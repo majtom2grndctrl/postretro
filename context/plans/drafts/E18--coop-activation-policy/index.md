@@ -1,149 +1,177 @@
 # E18--coop-activation-policy
 
-Brief · compact · Epic 18 · reads: `context/lib/scripting.md` §5, §12 · `context/lib/networking.md` §What gates, and what replicates instead, §Slot lifecycle, §Session-state ledger · `context/lib/entity_model.md` §7 · `plans/done/E18--player-life-states/` · `plans/done/E18--trigger-event-params/` · `plans/done/E18--dispatch-scope-params/` · read at 6c862fd
+Brief · resumable · Epic 18 · reads: `context/lib/scripting.md` §5, §12 · `context/lib/networking.md` §What gates, and what replicates instead, §Slot lifecycle, §Session-state ledger · `context/lib/ui.md` · `context/lib/entity_model.md` §7 · `plans/done/E18--player-life-states/` · `plans/done/E18--trigger-event-params/` · `plans/done/E18--dispatch-scope-params/` · read at 6c862fd
+
+**Sequence:** after the first-command presence fix (direct build: a remote pawn is present for triggers and touch from spawn, while movement stays command-gated).
 
 ## Problem
-Owner-raised, reopened. Co-op puzzles need "both plates held at once" and "every player is in the room", and scripts can read neither. The trigger stage tracks effective occupants per volume but publishes them only as the per-fire `on.occupancy` count, and nothing tells a script how many players are taking part. The 2026-07-14 plan for this was moved to `done/` without code, and downstream plans (`E18--dispatch-scope-params`' King-of-the-Hill fixture, E25's wait-for-everyone seam) still wait on it. The engine-state catalog behind `getGameState()` cannot express them: no entry is host-computed and shared with every machine, and none is keyed by data. When done, `getGameState()` carries `session.activePlayers` and a per-tag `occupancy` family on host and clients, and scripts build count-threshold and all-players puzzles from the existing crossing watcher and accumulators.
+Owner-raised, reopened. Co-op puzzles need "both plates held at once" and "every player is in the room", and co-op HUDs need "who is here, and who are we waiting for". Scripts can read none of it. The trigger stage publishes occupancy only as the per-fire `on.occupancy` count; nothing tells a script how many players are taking part or what each is doing; and a HUD can only read the local player. The 2026-07-14 plan for the occupancy half was moved to `done/` without code, and downstream plans (`E18--dispatch-scope-params`' King-of-the-Hill fixture, E25's wait-for-everyone seam) still wait on it. The engine-state catalog behind `getGameState()` cannot express these facts: no entry is host-computed and shared with every machine, none is keyed by data, and the UI cannot repeat a widget over a list. When done, `getGameState()` carries the session's players (per-player status and name, and counts by status) and a per-tag `occupancy` family on host and clients, and the UI can render one row per player.
 
 ## Decisions
 - **Engine facts stay one API: the catalog behind `getGameState()`** (`scripting.md` §5). The catalog gains these concepts, each with generated typedefs and drift guards like every other entry:
-  - **Host-computed shared entries.** The host writes them each authoritative tick; they replicate `SharedGlobal` to every machine through the existing slot replication, late-join baseline included. A crossing reading only them is host-mirrored (`scripting.md` §12).
-  - **Keyed families.** An entry whose path holds a data key, declared per level from level data, reached through a generated accessor.
-- **`session.activePlayers`**: the seats taking part in the current level, the host's own player included. A seat counts while it loads the level and, once its pawn spawns, while that pawn counts under the effective rule (`plans/done/E18--player-life-states/`): a declared pawn by its state's `occupancy` capability, an undeclared one unless its health is depleted. A held or disconnected seat does not count. Host-computed shared entry; reads 0 on a machine with no session level, including a client that has left.
-- **`occupancy.tag(tag)`**: a keyed family of readonly Numbers. `occupiedCount`: player-occupied volumes, those carrying the tag with at least one effective player inside. `occupants`: distinct effective players inside any volume carrying the tag. Membership ignores armed and latched state, as the occupant map does.
-- **`activePlayers` bounds `occupants`.** Every player `occupants` can count is in `activePlayers`, so `occupants >= activePlayers` with `activePlayers > 0` means every taking-part player is inside, and a player still loading holds it false. The documented all-players pattern carries the `> 0` guard; with none counted, the bare comparison is true.
-- **Volumes are trigger volumes**, `switch` included, since a switch is a trigger volume at the component layer.
-- **Lifetime.** The host's level install declares the family at 0 for every tag on an occupancy volume, and writes `activePlayers`, before reactions, crossings and accumulators rebuild; unload removes the family on every machine. Engine-written, script-readonly: a script write warns and changes nothing.
-- **The host sends the tag set** (`networking.md` §What gates: hash only what cannot be replicated). A client never derives it from its own map. The set rides the ordered control channel at host install and at admission, so it precedes the client's first accepted snapshot of the level. The client keeps the latest set and applies it only to the install it names, declaring the family before binds and crossings initialize. A set that arrives after install, or a new set for the same install, replaces the family, and the client's crossings and schema rebuild. The content digest is unchanged.
+  - **Host-computed shared entries**, replicated `SharedGlobal` to every machine through the existing slot replication, late-join baseline included. A crossing reading only them is host-mirrored (`scripting.md` §12).
+  - **Families**: entries keyed by data, reached through a generated accessor. A **list** is a family keyed by row, `0` to a fixed capacity, each row carrying a `present` flag.
+- **Player status.** Each seat in the session has one status, derived on the host: `loading` (connected, no pawn yet, including a client that never finishes loading), `inPlay` (pawn spawned and counted by the effective rule, `plans/done/E18--player-life-states/`: a declared pawn by its state's `occupancy` capability, an undeclared one unless its health is depleted), `down` (pawn spawned, not counted), `reconnecting` (held after a disconnect). The host's own player is a seat like any other.
+- **`session.playerCounts`**: host-computed shared entries `connected` (`loading` + `inPlay` + `down`), `loading`, `inPlay`, `down`, `reconnecting`. Gameplay reads these. They read 0 at unload and on a machine with no session level, including a client that has left.
+- **`session.players`**: a list, one row per seat (dense, ordered by seat, capacity the session's seat limit), each row `present`, `name`, `status`, `isLocal`. Each machine fills it: clients from the session roster, the host and single player from the seat table. It is for display; gameplay reads `playerCounts`.
+- **Names.** A row's `name` is the player's display name, which will come from the character save file; until that exists, and whenever a name is empty, it reads `Player N`, N being the row number from 1. Names and statuses ride the session roster to every peer, rewriting the contract that names stay host-local (`networking.md` §Session-state ledger). Status-only roster changes are rate-limited so a flapping life state cannot flood the reliable channel.
+- **`occupancy.tag(tag)`**: a family of readonly Numbers, host-computed and shared. `occupiedCount`: player-occupied volumes, those carrying the tag with at least one effective player inside. `occupants`: distinct effective players inside any volume carrying the tag. Membership ignores armed and latched state, as the occupant map does. Volumes are trigger volumes, `switch` included, since a switch is a trigger volume at the component layer.
+- **All-players condition.** `occupants <= inPlay` on every tick. "Everyone is in" is `loading == 0 && inPlay > 0 && occupants >= inPlay`: it waits for loading teammates, is not blocked by a downed one, and is false with nobody in play. The docs and the reference fixture carry exactly this pattern.
+- **`forEach(list, (row, i) => widget)`**: a UI helper that unrolls a widget once per row up to the list's capacity, shows a row only while `present`, and makes authored ids unique per row. Trees stay static: rows appearing or leaving never rebuild them. Both runtimes. The HUD player list is a reference implementation; rendering stays the mod's.
+- **Occupancy lifetime.** The host's level install declares the family at 0 for every tag on a trigger volume, before reactions, crossings and accumulators rebuild; unload removes it on every machine. Engine-written, script-readonly: a script write warns and changes nothing.
+- **The host sends the tag set** (`networking.md` §What gates: hash only what cannot be replicated). A client never derives it from its own map. The set rides the ordered control channel at host install and at admission, so it precedes the client's first accepted snapshot of the level, and applies only to the install it names. A set that arrives after install, or a new set for the same install, replaces the family; crossings bind and state batches apply from then. The content digest is unchanged.
 - **`occupancy` is a reserved engine namespace.** A mod store declaring it, or one overlapping it, is rejected at load whether or not a level is loaded.
 - **A tag that cannot form a slot name** (one containing `.` or `:`) warns once at install and gets no family. Its volumes still fire events.
-- **Write order.** Both facts are written once per authoritative host tick from that tick's one capture, after the trigger stage settles and before accumulators and crossing detection. A set that completes on a tick crosses in that tick's frame (`plans/done/E18--dispatch-scope-params/` ordering); a hold that starts and breaks inside one catch-up frame may not cross.
+- **Write order.** Counts and occupancy are written once per authoritative host tick, from that tick's trigger-stage capture and the seat table, after the trigger stage settles and before accumulators and crossing detection. A set that completes on a tick crosses in that tick's frame (`plans/done/E18--dispatch-scope-params/` ordering); a hold that starts and breaks inside one catch-up frame may not cross.
 - **Unknown tag degrades.** `occupancy.tag(name)` for a tag with no family in the current level is a ref to an undeclared slot: a crossing or accumulator over it warns and skips. No load failure.
-- **First consumers ship here:** the two-button co-op puzzle, today a design spike on a store workaround; an all-players room gate; and the King-of-the-Hill accumulator `E18--dispatch-scope-params` promised, on one dev map; and an effective-occupancy column in the dev-tools Triggers tab.
-- **Modder docs ship here.** `docs/scripting-reference.md` documents `session.activePlayers`, the `occupancy` family and the co-op patterns, the all-players guard included.
+- **First consumers ship here:** the two-button co-op puzzle, today a design spike on a store workaround; an all-players room gate; the King-of-the-Hill accumulator `E18--dispatch-scope-params` promised; a HUD player list showing who is loading and who is down; all on one dev map; and an effective-occupancy column in the dev-tools Triggers tab.
+- **Modder docs ship here.** `docs/scripting-reference.md` documents `session.players`, `session.playerCounts`, the `occupancy` family, `forEach` and the co-op patterns.
 - **Non-goals.**
-  - Moving defense layers into keyed families. They are keyed by mod vocabulary, owner-private, and already reached through `defineDefenseLayer`; the family concept leaves room for them.
+  - The character save file. Names fall back until it exists.
+  - Per-player status in gameplay conditions. Gameplay reads `playerCounts` and host-side player events; the list is for display.
+  - Shared per-player slot replication. The roster carries per-seat facts, including seats with no pawn, which slots cannot.
+  - Moving defense layers into families. They are keyed by mod vocabulary, owner-private, and reached through `defineDefenseLayer`.
   - Hard-disarm-cancels-pending-exit. `E18--timed-reaction-steps` filed it under this plan's surface; it changes exit obligations, not occupancy.
-  - Counting the dead or non-player entities. One counting rule: a mod that wants a downed state counted declares `occupancy: true` on it.
-  - A connected-seat count. `activePlayers` drops when a player goes down; a roster count for scaling difficulty is separate work.
+  - Counting the dead or non-player entities. A mod that wants a downed state counted declares `occupancy: true` on it.
   - Per-volume occupancy. Addressing stays tags-only, as for trigger commands.
   - Seams: E25 U2 adds them to the volume set.
 
 ### Scripting surface
 ```typescript
-import { defineMod, defineReaction, defineStore, getMapEntities, getGameState, runtime } from "postretro";
-import { onStateCrossing } from "postretro/ui";
-
-const { session, occupancy } = getGameState();
-
-const hill = defineStore("hill", {
+// mod script
+import { defineMod, defineStore, getGameState, runtime } from "postretro";
+const { occupancy } = getGameState();
+export const hill = defineStore("hill", {
   control: {
     type: "number", default: 100, range: [0, 100], network: "shared",
     accumulate: (t) => runtime.mul(t.dt, runtime.mul(runtime.read(occupancy.tag("hill").occupants), -1)),
   },
 });
+export default defineMod({ stores: [hill] });
+
+// level script
+import { defineReaction, getMapEntities, getGameState, runtime } from "postretro";
+import { onStateCrossing } from "postretro/ui";
+const { session, occupancy } = getGameState();
+const counts = session.playerCounts;
 
 export function setupLevel() {
   const doors = getMapEntities("mover", { tag: "vault-door" });
   const solve = defineReaction("vault.solve", { sequence: doors.flatMap((d) => d.start()) });
-  const airlock = occupancy.tag("airlock");
   const allIn = defineReaction("airlock.allIn", { sequence: doors.flatMap((d) => d.start()) });
+  const room = runtime.read(occupancy.tag("airlock").occupants);
+  const inPlay = runtime.read(counts.inPlay);
   return {
     reactions: [solve, allIn],
     crossings: [
       onStateCrossing(occupancy.tag("vault-plates").occupiedCount, { above: 1 }, [solve]),
       onStateCrossing(
-        runtime.and(
-          runtime.gt(runtime.read(session.activePlayers), 0),
-          runtime.ge(runtime.read(airlock.occupants), runtime.read(session.activePlayers)),
-        ),
+        runtime.and(runtime.eq(runtime.read(counts.loading), 0),
+          runtime.and(runtime.gt(inPlay, 0), runtime.ge(room, inPlay))),
         [allIn],
       ),
     ],
   };
 }
 
-export default defineMod({ stores: [hill] });
+// HUD
+import { VStack, HStack, Text, bindState, stateEquals, forEach } from "postretro/ui";
+const roster = VStack({ gap: 4 }, ...forEach(session.players, (p) =>
+  HStack({ gap: 8 },
+    Text({ bind: bindState(p.name) }),
+    Text({ text: "loading", visibleWhen: stateEquals(p.status, "loading") }),
+    Text({ text: "down", visibleWhen: stateEquals(p.status, "down") }),
+  )));
 ```
-Luau mirrors it: `local game = Postretro.getGameState()`, `game.occupancy:tag("airlock").occupants`, `game.session.activePlayers`. Both ship.
+Luau mirrors it: `game.occupancy:tag("airlock").occupants`, `game.session.playerCounts.inPlay`, `forEach(game.session.players, function(p, i) … end)`. Both ship.
 
 ## Acceptance
 ### Automated
-**Counting**
+**Status and counts**
+- [ ] A host with two clients reads `inPlay` 3; one client loading reads `loading` 1, `inPlay` 2, `connected` 3; a downed declared pawn reads `down` and leaves `inPlay`; a disconnected client reads `reconnecting` until its hold expires, then leaves every count.
+- [ ] A client that never finishes loading stays `loading` until it disconnects; a client disconnecting while loading leaves `loading` and `connected` on the next tick (pin P15).
+- [ ] A joiner's pawn counts `inPlay` from the tick it spawns, before its first command arrives (pin P16).
+- [ ] An undeclared client pawn at zero health reads `down` and is no occupant; a pawn with no health component counts; a declared pawn counts by its state's `occupancy` capability (pin P17).
+- [ ] Single player reads `inPlay` 1, or `down` with `inPlay` 0 when dead; a client that leaves reads every count 0 at the frontend (pin P14).
+- [ ] Every tick, each tag's `occupants` is at most `inPlay`.
+
+**Occupancy**
 - [ ] Two players on one plate: `occupiedCount` 1, `occupants` 2. One player on each of two plates sharing a tag: 2 and 2.
 - [ ] One player inside two overlapping volumes sharing a tag counts once in `occupants` and twice in `occupiedCount`.
-- [ ] An undeclared pawn at zero health counts in neither `occupants` nor `activePlayers`; a pawn with no health component counts in both; a declared pawn counts in both by its state's `occupancy` capability.
-- [ ] A disarmed or latched volume still counts its occupants.
-- [ ] A player on a `switch` press volume carrying the tag counts.
+- [ ] A disarmed or latched volume still counts its occupants; a player on a `switch` press volume carrying the tag counts.
 - [ ] A volume whose tags repeat one tag counts once in that tag's `occupiedCount`, and its occupant once in `occupants` (pin P11).
-- [ ] A player killed inside the room on a tick, with another player outside, leaves `activePlayers` and `occupants` on the same later tick; the all-players gate never crosses (pin P7).
-- [ ] `activePlayers` counts the host's player, counts a client's seat from admission to the level through loading and spawn, and excludes a held or disconnected seat.
-- [ ] A client that leaves the session reads `activePlayers` 0 at the frontend, not the host's last count (pin P14).
+- [ ] A player killed inside the room on a tick, with another player outside, leaves `inPlay` and `occupants` on the same later tick; the all-players gate never crosses (pin P7).
 
 **Puzzles (headless)**
 - [ ] Two-button door: the door opens only while both plates hold an effective occupant; releasing one before the second lands suppresses the solve; one player walking plate to plate never solves.
 - [ ] N separated plates sharing a tag solve only when all N are held on one tick.
-- [ ] All-players gate with one, two and three players: it opens on the tick the last counted player enters, and not before.
-- [ ] All-players gate with a declared downed player outside the room, whose state does not count: it opens when every other player is inside.
-- [ ] All-players gate with nobody counted, a lone player dead outside or every player downed outside: it stays closed (pin P12).
-- [ ] After a level change, an all-players gate the party spawns inside stays closed while any client still loads, and opens in the frame the last one's pawn counts inside (pin P13).
-- [ ] A player joining while the others wait inside holds the gate closed until they enter; a player disconnecting while outside opens it on the tick their seat stops counting.
-- [ ] With one tick per frame, a set completing on a tick crosses in that frame. A party standing inside at level install crosses in the first authoritative frame (pin P1).
+- [ ] All-players gate with one, two and three players: it opens in the frame the last in-play player enters, and not before.
+- [ ] All-players gate with a downed player outside: it opens when every in-play player is inside. With nobody in play: it stays closed (pin P12).
+- [ ] After a level change and after a same-map restart, with real client endpoints, a gate the party spawns inside stays closed while any client still loads and opens in the frame the last one counts inside (pin P13).
+- [ ] A player admitted after the gate opened turns it false; it fires again when they enter (pin P18).
+- [ ] With one tick per frame, a set completing on a tick crosses in that frame; a lone host standing inside at install crosses in the first authoritative frame (pin P1).
 - [ ] King-of-the-Hill: control drains at `dt` per tick with one player on the hill, twice that with two, and not at all when empty.
-- [ ] Two identical headless runs with scripted inputs, on a harness that drives the trigger stage, produce identical timelines for both facts (pin P6).
+- [ ] Two identical headless runs with scripted inputs, on a harness that drives the trigger stage, produce identical timelines for every count (pin P6).
+
+**Player list**
+- [ ] Each machine's `session.players` rows match the session's seats in seat order: `present`, `status` and `isLocal` correct, absent rows `present` false; a seat leaving shifts later rows up.
+- [ ] An empty name reads `Player N` by row; a non-empty name reads as sent.
+- [ ] A life state flipping every tick publishes status-only roster updates no faster than the rate limit, and the final status lands (pin P19).
+- [ ] `forEach` over `session.players` builds one row per capacity index, shows only present rows, gives each row's authored ids a unique suffix, and never rebuilds the tree as players join and leave.
 
 **Catalog and lifetime**
-- [ ] A script `setState` on `session.activePlayers` or an occupancy slot warns and leaves it unchanged.
+- [ ] A script `setState` on any count, row field or occupancy slot warns and leaves it unchanged.
 - [ ] A mod store named `occupancy`, or one overlapping it, is rejected at load with and without a level loaded; a store named `occupancyBoard` loads; the engine's own family insert succeeds (pin P5).
 - [ ] A tag containing `.` or `:` warns once at install and gets no family; the level's other tags get theirs, and its volumes still fire.
 - [ ] A crossing or accumulator over a tag with no volume in the level warns and is skipped; the level loads.
 - [ ] After a level change, the new level's tags have families and the old level's tags absent from it have none (pin P2).
-- [ ] Typedefs for `session.activePlayers` and the `occupancy` family are generated from the catalog; the catalog drift guards cover both, and the typedef drift check passes.
-- [ ] A data script calling `occupancy.tag` at module scope evaluates in the build-time bridge and at install alike, and a drift test holds the two `tag` installers equal (pin P4).
+- [ ] Typedefs for the counts, the player list and the `occupancy` family are generated from the catalog; the drift guards cover them; a data script calling `occupancy.tag` at module scope evaluates in the build-time bridge and at install alike (pin P4).
 
 **Co-op (two-endpoint)**
-- [ ] A client's `activePlayers` and occupancy values converge to the host's; its host-mirrored crossing fires once when the set completes; the solve's mover reaches it by replicated phase.
-- [ ] A client joining mid-hold reads the current values from its baseline; its crossing over them fires once in that frame and the host's does not fire again (pin P10).
-- [ ] A client whose tag set for the next level, or for a same-map restart, lands in the same control drain as the relevel declares that install's family and applies state batches from its first snapshot (pin P8).
-- [ ] On an uncatalogued level, a host reinstall with a changed tag set leaves the client holding exactly the host's new families, and its state batches apply (pin P9).
+- [ ] A client's counts and occupancy converge to the host's; its host-mirrored crossing fires once when the set completes; the solve's mover reaches it by replicated phase.
+- [ ] A client joining mid-hold reads the current values from its baseline; its crossing fires once in that frame and the host's does not fire again (pin P10).
+- [ ] A client whose tag set for the next level, or a same-map restart, lands in the same control drain as the relevel declares that install's family and applies state batches from its first snapshot (pin P8).
+- [ ] On an uncatalogued level, a host reinstall with a changed tag set leaves the client holding exactly the host's new families (pin P9); a set arriving after install declares the family then and batches resume (pin P3).
 - [ ] A client whose map differs from the host's only in trigger tags joins and reads the host's families, not its own.
-- [ ] A client whose tag set arrives after its install declares the family then: its crossings over occupancy bind, and state batches resume applying (pin P3).
 - [ ] A client demoted and re-promoted within a level keeps its families; after a level change it holds only the new level's (pin P2).
 
 **Surface**
-- [ ] The scripting-surface example compiles in TypeScript and Luau, and a TS and a Luau fixture of the two-button puzzle behave identically.
-- [ ] `docs/scripting-reference.md` documents `session.activePlayers`, `occupancy.tag` and the all-players pattern with its `> 0` guard.
-- [ ] With `dev-tools`, the Triggers tab shows effective occupancy beside raw; without it, no occupancy-exposure UI compiles (build gate: a build without `dev-tools` succeeds and no non-dev-tools module names the column).
+- [ ] The scripting-surface example compiles in TypeScript and Luau, and TS and Luau fixtures of the two-button puzzle and the HUD list behave identically.
+- [ ] `docs/scripting-reference.md` documents the counts, the player list, `forEach`, the `occupancy` family and the all-players pattern.
+- [ ] With `dev-tools`, the Triggers tab shows effective occupancy beside raw; a build without `dev-tools` succeeds and no non-dev-tools module names the column.
 
 ### Manual
-- [ ] Two-player session on the dev map: each puzzle opens only with both players on its plates; the room gate opens only with both inside; the hill drains faster with both on it.
+- [ ] Two-player session on the dev map: each puzzle opens only with both players on its plates; the room gate opens only with both inside; the hill drains faster with both on it; the HUD list shows both players, a joiner as loading, and a downed player as down.
 
 ## Path
-- Shape: catalog entries, so the facts arrive with `getGameState()` typing, generation and drift guards. Rival: top-level `occupiedCount(tag)` / `occupants(tag)` functions over hand-declared slots; cheaper, but a third way to read engine state beside `getGameState()` and the defense-layer handles. Script-only rival: mod stores fed by trigger enter and exit reactions writing `on.occupancy`; it goes stale, because exit fires on physical overlap and a player downed on a plate fires no exit.
-- Catalog: `BUILTIN_ENGINE_STATE` / `EngineStateCatalogEntry` (`crates/entities/src/engine_state_catalog.rs`); no entry is `SharedGlobal` today. Generation: `emit_ts_game_state_refs` and its Luau twin, runtime trees in `game_state_refs.rs`. Guards: `build_time_game_state_mirror.rs` (`MIRRORED_GAME_STATE_LEAVES`), the committed-typedef drift test; regenerate with `gen-script-types`.
-- Keyed family precedent: `SlotTable::replace_player_defense_slots` (retain by prefix, reinsert); `SlotTable` has no teardown. Insert after `trigger_volume_bridge.populate_from_level` and before `rebuild_reaction_subscribers` and `slot_accumulator_bindings.rebuild` in install; a crossing over a slot declared later warns and skips until a rebuild. Both sides reset the replicated schema at unload (`reset_level_scoped_host_state`, `reset_level_scoped_client_state`).
-- Shared engine writes: `write_store_slot` / `apply_store_slot_batch` skip the readonly check; script paths enforce it. Replication reads engine slots by dotted name (`ReplicatedSlotSchema::build`, `HostStateReplication::ingest_frame`).
-- Who counts: `TriggerStageCapabilities::capture` builds the effective set each tick; `TriggerSystem::effective_occupants` filters a volume's occupants through it. Aggregate per tag from it. `activePlayers` adds seats admitted to the level whose pawn is not yet in the capture (loading, or awaiting a first command; see the first-command assessment) to the capture's counted players.
-- Consumers: the two-button spike is `content/dev/scripts/coop-two-button-puzzles.ts`; the dev-tools column sits beside the raw count.
-- Reservation: `validate_namespace_records` rejects `@` today; `occupancy` joins it beside `namespaces_overlap`.
-- Tag set: append a `ServerControlMessage` variant carrying level identity, level life and the tags (application-protocol bump; append keeps `WIRE_VERSION`). Send it beside the spawn-pose hint, where `send_install_spawn_pose_hints` and admission send it, without the `player_spawn` gate; hold it as `ClientSpawnPoseHint` is held. Declare before `warn_unknown_slot_binds` and `rebuild_reaction_subscribers`. A late set redeclares, then `reset_state_slot_schema` and `rebuild_active_reaction_subscribers`; check the Recompose path's other side effects. Accumulators evaluate on the host only (`evaluate_slot_accumulators`).
-- Fingerprint: `compute_fingerprint` covers slot identity, type, range and scope, sorted by identity; identical declarations on both sides match. A mismatched batch drops whole and the host keeps sending `FullBaseline`, so the client recovers once declared.
-- Dev-tools: `collect_trigger_diagnostics_rows`, `TriggerDiagnosticsRow`.
-- First slice: a host-computed shared catalog entry (`session.activePlayers`) end to end, replicated to a client; then the keyed family and the headless two-button test; then the host-sent tag set.
+- Shape: catalog entries, so the facts arrive with `getGameState()` typing, generation and drift guards. Rivals: top-level `occupiedCount(tag)` functions over hand-declared slots, a third way to read engine state; mod stores fed by trigger events, which go stale because a player downed on a plate fires no exit; shared per-owner slots for status, weeks of wire work that still cannot represent pawnless seats.
+- Catalog: `BUILTIN_ENGINE_STATE`; generation `emit_ts_game_state_refs` and its Luau twin, runtime trees in `game_state_refs.rs` (interior nodes are method-free today; `byPlayer` is the accessor precedent); guards `build_time_game_state_mirror.rs`, `build_time_by_player_installers_match_runtime_bridge`.
+- Status: derive in one host function from `SeatTable` (`client_bindings`, `pawn_bindings`, `hold_deadlines`) and the life-state rule. Hold causes in transport mean level load or parity, not the seat-level reconnect hold.
+- Roster: `RosterEntry` / `SessionRosterMessage`, `publish_dirty_roster`, `apply_client_session_roster` (the client keeps the message in `ClientSessionStatus`); mark dirty on pawn bind and unbind and life-state change. Appending fields changes positional bitcode: bump `WIRE_VERSION` (39); update `roster_entry_fields_stay_claim_free`. Names: `ConnectClaim.display_name`, capped at `DISPLAY_NAME_MAX_BYTES`; the host's seat has no claim.
+- `forEach`: `Switch` in `sdk/lib/ui/state.ts` is the unroll precedent; `repeat` is already a container prop. Row capacity is the session seat limit (`MAX_CLIENTS` plus the host).
+- Occupancy: `TriggerStageCapabilities::capture`, `TriggerSystem::effective_occupants`; aggregate per tag. Families: `replace_player_defense_slots` (retain by prefix, reinsert). Insert after `trigger_volume_bridge.populate_from_level`, before `rebuild_reaction_subscribers` and `slot_accumulator_bindings.rebuild`; the host's pawn spawns after both, so the install count comes from seats. Reservation goes on the mod-declaration paths (`StoreDeclarationSet::add`, `plan_reconcile`), not `validate_namespace_records`, which also serves engine inserts.
+- Tag set: an appended `ServerControlMessage` variant sent beside the spawn-pose hint (`send_install_spawn_pose_hints`, admission), held as `ClientSpawnPoseHint` is; a late set redeclares, then `reset_state_slot_schema` and `rebuild_active_reaction_subscribers`.
+- Phases: (1) shared catalog entries, status and counts, replicated; (2) roster names and statuses, the player list and `forEach`, with the HUD reference; (3) occupancy families, the tag set and the puzzles; (4) docs, dev-tools, manual check. Each phase ends green and committed.
 - Split first: `trigger_system.rs` is past ~800 lines; move occupant tracking out, behavior-preserving, own commit.
-- Docs at promotion: §5 states the two catalog concepts and level-scoped engine slots beside the engine-global store; §12 states the occupancy contract; `networking.md` gains the tag-set control message and level-scoped shared slots in §Session-state ledger.
+- Docs at promotion: §5 states families, lists and level-scoped engine slots; §12 the occupancy and player contracts; `networking.md` the roster's names and statuses, the tag-set message and level-scoped shared slots; `ui.md` `forEach`.
 - Research: `research.md`.
 
 ## Wire format
-One `ServerControlMessage` variant, appended to the enum on the control channel and encoded as its siblings are: level identity (catalog id or path), level life (`Option<u64>`), then the tags as a length-prefixed list of UTF-8 strings in the host's sorted order; an empty list means the level has no family. No snapshot or PRL change.
+- `RosterEntry` appends `name` (UTF-8 string, at most `DISPLAY_NAME_MAX_BYTES`, empty when unknown) and `status` (`u8`: 0 loading, 1 inPlay, 2 down, 3 reconnecting) after `connected`, encoded as its siblings are; `WIRE_VERSION` bumps.
+- One `ServerControlMessage` variant appended: level identity (catalog id or path), level life (`Option<u64>`), then the tags as a length-prefixed list of UTF-8 strings in the host's sorted order; an empty list means the level has no family.
+- No snapshot or PRL change.
 
 ## Boundary inventory
 | Name | Rust | Slot / wire | TypeScript | Luau | FGD KVP |
 |---|---|---|---|---|---|
-| active players | catalog entry, host-computed, `SharedGlobal`, readonly | `"session.activePlayers"` | `getGameState().session.activePlayers: ComputedRef<number>` | `Postretro.getGameState().session.activePlayers` | n/a |
-| occupancy family | catalog keyed family, level-scoped, `SharedGlobal`, readonly | `"occupancy.<tag>.occupiedCount"`, `"occupancy.<tag>.occupants"` | `getGameState().occupancy.tag(tag).occupiedCount` / `.occupants: ComputedRef<number>` | `Postretro.getGameState().occupancy:tag(tag)` | n/a |
+| player counts | catalog, host-computed, `SharedGlobal`, readonly | `"session.playerCounts.connected"`, `.loading`, `.inPlay`, `.down`, `.reconnecting` | `getGameState().session.playerCounts.inPlay: ComputedRef<number>` | `game.session.playerCounts.inPlay` | n/a |
+| player list | catalog list, each machine writes, readonly | `"session.players.<row>.present"`, `.name`, `.status`, `.isLocal`; roster `name`, `status` | `getGameState().session.players`, row `p.name` etc. | `game.session.players` | n/a |
+| status values | enum | `"loading"`, `"inPlay"`, `"down"`, `"reconnecting"` | same strings | same | n/a |
+| row repeat | — | — | `forEach(list, (row, i) => widget)` from `"postretro/ui"` | `forEach(list, function(row, i) … end)` | n/a |
+| occupancy family | catalog family, level-scoped, `SharedGlobal`, readonly | `"occupancy.<tag>.occupiedCount"`, `"occupancy.<tag>.occupants"` | `getGameState().occupancy.tag(tag).occupants: ComputedRef<number>` | `game.occupancy:tag(tag)` | n/a |
 | namespace | reserved `occupancy` | — | store name rejected | same | n/a |
 
 ## Open questions
+- The status-only roster rate limit's value — **delegated**.
 - Whether the dev map is new or extends an existing co-op test map — **delegated**.
-- Whether a level with no tagged occupancy volume declares an empty `occupancy` namespace — **delegated**.
+- Whether a level with no tagged trigger volume declares an empty `occupancy` namespace — **delegated**.

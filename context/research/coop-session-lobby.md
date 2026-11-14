@@ -114,7 +114,7 @@ reaction addresses, and the reference lobby in the dev mod.
 
 ## 5. Open questions
 
-- **Roster display.** Planned in `plans/drafts/E18--coop-activation-policy/`: a
+- **Roster display.** Planned in `plans/ready/E18--coop-activation-policy/`: a
   `session.players` list (capped rows of present, name, status, isLocal) rendered through a
   `forEach` UI helper, and `session.playerCounts` as the session scope's player-count fact.
 - **Where a session starts.** Whether a host boots into a lobby by default, or the lobby is a

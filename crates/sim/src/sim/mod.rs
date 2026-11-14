@@ -35,12 +35,12 @@ pub use tick_start::{
 };
 #[cfg(test)]
 mod player_life_tests;
-#[cfg(test)]
-mod remote_presence_tests;
 mod player_locomotion;
 pub mod presentation_pool;
 pub mod presentation_projection;
 mod projectile_stage;
+#[cfg(test)]
+mod remote_presence_tests;
 pub mod splash;
 pub mod touch;
 #[cfg(any(test, feature = "test-support"))]
@@ -780,7 +780,11 @@ where
         let registry = registry.borrow();
         registry.local_player_movement_pawn()
     };
-    if let Some(pawn) = local_player {
+    // With no marked local pawn the registry falls back to the first movement
+    // pawn, which can be a client's; an owned remote pawn is never also local.
+    if let Some(pawn) = local_player
+        && !players.iter().any(|player| player.pawn == pawn)
+    {
         players.push(AuthoritativePlayer {
             id: PlayerId::Local(pawn),
             pawn,

@@ -82,8 +82,11 @@ impl MovementOwners {
     /// pawn whose client has sent no command yet is still present for triggers and
     /// touch while it holds its pose (`networking.md` §Host input command queue).
     pub fn present_remote_pawns(&self) -> Vec<(u64, EntityId)> {
-        let mut present: Vec<(u64, EntityId)> =
-            self.owners.iter().map(|(&pawn, &client)| (client, pawn)).collect();
+        let mut present: Vec<(u64, EntityId)> = self
+            .owners
+            .iter()
+            .map(|(&pawn, &client)| (client, pawn))
+            .collect();
         present.sort_unstable();
         present
     }

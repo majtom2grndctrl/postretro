@@ -22,7 +22,23 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// A listen host with its own marked pawn, far from every plate and pickup.
     fn new() -> Self {
+        let fixture = Self::without_host_pawn();
+        {
+            let mut registry = fixture.registry.borrow_mut();
+            let host = registry.spawn(Transform {
+                position: Vec3::new(100.0, 0.0, 0.0),
+                ..Transform::default()
+            });
+            registry.set_component(host, trigger_movement()).unwrap();
+            registry.mark_local_player_pawn(host).unwrap();
+        }
+        fixture
+    }
+
+    /// A host with no pawn of its own, as on a map with no player start.
+    fn without_host_pawn() -> Self {
         Self {
             registry: Rc::new(RefCell::new(EntityRegistry::new())),
             world: CollisionWorld::new(),
@@ -107,8 +123,13 @@ impl Fixture {
     /// no remote command at all.
     fn tick(&mut self, present: &[(u64, EntityId)]) -> TickEvents {
         let pending = begin_tick(&self.registry, None);
-        let started =
-            finish_tick_start(pending, &mut self.registry.borrow_mut(), &self.world, |_| None).0;
+        let started = finish_tick_start(
+            pending,
+            &mut self.registry.borrow_mut(),
+            &self.world,
+            |_| None,
+        )
+        .0;
         let hit_zones = HitZoneStore::new();
         let mut progress = ProgressTracker::new();
         let mut ai_runtime = postretro_ai::AiRuntime::new();
@@ -190,7 +211,10 @@ fn joiner_without_a_command_presses_a_plate_and_collects_a_pickup_while_holding_
     );
     let registry = fixture.registry.borrow();
     assert_eq!(
-        registry.get_component::<Inventory>(pawn).unwrap().wieldables[0],
+        registry
+            .get_component::<Inventory>(pawn)
+            .unwrap()
+            .wieldables[0],
         Some(item),
         "touch collects the pickup for the joiner"
     );
@@ -239,7 +263,10 @@ fn leaving_the_roster_fires_exactly_one_exit_and_a_fresh_pawn_enters_again() {
     let mut fixture = Fixture::new();
     let pawn = fixture.joiner(Vec3::ZERO);
     let plate = fixture.plate(Vec3::ZERO);
-    assert_eq!(edges(&fixture.tick(&[(7, pawn)]), TriggerEventEdge::Enter).len(), 1);
+    assert_eq!(
+        edges(&fixture.tick(&[(7, pawn)]), TriggerEventEdge::Enter).len(),
+        1
+    );
 
     // Demotion despawns the pawn and clears its owner entry.
     fixture.registry.borrow_mut().despawn(pawn).unwrap();
@@ -281,4 +308,16 @@ fn two_joiners_on_one_tick_enter_in_client_id_order_every_run() {
             vec![(plate, PlayerId::Remote(3)), (plate, PlayerId::Remote(9))],
         );
     }
+}
+
+#[test]
+fn a_host_without_a_pawn_never_lists_a_joiner_as_local() {
+    let mut fixture = Fixture::without_host_pawn();
+    let pawn = fixture.joiner(Vec3::ZERO);
+    let plate = fixture.plate(Vec3::ZERO);
+    assert_eq!(
+        edges(&fixture.tick(&[(7, pawn)]), TriggerEventEdge::Enter),
+        vec![(plate, PlayerId::Remote(7))],
+        "the registry's local fallback names the joiner, which enters once, as remote"
+    );
 }

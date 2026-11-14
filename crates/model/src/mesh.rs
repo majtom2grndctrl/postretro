@@ -369,6 +369,7 @@ mod tests {
                 ..Default::default()
             }],
             travel_speed: None,
+            events: Vec::new(),
         };
 
         mesh.compute_bounds();

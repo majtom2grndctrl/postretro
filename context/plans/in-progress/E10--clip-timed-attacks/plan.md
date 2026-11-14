@@ -69,9 +69,9 @@ read at: eb444995a
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Converter: split post-processing into a sibling module, behavior-preserving, own commit | worker (Python) | — | |
-| 2 | Converter: `--event`, trim carry, rejects, tests, `docs/character-animation.md` | worker (Python) | 1 | |
-| 3 | Loader: `AnimationClip` events, `parse_clip` extras, library carry and override, malformed warn | integrating executor | — | |
+| 1 | Converter: split post-processing into a sibling module, behavior-preserving, own commit | worker (Python) | — | done: d6ca8b3ea, 83/83 before and after |
+| 2 | Converter: `--event`, trim carry, rejects, tests, `docs/character-animation.md` | worker (Python) | 1 | done: `tools/mixamo_clip_events.py`, 97/97 |
+| 3 | Loader: `AnimationClip` events, `parse_clip` extras, library carry and override, malformed warn | integrating executor | — | done: `crates/model/src/clip_events.rs`; model lib 220 pass. Libraries stamped via `stamp_events_in_library` (content part of task 7) |
 | 4 | Thin slice: clip clock, `at` on contact attacks, `AiTickInputs` clip access, jab fixture on `punch` | integrating executor | 3 | |
 | 5 | Descriptor and surface: `ActionVerb` `at`, implied mark, load rejects, `animationDone` fact, TS/Luau types and prelude, typedef | integrating executor | 4 | |
 | 6 | Runtime completion: cancellation, loops and phase, travel variants, weapon `at`, missing-event warn, rate | integrating executor | 4, 5 | |

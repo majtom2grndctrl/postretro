@@ -3348,6 +3348,26 @@ mod tests {
                 "`{attack}_windup` and `{attack}_strike` together span `{attack}`"
             );
         }
+        // Clip events: each strike inherits its attack's `hit`, shifted by the
+        // windup cut's key; a windup ending before the moment carries none.
+        let event = |name: &str| {
+            model
+                .clips
+                .iter()
+                .find(|clip| clip.name == name)
+                .unwrap()
+                .event_time("hit")
+        };
+        for (attack, hit) in [("punch", 0.767), ("smash", 1.667), ("swipe", 1.3)] {
+            let windup = duration(&format!("{attack}_windup"));
+            let strike = event(&format!("{attack}_strike")).expect("the strike carries `hit`");
+            assert!((event(attack).expect("the attack carries `hit`") - hit).abs() < 1e-4);
+            assert!(
+                (strike - (hit - windup)).abs() < 1e-4,
+                "`{attack}_strike` hit shifted"
+            );
+            assert_eq!(event(&format!("{attack}_windup")), None);
+        }
     }
 
     #[test]

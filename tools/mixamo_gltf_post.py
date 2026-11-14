@@ -7,6 +7,9 @@ import struct
 from pathlib import Path
 from urllib.parse import unquote
 
+from mixamo_clip_events import attach_events, cut_key, set_clip_events, \
+    stamp_library_events, trim_events
+
 
 # ---------------------------------------------------------------------------
 # Mixamo bone -> engine extras mapping (bone names without "mixamorig:" prefix)
@@ -437,6 +440,18 @@ def append_floats(gltf, bin_bytes, elements, accessor_type, bounds):
     return len(gltf["accessors"]) - 1
 
 
+def clip_track_times(gltf, bin_bytes, animation):
+    """Map each of a clip's time accessors to its key times in seconds."""
+    return {s["input"]: [t for (t,) in read_floats(gltf, bin_bytes, s["input"])]
+            for s in animation["samplers"]}
+
+
+def document_track_times(gltf, bin_bytes):
+    """Map each clip's name to its tracks' key times in seconds."""
+    return {animation.get("name"): list(clip_track_times(gltf, bin_bytes, animation).values())
+            for animation in gltf.get("animations", [])}
+
+
 def find_clip(gltf, name):
     for animation in gltf.get("animations", []):
         if animation.get("name") == name:
@@ -514,6 +529,9 @@ def trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms=0.0):
     holds at the source's first root position. Unshifted, the strike would
     start wherever the windup's raw drift left the hips, and the body would pop
     there. `bin_bytes` is a bytearray that grows with the copy's keys.
+
+    The copy keeps the source's events inside its cut, shifted with its keys;
+    mixamo_clip_events.carried_events holds the rule.
     """
     if any(a.get("name") == new for a in gltf.get("animations", [])):
         raise ValueError(f"--trim {new}: a clip with that name already exists")
@@ -523,8 +541,7 @@ def trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms=0.0):
     for sampler in animation["samplers"]:
         if sampler.get("interpolation") == "CUBICSPLINE":
             raise ValueError(f"--trim {new}: cubic spline clips are not supported")
-    tracks = {s["input"]: [t for (t,) in read_floats(gltf, bin_bytes, s["input"])]
-              for s in animation["samplers"]}
+    tracks = clip_track_times(gltf, bin_bytes, animation)
     clip_end = max(times[-1] for times in tracks.values())
     end = clip_end + 1e-4 if end_ms is None else end_ms / 1000.0 + 1e-4
     if end_ms is not None and clip_end < end - 2e-4:
@@ -535,8 +552,7 @@ def trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms=0.0):
         if start_ms / 1000.0 >= clip_end - 1e-4:
             raise ValueError(f"--trim {new}: {start_ms:g} ms is at or past the end "
                              f"of '{source}' ({clip_end * 1000:.0f} ms)")
-        start = max((t for times in tracks.values() for t in times
-                     if t <= start_ms / 1000.0 + 1e-4), default=None)
+        start = cut_key(tracks.values(), start_ms / 1000.0)
         if start is None:
             raise ValueError(f"--trim {new}: {start_ms:g} ms is before the first key")
         if not any(start + 1e-4 < t <= end for times in tracks.values() for t in times):
@@ -580,11 +596,13 @@ def trim_clip(gltf, bin_bytes, new, source, end_ms, start_ms=0.0):
         if "interpolation" in sampler:
             copy["interpolation"] = sampler["interpolation"]
         samplers.append(copy)
+    events = trim_events(animation, list(tracks.values()), start_ms, end_ms, f"--trim {new}")
     gltf["animations"].append({
         "name": new,
         "channels": [dict(c, target=dict(c["target"])) for c in animation["channels"]],
         "samplers": samplers,
     })
+    set_clip_events(gltf["animations"][-1], events)
 
 
 def gltf_bin_path(gltf_path, gltf):
@@ -596,12 +614,15 @@ def gltf_bin_path(gltf_path, gltf):
 
 
 def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False,
-                     tag_if_missing=False, in_place=(), trims=()):
+                     tag_if_missing=False, in_place=(), trims=(), events=()):
     """Run the post-export pass on a `.gltf` and its `.bin`, in place.
 
     Normalization comes first so tagging sees canonical names; `tag` gates only
     tagging, so a binding survives --no-tag. `tag_if_missing` tags despite
     `tag=False` when names changed or the document has no engine tags.
+
+    Clip edits run pins, then events, then trims, so a trim keeps the events
+    inside its cut. Pinning moves no key in time.
     """
     gltf_path = Path(gltf_path)
     gltf = read_gltf(gltf_path)
@@ -612,15 +633,19 @@ def postprocess_gltf(gltf_path, tag=True, clip_library=None, library=False,
     if tag or (tag_if_missing and (renamed or not has_engine_tags(gltf))):
         print_tag_summary(gltf, tag_skeleton(gltf))
 
-    if in_place or trims:
+    if in_place or trims or events:
         if clip_library is not None:
-            raise ValueError("--in-place and --trim edit clips, and a bound "
+            raise ValueError("--in-place, --trim and --event edit clips, and a bound "
                              "character keeps none; apply them to its library")
         bin_path = gltf_bin_path(gltf_path, gltf)
         bin_bytes = bytearray(bin_path.read_bytes())
         for clip in in_place:
             pin_root_in_place(gltf, bin_bytes, clip)
             print(f"\nPinned '{clip}' in place")
+        if events:
+            attach_events(gltf, document_track_times(gltf, bin_bytes), events)
+        for source, name, ms in events:
+            print(f"\nAdded event '{name}' at {ms:g} ms to '{source}'")
         for new, source, start_ms, end_ms in trims:
             trim_clip(gltf, bin_bytes, new, source, end_ms=end_ms, start_ms=start_ms)
             end = "its end" if end_ms is None else f"{end_ms:g} ms"
@@ -651,3 +676,16 @@ def bind_gltf_to_clip_library(gltf_path, clip_library):
     rig is tagged, or it would lose its masks, sockets and zones without a word.
     """
     postprocess_gltf(gltf_path, tag=False, clip_library=clip_library, tag_if_missing=True)
+
+
+def stamp_events_in_library(gltf_path, events, trims=()):
+    """Add events to an already-exported library, with no Blender run.
+
+    `events` are parse_event tuples and `trims` the parse_trim tuples the library
+    was built with; mixamo_clip_events.stamp_library_events documents the result.
+    """
+    gltf_path = Path(gltf_path)
+    gltf = read_gltf(gltf_path)
+    bin_bytes = gltf_bin_path(gltf_path, gltf).read_bytes()
+    stamp_library_events(gltf, document_track_times(gltf, bin_bytes), events, trims)
+    write_gltf(gltf_path, gltf)

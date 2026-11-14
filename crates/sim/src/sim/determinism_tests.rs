@@ -2497,6 +2497,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
                 duration: 1.0,
                 joints: Vec::new(),
                 travel_speed: Some(2.0),
+                events: Vec::new(),
             }]),
             joint_zones: Vec::new(),
             sockets: std::collections::HashMap::new(),
@@ -2909,6 +2910,7 @@ fn leg_model() -> crate::scripting_systems::hit_zones::ModelHitZones {
         duration: 1.0,
         joints: Vec::new(),
         travel_speed: None,
+        events: Vec::new(),
     }];
     let mut chain_mask = JointMask::new();
     for j in [0usize, 1, 2] {
@@ -3331,6 +3333,7 @@ fn stateless_probe_sampler_holds_rest_pose_when_clip_zero_moves() {
             ..JointTracks::default()
         }],
         travel_speed: None,
+        events: Vec::new(),
     }]);
 
     let pose =

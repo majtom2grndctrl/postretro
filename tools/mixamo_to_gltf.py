@@ -16,6 +16,7 @@ Usage:
         [--exclude-meshes EXO_Body] \
         [--library | --clip-library ../clip_libraries/rifle/library.gltf] \
         [--in-place smash] \
+        [--event smash:hit=1667] \
         [--trim smash_windup=smash:400] [--trim smash_strike=smash:400-]
 
 The --base file is treated as the base mesh + armature.  If omitted, the
@@ -38,6 +39,15 @@ zero: `--trim smash_strike=smash:400-` is the rest of the attack after a
 `smash:400` windup, starting on the windup's last pose. A range's root (Hips)
 starts at the source's first ground-plane position, where the engine holds
 that windup. Trims copy the clip after --in-place, in the order given.
+
+--event attaches a named moment to a clip, in milliseconds from its start: an
+event lands in the clip's `extras.events` as `{ name, time }`, time in seconds.
+`--event punch:hit=620` puts `hit` at 0.62 s in `punch`. A name starts with a
+letter or underscore and holds only letters, digits and underscores; names are
+case-sensitive and unique within a clip, and the time must lie within the clip.
+Events attach before trims run, and a trim keeps those inside its cut, shifted
+by the cut's start key. A range keeps an event on its start key, at 0; a windup
+ending on that key does not keep it.
 
 After export the script tags the Mixamo skeleton with engine extras
 (poseMask, aimBendWeight, socket, hitZone) and sets the skin skeleton root.
@@ -87,10 +97,12 @@ from mixamo_gltf_post import (  # noqa: E402
     read_gltf,
     sample_track,
     stamp_clip_library,
+    stamp_events_in_library,
     strip_clips,
     strip_skins,
     trim_clip,
 )
+from mixamo_clip_events import carried_events, parse_event  # noqa: E402
 
 
 STALE_SUFFIXES = (".gltf", ".glb", ".bin", ".png", ".jpg", ".jpeg")
@@ -193,16 +205,25 @@ def parse_args():
              "to END_MS or the clip's end, its Hips starting at SOURCE's first "
              "ground position (e.g. --trim smash_strike=smash:400-). Repeatable."
     )
+    parser.add_argument(
+        "--event", action="append", default=[], metavar="SOURCE:NAME=MS",
+        help="Attach event NAME to clip SOURCE at MS milliseconds, stored in "
+             "the clip's extras.events in seconds (e.g. --event punch:hit=620). "
+             "Names start with a letter or underscore and hold letters, digits "
+             "and underscores. Events attach before --trim, which keeps those "
+             "inside its cut. Repeatable."
+    )
     args = parser.parse_args(argv)
     try:
         args.trim = [parse_trim(spec) for spec in args.trim]
+        args.event = [parse_event(spec) for spec in args.event]
     except ValueError as exc:
         parser.error(str(exc))
     if args.library and args.clip_library is not None:
         parser.error("--library and --clip-library cannot be combined")
-    if args.clip_library is not None and (args.in_place or args.trim):
-        parser.error("--in-place and --trim edit clips, and a character bound "
-                     "with --clip-library keeps none; apply them to its library")
+    if args.clip_library is not None and (args.in_place or args.trim or args.event):
+        parser.error("--in-place, --trim and --event edit clips, and a character "
+                     "bound with --clip-library keeps none; apply them to its library")
     if args.library and not args.base:
         parser.error("--library requires --base, or the first clip would "
                      "silently become the rig")
@@ -1062,7 +1083,7 @@ def main():
         # Library joints carry no extras: only a mesh's own skeleton is tagged.
         postprocess_gltf(args.output, tag=not (args.no_tag or args.library),
                          clip_library=args.clip_library, library=args.library,
-                         in_place=args.in_place, trims=args.trim)
+                         in_place=args.in_place, trims=args.trim, events=args.event)
     except (ValueError, OSError) as exc:
         # Blender exits 0 on an uncaught script exception.
         print(f"ERROR: {exc}")

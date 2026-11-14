@@ -52,6 +52,10 @@ Read at `ab08438`. Session-verified facts behind the brief, cited by symbol. Hub
 | P8 | Client crosses soon after a teleport | client teleports on host tick T → its commands sampled before T keep resolving → it enters the seam → harvest | The harvested view yaw is its latest resolved facing in the pawn's teleport frame: it arrives facing as its host-side pawn faced |
 | P9 | Teleport into a seam | teleporter fires on tick T with its destination inside a touch seam → trigger stage on tick T | The seam fires on tick T. A teleport is not a spawn and takes no seam latch |
 | P10 | Seam targets its own map | seam in A with target A activates → A unloads, arrivals written → A loads | Each occupant spawns where it stood, facing and moving as it was, latched against the seam; no second load |
+| P11 | Two seams activate on one frame | seam S1 (target B) and seam S2 (target C) both activate on tick T, or S2 on a later tick of the frame → boundary drain | One load, to the target of the first in map order; its occupants arrive landmark-relative, the other seam's at player starts |
+| P12 | Seam load ends without committing | seam drains → A unloads, arrivals written → B fails, or a queued unload cancels it → a later load of any map | Every seat spawns at a player start with no warning |
+| P13 | Client arrival blocked after it resolved | host install resolves the client's arrival, which fits → host reveals; a mover or the host's pawn moves onto it → client promotes | The client spawns at its player start with one warning, and its resent hint names that start |
+| P14 | Respawn onto a player start inside a seam | pawn outside the seam → respawn requested → next tick start relocates it onto a start inside a touch seam → movement → trigger stage, same tick | Latched as a spawn is; no fire. Leaving and re-entering fires |
 
 ## 7. Changes since `ab08438` (re-read at `6c862fd`)
 

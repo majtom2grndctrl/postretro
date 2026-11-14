@@ -75,30 +75,50 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 
 ### Automated
 - [ ] A texture with an `_e` map and no prefix glows at strength 1.0. One without `_e` packs 0 and skips the sample. A former `neon_` name is an unknown prefix, warned once.
-- [ ] Bake and runtime agree on the `_e`-loaded predicate for one texture: bounce-mean glow exclusion, reflection-capture term and material uniform.
+- [ ] Bake and runtime agree on the `_e`-loaded predicate for one texture: bounce-mean glow exclusion, reflection-capture term and material uniform. That texture's bounce mean excludes its glow texels.
+- [ ] A skinned model with an `_e` sibling still packs strength 0.
+- [ ] `gen_emissive.py` without `--cutoff` uses one default whatever the file's prefix: a `neon_` file and any other give the same `_e`.
 - [ ] Strength = min + level × (max − min) at level 0, 0.5 and 1. No script means max. A level outside [0, 1] clamps on both sides. Max < min swaps and warns.
 - [ ] Membership:
   - A face whose centroid is inside a hull joins; one just outside does not.
+  - A face lying in the plane of a volume brush's side (the volume drawn flush on a wall) joins (pin P27).
+  - A member face the atlas cuts into sub-faces glows as one: every sub-face carries its membership, and the section indexes the shipped Geometry faces (pin P29).
+  - A volume enclosing a mover brush and a fluid lists neither in its faces. Both glow at 1.0 with an `_e` map, at any level.
   - Two overlapping volumes: the later wins and one warning names the pair.
   - A volume with no `_e` face warns.
   - Volume 256 compiles; volume 257 fails, naming the count.
+- [ ] Adding a default volume (min 0, max 1) around `_e` faces changes only the emissive-volumes section: every other section is byte-identical to the same map without the volume.
+- [ ] The loader refuses a version other than 1, a count over 256, a face index out of range or descending, and a face owned twice.
+- [ ] At runtime a member face presents its volume's strength and a non-member face sharing a vertex with it presents 1.0, at level 0 and at level 1.
+- [ ] A level written by a reaction drained in frame N presents in frame N (pin P12).
+- [ ] Reflection capture shades a member face at its volume's max whatever its scripts do. Changing a volume's `emissive_max`, or a face's membership, misses the reflection-capture cache.
 - [ ] PRL round-trip of the emissive-volumes section. A level with no volumes emits no section, and its other sections are byte-identical to the same map compiled without the section.
 - [ ] The Scripting surface example runs as a `content/dev` script. In the resulting level ramps:
   - `flicker` moves the level within [0.3, 1].
-  - `setEmissiveLevel` to 0 holds 0.
+  - `setEmissiveLevel` to 0, fired by a dev-map trigger's `on_fire "powerCut"`, holds 0.
   - A finite `fade` settles on its last sample.
   - `setEmissiveAnimation` with `null` clears the curve.
+  - A non-finite level reads 0, and every animation sample clamps as a set level does. `periodMs` 0, `flicker` rate 0 and an empty curve are refused with a warning, leaving the prior animation; `playCount` 0 plays once (pins P7–P10).
+  - A tag matching no volume is a no-op; a non-emissive target warns and is skipped (pin P11). A paused script clock holds the level (pin P13).
   
   TS and Luau emit identical wire.
 - [ ] With the flash limiter on, a level step from 0 to 1 is rate-limited by the shared clamp rules. With it off, the step lands in one frame.
+  - With it on, the Scripting surface `flicker` (rate 6) presents at most 3 flashes in any 1 s; scripts and the wire still see the unclamped level (pin P14).
+  - Clamp history: a volume is limited every frame, in view or not. A frame whose surface acquire fails leaves every clamp where it began. A level change starts every volume fresh. Turning the limiter on presents that frame unchanged (pins P15–P18).
 - [ ] Co-op:
   - A host-only level write reaches a client. A late joiner receives the current level.
   - A client-local write stays local.
-  - A client whose volume index or origin mismatches drops the update and warns once.
+  - A client whose volume index or origin mismatches drops the update and warns once. A fog record never binds an emissive volume at the same index (pin P23).
+  - A joiner arriving mid-`fade` sees it settle when the host's does; one arriving after it ended presents the last sample from its first frame (pins P21, P22).
+  - A `levelLoad` wait-tail write lands on the host and replicates (pin P20). Demotion keeps the client's last level; re-promotion brings the host's (pin P24).
+  - Host overrides on every volume of a 256-volume level reach a late joiner (pin P25). An animation past the wire's key cap warns once on the host, and the client keeps its last valid override (pin P26).
+- [ ] After a script set level 0, `restartLevel` brings every volume back to max, with no animation, on host and client, before `levelLoad` fires (pin P19).
 - [ ] The migration script:
   - Dry run lists renames and touched maps, writing nothing.
   - A real run renames every slot sibling and rewrites references.
   - A collision refuses with no partial write.
+  - A former `neon_` texture on a mover or fluid face is named separately.
+- [ ] combat-demo and reflection-probes-test compile with every former `neon_` face in a volume of max 4.0. At that max the bright panel's peak passes the bloom threshold and the dim panel's stays under it, restating the bloom pin.
 
 ### Manual
 - [ ] combat-demo: the bright panel blooms and the dim one does not, as before. A script pulsing the bright panel's volume visibly breathes; at level 0 the panel shows its unlit diffuse.
@@ -117,9 +137,9 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - TrenchBroom groups and layers drop custom keys on save.
   - Ownership forces moving existing worldspawn brushes into an entity.
   - A volume retrofits glow over worldspawn and groups untouched, as `lightmap_scale_region` and `reflection_volume` already select faces.
-- Volume parse and peel: `fog_volume` and `lightmap_scale_region` in the Quake adapter (`build_pipeline.md` §Compiler pipeline step 1). The hull test reuses the peeled source-hull planes `lightmap_scale_region` keeps.
+- Volume parse and peel: brush entities `continue` before the world set in `parse.rs`. `fog_volume` (non-axis-aligned) and `lightmap_scale_region` each fail the compile on more than one brush, and lightmap selection never reads the region's kept planes (`lightmap_bake/charts.rs` tests the chart's first vertex against the AABB). Several hulls per entity follow the environment volumes, which keep one convex leaf per brush.
 - Scripting and replication: copy `sdk/lib/entities/fog_volumes.{ts,luau}`, the `setFog*` reaction primitives and the fog presentation binding. Reuse `AnimatableScalar<"level">`. Fog's 17-sample pulse with a wrap sample fits a CPU linear sampler; this level is sampled on the CPU too.
-- Flash clamp: the keyed per-value container in `render-cpu` `flash_clamp`, as the ghost look clamp uses it.
+- Flash clamp: `ValueClamp` is public and per value. Its keyed container is private (`flash_clamp` `mod keyed`; `KeyClamp for ValueClamp` exists only in tests), and the ghost look clamp keys `LookValueClamp`. Exposing a keyed `ValueClamp` is the executor's call.
 - Docs: FGD entry; `docs/level_design.md` material table and an Emissive volumes section; `docs/scripting-reference.md` member table and primitives.
 
 ## Open questions

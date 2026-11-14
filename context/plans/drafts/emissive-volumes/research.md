@@ -63,7 +63,39 @@ Sources:
 
 ## Precedents
 
-- **Region over surfaces:** `lightmap_scale_region` peels brushes to world AABBs plus source-hull planes; last-defined wins.
+- **Region over surfaces:** `lightmap_scale_region` peels one brush to a world AABB plus its hull planes, but selection tests only the chart's first vertex against the AABB; last-defined wins. `fog_volume` (non-axis-aligned) and `lightmap_scale_region` refuse more than one brush; environment volumes keep one convex leaf per brush. `reflection_volume` and environment volumes resolve overlaps smallest-wins.
 - **Scripting:** `FogVolumeHandle extends AnimatableScalar<"density">`, the `setFog*` primitives and `setFogAnimation` semantics (`scripting.md` §10.2), and the dev script `content/dev/scripts/fog-pulse-demo.ts`.
 - **Co-op:** fog presentation binding by record index plus a 1 cm origin check (`networking.md` §Presentation state).
-- **Photosensitivity:** `render-cpu` `flash_clamp` (`ValueClamp`, keyed per source; ghost look clamp precedent). `E23--photosensitivity-source-floor` lists emissive animation as a clamp site.
+- **Photosensitivity:** `render-cpu` `flash_clamp`: `ValueClamp` is public and per value; the keyed container is private and keys `ValueClamp` only in tests; the ghost look clamp keys `LookValueClamp`. `E23--photosensitivity-source-floor` lists emissive animation as a clamp site and leaves a shared cross-source budget as an open question.
+- **Neon surface depth:** `Material::Neon` is `SurfaceDepth::FLAT` (pinned flat-by-intent in `render-cpu` surface_depth tests; `docs/level_design.md` calls it deliberate). Default carves.
+
+## Ordering pins
+
+P1–P5 (a level write against a running animation; the level after a cleared curve) wait on owner answers.
+
+| id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P6 | Identical animation re-installed while it runs | install, install again | Start time kept (component equality); a running `fade` does not restart. After a finite one settles, re-install restarts it. |
+| P7 | `periodMs` 0, `flicker` `rate` 0 (period ∞), empty `level` curve | install | Rejected with a warning; any prior animation and level untouched. |
+| P8 | `playCount` 0 | install | Coerced to 1 with a warning; settles once. |
+| P9 | `fade` with `from == to` | install, wait `periodMs` | Flat curve; settles on that value; no flash counted. |
+| P10 | Level NaN, -0.5, 1.5; a curve sample 1.5 | set / install | NaN reads 0 (fog `glow` precedent); others clamp to [0, 1]; one warning per write. |
+| P11 | Tag matches 0 volumes; tag matches a non-emissive entity | dispatch | 0 volumes: debug no-op. Non-emissive target: warn, skip that target, others still written. |
+| P12 | Level written by a reaction drained in frame N | Game logic drain → RenderPrep bridge tick → Render | Packed into frame N's strength table, not N+1. |
+| P13 | Script time frozen (pause) mid-flicker | freeze, keep presenting | Level holds its sample (bridge samples the freeze-aware script clock); flash clamp keeps aging on presented-frame time. |
+| P14 | Limiter on; flicker at `rate` 6 | each presented frame | Presented level shows ≤ 3 flashes per 1 s window and moves ≤ 4.0/s; scripted level (scripts, wire) unchanged. |
+| P15 | Limiter turned on mid-flicker; turned off mid-hold | toggle frame | On: that frame presents unchanged, history starts fresh. Off: scripted level presents the same frame, no history kept. |
+| P16 | Volume out of view for 2 s, then in view | limit every frame | Clamp limits every volume every frame, culled or not; turning to face it counts no appearance. |
+| P17 | Surface acquire fails on one frame | begin → acquire fail → next frame | Every volume's clamp returns to where the frame began; its time merges into the next frame. |
+| P18 | Level A volume 0 flickering; change to level B, volume 0 static | unload → install | Clamp history, levels, animations cleared at teardown; B's volume 0 starts fresh at level 1. |
+| P19 | Host `restartLevel` after a host-only `setEmissiveLevel` 0 | unload → reinstall → `levelLoad` | Host and client both present max after reinstall; the old life's override never binds (epoch, level life). |
+| P20 | `levelLoad` sequence `wait 2000` then `setEmissiveLevel` 0 | host-timeline tail | Host lands it and records an override; client never lands it, receives it as replicated state. |
+| P21 | Late joiner; host's 2 s `fade` began 1 s before the join | join mid-animation | Client rebases on host `script_time`; fade settles when the host's does. |
+| P22 | Late joiner; host's `fade` ended before the join | join after settle | Client presents the last sample from its first world frame; no replay. |
+| P23 | Override for fog record 0 vs emissive volume 0 | client binding | Kind is part of the key; a fog record never binds an emissive volume, and vice versa. |
+| P24 | Client demoted, then re-promoted, host level changed between | demote → host write → promote | Demotion unbinds and keeps the client's last applied level; re-promotion baseline brings the host's current level. |
+| P25 | Host-only write to all 256 volumes; late joiner | join baseline | Records ride the 16 KiB baseline budget across snapshots; all 256 arrive; bound presentation records go last. |
+| P26 | Host-only `setEmissiveAnimation` with 65 samples | capture | Host presents it; record cannot encode (64-key wire cap), host warns once, client keeps the last valid override. |
+| P27 | Face lies in the plane of a volume brush's side (volume flush on a wall) | compile membership | Joins; containment is inclusive (`dot ≤ d`), within compile tolerance. |
+| P28 | Earlier volume whose every face a later volume takes | compile | Later wins each face; earlier keeps its record and index (co-op binding), lists 0 faces; warnings per F6. |
+| P29 | Face cut into sub-faces by the atlas | compile | Every sub-face carries the parent's membership; section indexes final Geometry faces. |

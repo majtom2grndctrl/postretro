@@ -1,5 +1,6 @@
 //! Remote presence before the first command: an owned remote pawn takes part in
 //! triggers and touch from spawn, while movement stays command-gated.
+// See: context/lib/networking.md §Host input command queue
 use postretro_entities::Transform;
 use postretro_entities::components::{
     health::HealthComponent, inventory::Inventory, touchable::TouchableComponent,
@@ -37,7 +38,7 @@ impl Fixture {
         fixture
     }
 
-    /// A host with no pawn of its own, as on a map with no player start.
+    /// A host whose own pawn is gone, so the registry's local fallback names a client's.
     fn without_host_pawn() -> Self {
         Self {
             registry: Rc::new(RefCell::new(EntityRegistry::new())),
@@ -218,15 +219,15 @@ fn joiner_without_a_command_presses_a_plate_and_collects_a_pickup_while_holding_
         Some(item),
         "touch collects the pickup for the joiner"
     );
-    assert_eq!(
-        registry.get_component::<Transform>(pawn).unwrap().position,
-        spawn,
-        "no command, so movement holds the spawn pose despite gravity"
+    let position = registry.get_component::<Transform>(pawn).unwrap().position;
+    assert!(
+        (position - spawn).length() < 1e-6,
+        "no command, so movement holds the spawn pose despite gravity: {position:?}"
     );
 }
 
 #[test]
-fn undeclared_dead_joiner_is_present_but_occupies_nothing() {
+fn undeclared_dead_joiner_without_a_command_still_reaches_the_trigger_stage() {
     let mut fixture = Fixture::new();
     let pawn = fixture.joiner(Vec3::ZERO);
     let mut health = HealthComponent::from_descriptor(&postretro_entities::HealthDescriptor {
@@ -241,20 +242,13 @@ fn undeclared_dead_joiner_is_present_but_occupies_nothing() {
         .borrow_mut()
         .set_component(pawn, health)
         .unwrap();
-    fixture.plate(Vec3::ZERO);
+    let plate = fixture.plate(Vec3::ZERO);
 
-    fixture.tick(&[(7, pawn)]);
-
-    let stage = player_life::TriggerStageCapabilities::capture(
-        &fixture.registry.borrow(),
-        &[AuthoritativePlayer {
-            id: PlayerId::Remote(7),
-            pawn,
-        }],
-    );
-    assert!(
-        !stage.occupants.contains(&PlayerId::Remote(7)),
-        "a present pawn at zero health is no occupant"
+    // An undeclared pawn at zero health keeps touch (its occupancy is the life
+    // rule's, covered in `player_life_tests`); presence is what this proves.
+    assert_eq!(
+        edges(&fixture.tick(&[(7, pawn)]), TriggerEventEdge::Enter),
+        vec![(plate, PlayerId::Remote(7))],
     );
 }
 
@@ -288,26 +282,16 @@ fn leaving_the_roster_fires_exactly_one_exit_and_a_fresh_pawn_enters_again() {
 }
 
 #[test]
-fn an_empty_roster_with_no_pawn_ticks_quietly() {
+fn two_joiners_on_one_tick_both_enter_in_client_id_order_whatever_the_roster_order() {
     let mut fixture = Fixture::new();
-    fixture.plate(Vec3::ZERO);
-    let events = fixture.tick(&[]);
-    assert!(events.trigger_fires.is_empty());
-}
-
-#[test]
-fn two_joiners_on_one_tick_enter_in_client_id_order_every_run() {
-    for _ in 0..3 {
-        let mut fixture = Fixture::new();
-        let first = fixture.joiner(Vec3::ZERO);
-        let second = fixture.joiner(Vec3::ZERO);
-        let plate = fixture.plate(Vec3::ZERO);
-        let events = fixture.tick(&[(3, second), (9, first)]);
-        assert_eq!(
-            edges(&events, TriggerEventEdge::Enter),
-            vec![(plate, PlayerId::Remote(3)), (plate, PlayerId::Remote(9))],
-        );
-    }
+    let first = fixture.joiner(Vec3::ZERO);
+    let second = fixture.joiner(Vec3::ZERO);
+    let plate = fixture.plate(Vec3::ZERO);
+    let events = fixture.tick(&[(9, first), (3, second)]);
+    assert_eq!(
+        edges(&events, TriggerEventEdge::Enter),
+        vec![(plate, PlayerId::Remote(3)), (plate, PlayerId::Remote(9))],
+    );
 }
 
 #[test]

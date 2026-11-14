@@ -1141,10 +1141,7 @@ impl Fixture {
             &[],
             &mut self.movers,
             &commands,
-            &commands
-                .iter()
-                .map(|remote| (remote.owner_client_id, remote.pawn))
-                .collect::<Vec<_>>(),
+            &self.owners.present_remote_pawns(),
             &neutral(),
             |_| sim::PostMovementCommand {
                 aim_origin: Vec3::ZERO,

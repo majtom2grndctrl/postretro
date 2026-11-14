@@ -781,7 +781,8 @@ where
         registry.local_player_movement_pawn()
     };
     // With no marked local pawn the registry falls back to the first movement
-    // pawn, which can be a client's; an owned remote pawn is never also local.
+    // pawn, which can be a client's; presence lists an owned remote pawn once,
+    // as remote. (Movement's own local fallback is a separate, older gap.)
     if let Some(pawn) = local_player
         && !players.iter().any(|player| player.pawn == pawn)
     {

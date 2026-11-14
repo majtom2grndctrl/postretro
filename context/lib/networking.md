@@ -439,8 +439,8 @@ policies govern resolution:
   grace resets progress as a release does but does not end a completed hold; only a real
   release does. A client that has never sent a command resolves
   to nothing — its pawn holds its authoritative pose, yet is present for triggers and
-  touch from spawn: the host's per-tick player set is every owned pawn, not the pawns
-  with a command this tick. Clean loopback reaches the empty
+  touch from spawn: the host's per-tick player set is every owned remote pawn plus the host's own, not
+  the pawns with a command this tick. Clean loopback reaches the empty
   frontier at its buffer-empty edge and freezes exactly as before; a lost tick with newer
   data buffered yields. (The frontier test is exact: at the gap decision, the prior advance's
   stale-drop and intake's stale-check guarantee `pending` holds only commands newer than the

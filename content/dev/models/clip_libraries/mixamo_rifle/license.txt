@@ -12,5 +12,15 @@ License:
 
 Packaging notes (PostRetro):
 * Clips from the Mixamo "Pro Rifle Pack", plus firing_rifle, hit_reaction and
-  reloading from the "Basic Shooter Pack", on the exo_red rig. Built with
-  mixamo_to_gltf.py --library --strip-face. See docs/character-animation.md.
+  reloading from the "Basic Shooter Pack", on the exo_red rig. Stage one
+  folder with every FBX from the Pro Rifle Pack's binary (fbx-bin) download,
+  exo_red.fbx included, and "firing rifle.fbx", "hit reaction.fbx" and
+  "reloading.fbx" from the Basic Shooter Pack. Built with:
+    mixamo_to_gltf.py --input-dir <staged folder> --base exo_red.fbx       --library --strip-face
+  See docs/character-animation.md.
+* A rebuild with today's script differs from the committed bake only on
+  mixamorig:Throat, which no clip keys and no vertex follows (checked
+  2026-11-14).
+* Measured moment for clip events (Clip-timed attacks, not yet in the
+  library): firing_rifle kick at 0 ms, where the gun hand drops and the
+  spine starts to pitch back with the recoil.

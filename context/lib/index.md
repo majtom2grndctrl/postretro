@@ -38,6 +38,7 @@
 - **Hierarchical enemy behavior / statecharts / nested activities / layers / committed attack phases** → `entity_model.md` §7c · `scripting.md` §11
 - **Enemy combat pacing / attack budget / attack tokens / turns / refresh / `ai_attack_pool` / strafe and reposition / activity facing** → `entity_model.md` §7c (Engaged motion, Attack budget) · `scripting.md` §2 (Attack token declarations), §11 (attack turn facts), §12 (Entity addressing) · `build_pipeline.md` §Custom FGD
 - **Enemy stances / poses / queued attack rows / typed attack handles** → `entity_model.md` §7c (Stances and attacks) · `scripting.md` §2 (Attack and stance declarations)
+- **Clip-timed attacks / clip events / `action.at` / `animationDone` / enemy clip time on the game tick** → `entity_model.md` §7c (Clip-timed attacks) · event format and converter: `resource_management.md` §7 (Clip events)
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
 - **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)

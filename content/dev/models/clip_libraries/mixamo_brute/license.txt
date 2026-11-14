@@ -32,3 +32,10 @@ Packaging notes (PostRetro):
 * smash_strike, swipe_strike and punch_strike are the rest of each attack
   from its windup cut, starting on the windup's last pose: a stance's release
   plays one after its windup holds.
+* Measured moments for clip events (Clip-timed attacks, not yet in the
+  library), in source clip time, each the first frame the striking hand is
+  within about 5% of its full reach: punch hit at 767 ms (the right hook,
+  frame 23); smash hit at 1667 ms (both hands reach the floor, frame 50);
+  swipe hit at 1300 ms (the left claw sweeping across, frame 39). The strike
+  cuts start at their windup cuts, so their hits fall at 300, 1267 and
+  400 ms.

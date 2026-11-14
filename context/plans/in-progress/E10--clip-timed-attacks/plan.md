@@ -39,47 +39,47 @@ read at: eb444995a
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| Conv 1 `--event punch:hit=620` writes, other clip only | `tools/tests/test_mixamo_to_gltf.py` event write tests | achievable as stated |
-| Conv 2 range trim carries/shifts; windup none; start-key rounding | `test_mixamo_to_gltf.py` trim-carry tests | achievable as stated |
-| Conv 3 past-end, duplicate, `--clip-library` reject naming flag | `test_mixamo_to_gltf.py` reject tests | achievable as stated |
-| Conv 4 suite passes unchanged across split | suite run on the split commit, before event code | achievable as stated |
-| Load 1 `mixamo_brute` → `punch_strike` shifted `hit` | `crates/model` library binding test on the committed library | achievable as stated |
-| Load 2 own same-named clip keeps own events or none | `crates/model` clip_library test | achievable as stated |
-| Load 3 malformed events warn once, keys load | `crates/model` gltf_clips test with log capture | achievable as stated |
-| Load 4 event with `end` loads name and time | `crates/model` gltf_clips test | achievable as stated |
-| Fire 1 0.5 s → tick 30, 0.51 s → 31, no `at` → entry | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 2 event at 0 fires on entry | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 3 out of range whiff, fresh entry fires | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 4 no turn whiff; grant on moment tick fires | `crates/ai` clip-timed tests (arbitration) | achievable as stated |
-| Fire 5 leaving before moment / exit on moment tick | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 6 last-tick event fires, `animationDone` next tick | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 7 shared non-looping clip past / reaching on entry | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 8 two activities on one state | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 9 looping past moment → next pass; variant restart at phase | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 10 impact switch cancels, off-and-back too | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 11 impact before AI on entry tick / after compute on moment tick | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 12 knockback launch cancels | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 13 travel variant switch restarts | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 14 rate 1.5 → 2/3 wall time, previous tick's rate | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 15 loop fires once per entry, phases differ | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 16 weapon attack starts at the moment | `crates/ai` clip-timed tests | achievable as stated |
-| Fire 17 missing event warns once, fires on entry | `crates/ai` clip-timed tests with log capture | achievable as stated |
-| Fire 18 implied mark holds turn from entry | `crates/ai` clip-timed tests (arbitration) | achievable as stated |
-| Fire 19 mark agreement and load rejects | `crates/foundation` behavior descriptor tests | achievable as stated |
-| Fire 20 same ticks at 1/2/4 ticks per frame, time scale 1/0.25 | `crates/sim` determinism test | achievable as stated |
-| End 1 `animationDone` false through duration tick, true next; loop false; unresolved true | `crates/ai` clip-timed tests | achievable as stated |
-| End 2 non-loop → non-loop entry reads false, moment fires | `crates/ai` clip-timed tests | achievable as stated |
-| End 3 cancelled moment, clip end still turns true | `crates/ai` clip-timed tests | achievable as stated |
-| End 4 parent and leaf guards read one value | `crates/ai` clip-timed tests | achievable as stated |
-| Surf 1 example lowers identically TS/Luau, runs | `crates/scripting-core` surface example test + `crates/ai` fixture | achievable as stated |
-| Surf 2 brute jab/slam at `hit`, limitator at `kick` | shipped-content test over `content/dev` scripts and libraries | achievable as stated |
-| Surf 3 limitator whiff leaves and frees turn; fire leaves after third shot | shipped-content test | achievable as stated |
-| Surf 4 grep gate: no wire/version/digest change | `git diff origin/main` over net/netcode/digest sources, empty | achievable as stated |
-| Man 1 re-export reproduces libraries apart from events | owner, with source FBXs | manual |
-| Man 2 single player timing | owner, in-engine | manual |
-| Man 3 loopback co-op timing, no new warnings | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| Conv 1 `--event punch:hit=620` writes, other clip only | `tools/tests/test_mixamo_to_gltf.py` event write tests | achievable as stated | pass — `ClipEventTests` (converter 99/99) |
+| Conv 2 range trim carries/shifts; windup none; start-key rounding | `test_mixamo_to_gltf.py` trim-carry tests | achievable as stated | pass — `ClipEventTests` trim-carry tests |
+| Conv 3 past-end, duplicate, `--clip-library` reject naming flag | `test_mixamo_to_gltf.py` reject tests | achievable as stated | pass — `ClipEventTests` / `ConverterArgumentTests` rejects |
+| Conv 4 suite passes unchanged across split | suite run on the split commit, before event code | achievable as stated | pass — 83/83 on d6ca8b3ea before event code |
+| Load 1 `mixamo_brute` → `punch_strike` shifted `hit` | `crates/model` library binding test on the committed library | achievable as stated | pass — `reference_enemy_model_binds_its_clip_library` |
+| Load 2 own same-named clip keeps own events or none | `crates/model` clip_library test | achievable as stated | pass — `embedded_override_keeps_its_own_events_or_none` |
+| Load 3 malformed events warn once, keys load | `crates/model` gltf_clips test with log capture | achievable as stated | pass — `malformed_clip_events_warn_once_and_keep_the_keys` |
+| Load 4 event with `end` loads name and time | `crates/model` gltf_clips test | achievable as stated | pass — `read_clip_events_loads_name_and_time_and_ignores_span_end` |
+| Fire 1 0.5 s → tick 30, 0.51 s → 31, no `at` → entry | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire1_*` |
+| Fire 2 event at 0 fires on entry | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire2_*` |
+| Fire 3 out of range whiff, fresh entry fires | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire3_*` |
+| Fire 4 no turn whiff; grant on moment tick fires | `crates/ai` clip-timed tests (arbitration) | achievable as stated | pass — `ai_tests::clip_timed::fire4_*` |
+| Fire 5 leaving before moment / exit on moment tick | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire5_*` |
+| Fire 6 last-tick event fires, `animationDone` next tick | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire6_*` |
+| Fire 7 shared non-looping clip past / reaching on entry | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire7_*` |
+| Fire 8 two activities on one state | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire8_*` |
+| Fire 9 looping past moment → next pass; variant restart at phase | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire9_*` |
+| Fire 10 impact switch cancels, off-and-back too | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire10_*` |
+| Fire 11 impact before AI on entry tick / after compute on moment tick | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire11_*` |
+| Fire 12 knockback launch cancels | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire12_*` |
+| Fire 13 travel variant switch restarts | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire13_*` |
+| Fire 14 rate 1.5 → 2/3 wall time, previous tick's rate | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire14_*` |
+| Fire 15 loop fires once per entry, phases differ | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire15_*` |
+| Fire 16 weapon attack starts at the moment | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::fire16_*` |
+| Fire 17 missing event warns once, fires on entry | `crates/ai` clip-timed tests with log capture | achievable as stated | pass — `ai_tests::clip_timed::fire17_*` |
+| Fire 18 implied mark holds turn from entry | `crates/ai` clip-timed tests (arbitration) | achievable as stated | pass — `ai_tests::clip_timed::fire18_*` |
+| Fire 19 mark agreement and load rejects | `crates/foundation` behavior descriptor tests | achievable as stated | pass — foundation `clip_timed_actions` tests |
+| Fire 20 same ticks at 1/2/4 ticks per frame, time scale 1/0.25 | `crates/sim` determinism test | achievable as stated | pass — sim `clip_timed_attacks_fire_on_the_same_ticks_at_any_frame_split_and_animation_time_scale` |
+| End 1 `animationDone` false through duration tick, true next; loop false; unresolved true | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::end1_*` |
+| End 2 non-loop → non-loop entry reads false, moment fires | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::end2_*` |
+| End 3 cancelled moment, clip end still turns true | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::end3_*` |
+| End 4 parent and leaf guards read one value | `crates/ai` clip-timed tests | achievable as stated | pass — `ai_tests::clip_timed::end4_*` |
+| Surf 1 example lowers identically TS/Luau, runs | `crates/scripting-core` surface example test + `crates/ai` fixture | achievable as stated | pass — `clip_timed_surface_example_lowers_identically_in_both_runtimes` + `surf1_the_surface_example_jab_fires_at_hit_and_leaves_on_animation_done` |
+| Surf 2 brute jab/slam at `hit`, limitator at `kick` | shipped-content test over `content/dev` scripts and libraries | achievable as stated | pass — `shipped_brute_jab_and_slam_fire_at_the_punch_hit`, `shipped_limitator_first_burst_shot_fires_at_the_rifle_kick` |
+| Surf 3 limitator whiff leaves and frees turn; fire leaves after third shot | shipped-content test | achievable as stated | pass — `shipped_limitator_whiffing_its_kick_leaves_burst_and_frees_its_turn`, `shipped_limitator_leaves_burst_after_its_third_shot_at_every_phase` |
+| Surf 4 grep gate: no wire/version/digest change | `git diff origin/main` over net/netcode/digest sources, empty | achievable as stated | pass — `crates/net` untouched; `netcode` diff is a test literal and the `ActionVerb` shape in a harness test; no digest change |
+| Man 1 re-export reproduces libraries apart from events | owner, with source FBXs | manual | outstanding — owner, with source FBXs (events were stamped via `stamp_events_in_library`; a reviewer confirmed in memory that stamping reproduces the committed events from the `license.txt` flags) |
+| Man 2 single player timing | owner, in-engine | manual | outstanding — owner, in-engine (note: limitator first burst ~1.3 s after reaching range; brute slam holds position) |
+| Man 3 loopback co-op timing, no new warnings | owner, in-engine | manual | outstanding — owner, loopback co-op |
 
 ## Tasks
 
@@ -93,3 +93,19 @@ read at: eb444995a
 | 6 | Runtime completion: cancellation, loops and phase, travel variants, weapon `at`, missing-event warn, rate | worker (Rust) | 4, 5 | done: `ai/src/clip_clock.rs`, `entities/.../brain/clip_clock.rs`; 28 clip-timed tests (`ai_tests::clip_timed`), ai 395, entities 315, sim lib 1980, netcode lib 1023 pass |
 | 7 | Content: events in `mixamo_brute`/`mixamo_rifle`, brute and limitator scripts, `license.txt`, script comment | worker (content) | 2, 6 | done: jab exit and slam recover on `animationDone`; slam windup 467 ms, commit 400 ms; `BURST_MS` 600 |
 | 8 | Remaining AC tests (determinism, shipped content, surface example), docs | worker (content) | 7 | done: `clip_timed_shipped_tests.rs` (4), sim determinism Fire 20; ai 399, sim lib 1981, postretro bin ghost_link 143 |
+
+## Review loop
+- Round 1 (8 reviewers: 3 tracers, 2 contract verifiers, 1 adversarial, 2 hygiene): no 🔴; 8 🟡 fixed in 157e15068 — own switch masking a same-batch flinch, redraw vs clip time, held pickup/drop phantom cancel, restore losing a flinch, latch tied to the per-tick action, spent moment firing through an untimed variant, `animationDone` lag on entry, content cooldowns meeting the one moment. Nits and comment drift fixed alongside; `context/lib` drift left for landing.
+- Round 2 (tracer + adversarial on the fixes): 1 🟡 (save around a drop) and nits, fixed in e05ae5cbe — switch counts serialize, the drop marks the replaced mesh and requests a redraw.
+- Round 3 (tracer on the drop path): 3 🟡 fixed in 8c0ff8e92 — a flinch drops a pending redraw, the clock holds until the redraw lands, drop tests use production index timing.
+- Stopped after round 3: its findings were confined to the drop path and are pinned by tests that fail with the fixes reverted.
+- Final gate: `cargo test --workspace --features postretro/dev-tools` — 91 targets, 15,936 passed, 0 failed. `/preflight` is owner-invoked and has not run.
+
+## Owner calls and follow-ups
+- Owner call: a swing entered while a launch is still under way (a knockback slide, or the airborne stretch after drag spent it) is cancelled. Kept.
+- Owner call: a brute flinched mid-slam redraws `attack_slam` on `recover` and replays the punch, holding the slam turn ~1 s longer (redraw restarts clip time). Latent: shipped content never flinches the brute. Decide before the stances brief builds on the shared-clip slam.
+- Owner call: an entry whose first drawn clip is an untimed travel variant fires as without `at`, even after a flinch or launch (consistent with "a missing event fires as without `at`").
+- Follow-up: `crates/ai/src/compute.rs` is past the 600-line guideline; split the Attack block out.
+- Follow-up: a slam started after a target switch could in theory meet its 1,800 ms cooldown at the commit moment.
+- Follow-up: script-reaction animation switches drain once per frame, so their cancel lands on the next frame's first tick; frame splits can change whether such a cancel catches a moment (reaction cadence, not covered by Fire 20).
+- Known limit: `MeshAnimation.rate` is not serialized, so the first tick after a restore advances at rate 1. No save-game system exists yet; restore paths are exercised by tests only.

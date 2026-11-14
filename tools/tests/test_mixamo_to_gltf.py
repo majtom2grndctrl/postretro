@@ -792,6 +792,120 @@ class ClipEditTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     CONVERTER.trim_clip(gltf, data, new, source, end_ms)
 
+    def test_trim_range_starts_on_the_windup_last_pose_shifted_to_zero(self):
+        gltf, data = clip_document()
+
+        CONVERTER.trim_clip(gltf, data, "smash_windup", "smash", 1000 / 30)
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 1000 / 30)
+
+        _, windup, strike = gltf["animations"]
+        self.assertEqual(strike["channels"], gltf["animations"][0]["channels"])
+        inputs = {s["input"] for s in strike["samplers"]}
+        self.assertEqual(len(inputs), 1, "a shared time accessor stays shared")
+        (times,) = inputs
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, times)),
+                         [(0.0,), (0.0333,), (0.0667,)])
+        self.assertEqual(gltf["accessors"][times]["min"], [0.0])
+        self.assertAlmostEqual(gltf["accessors"][times]["max"][0], 2 / 30, places=6)
+        # The root's ground position starts where the source starts (the engine
+        # holds the windup there); its height and the motion after it are kept.
+        moves = rounded(CONVERTER.read_floats(gltf, data, strike["samplers"][0]["output"]))
+        self.assertEqual(moves, [(0.0, 0.9, 0.0), (0.1, 1.1, -0.2), (0.2, 0.8, -0.4)])
+        windup_moves = rounded(CONVERTER.read_floats(gltf, data, windup["samplers"][0]["output"]))
+        self.assertEqual(windup_moves[-1][1], moves[0][1], "the strike starts at the windup's height")
+        windup_turns = CONVERTER.read_floats(gltf, data, windup["samplers"][1]["output"])
+        strike_turns = CONVERTER.read_floats(gltf, data, strike["samplers"][1]["output"])
+        self.assertEqual(rounded(windup_turns)[-1], rounded(strike_turns)[0],
+                         "the strike starts on the windup's last rotations")
+        self.assertEqual(gltf["buffers"][0]["byteLength"], len(data))
+
+    def test_trim_range_rounds_its_start_down_and_keeps_an_end(self):
+        gltf, data = clip_document()
+
+        CONVERTER.trim_clip(gltf, data, "middle", "smash", 80, 50)
+
+        clip = gltf["animations"][1]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, clip["samplers"][0]["input"])),
+                         [(0.0,), (0.0333,)])
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, clip["samplers"][0]["output"])),
+                         [(0.0, 0.9, 0.0), (0.1, 1.1, -0.2)])
+
+    def test_trim_range_holds_a_track_keyed_only_before_its_start(self):
+        import struct
+        gltf, data = clip_document()
+        data.extend(struct.pack("<f", 0.0))
+        gltf["bufferViews"].append({"buffer": 0, "byteOffset": len(data) - 4, "byteLength": 4})
+        gltf["accessors"].append({"bufferView": len(gltf["bufferViews"]) - 1,
+                                  "componentType": 5126, "count": 1, "type": "SCALAR",
+                                  "min": [0.0], "max": [0.0]})
+        data.extend(struct.pack("<4f", 0.0, 0.0, 0.7071, 0.7071))
+        gltf["bufferViews"].append({"buffer": 0, "byteOffset": len(data) - 16, "byteLength": 16})
+        gltf["accessors"].append({"bufferView": len(gltf["bufferViews"]) - 1,
+                                  "componentType": 5126, "count": 1, "type": "VEC4"})
+        gltf["buffers"][0]["byteLength"] = len(data)
+        gltf["nodes"].append({"name": "mixamorig:Spine"})
+        gltf["animations"][0]["samplers"].append(
+            {"input": len(gltf["accessors"]) - 2, "output": len(gltf["accessors"]) - 1})
+        gltf["animations"][0]["channels"].append(
+            {"sampler": 2, "target": {"node": 2, "path": "rotation"}})
+
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 50)
+
+        held = gltf["animations"][1]["samplers"][2]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, held["input"])), [(0.0,)])
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, held["output"])),
+                         [(0.0, 0.0, 0.7071, 0.7071)])
+
+    def test_trim_range_refusals(self):
+        for new, end_ms, start_ms in (("past", None, 100), ("late", None, 150),
+                                      ("backwards", 30, 60), ("empty", 50, 50)):
+            with self.subTest(new=new):
+                gltf, data = clip_document()
+                with self.assertRaises(ValueError):
+                    CONVERTER.trim_clip(gltf, data, new, "smash", end_ms, start_ms)
+
+    def test_trim_range_samples_a_track_with_no_key_at_its_start(self):
+        # Blender thins still tracks to their first and last keys; the copy's
+        # first pose samples them between their neighbours.
+        import struct
+        gltf, data = clip_document()
+        offset = gltf["bufferViews"][0]["byteOffset"]
+        struct.pack_into("<4f", data, offset, 0.0, 0.02, 0.05, 0.1)
+        gltf["accessors"].append(dict(gltf["accessors"][0]))
+        gltf["accessors"][-1]["bufferView"] = len(gltf["bufferViews"])
+        times = struct.pack("<4f", 0.0, 1 / 30, 2 / 30, 3 / 30)
+        gltf["bufferViews"].append({"buffer": 0, "byteOffset": len(data), "byteLength": 16})
+        data.extend(times)
+        gltf["buffers"][0]["byteLength"] = len(data)
+        gltf["animations"][0]["samplers"][1]["input"] = len(gltf["accessors"]) - 1
+
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 1000 / 30)
+
+        moved = gltf["animations"][1]["samplers"][0]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, moved["input"])),
+                         [(0.0,), (0.0167,), (0.0667,)])
+        weight = (1 / 30 - 0.02) / 0.03
+        # Sampled between its neighbours, then started at the source's ground position.
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, moved["output"]))[0],
+                         rounded([(0.0, 0.9 + 0.2 * weight, 0.0)])[0])
+
+    def test_sample_track_blends_steps_and_renormalizes_rotations(self):
+        times = [0.0, 1.0]
+        half_turn = (0.0, 0.7071068, 0.0, 0.7071068)
+        rotations = [(0.0, 0.0, 0.0, 1.0), half_turn]
+
+        blended = CONVERTER.sample_track(times, rotations, 0.5, "LINEAR", True, "test")
+        self.assertAlmostEqual(sum(c * c for c in blended), 1.0, places=6)
+        self.assertEqual(CONVERTER.sample_track(times, rotations, 0.5, "STEP", True, "test"),
+                         rotations[0])
+        self.assertEqual(CONVERTER.sample_track(times, rotations, 1.0, "LINEAR", True, "test"),
+                         half_turn)
+        flipped = [rotations[0], tuple(-c for c in half_turn)]
+        same = CONVERTER.sample_track(times, flipped, 0.5, "LINEAR", True, "test")
+        self.assertEqual(rounded([same]), rounded([blended]), "takes the short way round")
+        with self.assertRaises(ValueError):
+            CONVERTER.sample_track([0.5, 1.0], rotations, 0.25, "LINEAR", True, "test")
+
     def test_main_pins_before_trimming(self):
         gltf, data = clip_document()
         with tempfile.TemporaryDirectory() as directory:
@@ -917,11 +1031,20 @@ class ConverterArgumentTests(unittest.TestCase):
                           "--trim", "smash_windup=smash:400", "--trim", "swipe_windup=swipe:900.5")
 
         self.assertEqual(args.in_place, ["smash", "run"])
-        self.assertEqual(args.trim, [("smash_windup", "smash", 400.0),
-                                     ("swipe_windup", "swipe", 900.5)])
+        self.assertEqual(args.trim, [("smash_windup", "smash", 0.0, 400.0),
+                                     ("swipe_windup", "swipe", 0.0, 900.5)])
+
+    def test_trim_ranges_parse(self):
+        args = self.parse("--base", "rig.fbx", "--library",
+                          "--trim", "smash_strike=smash:400-",
+                          "--trim", "swipe_mid=swipe:100.5-800")
+
+        self.assertEqual(args.trim, [("smash_strike", "smash", 400.0, None),
+                                     ("swipe_mid", "swipe", 100.5, 800.0)])
 
     def test_rejects_malformed_trims(self):
-        for spec in ("smash_windup=smash", "smash:400", "smash=smash:400", "a=b:-1"):
+        for spec in ("smash_windup=smash", "smash:400", "smash=smash:400", "a=b:-1",
+                     "a=b:-", "a=b:300-200", "a=b:300-300", "a=b:1-2-3"):
             with self.subTest(spec=spec), self.assertRaises(SystemExit):
                 self.parse("--base", "rig.fbx", "--library", "--trim", spec)
 

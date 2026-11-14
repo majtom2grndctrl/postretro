@@ -37,6 +37,13 @@ Two options edit clips as the library is written, so a rebuild repeats them:
   with `loop: false` holds its last pose. Mixamo attacks rarely hold a windup,
   so this is how an enemy holds one before it strikes. Repeat `--trim` for
   each clip. Trims are cut after `--in-place`.
+- `--trim smash_strike=smash:400-` adds the rest of `smash` from 400 ms, starting
+  on the same key a `smash:400` windup ends on, so a strike played after its
+  held windup starts from the held pose. `--trim name=clip:400-900` stops at
+  900 ms instead. The copy's hips start where the source's hips start along the
+  ground, because the engine keeps every clip's first and last hip position over
+  the character. A windup that steps back therefore holds with its hips
+  over the character, and its strike starts there too.
 
 Both apply to a library or to a character that keeps its own clips, never with
 `--clip-library`. When the characters on a library all need the same `--yaw`,

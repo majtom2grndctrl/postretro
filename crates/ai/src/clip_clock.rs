@@ -64,7 +64,8 @@ impl Moment {
 /// AI, so that rate is the one presentation drew the last tick at. The rate is
 /// runtime-only on the mesh, so the first tick after a restore advances at 1.
 /// A clock tracking nothing binds to the drawn state instead, without
-/// advancing.
+/// advancing. While a dropped enemy's redraw is pending the clock holds; a
+/// foreign switch drops the redraw, so the flinch stays on screen.
 pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, tick_dt: f32) {
     let mesh = source
         .registry
@@ -84,6 +85,11 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
         };
         if foreign {
             brain.clip_clock.moment_open = false;
+            // A flinch on a dropped enemy's fresh mesh wins over its pending
+            // redraw: apply leaves the flinch on screen. The brain's own
+            // switch back onto the tracked state later still restarts the
+            // clock (`redrawn`).
+            brain.clip_clock.redraw = false;
         }
         brain.clip_clock.mesh_switches = Some(switches);
     }
@@ -93,6 +99,11 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
         sync_drawn_state(brain, source, presented);
         return;
     };
+    // A dropped enemy's fresh mesh does not draw the tracked clip yet, and the
+    // clock is the pre-pickup one: it holds until the redraw restarts it.
+    if brain.clip_clock.redraw {
+        return;
+    }
     let rate = mesh
         .filter(|animation| animation.current_state == state)
         .map_or(1.0, |animation| f64::from(animation.rate));
@@ -124,7 +135,8 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
 /// `brain.animationDone`: the drawn non-looping clip reached its duration on
 /// an earlier tick, so a moment on its last tick fires before an exit on it.
 /// Always false on a loop; true when the clip did not resolve, or the path
-/// draws no state.
+/// draws no state. False while a dropped enemy's redraw is pending: the
+/// redrawn clip has not started.
 pub(super) fn animation_done(clock: &ClipClock, source: &ClipSource<'_>) -> bool {
     let Some(state) = clock.state.as_deref() else {
         return true;
@@ -137,8 +149,9 @@ pub(super) fn animation_done(clock: &ClipClock, source: &ClipSource<'_>) -> bool
             .map_or((false, None), |read| (read.looping, read.duration)),
     };
     !looping
-        && duration
-            .is_none_or(|duration| f64::from(duration) <= clock.previous_time + CLIP_TIME_SLACK)
+        && duration.is_none_or(|duration| {
+            !clock.redraw && f64::from(duration) <= clock.previous_time + CLIP_TIME_SLACK
+        })
 }
 
 /// `brain.animationDone` for the rest of a tick whose path now draws another
@@ -223,6 +236,11 @@ pub(super) fn settle(
             Moment::Untimed
         };
     };
+    if clock.redraw {
+        // The clock holds the pre-pickup clip time until the redraw restarts
+        // it, so no moment is reached on it and the latch stays as it is.
+        return Moment::Pending;
+    }
     clock.moment_timed = true;
     if clock.moment_open && reached(clock.previous_time, clock.time, f64::from(event), facts) {
         clock.moment_open = false;

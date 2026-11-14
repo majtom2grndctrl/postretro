@@ -11,6 +11,7 @@ use postretro_model::skeleton::{AnimationClip, Skeleton};
 
 use super::*;
 use crate::scripting_systems::hit_zones::ModelHitZones;
+use crate::scripting_systems::mesh_anim::MeshClipTables;
 
 /// One 60 Hz tick, so a moment's tick is its time × 60.
 pub(super) const DT: f32 = 1.0 / 60.0;
@@ -84,9 +85,10 @@ fn base_specs() -> Vec<ClipSpec> {
     ]
 }
 
-/// The mesh declaring every spec's state, and the clip store holding every
-/// resolved spec's clip, each state indexing its own clip.
-pub(super) fn rig(specs: Vec<ClipSpec>) -> (MeshComponent, HitZoneStore) {
+/// The mesh declaring every spec's state, the clip store holding every
+/// resolved spec's clip, each state indexing its own clip, and the clip table
+/// the frame loop fills a fresh mesh's clip indices from.
+pub(super) fn rig(specs: Vec<ClipSpec>) -> (MeshComponent, HitZoneStore, MeshClipTables) {
     let mut all = base_specs();
     all.retain(|base| specs.iter().all(|spec| spec.state != base.state));
     all.extend(specs);
@@ -135,6 +137,19 @@ pub(super) fn rig(specs: Vec<ClipSpec>) -> (MeshComponent, HitZoneStore) {
         attachments: Vec::new(),
         pose_inputs: None,
     };
+    let mut tables = MeshClipTables::new();
+    let metadata: Vec<_> = clips
+        .iter()
+        .map(|clip| postretro_model::ClipMetadata {
+            name: clip.name.clone(),
+            duration: clip.duration,
+        })
+        .collect();
+    tables.insert_with_bounds(
+        postretro_model::ModelHandle::from(RIG_MODEL),
+        &metadata,
+        Default::default(),
+    );
     let mut store = HitZoneStore::new();
     store.insert_for_test(
         postretro_model::ModelHandle::from(RIG_MODEL),
@@ -148,7 +163,7 @@ pub(super) fn rig(specs: Vec<ClipSpec>) -> (MeshComponent, HitZoneStore) {
             Default::default(),
         ),
     );
-    (mesh, store)
+    (mesh, store, tables)
 }
 
 /// Fire `attack` at clip event `event`.
@@ -256,6 +271,7 @@ pub(super) struct Scene {
     pub(super) runtime: AiRuntime,
     pub(super) mesh: MeshComponent,
     pub(super) clips: HitZoneStore,
+    pub(super) clip_tables: MeshClipTables,
     pub(super) pawn: EntityId,
     pub(super) descriptors: Vec<EntityTypeDescriptor>,
 }
@@ -266,7 +282,7 @@ pub(super) fn player_spot() -> Vec3 {
 
 impl Scene {
     pub(super) fn new(specs: Vec<ClipSpec>) -> Self {
-        let (mesh, clips) = rig(specs);
+        let (mesh, clips, clip_tables) = rig(specs);
         let mut reg = EntityRegistry::new();
         let pawn = spawn_player(&mut reg, player_spot());
         Self {
@@ -274,6 +290,7 @@ impl Scene {
             runtime: AiRuntime::new(),
             mesh,
             clips,
+            clip_tables,
             pawn,
             descriptors: Vec::new(),
         }

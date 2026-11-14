@@ -375,8 +375,13 @@ where
         };
         let mut own_switch = None;
         // A redraw request stays pending only while the fresh mesh's clip
-        // indices are still filling; a drawn state restarts the clock.
-        let redraw = outcome.brain.clip_clock.redraw;
+        // indices are still filling; a drawn state restarts the clock. A
+        // switch since compute (an earlier slot's contact hit) flinched the
+        // fresh mesh: the flinch stays on screen and the redraw is dropped, as
+        // compute drops it for a switch before the AI stage. The next
+        // compute's check reads that switch as foreign and cancels the moment.
+        let redraw = outcome.brain.clip_clock.redraw
+            && mesh_switches(registry, outcome.id) == outcome.brain.clip_clock.mesh_switches;
         let mut redraw_pending = false;
         let mut redrawn = false;
         if should_switch_animation(

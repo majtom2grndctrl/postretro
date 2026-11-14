@@ -979,25 +979,47 @@ fn pick_up(scene: &mut Scene, enemy: EntityId) -> EntityId {
 }
 
 /// Drop `enemy` from `holder` as the sim's drop does: a fresh mesh drawing its
-/// default state, its switch count back at zero, handed to the brain.
+/// default state, its switch count back at zero and no clip index filled yet,
+/// handed to the brain. The frame loop fills the indices only after the drop's
+/// tick: [`resolve_dropped`].
 fn drop_from(scene: &mut Scene, enemy: EntityId, holder: EntityId) {
     scene
         .reg
         .remove_component::<postretro_entities::components::inventory::Inventory>(holder)
         .unwrap();
-    scene.reg.set_component(enemy, scene.mesh.clone()).unwrap();
+    let mut mesh = scene.mesh.clone();
+    for state in mesh.animation.as_mut().unwrap().states.values_mut() {
+        state.clip_index = None;
+    }
+    scene.reg.set_component(enemy, mesh).unwrap();
     postretro_entities::components::brain::note_replaced_mesh(&mut scene.reg, enemy);
 }
 
-/// The jab scene held from tick 10 and dropped on tick 30, calling `extra`
-/// ahead of each tick after the hold and drop.
+/// Fill a dropped mesh's clip indices with the resolve the frame loop runs
+/// after the drop's tick.
+fn resolve_dropped(scene: &mut Scene, enemy: EntityId) {
+    crate::sim::resolve_mesh_entity_bindings_for_entities(
+        &mut scene.reg,
+        &scene.clip_tables,
+        &scene.clips,
+        [enemy],
+    );
+}
+
+/// The tick the held jab is dropped on.
+const DROP_TICK: usize = 30;
+
+/// The jab scene held from tick 10 and dropped on [`DROP_TICK`], its clip
+/// indices filling after that tick, calling `extra` ahead of each tick after
+/// the hold, drop and fill.
 fn held_jab_hits(mut extra: impl FnMut(&mut Scene, EntityId, usize)) -> Vec<usize> {
     let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
     let mut holder = None;
     scene.hits_with(70, |scene, tick| {
         match tick {
             10 => holder = Some(pick_up(scene, enemy)),
-            30 => drop_from(scene, enemy, holder.take().expect("held")),
+            DROP_TICK => drop_from(scene, enemy, holder.take().expect("held")),
+            _ if tick == DROP_TICK + 1 => resolve_dropped(scene, enemy),
             _ => {}
         }
         extra(scene, enemy, tick);
@@ -1006,54 +1028,183 @@ fn held_jab_hits(mut extra: impl FnMut(&mut Scene, EntityId, usize)) -> Vec<usiz
 
 // A held enemy leaves the AI set, so its clip time freezes with its activity
 // clocks. Its drop's fresh mesh is no foreign switch: the enemy draws its
-// swing again on the drop tick, and the moment is timed from that redraw.
-// Regression: that mesh's switch count, back at zero, read as a foreign switch
-// and cancelled the swing.
+// swing again on the first tick after the mesh's clip indices fill (the tick
+// after the drop), and the moment is timed from that redraw. Regression: that
+// mesh's switch count, back at zero, read as a foreign switch and cancelled
+// the swing.
 #[test]
 fn held_enemy_freezes_clip_time_and_fires_on_release() {
     let mut drawn = Vec::new();
     let hits = held_jab_hits(|scene, enemy, tick| {
-        if tick == 31 {
+        if tick == DROP_TICK + 1 || tick == DROP_TICK + 2 {
             drawn.push(mesh_state(scene, enemy));
         }
     });
     assert_eq!(
         drawn,
-        ["attack_jab"],
-        "fixture: the drop tick redrew the swing"
+        ["idle", "attack_jab"],
+        "fixture: the drop tick leaves the fresh mesh's default state, and the next tick \
+         redraws the swing"
     );
-    assert_eq!(hits, vec![60], "0.5 s after the redraw on tick 30");
+    // The redraw on the tick after the drop restarts clip time at 0; the
+    // moment at 0.5 s is 30 ticks later.
+    let redraw_tick = DROP_TICK + 1;
+    assert_eq!(hits, vec![redraw_tick + 30], "0.5 s after the redraw");
 }
 
-// A switch on the dropped enemy's fresh mesh before its next AI tick (a
-// projectile flinch) is foreign. Regression: with the brain's last own switch
-// its first, the fresh mesh's first switch matched the count it had seen.
+// A switch on the dropped enemy's fresh mesh before its redraw tick's AI (a
+// projectile flinch) is foreign: the swing is cancelled and the flinch stays
+// on screen. A flinch cannot land on the drop tick itself, whose fresh mesh
+// has no clip index filled. Regressions: with the brain's last own switch its
+// first, the fresh mesh's first switch matched the count it had seen; and the
+// pending redraw switched the mesh back onto the swing and restarted its
+// clock, so the flinch never showed.
 #[test]
 fn a_flinch_on_a_dropped_enemys_fresh_mesh_before_the_ai_cancels_the_swing() {
+    let mut drawn = Vec::new();
     let hits = held_jab_hits(|scene, enemy, tick| match tick {
         9 => assert_eq!(
             scene.brain(enemy).clip_clock.mesh_switches,
             Some(1),
             "fixture: the brain's own switch so far is the mesh's first"
         ),
-        30 => scene.switch(enemy, "hit_reaction"),
+        _ if tick == DROP_TICK + 1 => scene.switch(enemy, "hit_reaction"),
+        _ if tick == DROP_TICK + 2 => drawn.push(mesh_state(scene, enemy)),
         _ => {}
     });
+    assert_eq!(drawn, ["hit_reaction"], "the flinch shows after apply");
     assert!(
         hits.is_empty(),
         "the flinched swing never connects: {hits:?}"
     );
 }
 
+// An earlier slot's contact hit flinches the dropped enemy inside the apply
+// batch on its redraw tick, after its compute: the flinch stays on screen, and
+// the swing never connects.
+#[test]
+fn a_contact_flinch_on_the_redraw_tick_wins_over_the_redraw() {
+    let run = |flinch: bool| {
+        let mut scene = Scene::new(vec![one_shot("attack_jab", 1.0, &[("hit", 0.5)])]);
+        // Enters `strike` and swings on the redraw tick (31): 31 ticks of
+        // 16.67 ms is 516.7 ms.
+        let striker = clip_graph(
+            "wait",
+            vec![
+                ("wait", act("idle", None)),
+                ("strike", act("idle", Some(untimed("slam")))),
+            ],
+            vec![("wait", vec![edge("strike", after_ms(510.0))])],
+            vec![("slam", contact_attack(10.0))],
+        );
+        scene.spawn(0, &striker, "wait");
+        let jabber = scene.spawn(1, &jab_graph(hit_jab(), vec![]), "jab");
+        let mut holder = None;
+        let mut hits = Vec::new();
+        let mut drawn = None;
+        for tick in 0..80 {
+            match tick {
+                10 => holder = Some(pick_up(&mut scene, jabber)),
+                DROP_TICK => drop_from(&mut scene, jabber, holder.take().expect("held")),
+                _ if tick == DROP_TICK + 1 => resolve_dropped(&mut scene, jabber),
+                _ => {}
+            }
+            let hp = player_hp(&scene.reg, scene.pawn);
+            scene.tick_with_impact(|reg| {
+                if flinch {
+                    let _ = switch_animation_state(reg, jabber, "hit_reaction");
+                }
+            });
+            if player_hp(&scene.reg, scene.pawn) < hp {
+                hits.push(tick);
+            }
+            if tick == DROP_TICK + 1 {
+                drawn = Some(mesh_state(&scene, jabber));
+            }
+        }
+        (hits, drawn)
+    };
+    let redraw_tick = DROP_TICK + 1;
+    assert_eq!(
+        run(false),
+        (
+            vec![redraw_tick, redraw_tick + 30],
+            Some("attack_jab".to_string())
+        ),
+        "fixture: the striker hits on the redraw tick, and the unflinched swing fires 0.5 s \
+         after its redraw"
+    );
+    assert_eq!(
+        run(true),
+        (vec![redraw_tick], Some("hit_reaction".to_string())),
+        "the flinch stays on screen and the swing never connects"
+    );
+}
+
+// Picked up a tick or two short of its moment, or of its clip's end, and
+// dropped: the frozen pre-pickup clock reaches nothing before the redraw. No
+// moment fires on it and no whiff spends the latch, so the moment fires 0.5 s
+// after the redraw; `animationDone` stays false until the redrawn clip plays
+// through. Regression: the clock advanced on the drop tick and the redraw
+// tick, reaching the moment, or the clip's end, on the clip the fresh mesh
+// did not draw.
+#[test]
+fn a_dropped_enemy_reaches_no_moment_before_its_redraw() {
+    // Unheld, the moment fires on tick 30 and `animationDone` turns true on
+    // tick 61. Picked up before tick `pickup`'s AI, the clock last advanced
+    // on tick `pickup - 1`: one tick short at 30 or 61, two at 29 or 60.
+    for pickup in [29, 30, 60, 61] {
+        let mut scene = Scene::new(vec![one_shot("attack_jab", 1.0, &[("hit", 0.5)])]);
+        let enemy = scene.spawn(
+            0,
+            &jab_graph(hit_jab(), vec![edge("stalk", guard_done())]),
+            "jab",
+        );
+        let drop = pickup + 10;
+        let redraw = drop + 1;
+        let mut holder = None;
+        let mut left = None;
+        let hits = scene.hits_with(redraw + 70, |scene, tick| {
+            match tick {
+                _ if tick == pickup => holder = Some(pick_up(scene, enemy)),
+                _ if tick == drop => drop_from(scene, enemy, holder.take().expect("held")),
+                _ if tick == drop + 1 => resolve_dropped(scene, enemy),
+                _ => {}
+            }
+            // The state after the previous tick.
+            if left.is_none() && scene.state(enemy) == "stalk" {
+                left = Some(tick - 1);
+            }
+        });
+        let expected_hit = if pickup <= 30 { redraw + 30 } else { 30 };
+        assert_eq!(
+            hits,
+            vec![expected_hit],
+            "picked up on tick {pickup}: the moment fires once, its latch unspent before the \
+             redraw"
+        );
+        // The redrawn one-second clip reaches its duration 60 ticks after the
+        // redraw; `animationDone` reads true, and the activity leaves, on the
+        // tick after.
+        assert_eq!(
+            left,
+            Some(redraw + 61),
+            "picked up on tick {pickup}: `animationDone` holds false until the redrawn clip \
+             plays through"
+        );
+    }
+}
+
 // A save between the drop and the redraw, or while held, restores the switch
 // count and the redraw request, so it fires on the tick an unsaved run does.
+// A save lands between frames, after the drop tick's clip indices fill.
 // Regression: a restore read the fresh mesh's default state as a pre-save
 // flinch and cancelled the swing.
 #[test]
 fn a_restore_after_a_drop_fires_on_the_same_tick() {
     let unsaved = held_jab_hits(|_, _, _| {});
-    assert_eq!(unsaved, vec![60], "fixture");
-    for save_tick in [20, 30] {
+    assert_eq!(unsaved, vec![DROP_TICK + 1 + 30], "fixture");
+    for save_tick in [20, DROP_TICK + 1] {
         let hits = held_jab_hits(|scene, enemy, tick| {
             if tick == save_tick {
                 save_and_restore(scene, enemy);
@@ -1084,6 +1235,7 @@ fn a_moment_at_the_start_of_a_redrawn_clip_fires_on_the_next_tick() {
         scene.hits_with(45, |scene, tick| match tick {
             10 if hold => holder = Some(pick_up(scene, enemy)),
             20 if hold => drop_from(scene, enemy, holder.take().expect("held")),
+            21 if hold => resolve_dropped(scene, enemy),
             _ => {}
         })
     };
@@ -1091,7 +1243,11 @@ fn a_moment_at_the_start_of_a_redrawn_clip_fires_on_the_next_tick() {
         run(false).is_empty(),
         "fixture: the jab is entered past its moment at 0"
     );
-    assert_eq!(run(true), vec![21], "the tick after the redraw on tick 20");
+    assert_eq!(
+        run(true),
+        vec![22],
+        "the tick after the redraw on tick 21, the tick after the drop"
+    );
 }
 
 // Clip time serializes with the activity clocks, so a restore mid-entry fires

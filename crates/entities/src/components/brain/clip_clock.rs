@@ -60,8 +60,10 @@ pub struct ClipClock {
     #[serde(default)]
     pub mesh_switches: Option<u32>,
     /// A fresh mesh replaced the one the brain drew (a held enemy's drop), so
-    /// it shows its default state: the next AI apply draws the brain's state
-    /// on it again, which restarts the clock.
+    /// it shows its default state: the first AI apply after its clip indices
+    /// fill draws the brain's state on it again, which restarts the clock.
+    /// Until then the clock holds, reaches no moment and reads not done. A
+    /// foreign switch first (a flinch) drops the request.
     #[serde(default)]
     pub redraw: bool,
     /// The tracked state's resolved clip, cached on first use. `None` when not

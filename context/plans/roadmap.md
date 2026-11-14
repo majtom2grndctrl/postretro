@@ -182,12 +182,13 @@ The platform foundation, visual parity, trigger/command surface, rotation, and d
 
 ## Epic 18: Co-op Set-Pieces
 
-Trigger fan-out, activation policy, dispatch parameters, enemy groups, spawning, trap pools, timed reactions, and projectile traps have shipped. The load-bearing E18-A decisions — effect-based dispatch split, bind-at-install, the co-op atmosphere channel — are recorded in the Q3 archive; later specs inherit them. Design intent: `context/research/co-op-triggers-trap-pools.md`.
+Trigger fan-out, dispatch parameters, enemy groups, spawning, trap pools, timed reactions, and projectile traps have shipped. The load-bearing E18-A decisions — effect-based dispatch split, bind-at-install, the co-op atmosphere channel — are recorded in the Q3 archive; later specs inherit them. Design intent: `context/research/co-op-triggers-trap-pools.md`.
 
 - [x] **R — Respawn + player-leave policy.** Author-named player life states, capability gates, respawn and the rejoin map; player-leave keeps the harvest-and-hold contract. Shipped: `plans/done/E18--player-life-states/`.
 - [x] **Player revive and second wind.** Teammate assist (hold-to-revive with client prediction), impact-policy life-state reads and effects, and a world-anchored revive marker over downed teammates. Done (`context/plans/done/E18--player-revive-assist/`).
 - [ ] **Defense-layer reads in interaction-pair expressions.** A helper's or target's defense layer read in pair expressions such as revive's `assistable`, so a shield can scale a revive; such a read rejects load until then. A small additive change to the pair scope, after `done/E16--damage-types-and-defense-layers/`. Per-entity `@state.*` side reads, the item's original scope, wait on the cross-entity state-read write path (`scripting.md` §11), and the per-owner store already covers their use case (the healer recipe in `docs/scripting-reference.md`).
 - [ ] **Life-state drop capability.** A `drop` profile key, separate from `switchWeapon`. Today `switchWeapon: false` also refuses drop, because drop repoints the active slot, so an author can't let a downed player drop a weapon while switching stays refused.
+- [ ] **B — Co-op activation policy.** Per-tag effective trigger occupancy as replicated readonly refs (`occupiedCount(tag)`, `occupants(tag)`), so count-threshold and all-players puzzles are script-only. Marked shipped on 2026-07-14 without code; reopened: `plans/drafts/E18--coop-activation-policy/`.
 - [ ] **E — Playable encounter.** One authored reveal-closet set-piece that proves the loop is fun — the capstone consuming A–R. Its sealed closets motivate E17-F (doors as occluders); E18-E is that spec's consumer, not the reverse.
 
 ---

@@ -2,14 +2,14 @@
 
 > **Read this when:** drafting the last of Epic 18 — co-op respawn/player-leave policy (E18-R)
 > or the playable capstone encounter (E18-E). The rest of Epic 18's opening spec set (trigger
-> fan-out, plate/button semantics, co-op activation policy, spawner/closet containment, seeded
-> trap-pool arming) has shipped.
-> **Status:** trigger fan-out, activation policy, spawner + closet containment, seeded trap-pool
+> fan-out, plate/button semantics, spawner/closet containment, seeded trap-pool arming) has shipped.
+> Co-op activation policy was marked shipped without code; reopened as `plans/drafts/E18--coop-activation-policy/`.
+> **Status:** trigger fan-out, spawner + closet containment, seeded trap-pool
 > arming, enemy groups, and timed reactions are built. Durable shape lives in
 > `context/lib/networking.md`. What remains: co-op respawn/player-leave policy and the playable
 > capstone encounter.
 > **Related:** `context/lib/networking.md` · `context/plans/done/E18--trigger-event-fanout` ·
-> `E18--coop-activation-policy` · `E18--spawner-and-closet-containment` ·
+> `drafts/E18--coop-activation-policy` · `E18--spawner-and-closet-containment` ·
 > `E18--trap-pools-seeded-arming` · `E18--enemy-group-handle` · `E18--timed-reaction-steps` ·
 > roadmap Epic 18.
 
@@ -19,11 +19,11 @@
 
 Trigger detection and fan-out (`on_fire`/`on_exit` with paired gating, the effect-based
 consequential/presentation/lifecycle dispatch split, bind-at-install), pressure-plate and button
-authoring patterns, co-op activation policy (any/N-simultaneous/all), the `entity_spawner` entity
+authoring patterns, the `entity_spawner` entity
 with spawn-time replication registration, closet containment (the dormant-until-armed aggro gate
 that stops reveal-closet enemies aggroing through walls or pathing through closed doors before the
 reveal), and seeded host-side trap-pool arming at level install are all built —
-`context/plans/done/E18--trigger-event-fanout`, `E18--coop-activation-policy`,
+`context/plans/done/E18--trigger-event-fanout`,
 `E18--spawner-and-closet-containment`, `E18--trap-pools-seeded-arming`,
 `E18--enemy-group-handle`, `E18--timed-reaction-steps`. The durable shape — trigger volumes as
 baked map data, the trap-pool arming's host-only load-time shape, the consequential/presentation
@@ -36,8 +36,9 @@ dispatch split, the general RNG posture (host-only, load-time, consequences-only
 |---|---|---|
 | No co-op respawn / player-leave policy | High | Charter-named. `playerDied` fires a mod-bound game-flow verb; there is no respawn path. A lethal-trap capstone playtest hits this immediately. |
 
-**Dead-pawn occupancy is undecided.** The trigger system iterates all player pawns with no alive
-check, so a corpse on a plate holds it down. Undecided; gate in E18-R.
+**Script-readable occupancy is not built.** Co-op activation policy (any/N-simultaneous/all over
+per-tag occupancy refs) is reopened as `plans/drafts/E18--coop-activation-policy/`. Who counts is
+decided: E18 life states' `occupancy` capability, falling back to HP for undeclared pawns.
 
 ### Remaining spec sequence
 

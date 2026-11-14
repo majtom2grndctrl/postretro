@@ -56,34 +56,41 @@ Luau mirrors it as teleporters do: `s:arm()`, `s:disarm()`, `s:on("arrive", { re
 - [ ] An arriving player overlapping an armed teleporter in the next map is latched against it and does not teleport.
 - [ ] An arriving host settles and reveals at the arrival eye, yaw and pitch, not the first player start.
 - [ ] A pawn at zero health inside the seam at the harvest arrives landmark-relative, with health as a level change restores it.
+- [ ] A destination seam with `enabled_on_spawn` 0 places every crossing pawn landmark-relative and latches it, exactly as an armed one does.
+- [ ] A co-op client crossing a seam while its resolved commands still carry a pre-teleport stamp arrives facing as its host-side pawn faced (pin P8).
 
 **Carry and consumption**
 - [ ] Carried state crosses a seam exactly as it crosses `loadLevel` today.
-- [ ] A seat's arrival is consumed by its first spawn. A later respawn, and the level after a non-seam change, place it at player starts (pin P2).
+- [ ] A seat's arrival is consumed by its first spawn. A later respawn, and the level after a non-seam change, place it at player starts with no warning, the later level holding a seam of the crossing's name (pin P2).
 - [ ] A pawn outside the seam at the harvest arrives at a player start, including a pawn that activated the seam and left it before the load drained (pin P1).
+- [ ] Suspend before a seam's load drains, during its load, and while a crossing client still loads the destination each leave no arrival: after resume every seat spawns at a player start (pin P6).
 
 **Activation**
 - [ ] Touch and use activation each start the transition. Use without overlap does not; a disarmed seam does not. A seam activation and a script `loadLevel` on one frame load exactly one level, and only a seam load writes arrivals (pin P3).
 - [ ] An unknown target catalog id warns once and leaves the level running.
 - [ ] A pawn whose capsule overlaps the seam's union AABB but none of its brushes is outside: it neither activates the seam nor arrives landmark-relative.
 - [ ] Arming a disarmed touch seam with a player standing inside starts the transition on the next trigger tick.
-- [ ] A pawn at zero health that declares no life states neither touches nor uses a seam into firing, as it cannot teleport. A declared pawn follows its state's `touch` and `use` capabilities, once E18 lands.
+- [ ] A pawn at zero health that declares no life states neither touches nor uses a seam into firing, as it cannot teleport. A declared pawn follows its state's `touch` and `use` capabilities.
 - [ ] `occupants(tag)` counts a player in a bent seam's brushes and not one beside the bend inside its bounding box, armed or not. A disarmed seam armed from `onStateCrossing(occupants(tag), …)` when every player is inside moves every player landmark-relative.
-- [ ] No source, FGD, doc or map names `streaming_seam_volume` (grep gate); `sh-streaming-hinted-door` written with `stream_split_volume` compiles to the same id-49 section as before.
+- [ ] No source, FGD, `docs/` or `context/lib/` file, or map names `streaming_seam_volume` (grep gate; `context/plans/` excluded); `sh-streaming-hinted-door` written with `stream_split_volume` compiles to the same id-49 section as before.
 
 **Latch and events**
 - [ ] The latch follows the hub D11 table on every row, including an arrival whose capsule overlaps the seam with its body point outside, and a capsule that leaves while the body point is already out (pin P4).
-- [ ] The destination seam fires `arrive` once per arriving pawn, on the host only, inside the first fixed tick after the pawn spawns. A brush `on_arrive` and a script `seamEvents` binding both run.
+- [ ] The destination seam fires `arrive` once per arriving pawn, on the host only, inside the first fixed tick after the pawn spawns, and fires none for a pawn of the same load placed at a player start, a blocked arrival included. A brush `on_arrive` and a script `seamEvents` binding both run.
+- [ ] A teleporter whose destination lies inside a touch seam fires that seam on the teleport's tick (pin P9).
+- [ ] A seam whose target is its own map reloads it once, and each occupant spawns where it stood, latched (pin P10).
 - [ ] The scripting-surface example compiles in TypeScript and Luau and, on the dev pair, disarms the destination seam on arrival.
 
 **Co-op**
 - [ ] A client pawn inside the seam arrives landmark-relative at participation entry; one outside arrives at its assigned player start.
 - [ ] A crossing client settles, reveals and arms at its arrival eye, yaw and pitch, and its seat holds no player start. A client whose arrival is blocked resolves to a player start, and its hint names that start.
 - [ ] A host level change before a crossing client spawns clears that client's arrival; it arrives at a player start (pin P5).
+- [ ] A crossing client demoted or reconnected after its arrival spawn re-enters at a player start, and its hint names that start; one that reconnects before any spawn in the destination spawns at its arrival (pin P7).
 
 **Compiler and surface**
 - [ ] A duplicate seam name in one map, an unresolved landmark, and a missing name or target each fail the build with the entity named. Blank optional keys take their defaults.
 - [ ] The FGD defaults equal the compiler's, by test.
+- [ ] A seam with `mode` `seamless` crosses exactly as a classic one and logs no warning.
 
 ### Manual
 - [ ] On the dev-mod seam pair, a player crosses into the next map and back, turned and moving, and keeps facing and momentum.
@@ -91,8 +98,8 @@ Luau mirrors it as teleporters do: `s:arm()`, `s:disarm()`, `s:on("arrive", { re
 
 ## Path
 - Shape: a `trigger_teleport`-style entity — section, companion, component, `getMapEntities("seam")` kind, arm and disarm verbs, a seam event source and binding table.
-- Rival A, the strongest: classic transitions in script with the seam a passive marker — a `trigger_volume` calls `loadLevel(id, { seam })`, and the seam holds only a name, a region and a landmark, with no activation, armed state, latch or events. Alone, U2 would be better built this way. It loses because U3 needs the engine to own activation (wait, blind check, swap timing) and the arrival latch; the owner kept U3 (hub, "Stop after U1 and U2", rejected 2026-10-28), and a passive marker would reshape the modder surface at U3.
-- Rival B: a cross-map `trigger_teleport`, a target-map key on teleporters. Teleporters fire per pawn on the body point inside the tick and are predicted on clients, with latches on the wire; a seam moves the whole party, host-only, commits at a frame boundary and tests the capsule.
+- Rival A, the strongest: a passive seam marker (name, region, landmark) with a `trigger_volume` calling `loadLevel(id, { seam })`. Better if U2 were the end; it loses because U3 needs the engine to own activation and the latch, and the owner kept U3 (hub, "Stop after U1 and U2", rejected 2026-10-28).
+- Rival B: a target-map key on `trigger_teleport`. Teleporters fire per pawn on the body point, predicted, latches on the wire; a seam moves the party, host-only, at a frame boundary.
 - Rival C, compile layout only: `switch`-style sugar over section 44 plus a side table keyed by trigger index; cheaper to compile, but triggers have no companion and would publish trigger events.
 - Seams: `TeleporterParser` and `region_companion` (compile), `TeleportersSection` (layout precedent), `spawn_loaded_teleporters` / `bind_loaded_teleporters` (install), `TeleporterBindingTable` (events), `trigger_system`'s edge and gate code (activation), `physics::movement::teleport::resolve` (factor), `unload_level`, `SeatTable::harvest_bound_pawns`, `spawn_from_player_starts_with_carried_loadout`, `spawn_net_slot_pawn_with_carried_loadout`, the participation-entry handler in `net_poll_and_apply`, `place_camera_at_presented_pose`, `LevelRequest` / `LevelSource`.
 - Inside test: capsule against each convex brush by its planes inflated by the radius, about the segment; it over-includes near edges by at most the radius, the safe direction for activation and the conservative one for U3's eyes. Teleporter regions already store convex brush planes.
@@ -100,7 +107,10 @@ Luau mirrors it as teleporters do: `s:arm()`, `s:disarm()`, `s:on("arrive", { re
 - The movement state payload carries `elapsed_ms`; a dash or slide resumes, not restarts.
 - Occupancy: the reserved per-tag slots the trigger stage writes from its effective-occupant set each host tick; seams join that set through their own test.
 - Rename: the compiler's streaming-hint parse and resolve (`authoring_regions`, `streaming_hints`, `streaming_hint_source`), the id-49 seam-portal names and the runtime's `SeamWarm` class, `postretro.fgd`, `docs/level_design.md`, `build_pipeline.md`, and the dev maps `sh-streaming-hinted-door.map` and `lightmap-runtime-floor-verification.map`. Its own commit, first.
-- First slice: factor the apply half out of `resolve` with teleport tests green, then a host-only seam on a fixture pair with the harvest moved. That falsifies the riskiest assumptions: the chokepoint splits cleanly, and nothing between the old and new harvest point depended on the old order.
+- Arrival code already shared: `physics::movement::teleport::settle_arrival` holds the ground settle, record bump and teleporter latch rebuild, and respawn calls it. The fit test, boost rotation, vault abort and velocity rotation remain inline in `resolve`; those are what to factor.
+- Client arrival through the resolver: `UnbackedSpawn` carries only `SpawnPose` (eye, yaw, pitch), `entity_class` and `single_use`. Velocity channels, movement state and the seam latch need their own path into the participation-entry spawn beside it.
+- Activation gate: the trigger stage lets an undeclared zero-HP pawn touch and use (`PlayerCapabilities::permits_touch` / `permits_use` default to permit); the seam adds the teleporter's zero-HP bar on top.
+- First slice: factor the rest of the apply half out of `resolve` with teleport tests green, then a host-only seam on a fixture pair with the harvest moved. That falsifies the riskiest assumptions: the chokepoint splits cleanly, and nothing between the old and new harvest point depended on the old order.
 - `startup/lifecycle.rs`, `trigger_system.rs` and `level-compiler/src/parse.rs` are past ~800 lines: split first, behavior-preserving, own commits.
 - Docs: `docs/level_design.md` gains a seam section (it has none for triggers either), `docs/scripting-reference.md` the handle, `docs/modding.md` the index; `build_pipeline.md` corrects "each brush" for `trigger_volume` at promotion, recording its union-AABB inside test as a known limitation rather than intent; moving triggers to the brush-union test is follow-up work, not this brief.
 - Research: `research.md`.

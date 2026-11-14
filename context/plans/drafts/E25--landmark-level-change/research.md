@@ -47,3 +47,20 @@ Read at `ab08438`. Session-verified facts behind the brief, cited by symbol. Hub
 | P3 | Seam activation and script `loadLevel` on one frame | seam activates in the trigger stage → a reaction's `loadLevel` drains at frame end → next boundary drains the queue | One load. Arrivals are written only when the load that drains is the seam's |
 | P4 | Latch clears on capsule exit | touch seam latched → body point leaves, capsule still overlaps → capsule leaves → re-enter | No fire while the capsule overlaps; re-entry fires (hub pin) |
 | P5 | Level change before a co-op client arrives | seam crossing A→B → client still loading B → host changes B→C | The client arrives in C at a player start; its B arrival is cleared at B's unload (hub pin) |
+| P6 | Suspend across a seam crossing | (a) seam activates → suspend before the drain; (b) drain unloads A → suspend while B loads; (c) host in B → suspend while a crossing client still loads B | (a) the queued load drops with the queue; (b) the load cancels; (c) the client's arrival clears. After resume every seat spawns at a player start |
+| P7 | Client leaves participation around its arrival spawn | (a) client spawns at its arrival → Holding demotes it → re-promotes; (b) client spawns at its arrival → disconnects → rejoins within the hold; (c) client disconnects while loading B → rejoins within the hold before any spawn in B | (a) and (b) re-enter at a player start, hinted before the re-promotion; (c) spawns at its arrival |
+| P8 | Client crosses soon after a teleport | client teleports on host tick T → its commands sampled before T keep resolving → it enters the seam → harvest | The harvested view yaw is its latest resolved facing in the pawn's teleport frame: it arrives facing as its host-side pawn faced |
+| P9 | Teleport into a seam | teleporter fires on tick T with its destination inside a touch seam → trigger stage on tick T | The seam fires on tick T. A teleport is not a spawn and takes no seam latch |
+| P10 | Seam targets its own map | seam in A with target A activates → A unloads, arrivals written → A loads | Each occupant spawns where it stood, facing and moving as it was, latched against the seam; no second load |
+
+## 7. Changes since `ab08438` (re-read at `6c862fd`)
+
+`coop--client-spawn-view-handoff` landed. These supersede the matching claims above.
+
+- **Arrival code partly shared.** `settle_arrival` (`physics::movement::teleport`) holds the ground settle, record bump and teleporter latch rebuild; teleports and respawn both call it. §1's "not separable" holds only for the fit test, boost rotation, vault abort and velocity rotation still inline in `resolve`.
+- **Engine respawn exists.** `respawn` drains at tick start and relocates the existing pawn through `settle_arrival`; it spawns nothing (`sim::tick_start`). Supersedes §3's "No engine respawn exists".
+- **Resolver.** `SpawnPoseResolver` (`crates/postretro/src/spawn_pose.rs`) resolves at host install, admission and promotion (`resolve_for_promotion`). `UnbackedSpawn` carries a `SpawnPose`, `entity_class` and `single_use`; a single-use pose is consumed at spawn and the seat re-resolves at its next demotion. An unbacked seat holds no placement. Promotion keeps a recorded unbacked pose without re-testing it.
+- **Client camera at install** takes the resolver's hint (`take_install_spawn_pose_hint`). Supersedes §3's "arming sets position only". The host camera is still seeded from the first spawn's angles.
+- **`loadLevel` with an unknown id** enqueues with no catalog check, drops any queued load at enqueue, and warns at the drain.
+- **Section 44** carries a trigger `name`; it still has no target, mode or landmark.
+- **Occupancy refs absent.** `occupiedCount` / `occupants` and the `trigger.<tag>.*` slots appear in no file under `sdk/`, `crates/`, `docs/` or `content/`, though `E18--coop-activation-policy` is in `done/`. The trigger stage computes effective occupants (`PlayerCapabilities::effective_occupants`) but publishes no per-tag slot.

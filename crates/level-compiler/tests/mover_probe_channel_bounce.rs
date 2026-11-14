@@ -290,6 +290,7 @@ fn in_raised_room(quake: [f64; 3]) -> bool {
 // static-room reference's id 34 than today's id 34 is, and within 3 display
 // levels of it.
 #[test]
+#[ignore = "bakes mover-setpiece cold three times (minutes); run `cargo test -p postretro-level-compiler --test mover_probe_channel_bounce -- --ignored`"]
 fn raised_room_bounce_is_nearer_the_static_room_reference_than_today() {
     let setpiece = setpiece();
     let room = mover_id(&setpiece.channel, "setpiece_room");
@@ -405,6 +406,7 @@ fn bounce_half_poses(logs: &str) -> (u64, u64) {
 // in-process proof that it covers what the bake holds is
 // `the_sh_base_gate_covers_every_poses_bake_on_the_setpiece_at_either_fidelity`.
 #[test]
+#[ignore = "bakes mover-setpiece cold at low and release (minutes); run `cargo test -p postretro-level-compiler --test mover_probe_channel_bounce -- --ignored`"]
 fn a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray() {
     let map = dev_map("mover-setpiece.map");
     for flags in [&["--bake-fidelity", "low"][..], RELEASE] {

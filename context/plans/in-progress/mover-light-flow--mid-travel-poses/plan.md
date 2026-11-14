@@ -568,6 +568,8 @@ The verdict was "request changes". Wire bytes agree across every layer, and the 
 - **Gates.** fmt; clippy clean; `mover` 215 passed, 9 ignored; `parse` 301; `mover_light_gate_setpiece` 5 of 5; `mover-setpiece` cold `--release` bake byte-identical to `dbacdfdf2`'s `prl-build` (87,369,750 B), no graze warning.
 - `poses_in_band` (test only) still reports both kinds, so the motion-proof truth check bars grazes too: placement would not move one out of a truth bake.
 
+**Heavy setpiece tests (owner, 2026-11-13): behind `#[ignore]`.** After `df00bd54e` a cold setpiece bake takes minutes, so per the testing guide's small-fixture rule four tests that bake it cold run on demand, each naming its command: the setpiece SH-gate pricing test (`mover_bounce_stage_tests.rs`; the closet's gate test stays routine), `raised_room_bounce_is_nearer_the_static_room_reference_than_today` and `a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray` (`tests/mover_probe_channel_bounce.rs`), and `a_block_over_its_bar_streams_with_id_50_and_one_at_or_under_it_stays_resident` (`tests/mover_probe_channel_placement.rs`). Routine runs: `--bin prl-build mover` 784 s → 91 s (214 passed, 10 ignored); bounce target 589 s → 18 s; placement 254 s → 0 s. `mover_light_gate_setpiece` and `mover_probe_channel_setpiece` (about 1.5 min each) stay routine as the only routine light-gate coverage on real content. Run all four under `--ignored` before landing.
+
 **Waiting on the owner:**
 - **Short enclosure runs.** A run of one or two poses is all edge copy, so it gets no dark pose; that is the ruled rule, word for word. The owner is reviewing it in-engine.
 

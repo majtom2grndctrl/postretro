@@ -321,6 +321,7 @@ fn the_sh_base_gate_covers_the_mover_bounce_peak_cold_and_warm() {
 // the raw states one mover's poses hold before it reduces. A `low` build
 // bakes fewer posed bounces than it is priced for, so its bound is looser.
 #[test]
+#[ignore = "bakes mover-setpiece six times at low and release (about 11 minutes); the closet's gate test runs routinely. Run `cargo test -p postretro-level-compiler --bin prl-build the_sh_base_gate_covers_every_poses_bake_on_the_setpiece -- --ignored`"]
 fn the_sh_base_gate_covers_every_poses_bake_on_the_setpiece_at_either_fidelity() {
     let fixture = load_map(&fixture_path("mover-setpiece"));
     let mut rows = Vec::new();

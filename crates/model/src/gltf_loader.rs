@@ -3300,11 +3300,15 @@ mod tests {
                 "hit_reaction",
                 "idle",
                 "punch",
+                "punch_strike",
+                "punch_windup",
                 "roar",
                 "run",
                 "smash",
+                "smash_strike",
                 "smash_windup",
                 "swipe",
+                "swipe_strike",
                 "swipe_windup",
                 "walk",
             ],
@@ -3327,11 +3331,71 @@ mod tests {
                 .unwrap()
                 .duration
         };
-        // Trims end at their windup peak, on a 30 fps key.
+        // Trims end at their windup peak, on a 30 fps key, and each strike is
+        // the rest of its attack from there.
         assert!((duration("smash_windup") - 0.4).abs() < 1e-3);
         assert!((duration("swipe_windup") - 0.9).abs() < 1e-3);
-        assert!(duration("smash_windup") < duration("smash"));
-        assert!(duration("swipe_windup") < duration("swipe"));
+        assert!((duration("punch_windup") - 14.0 / 30.0).abs() < 1e-3);
+        for attack in ["smash", "swipe", "punch"] {
+            let windup = duration(&format!("{attack}_windup"));
+            let strike = duration(&format!("{attack}_strike"));
+            assert!(
+                windup < duration(attack),
+                "`{attack}_windup` is shorter than `{attack}`"
+            );
+            assert!(
+                (windup + strike - duration(attack)).abs() < 1e-3,
+                "`{attack}_windup` and `{attack}_strike` together span `{attack}`"
+            );
+        }
+    }
+
+    #[test]
+    fn reference_enemy_strikes_start_on_their_windup_pose() {
+        // A stance holds its windup's last pose, then its release plays the
+        // strike from 0: the two poses must agree, or the body pops.
+        use crate::anim::{Loop, sample_clip_looped_world};
+
+        let path = reference_enemy_model_path();
+        if !path.exists() {
+            eprintln!("skipping: model asset not present at {}", path.display());
+            return;
+        }
+        let model = load_model(&path).expect("reference enemy (Mutant) model loads");
+        let clip = |name: &str| {
+            model
+                .clips
+                .iter()
+                .find(|clip| clip.name == name)
+                .unwrap_or_else(|| panic!("clip `{name}` binds"))
+        };
+        let (mut held, mut released) = (Vec::new(), Vec::new());
+        for attack in ["smash", "swipe", "punch"] {
+            let windup = clip(&format!("{attack}_windup"));
+            let strike = clip(&format!("{attack}_strike"));
+            sample_clip_looped_world(
+                windup,
+                &model.skeleton,
+                windup.duration + 1.0,
+                Loop::Clamp,
+                &mut held,
+            );
+            sample_clip_looped_world(strike, &model.skeleton, 0.0, Loop::Clamp, &mut released);
+            let gap = held
+                .iter()
+                .zip(&released)
+                .flat_map(|(a, b)| {
+                    a.to_cols_array()
+                        .into_iter()
+                        .zip(b.to_cols_array())
+                        .map(|(x, y)| (x - y).abs())
+                })
+                .fold(0.0_f32, f32::max);
+            assert!(
+                gap < 1e-3,
+                "`{attack}_strike` starts {gap} off `{attack}_windup`'s held pose"
+            );
+        }
     }
 
     /// The two dev melee enemies bound to Mutant clip libraries: the brute and

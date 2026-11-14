@@ -12,15 +12,30 @@ License:
 
 Packaging notes (PostRetro):
 * Mutant clips from Mixamo, on the Mutant rig, each file named for its clip:
-  idle, walk, run, punch, swipe, smash (a jump attack), roar, hit_reaction,
-  death, falling (Falling Idle). Built with:
+  idle (Mutant Breathing Idle), walk, run, punch, swipe, smash (Mutant Jump
+  Attack), roar, hit_reaction (Standing React Large From Front), death
+  (Mutant Dying), falling (Falling Idle). Built with:
     mixamo_to_gltf.py --library --base Mutant.fbx --yaw 180 --in-place smash hit_reaction \
-      --trim smash_windup=smash:400 --trim swipe_windup=swipe:900
+      --trim smash_windup=smash:400 --trim swipe_windup=swipe:900 \
+      --trim punch_windup=punch:467 \
+      --trim smash_strike=smash:400- --trim swipe_strike=swipe:900- \
+      --trim punch_strike=punch:467-
 * --yaw 180 turns the rig to face +Z, the front AI facing aims, matching
   the bound Mutant model; root motion then runs the way the model faces.
 * smash and hit_reaction are pinned in place: the jump attack lands 1.6 m
   forward and the hit reaction staggers 1 m back, and the
   body would snap back when either clip ended.
-* smash_windup and swipe_windup are the attacks cut at their windup peak (the
-  crouch before the leap; the lean back before the lunge). Played without
-  looping they hold that pose, for enemy stances.
+* smash_windup, swipe_windup and punch_windup are the attacks cut at their
+  windup peak (the crouch before the leap; the lean back before the lunge;
+  the fist drawn back high, 467 ms, frame 14, where it stops moving). Played
+  without looping they hold that pose, for enemy stances.
+* smash_strike, swipe_strike and punch_strike are the rest of each attack
+  from its windup cut, starting on the windup's last pose: a stance's release
+  plays one after its windup holds.
+* Measured moments for clip events (Clip-timed attacks, not yet in the
+  library), in source clip time, each the first frame the striking hand is
+  within about 5% of its full reach: punch hit at 767 ms (the right hook,
+  frame 23); smash hit at 1667 ms (both hands reach the floor, frame 50);
+  swipe hit at 1300 ms (the left claw sweeping across, frame 39). The strike
+  cuts start at their windup cuts, so their hits fall at 300, 1267 and
+  400 ms.

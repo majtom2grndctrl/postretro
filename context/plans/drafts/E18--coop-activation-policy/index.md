@@ -1,6 +1,6 @@
 # E18--coop-activation-policy
 
-Brief · compact · Epic 18 · reads: `context/lib/scripting.md` §5, §12 · `context/lib/networking.md` §Admission and content parity, §What gates, and what replicates instead · `context/lib/entity_model.md` §7 · `plans/done/E18--player-life-states/` · `plans/done/E18--trigger-event-params/` · `plans/done/E18--dispatch-scope-params/` · read at 6c862fd
+Brief · compact · Epic 18 · reads: `context/lib/scripting.md` §5, §12 · `context/lib/networking.md` §What gates, and what replicates instead, §Slot lifecycle, §Session-state ledger · `context/lib/entity_model.md` §7 · `plans/done/E18--player-life-states/` · `plans/done/E18--trigger-event-params/` · `plans/done/E18--dispatch-scope-params/` · read at 6c862fd
 
 ## Problem
 Owner-raised, reopened. Co-op puzzles need "both plates held at once" and "every player is in the room", and scripts can read neither. The trigger stage tracks effective occupants per volume but publishes them only as the per-fire `on.occupancy` count, and nothing tells a script how many players are taking part. The 2026-07-14 plan for this was moved to `done/` without code, so `scripting.md` §12, the roadmap and downstream plans (`E18--dispatch-scope-params`' King-of-the-Hill fixture, E25's wait-for-everyone seam) assume facts that do not exist. The engine-state catalog behind `getGameState()` cannot express them: no entry is host-computed and shared with every machine, and none is keyed by data. When done, `getGameState()` carries `session.activePlayers` and a per-tag `occupancy` family on host and clients, and scripts build count-threshold and all-players puzzles from the existing crossing watcher and accumulators.
@@ -13,11 +13,11 @@ Owner-raised, reopened. Co-op puzzles need "both plates held at once" and "every
 - **`occupancy.tag(tag)`**: a keyed family with two readonly Numbers. `occupiedCount`: player-occupied volumes, those carrying the tag with at least one effective player inside. `occupants`: distinct effective players inside any volume carrying the tag. Membership ignores armed and latched state, as the occupant map does. Slots `occupancy.<tag>.occupiedCount` and `occupancy.<tag>.occupants`.
 - **One counting rule.** `activePlayers` and `occupants` use the same effective set, so `occupants >= activePlayers` means every counted player is inside.
 - **Volumes are trigger volumes**, `switch` included, since a switch is a trigger volume at the component layer. E25's `level_seam` joins through its own inside test (`drafts/E25--landmark-level-change/`).
-- **Lifetime.** Each level install declares the family for every tag on an occupancy volume before reactions, crossings and accumulators rebuild; unload removes it. Engine-written, script-readonly: a script write warns and changes nothing.
+- **Lifetime.** The host's level install declares the family for every tag on an occupancy volume before reactions, crossings and accumulators rebuild; unload removes it on every machine. Engine-written, script-readonly: a script write warns and changes nothing.
+- **The host sends the tag set** (`networking.md` §What gates: hash only what cannot be replicated). A client never derives it from its own map. The set rides the ordered control channel at host install and at admission, beside the spawn-pose hint, so it precedes the client's first accepted snapshot of the level. The client holds it across demotion, declares the family at the matching install before binds and crossings initialize, and drops it at unload or a level-life change. A set that arrives after install is declared then, and the client's crossings and schema rebuild. The content digest is unchanged.
 - **`occupancy` is a reserved engine namespace.** A mod store declaring it, or one overlapping it, is rejected at load whether or not a level is loaded.
 - **A tag that cannot form a slot name** (one containing `.` or `:`) warns once at install and gets no family. Its volumes still fire events.
 - **Write order.** Both facts are written once per authoritative host tick, after the trigger stage settles and before accumulators and crossing detection, so a set that completes on a tick crosses on that tick (`plans/done/E18--dispatch-scope-params/` ordering).
-- **Trigger tags join the level content digest** (epoch bump). Each side derives the family from its own level; a pair whose tags differ is refused at admission instead of dropping every replicated slot at the schema fingerprint check.
 - **Unknown tag degrades.** `occupancy.tag(name)` for a tag with no family in the current level is a ref to an undeclared slot: a crossing or accumulator over it warns and skips. No load failure.
 - **First consumers ship here:** the two-button co-op puzzle (`content/dev/scripts/coop-two-button-puzzles.ts`, today a design spike on a store workaround), an all-players room gate, and the King-of-the-Hill accumulator `E18--dispatch-scope-params` promised, on one dev map; and an effective-occupancy column beside the raw count in the dev-tools Triggers tab.
 - **Non-goals.**
@@ -88,7 +88,9 @@ Luau mirrors it: `local game = Postretro.getGameState()`, `game.occupancy.tag("a
 **Co-op (two-endpoint)**
 - [ ] A client's `activePlayers` and occupancy values converge to the host's; its host-mirrored crossing fires once when the set completes; the solve's mover reaches it by replicated phase.
 - [ ] A client joining mid-hold reads the current values from its baseline.
-- [ ] A host and client whose maps differ only in a trigger tag are refused at admission with a content-parity reason; matching maps are admitted.
+- [ ] A client whose map differs from the host's only in trigger tags joins and reads the host's families, not its own.
+- [ ] A client whose tag set arrives after its install declares the family then: its crossings over occupancy bind, and state batches resume applying (pin P3).
+- [ ] A client demoted and re-promoted within a level keeps its families; after a level change it holds only the new level's (pin P2).
 
 **Surface**
 - [ ] The scripting-surface example compiles in TypeScript and Luau, and a TS and a Luau fixture of the two-button puzzle behave identically.
@@ -104,12 +106,16 @@ Luau mirrors it: `local game = Postretro.getGameState()`, `game.occupancy.tag("a
 - Shared engine writes: `write_store_slot` / `apply_store_slot_batch` skip the readonly check; script paths enforce it. Replication reads engine slots by dotted name (`ReplicatedSlotSchema::build`, `HostStateReplication::ingest_frame`).
 - Who counts: `TriggerStageCapabilities::capture` builds the effective set each tick; `TriggerSystem::effective_occupants` filters a volume's occupants through it. Aggregate per tag, and count the set for `activePlayers`.
 - Reservation: `validate_namespace_records` rejects `@` today; `occupancy` joins it beside `namespaces_overlap`.
-- Digest: `level_content_digest` (`runtime_movers.rs`) and its `FINGERPRINT_EPOCH`; clients populate trigger volumes themselves, so both sides hash their own.
+- Tag set: append a `ServerControlMessage` variant carrying level identity, level life and the tags (application-protocol bump; append keeps `WIRE_VERSION`). Send it where `send_install_spawn_pose_hints` and admission send the hint, without the `player_spawn` gate; hold it as `ClientSpawnPoseHint` is held. Declare before `warn_unknown_slot_binds` and `rebuild_reaction_subscribers`. A late set redeclares, then `reset_state_slot_schema` and `rebuild_active_reaction_subscribers`; check the Recompose path's other side effects. Accumulators evaluate on the host only (`evaluate_slot_accumulators`).
+- Fingerprint: `compute_fingerprint` covers slot identity, type, range and scope, sorted by identity; identical declarations on both sides match. A mismatched batch drops whole and the host keeps sending `FullBaseline`, so the client recovers once declared.
 - Dev-tools: `collect_trigger_diagnostics_rows`, `TriggerDiagnosticsRow`.
-- First slice: a host-computed shared catalog entry (`session.activePlayers`) end to end, replicated to a client; then the keyed family and the headless two-button test; then the digest.
+- First slice: a host-computed shared catalog entry (`session.activePlayers`) end to end, replicated to a client; then the keyed family and the headless two-button test; then the host-sent tag set.
 - Split first: `trigger_system.rs` is past ~800 lines; move occupant tracking out, behavior-preserving, own commit.
-- Docs: `docs/scripting-reference.md` gains the facts and the co-op patterns. At promotion: §5 states the two catalog concepts and level-scoped engine slots beside the engine-global store; §12 states the occupancy contract; `networking.md`'s digest rule covers inputs that shape the replicated slot schema, not only prediction inputs.
+- Docs: `docs/scripting-reference.md` gains the facts and the co-op patterns. At promotion: §5 states the two catalog concepts and level-scoped engine slots beside the engine-global store; §12 states the occupancy contract; `networking.md` gains the tag-set control message and level-scoped shared slots in §Session-state ledger.
 - Research: `research.md`.
+
+## Wire format
+One `ServerControlMessage` variant, appended to the enum on the control channel and encoded as its siblings are: level identity (catalog id or path), level life (`Option<u64>`), then the tags as a length-prefixed list of UTF-8 strings in the host's sorted order; an empty list means the level has no family. No snapshot or PRL change.
 
 ## Boundary inventory
 | Name | Rust | Slot / wire | TypeScript | Luau | FGD KVP |

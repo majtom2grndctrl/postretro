@@ -39,7 +39,8 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 | Pin | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
 | P1 | Players already on the plates at install | install declares slots at 0 → crossings initialize at 0 → first authoritative tick writes the count | The crossing fires on the first tick; the set needs no exit and re-entry |
-| P2 | Level change across tags | level A declares `occupancy.a.*` → unload → level B declares `occupancy.b.*` | Only B's tags have slots; a crossing over `a` in B warns and skips |
+| P2 | Level change across tags | level A declares `occupancy.a.*` → unload → level B declares `occupancy.b.*` | Only B's tags have slots on every machine; a crossing over `a` in B warns and skips |
+| P3 | Tag set after client install | client reveals an uncatalogued level and promotes in its admission batch → participation marker → snapshots → tag set arrives | Batches drop until the family is declared; then the schema matches, the host's baseline applies, and crossings over occupancy bind |
 
 ## 7. Engine-state catalog
 
@@ -49,3 +50,11 @@ Read at `6c862fd`. Facts behind the brief, cited by symbol.
 - `session.*`: `hosting` is computed locally from role; `openSeats` arrives on a client through the roster Control message (`apply_client_session_roster`) and is absent on the host. Neither is host-computed shared state.
 - Keyed slots exist only outside the catalog: `player.defense.<name>` (`replace_player_defense_slots`), owner-private, reached through `defineDefenseLayer(name).current` built on `storeRef`.
 - No player-count fact exists. A mod cannot derive one: player events fire nothing when a player stops being observed, and the `occupancy` capability is not readable as a slot.
+
+## 8. Host-sent tag set
+
+- Control is the one ordered, reliable channel (`ServerControlFrame { participation_epoch, payload }`, resent every 100 ms); snapshots are unreliable and epoch-gated. A client accepts a snapshot only after draining the participation marker, and control drains before snapshot apply, so a control message sent before the marker lands before the epoch's first accepted snapshot. A level change always demotes, so every level starts a new epoch.
+- `SpawnPoseHint` is sent at host install (`send_install_spawn_pose_hints`) and at admission, after `Relevel` and before the marker, gated on a `player_spawn`; the client holds it tagged with identity and life (`ClientSpawnPoseHint`). Exception: a client that already revealed an uncatalogued level and promotes in its admission batch gets the marker first. `Tuning` lands after the marker.
+- The schema never travels; snapshots carry only `compute_fingerprint` (version, count, and per entry slot id, identity, type, enum values, wire shape, range, scope; sorted by identity). `ReplicatedSlotSchema::build` reads the local `SlotTable`. A mismatched batch drops whole, warns per batch, requests nothing; the host keeps sending `FullBaseline` for unacked slots, so the client recovers once its schema matches.
+- Client binding: crossings run on clients; `CrossingDetector::initialize` skips an undeclared threshold slot and a predicate fails to bind. Rebinds happen only at level install and staged manifest commit (`rebuild_active_reaction_subscribers`, which also calls `reset_state_slot_schema`). `bindState` looks slots up each frame and only warns once at tree build (`warn_unknown_slot_binds`). Accumulators evaluate on the host only.
+- Nothing today declares slots from host data; `replace_player_defense_slots` runs from each peer's own mod commit.

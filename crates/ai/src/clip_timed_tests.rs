@@ -707,6 +707,35 @@ fn fire17_a_missing_event_warns_once_per_class_and_state_and_fires_on_entry() {
     );
 }
 
+// The bind-time check reads a variant's clip by name as well as by index, so a
+// runtime spawn bound before its indices fill is checked as it will draw.
+// Regression: every variant was skipped while its index was unfilled.
+#[test]
+fn a_missing_event_warns_for_a_variant_bound_before_its_clip_index_fills() {
+    let capture = LogCapture::start();
+    let (mut scene, enemy) = strafing_scene(
+        vec![
+            one_shot("attack_jab", 1.0, &[("hit", 0.5)]),
+            one_shot("attack_jab_right", 1.0, &[]),
+        ],
+        "attack_jab",
+    );
+    let mut mesh = scene
+        .reg
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .clone();
+    for state in mesh.animation.as_mut().unwrap().states.values_mut() {
+        state.clip_index = None;
+    }
+    scene.reg.set_component(enemy, mesh).unwrap();
+    scene.tick();
+    capture.assert_logged_once(
+        Level::Warn,
+        "`brute` animation state `attack_jab_right`: clip `attack_jab_right_clip` has no such event",
+    );
+}
+
 // Fire 18.
 #[test]
 fn fire18_the_implied_mark_holds_the_turn_from_entry() {
@@ -938,33 +967,131 @@ fn surf1_the_surface_example_jab_fires_at_hit_and_leaves_on_animation_done() {
     );
 }
 
+/// Pick `enemy` up into a fresh holder's inventory: the pickup takes its mesh
+/// out of the world. Returns the holder.
+fn pick_up(scene: &mut Scene, enemy: EntityId) -> EntityId {
+    let holder = scene.reg.spawn(Transform::default());
+    let mut inventory = postretro_entities::components::inventory::Inventory::default();
+    inventory.wieldables[9] = Some(enemy);
+    scene.reg.set_component(holder, inventory).unwrap();
+    scene.reg.remove_component::<MeshComponent>(enemy).unwrap();
+    holder
+}
+
+/// Drop `enemy` from `holder` as the sim's drop does: a fresh mesh drawing its
+/// default state, its switch count back at zero, handed to the brain.
+fn drop_from(scene: &mut Scene, enemy: EntityId, holder: EntityId) {
+    scene
+        .reg
+        .remove_component::<postretro_entities::components::inventory::Inventory>(holder)
+        .unwrap();
+    scene.reg.set_component(enemy, scene.mesh.clone()).unwrap();
+    postretro_entities::components::brain::note_replaced_mesh(&mut scene.reg, enemy);
+}
+
+/// The jab scene held from tick 10 and dropped on tick 30, calling `extra`
+/// ahead of each tick after the hold and drop.
+fn held_jab_hits(mut extra: impl FnMut(&mut Scene, EntityId, usize)) -> Vec<usize> {
+    let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
+    let mut holder = None;
+    scene.hits_with(70, |scene, tick| {
+        match tick {
+            10 => holder = Some(pick_up(scene, enemy)),
+            30 => drop_from(scene, enemy, holder.take().expect("held")),
+            _ => {}
+        }
+        extra(scene, enemy, tick);
+    })
+}
+
 // A held enemy leaves the AI set, so its clip time freezes with its activity
-// clocks; its drop's fresh mesh is no foreign switch. Regression: that mesh's
-// switch count, back at zero, read as a foreign switch and cancelled the swing.
+// clocks. Its drop's fresh mesh is no foreign switch: the enemy draws its
+// swing again on the drop tick, and the moment is timed from that redraw.
+// Regression: that mesh's switch count, back at zero, read as a foreign switch
+// and cancelled the swing.
 #[test]
 fn held_enemy_freezes_clip_time_and_fires_on_release() {
-    let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
-    let holder = scene.reg.spawn(Transform::default());
-    let hits = scene.hits_with(70, |scene, tick| match tick {
-        10 => {
-            let mut inventory = postretro_entities::components::inventory::Inventory::default();
-            inventory.wieldables[9] = Some(enemy);
-            scene.reg.set_component(holder, inventory).unwrap();
-            // Pickup takes the mesh out of the world.
-            scene.reg.remove_component::<MeshComponent>(enemy).unwrap();
+    let mut drawn = Vec::new();
+    let hits = held_jab_hits(|scene, enemy, tick| {
+        if tick == 31 {
+            drawn.push(mesh_state(scene, enemy));
         }
-        30 => {
-            scene
-                .reg
-                .remove_component::<postretro_entities::components::inventory::Inventory>(holder)
-                .unwrap();
-            // A drop attaches a fresh mesh, drawing its default state with a
-            // switch count back at zero.
-            scene.reg.set_component(enemy, scene.mesh.clone()).unwrap();
-        }
+    });
+    assert_eq!(
+        drawn,
+        ["attack_jab"],
+        "fixture: the drop tick redrew the swing"
+    );
+    assert_eq!(hits, vec![60], "0.5 s after the redraw on tick 30");
+}
+
+// A switch on the dropped enemy's fresh mesh before its next AI tick (a
+// projectile flinch) is foreign. Regression: with the brain's last own switch
+// its first, the fresh mesh's first switch matched the count it had seen.
+#[test]
+fn a_flinch_on_a_dropped_enemys_fresh_mesh_before_the_ai_cancels_the_swing() {
+    let hits = held_jab_hits(|scene, enemy, tick| match tick {
+        9 => assert_eq!(
+            scene.brain(enemy).clip_clock.mesh_switches,
+            Some(1),
+            "fixture: the brain's own switch so far is the mesh's first"
+        ),
+        30 => scene.switch(enemy, "hit_reaction"),
         _ => {}
     });
-    assert_eq!(hits, vec![50], "20 held ticks later, on clip time");
+    assert!(
+        hits.is_empty(),
+        "the flinched swing never connects: {hits:?}"
+    );
+}
+
+// A save between the drop and the redraw, or while held, restores the switch
+// count and the redraw request, so it fires on the tick an unsaved run does.
+// Regression: a restore read the fresh mesh's default state as a pre-save
+// flinch and cancelled the swing.
+#[test]
+fn a_restore_after_a_drop_fires_on_the_same_tick() {
+    let unsaved = held_jab_hits(|_, _, _| {});
+    assert_eq!(unsaved, vec![60], "fixture");
+    for save_tick in [20, 30] {
+        let hits = held_jab_hits(|scene, enemy, tick| {
+            if tick == save_tick {
+                save_and_restore(scene, enemy);
+            }
+        });
+        assert_eq!(hits, unsaved, "saved on tick {save_tick}");
+    }
+}
+
+// The redraw restarts clip time after the moment check, so the next tick's
+// window opens just below the start. Regression: the next tick's window opened
+// at the start and a moment there was never reached.
+#[test]
+fn a_moment_at_the_start_of_a_redrawn_clip_fires_on_the_next_tick() {
+    let run = |hold: bool| {
+        let mut scene = Scene::new(vec![one_shot("attack_jab", 1.0, &[("hit", 0.0)])]);
+        let graph = clip_graph(
+            "windup",
+            vec![
+                ("windup", act("attack_jab", None)),
+                ("jab", act("attack_jab", Some(hit_jab()))),
+            ],
+            vec![("windup", vec![edge("jab", after_ms(99.0))])],
+            vec![(JAB, contact_attack(10.0))],
+        );
+        let enemy = scene.spawn(0, &graph, "windup");
+        let mut holder = None;
+        scene.hits_with(45, |scene, tick| match tick {
+            10 if hold => holder = Some(pick_up(scene, enemy)),
+            20 if hold => drop_from(scene, enemy, holder.take().expect("held")),
+            _ => {}
+        })
+    };
+    assert!(
+        run(false).is_empty(),
+        "fixture: the jab is entered past its moment at 0"
+    );
+    assert_eq!(run(true), vec![21], "the tick after the redraw on tick 20");
 }
 
 // Clip time serializes with the activity clocks, so a restore mid-entry fires
@@ -977,23 +1104,28 @@ fn restored_brain_fires_on_the_same_tick() {
     assert_eq!(scene.hits(30), vec![15], "tick 30 after entry, as unsaved");
 }
 
-/// Round-trip `enemy`'s brain and mesh through serde into a fresh runtime, as
-/// a save and load do.
+/// Round-trip `enemy`'s brain and mesh, when it has one, through serde into a
+/// fresh runtime, as a save and load do. The load resolves the mesh's clip
+/// indices again, which serde leaves unfilled.
 fn save_and_restore(scene: &mut Scene, enemy: EntityId) {
     let brain: BrainComponent =
         serde_json::from_value(serde_json::to_value(scene.brain(enemy)).unwrap()).unwrap();
-    let mesh: MeshComponent = serde_json::from_value(
-        serde_json::to_value(scene.reg.get_component::<MeshComponent>(enemy).unwrap()).unwrap(),
-    )
-    .unwrap();
     scene.reg.set_component(enemy, brain).unwrap();
-    scene.reg.set_component(enemy, mesh).unwrap();
+    if let Ok(mesh) = scene.reg.get_component::<MeshComponent>(enemy) {
+        let mut mesh: MeshComponent =
+            serde_json::from_value(serde_json::to_value(mesh).unwrap()).unwrap();
+        let resolved = &scene.mesh.animation.as_ref().unwrap().states;
+        for (name, state) in &mut mesh.animation.as_mut().unwrap().states {
+            state.clip_index = resolved[name].clip_index;
+        }
+        scene.reg.set_component(enemy, mesh).unwrap();
+    }
     scene.runtime = AiRuntime::new();
 }
 
-// A flinch after the last compute, then a save: the switch count does not
-// survive the save, but the mesh still draws the impact clip. Regression: the
-// restore rebound without a cancel and the saved open latch fired.
+// A flinch after the last compute, then a save: the restored switch count
+// still reads the flinch as foreign. Regression: the restore rebound without a
+// cancel and the saved open latch fired.
 #[test]
 fn a_restore_after_a_flinch_keeps_the_moment_cancelled() {
     let (mut scene, enemy) = jab_scene(0.5, hit_jab(), vec![]);
@@ -1258,6 +1390,56 @@ fn an_entered_one_shots_selector_reads_its_own_clip_on_entry() {
         hits,
         vec![44],
         "not on the entry tick: once the jab's own clip has played through"
+    );
+}
+
+// A seated path's rows read the clip it is about to draw; a transition on that
+// tick back onto the clip the clock tracks gives the entered path's selectors
+// the clock's own value. Regression: they kept the seated path's value, and
+// read a played-through clip as not done for that tick.
+#[test]
+fn a_transition_back_onto_the_tracked_clip_reads_its_own_animation_done() {
+    let mut scene = Scene::new(vec![one_shot("attack_jab", 0.5, &[])]);
+    let mut jab = act("attack_jab", None);
+    jab.layers = BTreeMap::from([(
+        "offense".to_string(),
+        BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+            when: Some(guard_done()),
+            motion: None,
+            action: Some(untimed(JAB)),
+        })]),
+    )]);
+    let not_done = IrNode::Not {
+        x: Box::new(guard_done()),
+    };
+    let graph = clip_graph(
+        "warm",
+        vec![
+            ("warm", act("attack_jab", None)),
+            ("pause", act("idle", None)),
+            ("jab", jab),
+        ],
+        vec![("pause", vec![edge("jab", not_done)])],
+        vec![(JAB, contact_attack(10.0))],
+    );
+    let enemy = scene.spawn(0, &graph, "warm");
+    let mut states = Vec::new();
+    let hits = scene.hits_with(60, |scene, tick| {
+        if tick == 40 {
+            // Seated as a reseat seats a path: its rows run this tick.
+            scene.enter(enemy, "pause");
+        }
+        states.push(scene.state(enemy));
+    });
+    states.push(scene.state(enemy));
+    assert_eq!(
+        states[41], "jab",
+        "fixture: `pause` reads its looping clip as not done and leaves on tick 40"
+    );
+    assert_eq!(
+        hits,
+        vec![40],
+        "`attack_jab` played through on tick 30: the selector reads done on tick 40"
     );
 }
 

@@ -15,13 +15,15 @@ use crate::sim::{FALL_DELAY_TICKS, JUMP_LOOP_STATE};
 /// `heading::resolve` calls it once per tick, before facing reads the impact
 /// yaw.
 ///
-/// Launched means knockback velocity remains. The first launched tick latches
-/// the current yaw, which is the yaw at impact: the hit lands before the AI
-/// tick reads it. An airborne stretch a launch began keeps counting until the
-/// body lands, even if drag spends the knockback in the air.
+/// The impact yaw is held while knockback velocity remains. The first such
+/// tick latches the current yaw, which is the yaw at impact: the hit lands
+/// before the AI tick reads it. An airborne stretch a launch began keeps
+/// counting until the body lands, even if drag spends the knockback in the
+/// air; either keeps the enemy launched, which cancels a clip-timed attack's
+/// pending moment ([`launched`]).
 pub(super) fn advance(launch: &mut LaunchState, path: Option<&AgentPathState>, rotation: Quat) {
-    let launched = path.is_some_and(|path| path.knockback_velocity != Vec3::ZERO);
-    launch.impact_yaw = if launched {
+    let knockback = path.is_some_and(|path| path.knockback_velocity != Vec3::ZERO);
+    launch.impact_yaw = if knockback {
         Some(
             launch
                 .impact_yaw
@@ -31,7 +33,7 @@ pub(super) fn advance(launch: &mut LaunchState, path: Option<&AgentPathState>, r
         None
     };
     let airborne = path.is_some_and(|path| path.airborne);
-    launch.air_ticks = if airborne && (launched || launch.air_ticks > 0) {
+    launch.air_ticks = if airborne && (knockback || launch.air_ticks > 0) {
         launch.air_ticks.saturating_add(1)
     } else {
         0

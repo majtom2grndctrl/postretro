@@ -13,7 +13,8 @@ read at: eb444995a
 - Decision "Load rejects `at` … on an activity whose path selects no animation" → unreachable: only leaves author `action`, every leaf requires `animation`, and an action-bearing leaf is never a locomotion leaf, so its own animation is selected. Proven by `action_at_on_a_leaf_without_an_animation_rejects` (the existing leaf rule rejects); no dead check added.
 
 - Design note "reuse the tracked name's `String`" → the brain clones twice per enemy per tick, so a `String` would allocate per tick; the tracked state is an `Arc<str>`, allocated only on restart. A fresh clock binds to the drawn state on its first tick without advancing, so `animationDone` does not read true on a fresh brain.
-- Switch counter equality → `MeshAnimation.switches` is a `SwitchCount` whose `PartialEq` is always true and is `serde(skip)`, so component equality, round-trips and the held-enemy check are unaffected; replication sends only the state name.
+- Switch counter equality → `MeshAnimation.switches` is a `SwitchCount` whose `PartialEq` is always true, so component equality and the held-enemy check are unaffected. It and the brain's recorded count serialize (`serde(default)`) so a restore behaves as an unsaved run; replication sends only the state name (`WireMeshAnimationState`, bitcode, hand-built), and no digest reads it.
+- Pickup/drop replaces an enemy's mesh → the drop marks it (`note_replaced_mesh`: the brain records the fresh count and requests a redraw); apply redraws the drawn state and clip time restarts from the redraw. P12's "fires on clip time" becomes clip time from the redraw at release.
 
 - Brute slam with one chance at 767 ms (was a retried fire at 250 ms) missed on facing while the commit kept chasing a slot → the slam's windup, commit and recover hold position (`motion: "hold"`); content judgment within the brief's timer latitude, flagged for the owner's playtest.
 - Limitator burst: the authored 240 ms between three shots runs to 267 ms on whole ticks → `BURST_MS` 600 covers a full 16-tick `firing_rifle` pass plus the burst with four ticks spare.
@@ -22,7 +23,7 @@ read at: eb444995a
 
 - Review: clip time restarts when the brain's own switch redraws its tracked state after a foreign switch moved the mesh off it. This applies the Decision's "time since the animation its path selects began playing"; P11's keep-running holds while the mesh stays off.
 - Review: a re-entered attack's moment could meet its cooldown and whiff while holding a turn → brute jab `cooldownMs` 900 (below `JAB_REST_MS` + `hit` = 917 ms); limitator `WAIT_MS` = rifle recovery 1000 + three-shot span 267 = 1267 ms (a started burst finishes its shots after `burst` leaves, each restarting the recovery). Pacing change for the owner's playtest: first limitator burst ~1.3 s after reaching range, steady cycle longer.
-- Review: a swing entered while a knockback slide is still running is cancelled ("launched" means knockback velocity remains; P15) — kept, flagged for the owner.
+- Review: a swing entered while a launch is still under way is cancelled: knockback velocity remains (a slide), or the body is in the airborne stretch a launch began after drag spent it (P15) — kept, flagged for the owner.
 
 ## Delegated answers
 - Event name rules beyond non-empty and unique — a name matches `[A-Za-z_][A-Za-z0-9_]*`, case-sensitive; the converter rejects others, the loader treats them as malformed (warn, no events), and descriptor load rejects an `at` outside the rule. It keeps names valid as script string literals and unambiguous in log lines, and an `at` that cannot match any event is a typo worth rejecting at load.

@@ -75,18 +75,12 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
         let switches = animation.switches.get();
         let foreign = match brain.clip_clock.mesh_switches {
             Some(seen) if switches >= seen => switches != seen,
-            // A count below the one seen is a replaced mesh: a held enemy's
-            // drop attaches a fresh one, which counts from zero, so only the
-            // switches it made since are foreign.
+            // Defensive: a count below the one seen is a mesh replaced without
+            // the drop's hand-off (`note_replaced_mesh`), which counts from
+            // zero, so only the switches it made since are foreign.
             Some(_) => switches != 0,
-            // A restore keeps no count. A mesh drawing neither the tracked
-            // state nor the launch's airborne clip was switched off it before
-            // the save, as by a hitscan flinch after the last compute.
-            None => brain.clip_clock.state.as_deref().is_some_and(|state| {
-                animation.current_state != state
-                    && launch::airborne_clip(source.registry, source.id, &brain.launch)
-                        != Some(animation.current_state.as_str())
-            }),
+            // A fresh brain, or one saved before the count was kept: bind.
+            None => false,
         };
         if foreign {
             brain.clip_clock.moment_open = false;
@@ -103,7 +97,11 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
         .filter(|animation| animation.current_state == state)
         .map_or(1.0, |animation| f64::from(animation.rate));
     let clock = &mut brain.clip_clock;
-    clock.previous_time = clock.time;
+    // A restart after the last tick's check keeps its window opening below
+    // the start, so a moment exactly there is reached now.
+    if !std::mem::take(&mut clock.late_restart) {
+        clock.previous_time = clock.time;
+    }
     clock.time += f64::from(tick_dt.max(0.0)) * rate;
     if clock.clip.is_none() {
         clock.clip = clip_facts(source, state_name(clock));
@@ -238,9 +236,13 @@ pub(super) fn settle(
 /// it (an impact effect, a reaction, the launch's airborne clip, a dropped
 /// enemy's fresh mesh). The drawn clip starts over, so clip time does too, as
 /// on a change of state. The latch is untouched: a restart reopens no moment.
+///
+/// Apply draws after this tick's moment check, so the next tick's window opens
+/// just below the start, as a restart in compute's own check does.
 pub(super) fn redrawn(clock: &mut ClipClock, id: EntityId) {
     let facts = clock.clip;
     restart(clock, id, facts);
+    clock.late_restart = true;
 }
 
 /// The owner's event time in the drawn state's resolved clip, with the clip's
@@ -316,6 +318,7 @@ fn restart(clock: &mut ClipClock, id: EntityId, facts: Option<ClipFacts>) {
     clock.unphased = facts.is_none();
     clock.time = start;
     clock.previous_time = start - 2.0 * CLIP_TIME_SLACK;
+    clock.late_restart = false;
 }
 
 fn drawn_state<'b>(
@@ -437,15 +440,16 @@ pub(super) fn warn_unclipped_moments(
             else {
                 continue;
             };
-            // A variant whose clip never resolved is never drawn: the base
-            // clip plays in its place, as `travel_variants::presentable` picks.
-            if variant != TravelVariant::Base && declared.clip_index.is_none() {
-                continue;
-            }
+            // Read by index or by name, so a runtime spawn bound before its
+            // indices fill is checked as it will draw.
             let clip = clips
                 .get_by_name(&mesh.model)
                 .and_then(|model| model.state_clip(declared.clip_index, &declared.clip));
             let problem = match clip {
+                // A variant whose clip does not resolve is never drawn: the
+                // base clip plays in its place, as `travel_variants::presentable`
+                // picks.
+                None if variant != TravelVariant::Base => continue,
                 None => "did not resolve",
                 Some(clip) if clip.event_time(event).is_none() => "has no such event",
                 Some(_) => continue,

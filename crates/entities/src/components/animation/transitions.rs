@@ -847,4 +847,25 @@ mod tests {
             "the counter is bookkeeping, not component identity"
         );
     }
+
+    // A restore reads the same switches as foreign as an unsaved run, so the
+    // count survives a save; a mesh saved before it was kept counts from zero.
+    #[test]
+    fn switch_counter_survives_a_save() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        let _ = switch_animation_state(&mut reg, id, "attack");
+        let _ = switch_animation_state(&mut reg, id, "idle");
+        let mut json =
+            serde_json::to_value(reg.get_component::<MeshComponent>(id).unwrap()).unwrap();
+        let restored: MeshComponent = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.animation.unwrap().switches.get(), 2);
+
+        json["animation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("switches");
+        let old: MeshComponent = serde_json::from_value(json).unwrap();
+        assert_eq!(old.animation.unwrap().switches.get(), 0);
+    }
 }

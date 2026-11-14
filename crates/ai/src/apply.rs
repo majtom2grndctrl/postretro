@@ -352,8 +352,9 @@ where
         }
 
         // Animation: on a state change, locomotion stop/resume, an airborne
-        // launch's clip starting or ending, or a directional travel variant
-        // changing, request the selected animation name for the new
+        // launch's clip starting or ending, a directional travel variant
+        // changing, or a dropped enemy's fresh mesh asking for a redraw,
+        // request the selected animation name for the new
         // graph/locomotion state. A failed switch
         // (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and keeps
         // the prior animation — it never aborts the tick. The latches are still
@@ -373,12 +374,18 @@ where
             )
         };
         let mut own_switch = None;
+        // A redraw request stays pending only while the fresh mesh's clip
+        // indices are still filling; a drawn state restarts the clock.
+        let redraw = outcome.brain.clip_clock.redraw;
+        let mut redraw_pending = false;
+        let mut redrawn = false;
         if should_switch_animation(
             outcome.state_changed,
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
         ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
             || travel_variant != outcome.brain.presented_travel_variant
+            || redraw
         {
             // Only a variant the mesh declares is requested, so a missing
             // `X_left` plays `X` without warning.
@@ -386,23 +393,32 @@ where
                 .filter(|_| travel_variant != TravelVariant::Base)
                 .map(|name| format!("{name}{}", travel_variant.suffix()));
             if let Some(name) = variant_name.as_deref().or(animation_name) {
+                let tracked = outcome.brain.clip_clock.state.as_deref() == Some(name);
                 let before = mesh_switches(registry, outcome.id);
-                match switch_animation_state(registry, outcome.id, name) {
-                    SwitchResult::Switched => {
-                        own_switch = Some(OwnSwitch {
-                            before,
-                            after: mesh_switches(registry, outcome.id),
-                            redrawn: outcome.brain.clip_clock.state.as_deref() == Some(name),
-                        });
-                    }
-                    SwitchResult::AlreadyInState => {}
-                    SwitchResult::UnknownState | SwitchResult::NotAnimated => {
-                        if warned.insert(format!("anim:{name}")) {
-                            log::warn!(
-                                "[AI] enemy animation state `{name}` could not be switched \
-                                 (undeclared/unresolved on the mesh); keeping the prior \
-                                 animation. Warned once per distinct name."
-                            );
+                if redraw && declared_but_unresolved(registry, outcome.id, name) {
+                    // A dropped enemy's fresh mesh fills its clip indices after
+                    // the tick it lands: draw once they resolve.
+                    redraw_pending = true;
+                } else {
+                    match switch_animation_state(registry, outcome.id, name) {
+                        SwitchResult::Switched => {
+                            redrawn = tracked;
+                            own_switch = Some(OwnSwitch {
+                                before,
+                                after: mesh_switches(registry, outcome.id),
+                            });
+                        }
+                        // The fresh mesh already draws the state, from its
+                        // start at the drop.
+                        SwitchResult::AlreadyInState => redrawn = redraw && tracked,
+                        SwitchResult::UnknownState | SwitchResult::NotAnimated => {
+                            if warned.insert(format!("anim:{name}")) {
+                                log::warn!(
+                                    "[AI] enemy animation state `{name}` could not be \
+                                     switched (undeclared/unresolved on the mesh); keeping \
+                                     the prior animation. Warned once per distinct name."
+                                );
+                            }
                         }
                     }
                 }
@@ -442,9 +458,10 @@ where
                     brain.clip_clock.moment_open = false;
                 }
                 brain.clip_clock.mesh_switches = own.after;
-                if own.redrawn {
-                    clip_clock::redrawn(&mut brain.clip_clock, outcome.id);
-                }
+            }
+            brain.clip_clock.redraw = redraw_pending;
+            if redrawn {
+                clip_clock::redrawn(&mut brain.clip_clock, outcome.id);
             }
             let _ = registry.set_component(outcome.id, brain);
         }
@@ -462,9 +479,20 @@ struct OwnSwitch {
     before: Option<u32>,
     /// The mesh's switch count the switch left.
     after: Option<u32>,
-    /// The switch drew the clock's tracked state again, which the mesh had
-    /// left.
-    redrawn: bool,
+}
+
+/// The mesh declares `state`, but its clip index has not filled yet.
+fn declared_but_unresolved(
+    registry: &postretro_entities::EntityRegistry,
+    id: postretro_entities::EntityId,
+    state: &str,
+) -> bool {
+    registry
+        .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
+        .ok()
+        .and_then(|mesh| mesh.animation.as_ref())
+        .and_then(|animation| animation.states.get(state))
+        .is_some_and(|declared| declared.clip_index.is_none())
 }
 
 /// The mesh's switch count, read around the brain's own switch.

@@ -132,15 +132,18 @@ pub struct MeshAnimation {
     /// How many times [`switch_animation_state`] has moved this mesh to
     /// another state. An enemy's clip clock reads it to tell a switch off its
     /// drawn state from its own, even one switched off and back between two AI
-    /// ticks. Runtime-only and excluded from equality.
-    #[serde(skip, default)]
+    /// ticks. Serialized, so a restore reads the same switches as foreign as an
+    /// unsaved run; excluded from equality. Never replicated: the wire carries
+    /// only the state name.
+    #[serde(default)]
     pub switches: SwitchCount,
 }
 
-/// A runtime-only switch counter that never takes part in component equality:
-/// it is bookkeeping for one reader, and a component's identity does not change
-/// with how many switches brought it to its current state.
-#[derive(Debug, Clone, Copy, Default)]
+/// A switch counter that never takes part in component equality: it is
+/// bookkeeping for one reader, and a component's identity does not change with
+/// how many switches brought it to its current state.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SwitchCount(u32);
 
 impl SwitchCount {

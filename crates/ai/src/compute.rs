@@ -427,20 +427,23 @@ pub(super) fn evaluate(
                 })
                 .unwrap_or(false);
             // The entered path's selectors read the clip `settle` is about to
-            // restart, not its predecessor's. The rows above read one value
-            // and the selectors below another, one per evaluation pass.
-            if transitioned
-                && let Some(entered) = clip_clock::entered_animation_done(&brain, &clip_source)
-                && entered != facts.animation_done
-            {
-                programs.scope_mut().refresh(
-                    registry,
-                    snap.id,
-                    BrainFacts {
-                        animation_done: entered,
-                        ..facts
-                    },
-                );
+            // restart, not its predecessor's; a path back onto the tracked
+            // state reads the clock's own value, which a reseat's rows did not.
+            // The rows above read one value and the selectors below another,
+            // one per evaluation pass.
+            if transitioned {
+                let entered = clip_clock::entered_animation_done(&brain, &clip_source)
+                    .unwrap_or_else(|| clip_clock::animation_done(&brain.clip_clock, &clip_source));
+                if entered != facts.animation_done {
+                    programs.scope_mut().refresh(
+                        registry,
+                        snap.id,
+                        BrainFacts {
+                            animation_done: entered,
+                            ..facts
+                        },
+                    );
+                }
             }
             let resolved = programs
                 .with_entry_scope(snap.id, |bound, scope| {

@@ -1,18 +1,23 @@
 // Per-brain clip clock: game-time clip time for the animation an enemy's path
-// selects, and the per-entry moment latch of a clip-timed attack. Storage only;
-// `postretro-ai` owns every rule that reads or writes it.
+// selects, and the per-entry moment latch of a clip-timed attack. Storage, plus
+// the one hand-off a held enemy's drop makes; `postretro-ai` owns every rule
+// that reads it.
 // See: context/lib/entity_model.md §7c (Clip-timed attacks)
 
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use super::BrainComponent;
+use crate::components::mesh::MeshComponent;
+use crate::registry::{EntityId, EntityRegistry};
+
 /// The clip time an enemy's AI tick accumulates for its drawn animation state.
 ///
-/// The serialized half (tracked state, clip time, moment latch, owed phase) is
-/// simulation state: a restore resumes mid-entry and fires on the same tick.
-/// The cached clip facts and the accounted mesh switch count are runtime-only
-/// and rebind lazily, so they stay out of serde and out of equality.
+/// Everything but the cached clip facts is simulation state, serialized so a
+/// restore behaves exactly as an unsaved run: it fires on the same tick and
+/// reads the same switches as foreign. The cached facts are runtime-only and
+/// rebind lazily, so they stay out of serde and out of equality.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClipClock {
     /// The drawn animation state the clock times: the path-selected state with
@@ -44,14 +49,25 @@ pub struct ClipClock {
     /// still owes its drawn phase once the clip resolves.
     #[serde(default)]
     pub unphased: bool,
+    /// The clock restarted after its tick's moment check, when apply drew the
+    /// tracked clip again: the next tick's window opens just below the start
+    /// instead of at it, so a moment exactly at the start is still reached.
+    #[serde(default)]
+    pub late_restart: bool,
+    /// The mesh's switch count the brain last accounted for. A count that
+    /// moved since is a switch the brain did not make. `None` on a fresh brain,
+    /// or one saved before the count was kept, which binds to the mesh's count.
+    #[serde(default)]
+    pub mesh_switches: Option<u32>,
+    /// A fresh mesh replaced the one the brain drew (a held enemy's drop), so
+    /// it shows its default state: the next AI apply draws the brain's state
+    /// on it again, which restarts the clock.
+    #[serde(default)]
+    pub redraw: bool,
     /// The tracked state's resolved clip, cached on first use. `None` when not
     /// yet looked up or when the clip did not resolve, which is looked up again.
     #[serde(skip)]
     pub clip: Option<ClipFacts>,
-    /// The mesh's switch count the brain last accounted for. `None` on a fresh
-    /// or restored brain, which rebinds to the mesh's current count.
-    #[serde(skip)]
-    pub mesh_switches: Option<u32>,
 }
 
 /// What the clock caches of the tracked state's resolved clip.
@@ -75,8 +91,8 @@ impl ClipClock {
     }
 }
 
-/// Only the serialized half compares: the cached facts and the switch count
-/// are derived, like a brain's bound guard programs.
+/// Only the serialized half compares: the cached facts are derived, like a
+/// brain's bound guard programs.
 impl PartialEq for ClipClock {
     fn eq(&self, other: &Self) -> bool {
         self.state == other.state
@@ -85,7 +101,29 @@ impl PartialEq for ClipClock {
             && self.moment_open == other.moment_open
             && self.moment_timed == other.moment_timed
             && self.unphased == other.unphased
+            && self.late_restart == other.late_restart
+            && self.mesh_switches == other.mesh_switches
+            && self.redraw == other.redraw
     }
+}
+
+/// A fresh mesh now stands in for the one `id`'s brain drew: a held enemy's
+/// drop attaches one drawing its default state, its switch count back at zero.
+/// The brain accounts for that count, so only a switch on the fresh mesh is
+/// foreign (a flinch before the next AI tick still cancels the swing), and asks
+/// the AI to draw its state again. The drop calls this right after attaching
+/// the mesh; it does nothing for an entity without a brain.
+pub fn note_replaced_mesh(registry: &mut EntityRegistry, id: EntityId) {
+    let Ok(mut brain) = registry.get_component::<BrainComponent>(id).cloned() else {
+        return;
+    };
+    brain.clip_clock.mesh_switches = registry
+        .get_component::<MeshComponent>(id)
+        .ok()
+        .and_then(|mesh| mesh.animation.as_ref())
+        .map(|animation| animation.switches.get());
+    brain.clip_clock.redraw = true;
+    let _ = registry.set_component(id, brain);
 }
 
 #[cfg(test)]
@@ -93,7 +131,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clip_clock_serializes_its_clock_and_latch_but_not_its_caches() {
+    fn clip_clock_serializes_its_clock_latch_and_switch_count_but_not_its_clip_cache() {
         let clock = ClipClock {
             state: Some(Arc::from("walk_left")),
             time: 1.25,
@@ -101,21 +139,28 @@ mod tests {
             moment_open: true,
             moment_timed: true,
             unphased: true,
+            late_restart: true,
+            mesh_switches: Some(7),
+            redraw: true,
             clip: Some(ClipFacts {
                 duration: 2.0,
                 looping: true,
             }),
-            mesh_switches: Some(7),
         };
         let json = serde_json::to_value(&clock).expect("clip clock serializes");
         let object = json.as_object().expect("clip clock is an object");
         assert!(!object.contains_key("clip"));
-        assert!(!object.contains_key("mesh_switches"));
 
         let restored: ClipClock = serde_json::from_value(json).expect("clip clock loads");
         assert_eq!(restored, clock, "the serialized half round-trips");
+        assert_eq!(restored.mesh_switches, Some(7), "the switch count survives");
         assert_eq!(restored.clip, None, "clip facts rebind lazily");
-        assert_eq!(restored.mesh_switches, None, "the switch count rebinds");
+
+        let old: ClipClock =
+            serde_json::from_value(serde_json::json!({ "state": "walk", "time": 0.5 }))
+                .expect("a clock saved before the count was kept loads");
+        assert_eq!(old.mesh_switches, None, "and binds to the mesh's count");
+        assert!(!old.redraw && !old.late_restart);
     }
 
     #[test]

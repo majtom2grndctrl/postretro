@@ -977,6 +977,7 @@ fn target_reachability_reads_the_door_that_cuts_the_only_route() {
                 descriptor_generation: 0,
                 factions: &factions,
                 faction_sentiment: &sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -1171,6 +1172,7 @@ fn reachability_carried_between_docks(wait_ms: f32) -> (bool, bool) {
                 descriptor_generation: 0,
                 factions: &factions,
                 faction_sentiment: &sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2054,6 +2056,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 descriptor_generation: 0,
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2079,6 +2082,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 descriptor_generation: 0,
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2111,6 +2115,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 descriptor_generation: 0,
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2260,6 +2265,7 @@ fn run_crossfire_tick(
             descriptor_generation: 0,
             factions,
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3314,6 +3320,7 @@ fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3381,6 +3388,7 @@ fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3453,6 +3461,7 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3527,6 +3536,7 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| {
             policy_fires += 1;
@@ -3606,6 +3616,7 @@ fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_pol
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| {
             policy_fires += 1;
@@ -3706,6 +3717,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| policies.evaluate_pending_in_registry(registry),
     );
@@ -3746,6 +3758,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| policies.evaluate_pending_in_registry(registry),
     );
@@ -3808,6 +3821,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| {
             registry
@@ -8172,6 +8186,7 @@ fn entering_an_activity_without_on_enter_emits_its_path_and_no_address() {
                 descriptor_generation: 0,
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+                clips: None,
             },
             |_| {},
         )
@@ -11260,6 +11275,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     )
@@ -11294,6 +11310,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11416,6 +11433,7 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11489,6 +11507,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11533,6 +11552,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11609,6 +11629,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11636,6 +11657,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11669,6 +11691,7 @@ fn tick_persistent_enemy_weapon(
             descriptor_generation: generation,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     )
@@ -11968,6 +11991,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -12015,6 +12039,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -12066,6 +12091,7 @@ fn enemy_projectile_attack_emits_its_attack_cue_and_records_its_weapon() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -12156,6 +12182,7 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     )
@@ -13592,6 +13619,9 @@ mod engaged_motion;
 
 #[path = "attack_turns/tests/tick/mod.rs"]
 mod attack_turn_ticks;
+
+#[path = "clip_timed_tests.rs"]
+mod clip_timed;
 
 #[test]
 fn contact_attack_deals_its_damage_type() {

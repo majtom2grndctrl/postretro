@@ -371,6 +371,7 @@ where
                 outcome.travel_variant,
             )
         };
+        let mut switched_to = None;
         if should_switch_animation(
             outcome.state_changed,
             locomotion_intent.moving,
@@ -385,7 +386,8 @@ where
                 .map(|name| format!("{name}{}", travel_variant.suffix()));
             if let Some(name) = variant_name.as_deref().or(animation_name) {
                 match switch_animation_state(registry, outcome.id, name) {
-                    SwitchResult::Switched | SwitchResult::AlreadyInState => {}
+                    SwitchResult::Switched => switched_to = mesh_switches(registry, outcome.id),
+                    SwitchResult::AlreadyInState => {}
                     SwitchResult::UnknownState | SwitchResult::NotAnimated => {
                         if warned.insert(format!("anim:{name}")) {
                             log::warn!(
@@ -417,6 +419,12 @@ where
             brain.locomotion_moving = locomotion_intent.moving;
             brain.launch.airborne_presented = airborne_clip.is_some();
             brain.presented_travel_variant = travel_variant;
+            // The brain's own switch replaced whatever an earlier outcome in
+            // this batch switched to, so it is no foreign switch. Without one,
+            // a later switch this tick reaches the next compute's check (P7).
+            if switched_to.is_some() {
+                brain.clip_clock.mesh_switches = switched_to;
+            }
             let _ = registry.set_component(outcome.id, brain);
         }
     }
@@ -425,4 +433,17 @@ where
         events,
         projectile_spawns,
     }
+}
+
+/// The mesh's switch count, read right after the brain's own switch.
+fn mesh_switches(
+    registry: &postretro_entities::EntityRegistry,
+    id: postretro_entities::EntityId,
+) -> Option<u32> {
+    registry
+        .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
+        .ok()?
+        .animation
+        .as_ref()
+        .map(|animation| animation.switches.get())
 }

@@ -129,6 +129,34 @@ pub struct MeshAnimation {
     /// engine's jump states, local to each peer like `locomotion_direction`.
     #[serde(skip, default)]
     pub locomotion_jump: LocomotionJumpPhase,
+    /// How many times [`switch_animation_state`] has moved this mesh to
+    /// another state. An enemy's clip clock reads it to tell a switch off its
+    /// drawn state from its own, even one switched off and back between two AI
+    /// ticks. Runtime-only and excluded from equality.
+    #[serde(skip, default)]
+    pub switches: SwitchCount,
+}
+
+/// A runtime-only switch counter that never takes part in component equality:
+/// it is bookkeeping for one reader, and a component's identity does not change
+/// with how many switches brought it to its current state.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SwitchCount(u32);
+
+impl SwitchCount {
+    pub fn get(self) -> u32 {
+        self.0
+    }
+
+    pub(super) fn bump(&mut self) {
+        self.0 = self.0.wrapping_add(1);
+    }
+}
+
+impl PartialEq for SwitchCount {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// Which way a player's lower body faces relative to its travel. `Backward`
@@ -186,6 +214,7 @@ impl MeshAnimation {
             interrupted_outgoing: None,
             locomotion_direction: LocomotionDirection::Forward,
             locomotion_jump: LocomotionJumpPhase::Grounded,
+            switches: SwitchCount::default(),
         }
     }
 

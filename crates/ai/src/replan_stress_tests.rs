@@ -269,6 +269,7 @@ fn run_wave(scenario: &Scenario, wave_size: usize) {
                 descriptor_generation: 0,
                 factions: &factions,
                 faction_sentiment: &faction_sentiment,
+                clips: None,
             },
             |_| {},
         );

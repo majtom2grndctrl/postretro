@@ -32,10 +32,12 @@ use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
 use super::mesh::MeshComponent;
 
 mod attack_turns;
+mod clip_clock;
 pub use attack_turns::{
     AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
     MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
 };
+pub use clip_clock::{ClipClock, ClipFacts};
 
 /// Maximum number of distinct damagers remembered by one brain. Entries age to
 /// the shared damage-recency sentinel and remain until this bounded ledger must
@@ -236,6 +238,11 @@ pub struct BrainComponent {
     /// brain never strands a variant clip.
     #[serde(default)]
     pub presented_travel_variant: TravelVariant,
+    /// Game-time clip time for the drawn animation state and the pending
+    /// moment of a clip-timed attack. Serialized beside the activity clocks, so
+    /// a restore mid-entry fires on the same tick; old brains start untracked.
+    #[serde(default)]
+    pub clip_clock: ClipClock,
     /// Entry memory of an engaged `strafe` or `reposition`. Transient: a
     /// restore re-enters fresh, recording new bounds and re-picking direction.
     #[serde(skip)]
@@ -365,6 +372,7 @@ impl BrainComponent {
             locomotion_moving: false,
             launch: LaunchState::default(),
             presented_travel_variant: TravelVariant::Base,
+            clip_clock: ClipClock::default(),
             engaged_motion: EngagedMotionMemory::None,
             attack_turns: AttackTurnState::default(),
             attack_pool: None,

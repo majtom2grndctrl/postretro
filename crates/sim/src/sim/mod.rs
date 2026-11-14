@@ -962,6 +962,7 @@ where
                 descriptor_generation,
                 factions,
                 faction_sentiment,
+                clips: Some(hit_zone_store),
             },
             &mut host,
         )

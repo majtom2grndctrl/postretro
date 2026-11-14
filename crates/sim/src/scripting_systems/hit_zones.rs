@@ -20,8 +20,11 @@ use postretro_model::anim::{
 };
 use postretro_model::gltf_loader::{self, JointZone, SocketBinding};
 use postretro_model::pose_modifier::{LegChain, PoseModifierStack};
+/// An enemy's clip clock starts a looping state at the phase this seeds, so its
+/// game-time moments line up with the clip the renderer and hit zones draw.
+pub use postretro_model::sample_params::instance_phase;
 use postretro_model::sample_params::{
-    CaptureInstruction, ClipSample, FadeSource, MeshSampleParams, instance_phase,
+    CaptureInstruction, ClipSample, FadeSource, MeshSampleParams,
 };
 use postretro_model::skeleton::{AnimationClip, RestLocal, Skeleton};
 use postretro_render_data::cone_frustum::Aabb;

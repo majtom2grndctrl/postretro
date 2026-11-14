@@ -293,6 +293,7 @@ fn tick_with(
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     )

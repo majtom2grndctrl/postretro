@@ -24,7 +24,7 @@ use super::targeting::{
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
-use super::{attack_turns, engaged_motion};
+use super::{attack_turns, clip_clock, engaged_motion};
 use crate::nav::{NavStart, find_path_from};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_entities::components::agent::AgentComponent;
@@ -45,6 +45,7 @@ pub(super) fn evaluate(
     collision_world: Option<&crate::collision::CollisionWorld>,
     factions: &LiveFactionSentiment<'_>,
     turns: &attack_turns::AttackTurnRuntime,
+    clips: Option<&crate::scripting_systems::hit_zones::HitZoneStore>,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for (slot, snap) in snapshots.into_iter().enumerate() {
@@ -220,6 +221,13 @@ pub(super) fn evaluate(
         if !brain.entry_pending {
             brain.tick_activity_timers(dt_ms);
         }
+        let clip_source = clip_clock::ClipSource {
+            registry,
+            clips,
+            id: snap.id,
+        };
+        clip_clock::begin_tick(&mut brain, &clip_source, tick_dt);
+        let animation_done = clip_clock::animation_done(&brain.clip_clock, &clip_source);
 
         // Stride bookkeeping advances every tick so the gate is deterministic.
         brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
@@ -384,8 +392,7 @@ pub(super) fn evaluate(
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                     has_attack_turn,
-                    // The clip clock supplies this once it runs.
-                    animation_done: false,
+                    animation_done,
                 },
             );
             let attack_cooldown_ms = programs
@@ -416,8 +423,7 @@ pub(super) fn evaluate(
                     target_visible,
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                     has_attack_turn,
-                    // The clip clock supplies this once it runs.
-                    animation_done: false,
+                    animation_done,
                 },
             );
             prior_standoff_distance = programs
@@ -515,9 +521,25 @@ pub(super) fn evaluate(
         // Gating on the selected target's damage eligibility stops attack/event
         // spam against an already-dead or removal-committed pawn and prevents
         // damaging a different co-op pawn than the one this enemy chose.
+        // A clip-timed attack proposes only on its moment's tick, its one
+        // chance per entry: a gate failing there is a whiff.
         let entry_depth = brain.take_entry_pending();
+        let at_owner = programs
+            .with_entry_scope(snap.id, |bound, scope| {
+                action_for_path(bound, scope, &brain)
+                    .and_then(|action| clip_clock::at_owner(&brain, action))
+            })
+            .flatten();
+        let moment = clip_clock::settle(
+            &mut brain,
+            &clip_source,
+            entry_depth,
+            at_owner,
+            tick_heading.travel_variant,
+        );
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
+            && moment.allows_proposal()
             && let (Some(target), Some(distance)) = (target, selected_distance)
             && brain.activity_attack_count(firing_leaf_depth) == Some(0)
             && selected_target_alive(registry, target.entity)

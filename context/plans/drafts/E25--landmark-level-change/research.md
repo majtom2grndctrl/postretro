@@ -1,11 +1,11 @@
 # Landmark level change — research
 
-Read at `ab08438`. Session-verified facts behind the brief, cited by symbol. Hub: `drafts/E25--map-transitions/` (U2).
+Read at `ab08438`, re-read at `6c862fd` (§7). Session-verified facts behind the brief, cited by symbol. Hub: `drafts/E25--map-transitions/` (U2).
 
 ## 1. Teleport arrival today
 
 - **Chokepoint.** `physics::movement::teleport::resolve` (private to the movement module) runs as the last step of `tick_with_immersion_and_armed`, the shared host / prediction / replay entry. In order: prune latches the body point left; skip when `vault_barred`; pick a winner; compute arrival and yaw delta (classic sets view yaw to the destination's; seamless is relative through `SeamlessMapping`); refuse a blocked arrival (`capsule_fits_combined`, one warning per teleporter through `warn_refused`); rotate `Dash`/`Sliding` boost; abort `Vault` to `Normal` with a `vault_ended` edge; rotate `velocity`, `knockback_velocity`, `push_velocity`; `settle_arrival_ground`; bump the teleport record and rebuild latches; emit `TeleportEvent`.
-- **Not separable today.** `settle_arrival_ground`, `capsule_fits_combined`, `SeamlessMapping` and `wrap_teleport_yaw` stand alone. The rotation, vault abort and record update are inline, tied to the current map's teleporter index (`warn_refused`, `last_teleporter`, latch rebuild against `static_world.teleporters.regions`).
+- **Partly shared.** `settle_arrival` holds the ground settle, record bump and teleporter latch rebuild; teleports and respawn both call it. `capsule_fits_combined`, `SeamlessMapping` and `wrap_teleport_yaw` stand alone. The fit refusal (`warn_refused`), boost rotation, vault abort and velocity rotation remain inline in `resolve`.
 - **Callers own the view.** Host movement and client replay write `Transform.rotation` from facing plus the delta and cut presentation (`set_presentation_transform`, `hold_local_arrival`); the sim tick turns cached aims; `apply_local_camera_turn` turns the host camera. `movement.md` §6 overstates the chokepoint ("a presentation cut").
 - **Pitch never changes.** `SeamlessMapping` is yaw-only; destination pitch is dropped at compile time.
 - **Latches.** Per pawn, on `PlayerMovementComponent.teleport.arrival_latches`, sorted teleporter indices, wire-mirrored. Arming a disarmed teleporter clears latches against it on the host only (`apply_pending_teleporter_mutations`).
@@ -25,9 +25,9 @@ Read at `ab08438`. Session-verified facts behind the brief, cited by symbol. Hub
 - **`unload_level` order** (`startup/lifecycle_net.rs`): CPU timer; **net reset** (`clear_net_level_parity` → `reset_level_scoped_host_state` replaces `command_queues`); client reset; audio; renderer release; streaming clear; `level = None`; surface-lifetime clear (weapon activations cancelled, triggers, collision, teleporter bindings); nav, environment; session clears; **`harvest_bound_pawns`**; **registry despawn**; `clear_pawn_bindings_for_level_unload`; UI; **camera reset** to the origin, yaw and pitch 0.
 - **Harvest placement.** At the top of `unload_level` the registry and pawn bindings are intact. Suspend already harvests before the net reset (`suspended`). Only production caller of unload: `drain_level_requests`.
 - **Carried state.** `CarriedState` holds health, reserve, wieldables, magazines and active slot; cleared only by `release_seat`. No per-seat record is consumed once by a first spawn today.
-- **Placement.** Host pawn spawns at install stage 11 (`spawn_from_player_starts_with_carried_loadout`, first spawn in `first_player_spawn_order`). A client pawn spawns at participation entry, after the host's reveal, through `assign_joiner_placement` and `spawn_net_slot_pawn_with_carried_loadout`. No engine respawn exists; mods bind `playerDied`.
+- **Placement.** Host pawn spawns at install stage 11 (`spawn_from_player_starts_with_carried_loadout`, first spawn in `first_player_spawn_order`). A client pawn spawns at participation entry, after the host's reveal, through `assign_joiner_placement` and `spawn_net_slot_pawn_with_carried_loadout`. Engine `respawn` drains at tick start and relocates the existing pawn through `settle_arrival`; it spawns nothing (`sim::tick_start`).
 - **Facing sources.** Host: `App.camera` yaw and pitch. Client on the host: `HostCommandQueues` keeps `latest_facing_yaw` and `latest_aim_pitch` per client (no facing accessor); the facing converts through `facing_in_teleport_frame`. The queues reset at the start of unload.
-- **Camera at install.** Seeded from the first player spawn's angles, then the presented pose. On a client this is the host's first spawn; arming sets position only (`coop--client-spawn-view-handoff` documents the gap).
+- **Camera at install.** Host: seeded from the first player spawn's angles, then the presented pose. Client: takes the resolver's hint (`take_install_spawn_pose_hint`).
 - **Relevel.** `ServerControlMessage::Relevel(String)` carries the catalog id only; the client follows it and the host places every pawn.
 
 ## 4. Naming
@@ -44,7 +44,7 @@ Read at `ab08438`. Session-verified facts behind the brief, cited by symbol. Hub
 |---|---|---|---|
 | P1 | Activator leaves before the load drains | activate on tick T → capsule leaves the seam on a later tick of the same frame → redraw boundary drains the load → harvest | The harvest's inside test decides: that pawn arrives at a player start. Arrival is never read at activation |
 | P2 | Arrival consumed, then a respawn and a later change | seam crossing → first spawn takes the arrival → death → mod respawn → `loadLevel` to a third map | The respawn and the third map place at player starts |
-| P3 | Seam activation and script `loadLevel` on one frame | seam activates in the trigger stage → a reaction's `loadLevel` drains at frame end → next boundary drains the queue | One load. Arrivals are written only when the load that drains is the seam's |
+| P3 | Seam activation and a script level verb on one frame | seam activates in the trigger stage on tick T → a reaction on the same frame calls `loadLevel`, `restartLevel` or `returnToFrontend`, before or after tick T → frame-end drain → boundary drain | The script request proceeds and the seam's load drops; no arrival is written; `returnToFrontend` ends in Frontend, or on its backdrop |
 | P4 | Latch clears on capsule exit | touch seam latched → body point leaves, capsule still overlaps → capsule leaves → re-enter | No fire while the capsule overlaps; re-entry fires (hub pin) |
 | P5 | Level change before a co-op client arrives | seam crossing A→B → client still loading B → host changes B→C | The client arrives in C at a player start; its B arrival is cleared at B's unload (hub pin) |
 | P6 | Suspend across a seam crossing | (a) seam activates → suspend before the drain; (b) drain unloads A → suspend while B loads; (c) host in B → suspend while a crossing client still loads B | (a) the queued load drops with the queue; (b) the load cancels; (c) the client's arrival clears. After resume every seat spawns at a player start |
@@ -62,15 +62,13 @@ Read at `ab08438`. Session-verified facts behind the brief, cited by symbol. Hub
 | P18 | Latch leaves and returns while the seam is disarmed | pawn arrives latched in a disarmed touch seam → capsule leaves → capsule re-enters, seam still disarmed → seam armed | The latch cleared when the capsule left; arming fires for the pawn on the next trigger tick, as for any unlatched standing occupant |
 | P19 | Respawn into a disarmed seam armed the same tick | respawn requested → seam arm queued → next tick start applies mutations and relocates the pawn onto a start inside the seam, in either order → trigger stage | Latched whatever the seam's armed state at relocation; no fire until the capsule leaves and re-enters |
 | P20 | Seam crossing before a crossing client spawns | seam A→B (name N) → client still loading B → host crosses B→C by a seam, C holding a seam named N | The client's N arrival is cleared at B's unload; it arrives in C at a player start with no warning |
+| P21 | Seam state changes after activation, same frame | seam activates on tick T → on a later tick of the frame it is disarmed, or (several seams) its last occupant leaves → boundary drain | The load proceeds; among several, the first in map order that activated wins. The harvest still decides who arrives landmark-relative (P1) |
 
 ## 7. Changes since `ab08438` (re-read at `6c862fd`)
 
-`coop--client-spawn-view-handoff` landed. These supersede the matching claims above.
+`coop--client-spawn-view-handoff` landed. Facts added at the re-read; §1–§3 are corrected in place.
 
-- **Arrival code partly shared.** `settle_arrival` (`physics::movement::teleport`) holds the ground settle, record bump and teleporter latch rebuild; teleports and respawn both call it. §1's "not separable" holds only for the fit test, boost rotation, vault abort and velocity rotation still inline in `resolve`.
-- **Engine respawn exists.** `respawn` drains at tick start and relocates the existing pawn through `settle_arrival`; it spawns nothing (`sim::tick_start`). Supersedes §3's "No engine respawn exists".
 - **Resolver.** `SpawnPoseResolver` (`crates/postretro/src/spawn_pose.rs`) resolves at host install, admission and promotion (`resolve_for_promotion`). `UnbackedSpawn` carries a `SpawnPose`, `entity_class` and `single_use`; a single-use pose is consumed at spawn and the seat re-resolves at its next demotion. An unbacked seat holds no placement. Promotion keeps a recorded unbacked pose without re-testing it.
-- **Client camera at install** takes the resolver's hint (`take_install_spawn_pose_hint`). Supersedes §3's "arming sets position only". The host camera is still seeded from the first spawn's angles.
 - **`loadLevel` with an unknown id** enqueues with no catalog check, drops any queued load at enqueue, and warns at the drain.
 - **Section 44** carries a trigger `name`; it still has no target, mode or landmark.
 - **Occupancy refs absent.** `occupiedCount` / `occupants` and the `trigger.<tag>.*` slots appear in no file under `sdk/`, `crates/`, `docs/` or `content/`, though `E18--coop-activation-policy` is in `done/`. The trigger stage computes effective occupants (`PlayerCapabilities::effective_occupants`) but publishes no per-tag slot.

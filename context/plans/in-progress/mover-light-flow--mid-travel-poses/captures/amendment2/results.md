@@ -576,3 +576,244 @@ Against the ramp-alone captures, all 24 frames are pixel-identical. The rest cha
   - tables: `final-band.txt`, `final-exits.txt`, `final-handover-blotch.txt`, `final-rest.txt`;
   - tools: `tools/fcap.py`, `flib.py`, `fanalyze.py`, `fexit.py`, `fcharts.py`, `fclip.py`, `knots.py`, `relabel.py`, `fbake.sh`, `fcaps.sh`, `ftestbakes.sh`.
 - Scratch `amend2\final\`: `bin\`, `ws\` (PRLs, logs in `logs\`), `cap\` (about 5,100 frames, 1.3 GB), `base\prl-build-parent.exe`.
+
+## Big room re-capture (Windows, 2026-11-13)
+
+Re-measures the Amendment 2 rows on `mover-setpiece` after df00bd54e added `setpiece_room_big`. Builds are at HEAD dbacdfdf2. Machine and settings are as in 25c: GTX 1660 SUPER, Vulkan, offscreen 960×540, `sync-proof`, `force_full_resident_sh_compose`, reflections off, one forced mover.
+
+The lattice moved: 52×18×55, cell 1 m. The bake's knots confirm its layers. Every predicted crossing of the room's planes past a z layer at −336 + 39.37k, and of the arch past the x columns 1678.9, 1718.3 and 1757.7, falls between a geometry-knot pair. The west layer is at x 1521.5 and the south layer at y 1354.0, as briefed.
+
+### Answers first
+
+- **In-wall layer: pass.** The ceiling strip over the south wall is the thick-wall case: the layer y 1354.0 sits 6 u inside that wall. Its static indirect over the whole trip is within 0.05 mean and 1.0 worst block of the same-rule truth. Every other band is within 0.00–0.11 mean and 0.9–2.1 worst. Ramp alone reads 0.97 / 7.3 on the south strip, which fails both bars, so the row discriminates there. On the west strip, ramp alone fails only the mean bar (0.51 / 2.0). The room is very dark inside (band means 0.1–2 luma), so most of the discrimination comes from the south and arch strips.
+- **Dark blotch: fails as written.** Against ramp alone, HEAD darkens a block by up to 17.3 (wall face above the arch, t′ 0.019). That is not a blotch: ramp alone leaks in-wall light into every interior view, the residue the dark state exists to remove. HEAD is 0.3 from the dense truth there, and ramp alone is 17.6 above it. The fixed chamber and hallway views pass (worst 2.98).
+  - A block counts as darker only when it is darker than both ramp alone and the truth. The worst such block is −4.68, on the ceiling over the arch at t′ 0.651, across 10 frames.
+  - Static indirect there equals the truth exactly. The shortfall is in the direct share, inside one 16-frame stored interval (knots 0.6348–0.6746) where the truth has a transient peak: HEAD 2.1, ramp alone 4.4, truth 6.8.
+  - About 2.2 of the shortfall is the dark state, under 3.0. The rest is long-interval direct interpolation.
+  - Everywhere else, darker-than-both is within 1.65.
+- **Re-light into rest: pass.** The largest per-frame block step over t′ 0.95–1.0 is 0.81 on the in-wall bands' static indirect and 1.37 full frame (bar 1.5).
+- **Enclosure exits and entries.** I measured all 42 visible crossings: 122 view-region windows at 1/5-frame steps (0.000482 t′). The one-frame span is 0.002412 t′.
+  - **Step: pass.** The worst is ramp alone + 0.57 (floor-top entry, t′ 0.488).
+  - **Dip: fails as written, on HEAD and ramp alone alike.** HEAD's worst is −6.79 (roof-top entry, t′ 0.244), identical to ramp alone. Every dip past 1.5 is a monotone level change on a face rising through a lighting gradient: the roof top, the floor by the arch, the wall face above the arch.
+  - **Undershoot: no fall that recovers.** 25c's artifact was a dip and rise. HEAD's undershoot below both its inside-pose and settled values is never more than 0.35 beyond ramp alone's. The worst is −2.80, the same as ramp alone's, on the roof top.
+- **Hand-over: fails on one surface, by 0.75.** On the big room's ceiling over the arch, HEAD steps 8.82 in one frame at the ceiling exit of layer z 97.07 (t′ 0.7695), where the truth steps 4.07. That is +4.75 against the +4.0 bar. Ramp alone fails there too, at +4.52.
+  - The step is physical. A probe leaves the roof slab into the lit air under the arch, and the block brightens by about 20 levels.
+  - Geometry knots place that change exactly on the 2.6-frame knot pair at the enclosure exit. The truth's 98 even poses smear it over about 4 frames, starting 2 frames early.
+  - It is not the dark state. The exits row, judged against ramp alone, passes it (−0.32).
+  - Every other surface passes: wall door end +1.64, north +0.34, small room ceiling +0.78 and +0.75, big ceiling seen from the west +0.27.
+- **Edge copy:** every band's static indirect is within the in-wall bar (worst 2.1). The full frame's worst blocks pass 2.5 at three t′:
+  - t′ 0.649: the direct-share miss above, 11.0;
+  - t′ 0.912: the arch exit, 5.3;
+  - t′ 0.989: 4.9–8.7, where the truth's own step toward its last pose is 2.4–3.4.
+- **Rest:** HEAD equals the dense truth pixel for pixel in all 18 view × terminus frames. Against ramp alone it is identical in 17 of 18; in walledge at t′ 0 one pixel differs, with a worst block of 0.01.
+- **What changed with the lattice.**
+  - The wall door no longer encloses a layer. It bakes 15 even poses and no geometry knots, so HEAD and ramp alone are identical on it, and its hand-over measures Ruling A alone.
+  - The small room falls to 37 poses (5 even + 32 geometry) from 45. Its ceiling steps at most 1.0 per frame in every column.
+
+### Build and bakes
+
+- **HEAD builds.** Release `prl-build` (4 min 39 s) and `postretro --features capture` (12 min 29 s) at dbacdfdf2, with `CARGO_INCREMENTAL=0`. They are kept in scratch `amend3\bin\`.
+- **Ramp alone.** The prototype binaries in `amend2\bin\`: `prl-build` at f712cfc14 (pre-dark, epoch 6), and the engine with `POSTRETRO_PROTO_MOVER_SH` set to `r40`.
+  - Every ramp capture's stderr confirmed `AMEND2-PROTO`. `bcap.py` refuses a capture otherwise.
+  - Its knots and rest frames equal HEAD's (rest above).
+- **Bakes.** Each is a cold `--release` bake with a fresh cache dir (`tools/bbake.sh`).
+  - The scratch ws holds junctions to the repo's `content/dev/{textures,models,sounds,ui,scripts}` and `baked/`, plus a copy of `start-script.js`.
+  - The views were checked for textures before the batches ran.
+
+| Bake | Wall time | Poses (even + geometry): wall, room, room_big | Big-room bounce bake | id 57 |
+|---|---|---|---|---|
+| HEAD | 151.4 s | 15 (15+0), 37 (5+32), 74 (6+68) | 97.2 s | 26,880,284 B, epoch 7 |
+| ramp alone | 151.2 s | the same knots | 98.6 s | 26,119,152 B, epoch 6 |
+| truth: wall 267, room 76, room_big 98 | 253.7 s | 267, 76, 98 (all even) | 124.1 s | 34,607,171 B, epoch 7 |
+
+- No bake logged a band nudge or a `held the probe` line, so 98 is clean for the big room.
+- **The bounce-bake estimate is short.** The Build Summary projects the big room's `--release` bounce bake at 18.7 s; it measured 97.2 s, about 5× that. The other movers are closer: 7.1 s against an estimate of 5.8 s, and 18.9 s against 6.3 s.
+- **States kept after skipping.**
+  - Big-room bounce: HEAD 6,249, ramp alone 4,454, truth 6,765.
+  - Depth: HEAD keeps 24,061.
+
+### Views and regions
+
+- **Riding views** ride `setpiece_room_big`, so regions hold at every t′. Positions are at the lowered pose.
+  - `bw` (1640, 1576, −160), yaw 180, pitch 35: the west wall and the ceiling over it.
+  - `bs` (1728, 1464, −160), yaw 270, pitch 35: the south wall above the arch and the ceiling over it.
+  - `bfloor` (1820, 1720, −180), yaw 225, pitch −30: the floor toward the south-west corner.
+  - `broof` (1760, 1640, 40), yaw 225, pitch −45: the roof top.
+- **Fixed views:**
+  - `barch` (1728, 1180, 80), yaw 90: the chamber, square on to the arch wall.
+  - `bch` (1400, 1200, 200), yaw 45, pitch −25: the chamber's south-west corner.
+  - `bhall`: README station 4.
+- **Regions.** A per-pixel ray cast against the room's inner box (`blib.py`) defines them. It was checked against the captures' corner and arch edges.
+  - **Ceiling strips:** W (x < 1560.9), S (y < 1393.4, beside the arch) and A (y < 1393.4, over the arch).
+  - **Wall faces:** WF, SF, and AF (above the arch).
+  - **Floor strips:** FW and FS.
+  - **Whole faces:** `ceil`, `floor` and `top`.
+- **East and north layers.** The east (x 1954.5) and north (y 1826.4) in-wall layers sit 34.5 u behind their faces, outside every lookup's trilinear reach. They feed no band, so no view watches them.
+
+### 1 and 6. In-wall bands (whole trip, one sample per 60 fps frame, 416 samples; static indirect, mask 02)
+
+| Band | HEAD mean | HEAD vs truth (block mean / worst) | Ramp alone vs truth | Ramp alone at the bar | Truth mean | Ramp-alone mean |
+|---|---|---|---|---|---|---|
+| **S, ceiling over the south wall** (layer y 1354.0) | 0.99 | **0.05 / 1.0** | 0.97 / 7.3 | fails both | 0.97 | 1.86 |
+| W, ceiling over the west wall (layer x 1521.5) | 0.25 | 0.01 / 1.0 | 0.51 / 2.0 | fails mean | 0.26 | 0.72 |
+| A, ceiling over the arch | 2.17 | 0.11 / 2.1 | 0.66 / 4.3 | fails both | 2.14 | 2.63 |
+| AF, wall face above the arch | 0.15 | 0.01 / 1.0 | 0.12 / 2.8 | fails worst | 0.14 | 0.26 |
+| SF, south wall face | 0.07 | 0.01 / 0.9 | 0.05 / 1.8 | passes | 0.07 | 0.09 |
+| WF, west wall face | 0.05 | 0.00 / 1.0 | 0.07 / 2.0 | passes | 0.05 | 0.09 |
+| FW, floor along the west wall | 0.63 | 0.00 / 0.9 | 0.38 / 2.9 | fails both | 0.63 | 1.02 |
+| FS, floor along the south wall | 1.04 | 0.02 / 1.3 | 0.37 / 2.1 | fails mean | 1.02 | 1.40 |
+
+**Verdict: pass on every band** (bar 0.25 / 2.5). Ramp alone fails six of eight, cleanly on S, A and FW.
+
+**Edge copy: full-frame HEAD vs truth (block mean / worst).**
+
+| Band | HEAD vs truth |
+|---|---|
+| S | 0.07 / 4.9 |
+| W | 0.01 / 1.0 |
+| A | 0.25 / 11.0 |
+| AF | 0.03 / 5.3 |
+| SF | 0.01 / 3.3 |
+| WF | 0.00 / 2.7 |
+| FW | 0.01 / 0.9 |
+| FS | 0.05 / 8.7 |
+
+The full-frame worsts fall at three t′:
+
+- **0.649:** the direct-share miss (row 2).
+- **0.989:** the truth's own step toward its last pose, 2.4 on S and 3.4 on FS.
+- **0.912:** the arch exit of layer z 97.07, which ramp alone shares (4.9 against the truth).
+
+No band regresses against ramp alone in static indirect, so no bounding dark pose is indicated.
+
+### 2. Dark blotches (most negative 8×8 block, full frame; frames with a block < −3)
+
+| View | HEAD vs ramp alone | HEAD vs truth | Darker than both | Ramp alone vs truth |
+|---|---|---|---|---|
+| bw ceiling | −2.00 at 0.357 (0) | −1.00 (0) | −1.00 | −1.00 |
+| bw west wall face | **−4.74** at 0.015 (15) | −0.91 (0) | −0.76 | −1.00 |
+| bs ceiling | **−9.77** at 0.620 (265) | −10.98 at 0.649 (35) | **−4.68** at 0.651 (10) | −9.38 at 0.649 |
+| bs south wall face | **−10.52** at 0.015 (103) | −0.91 (0) | −0.87 | −1.00 |
+| bs wall face above the arch | **−17.33** at 0.019 (167) | −5.28 at 0.912 (2) | −1.65 | −4.87 at 0.912 |
+| bfloor floor | **−13.27** at 0.922 (220) | −2.21 (0) | −1.64 | −2.22 |
+| bfloor west wall face | −1.40 | −1.00 | −0.39 | −1.00 |
+| broof roof top (0:1:101) | −0.65 | −0.72 | −0.26 | −0.88 |
+| barch, fixed (0:1:101) | −2.98 at 0.86 (0) | −4.16 at 0.65 (2) | −0.87 | −4.05 at 0.65 |
+| bch, fixed | −2.40 (0) | −4.58 at 0.65 (1) | −0.29 | −4.57 at 0.65 |
+| bhall, fixed | −2.42 (0) | −1.70 | −0.62 | −1.74 |
+
+**Verdict as written (bar 3.0 against ramp alone): fail on five interior views.** Each is ramp alone's leak, which HEAD and the truth both remove. On the wall face above the arch at t′ 0.019, HEAD is 0.3 from the truth and ramp alone is 17.6 above it.
+
+**Darker than both: −4.68.**
+
+- The block is on the ceiling at local (1691, 1361), by the arch's west jamb, inside one 16-frame stored interval (knots 0.6348–0.6746).
+- Static indirect there is 0.88 in HEAD and the truth at every frame; ramp alone reads 3.2–4.7.
+- Full frame at t′ 0.651 reads 3.00 in HEAD, 7.88 in ramp alone and 7.68 in the truth. The direct share is therefore 2.1, 4.4 and 6.8.
+- The truth has a transient direct peak at t′ 0.649, and both knotted builds interpolate under it. HEAD's extra 2.2 below ramp alone is plausibly the dark state's direct q at that interval's enclosed probes.
+- This is the Motion-proof row's long-interval direct follow-up, not an exit artifact.
+
+### 3. Re-light into rest (t′ 0.95–1.0, 60 fps; largest per-frame block step, static indirect / full frame)
+
+| Band | HEAD | Truth | Ramp alone |
+|---|---|---|---|
+| S | 0.75 / 0.91 | 0.84 / 2.41 | 0.65 / 0.71 |
+| W | 0.76 / 0.85 | 0.86 / 0.93 | 1.00 / 1.00 |
+| A | 0.81 / 1.37 | 0.86 / 1.64 | 0.82 / 0.82 |
+| AF | 0.28 / 0.71 | 0.32 / 1.51 | 0.27 / 0.39 |
+| FW | 0.52 / 0.77 | 0.76 / 0.79 | 0.21 / 0.05 |
+| FS | 0.39 / 1.26 | 0.50 / 3.42 | 0.26 / 0.95 |
+
+**Verdict: pass** (bar 1.5): the worst is 0.81 in static indirect and 1.37 in full frame. Leaving rest (t′ 0–0.05) has no bar. There the worst is the arch exit at t′ 0.016 on the wall face above the arch: 3.17 full frame, against 3.45 for the truth.
+
+### 4. Enclosure exits and entries (window 0.003 before the first geometry knot to 0.003 after the second; samples every 0.000482 t′; one-frame span 0.002412 t′ at every phase)
+
+The crossings are every pass of a room plane through a lattice layer. The floor bottom's 6 exits leave into the sealed shaft, which no view sees.
+
+| Plane | Kind | Crossings | Views and regions |
+|---|---|---|---|
+| Ceiling | exit | 7 | bw W, ceil; bs S, A, ceil |
+| Arch bottom (x 1678.9, 1718.3, 1757.7) | exit | 21 | bs A, AF |
+| Floor top | entry | 7 | bfloor FW, FS, floor |
+| Roof top | entry | 7 | broof topW, topS, top |
+
+**Selected crossings.** Each cell is HEAD / ramp alone. "Undershoot" means the block falls below both its first and settled values. `big-exits.txt` holds all 122 rows.
+
+| Crossing | Region | Dip (25c metric) | Undershoot | Step, one frame | Step − ramp alone |
+|---|---|---|---|---|---|
+| roof top 0.0991 | broof topS | −4.96 / −4.96 | −0.37 / −0.41 | 2.12 / 2.12 | +0.00 |
+| roof top 0.2439 | broof topS | **−6.79** / −6.79 | −2.80 / −2.80 | 3.53 / 3.53 | +0.00 |
+| roof top 0.3886 | broof topS | −5.10 / −5.10 | −1.85 / −1.86 | 2.69 / 2.69 | +0.00 |
+| arch x 1718.3, 0.4498 | bs AF | −2.26 / −0.85 | −0.02 / −0.33 | 1.57 / 1.20 | +0.37 |
+| arch x 1757.7, 0.4809 | bs AF | −2.47 / −6.07 | −0.05 / 0.00 | 2.12 / 2.87 | −0.75 |
+| floor top 0.4884 | bfloor FW | −0.19 / −0.12 | 0.00 / −0.03 | 0.98 / 0.40 | **+0.57** (worst) |
+| ceiling 0.7686 | bs A | −0.93 / −0.90 | −0.40 / −0.06 | **13.67** / 13.99 | −0.32 |
+| floor top 0.7779 | bfloor floor | −3.90 / −3.87 | −0.08 / −0.15 | 1.38 / 1.36 | +0.02 |
+| ceiling 0.9134 | bs A | −3.99 / −3.42 | −0.32 / −0.29 | 3.80 / 3.92 | −0.12 |
+| arch x 1757.7, 0.9151 | bs AF | −2.69 / −9.64 | −0.38 / −0.30 | 5.18 / 5.33 | −0.14 |
+| floor top 0.9227 | bfloor floor | −3.37 / −3.35 | −0.82 / −0.47 | 1.51 / 1.07 | +0.44 |
+
+**Verdicts.**
+
+- **Step bar** (ramp alone + 1.5): **pass**, worst +0.57.
+- **Dip bar** (1.5): **fails as written.** HEAD exceeds 1.5 in 25 rows, and ramp alone in 28. Each such series is a monotone level change across the window, not a fall that recovers (`a3-exits.png`). Three cases:
+  - the roof top dims as it rises toward the chamber's ceiling light;
+  - the ceiling over the arch brightens as a lit probe exits the roof;
+  - at t′ 0.4498, the wall face above the arch settles darker in HEAD (worst block 5.6 → 1.5), where ramp alone leaks.
+- **Undershoot,** 25c's dip and rise: HEAD's worst is −2.80, equal to ramp alone's, on the roof top. HEAD never undershoots more than 0.35 beyond ramp alone.
+
+**Diagnosis.** 25c's bands were flat outside crossings, so an absolute dip read the artifact alone. On lit moving faces it also reads the scene's lighting gradient. Judged against ramp alone, HEAD shows no edge-copy or dark-state dip at any crossing.
+
+### 5. Hand-over (largest 8×8-block step per 60 fps frame; over truth = HEAD's step minus the truth's at the same t′)
+
+| Surface | HEAD | Over truth | Truth's own max | Ramp alone (over truth) |
+|---|---|---|---|---|
+| Wall door trailing end face (t′ 0.10–0.45) | 9.65 at 0.168 (12 > 3) | +1.64 at 0.385 | 9.76 | 9.65 (+1.64), identical |
+| Wall door north face | 1.18 | +0.34 | 5.81 | identical |
+| Small room ceiling above the door (t′ 0.10–0.60) | 1.00 | +0.78 | 1.00 | 1.00 (+0.79) |
+| Small room ceiling over the west wall | 0.99 | +0.75 | 0.99 | 1.00 (+0.91) |
+| **Big room ceiling, west view (whole trip)** | 0.92 | +0.27 | 0.93 | 1.00 (+1.00) |
+| **Big room ceiling, south view (whole trip)** | **8.82 at 0.7695** (13 > 3) | **+4.75 at 0.7695** | 7.99 at 0.902 | 8.59 (+4.52) |
+
+**Verdict: fail on the big ceiling's south view, by 0.75; every other surface passes.**
+
+**Diagnosis.** The block is on the ceiling by the arch, at local (1708, 1366).
+
+- The probe at layer z 97.07 leaves the roof slab into the arch's lit air.
+- HEAD reads 7.5, 16.3, 22.7 and 26.2 at t′ 0.7671, 0.7695, 0.7720 and 0.7744. Its depth tile opens over the 2.6-frame geometry-knot pair 0.7671–0.7733, exactly at the enclosure end.
+- The truth's even poses are 4.3 frames apart. It reads 16.3, 20.4, 23.7 and 25.6 at the same t′, having started at 7.5 at t′ 0.7623. That spreads the same ~20-level rise over about 4 frames.
+- Ramp alone does the same (+4.52), and against ramp alone in the exit row it is −0.32. So the step comes from the geometry knots, which are exact here, while the truth smears it; it is not the dark state or edge copy.
+- Clip: `clips/a3-exit-0.7671.mp4`.
+
+### 7. Rest frames (HEAD at t′ 0 and 1)
+
+- **Views:** bw, bs, bfloor, broof, barch, bch, bhall, door_ceiling and walledge, 18 view × terminus frames.
+- **Against the dense truth:** all 18 are pixel-identical.
+- **Against ramp alone:** 17 of 18 are identical. In walledge at t′ 0, one pixel differs, with a worst block of 0.01.
+
+The dark state and edge copy never touch termini.
+
+### Proposed AC wording (the owner decides)
+
+- **Hand-over.** "Dense t′ series, built `--release`, on em_sweeper's east face, the wall door's trailing end face and north face, the small rising room's ceiling and `setpiece_room_big`'s ceiling. The largest frame-to-frame 8×8-block step is at most the dense same-rule truth's step + 4.0, outside enclosure-exit windows, which the Enclosure row judges (final build +3.16; big-room re-capture +1.64, and +4.75 inside the t′ 0.7686 ceiling-exit window, ramp alone +4.52; pre-amendment +10.6, which fails)." Without the carve-out, the bar would need + 5.0.
+- **In-wall layer.** "On `mover-setpiece`'s `setpiece_room_big`, whose 64-unit walls hold probe layers (south y 1354.0, west x 1521.5), with the ramp and the dark state, the ceiling and floor strips over its in-wall layers and the arch are within a block mean of 0.25 and a worst block of 2.5 of a dense truth baked under the same rule, in static indirect over the whole trip (re-capture: south 0.05 / 1.0, worst band 0.11 / 2.1; ramp alone south 0.97 / 7.3, which fails). No mover-face or fixed-view block reads more than 3.0 darker than both the ramp-alone bake and that truth (re-capture −4.68 at t′ 0.651, a long-interval direct miss; see the Motion-proof follow-up)." As written, against ramp alone, the blotch bar fails wherever ramp alone leaks (up to −17.3), so it cannot judge the big room.
+- **Re-light into rest.** "On `setpiece_room_big` at 60 fps over the last 5 % of travel, with the ramp and the dark state, the in-wall bands' largest per-frame 8×8-block step is at most 1.5 (re-capture 0.81 in static indirect, 1.37 full frame)."
+- **Enclosure exits and entries.** "On `setpiece_room_big`, across every crossing of its roof and floor slabs and arch top past a probe layer that a riding view sees (42 crossings), at t′ steps of 0.0005 or less, with the ramp:
+  - no 8×8 block undershoots by more than 1.5 beyond the ramp-alone build's undershoot at the same crossing, where undershooting means falling below both its inside-pose (exit) or first (entry) value and its settled value (re-capture +0.35);
+  - the largest block step over any one-frame span (0.00241 t′, at any phase) is no more than 1.5 above the ramp-alone build's (re-capture +0.57)."
+
+  The absolute 1.5 dip below the inside-pose value reads a lit face's lighting gradient as a dip: −6.79, the same in ramp alone.
+- **Edge copy.** "… The big room's in-wall bands stay within the in-wall row's bar over the whole trip (re-capture worst band 0.11 / 2.1, static indirect), or a bounding dark pose about 1 u inside keeps them there."
+
+### Files (big-room re-capture)
+
+- **Here:**
+  - Charts: `a3-band.png`, `a3-exits.png`, `a3-handover.png`.
+  - Clip: `clips/a3-exit-0.7671.mp4`, the t′ 0.7686 ceiling exit at 1/5-frame steps, 10× slow, HEAD | ramp alone | truth.
+  - Tables: `big-analyze.txt` (rows 1, 2, 3, 5 and 7), `big-exits.txt` (row 4), `big-bakes.txt`.
+  - Tools: `tools/blib.py`, `bcap.py`, `bexit.py`, `banalyze.py`, `bcharts.py`, `bclip.py`, `bbake.sh`, `bcaps.sh`.
+- **Scratch `amend3\`:**
+  - `bin\`: the HEAD binaries.
+  - `ws\`: the PRLs and the truth map.
+  - `logs\`: bakes and captures.
+  - `cap\`: 11,919 frames, 1.5 GB.
+  - `results\`: `bsummary.json`, `bexit.json`.

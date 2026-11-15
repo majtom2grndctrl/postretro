@@ -84,9 +84,8 @@ light.
   - `_glow` is an authored multiplier, default 1.0, independent of `light`, so a
     game can pair a dim glow with strong cast light, or the reverse
     (`context/lib/index.md` §2, Defaults for novices, controls for experts). It
-    follows emissive-volumes' key rules. Light curves have no upper bound, so
-    the shader clamps each face's presented glow below the scene target's
-    half-float maximum.
+    follows emissive-volumes' key rules. Its ceiling and the curve cap (below)
+    keep the glow finite in the scene target.
   - The glow set is every render face derived from the entity's `_e` sides,
     including slivers the emit set drops (O8, O38), so no strip of the pane leaves
     its light.
@@ -112,7 +111,21 @@ light.
   runs: that light is skipped with a logged `InvalidArgument` naming it, and
   the other lights it targets still apply, as a target with no light
   component is skipped today.
-  Co-op replication of light animation is unchanged.
+  Scripts-build drops a step the runtime would refuse for an area light before
+  it records an animated reservation or start state, and warns, naming the
+  light and the step's reaction (O15, O40). Co-op replication of light
+  animation is unchanged.
+- **Light curves are capped, for every light.** Glow multiplies its light's
+  curve, and an unbounded curve overflows the scene target, which bloom then
+  spreads (O39). Brightness and colour curve samples read into [0, C],
+  authored (`brightness_curve`, `color_curve`) or scripted (`setLightAnimation`
+  and the light handle's methods): a negative sample reads 0, a non-finite one
+  1, and one past C reads C. The compiler warns once per light and key; the
+  runtime clamps and warns once per call, as the fog and emissive primitives
+  clamp (`context/lib/index.md` §2, Primitive surface is a contract). C sits far
+  above any look. With texture strength and `_glow` at their ceilings and both
+  curves at their evaluated peak, glow stays below the scene target's
+  half-float maximum, with headroom for bloom's sum.
 - **Keys: inert keys warn, contradictory keys fail.** Changing a `light` to
   `light_area` in the editor keeps its keys. So `delay`, `_light_size` and the
   spot keys warn, naming the light and key, and are ignored. `_shadow_type sdf`,
@@ -310,8 +323,9 @@ Placement, culls and keys:
   area-light list.
 - [ ] Emissive (id 60) v2 round-trips a volume list and an area-light list. The
   loader rejects version 1; a compose slot out of range that is not the static
-  sentinel; a negative or non-finite glow, colour or intensity, or a glow past
-  its ceiling; a face index out of range,
+  sentinel; a compose slot with a reference intensity of 0; a negative or
+  non-finite glow, colour or intensity, or a glow past its ceiling; a face
+  index out of range,
   descending, or owned by a volume or another area light; and volume and
   area-light counts past the shared cap.
 - [ ] A sub-second area-light fixture joins `GATE_FIXTURES`, profiled first, and
@@ -345,10 +359,12 @@ Glow and light identity (orderings in `research.md` §Pin table):
   and Emissive (id 60) stays byte-identical. A negative `_glow` reads 0, a
   non-finite one 1.0, and one past the ceiling the ceiling, each warning by
   light and key.
-- [ ] A texture at the strength ceiling under an area light whose `_glow` is at
-  its ceiling presents finite glow and finite bloom with a brightness curve
-  peaking at 1e30, and again with a colour curve peaking at 1e30
-  (research.md O39).
+- [ ] A brightness or colour curve sample of 1e30, −1 or NaN, authored on a
+  point, a spot and an area light and written by a script, reads C, 0 and 1,
+  each with one warning naming the light. Samples within [0, C] compile and run
+  unchanged and silently. A texture at the strength ceiling under an area light
+  whose `_glow` is at its ceiling and whose brightness and colour curves peak at
+  C presents finite glow, finite room light and finite bloom (research.md O39).
 - [ ] A static `_bake_only` area light's faces glow steadily at `_e` × texture
   strength × `_glow` × `_color`, and its id 60 entry carries the static
   sentinel. For an area light with an AlphaLights record, its entry's colour
@@ -433,6 +449,13 @@ Glow and light identity (orderings in `research.md` §Pin table):
   light made animated by a curve, `_animated`, `_start_inactive` or a
   `levelLoad` pulse fails the build, naming the light and `emissive_volume`
   (research.md O32).
+- [ ] A static area light with `light 0` and one with `light 300`, each a
+  target of a per-member `levelLoad` `sweep` beside a spot, compile with no
+  animated reservation and one warning each, naming the light and the
+  reaction: their id 60 entries carry the static sentinel, the first glows as a
+  glow-only panel, and the spot sweeps. The `light 0` light under a trigger
+  reaction's `pulse` fails the build, naming the light and `emissive_volume`
+  (research.md O40).
 - [ ] An animated area light with `light 900` and no curve glows at `_e` ×
   texture strength × `_glow` × `_color`, equal to the same light static within
   1e-6 relative (research.md O34).
@@ -446,8 +469,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   its faces, and the warning a volume they empty gives; `_bake_only` with
   `_start_inactive` warns; an animated `light 0` fails, pointing at
   `emissive_volume`; its glow and room light are not flash-limited until
-  E23 lands. `docs/scripting-reference.md` lists `"Area"` among light kinds and
-  `sweep`'s refusal on it (grep gate on `light_area` and `"Area"`).
+  E23 lands; every light's curve samples read into [0, C].
+  `docs/scripting-reference.md` lists `"Area"` among light kinds, `sweep`'s
+  refusal on it and the curve range (grep gate on `light_area` and `"Area"`).
 - [ ] Measured, not gated: forward-pass GPU time (`POSTRETRO_GPU_TIMING=1`) on a
   view filled with an animated area light's faces, against the same faces under
   a default `emissive_volume`.
@@ -531,6 +555,8 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - Patent follow-ups and counsel's reading of `ip-check.md`. Runs beside the
   build; a filing whose elements all appear present stops it (Decisions, IP).
   — owner: owner / counsel — **delegated**
+- The curve cap C, within the curve Decision's bounds, beside
+  emissive-volumes' value ceiling. — owner: executor — **delegated**
 
 ## Boundary inventory
 
@@ -541,6 +567,7 @@ Glow and light identity (orderings in `research.md` §Pin table):
 | Falloff reported | n/a | `falloff_model` 2 | `falloffModel` `"InverseSquared"` | n/a | same |
 | Brightness, colour, override reach | `MapLight` intensity, color, falloff_range | existing record fields | existing | `light`, `_color`, `_falloff_range` | same |
 | Animation keys | existing | existing | existing | `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase`, `_animated`, `_start_inactive`, `_bake_only`, `_tags` | same |
+| Light curve range | brightness and colour samples clamped to [0, C] at FGD translation and in `setLightAnimation` validation | unchanged | samples in [0, C], documented on `LightAnimation` and the light handle's methods | `brightness_curve`, `color_curve` | `docs/scripting-reference.md` light handles, `docs/level_design.md` custom animation curves |
 | Glow strength | per-entity f32 | Emissive (id 60) v2 area-light list (not AlphaLights) | n/a | `_glow(float)`, default 1.0 | `docs/level_design.md` lights |
 
 ## Wire format
@@ -558,7 +585,8 @@ v1 layout unchanged up to its end:
   entity order: `u32` compose slot (AnimatedBakedLights index, or `0xFFFF_FFFF`
   for a static light), `f32[3]` rest glow colour (`_color`, linear), `f32`
   reference intensity (the light's intensity as AlphaLights stores it, `light`
-  ÷ 300, which an animated glow divides out), `f32` glow (`_glow`), `u32
+  ÷ 300, which an animated glow divides out; never 0 on an entry with a
+  compose slot), `f32` glow (`_glow`), `u32
   face_count`, then `face_count × u32` Geometry face indices, ascending, each in
   range and owned by no volume and no other area light. The face list is the
   glow set, slivers included.

@@ -284,7 +284,7 @@ The line between the two halves of targeting is **perceivable vs. worth engaging
 
 Invariants the evaluator upholds:
 
-- **Guards evaluate every tick.** No activity, animation, or cooldown latches evaluation off. A commitment window is an authored guard over time-in-activity, never an engine mechanism.
+- **Guards evaluate every tick.** No activity, animation, or cooldown latches an authored row off. An authored commitment window is a guard over time in activity, never an engine mechanism. Rows lowering generates from stances and attacks may carry engine gates (Stances and attacks, below).
 - **Transitions evaluate outer-to-inner.** At each level, wildcard (`"*"`) rows precede the active activity's rows, each in declaration order; the first true row wins. A winning edge enters its target and descends through initial activities immediately. Newly entered activities do not evaluate transitions until the next tick.
 - **Guards are read-only.** Per-entity state fields are written by impact policies and spawn seeding; guards only read them. That is how a hit-driven reaction and an authored wildcard transition compose without either knowing about the other.
 - **Candidacy is per-graph eligibility; disengagement is per-activity policy.** The candidacy predicate is read-only and evaluated once per offered candidate during a ranking scan, never against the target already retained — dropping a retained target is what guards are for. It answers eligibility only, never rank: it produces a boolean, and ranking stays the engine's.
@@ -314,7 +314,7 @@ Invariants the evaluator upholds:
 - **Reload.** A reload that drops a token an attack draws warns on that reload and ignores the draw. A load or reload that drops a profile a placed pool names warns, and the pool uses `default`.
 - **Host-only, outside the co-op compatibility digest.** Clients never read the budget, and turns never replicate.
 
-**Stances and attacks (decided, not yet built).** Stances and attacks are authoring vocabulary. Load-time lowering turns them into activities and sets `pose` and `queue` itself; authors never write either (`scripting.md` §2). The runtime gains three things:
+**Stances and attacks (decided, not yet built).** Stances and attacks are authoring vocabulary. Load-time lowering turns them into activities and sets their lowering-only fields itself (`pose`, `queue`, the release's moment gate and its default `at`); authors never write them (`scripting.md` §2). These generated rows are the one place engine gates hold a commitment window (Guards evaluate every tick, above). The runtime gains four things:
 
 - **Pose.** Activities sharing a `pose` act as one: moving between them restarts no clip, plays no second sound, and keeps time in activity, `activityRoll` and `damageInActivity`. Entering from outside starts them fresh. A `"*"` or ancestor row into the current pose is skipped. A pose retains its target like an engaging activity. So does any activity marked for an attack.
 - **Queued rows.** A row carrying `queue` requests its attack's turn from an unmarked activity while its guard and the attack's reach pass and the attack is off cooldown. A grant survives into the next evaluation, as a mark's does, and the row passes once the turn reads held. One request per enemy: a mark's outranks a queued row's, which outranks a pending unmarked attack. Rows into hand-written marks do not queue.

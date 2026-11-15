@@ -714,6 +714,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 - **Members.** `getMapEntities(kind, { tag? })` returns the map-placed instances of one kind, in authored map order, as an array the author inspects in JS. No match returns an empty array; an unknown kind (`npc`, `transform`) fails to compile in TS and raises in Luau.
   - Handle methods bake the instance id into steps, returned as step arrays that nest unspread in a body or sequence. A stale id warn-skips at dispatch, generation-checked.
   - Membership is fixed at install. Members are the only form the build-time light pass sees, and the only form that allows per-member authored arguments, because the IR has no iteration. Members never convert to groups.
+  - An area light (decided, not yet built) is a light member: `sweep` on it is refused with `InvalidArgument`, and its `lightType` reads `"Area"`.
   - The query keeps map placements and entities with no spawn provenance, for every kind. A light, emitter or other instance carried by a runtime spawn or a player pawn never appears.
   - Callable in a level's data script (module evaluation or `setupLevel`); in a mod start script it raises (§3). Mod-global definitions therefore cannot name map entities, except through trigger-event rules (below).
   - A spawner member's `fire()` spawns one batch from that spawner only, never from a sibling sharing its tag — on named dispatch, after a `wait`, and in a trigger's tick. Two `fire()` steps spawn two batches; steps are not deduplicated.

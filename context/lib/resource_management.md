@@ -81,7 +81,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
+| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
 | **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` and `neon` resolve to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
@@ -141,13 +141,18 @@ Optional per-texture normal maps for fine surface detail.
 
 ### 4.5 Emissive Surfaces
 
-Optional emissive color maps add static, per-texel self-illumination to world and
-kinematic-brush surfaces. They do not emit light into lightmaps, SH irradiance or
-neighboring surfaces, and do not create dynamic lights. Glow texels are excluded
-from the per-texture diffuse mean used by SH bounce when non-glowing texels
-remain; an all-glowing texture uses its full average (`build_pipeline.md`
-§Compiler pipeline). Glow strength follows the original material name, as at
-runtime. To light a scene, an author places a separate light entity.
+Optional emissive color maps add per-texel self-illumination to world and
+kinematic-brush surfaces, static except on `light_area` faces (Strength, below).
+They do not emit light into lightmaps, SH irradiance or neighboring surfaces,
+and do not create dynamic lights. Glow texels are excluded from the per-texture
+diffuse mean used by SH bounce when non-glowing texels remain; an all-glowing
+texture uses its full average (`build_pipeline.md` §Compiler pipeline). The
+mean's glow test follows the original material name, as prefix glow does at
+runtime; a `light_area` face's `_glow` never enters it. To light a scene, an
+author places a light entity. A `light_area` is such an entity: its `_e` faces
+form its emitter and glow with it, and its cast light takes the entity's `light`
+and `_color`, never the emissive map or prefix (decided, not yet built;
+`build_pipeline.md` §Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions
@@ -160,8 +165,10 @@ runtime. To light a scene, an author places a separate light entity.
 - **Strength:** a prefix-derived `Material::emissive_strength()` multiplier scales
   the sampled color. `neon_` is 4.0 so an authored bright texel exceeds the
   renderer bloom threshold; other current material prefixes are zero until
-  content establishes a use for them. There is no per-surface runtime scalar in
-  v1.
+  content establishes a use for them. A `light_area` face (decided, not yet
+  built) instead takes its light's `_glow` × the light's live colour and
+  brightness, so its glow follows its light frame for frame. Every other face
+  has no per-surface runtime scalar.
 - **Composite and fallback:** forward rendering writes `lit + emissive` into the
   renderer-owned HDR scene target. An absent `_e` uses a shared 1×1 black sRGB
   placeholder, an additive no-op. Bloom is a screen-space effect after this

@@ -1,7 +1,7 @@
 # E18--coop-activation-policy — plan of record
 
 mode: resumable
-status: approved
+status: approved (results recorded; awaiting "land the plane")
 read at: 01d5db4f
 
 ## Corrections
@@ -61,54 +61,54 @@ Every Decision premise holds at `01d5db4f`. The sequencing prerequisite, the fir
 ## AC-to-proof
 Test names are proposals; final names land with each task. `two-endpoint` means real `NetServer` / `NetClient` endpoints in-process.
 
-| AC | Proof | Status |
-|---|---|---|
-| S1 host+2 clients `inPlay` 3; loading, down, reconnecting counts | `seat_status_reads_live_pawn_capture_and_hold`, `player_counts_replicate_to_every_client_and_late_joiner`, `rows_by_status_match_counts_on_host_and_clients` | achievable as stated; passing (in-process replication) |
-| S2 never-loading client stays `loading`; disconnect while loading leaves `loading`/`connected` next tick (P15) | `seat_status_reads_live_pawn_capture_and_hold` (a seat with no pawn reads loading; a held seat reads reconnecting, outside `connected`) | achievable as stated; passing |
-| S3 joiner counts `inPlay` from spawn, before first command (P16) | `joiner_counts_in_play_from_spawn_before_first_command` | achievable as stated; passing (task 1) |
-| S4 undeclared zero-health client `down`, no occupant; no-health pawn counts; declared by capability (P17) | `trigger_stage_pawns_count_client_pawns_by_the_effective_rule`, `seat_status_reads_live_pawn_capture_and_hold`, `occupied_volumes_ignore_arm_and_latch_and_count_use_volumes` | achievable as stated; passing |
-| S5 single player `inPlay` 1 / `down`; leaver reads 0 at frontend (P14) | `single_player_counts_follow_install_tick_death_and_unload`, `client_counts_read_zero_once_its_level_unloads`, `frontend_backdrop_is_not_a_session_level` | achievable as stated; passing (task 1) |
-| S6 `occupants <= inPlay` every tick | assertion in every `coop_activation_tests` harness tick | achievable as stated; passing (task 8) |
-| S7 demoted client and host seat read `loading` without a live pawn (P26) | `seat_without_live_pawn_reads_loading` | achievable as stated; passing (task 1) |
-| O1 two on one plate 1/2; one on each of two plates 2/2 | `occupancy_counts_volumes_and_distinct_players` | achievable as stated; passing (task 7) |
-| O2 overlapping volumes: once in `occupants`, twice in `occupiedCount` | `occupancy_counts_volumes_and_distinct_players`, overlap case | achievable as stated; passing (task 7) |
-| O3 disarmed or latched volume counts; `switch` press volume counts | `occupied_volumes_ignore_arm_and_latch_and_count_use_volumes` | achievable as stated; passing (task 7) |
-| O4 repeated tag counts once (P11) | `occupancy_counts_volumes_and_distinct_players`, repeated-tag case | achievable as stated; passing (task 7) |
-| O5 player killed inside leaves both on the same later tick; gate never crosses (P7) | `death_inside_leaves_counts_together_and_gate_holds` | achievable as stated; passing (task 8) |
-| P1 two-button door: both held, early release, walking plate to plate | `two_button_door_solves_only_with_both_plates_held` | achievable as stated; passing (task 8) |
-| P2 N plates solve only when all held on one tick | `n_plates_solve_only_when_all_held_on_one_tick` | achievable as stated; passing (task 8) |
-| P3 all-players gate with 1, 2, 3 players opens in the last entry's frame | `all_players_gate_opens_in_last_entry_frame` | achievable as stated; passing (task 8) |
-| P4 downed player outside; nobody in play (P12) | `all_players_gate_ignores_downed_and_stays_closed_with_none_in_play` | achievable as stated; passing (task 8) |
-| P5 level change and same-map restart with real clients: closed while loading (P13) | `party_gate_waits_for_every_client_after_level_change_and_restart` (headless host, client demotion and re-promotion; no transport) | achievable as stated; passing headless, real-endpoint run outstanding |
-| P6 player admitted after open turns gate false, fires again on entry (P18) | `late_admission_reopens_all_players_gate` | achievable as stated; passing (task 8) |
-| P7 one tick per frame crosses that frame; lone host inside at install crosses first frame (P1) | `completed_set_crosses_in_its_frame_and_at_install` | achievable as stated; passing (task 8) |
-| P8 King-of-the-Hill drains `dt`, `2dt`, `0` | `king_of_the_hill_drains_by_occupants` (evaluated, not descriptor-only) | achievable as stated; passing (task 8) |
-| P9 two identical runs give identical count timelines (P6) | `scripted_runs_produce_identical_count_timelines` on the trigger-driving harness | achievable as stated; passing (task 8) |
-| L1 rows match seats on every machine; shift on leave; `isLocal` follows (P25) | `player_rows_follow_seats_names_and_local_seat`, `rows_by_status_match_counts_on_host_and_clients` | achievable as stated; passing |
-| L2 empty name `Player N`, stable after an earlier seat leaves; sent name reads as sent | `player_rows_follow_seats_names_and_local_seat`, `host_rows_read_statuses_and_claim_names`, `roster_keeps_session_and_status_through_level_rejoin_and_expiry` | achievable as stated; passing (task 4) |
-| L3 single player one local row Player 1; leaver all rows absent, with and without backdrop (P14) | `single_player_counts_follow_install_tick_death_and_unload`, `client_counts_read_zero_once_its_level_unloads`, `frontend_backdrop_is_not_a_session_level` | achievable as stated; passing (task 4) |
-| L4 flapping status rate-limited; final and other-seat changes within one interval (P19) | `status_only_roster_updates_respect_rate_limit` | achievable as stated; passing (task 4) |
-| L5 rows by status equal counts on host each tick and clients within one interval, incl. undeclared death and respawn and joiner bind (P24) | `rows_by_status_match_counts_on_host_and_clients` (in-process roster and replication; the host's rows and counts come from one status pass each tick); P19 interval in `status_only_roster_updates_respect_rate_limit` | achievable as stated; passing |
-| L6 `forEach` rows, present-only, id suffix, same-row `labelledBy` / `focusNeighbors`, no rebuild | `for_each_unrolls_rows_with_suffixed_ids_and_matches_across_runtimes` (TS and Luau) | achievable as stated; passing (task 5) |
-| C1 script `setState` on counts, rows, family warns, unchanged | `engine_session_and_occupancy_slots_reject_script_writes` (log capture) | achievable as stated; passing (task 3) |
-| C2 `occupancy` / overlapping store rejected with and without level; `occupancyBoard` loads; engine insert succeeds (P5) | `occupancy_namespace_is_reserved_for_the_engine` | achievable as stated; passing (task 3) |
-| C3 tag with `.` or `:` warns once, no family; others get theirs | `unformable_tag_warns_once_and_gets_no_family`, `references_collect_from_crossings_reactions_ir_and_ui_binds` | achievable as stated; passing (task 6) |
-| C4 level reference to absent tag reads 0 and warns once; mod-scope reads 0 silently | `absent_tag_warns_for_level_reference_only` | achievable as stated; passing (task 6) |
-| C5 run-time tag from `getMapEntities` gets its family | `dev_map_declares_families_and_matches_across_runtimes` (the airlock tag is read off the map) | achievable as stated; passing (task 10) |
-| C6 level UI bind to a level-only tag installs without unknown-slot warning and reads | `dev_map_declares_families_and_matches_across_runtimes` (`coop.airlock` strip) | achievable as stated; passing (task 10) |
-| C7 after level change: mod-scope plus new level only (P2) | `level_change_replaces_level_families_and_zeroes_every_family` | achievable as stated; passing (task 6) |
-| C8 staged reload changing mod refs redeclares on host and clients; batches apply (P20) | `staged_reload_redeclares_mod_families_and_batches_apply` (in-process replication) | achievable as stated; passing |
-| C9 staged reload mid-level keeps level families and values; new mod ref binds; held crossing not refired (P22) | `staged_commit_mid_level_keeps_families_and_values` (families and values); the crossing-rebind half is the existing staged rebuild, not exercised end to end here | achievable as stated; partially proven |
-| C10 tag shared by mod and level survives unload; accumulator binds next level (P23) | `level_change_replaces_level_families_and_zeroes_every_family`; the hill accumulator binds and drains on install in `dev_map_declares_families_and_matches_across_runtimes` | achievable as stated; passing |
-| C11 every family and count reads 0 at install and from unload; threshold over held family crosses first frame; below over empty does not fire (P21) | `families_and_counts_read_zero_from_unload_through_install` (in-process replication) + `level_change_replaces_level_families_and_zeroes_every_family` | achievable as stated; passing |
-| C12 typedefs generated; drift guards cover them; module-scope `occupancy.tag` in a data script evaluates in build-time bridge and at install (P4) | `committed_sdk_types_match_current_registry`, `build_time_families_and_lists_match_engine_state_catalog`, `build_time_family_and_list_installers_match_runtime_bridge`; the dev scripts' module-scope `occupancy.tag` compiles through `prl-build` and installs | achievable as stated; passing |
-| N1 client counts and occupancy converge; host-mirrored crossing fires once; mover by replicated phase | `client_occupancy_converges_and_mirrored_crossing_fires_once` (in-process replication); the mover half rides existing replicated-phase coverage | achievable as stated; passing, mover half not re-proved here |
-| N2 client joining mid-hold reads values from baseline; fires once; host does not refire (P10) | `mid_hold_joiner_fires_once_from_baseline` (in-process replication) | achievable as stated; passing |
-| N3 late joiner after other levels derives host's families; batches apply from first snapshot (P8) | `late_joiner_derives_host_family_set` (in-process replication) | achievable as stated; passing |
-| U1 surface example compiles in TS and Luau; TS and Luau puzzle and HUD fixtures behave identically | the dev scripts follow the example and compile through `prl-build` in both runtimes; `dev_map_declares_families_and_matches_across_runtimes` (identical lowered crossings), `for_each_unrolls_rows_with_suffixed_ids_and_matches_across_runtimes` (HUD rows) | achievable as stated; passing |
-| U2 `docs/scripting-reference.md` documents counts, list, `forEach`, family, all-players pattern | `scripting_reference_documents_session_players_and_occupancy` (grep gate) | achievable as stated; passing (task 11) |
-| U3 dev-tools Triggers tab shows effective beside raw; non-dev-tools build succeeds and names no column | `effective_occupancy_column_is_dev_tools_only` (grep gate) + `cargo check -p postretro` without `dev-tools` | achievable as stated; passing (task 11) |
-| M1 two-player session on the dev map | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| S1 host+2 clients `inPlay` 3; loading, down, reconnecting counts | `seat_status_reads_live_pawn_capture_and_hold`, `player_counts_replicate_to_every_client_and_late_joiner`, `rows_by_status_match_counts_on_host_and_clients` | achievable as stated; passing (in-process replication) | pass (in-process replication, no real transport) |
+| S2 never-loading client stays `loading`; disconnect while loading leaves `loading`/`connected` next tick (P15) | `seat_status_reads_live_pawn_capture_and_hold` (a seat with no pawn reads loading; a held seat reads reconnecting, outside `connected`) | achievable as stated; passing | pass |
+| S3 joiner counts `inPlay` from spawn, before first command (P16) | `joiner_counts_in_play_from_spawn_before_first_command` | achievable as stated; passing (task 1) | pass |
+| S4 undeclared zero-health client `down`, no occupant; no-health pawn counts; declared by capability (P17) | `trigger_stage_pawns_count_client_pawns_by_the_effective_rule`, `seat_status_reads_live_pawn_capture_and_hold`, `occupied_volumes_ignore_arm_and_latch_and_count_use_volumes` | achievable as stated; passing | pass |
+| S5 single player `inPlay` 1 / `down`; leaver reads 0 at frontend (P14) | `single_player_counts_follow_install_tick_death_and_unload`, `client_counts_read_zero_once_its_level_unloads`, `frontend_backdrop_is_not_a_session_level` | achievable as stated; passing (task 1) | pass |
+| S6 `occupants <= inPlay` every tick | assertion in every `coop_activation_tests` harness tick | achievable as stated; passing (task 8) | pass |
+| S7 demoted client and host seat read `loading` without a live pawn (P26) | `seat_without_live_pawn_reads_loading` | achievable as stated; passing (task 1) | pass |
+| O1 two on one plate 1/2; one on each of two plates 2/2 | `occupancy_counts_volumes_and_distinct_players` | achievable as stated; passing (task 7) | pass |
+| O2 overlapping volumes: once in `occupants`, twice in `occupiedCount` | `occupancy_counts_volumes_and_distinct_players`, overlap case | achievable as stated; passing (task 7) | pass |
+| O3 disarmed or latched volume counts; `switch` press volume counts | `occupied_volumes_ignore_arm_and_latch_and_count_use_volumes` | achievable as stated; passing (task 7) | pass |
+| O4 repeated tag counts once (P11) | `occupancy_counts_volumes_and_distinct_players`, repeated-tag case | achievable as stated; passing (task 7) | pass |
+| O5 player killed inside leaves both on the same later tick; gate never crosses (P7) | `death_inside_leaves_counts_together_and_gate_holds` | achievable as stated; passing (task 8) | pass |
+| P1 two-button door: both held, early release, walking plate to plate | `two_button_door_solves_only_with_both_plates_held` | achievable as stated; passing (task 8) | pass |
+| P2 N plates solve only when all held on one tick | `n_plates_solve_only_when_all_held_on_one_tick` | achievable as stated; passing (task 8) | pass |
+| P3 all-players gate with 1, 2, 3 players opens in the last entry's frame | `all_players_gate_opens_in_last_entry_frame` | achievable as stated; passing (task 8) | pass |
+| P4 downed player outside; nobody in play (P12) | `all_players_gate_ignores_downed_and_stays_closed_with_none_in_play` | achievable as stated; passing (task 8) | pass |
+| P5 level change and same-map restart with real clients: closed while loading (P13) | `party_gate_waits_for_every_client_after_level_change_and_restart` (headless host, client demotion and re-promotion; no transport) | achievable as stated; passing headless, real-endpoint run outstanding | pass on the headless host; real-endpoint run outstanding |
+| P6 player admitted after open turns gate false, fires again on entry (P18) | `late_admission_reopens_all_players_gate` | achievable as stated; passing (task 8) | pass |
+| P7 one tick per frame crosses that frame; lone host inside at install crosses first frame (P1) | `completed_set_crosses_in_its_frame_and_at_install` | achievable as stated; passing (task 8) | pass |
+| P8 King-of-the-Hill drains `dt`, `2dt`, `0` | `king_of_the_hill_drains_by_occupants` (evaluated, not descriptor-only) | achievable as stated; passing (task 8) | pass |
+| P9 two identical runs give identical count timelines (P6) | `scripted_runs_produce_identical_count_timelines` on the trigger-driving harness | achievable as stated; passing (task 8) | pass |
+| L1 rows match seats on every machine; shift on leave; `isLocal` follows (P25) | `player_rows_follow_seats_names_and_local_seat`, `rows_by_status_match_counts_on_host_and_clients` | achievable as stated; passing | pass (in-process replication, no real transport) |
+| L2 empty name `Player N`, stable after an earlier seat leaves; sent name reads as sent | `player_rows_follow_seats_names_and_local_seat`, `host_rows_read_statuses_and_claim_names`, `roster_keeps_session_and_status_through_level_rejoin_and_expiry` | achievable as stated; passing (task 4) | pass |
+| L3 single player one local row Player 1; leaver all rows absent, with and without backdrop (P14) | `single_player_counts_follow_install_tick_death_and_unload`, `client_counts_read_zero_once_its_level_unloads`, `frontend_backdrop_is_not_a_session_level` | achievable as stated; passing (task 4) | pass |
+| L4 flapping status rate-limited; final and other-seat changes within one interval (P19) | `status_only_roster_updates_respect_rate_limit` | achievable as stated; passing (task 4) | pass |
+| L5 rows by status equal counts on host each tick and clients within one interval, incl. undeclared death and respawn and joiner bind (P24) | `rows_by_status_match_counts_on_host_and_clients` (in-process roster and replication; the host's rows and counts come from one status pass each tick); P19 interval in `status_only_roster_updates_respect_rate_limit` | achievable as stated; passing | pass (in-process replication, no real transport) |
+| L6 `forEach` rows, present-only, id suffix, same-row `labelledBy` / `focusNeighbors`, no rebuild | `for_each_unrolls_rows_with_suffixed_ids_and_matches_across_runtimes` (TS and Luau) | achievable as stated; passing (task 5) | pass |
+| C1 script `setState` on counts, rows, family warns, unchanged | `engine_session_and_occupancy_slots_reject_script_writes` (log capture) | achievable as stated; passing (task 3) | pass |
+| C2 `occupancy` / overlapping store rejected with and without level; `occupancyBoard` loads; engine insert succeeds (P5) | `occupancy_namespace_is_reserved_for_the_engine` | achievable as stated; passing (task 3) | pass |
+| C3 tag with `.` or `:` warns once, no family; others get theirs | `unformable_tag_warns_once_and_gets_no_family`, `references_collect_from_crossings_reactions_ir_and_ui_binds` | achievable as stated; passing (task 6) | pass |
+| C4 level reference to absent tag reads 0 and warns once; mod-scope reads 0 silently | `absent_tag_warns_for_level_reference_only` | achievable as stated; passing (task 6) | pass |
+| C5 run-time tag from `getMapEntities` gets its family | `dev_map_declares_families_and_matches_across_runtimes` (the airlock tag is read off the map) | achievable as stated; passing (task 10) | pass |
+| C6 level UI bind to a level-only tag installs without unknown-slot warning and reads | `dev_map_declares_families_and_matches_across_runtimes` (`coop.airlock` strip) | achievable as stated; passing (task 10) | pass |
+| C7 after level change: mod-scope plus new level only (P2) | `level_change_replaces_level_families_and_zeroes_every_family` | achievable as stated; passing (task 6) | pass |
+| C8 staged reload changing mod refs redeclares on host and clients; batches apply (P20) | `staged_reload_redeclares_mod_families_and_batches_apply` (in-process replication) | achievable as stated; passing | pass (in-process replication, no real transport) |
+| C9 staged reload mid-level keeps level families and values; new mod ref binds; held crossing not refired (P22) | `staged_commit_mid_level_keeps_families_and_values` (families and values); the crossing-rebind half is the existing staged rebuild, not exercised end to end here | achievable as stated; partially proven | partial: families and values pass; the crossing rebind across a staged commit is not exercised end to end |
+| C10 tag shared by mod and level survives unload; accumulator binds next level (P23) | `level_change_replaces_level_families_and_zeroes_every_family`; the hill accumulator binds and drains on install in `dev_map_declares_families_and_matches_across_runtimes` | achievable as stated; passing | pass |
+| C11 every family and count reads 0 at install and from unload; threshold over held family crosses first frame; below over empty does not fire (P21) | `families_and_counts_read_zero_from_unload_through_install` (in-process replication) + `level_change_replaces_level_families_and_zeroes_every_family` | achievable as stated; passing | pass (in-process replication, no real transport) |
+| C12 typedefs generated; drift guards cover them; module-scope `occupancy.tag` in a data script evaluates in build-time bridge and at install (P4) | `committed_sdk_types_match_current_registry`, `build_time_families_and_lists_match_engine_state_catalog`, `build_time_family_and_list_installers_match_runtime_bridge`; the dev scripts' module-scope `occupancy.tag` compiles through `prl-build` and installs | achievable as stated; passing | pass |
+| N1 client counts and occupancy converge; host-mirrored crossing fires once; mover by replicated phase | `client_occupancy_converges_and_mirrored_crossing_fires_once` (in-process replication); the mover half rides existing replicated-phase coverage | achievable as stated; passing, mover half not re-proved here | pass (in-process replication); the mover half is not re-proved |
+| N2 client joining mid-hold reads values from baseline; fires once; host does not refire (P10) | `mid_hold_joiner_fires_once_from_baseline` (in-process replication) | achievable as stated; passing | pass (in-process replication, no real transport) |
+| N3 late joiner after other levels derives host's families; batches apply from first snapshot (P8) | `late_joiner_derives_host_family_set` (in-process replication) | achievable as stated; passing | pass (in-process replication, no real transport) |
+| U1 surface example compiles in TS and Luau; TS and Luau puzzle and HUD fixtures behave identically | the dev scripts follow the example and compile through `prl-build` in both runtimes; `dev_map_declares_families_and_matches_across_runtimes` (identical lowered crossings), `for_each_unrolls_rows_with_suffixed_ids_and_matches_across_runtimes` (HUD rows) | achievable as stated; passing | pass |
+| U2 `docs/scripting-reference.md` documents counts, list, `forEach`, family, all-players pattern | `scripting_reference_documents_session_players_and_occupancy` (grep gate) | achievable as stated; passing (task 11) | pass |
+| U3 dev-tools Triggers tab shows effective beside raw; non-dev-tools build succeeds and names no column | `effective_occupancy_column_is_dev_tools_only` (grep gate) + `cargo check -p postretro` without `dev-tools` | achievable as stated; passing (task 11) | pass |
+| M1 two-player session on the dev map | owner, in-engine | manual | outstanding: owner, in-engine |
 
 ## Tasks
 Each task ends green and committed with this file. Hot path: the per-tick write reuses its per-seat and per-tag buffers across ticks; the per-tick allocations are the small lists `TickEvents` carries (the sorted captured and counted pawns, and each occupied volume's counted pawns), like its sibling event vectors. Writes are change-driven where a value is unchanged, and slot names are interned at declaration, never formatted per tick.
@@ -126,3 +126,27 @@ Each task ends green and committed with this file. Hot path: the per-tick write 
 | 9 | Two-endpoint harness on the sim tick; N1–N3, P5, C8, C11, S1 client half, L1, L5 | integrating executor | 4, 7 | done with a deviation: N1–N3, C8, C11, L1, L5 run on the in-process replication path (`HostStateReplication` / `ClientStateApply` and the host's roster messages, `coop_activation_replication_test.rs`), P5 on the headless host with the demotion lifecycle; no run drives real `NetServer` / `NetClient` transport |
 | 10 | Dev map `coop-activation-test` and TS and Luau scripts (two-button, N plates, room gate, hill, HUD list); rewrite `coop-two-button-puzzles.ts`; surface example compile; TS/Luau parity (U1) | integrating executor | 5, 8 | done: `coop-activation-test.map` and its `-luau` twin (both compile clean), `coop-activation-test.ts` / `.luau` (the spike rewritten), `coop-hill.ts` in the dev mod; `dev_map_declares_families_and_matches_across_runtimes` passes |
 | 11 | `docs/scripting-reference.md`; dev-tools Triggers effective column and gate (U2, U3) | integrating executor | 7, 10 | done: Session players and Occupancy by tag sections; Triggers tab Effective column; U2 and U3 gates pass; `cargo check -p postretro` without dev-tools is clean |
+
+## Review loop
+One panel (`/review-panel`): two correctness tracers, a contract verifier and an adversarial tester (opus), plus hygiene and drift (sonnet). No finding reached a Decision or Acceptance row. Fixed in `3541f4f9`:
+- A hold or reclaim published a roster entry whose status contradicted its connection for up to one interval (two tracers and the tester): `seat_status` now lets the connection decide first.
+- `occupants <= inPlay` could break for a pawn with no seat, such as an unmarked fallback pawn (tester): occupancy counts only seated pawns.
+- A client that left showed the host's counts, rows and families until its queued unload ran (tracer): leaving zeroes them at once.
+- The hill store needed a durable identity entry, and the dev-mod fixture and observability driver skipped the mod's occupancy commit that first init runs (surfaced by the post-fix suite).
+- An empty tag was dropped without a warning; the Luau accessor error named the dot call; the `forEach` wrapper did not stretch; Luau row copies stopped at a `nil` hole; the open-seat log repeated on status-only rosters; the Triggers tab's counts allocated in non-dev-tools builds.
+- Comment and doc drift: the unload table, roster "status-only" wording, two misplaced doc blocks, the Luau row suffix (0-based in both runtimes), previous-tick reads in trigger reactions, `inPlay` with no health component, and the per-tick allocation note above.
+
+Left as they are:
+- A client that installs before the host's next status publication shows the roster it already holds, for at most one interval. P24 allows it.
+- A `localState` scope inside a `forEach` row is shared by every row. This is now documented; per-row scopes are outside the Decision.
+- Rows past the list's capacity drop silently, as the non-goal says.
+- `context/lib` still marks the shipped surface "decided, not yet built". The landing step updates it.
+
+## Gates
+- `cargo fmt --check`: pass.
+- `cargo clippy --workspace --all-targets --features postretro/dev-tools -- -D warnings` and plain `cargo clippy -- -D warnings`: pass.
+- `cargo check --release`: pass. Its only warnings are two unused dependencies that predate the branch: `combat-model` → `net`, and `scripting-core` → `notify-debouncer-full`.
+- `crate-graph --check`: pass.
+- `cargo test --workspace`: running.
+- Not run here: GPU-adapter tests skip without an adapter, as everywhere in this container.
+

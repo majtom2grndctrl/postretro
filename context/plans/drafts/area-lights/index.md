@@ -8,142 +8,143 @@ ceiling skylight or a glowing light-table floor has no way to make it light the
 room: emissive maps light nothing, and only `neon_` textures even glow (every
 other prefix has zero emissive strength). The workaround is a grid of point
 lights, which leaves hot spots on nearby surfaces. Under a 4 × 4 m panel a single
-point reads 6.1× too bright at 1 m (`research.md` §1). The grid also loses
-specular past the four shadowmask owners per face, and every copy adds lightmap
-bake cost. When this is done, a designer can draw a brush entity, give its
-emitting faces an `_e` map, and set a colour and brightness. Those faces glow and
-light the room as one soft-shadowed area light: in the lightmap, in bounce, and
-on entities. A script can pulse or recolour it, and the glow moves with the
+point reads 6.1× too bright at 1 m (`research.md` §1), and every copy adds
+lightmap bake cost. When this is done, a designer can draw a brush entity, give
+its emitting faces an `_e` map, and set a colour and brightness. Those faces glow
+and light the room as one soft-shadowed area light: in the lightmap, in bounce,
+and on entities. A script can pulse or recolour it, and the glow moves with the
 light.
 
 ## Decisions
 - **A polygon area light, not template lights.** A new light type whose emitter
-  is the set of convex polygons formed by its entity's emitting faces.
-  Precedent: id q3map 1999, Source 2 `light_rect`, Godot 4.7 (`research.md` §5).
-  `light_area` is the light type's first front end. The roadmap "surface lights"
-  entry (template copies of a light across a named texture) is reworded at
-  promotion: it becomes a texture-keyed front end on this light type, for screens,
-  signs and lava. It also takes over the texture-level bounce multiplier, and must
-  reconcile it with "Albedo is physical" (`build_pipeline.md` §Compiler pipeline).
-- **Authoring: a brush entity, `light_area`.** Its brushes compile as static
-  world brushwork, like `switch` and `func_group`.
-  - Emitting faces are the exposed brush sides whose texture has an `_e` map,
-    taken before BSP splitting. An entity with no such face is a compile error.
-  - Emission is one-sided, along each face's outward normal.
-- **Brightness is per area.** On the emitter's axis, a 1 m² panel matches a
-  `light` point light of the same `light` value at the same distance. A larger
-  brush gives proportionally more light, as in every area-scaled tool
-  (`research.md` §5).
-  - The entity carries its own `_color` and `light`.
-  - Its light never reads `Material::emissive_strength` or a texture prefix.
-- **Reach is derived, with an override.** Reach is the distance from the
-  polygon at which the bound E ≤ L·A/d² falls below a fixed cutoff. Nothing
-  beyond it is lit. `_falloff_range`, measured from the panel, overrides it.
-  `delay` (falloff model) does not apply. Reach is measured from the polygon,
-  never from its centre (`research.md` §4).
-- **Unshadowed term: exact.** Lambert's polygon irradiance is clipped to the
-  receiver's horizon. The stored direction is the clipped polygon's irradiance
-  vector. Both are computed in f64, with the robust edge form (`research.md` §1).
-  A receiver on or behind the emitter's plane gets zero, so the emitter's own
-  faces take no direct light from it.
-- **Shadows: ratio estimator in the existing separable fold.** Stored visibility
-  is Σ wV / Σ w over samples spread across the polygons by solid angle
-  (Heitz–Hill–McGuire 2018). The `lightmap_layer` partition record does not
-  change. Fully lit and fully shadowed texels stay exactly 1 and 0. An unweighted
-  clear-ray fraction is wrong near a large emitter, which is the case this light
-  exists for (`research.md` §2).
-- **Probe bakes project over the polygon, not along one direction.**
-  - This covers direct SH (ids 35, 41, 45), billboard scatter (ids 47, 48) and
-    the mover probe channel.
-  - The unshadowed coefficients are analytic. Shadowing is a control-variate
-    term with all-visible and none-visible fast paths. There is never a
-    per-coefficient ratio (`research.md` §3).
-  - The bounce comes from the light's own surface-radiance patch layer, as for
-    every light. Its glow is never also added to the radiance cache, which keeps
-    the no-double-count invariant (`context/lib/index.md` §2).
+  is the set of convex polygons formed by its entity's emitting faces
+  (precedent: `research.md` §5). `light_area` is the type's first front end. At
+  promotion, the roadmap "surface lights" entry is reworded as a texture-keyed
+  front end on this type, for screens, signs and lava. It also takes over the
+  texture-level bounce multiplier, and must reconcile it with "Albedo is
+  physical" (`build_pipeline.md` §Compiler pipeline).
+- **Authoring: a brush entity, `light_area`.** Its brushes compile as static world
+  brushwork, like `switch` and `func_group`. Its emitting faces are the exposed
+  brush sides whose texture has an `_e` map. Emission is one-sided, along each
+  face's outward normal. An entity with no emitting face fails the build.
+- **Brightness is per area.** A larger brush gives proportionally more light, as
+  in every area-scaled tool (`research.md` §5). Far from the panel, on its axis,
+  a 1 m² panel matches an inverse-squared (`delay 2`) point light of the same
+  `light` value; close in, it is dimmer, which is the point. The entity carries
+  its own `_color` and `light`, and its light never reads a material's emissive
+  strength or a texture prefix.
+- **Reach is derived, with an override.** Reach is the distance from the polygons
+  at which the bound E ≤ L·A/d² falls below a fixed cutoff, and nothing beyond it
+  is lit. `_falloff_range`, measured the same way, overrides it (`research.md`
+  §4).
+- **Unshadowed term: exact.** Lambert's polygon irradiance, clipped to the
+  receiver's horizon, with the clipped polygon's irradiance vector as the stored
+  direction (`research.md` §1). A receiver on or behind the emitter's plane gets
+  zero, so the emitter's own faces take no direct light from it.
+- **Shadows: integrand-weighted visibility in the existing separable fold.** Each
+  shadow sample counts by its share of the unshadowed light, never as a plain
+  clear-ray fraction, which is wrong near a large emitter (`research.md` §2). The
+  `lightmap_layer` partition record does not change.
+- **Probe bakes project over the polygon, not along one direction.** This covers
+  direct SH, billboard scatter and the mover probe channel. Unshadowed
+  coefficients are analytic; shadowing never applies a per-coefficient ratio
+  (`research.md` §3).
+  - Bounce comes from the light's own surface-radiance patch layer, as for every
+    light. Its glow never enters the radiance cache, which keeps the
+    no-double-count invariant (`context/lib/index.md` §2).
   - The gi-rtx-lite ruling "Emissive bounce: opt-in per material" stays open.
-    The record gains one line: `light_area` faces are excluded from any
-    emissive bounce, since their light already bounces.
-- **Culls stay sphere-shaped in this brief.** Every reach, shaft and influence
-  cull receives a sphere that contains the polygons plus their reach. That keeps
-  every exact-skip proof true, so no output byte depends on a cull
-  (`build_pipeline.md` §Compiler pipeline step 12, Exact skips). Tight polygon
-  hulls are a follow-on, built only if the bake-time row asks for them.
-- **Flush emitters are expected.**
-  - Buried-light classification and the embedded-emitter test do not apply to
-    this type.
-  - Shadow rays must not be blocked by the emitter's own faces.
-- **Glow follows the light.**
-  - Each emitting face draws `_e` × `_glow` × the light's live brightness and
-    colour multipliers, on the same frame as its lighting.
-  - `_glow` is an authored number, independent of `light`, so a game can pair
-    a dim glow with strong cast light, or the reverse.
+    The record gains one line: `light_area` faces are excluded from any emissive
+    bounce, since their light already bounces.
+- **Culls take two spheres.** Shadow-ray and occluder tests that bound the
+  emitter get the emitter sphere: the polygons' centroid and circumradius. Reach
+  and influence culls get the reach sphere: the same centre, with the reach added
+  to the radius. Both contain what they stand for, so every exact-skip proof
+  holds and no output byte depends on a cull (`build_pipeline.md` §Compiler
+  pipeline step 12, Exact skips). Tight polygon hulls are a follow-on, built only
+  if the bake-time row asks for them.
+- **Flush emitters are expected.** Buried-light classification and the
+  embedded-emitter test do not apply to this type. Shadow rays are never blocked
+  by the emitter's own faces.
+- **Glow follows the light.** Each emitting face draws `_e` × `_glow` × the
+  light's live colour × its live brightness multiplier, on the same frame as its
+  lighting. At rest, the live colour is `_color`, so a red light's white pane
+  glows red. Glow is drawn for static lights too.
+  - `_glow` is an authored number, independent of `light`, so a game can pair a
+    dim glow with strong cast light, or the reverse (`context/lib/index.md` §2,
+    Defaults for novices, controls for experts). Values ≥ 0 are accepted with no
+    upper clamp; a negative value fails the build.
   - On a `light_area` face, `_glow` replaces the texture prefix's emissive
-    strength, so a `neon_` texture there does not glow twice.
-  - This is the first per-surface glow scalar. It overrides "no per-surface
-    runtime scalar in v1" (`resource_management.md` §Emissive) for area-light
-    faces only. Prefix glow on every other face is unchanged.
-    - Default 4.0, today's `neon_` look, above the bloom threshold.
-    - Any value ≥ 0 is accepted, with no upper clamp; 0 is a light with
-      unlit faces.
-    - A negative value is a compile error.
-    - No preset names and no prefix lookup (`context/lib/index.md` §2,
-      Defaults for novices, controls for experts).
-  - The id → runtime table follows the `animated_block` precedent.
-  - Glow is drawn even when the light is static.
-- **Script surface is the existing light family.** Area lights appear in
-  `getMapEntities("light")` and take brightness and colour animation, including
-  the compile-time animated-bake reservation. A direction channel is refused at
-  compile time. Co-op replication of light animation is unchanged.
-- **v1 refusals.**
-  - No area-light specular. The light keeps a placeholder `SpecLight` record and
-    is never a shadowmask owner.
-  - No entity-shadow promotion on the base or the animated path.
-  - `_shadow_type sdf`, `_light_size`, `direction_curve`, `style` and spot keys
-    are compile errors.
-- **Wire: the AlphaLights section (id 18) bumps to v5.**
-  - A new type value, and the polygon list after the records.
-  - The polygon list is enough to rebuild a later specular term (LTC or
-    representative point, `research.md` §6) without another bump.
-  - LightInfluence stays a bounding sphere.
+    strength, so a `neon_` texture there does not glow twice. This is the first
+    per-surface glow scalar: it overrides "no per-surface runtime scalar in v1"
+    (`resource_management.md` §Emissive) for area-light faces only.
+- **`_start_inactive` reserves the animated bake.** On an area light, the key
+  means the light starts dark, faces and room together, and a script or mod
+  reaction can light it. It takes the same animated reservation `_animated 1`
+  does. Point lights keep today's rule.
+- **Script surface: the existing light family, plus one type name.** Area lights
+  appear in `getMapEntities("light")` with brightness and colour animation and
+  the script-derived animated reservation. `lightType` reports `"Area"`,
+  `falloffModel` reports `"InverseSquared"`, and `position` is the area-weighted
+  centroid. A direction channel (`sweep`) on an area light is refused at runtime
+  with `InvalidArgument`, as `setLightAnimation` refuses other invalid input. Co-op
+  replication of light animation is unchanged.
+- **Keys: inert keys warn, contradictory keys fail.** Changing a `light` to
+  `light_area` in the editor keeps its keys. So `delay`, `_light_size` and the
+  spot keys warn, naming the light and key, and are ignored. `_shadow_type sdf`,
+  `direction_curve` and `style` request behaviour this light cannot give, and fail
+  the build.
+- **v1 refusals.** No area-light specular: the light keeps an inert placeholder
+  `SpecLight` record, is never a shadowmask owner, and adds no specular on any
+  path. Runtime specular is a recorded door (`research.md` §6), deferred until
+  the diffuse light has shipped and been judged. No entity-shadow promotion on
+  either path, because promotion shadows from a point, and a point shadow from a
+  4 m panel is wrong.
+- **Wire: AlphaLights (id 18) v5 adds one type value.** No polygon payload ships
+  until a runtime consumer reads it. A later specular feature takes its own bump.
+  LightInfluence stays a bounding sphere.
 - **Non-goals.**
-  - Runtime specular, promotion, SDF shadows, two-sided emitters, tight cull
-    hulls.
-  - Texture-keyed emission (screens, signs, lava) and the texture-level bounce
-    multiplier. The reworded roadmap entry owns them, on this brief's light type.
+  - Two-sided emitters: none of the motivating content needs one.
+  - Texture-keyed emission and the texture-level bounce multiplier: the reworded
+    roadmap entry owns them.
   - Emissive bounce from ordinary emissive faces, and any change to prefix glow
     outside `light_area` faces.
-  - Texture-coloured emission: the light's colour is the entity's `_color`,
-    not the `_e` texels.
+  - Texture-coloured emission. The cast light's colour is `_color`, so one
+    texture can serve lights of different colours.
 
 ### Scripting surface
-No new names. An area light is a light member:
+One new name: `"Area"` in `LightKind`, in both `postretro.d.ts` and
+`postretro.d.luau`. An area light is otherwise a light member:
 
 ```ts
-const panels = getMapEntities("light", { tag: "skylight" });
-defineReaction("levelLoad", {
-  sequence: panels.flatMap((p) => p.pulse({ min: 0.3, max: 1.0, periodMs: 900 })),
-});
-// p.position is the area-weighted centroid of the emitting faces.
-// p.sweep(...) on an area light fails the level bake by name.
+import { defineReaction, getMapEntities } from "postretro";
+
+export function setupLevel(_ctx: unknown) {
+  const panels = getMapEntities("light", { tag: "skylight" });
+  return {
+    reactions: [
+      defineReaction("levelLoad", {
+        sequence: panels.flatMap((p) => p.pulse({ min: 0.3, max: 1.0, periodMs: 900 })),
+      }),
+    ],
+  };
+}
+// p.component.lightType === "Area"; p.position is the emitting faces' centroid.
+// p.sweep(...) on an area light fails with InvalidArgument.
 ```
 
 ## Acceptance
 ### Automated
 Polygon term (oracle values in `research.md` §1):
-- [ ] A unit square, L = 1, facing down, with receivers facing up at h = 0.1,
-  0.5, 1, 2, 5 and 10, matches the closed-form centred-square value to 1e-5
-  relative.
-- [ ] Tilted receivers at h = 1 match the table, including exactly 0 at 120°.
-  That case fails without the horizon clip.
-- [ ] Off-axis and edge-line receivers match the table, with no NaN.
-- [ ] A grazing receiver (0.1 mm below the plane) is finite and matches the
-  table.
+- [ ] Every receiver in the §1 table matches to 1e-5 relative: on-axis heights
+  against the closed-form centred square, tilts including exactly 0 at 120°
+  (which fails without the horizon clip), off-axis and edge-line receivers with
+  no NaN, and the grazing receiver finite.
 - [ ] Coplanar, behind-the-emitter and emitter-face receivers read 0. A receiver
   1 mm under the centre reads within 1e-4 of π.
 - [ ] Small-emitter limit: the ratio to L·A·cosθ_e·cosθ_r/d² is within 1e-3,
-  1e-5 and 1e-7 at s = 0.1, 0.01 and 0.001. On the axis, a 1 m² panel equals the
-  point term of the same `light` value.
+  1e-5 and 1e-7 at s = 0.1, 0.01 and 0.001. On the axis, 10 m from a 1 m² panel,
+  the lit value is within 1% of an inverse-squared point light of the same
+  `light` value; at 1 m it is lower.
 - [ ] f32 corners about 1 km from the origin agree with f64 corners.
 
 Shadows and probes:
@@ -157,32 +158,27 @@ Shadows and probes:
 - [ ] 4 × 4 m panel, probe 1 m below: the side-facing reconstruction is within 5%
   of 0.781, and the down-facing one within 0.05 of 0. The single-direction
   projection gives 0.230 and 0.154.
-- [ ] Billboard scatter (ids 47, 48) and the mover probe channel each project a
-  4 × 4 m panel over the polygon: at a probe 1 m below, the side-facing value is
-  within 5% of 0.781.
+- [ ] Billboard scatter and the mover probe channel each project a 4 × 4 m panel
+  over the polygon: at a probe 1 m below, the side-facing value is within 5% of
+  0.781.
 
-Placement, identity and refusals:
+Placement, culls and keys:
 - [ ] In one entity holding a frame brush and an `_e` glass brush, only the
   glass's exposed faces emit. The entity's brushes block movement and cast
   shadows like worldspawn.
 - [ ] With `_falloff_range` set, a receiver just past it, measured from the
-  panel, is unlit, and one just inside is lit. Without the key, reach follows
-  brightness: doubling `light` lengthens it by √2.
+  panel, is unlit, and one just inside is lit. Without the key, doubling `light`
+  lengthens reach by √2.
 - [ ] An area light on all four sides of a pillar, with its centroid inside the
   pillar, is neither dropped as buried nor flagged embedded. A point light
   buried in solid is still dropped.
 - [ ] A wall texel at a flush emitter's edge stores visibility 1 and matches the
   unoccluded polygon term within 1%.
 - [ ] Every bake output is byte-identical with exact skips on and off on an
-  area-light map.
+  area-light map, and the shaft cull still clears tiles there: its cleared-tile
+  count is above zero.
 - [ ] Moving one polygon vertex re-keys the lightmap layer, the surface-radiance
   layer and the direct-SH memos. An unrelated light's cache entries do not move.
-- [ ] Each of these fails the build, naming the light: an entity with no `_e`
-  face, `_shadow_type sdf`, `direction_curve`, and a script `sweep`.
-- [ ] Promotion selects no area light on either path, though the animated area
-  light is in section 45's direct-delta set and an animated spot beside it is
-  selected. The placeholder `SpecLight` is never an id-42 owner.
-- [ ] An animated area light's weight map at curve 1 equals its static bake.
 - [ ] A 4 × 4 m panel built from four 2 × 2 m brushes lights every receiver
   within 1e-5 relative of the same panel as one brush, and resolves the same
   reach (research.md O6).
@@ -203,34 +199,44 @@ Placement, identity and refusals:
   id (research.md O12).
 - [ ] On one thread, a point light's probe set is the same whether or not an
   area light's probe set was built first at the same count (research.md O9).
-- [ ] `_light_size`, `style` and each spot key on a `light_area` fail the build,
-  naming the light and the key.
-- [ ] The AlphaLights v5 loader rejects a polygon entry on a non-area record, an
-  area record without one, and a polygon with fewer than 3 vertices. An empty
-  list reads as a zero area count.
+- [ ] An entity with no `_e` face, `_shadow_type sdf`, `direction_curve` or
+  `style` fails the build, naming the light and key. `delay`, `_light_size` and
+  each spot key warn, naming the light and key, and leave every bake byte as if
+  absent.
+- [ ] Promotion selects no area light on either path, though the animated area
+  light is in section 45's direct-delta set and an animated spot beside it is
+  selected. The placeholder `SpecLight` is never an id-42 owner, and with
+  billboard scatter withheld, billboards beside the panel take no specular from
+  it.
+- [ ] An animated area light's weight map at curve 1 equals its static bake.
+- [ ] AlphaLights v5 round-trips area and non-area records. A v4 file and an
+  unknown type value are rejected.
 - [ ] A sub-second area-light fixture joins `GATE_FIXTURES`, profiled first, and
   its two lightmap bakes match byte for byte.
-- [ ] AlphaLights v5 round-trips area and non-area records. A v4 file is
-  rejected by version.
+
+Script surface:
 - [ ] The Scripting surface example runs as a `content/dev` script on panels
   with no `_animated` key. Each tagged panel gains an animated-bake reservation,
-  its faces' glow entries name that reserved slot, and `p.position` is the
-  area-weighted centroid.
-- [ ] A static area light's `_e` faces glow on a texture without the `neon_`
-  prefix, at `_e` × `_glow`. With `_glow` at 0, 0.5 and 8, the face's emissive
-  term scales by that factor, and every bake section stays byte-identical. A
-  negative `_glow` fails the build. A `_start_inactive` light's faces start
-  dark.
-- [ ] A `neon_` texture on a `light_area` face glows at `_e` × `_glow`. The same
-  texture on a worldspawn face keeps its prefix glow.
+  its faces' glow entries name that reserved slot, `lightType` reads `"Area"`, and
+  `p.position` is the area-weighted centroid. The TypeScript and Luau type
+  checks both accept `"Area"`.
+- [ ] `sweep` on an area light returns `InvalidArgument` and leaves the light's
+  animation unchanged. `sweep` on a spot light still works.
 
 Glow and light identity (orderings in `research.md` §Pin table):
+- [ ] A static area light's `_e` faces glow on a texture without the `neon_`
+  prefix, at `_e` × `_glow` × `_color`. With `_glow` at 0, 0.5 and 8, the face's
+  emissive term scales by that factor, and every bake section stays
+  byte-identical. A negative `_glow` fails the build.
+- [ ] A white `_e` pane on a red area light glows red. A `colorShift` moves the
+  glow's colour and the room's colour together.
+- [ ] A `neon_` texture on a `light_area` face glows at `_e` × `_glow` × `_color`.
+  The same texture on a worldspawn face keeps its prefix glow.
 - [ ] Doubling an area light's `light` doubles its lightmap and probe output and
   leaves its faces' emissive term unchanged (research.md O2).
 - [ ] Two otherwise equal area lights with the same diffuse map, one on a
   `neon_` texture with a white `_e` map and one on a plain texture with a red
-  `_e` map, produce
-  byte-identical lightmap, SH and scatter sections.
+  `_e` map, produce byte-identical lightmap, SH and scatter sections.
 - [ ] A plain-prefix texture with an `_e` map glows on a `light_area` face and
   stays dark on a worldspawn face in the same draw.
 - [ ] Changing only `_glow` re-keys no bake cache entry: a warm rebuild reads
@@ -238,9 +244,10 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - [ ] A script fade from 1 to 0.25 on an animated area light settles with its
   faces' emissive multiplier at 0.25, equal to the room's settled scale, on the
   settle frame and after (research.md O1).
-- [ ] An `_animated` area light with `_start_inactive 1` starts with dark faces
-  and an unlit room. The same light under a `levelLoad` pulse starts lit, faces
-  and room together (research.md O3).
+- [ ] An area light with `_start_inactive 1` and no `_animated` key gains an
+  animated reservation and starts with dark faces and an unlit room. The same
+  light under a `levelLoad` pulse starts lit, faces and room together
+  (research.md O3).
 - [ ] On a map with an animated point light ahead of three animated area lights,
   one of them `_bake_only`, each area light's faces resolve to that light's own
   compose descriptor slot (research.md O4).
@@ -270,69 +277,69 @@ Glow and light identity (orderings in `research.md` §Pin table):
     `sh_bake/probe.rs::bake_probe_direct_rgb_posed`.
   - Mover probe channel: `mover_probe_channel/{direct,visibility,posed_scene}`.
   - Billboard scatter: `billboard_direct_scatter_bake`.
-- **Containing sphere.** One reach-sphere accessor, read by every
-  `falloff_range` cull reader (`research.md` §Grounding lists them). It is
-  cheaper and safer than editing each one by hand.
+- **Two spheres.** The emitter sphere replaces `light_size` in
+  `lightmap_layer/shaft_cull.rs::ShaftCull::new` and the mover occluder tests
+  (`posed_scene`, `visibility`). One reach-sphere accessor serves the
+  `falloff_range` cull readers (`research.md` §Grounding), including the layer
+  key's geometry slice (O10).
+- **Visibility weighting.** Two equal options (`research.md` §2): Heitz–Hill–
+  McGuire ratio estimator over solid-angle samples (Ureña for rectangles, an Arvo
+  fan otherwise), or projected-solid-angle sampling (Peters 2021) with plain
+  counting. Pick after the patent search.
+- **Probe shadowing.** A control-variate term on the 4-ray set, with all-visible
+  and none-visible fast paths. The scalar ratio taken from L0 is the cheapest
+  fallback (`research.md` §3).
+- **Numerics.** f64 with the atan2 edge form; no fitted approximation offline.
+- **Emitting sides.** Take sides before BSP splitting, and stamp glow ids on every
+  derived render face (O12).
 - **Lattice snap.** The polygon lattice depends on the light and the receiver.
   Key it apart from the count-keyed point/spot snap in `SoftProbes::new`.
 - **Self-occlusion.** Lift sample points off the plane (q3map, qrad and
   ericw-tools precedent), or exclude the emitter's faces from the hit test.
   First check how `segment_clear` treats an endpoint lying on a triangle.
 - **Cache digest.** Add the polygon to `surface_radiance/layer.rs::LightDigest::of`
-  by hand. The lightmap key already hashes the whole `MapLight`.
+  by hand. Keep `_glow` out of every bake key.
 - **Promotion.** Animated promotion
   (`animated_baked_shadow_candidates_with_direct_delta`) needs an explicit type
   refusal. `is_promotable_base_light` already has one.
-- **Glow table.** It must be a uniform, not a texture: the forward pass is at
-  16/16 textures.
+- **Glow table.** Follow the `animated_block` id → uniform-table precedent; the
+  forward pass has no texture binding to spare (`research.md` §Grounding). The
+  glow reads the compose descriptor and the frame's time uniform in-shader (O13).
 - **Strongest rival:** texture-keyed polygon lights, which use the roadmap's
   mark-a-texture-once authoring with this brief's maths. They win for many small
   emitters (screens, signs). The entity wins for the Problem's set pieces: one
   light per panel, a script handle, and its own colour and brightness.
-- **Template point lights** lose on hot spots and per-copy bake cost
-  (`research.md` §1). They keep up to four specular owners per face, which v1
-  area lights give up.
-- **First slice.** Polygon term plus ratio-estimator visibility in the lightmap
-  only, on a test map: the riskiest maths, behind the analytic and visibility
-  rows. Then probes, glow, wire and refusals.
-- **Cross-check.** Godot 4.7's `lm_area_lights_inc.glsl` (MIT) is a cheap
-  cross-check of the clipped polygon term. Its centre-aimed shadows are not this
-  design.
+- **First slice.** Polygon term plus weighted visibility in the lightmap only, on
+  a test map: the riskiest maths, behind the analytic and visibility rows. Then
+  probes, glow, wire and keys.
+- **Cross-check.** Godot 4.7's `lm_area_lights_inc.glsl` (MIT) checks the clipped
+  polygon term cheaply. Its centre-aimed shadows are not this design.
 
 ## Open questions
-- Patent search on polygon area-light baking and on ratio-estimator visibility,
-  charted per `context/research/gi-rtx-lite/ip-check.md`. Prior art only so far
-  (`research.md` §5). — owner: owner / counsel — **blocks build**
+- Patent search on polygon area-light baking and on the visibility-weighting
+  options, charted per `context/research/gi-rtx-lite/ip-check.md`. Prior art only
+  so far (`research.md` §5). — owner: owner / counsel — **blocks build**
 - Reach cutoff constant: no visible edge in the owner A/B. — **delegated**
 - Escalated sample count for area lights, from the noise row. — **delegated**
 - Self-occlusion mechanism: lift or exclude. — **delegated**
+- Visibility weighting option, after the patent search. — **delegated**
 
 ## Boundary inventory
 
-| Name | Rust | Wire | FGD KVP | Docs |
-|---|---|---|---|---|
-| Area light classname | adapter-recognised brush entity | n/a | `light_area` (`@SolidClass`) | `docs/level_design.md` lights |
-| Light type | `LightType::Area` | `AlphaLightType` value 3 | n/a | n/a |
-| Brightness, colour, override reach | `MapLight` intensity, color, falloff_range | existing record fields | `light`, `_color`, `_falloff_range` | same |
-| Animation keys | existing | existing | `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase`, `_animated`, `_start_inactive`, `_bake_only`, `_tags` | same |
-| Glow strength | per-entity f32 | glow table (not AlphaLights) | `_glow(float)`, default 4.0 | same |
+| Name | Rust | Wire | TS / Luau | FGD KVP | Docs |
+|---|---|---|---|---|---|
+| Area light classname | adapter-recognised brush entity | n/a | n/a | `light_area` (`@SolidClass`) | `docs/level_design.md` lights |
+| Light type | `LightType::Area` | `AlphaLightType` value 3 | `LightKind` `"Area"`, both files ship | n/a | `docs/scripting-reference.md` light handles |
+| Falloff reported | n/a | `falloff_model` 2 | `falloffModel` `"InverseSquared"` | n/a | same |
+| Brightness, colour, override reach | `MapLight` intensity, color, falloff_range | existing record fields | existing | `light`, `_color`, `_falloff_range` | same |
+| Animation keys | existing | existing | existing | `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase`, `_animated`, `_start_inactive`, `_bake_only`, `_tags` | same |
+| Glow strength | per-entity f32 | glow table (not AlphaLights) | n/a | `_glow(float)`, default 4.0 | same |
 
 ## Wire format
 AlphaLights (id 18) v5, little-endian throughout, mirroring v4:
-- Version u32, then light count u32, then fixed 73-byte records with the v4
-  field order unchanged.
-- An area record:
-  - `light_type` = 3
-  - `origin` = area-weighted centroid
-  - `falloff_range` = resolved reach
-  - `falloff_model` = 2
-  - cone fields zero
-  - `shadow_type` = 0
-- After the records: area count u32, then, per area light in record order:
-  - record index u32
-  - polygon count u32
-  - per polygon: vertex count u32 (≥ 3), then vertices as f32 × 3 in emitting
-    winding (counter-clockwise seen from the lit side)
-- An empty list is a zero area count.
-- A loader rejects a non-3 record with an entry, a type-3 record without one,
-  and any version other than 5.
+- Version u32, then light count u32, then fixed 73-byte records with the v4 field
+  order unchanged. No trailing payload.
+- An area record has `light_type` = 3, `origin` = area-weighted centroid,
+  `falloff_range` = resolved reach, `falloff_model` = 2, zero cone fields and
+  `shadow_type` = 0.
+- A loader rejects any version other than 5 and any unknown type value.

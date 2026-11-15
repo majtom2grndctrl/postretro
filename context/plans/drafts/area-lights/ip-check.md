@@ -23,7 +23,7 @@ The design is stated in claim-like terms in `ip-questions.md` §Design:
 | Document | Owner | Priority | Status | Source | Pieces | Reading |
 |---|---|---|---|---|---|---|
 | US10325401B2 (from US20170263043A1; EP3217361B1) "bounce light map" | Imagination Technologies | GB 2016-03-11; US filed 2017-03-13 | Granted 2019-06-18, active, adjusted expiry 2037-06-07 (Google) | Independent claims 1 and 18 read in full; the third (IC-description medium) not opened | 1 | §Claim charts. Initial light maps and importance sampling from their texels appear absent. A bounce-light patent |
-| US10891783B2 (+ US11302068B2, US11763520B2, WO2019183149A1) "Improving area light shadows in computer generated scenes" | NVIDIA | 2018-03-19 (provisional 62/644,806) | Granted 2021-01-12, active, expiry ≈2039-03-19 | '783 claims 1 and 10 read in full, third independent claim not opened. '520 and '068 claims relayed in quoted segments | 2 | §Claim charts. Real subject overlap: a rectangular area light, a spherical polygon and weighted average visibility. Every independent claim read adds voxel cone tracing, which appears absent. Show counsel if option (a) is chosen |
+| US10891783B2, US11763520B2 (+ US11302068B2, WO2019183149A1) "Improving area light shadows in computer generated scenes", inventor Panteleev | NVIDIA | 2018-03-19 (provisional 62/644,806; PCT/US2019/023043) | '783 granted 2021-01-12; '520 granted 2023-09-19; active, expiry ≈2039-03-19 (Google) | Every independent claim of '783 and '520 read in full in a browser. '068 not read directly; its summary reading stands | 2 | §Claim charts. Runtime soft shadows from a rectangular light by voxel cone tracing. Real subject overlap: a spherical polygon, a sample grid and weighted average visibility. Every independent claim requires cones. Show counsel if option (a) is chosen |
 | US12293451B2 | Tencent | CN 2021-04-02 | Granted 2025-05-06, active, adjusted expiry 2043-01-19 | Claim 1 read in full; claims 9 and 17 summarised as the same five steps | 1, 3 | §Claim charts. The light-change step and the radiance transfer parameter appear absent. Also charted for the GI stack in `context/research/gi-rtx-lite/ip-check.md` |
 | US9262860B2 | Solid Angle SL / Sony | 2011-02-17 | Active, expiry ≈2032 (estimate) | **Full claims read** | 2 | Claims 1 and 14 require homogeneous participating media and equi-angular sampling along a ray. Appears absent: the design samples directions to a polygon from a surface texel. Dependent claim 6 (quad lights) hangs from the media claim |
 | US7864177B2 | Intel | 2006-07-24 | Expired (fees) | Claims 1/12/17 partly read | 1 | Per-polygon visibility map: appears absent. Claim 12 (incident light × precomputed visibility) is arguable at that level of generality only. No polygon area light, no sampled solid angle |
@@ -68,7 +68,31 @@ Read against `ip-questions.md` §Design. Elements are quoted from the claim.
 | "obtaining samples … by tracing cones, through a voxel representation of the scene, … wherein a total number of cones is a product of the number of cones along each dimension" | Appears absent: no cones and no voxel scene |
 | "computing average visibility for the surface point based on the samples and a weight associated with each of the cones as determined by the sample patterns" | Arguable on weighted average visibility; the design's weight is each sample's share of the unshadowed integrand, not a cone-pattern weight |
 
-Claim 10, a GPU system, claims "a memory configured to store a voxel representation of a scene" and "voxel cone tracing". Both appear absent; its weighted-average-visibility tail is arguable. The third independent claim is unread, so it is not yet confirmed that every independent claim requires voxels or cones.
+**US10891783B2 claims 10 and 18.** Claim 10, a GPU system, claims "a memory configured to store a voxel representation of a scene" and "voxel cone tracing". Claim 18, a computer program product, claims "determining a number of cones" and "employing voxel cone tracing". Both cone and voxel elements appear absent; each claim's weighted-average-visibility tail is arguable.
+
+**US11763520B2:**
+
+| Claim | Elements | Reading |
+|---|---|---|
+| 1 | Generating voxels from geometry and light information; "tracing … one or more cones corresponding to an illuminant … through the one or more voxels, wherein a number of the one or more cones traced is based on sampling a surface of the illuminant"; illumination values from the traced cones | Appears absent |
+| 12 (system), 19 (method) | "determining a number of cones for sampling the illuminant"; "obtaining … samples from a light surface of the illuminant by tracing the cones"; average visibility or illumination using "a weight associated with at least one sample … as determined by sample patterns". Claim 19 adds patterns that "dynamically correspond to changes in a size of the illuminant". The voxel wording is dropped | Cones appear absent: the description defines them as voxel-cone-trace cones with a preferred cone angle, though how "cones" is construed is counsel's question. Weighted visibility is arguable |
+
+**Distance from the family.**
+- What the design shares: a spherical polygon, a sample set and a weighted visibility average.
+- Where it differs:
+  - It traces no cones and keeps no voxel scene.
+  - Its sample count does not come from the light's angular size.
+  - Its weights are each sample's share of the unshadowed integrand (option a), or there are none (option b), never smoothness-driven pattern weights.
+  - It bakes offline, per texel.
+  - It takes any convex polygon, not only rectangles.
+- Option (b) sits furthest from the family.
+- The examiner cited Ureña 2013, LTC 2016, Kok 1992, Crassin's voxel cone tracing, Assarsson 2003 and Disney US20130328875A1. The claims are drawn around that art through cones and voxels.
+
+**Choices that would move the design toward these claims, and stay out of it:**
+- a voxel scene representation;
+- a sample or cone count derived from the light's angular size;
+- a two-axis sample grid whose zero-weight samples split as the light grows;
+- describing samples as cones.
 
 ## Readings by piece
 
@@ -97,12 +121,26 @@ Claim 10, a GPU system, claims "a memory configured to store a voxel representat
 - **Lightmass.** UDK docs confirm area lights and emissive mesh area lights, but the page is undated, so 2009 is unverified.
 - **Strata Source.** The wiki is behind bot protection; no area-light documentation was found, and absence is not confirmed.
 
+## Prior-art basis by element
+
+The design practises published methods. Its analytic × sampled-visibility pairing is Heitz, Hill & McGuire's own idea, so the design does not rest on a novel combination. This is not a clearance.
+
+| Element | Published basis |
+|---|---|
+| Analytic polygon irradiance, horizon clip, irradiance vector | Lambert 1760; Arvo 1994 |
+| Polygon sampling | Ureña et al. 2013; Arvo 1995; Peters 2021 (code licence unconfirmed) |
+| Analytic term × weighted sampled visibility | Heitz, Hill & McGuire 2018 (full text read; no patent notice) |
+| Probe SH from polygon lights | Wang & Ramamoorthi 2018 (order-1 statement unverified); control variates are generic |
+| Reach window | Karis 2013 |
+| Glow synced to a baked animated light | Quake lightstyles 1996 (one search run) |
+| Polygon area lights in a level compiler | id q3map 1999 (exact form factor, confirmed in source); Source 2 `light_rect` (method and date unknown) |
+
 ## Follow-ups before the build gate lifts
 
 By hand in Google Patents or ppubs, where automated queries fail:
 - A CPC sweep over G06T 15/50, 15/506, 15/60 and 15/80, with "area light", "lightmap", "form factor" and "visibility".
 - Assignee queries for Sony, Valve, AMD, Silicon Studio, NetEase, UC Regents, Unity, Activision, Ubisoft and Geomerics/ARM.
-- The unread independent claims: US10891783B2's third, which should confirm whether it too requires voxels or cones; US10325401B2's IC-description claim; and US12293451B2 claims 9 and 17.
+- The unread claims: US11302068B2 in full; US10325401B2's IC-description claim; US12293451B2 claims 9 and 17.
 - A full read of the 159-hit "area light / polygonal light + lightmap / texel" result set; only its first ten hits were seen.
 - Wang & Ramamoorthi 2018 from a mirror, for the order-1 statement and cost.
 - Source 2 `light_rect`: bake method and date.

@@ -33,12 +33,33 @@ pub(crate) fn mod_scope_references<'a>(
     refs
 }
 
+fn write_count(slot_table: &mut SlotTable, name: &str, count: u32) {
+    let value = postretro_entities::SlotValue::Number(count as f32);
+    if let Some(slot) = slot_table.get_mut(name)
+        && slot.value.as_ref() != Some(&value)
+    {
+        slot.write_value(Some(value));
+    }
+}
+
 /// Every peer runs the same scripts, so each derives the same sets at the same
 /// points; nothing carries them on the wire.
 #[derive(Debug, Default)]
 pub(crate) struct OccupancyFamilies {
     mod_keys: BTreeSet<String>,
     level_keys: BTreeSet<String>,
+    /// Each existing member's tag and slot names, rebuilt when the set changes
+    /// so a tick's writes format nothing.
+    members: Vec<MemberSlots>,
+    /// Scratch for one tag's distinct occupant pawns; reused across ticks.
+    pawns: Vec<postretro_entities::EntityId>,
+}
+
+#[derive(Debug)]
+struct MemberSlots {
+    tag: String,
+    occupied_count: String,
+    occupants: String,
 }
 
 impl OccupancyFamilies {
@@ -79,13 +100,56 @@ impl OccupancyFamilies {
     }
 
     /// The tags whose families exist, sorted.
+    #[cfg(test)]
     pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
         self.mod_keys.union(&self.level_keys).map(String::as_str)
     }
 
-    fn apply(&self, slot_table: &mut SlotTable) {
+    /// One authoritative tick, beside the player counts: each family from the
+    /// volumes this tick's trigger stage left occupied. `occupiedCount` counts
+    /// volumes carrying the tag with a counted player inside (a tag a volume
+    /// repeats counts it once); `occupants` counts distinct counted players
+    /// inside any of them. With no session level every family reads 0, as the
+    /// player counts do.
+    pub(crate) fn publish_tick(
+        &mut self,
+        session_level: bool,
+        registry: &postretro_entities::EntityRegistry,
+        occupied_volumes: &[(postretro_entities::EntityId, Vec<postretro_entities::EntityId>)],
+        slot_table: &mut SlotTable,
+    ) {
+        for member in &self.members {
+            let mut volumes = 0u32;
+            self.pawns.clear();
+            if session_level {
+                for (volume, inside) in occupied_volumes {
+                    let carries = registry
+                        .get_tags(*volume)
+                        .is_ok_and(|tags| tags.iter().any(|tag| *tag == member.tag));
+                    if carries {
+                        volumes += 1;
+                        self.pawns.extend_from_slice(inside);
+                    }
+                }
+            }
+            self.pawns.sort_unstable();
+            self.pawns.dedup();
+            write_count(slot_table, &member.occupied_count, volumes);
+            write_count(slot_table, &member.occupants, self.pawns.len() as u32);
+        }
+    }
+
+    fn apply(&mut self, slot_table: &mut SlotTable) {
         let keys: BTreeSet<String> = self.mod_keys.union(&self.level_keys).cloned().collect();
         slot_table.replace_family_members(&OCCUPANCY_FAMILY, &keys);
+        self.members = keys
+            .into_iter()
+            .map(|tag| MemberSlots {
+                occupied_count: OCCUPANCY_FAMILY.slot_name(&tag, "occupiedCount"),
+                occupants: OCCUPANCY_FAMILY.slot_name(&tag, "occupants"),
+                tag,
+            })
+            .collect();
     }
 }
 
@@ -193,5 +257,72 @@ mod tests {
             families.keys().collect::<Vec<_>>(),
             vec!["airlock", "arena", "hill"]
         );
+    }
+
+    fn counts(table: &SlotTable, tag: &str) -> (Option<SlotValue>, Option<SlotValue>) {
+        (
+            table
+                .get(&format!("occupancy.{tag}.occupiedCount"))
+                .and_then(|slot| slot.value.clone()),
+            occupants(table, tag),
+        )
+    }
+
+    fn n(value: f32) -> Option<SlotValue> {
+        Some(SlotValue::Number(value))
+    }
+
+    // O1, O2, O4 (P11): volumes with a counted player inside count once per
+    // volume carrying the tag, players once however many volumes they stand in,
+    // and a volume repeating a tag counts it once.
+    #[test]
+    fn occupancy_counts_volumes_and_distinct_players() {
+        use postretro_entities::{EntityRegistry, Transform};
+        let mut registry = EntityRegistry::new();
+        let mut volume = |tags: &[&str]| {
+            let id = registry.spawn(Transform::default());
+            registry
+                .set_tags(id, tags.iter().map(|tag| (*tag).to_string()).collect())
+                .unwrap();
+            id
+        };
+        let plate = volume(&["plates"]);
+        let other_plate = volume(&["plates"]);
+        let overlap = volume(&["room", "plates"]);
+        let doubled = volume(&["hill", "hill"]);
+        let mut pawn = || registry.spawn(Transform::default());
+        let (a, b) = (pawn(), pawn());
+
+        let mut table = SlotTable::new();
+        let mut families = OccupancyFamilies::default();
+        families.commit_mod(&refs(&["plates", "room", "hill"]), &mut table);
+
+        // Two players on one plate.
+        families.publish_tick(true, &registry, &[(plate, vec![a, b])], &mut table);
+        assert_eq!(counts(&table, "plates"), (n(1.0), n(2.0)));
+        // One player on each of two plates sharing a tag.
+        families.publish_tick(
+            true,
+            &registry,
+            &[(plate, vec![a]), (other_plate, vec![b])],
+            &mut table,
+        );
+        assert_eq!(counts(&table, "plates"), (n(2.0), n(2.0)));
+        // One player inside two overlapping volumes sharing a tag.
+        families.publish_tick(
+            true,
+            &registry,
+            &[(plate, vec![a]), (overlap, vec![a])],
+            &mut table,
+        );
+        assert_eq!(counts(&table, "plates"), (n(2.0), n(1.0)));
+        assert_eq!(counts(&table, "room"), (n(1.0), n(1.0)));
+        // A volume repeating its tag counts once.
+        families.publish_tick(true, &registry, &[(doubled, vec![a])], &mut table);
+        assert_eq!(counts(&table, "hill"), (n(1.0), n(1.0)));
+        assert_eq!(counts(&table, "plates"), (n(0.0), n(0.0)));
+        // No session level: every family reads 0.
+        families.publish_tick(false, &registry, &[(doubled, vec![a])], &mut table);
+        assert_eq!(counts(&table, "hill"), (n(0.0), n(0.0)));
     }
 }

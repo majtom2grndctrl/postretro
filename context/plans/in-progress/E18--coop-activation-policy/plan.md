@@ -70,10 +70,10 @@ Test names are proposals; final names land with each task. `two-endpoint` means 
 | S5 single player `inPlay` 1 / `down`; leaver reads 0 at frontend (P14) | `single_player_counts_follow_install_tick_death_and_unload`, `client_counts_read_zero_once_its_level_unloads`, `frontend_backdrop_is_not_a_session_level` | achievable as stated; passing (task 1) |
 | S6 `occupants <= inPlay` every tick | property assertion inside every puzzle and co-op harness tick, plus `occupants_never_exceed_in_play` | achievable as stated |
 | S7 demoted client and host seat read `loading` without a live pawn (P26) | `seat_without_live_pawn_reads_loading` | achievable as stated; passing (task 1) |
-| O1 two on one plate 1/2; one on each of two plates 2/2 | `occupancy_counts_volumes_and_distinct_players` | achievable as stated |
-| O2 overlapping volumes: once in `occupants`, twice in `occupiedCount` | same test, overlap case | achievable as stated |
-| O3 disarmed or latched volume counts; `switch` press volume counts | `occupancy_ignores_arm_and_latch_and_counts_switch` | achievable as stated |
-| O4 repeated tag counts once (P11) | `repeated_volume_tag_counts_once` | achievable as stated |
+| O1 two on one plate 1/2; one on each of two plates 2/2 | `occupancy_counts_volumes_and_distinct_players` | achievable as stated; passing (task 7) |
+| O2 overlapping volumes: once in `occupants`, twice in `occupiedCount` | `occupancy_counts_volumes_and_distinct_players`, overlap case | achievable as stated; passing (task 7) |
+| O3 disarmed or latched volume counts; `switch` press volume counts | `occupied_volumes_ignore_arm_and_latch_and_count_use_volumes` | achievable as stated; passing (task 7) |
+| O4 repeated tag counts once (P11) | `occupancy_counts_volumes_and_distinct_players`, repeated-tag case | achievable as stated; passing (task 7) |
 | O5 player killed inside leaves both on the same later tick; gate never crosses (P7) | `death_inside_leaves_counts_together_and_gate_holds` | achievable as stated |
 | P1 two-button door: both held, early release, walking plate to plate | `two_button_door_solves_only_with_both_plates_held` | achievable as stated |
 | P2 N plates solve only when all held on one tick | `n_plates_solve_only_when_all_held_on_one_tick` | achievable as stated |
@@ -121,7 +121,7 @@ Each task ends green and committed with this file. Hot path: the per-tick write 
 | 4 | Roster names and statuses: `RosterEntry` fields, `WIRE_VERSION` 40, status dirty marking and 250 ms gate, client `entries` accessor; `session.players` rows on host, single player and clients; `Player N`; privacy tests and doc comments rewritten (L1–L5) | integrating executor | 1, 3 | done: L2, L3, L4 pass; WIRE_VERSION 40 gates and both privacy guards updated; full net, netcode and app suites green; L1 and L5 real-endpoint runs land with task 9 |
 | 5 | `forEach` in TS and Luau, `present` gating, id and reference suffixing, export inventories; HUD reference list (L6) | integrating executor (no worktree build budget on this disk) | 3 | done: L6 passes in both runtimes; typedefs regenerated; dev HUD `hud.players` list (`dev_hud_player_list_unrolls_one_row_per_seat`); scripting-core, sim, script-compiler suites green |
 | 6 | Referenced-tag collection over lowered descriptors; mod-scope families at first init and staged commit; level families at install, removed at unload unless mod-shared; absent and unformable tag warnings (C3–C11) | integrating executor | 3 | in progress: collector, mod/level/unload lifecycle and warnings written; C3, C4, C7, C10, C11 and P22 values pass at unit level; C5, C6 on the dev map (tasks 8, 10); C8, C9 binding and C11 crossings with tasks 8, 9 |
-| 7 | Sim aggregates per-tag `occupiedCount` / `occupants` from the capture onto `TickEvents`; the frame write publishes them with counts (O1–O5, S6) | integrating executor | 2, 6 | |
+| 7 | Sim aggregates per-tag `occupiedCount` / `occupants` from the capture onto `TickEvents`; the frame write publishes them with counts (O1–O5, S6) | integrating executor | 2, 6 | in progress: sim returns occupied volumes from the capture; app writes each family per tick beside the counts; O1–O4 pass; full suites running; O5 and S6 on the task-8 harness |
 | 8 | Shared headless harness (production sim tick, write, accumulators, crossings) and the puzzle rows P1–P9 | integrating executor | 7 | |
 | 9 | Two-endpoint harness on the sim tick; N1–N3, P5, C8, C11, S1 client half, L1, L5 | integrating executor | 4, 7 | |
 | 10 | Dev map `coop-activation-test` and TS and Luau scripts (two-button, N plates, room gate, hill, HUD list); rewrite `coop-two-button-puzzles.ts`; surface example compile; TS/Luau parity (U1) | integrating executor | 5, 8 | |

@@ -26,7 +26,7 @@ pub(crate) struct SessionPlayers {
 }
 
 impl SessionPlayers {
-    #[cfg(test)]
+    /// A level a session plays is installed.
     pub(crate) fn session_level(&self) -> bool {
         self.session_level
     }

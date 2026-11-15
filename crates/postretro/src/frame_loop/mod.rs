@@ -1087,6 +1087,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 },
                 &mut script_ctx.slot_table.borrow_mut(),
             );
+            session.occupancy_families.publish_tick(
+                session.session_players.session_level(),
+                &script_ctx.registry.borrow(),
+                &tick_events.trigger_stage_pawns.occupied_volumes,
+                &mut script_ctx.slot_table.borrow_mut(),
+            );
             scripting_systems::slot_accumulators::evaluate_slot_accumulators(
                 &mut session.scripting.slot_accumulator_bindings,
                 tick_dt,

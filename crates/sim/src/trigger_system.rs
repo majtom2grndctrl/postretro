@@ -153,6 +153,16 @@ impl TriggerSystem {
     /// borrows this from the frame-end drain: an interruptible wait may park only
     /// while its origin's paired enter is live, otherwise a player who entered and
     /// left within one frame would park an uncancellable instance (O52, O60).
+    /// After this tick's trigger stage: each volume the capture's counted
+    /// players occupy, with their pawns.
+    pub fn counted_volumes(
+        &self,
+        capabilities: &crate::sim::player_life::TriggerStageCapabilities,
+    ) -> Vec<(EntityId, Vec<EntityId>)> {
+        self.occupants
+            .counted_volumes(&capabilities.occupants, &capabilities.pawns)
+    }
+
     pub fn paired_enters(&self) -> &BTreeSet<(EntityId, PlayerId)> {
         &self.paired_enters
     }

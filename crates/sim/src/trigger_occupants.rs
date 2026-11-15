@@ -56,6 +56,27 @@ impl TriggerOccupants {
         self.by_trigger.entry(trigger).or_default().insert(player)
     }
 
+    /// Each volume with at least one member the effective occupancy rule
+    /// counts, in volume order, with those members' pawns. Armed and latched
+    /// state play no part: membership is physical.
+    pub(crate) fn counted_volumes(
+        &self,
+        counted: &HashSet<PlayerId>,
+        pawns: &std::collections::BTreeMap<PlayerId, EntityId>,
+    ) -> Vec<(EntityId, Vec<EntityId>)> {
+        self.by_trigger
+            .iter()
+            .filter_map(|(&trigger, members)| {
+                let inside: Vec<EntityId> = members
+                    .iter()
+                    .filter(|player| counted.contains(player))
+                    .filter_map(|player| pawns.get(player).copied())
+                    .collect();
+                (!inside.is_empty()).then_some((trigger, inside))
+            })
+            .collect()
+    }
+
     /// Members of `trigger` the effective occupancy rule counts, in player order.
     pub(crate) fn effective(
         &self,

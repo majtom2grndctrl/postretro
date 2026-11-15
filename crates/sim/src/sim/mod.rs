@@ -803,7 +803,7 @@ where
     let mut trigger_command_fires = Vec::new();
     let stage_capabilities =
         player_life::TriggerStageCapabilities::capture(&registry.borrow(), &players);
-    let trigger_stage_pawns = stage_capabilities.stage_pawns();
+    let mut trigger_stage_pawns = stage_capabilities.stage_pawns();
     if let Some(trigger_context) = trigger_context {
         let canonical_player_pawns = &stage_capabilities.pawns;
         let alive_players = &stage_capabilities.occupants;
@@ -919,6 +919,11 @@ where
                     },
                 );
         }
+        // Occupancy after the trigger stage settles, from the same capture
+        // the stage counted with: a player killed later this tick still
+        // occupies for it, and leaves on the next.
+        trigger_stage_pawns.occupied_volumes =
+            trigger_context.system.counted_volumes(&stage_capabilities);
     }
     let touch_events = {
         let mut registry = registry.borrow_mut();

@@ -63,6 +63,10 @@ pub struct TriggerStageCapabilities {
 pub struct TriggerStagePawns {
     pub captured: Vec<EntityId>,
     pub counted: Vec<EntityId>,
+    /// Each trigger volume with a counted pawn inside after the trigger stage
+    /// settles, in volume order, with those pawns. Empty on a tick with no
+    /// trigger stage.
+    pub occupied_volumes: Vec<(EntityId, Vec<EntityId>)>,
 }
 
 impl TriggerStageCapabilities {
@@ -76,7 +80,11 @@ impl TriggerStageCapabilities {
             .collect();
         captured.sort_unstable();
         counted.sort_unstable();
-        TriggerStagePawns { captured, counted }
+        TriggerStagePawns {
+            captured,
+            counted,
+            occupied_volumes: Vec::new(),
+        }
     }
 
     pub fn capture(registry: &EntityRegistry, players: &[AuthoritativePlayer]) -> Self {

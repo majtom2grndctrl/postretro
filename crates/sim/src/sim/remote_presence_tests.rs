@@ -415,3 +415,82 @@ fn trigger_stage_pawns_count_client_pawns_by_the_effective_rule() {
     assert!(!pawns.counted.contains(&declared_down));
     assert!(pawns.counted.contains(&declared_occupying));
 }
+
+// O3 and S4's occupant half: occupancy is physical membership filtered by the
+// capture. A disarmed or latched plate still counts its occupant, a `use`
+// volume (what a `switch` compiles to) counts a player standing in it without
+// a press, and an undeclared pawn at zero health occupies nothing.
+#[test]
+fn occupied_volumes_ignore_arm_and_latch_and_count_use_volumes() {
+    let mut fixture = Fixture::without_host_pawn();
+    let plate = fixture.plate(Vec3::ZERO);
+    let switch = {
+        let at = Vec3::new(10.0, 0.0, 0.0);
+        let trigger = {
+            let mut registry = fixture.registry.borrow_mut();
+            let trigger = registry.spawn(Transform {
+                position: at,
+                ..Transform::default()
+            });
+            let component = TriggerVolumeComponent::new(
+                TriggerActivation::Use,
+                String::new(),
+                "press".into(),
+                String::new(),
+                TriggerCommand::Start,
+                TriggerFireMode::Multiple,
+                0.0,
+                true,
+            );
+            registry.set_component(trigger, component).unwrap();
+            trigger
+        };
+        fixture
+            .bridge
+            .insert_for_test(trigger, at - Vec3::splat(2.0), at + Vec3::splat(2.0));
+        trigger
+    };
+    let on_plate = fixture.joiner(Vec3::ZERO);
+    let at_switch = fixture.joiner(Vec3::new(10.0, 0.0, 0.0));
+    let present = [(1, on_plate), (2, at_switch)];
+
+    let events = fixture.tick(&present);
+    assert_eq!(
+        events.trigger_stage_pawns.occupied_volumes,
+        vec![(plate, vec![on_plate]), (switch, vec![at_switch])]
+    );
+
+    for mutate in [
+        |volume: &mut TriggerVolumeComponent| volume.armed = false,
+        |volume: &mut TriggerVolumeComponent| volume.latched = true,
+    ] {
+        {
+            let mut registry = fixture.registry.borrow_mut();
+            let mut volume = registry
+                .get_component::<TriggerVolumeComponent>(plate)
+                .cloned()
+                .unwrap();
+            mutate(&mut volume);
+            registry.set_component(plate, volume).unwrap();
+        }
+        let events = fixture.tick(&present);
+        assert!(
+            events
+                .trigger_stage_pawns
+                .occupied_volumes
+                .contains(&(plate, vec![on_plate]))
+        );
+    }
+
+    fixture
+        .registry
+        .borrow_mut()
+        .set_component(on_plate, depleted_health())
+        .unwrap();
+    let events = fixture.tick(&present);
+    assert_eq!(
+        events.trigger_stage_pawns.occupied_volumes,
+        vec![(switch, vec![at_switch])],
+        "a dead undeclared pawn stays a physical member but occupies nothing"
+    );
+}

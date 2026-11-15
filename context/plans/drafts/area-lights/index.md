@@ -351,8 +351,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
 
 ## Open questions
 - Patent search on polygon area-light baking and on the visibility-weighting
-  options, charted per `context/research/gi-rtx-lite/ip-check.md`. Prior art only
-  so far (`research.md` §5). — owner: owner / counsel — **blocks build**
+  options. A first pass (`ip-check.md`) found no filing that combines the
+  design's elements, with no CPC or assignee sweep behind it. Its follow-up list
+  and counsel's reading remain. — owner: owner / counsel — **blocks build**
 - Visibility weighting option, after the patent search. — **delegated**
 
 ## Boundary inventory

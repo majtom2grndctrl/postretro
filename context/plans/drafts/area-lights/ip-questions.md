@@ -1,6 +1,6 @@
 # Area Lights — IP Questions
 
-**Status:** Open request for the patent search the brief's one build-blocking question names. Engineering triage for counsel; not legal advice. Findings land in a sibling `ip-check.md`, in the shape of `context/research/gi-rtx-lite/ip-check.md`.
+**Status:** The request behind the patent search the brief's one build-blocking question names. The first pass is in `ip-check.md`; its follow-up list is what remains. Engineering triage for counsel; not legal advice. Findings are in the sibling `ip-check.md`.
 
 > **Read this when:** running or reviewing the area-light patent search.
 > **Related:** `index.md` (Open questions) · `research.md` §5 (prior art held) · `context/research/gi-rtx-lite/ip-check.md` (format)

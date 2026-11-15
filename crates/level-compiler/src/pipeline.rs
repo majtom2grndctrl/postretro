@@ -33,6 +33,7 @@ use delta_working_set::*;
 mod lightmap_pool_gate;
 pub(crate) mod lightmap_stage;
 mod mover_bounce_stage;
+mod mover_fidelity_summary;
 mod mover_light_stage;
 mod mover_probe_stage;
 pub(crate) mod runtime_cells;
@@ -734,23 +735,56 @@ fn run_after_parsing(
         args.working_set_max_bytes,
         delta_working_set_copy_chain_factor(retain_sh_analyze_dense_deltas),
     )?;
-    // Mover poses depend only on map data. They resolve ahead of the SH
-    // gates and every SH bake, so the probe channel's bakes, and the storage
-    // classifiers its cells cap, all read one set.
-    let mover_poses = crate::mover_light_gate::MoverPoses::resolve(
+    // Mover poses depend on map data and the probe grid's layout, never on a
+    // ray. They resolve ahead of the SH gates and every SH bake, so the probe
+    // channel's bakes, and the storage classifiers its cells cap, all read
+    // one set.
+    let mut mover_poses = crate::mover_light_gate::MoverPoses::resolve(
         &map_data.kinematic_movers,
         &map_data.kinematic_waypoints,
     );
-    // Every analysed mover posed at both termini, once: the bounce half's
-    // scenes and the direct half's occluders share these solids.
+    // An authored `light_poses` too large to place, or authored counts whose
+    // poses together hold more than the working-set budget before the SH
+    // base gate, fail by the movers' names before placement allocates for
+    // them.
+    mover_poses.admit_pose_counts(
+        &map_data.kinematic_movers,
+        &geo_result.texture_names,
+        args.working_set_max_bytes,
+    )?;
+    // The probe grid is laid out from geometry, the BSP and the spacing
+    // alone, with no ray, so placement reads it ahead of the SH gates:
+    // geometry knots sit where a mover's brushes start or stop enclosing a
+    // near-field probe. The bounce half reads the same layout.
+    let probe_layout = crate::sh_bake::probe_grid_layout_of(
+        &geo_result,
+        &runtime.cells.tree,
+        &runtime.cells.exterior_cells,
+        sh_config.probe_spacing,
+    );
+    mover_poses.place_poses(
+        &map_data.kinematic_movers,
+        sh_config.probe_spacing,
+        &probe_layout,
+    )?;
+    // Geometry poses first have a count here: every mover's placed poses,
+    // automatic ones included, are admitted before each is posed as a solid
+    // and a scene, by the movers' names.
+    mover_poses.admit_placed_poses(
+        &map_data.kinematic_movers,
+        &geo_result.texture_names,
+        args.working_set_max_bytes,
+    )?;
+    // Every analysed mover posed at each of its poses, once: the bounce
+    // half's scenes and the direct half's occluders share these solids.
     let posed_movers = crate::mover_probe_channel::PosedMovers::resolve(
         &mover_poses,
         &map_data.kinematic_movers,
         &geo_result.texture_names,
     )?;
-    // The probe channel's bounce half poses every analysed mover at both
-    // termini now, so the SH base gate prices its scenes, its states and the
-    // direct half's entries before any SH ray.
+    // The probe channel's bounce half poses every analysed mover at each of
+    // its poses, so the SH base gate prices its scenes, its states and
+    // the direct half's entries before any SH ray.
     let probe_depth_tile_cap = args.probe_depth_tile_cap;
     let bounce_plan = {
         let direct_lights: Vec<&crate::map_data::MapLight> = static_baked_lights
@@ -768,16 +802,18 @@ fn run_after_parsing(
             poses: &mover_poses,
             posed: &posed_movers,
             movers: &map_data.kinematic_movers,
-            geometry: &geo_result,
-            tree: &runtime.cells.tree,
-            exterior_leaves: &runtime.cells.exterior_cells,
+            layout: &probe_layout,
             probe_spacing: sh_config.probe_spacing,
             bounce_fill: map_data.bounce_fill,
             direct_lights: &direct_lights,
             uncompressed: args.uncompressed_irradiance,
             tile_cap: probe_depth_tile_cap,
+            mode: args.bake_mode(),
         })?
     };
+    // The SH bake lays the grid out again for itself; this copy was only
+    // placement's and the plan's, so it holds no memory past the gates.
+    drop(probe_layout);
     // The SH base gate prices the patch cache, the later bounces at the
     // map's `_bounce_fill` and the id-34 volume from the patch set, the
     // static lights' ranges and the probe grid's dimensions, and the mover
@@ -904,7 +940,7 @@ fn run_after_parsing(
             section: mut sh_volume_section,
             depth_tiles: mut probe_depth_tiles,
         },
-        mover_bounce,
+        mut mover_bounce,
     ) = surface_radiance::bake_sh_base_with_movers(
         &sh_ctx,
         &sh_config,
@@ -915,16 +951,41 @@ fn run_after_parsing(
         probe_depth_tile_cap,
         &bounce_plan.request,
     );
+    // Every mover's states have resolved, from its memo or its bake; the
+    // redundant mid-pose skips read each mover's ramp, which no memo keys. A
+    // bake the tile range cut short fails by name before any state skips.
+    let mover_skips = mover_bounce_stage::skip_mid_poses(
+        &mut mover_bounce,
+        &map_data.kinematic_movers,
+        &mover_poses,
+        &sh_volume_section,
+        &probe_depth_tiles,
+        bounce_plan.request.uncompressed,
+        probe_depth_tile_cap,
+    )?;
     let (mover_bounce_blocks, mover_depth_reservation) = mover_bounce_stage::finish_bounce_half(
         &mover_bounce.movers,
-        mover_bounce.stopped,
         &sh_volume_section,
         &mut probe_depth_tiles,
         probe_depth_tile_cap,
     )?;
-    let mover_bounce_summary = (mover_bounce_blocks
+    let mut mover_bounce_summary: Vec<String> = (mover_bounce_blocks
         != crate::mover_probe_channel::BounceBlocks::default())
-    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation));
+    .then(|| mover_bounce_stage::summary_line(&mover_bounce_blocks, &mover_depth_reservation))
+    .into_iter()
+    .collect();
+    let mover_knots: Vec<_> = mover_poses
+        .analysed
+        .iter()
+        .map(|mover| (mover.mover_id, mover.knot_counts))
+        .collect();
+    mover_bounce_summary.extend(mover_fidelity_summary::fidelity_lines(
+        args.bake_mode(),
+        &mover_bounce.pose_bounces,
+        &mover_knots,
+        &mover_skips,
+        mover_bounce.sh_base_bake_time,
+    ));
     drop(mover_bounce);
     drop(bounce_plan);
     // SH bake stages use raw MapData source indices so bake-only animated
@@ -1239,6 +1300,7 @@ fn run_after_parsing(
     let mover_direct_half =
         mover_probe_stage::bake_direct_half(mover_probe_stage::DirectHalfInputs {
             posed: &posed_movers,
+            poses: &mover_poses,
             movers: &map_data.kinematic_movers,
             sh_ctx: &sh_ctx,
             sh_config: &sh_config,
@@ -1256,6 +1318,12 @@ fn run_after_parsing(
             ),
         })?;
     drop(posed_movers);
+    // The gate's report counts these beside its per-terminus rows, once
+    // every tier's rows are in.
+    let mover_mid_pose_only = mover_direct_half
+        .as_ref()
+        .map(|half| half.mid_pose_only().clone())
+        .unwrap_or_default();
     let provisional_mover_channel = mover_direct_half
         .as_ref()
         .map(|half| half.provisional_section(&sh_volume_section))
@@ -2031,6 +2099,7 @@ fn run_after_parsing(
         &mover_light_rows,
         light_label,
     );
+    crate::mover_light_gate::log_mid_pose_only(&mover_poses, &mover_mid_pose_only, light_label);
     let mover_side_counts = crate::mover_light_gate::side_counts(
         &mover_poses,
         &map_data.lights,
@@ -2043,6 +2112,7 @@ fn run_after_parsing(
         &mover_gate_lights,
         &mover_light_rows,
         &mover_side_counts,
+        &mover_mid_pose_only,
     );
 
     let sdf_atlas_section = if map_needs_sdf_atlas(&map_data.lights) {

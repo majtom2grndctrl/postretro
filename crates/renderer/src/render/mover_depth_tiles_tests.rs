@@ -18,7 +18,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
 use crate::render::gpu_test_harness::offscreen_renderer_or_skip;
 use crate::render::mover_channel::depth_test_support::{
-    depth_section, ramp_tile, through_base, uniform_tile,
+    PosedDepth, depth_section, posed_depth_section, ramp_tile, through_base, uniform_tile,
 };
 use crate::render::sh_depth_tiles::tests::{fixture_moments, second, whole_texels};
 use crate::render::{MoverTravel, Renderer};
@@ -518,10 +518,13 @@ fn live_tiles_without_id_59_size_the_texture_alone() {
     }
 }
 
-/// The tile texture's ledger row is
-/// the layout's bytes for id 59's tiles plus the live tiles, sourced to ids
-/// 59 and 57; the CPU-held closed-pose tiles are a host row outside the
-/// physical total; both leave with the level.
+/// The tile texture's ledger row is the layout's bytes for id 59's tiles
+/// plus the live tiles, sourced to ids 59 and 57. The CPU-held closed-pose
+/// tiles are a host row outside the physical total: every stored pose's
+/// tile, mid poses included (a base-reading or blended-across pose holds
+/// none), plus one base tile per probe carrying mover depth. A frame
+/// mid-travel writes every such probe's live tile, and both rows leave with
+/// the level.
 #[test]
 fn tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level() {
     use crate::render::ResidencySource;
@@ -529,37 +532,68 @@ fn tile_bytes_and_held_closed_pose_tiles_are_ledgered_and_leave_with_the_level()
     let Some(mut renderer) = offscreen_renderer_or_skip(test, 16, 16) else {
         return;
     };
-    let (tiles, channel) = (id59(), channel());
-    install(&mut renderer, &lattice(), Some(&tiles), Some(&channel));
-    let report = renderer.sh_residency_report().expect("an SH report");
-    let row = report
-        .allocations
-        .iter()
-        .find(|row| row.name == "depth_tiles")
-        .expect("the tile texture row");
-    let count = depth_tile_texture_count(tiles.tile_count(), Some(&channel)) as u32;
-    assert_eq!(count, 6);
-    assert_eq!(row.bytes, probe_depth_tile_texture_bytes(count));
-    assert_eq!(
-        row.sources,
-        [ResidencySource::Section(59), ResidencySource::Section(57)]
+    let tile = |pose: u32| PosedDepth::Tile(ramp_tile(0.5 + pose as f32));
+    let posed = posed_depth_section(
+        &[
+            (4, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0]),
+            (6, (0.0, 1.0), vec![0.0, 0.5, 1.0]),
+        ],
+        vec![
+            (4, 3, vec![tile(0), tile(1), PosedDepth::Base, tile(3)]),
+            (4, 5, vec![tile(0), PosedDepth::Across, tile(2), tile(3)]),
+            (6, 9, vec![tile(0), tile(1), tile(2)]),
+        ],
     );
-    let gpu_total: u64 = report.allocations.iter().map(|row| row.bytes).sum();
-    assert_eq!(report.total_bytes, gpu_total, "the host row stays outside");
-    assert_eq!(report.host_rows.len(), 1);
-    let host = &report.host_rows[0];
-    assert_eq!(host.name, "mover_closed_pose_depth_tiles");
-    assert_eq!(host.sources, [ResidencySource::Section(57)]);
-    assert_eq!(
-        host.bytes,
-        (5 * 2 + 4) * PROBE_DEPTH_TILE_TEXELS as u64 * 8,
-        "decoded f32 pairs: ten closed-pose tiles, and one base tile per probe carrying mover depth"
-    );
-    renderer.release_level_resources();
-    assert!(
-        renderer.sh_residency_report().is_none(),
-        "nothing after unload"
-    );
+    let texel_bytes = PROBE_DEPTH_TILE_TEXELS as u64 * 8;
+    for (channel, held_tiles, live, why) in [
+        (
+            channel(),
+            5 * 2 + 4,
+            4,
+            "decoded f32 pairs: ten closed-pose tiles at the termini, and one base tile per \
+             probe carrying mover depth",
+        ),
+        (
+            posed,
+            9 + 3,
+            3,
+            "nine stored pose tiles, mid poses included, and three base tiles",
+        ),
+    ] {
+        let tiles = id59();
+        install(&mut renderer, &lattice(), Some(&tiles), Some(&channel));
+        let report = renderer.sh_residency_report().expect("an SH report");
+        let row = report
+            .allocations
+            .iter()
+            .find(|row| row.name == "depth_tiles")
+            .expect("the tile texture row");
+        let count = depth_tile_texture_count(tiles.tile_count(), Some(&channel)) as u32;
+        assert_eq!(count, 2 + live);
+        assert_eq!(row.bytes, probe_depth_tile_texture_bytes(count));
+        assert_eq!(
+            row.sources,
+            [ResidencySource::Section(59), ResidencySource::Section(57)]
+        );
+        let gpu_total: u64 = report.allocations.iter().map(|row| row.bytes).sum();
+        assert_eq!(report.total_bytes, gpu_total, "the host row stays outside");
+        assert_eq!(report.host_rows.len(), 1);
+        let host = &report.host_rows[0];
+        assert_eq!(host.name, "mover_closed_pose_depth_tiles");
+        assert_eq!(host.sources, [ResidencySource::Section(57)]);
+        assert_eq!(host.bytes, held_tiles * texel_bytes, "{why}");
+        frame(&mut renderer, &[state(4, 0.375), state(6, 0.75)]);
+        assert_eq!(
+            tiles_written(&renderer),
+            live,
+            "every probe's live tile mid-travel"
+        );
+        renderer.release_level_resources();
+        assert!(
+            renderer.sh_residency_report().is_none(),
+            "nothing after unload"
+        );
+    }
 }
 
 /// Whole-load half: after warm-up, a frame writing two

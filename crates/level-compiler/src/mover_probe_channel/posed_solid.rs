@@ -1,4 +1,4 @@
-// One mover posed at one terminus as solid geometry: its brushes'
+// One mover posed at one pose as solid geometry: its brushes'
 // half-spaces, and its sides cut where its other brushes cover them, met
 // through the static tracer's own hit test with τ. Every posed trace of the
 // channel meets a pose here: the bounce half's gather rays, the direct
@@ -9,12 +9,13 @@ use std::sync::Arc;
 
 use glam::{DVec3, Vec3};
 use postretro_level_format::geometry::{FaceMeta, GeometrySection, Vertex};
+use postretro_level_format::mover_probe_channel::{Knot, effective_knots};
 use postretro_level_format::texture_names::TextureNamesSection;
 
 use crate::geometry::{FaceIndexRange, GeometryResult};
 use crate::lightmap_bake::RAY_EPSILON;
 use crate::map_data::MapKinematicMover;
-use crate::mover_light_gate::{BOX_SLACK_M, MoverPoses, Pose, Terminus};
+use crate::mover_light_gate::{BOX_SLACK_M, MoverPoses, Pose};
 use crate::mover_pose::PosedBrush;
 use crate::partition::Aabb;
 use crate::ray_traversal::{ShadowSegment, TraceRay, triangle_points};
@@ -51,7 +52,7 @@ pub(crate) struct PosedSolid {
 }
 
 impl PosedSolid {
-    /// `mover` at `pose`, one of its analysed termini. Texture indices
+    /// `mover` at `pose`, one of its analysed poses. Texture indices
     /// resolve against `texture_names` read-only: the geometry stage already
     /// appended every mover-only name, so nothing here can add one.
     pub(crate) fn new(
@@ -138,30 +139,26 @@ impl PosedSolid {
     /// half-space test with each plane moved `inset` inward. An inset of 0
     /// is the inside-brush rule itself.
     pub(crate) fn contains_by(&self, point: Vec3, inset: f64) -> bool {
-        self.contains_point(point.as_dvec3(), inset)
+        self.pose.contains_by(point.as_dvec3(), inset)
     }
 
     /// Whether the pose encloses the probe at `probe`: [`Self::contains_by`]
     /// at [`enclosure_inset`], so every lifted gather ray from the probe
-    /// starts in solid and its depth is the dark tile. A pose that encloses
-    /// a probe stores no value state for it and reads the base (owner,
-    /// 2026-11-09). A probe on a face or less than the inset inside it is
-    /// not enclosed: its rays keep the per-ray rule, and those whose lift
-    /// escapes read past the face.
+    /// starts in solid and its depth is the dark tile. A terminus that
+    /// encloses a probe stores no value state for it and reads the base; a
+    /// mid pose stores the dark state its own trace gives (zero bounce, its
+    /// traced q), except the first and last read pose of a run of enclosing
+    /// poses, which store the adjoining clear pose's value
+    /// ([`super::edge_copy`]). A probe on a face or less than the inset
+    /// inside it is not enclosed: its rays keep the per-ray rule, and those
+    /// whose lift escapes read past the face.
     ///
     /// The inset holds inside one brush. Where the mover's brushes touch, a
     /// probe within the inset of the seam is not enclosed even though each
     /// lifted ray may land in one brush or the other; it keeps the per-ray
     /// rule. So enclosure always implies every lifted ray starts in solid.
     pub(crate) fn encloses(&self, probe: Vec3) -> bool {
-        self.contains_by(probe, enclosure_inset(probe))
-    }
-
-    fn contains_point(&self, point: DVec3, inset: f64) -> bool {
-        self.pose
-            .brushes
-            .iter()
-            .any(|brush| in_half_spaces(point, brush, inset))
+        self.pose.encloses(probe)
     }
 
     /// Whether the unbounded ray from `origin` along `dir` can come near
@@ -239,7 +236,7 @@ impl PosedSolid {
         if !ray_may_touch_box(o, d, reach, &self.pose.bounds) {
             return false;
         }
-        if self.contains_point(o, 0.0) {
+        if self.pose.contains_by(o, 0.0) {
             return true;
         }
         self.faces.iter().any(|face| {
@@ -295,14 +292,20 @@ impl PosedSolid {
     }
 }
 
-/// One analysed mover's solids, by [`Terminus::index`].
+/// One analysed mover's solids, one per pose in path order: the first and
+/// last are its termini.
 pub(crate) struct PosedMover {
     pub(crate) mover_id: u32,
-    pub(crate) solids: [Arc<PosedSolid>; 2],
+    pub(crate) solids: Vec<Arc<PosedSolid>>,
+    /// The knots compose reads: each pose's travel fraction
+    /// ([`crate::mover_light_gate::AnalysedMover::knots`]) through the
+    /// mover's author ramp, poses the ramp squeezes out left out
+    /// ([`effective_knots`]).
+    pub(crate) read_knots: Vec<Knot>,
 }
 
-/// Every analysed mover posed at both termini as solids, ascending by id:
-/// each pose built once and shared by every trace that meets it.
+/// Every analysed mover posed at each of its poses as solids, ascending by
+/// id: each pose built once and shared by every trace that meets it.
 pub(crate) struct PosedMovers(Vec<PosedMover>);
 
 impl PosedMovers {
@@ -325,13 +328,16 @@ impl PosedMovers {
                     })?;
                 Ok(PosedMover {
                     mover_id: analysed.mover_id,
-                    solids: Terminus::BOTH.map(|terminus| {
-                        Arc::new(PosedSolid::new(
-                            mover,
-                            analysed.pose(terminus),
-                            texture_names,
-                        ))
-                    }),
+                    solids: analysed
+                        .poses
+                        .iter()
+                        .map(|pose| Arc::new(PosedSolid::new(mover, pose, texture_names)))
+                        .collect(),
+                    read_knots: effective_knots(
+                        &analysed.knots,
+                        mover.light_ramp_start,
+                        mover.light_ramp_end,
+                    ),
                 })
             })
             .collect::<anyhow::Result<_>>()
@@ -356,16 +362,6 @@ impl PosedMovers {
     }
 }
 
-/// Whether `point` lies inside `brush` by at least `inset` on every plane:
-/// at 0, inside or on its surface, with no band. Plane normals are unit, as
-/// parse builds them, so `inset` is metres.
-fn in_half_spaces(point: DVec3, brush: &PosedBrush, inset: f64) -> bool {
-    brush
-        .planes
-        .iter()
-        .all(|&(normal, distance)| normal.dot(point) - distance <= -inset)
-}
-
 /// How deep inside one posed brush a probe must lie for the pose to enclose
 /// it ([`PosedSolid::encloses`]): the gather's lift, [`RAY_EPSILON`] along
 /// each ray's unit direction, plus the `f32` rounding of that lifted origin
@@ -374,8 +370,9 @@ fn in_half_spaces(point: DVec3, brush: &PosedBrush, inset: f64) -> bool {
 /// that on all three axes. So a probe this deep has every lifted gather ray
 /// inside the brush, toward the nearest face included. The direct half's
 /// segments lift twice, along the light's direction and then the segment's,
-/// up to two lifts in all; an enclosed probe traces none, since it keeps
-/// q = 255.
+/// up to two lifts in all. An enclosed terminus traces none (it keeps
+/// q = 255); an enclosed mid pose traces, and a segment whose second lift
+/// escapes the brush may count clear.
 pub(crate) fn enclosure_inset(probe: Vec3) -> f64 {
     let lift = f64::from(RAY_EPSILON);
     let magnitude = f64::from(probe.abs().max_element()) + lift;

@@ -438,6 +438,10 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 **`setFogAnimation`** installs (or, when args is `null`, clears) a `FogAnimation` curve on every target. `FogAnimation` carries four independent channels — `density`, `saturation`, `minBrightness`, and `lightRange` — that share `periodMs`, `phase`, and `playCount`. Any channel may be `null`; at install time the validator rejects an animation that has none of the four curves when `playCount` is finite, since it would have nothing to settle to. Each channel's per-sample validation: `density`, `saturation`, and `minBrightness` accept `[0, +∞)` and clamp negative or non-finite samples to `0.0`; `lightRange` accepts `(0, +∞)` and clamps non-positive or non-finite samples to `0.001` (a `light_range` of zero would collapse the shader's distance term, so the channel cannot pass through zero). An empty curve on any channel is rejected — use `null` to omit a channel. `phase` is normalized into `[0, 1)` via `rem_euclid`; non-finite phase coerces to `null`. `playCount = 0` coerces to `1` (one-shot). On completion of a finite-count animation the bridge writes back each channel's final keyframe as static `density` / `saturation` / `minBrightness` / `lightRange` on the component; channels with `null` curves leave the corresponding component field unchanged.
 
+### 10.2a Emissive Reaction Primitives (decided, not yet built)
+
+Three tag-targeted reaction primitives, `setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation`, write every matching `emissive_volume`, mirroring the fog primitives (§10.2). Brightness in [0, 1] maps onto the volume's authored min–max; colour channels are linear in [0, 1]. Out-of-range values clamp. No primitive writes min or max: the map owns the range. A brightness write clears a running animation, as `setSpinRate` does; a colour write leaves it running. Brief: `plans/ready/emissive-volumes`.
+
 ### 10.3 Mesh Animation
 
 `setAnimationState` is a tag-targeted reaction primitive: it switches each matching mesh entity's animation state by name. States are declared as descriptor data on `components.mesh` — state name → clip name, loop, crossfade, interrupt policy — with a required `defaultState`. The animation runtime plays whatever state is set and never decides transitions: selection logic stays caller-side. Reactions, impact policies, and the enemy behavior graph (`entity_model.md` §7c) all wrap the same engine switch path — an enemy state names the animation state it requests, and an unresolvable name warns and keeps the prior animation rather than aborting.
@@ -697,6 +701,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | mover member | `getMapEntities("mover")` | `start`, `stop`, `reverse`, `goToPathNode`, `setSpinRate`, `setBlockPolicy` |
 | light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
+| emissive member (decided, not yet built) | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker`; values are brightness in [0, 1] |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on("teleport", …)` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |

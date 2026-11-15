@@ -22,7 +22,7 @@ use postretro_level_format::probe_depth_tiles::{
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
-use crate::prl_build_support::{REACH_VERIFY_ENV, prl_build};
+use crate::prl_build_support::{BuildDir, REACH_VERIFY_ENV, link_dev_textures, prl_build};
 
 /// Quake map units to engine meters.
 pub const UNIT: f64 = 0.0254;
@@ -48,7 +48,7 @@ pub fn quake(engine: [f64; 3]) -> [f64; 3] {
 
 /// One build's output, kept with its directory.
 pub struct Built {
-    pub dir: tempfile::TempDir,
+    pub dir: BuildDir,
     pub prl: PathBuf,
     pub logs: String,
 }
@@ -64,7 +64,18 @@ pub enum Cache<'a> {
 /// Build `map_text` as `<name>.map` in a fresh content root whose textures
 /// are the dev tree's (where the platform links them), with `flags`.
 pub fn build(map_text: &str, name: &str, cache: Cache<'_>, flags: &[&str]) -> Built {
-    try_build(map_text, name, cache, flags)
+    build_in(BuildDir::temp(), map_text, name, cache, flags)
+}
+
+/// [`build`] into `dir`.
+pub fn build_in(
+    dir: BuildDir,
+    map_text: &str,
+    name: &str,
+    cache: Cache<'_>,
+    flags: &[&str],
+) -> Built {
+    try_build_in(dir, map_text, name, cache, flags)
         .unwrap_or_else(|logs| panic!("prl-build failed\n{logs}"))
 }
 
@@ -75,15 +86,20 @@ pub fn try_build(
     cache: Cache<'_>,
     flags: &[&str],
 ) -> Result<Built, String> {
-    let dir = tempfile::tempdir().expect("create build directory");
+    try_build_in(BuildDir::temp(), map_text, name, cache, flags)
+}
+
+/// [`try_build`] into `dir`.
+pub fn try_build_in(
+    dir: BuildDir,
+    map_text: &str,
+    name: &str,
+    cache: Cache<'_>,
+    flags: &[&str],
+) -> Result<Built, String> {
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(
-        workspace_root().join("content/dev/textures"),
-        dir.path().join("textures"),
-    )
-    .expect("link the dev textures");
+    link_dev_textures(dir.path());
     let input = maps.join(format!("{name}.map"));
     std::fs::write(&input, map_text).expect("write map");
     let prl = dir.path().join(format!("{name}.prl"));
@@ -436,10 +452,12 @@ pub fn bounce_states_in(
         }
         let cell = view.cell as usize;
         let (cx, cy, cz) = (cell % ax, cell / ax % ay, cell / (ax * ay));
+        let last = view.entry.pose_count() - 1;
         for local in 0..64u32 {
-            let Some(tiles) = view.probe_tiles(local) else {
+            if view.entry.affected_probe_mask() & (1 << local) == 0 {
                 continue;
-            };
+            }
+            let tiles = [view.pose_tile(0, local), view.pose_tile(last, local)];
             let local = local as usize;
             let (x, y, z) = (
                 cx * 4 + local % 4,
@@ -491,10 +509,9 @@ pub fn round_trip_error(tile: &[[f32; 3]]) -> f32 {
     error
 }
 
-/// The bounce floor's measure: the largest change, in 8-bit sRGB levels, of
-/// a mid-grey receiver lit by one texel through the renderer's indirect
-/// scale and soft-knee tonemap.
-pub fn display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
+/// A texel as shown on a mid-grey receiver: 8-bit sRGB levels through the
+/// renderer's indirect scale and soft-knee tonemap.
+fn shown(rgb: [f32; 3]) -> [f32; 3] {
     let encode = |linear: f32| {
         let x = linear.clamp(0.0, 1.0);
         if x <= 0.003_130_8 {
@@ -503,16 +520,32 @@ pub fn display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
             1.055 * x.powf(1.0 / 2.4) - 0.055
         }
     };
-    let shown = |rgb: [f32; 3]| {
-        soft_knee_tonemap(rgb.map(|c| 0.5 * DEFAULT_INDIRECT_SCALE * c)).map(|c| 255.0 * encode(c))
-    };
+    soft_knee_tonemap(rgb.map(|c| 0.5 * DEFAULT_INDIRECT_SCALE * c)).map(|c| 255.0 * encode(c))
+}
+
+/// The bounce floor's measure: the largest change, in 8-bit sRGB levels, of
+/// a mid-grey receiver lit by one texel through the renderer's indirect
+/// scale and soft-knee tonemap.
+pub fn display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
+    signed_display_levels(a, b).abs()
+}
+
+/// [`display_levels`] with its sign: `a` shown minus `b` shown at the texel
+/// and channel where they differ most, negative where `a` reads darker.
+pub fn signed_display_levels(a: &[[f32; 3]], b: &[[f32; 3]]) -> f32 {
     a.iter()
         .zip(b)
         .flat_map(|(a, b)| {
             let (a, b) = (shown(*a), shown(*b));
-            (0..3).map(move |c| (a[c] - b[c]).abs())
+            (0..3).map(move |c| a[c] - b[c])
         })
-        .fold(0.0, f32::max)
+        .fold(0.0, |worst: f32, difference| {
+            if difference.abs() > worst.abs() {
+                difference
+            } else {
+                worst
+            }
+        })
 }
 
 /// Whether two f16 depth moments agree within f16 rounding: one unit in the

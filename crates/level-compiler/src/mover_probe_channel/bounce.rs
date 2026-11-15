@@ -1,5 +1,6 @@
 // Posed patch radiance: the static bounce one with one mover posed, then the
-// later bounces over the static patches and the mover's own.
+// later bounces over the mover's own patches and the static ones: every
+// static patch at a terminus, the near-field domain's at a mid pose.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 use std::f32::consts::PI;
@@ -7,6 +8,7 @@ use std::f32::consts::PI;
 use glam::Vec3;
 use rayon::prelude::*;
 
+use super::absent_bounces::AbsentLaterBounces;
 use super::posed_scene::PosedScene;
 use crate::bake_control::BakeControl;
 use crate::map_data::MapLight;
@@ -18,7 +20,7 @@ use crate::surface_radiance::{
 use crate::texel_footprint::ProbeEarlyOut;
 
 /// Work items split patch lists this finely, as the SH base's bounces do.
-const PATCHES_PER_CHUNK: usize = 256;
+pub(super) const PATCHES_PER_CHUNK: usize = 256;
 
 /// One planned layer's light as the shading reads it: its content's seed
 /// axis, its early-out, and how many static lights share it.
@@ -166,7 +168,7 @@ pub(crate) fn posed_bounce_one(
 /// sets: [`crate::surface_radiance`]'s bounce source with the mover's
 /// patches beside the static ones.
 #[derive(Clone, Copy)]
-enum Source<'a> {
+pub(super) enum Source<'a> {
     First(&'a PosedRadiance),
     Later(&'a [[f32; 3]], &'a [[f32; 3]]),
 }
@@ -200,20 +202,35 @@ impl Source<'_> {
     }
 }
 
-/// Which later bounces one pose re-bakes, and what it keeps of id 34's.
+/// Which static patches a pose's posed later bounces gather.
+#[derive(Clone, Copy)]
+pub(crate) enum LaterReach<'d> {
+    /// Every static patch: a terminus.
+    Everywhere,
+    /// The static patches whose centre lies in the mover's near-field
+    /// domain, ascending ([`super::NearFieldDomain::static_patches`]): a mid
+    /// pose. Every other static patch holds the mover-absent bake's bounce,
+    /// so a gather ray that leaves the domain reads it.
+    NearField(&'d [u32]),
+}
+
+/// Which later bounces one pose re-bakes, over which patches, and what it
+/// keeps of id 34's.
 #[derive(Clone, Copy)]
 pub(crate) struct PosedLaterBounces<'t> {
     /// Later bounces run posed: the mover's `light_bounces` less bounce one.
     pub(crate) posed: u32,
-    /// The SH base's own later bounces past the posed ones, in bounce order,
-    /// one front side per static patch each. The mover's own patches take
-    /// no tail: the static bounces never saw them.
-    pub(crate) static_tail: &'t [Vec<[f32; 3]>],
+    /// The mover-absent later bounces, id 34's own, from bounce two on. The
+    /// ones past the posed ones join the sum; within the posed ones, a
+    /// near-field pose reads them past its domain. The mover's own patches
+    /// take none: the static bounces never saw them.
+    pub(crate) absent: &'t AbsentLaterBounces,
+    pub(crate) reach: LaterReach<'t>,
 }
 
 /// Progress units [`add_posed_later_bounces`] advances for `posed` later
-/// bounces: one per patch chunk of each, over the static and the posed
-/// patch sets.
+/// bounces: one per patch chunk of each, over the `world` static patches it
+/// gathers and the `mover` posed ones.
 pub(crate) fn posed_later_progress_units(posed: u32, world: usize, mover: usize) -> usize {
     posed.min(LATER_BOUNCE_COUNT) as usize
         * (world.div_ceil(PATCHES_PER_CHUNK) + mover.div_ceil(PATCHES_PER_CHUNK))
@@ -226,11 +243,16 @@ pub(crate) fn posed_later_progress_units(posed: u32, world: usize, mover: usize)
 /// and every patch it reads holds its static value, its bounce is the
 /// static one bit for bit.
 ///
-/// `later.posed` later bounces run posed; `later.static_tail` joins them
-/// before the fill scales the sum, each layer added to the running sum in
-/// bounce order as id 34 adds it, so a patch no posed bounce changes sums
-/// id 34's later bounces bit for bit. Each patch chunk of each posed bounce
-/// advances progress by one ([`posed_later_progress_units`]).
+/// `later.posed` later bounces run posed over the static patches
+/// `later.reach` names and every posed side. Under
+/// [`LaterReach::NearField`], every other static patch takes the
+/// mover-absent bake's bounce at each step, so a ray leaving the domain
+/// reads it, and that patch sums id 34's later bounces bit for bit. The
+/// absent bounces past the posed ones join before the fill scales the sum,
+/// each layer added to the running sum in bounce order as id 34 adds it, so
+/// a patch no posed bounce changes sums id 34's later bounces bit for bit.
+/// Each patch chunk of each posed bounce advances progress by one
+/// ([`posed_later_progress_units`], over the patches `reach` gathers).
 pub(crate) fn add_posed_later_bounces(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
@@ -242,7 +264,8 @@ pub(crate) fn add_posed_later_bounces(
 ) {
     let PosedLaterBounces {
         posed: posed_later,
-        static_tail,
+        absent,
+        reach,
     } = later;
     if fill == 0.0 {
         return;
@@ -267,30 +290,62 @@ pub(crate) fn add_posed_later_bounces(
         } else {
             Source::Later(&previous.0, &previous.1)
         };
-        if source.is_zero() {
-            // Zero in, zero out: every posed bounce left is zero too.
-            control.advance(posed_later_progress_units(
-                posed_later - bounce,
-                world_count,
-                mover_count,
-            ));
-            break;
+        let zero = source.is_zero();
+        match reach {
+            LaterReach::Everywhere => {
+                if zero {
+                    // Zero in, zero out: every posed bounce left is zero too.
+                    control.advance(posed_later_progress_units(
+                        posed_later - bounce,
+                        world_count,
+                        mover_count,
+                    ));
+                    break;
+                }
+                gather_set(
+                    ctx,
+                    patches,
+                    scene,
+                    &directions,
+                    patches.patches(),
+                    source,
+                    &mut next.0,
+                    control,
+                );
+            }
+            LaterReach::NearField(domain) => {
+                // Past the domain the absent bounce goes on whether or not
+                // the posed one is black, so the loop never stops early.
+                super::near_field_bounce::gather_near_field(
+                    super::near_field_bounce::NearFieldGather {
+                        ctx,
+                        patches,
+                        scene,
+                        source,
+                        directions: &directions,
+                        domain,
+                        absent: absent.layer(bounce),
+                        traced: !zero,
+                    },
+                    &mut next.0,
+                    control,
+                );
+            }
         }
-        for (set, out) in [
-            (patches.patches(), &mut next.0),
-            (scene.patches.patches(), &mut next.1),
-        ] {
-            out.par_chunks_mut(PATCHES_PER_CHUNK)
-                .enumerate()
-                .for_each(|(chunk, out)| {
-                    let _permit = control.governor().enter();
-                    let first = chunk * PATCHES_PER_CHUNK;
-                    for (patch, slot) in set[first..].iter().zip(out.iter_mut()) {
-                        *slot = gather_patch(ctx, patches, scene, source, &directions, patch)
-                            .to_array();
-                    }
-                    control.advance(1);
-                });
+        if zero {
+            next.1.fill([0.0; 3]);
+            control.advance(mover_count.div_ceil(PATCHES_PER_CHUNK));
+        } else {
+            gather_set(
+                ctx,
+                patches,
+                scene,
+                &directions,
+                scene.patches.patches(),
+                source,
+                &mut next.1,
+                control,
+            );
         }
         for (running, next) in [(&mut running.0, &next.0), (&mut running.1, &next.1)] {
             for (sum, value) in running.iter_mut().zip(next) {
@@ -301,7 +356,7 @@ pub(crate) fn add_posed_later_bounces(
         }
         std::mem::swap(&mut previous, &mut next);
     }
-    for layer in static_tail {
+    for layer in absent.layers_from(posed_later) {
         for (sum, value) in running.0.iter_mut().zip(layer) {
             for (s, v) in sum.iter_mut().zip(value) {
                 *s += v;
@@ -312,9 +367,35 @@ pub(crate) fn add_posed_later_bounces(
     radiance.mover.add_front_scaled(&running.1, fill);
 }
 
+/// One posed later bounce over every patch of `set` (the static patches or
+/// the posed sides) into `out`, a patch chunk per work item, each taking a
+/// governor permit and advancing progress by one.
+#[allow(clippy::too_many_arguments)]
+fn gather_set(
+    ctx: &RaytracingCtx<'_>,
+    patches: &PatchSet,
+    scene: &PosedScene,
+    directions: &[Vec3],
+    set: &[Patch],
+    source: Source<'_>,
+    out: &mut [[f32; 3]],
+    control: &BakeControl,
+) {
+    out.par_chunks_mut(PATCHES_PER_CHUNK)
+        .enumerate()
+        .for_each(|(chunk, out)| {
+            let _permit = control.governor().enter();
+            let first = chunk * PATCHES_PER_CHUNK;
+            for (patch, slot) in set[first..].iter().zip(out.iter_mut()) {
+                *slot = gather_patch(ctx, patches, scene, source, directions, patch).to_array();
+            }
+            control.advance(1);
+        });
+}
+
 /// One patch's front-side later bounce, as the SH base gathers it, with the
 /// pose's hit tested against each static hit.
-fn gather_patch(
+pub(super) fn gather_patch(
     ctx: &RaytracingCtx<'_>,
     patches: &PatchSet,
     scene: &PosedScene,

@@ -1032,7 +1032,7 @@ mod tests {
     fn provider_caps_id41_at_l0_under_a_channel_direct_entry_only() {
         use postretro_level_format::mover_probe_channel::{
             BounceEntryParts, DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry,
-            MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord, MoverProbeChannelParts,
+            MoverDirectRecord, MoverLightNamespace, MoverProbeChannelParts, MoverRecord,
         };
         let dims = [4, 4, 4];
         let validity = all_valid(dims);
@@ -1058,10 +1058,7 @@ mod tests {
                 bounce: (!direct)
                     .then(|| BounceEntryParts {
                         cell: 0,
-                        entry: MoverBounceEntry {
-                            mover_id: 0,
-                            stored_probe_masks: [1, 1],
-                        },
+                        entry: MoverBounceEntry::termini(0, [1, 1]),
                         tiles: vec![0; 2 * MOVER_IRRADIANCE_TILE_F16_COUNT],
                     })
                     .into_iter()
@@ -1071,13 +1068,7 @@ mod tests {
             MoverProbeChannelSection::assemble(
                 parts,
                 |_| u64::MAX,
-                |mover_id| {
-                    Ok::<_, ()>(MoverLightRampRecord {
-                        mover_id,
-                        start: 0.0,
-                        end: 1.0,
-                    })
-                },
+                |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.0, 1.0)),
             )
             .unwrap()
             .expect("one entry")

@@ -1,14 +1,18 @@
-// Mover termini and the brushes posed at each, from the authored path.
+// Mover poses along the authored path and the brushes posed at each.
+// Termini are the first and last poses; mid poses sit at even arc length
+// and at geometry knots.
 // See: context/lib/build_pipeline.md §Compiler pipeline (step 12)
 
 use std::collections::HashMap;
 
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 
+use super::placement::KnotCounts;
 use super::segment::{segment_may_touch_box, segment_touches_brush};
 use crate::map_data::{BrushVolume, MapKinematicMover, MapKinematicWaypoint};
 pub(crate) use crate::mover_pose::PosedBrush;
 use crate::mover_pose::{BROKEN_PATH_REASON, path_waypoints};
+use crate::mover_probe_channel::enclosure_inset;
 use crate::partition::Aabb;
 
 /// One end of a mover's travel: its path's first or last waypoint. Ordered
@@ -41,12 +45,13 @@ impl Terminus {
     }
 }
 
-/// A mover parked at one terminus. Its brushes are tested one by one, never
-/// as their hull, so a hollow mover keeps its doorways open.
+/// A mover parked at one pose. Its brushes are tested one by one, never as
+/// their hull, so a hollow mover keeps its doorways open.
 #[derive(Debug, Clone)]
 pub(crate) struct Pose {
-    /// The terminus waypoint's authored name.
-    pub(crate) waypoint: String,
+    /// What reports call the pose: a terminus's authored waypoint name, or a
+    /// mid pose's path fraction (`t 0.40`), which has no waypoint.
+    pub(crate) name: String,
     pub(crate) brushes: Vec<PosedBrush>,
     /// Union of the brushes' bounds; always valid for an analysed mover,
     /// since one with no bounded brush is not analysed.
@@ -64,7 +69,36 @@ impl Pose {
                 .any(|brush| segment_touches_brush(start, end, brush))
     }
 
-    fn new(waypoint: &str, brushes: &[BrushVolume], offset: DVec3) -> Self {
+    /// Whether `point` lies inside one posed brush by at least `inset`
+    /// metres on every one of that brush's planes; an inset of 0 is the
+    /// inside-brush rule, inside or on the surface with no band. The one
+    /// half-space test behind the probe channel's posed solid
+    /// (`mover_probe_channel::PosedSolid`) and geometry-knot placement.
+    pub(crate) fn contains_by(&self, point: DVec3, inset: f64) -> bool {
+        self.brushes
+            .iter()
+            .any(|brush| in_half_spaces(point, brush, inset))
+    }
+
+    /// Whether the pose encloses the probe at `probe`: inside one posed
+    /// brush by the probe channel's enclosure inset
+    /// ([`enclosure_inset`]), so every lifted gather ray starts in solid.
+    /// Every bake read of enclosure and geometry-knot placement read this.
+    pub(crate) fn encloses(&self, probe: Vec3) -> bool {
+        self.contains_by(probe.as_dvec3(), enclosure_inset(probe))
+    }
+
+    /// Heap bytes the posed brushes and their planes hold.
+    pub(crate) fn brush_heap_bytes(&self) -> u64 {
+        let planes: usize = self
+            .brushes
+            .iter()
+            .map(|brush| brush.planes.capacity() * size_of::<(DVec3, f64)>())
+            .sum();
+        (self.brushes.capacity() * size_of::<PosedBrush>() + planes) as u64
+    }
+
+    pub(super) fn new(name: &str, brushes: &[BrushVolume], offset: DVec3) -> Self {
         // A brush without bounds has no face, so it covers nothing.
         let brushes: Vec<PosedBrush> = brushes
             .iter()
@@ -76,29 +110,56 @@ impl Pose {
             bounds.expand_aabb(&brush.bounds);
         }
         Self {
-            waypoint: waypoint.to_string(),
+            name: name.to_string(),
             brushes,
             bounds,
         }
     }
 }
 
-/// A mover whose termini the gate tests, posed alone: every other mover is
+/// Whether `point` lies inside `brush` by at least `inset` on every plane:
+/// at 0, inside or on its surface, with no band. Plane normals are unit, as
+/// parse builds them, so `inset` is metres.
+fn in_half_spaces(point: DVec3, brush: &PosedBrush, inset: f64) -> bool {
+    brush
+        .planes
+        .iter()
+        .all(|&(normal, distance)| normal.dot(point) - distance <= -inset)
+}
+
+/// A mover the gate and the probe channel pose, alone: every other mover is
 /// absent, as in the bake.
 #[derive(Debug, Clone)]
 pub(crate) struct AnalysedMover {
     pub(crate) mover_id: u32,
     pub(crate) label: String,
-    /// Indexed by [`Terminus::index`].
-    pub(crate) poses: [Pose; 2],
+    /// Every pose along the path, in path order, at least two: the first is
+    /// the first terminus and the last the last. Termini only until
+    /// [`MoverPoses::place_poses`] adds the mid poses.
+    pub(crate) poses: Vec<Pose>,
+    /// Each pose's travel fraction t, the runtime's arc-length fraction
+    /// ([`super::placement`]): 0 first, 1 last, strictly ascending.
+    pub(crate) knots: Vec<f32>,
+    /// How many of the knots are even poses and how many geometry knots.
+    pub(crate) knot_counts: KnotCounts,
     /// Union of the posed brush bounds at every waypoint on the path, not
     /// only the termini.
     pub(crate) swept: Aabb,
+    /// Per (bounded brush, path segment), the hull of the brush's bounds
+    /// posed at the segment's two ends: a translated convex brush stays
+    /// inside it along the segment. The probe channel's near-field domain
+    /// widens these (`mover_probe_channel::NearFieldDomain`).
+    pub(crate) brush_sweeps: Vec<Aabb>,
+    /// The path's waypoint origins, in path order.
+    pub(crate) path: Vec<DVec3>,
 }
 
 impl AnalysedMover {
     pub(crate) fn pose(&self, terminus: Terminus) -> &Pose {
-        &self.poses[terminus.index()]
+        match terminus {
+            Terminus::First => &self.poses[0],
+            Terminus::Last => &self.poses[self.poses.len() - 1],
+        }
     }
 }
 
@@ -190,11 +251,15 @@ impl MoverPoses {
             poses.analysed.push(AnalysedMover {
                 mover_id: mover.mover_id,
                 label,
-                poses: [
+                poses: vec![
                     Pose::new(&first.name, &mover.brush_volumes, DVec3::ZERO),
                     Pose::new(&last.name, &mover.brush_volumes, last.origin - first.origin),
                 ],
+                knots: vec![0.0, 1.0],
+                knot_counts: KnotCounts::TERMINI,
                 swept,
+                brush_sweeps: brush_sweeps(&mover.brush_volumes, &path),
+                path: path.iter().map(|waypoint| waypoint.origin).collect(),
             });
         }
         poses.analysed.sort_by_key(|mover| mover.mover_id);
@@ -293,6 +358,34 @@ fn swept_bounds(brushes: &[BrushVolume], path: &[&MapKinematicWaypoint], spins: 
         });
     }
     swept
+}
+
+/// Per (bounded brush, path segment), the hull of the brush's bounds posed
+/// at both segment ends ([`AnalysedMover::brush_sweeps`]). A path with no
+/// segment sweeps nothing past the first pose, so each brush gets its own
+/// bounds there.
+fn brush_sweeps(brushes: &[BrushVolume], path: &[&MapKinematicWaypoint]) -> Vec<Aabb> {
+    let Some(first) = path.first() else {
+        return Vec::new();
+    };
+    let offsets: Vec<DVec3> = path.iter().map(|wp| wp.origin - first.origin).collect();
+    let mut sweeps = Vec::new();
+    for brush in brushes.iter().filter(|brush| brush.aabb.is_valid()) {
+        let posed = |offset: DVec3| Aabb {
+            min: brush.aabb.min + offset,
+            max: brush.aabb.max + offset,
+        };
+        if offsets.len() < 2 {
+            sweeps.push(posed(DVec3::ZERO));
+            continue;
+        }
+        for ends in offsets.windows(2) {
+            let mut hull = posed(ends[0]);
+            hull.expand_aabb(&posed(ends[1]));
+            sweeps.push(hull);
+        }
+    }
+    sweeps
 }
 
 /// The mover's name, or for an unnamed mover the centre of its authored

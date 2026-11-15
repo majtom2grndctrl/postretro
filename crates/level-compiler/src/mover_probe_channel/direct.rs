@@ -1,4 +1,4 @@
-// Mover probe channel, direct half: per (mover, terminus, gated light, valid
+// Mover probe channel, direct half: per (mover, pose, gated light, valid
 // probe) the share q of the light's baked soft visibility that survives with
 // the mover posed, and the light's own per-probe tile T.
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use glam::Vec3;
 use postretro_level_format::delta_sh_volumes::DELTA_TILE_TEXEL_F16_COUNT;
 use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE, MoverLightNamespace,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverLightNamespace, is_terminus,
 };
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
@@ -18,6 +18,7 @@ use postretro_level_format::sh_reconstruct::local_xyz;
 use rayon::prelude::*;
 
 use super::direct_memo::{DirectMemo, MemoPrefix};
+use super::edge_copy::copy_direct_edges;
 use super::posed_solid::PosedMovers;
 use super::visibility::{PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{
@@ -28,7 +29,7 @@ use crate::bake_control::BakeControl;
 use crate::cache::{CacheKey, StageCache};
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, emitter_radius};
 use crate::map_data::{LightType, MapLight};
-use crate::mover_light_gate::{BOX_SLACK_M, Terminus, sphere_touches_box};
+use crate::mover_light_gate::{BOX_SLACK_M, sphere_touches_box};
 use crate::ray_traversal::RAY_EPSILON;
 use crate::sh_bake::{
     ProbeGridLayout, RaytracingCtx, bake_probe_direct_rgb_posed, incident_radiance_at_point,
@@ -51,6 +52,9 @@ pub(crate) struct ChannelLight<'a> {
     pub(crate) baked: MapLight,
     /// The authored light, which the reach decomposition reads.
     pub(crate) authored: &'a MapLight,
+    /// Its position in the map's light list (authored entity order), which
+    /// the mover light gate's report names it by.
+    pub(crate) source_index: usize,
     /// Its soft-visibility seed axis in its section's bake.
     pub(crate) seed_axis: u64,
     pub(crate) early_out: ProbeEarlyOut,
@@ -58,18 +62,20 @@ pub(crate) struct ChannelLight<'a> {
     pub(crate) policy: AffinityReachPolicy,
 }
 
-/// A mover the light may meet, posed at each terminus its reach touches.
+/// A mover the light may meet, posed at each pose its reach touches.
 #[derive(Debug, Clone)]
 pub(crate) struct LightMover {
     pub(crate) mover_id: u32,
-    /// By [`Terminus::index`]; `None` where the light's reach misses the pose.
-    pub(crate) poses: [Option<PosedOccluder>; 2],
+    /// One per pose of the mover, in path order; `None` where the light's
+    /// reach misses the pose.
+    pub(crate) poses: Vec<Option<PosedOccluder>>,
 }
 
-/// The movers `light` may meet, ascending by id: every analysed mover with a
-/// pose inside the ball its sample segments sweep. A probe the light lights
-/// lies within its falloff range of the origin, and a sample target within
-/// its emitter radius, so every segment lies in the larger ball; a sun's
+/// The movers `light` may meet, ascending by id: every analysed mover with
+/// some pose, terminus or mid, inside the ball its sample segments sweep, so
+/// a light only a mid pose may block is gated. A probe the light lights lies
+/// within its falloff range of the origin, and a sample target within its
+/// emitter radius, so every segment lies in the larger ball; a sun's
 /// segments reach every pose.
 pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightMover> {
     let reach = match light.light_type {
@@ -84,13 +90,17 @@ pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightM
         .movers()
         .iter()
         .filter_map(|mover| {
-            let poses = Terminus::BOTH.map(|terminus| {
-                let solid = &mover.solids[terminus.index()];
-                let bounds = solid.bounds();
-                let reached = bounds.is_valid()
-                    && reach.is_none_or(|radius| sphere_touches_box(light.origin, radius, bounds));
-                reached.then(|| PosedOccluder::new(Arc::clone(solid)))
-            });
+            let poses: Vec<Option<PosedOccluder>> = mover
+                .solids
+                .iter()
+                .map(|solid| {
+                    let bounds = solid.bounds();
+                    let reached = bounds.is_valid()
+                        && reach
+                            .is_none_or(|radius| sphere_touches_box(light.origin, radius, bounds));
+                    reached.then(|| PosedOccluder::new(Arc::clone(solid)))
+                })
+                .collect();
             poses.iter().any(Option::is_some).then_some(LightMover {
                 mover_id: mover.mover_id,
                 poses,
@@ -104,7 +114,10 @@ pub(crate) fn light_movers(light: &MapLight, movers: &PosedMovers) -> Vec<LightM
 pub(crate) struct DirectEntry {
     pub(crate) cell: u32,
     pub(crate) mover_id: u32,
-    /// `q₀, q₁` per valid probe of the cell, x-fastest; `q = byte / 255`.
+    /// The mover's pose count N, as its id-57 record stores it.
+    pub(crate) pose_count: usize,
+    /// Per valid probe of the cell, x-fastest, `q` at each pose (byte
+    /// `slot · N + pose`); `q = byte / 255`.
     pub(crate) visibility: Vec<u8>,
     /// The light's own term T per valid probe, x-fastest, in id 41's compact
     /// RGB f16 tile: what the section carries where no per-probe id-41 or
@@ -125,6 +138,13 @@ pub(crate) struct LightEntries {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MoverDirectBake {
     pub(crate) lights: Vec<LightEntries>,
+}
+
+impl DirectEntry {
+    /// The probe at `slot`'s `q` byte at every pose, in pose order.
+    pub(crate) fn poses_at(&self, slot: usize) -> &[u8] {
+        &self.visibility[slot * self.pose_count..][..self.pose_count]
+    }
 }
 
 impl MoverDirectBake {
@@ -167,11 +187,14 @@ impl ProbeCells {
 
     /// The dense index of each valid probe in `cell`, x-fastest.
     pub(crate) fn valid_probes(&self, cell: usize) -> Vec<usize> {
+        self.valid_locals(cell).map(|(_, probe)| probe).collect()
+    }
+
+    /// `(local bit, dense index)` of each valid probe in `cell`, x-fastest.
+    pub(crate) fn valid_locals(&self, cell: usize) -> impl Iterator<Item = (usize, usize)> {
         let mask = self.valid_masks[cell];
         cell_probes(self.dims, self.affinity_dims, cell)
-            .filter(|&(local, _)| mask & (1 << local) != 0)
-            .map(|(_, probe)| probe)
-            .collect()
+            .filter(move |&(local, _)| mask & (1 << local) != 0)
     }
 }
 
@@ -209,15 +232,16 @@ pub(crate) struct DirectScene<'a> {
 /// Output follows `lights`' order, holding only lights with an entry, so the
 /// bytes never depend on the worker count.
 pub(crate) fn bake_direct(
-    movers: &PosedMovers,
+    posed: &PosedMovers,
     lights: &[ChannelLight<'_>],
     scene: &DirectScene<'_>,
     cache: Option<&StageCache>,
     control: &BakeControl,
 ) -> anyhow::Result<MoverDirectBake> {
+    // Per light, the movers it may meet.
     let movers: Vec<Vec<LightMover>> = lights
         .iter()
-        .map(|light| light_movers(&light.baked, movers))
+        .map(|light| light_movers(&light.baked, posed))
         .collect();
     let mut baked: Vec<Option<Vec<DirectEntry>>> = vec![None; lights.len()];
     let memo = cache.map(|cache| DirectMemo::new(cache, MemoPrefix::new(scene)));
@@ -306,25 +330,27 @@ pub(crate) fn bake_direct(
         }
     }
 
-    Ok(MoverDirectBake {
-        lights: lights
-            .iter()
-            .zip(baked)
-            .filter_map(|(light, entries)| {
-                let entries = entries.expect("every light baked or hit");
-                (!entries.is_empty()).then_some(LightEntries {
-                    namespace: light.namespace,
-                    light_index: light.light_index,
-                    entries,
-                })
+    let mut lights: Vec<LightEntries> = lights
+        .iter()
+        .zip(baked)
+        .filter_map(|(light, entries)| {
+            let entries = entries.expect("every light baked or hit");
+            (!entries.is_empty()).then_some(LightEntries {
+                namespace: light.namespace,
+                light_index: light.light_index,
+                entries,
             })
-            .collect(),
-    })
+        })
+        .collect();
+    // The memo keeps the traced q; each build copies enclosure-run edges
+    // over it, before the section reads the q.
+    copy_direct_edges(&mut lights, posed, scene.cells, scene.layout);
+    Ok(MoverDirectBake { lights })
 }
 
 /// Static-trace results for one probe and light, by sample target. The
-/// sample set is fixed by the probe, light and seed, so every mover and
-/// terminus at the probe reuses one static trace per sample.
+/// sample set is fixed by the probe, light and seed, so every mover and pose
+/// at the probe reuses one static trace per sample.
 #[derive(Default)]
 struct StaticSamples(RefCell<Vec<(Vec3, bool)>>);
 
@@ -340,10 +366,27 @@ impl StaticSamples {
 }
 
 /// `light`'s entries at `cell`: one per mover whose posed brushes meet a
-/// static-clear sample at some valid probe. A probe where the light's term
-/// is zero keeps q = 1, as does one no pose can meet, and one a pose
-/// encloses keeps q = 1 at that terminus: it reads the light's mover-absent
-/// term there (owner, 2026-11-09).
+/// static-clear sample at some valid probe at some pose. A probe where the
+/// light's term is zero keeps q = 1, as does one no pose can meet.
+///
+/// Enclosure decides only at a terminus: a terminus that encloses the probe
+/// keeps q = 1 and reads the light's mover-absent term there, so rest
+/// lighting is the base's. A mid pose that encloses the probe runs the same
+/// joint trace as every other pose and stores the q it leaves. Each segment
+/// lifts twice, along the light's direction and then the segment's, while
+/// the enclosure inset covers one lift: a segment starting in solid is
+/// blocked, so q is 0 where the light is statically clear, except that a
+/// probe within two lifts of a face may keep the samples whose second lift
+/// escapes the brush. That is a traced value, never a flag or a weight: the
+/// probe stays in the blend at its full weight and darkens it, so a probe
+/// layer inside a thin mover wall carries no light into the room behind it
+/// mid-travel. After the memo, the first and last read poses of each run of
+/// enclosing poses take their read clear neighbour's q instead
+/// ([`super::edge_copy`]).
+///
+/// Every pose bakes, mid poses included, and wherever the light reaches:
+/// never only the near-field domain, and never skipping a pose the author
+/// ramp squeezes out.
 pub(crate) fn bake_cell(
     light: &ChannelLight<'_>,
     movers: &[LightMover],
@@ -355,8 +398,10 @@ pub(crate) fn bake_cell(
         return Vec::new();
     }
     let layout = scene.layout;
-    let mut visibility =
-        vec![vec![u8::MAX; probes.len() * MOVER_VISIBILITY_BYTES_PER_PROBE]; movers.len()];
+    let mut visibility: Vec<Vec<u8>> = movers
+        .iter()
+        .map(|gate| vec![u8::MAX; probes.len() * gate.poses.len()])
+        .collect();
     let mut met = vec![false; movers.len()];
     for (slot, &probe) in probes.iter().enumerate() {
         let point = vec3_from(layout.probe_positions[probe]);
@@ -369,11 +414,16 @@ pub(crate) fn bake_cell(
         let seed = soft_visibility_seed(probe as u64, 0, light.seed_axis);
         let statics = StaticSamples::default();
         for (mover, gate) in movers.iter().enumerate() {
-            for terminus in Terminus::BOTH {
-                let Some(occluder) = &gate.poses[terminus.index()] else {
+            let pose_count = gate.poses.len();
+            for (pose, occluder) in gate.poses.iter().enumerate() {
+                let Some(occluder) = occluder else {
                     continue;
                 };
-                if occluder.encloses(point) || !occluder.may_meet(point, &light.baked) {
+                // An enclosing terminus reads the base; an enclosing mid pose
+                // traces like any other pose.
+                if (is_terminus(pose, pose_count) && occluder.encloses(point))
+                    || !occluder.may_meet(point, &light.baked)
+                {
                     continue;
                 }
                 let joint = joint_soft_visibility(
@@ -387,8 +437,7 @@ pub(crate) fn bake_cell(
                     |from, to| occluder.blocks(from, to),
                 );
                 if joint.meets_mover() {
-                    visibility[mover][slot * MOVER_VISIBILITY_BYTES_PER_PROBE + terminus.index()] =
-                        joint.surviving_byte();
+                    visibility[mover][slot * pose_count + pose] = joint.surviving_byte();
                     met[mover] = true;
                 }
             }
@@ -409,6 +458,7 @@ pub(crate) fn bake_cell(
         .map(|((gate, visibility), _)| DirectEntry {
             cell,
             mover_id: gate.mover_id,
+            pose_count: gate.poses.len(),
             visibility,
             tiles: tiles.clone(),
         })

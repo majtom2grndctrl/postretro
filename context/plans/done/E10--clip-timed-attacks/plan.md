@@ -1,7 +1,7 @@
 # E10--clip-timed-attacks — plan of record
 
 mode: compact
-status: active
+status: done
 read at: eb444995a
 
 ## Corrections
@@ -78,8 +78,8 @@ read at: eb444995a
 | Surf 3 limitator whiff leaves and frees turn; fire leaves after third shot | shipped-content test | achievable as stated | pass — `shipped_limitator_whiffing_its_kick_leaves_burst_and_frees_its_turn`, `shipped_limitator_leaves_burst_after_its_third_shot_at_every_phase` |
 | Surf 4 grep gate: no wire/version/digest change | `git diff origin/main` over net/netcode/digest sources, empty | achievable as stated | pass — `crates/net` untouched; `netcode` diff is a test literal and the `ActionVerb` shape in a harness test; no digest change |
 | Man 1 re-export reproduces libraries apart from events | owner, with source FBXs | manual | pass — Blender 5.2.3 rebuild from 93b76c7e8 with the `license.txt` commands (branch `E10--clip-timed-attacks-reexport`, e9e281d25). `mixamo_brute` byte-identical. `mixamo_rifle`: same 52 clips, nodes and events (`firing_rifle` `kick` 0); the only real difference is `mixamorig:Throat`, which nothing keys or follows; other channels differ by at most 4.2e-5, and a few constant 1.0 scale channels flip STEP/LINEAR. Committed libraries kept. |
-| Man 2 single player timing | owner, in-engine | manual | outstanding — owner, in-engine (note: limitator first burst ~1.3 s after reaching range; brute slam holds position) |
-| Man 3 loopback co-op timing, no new warnings | owner, in-engine | manual | outstanding — owner, loopback co-op |
+| Man 2 single player timing | owner, in-engine | manual | brute pass; limitator outstanding — owner playtest 2026-11-14: jab and slam damage land on the visible impact after the `punch` (267 ms) and `smash` (1,633 ms) retimes. The limitator's first shot on its recoil was not checked. |
+| Man 3 loopback co-op timing, no new warnings | owner, in-engine | manual | outstanding — owner, loopback co-op (watch the limitator: clients play its firing loop on their own clock) |
 
 ## Tasks
 
@@ -99,7 +99,7 @@ read at: eb444995a
 - Round 2 (tracer + adversarial on the fixes): 1 🟡 (save around a drop) and nits, fixed in e05ae5cbe — switch counts serialize, the drop marks the replaced mesh and requests a redraw.
 - Round 3 (tracer on the drop path): 3 🟡 fixed in 8c0ff8e92 — a flinch drops a pending redraw, the clock holds until the redraw lands, drop tests use production index timing.
 - Stopped after round 3: its findings were confined to the drop path and are pinned by tests that fail with the fixes reverted.
-- Final gate: `cargo test --workspace --features postretro/dev-tools` — 91 targets, 15,936 passed, 0 failed. `/preflight` at 264d5e12f: `cargo fmt --check` pass; `cargo clippy -- -D warnings` pass; `cargo test` 91 targets, 15,828 passed, 0 failed, 122 ignored; `cargo check --release` pass; `crate-graph --check` up to date.
+- Final gate: `cargo test --workspace --features postretro/dev-tools` — 91 targets, 15,936 passed, 0 failed. `/preflight` at 264d5e12f: `cargo fmt --check` pass; `cargo clippy -- -D warnings` pass; `cargo test` 91 targets, 15,828 passed, 0 failed, 122 ignored; `cargo check --release` pass; `crate-graph --check` up to date. Landing gate after the playtest retimes (`punch` 267 ms, `smash` 1,633 ms, slam on `smash`): `cargo test --workspace --features postretro/dev-tools` — 91 targets, 15,936 passed, 0 failed, 125 ignored; `cargo fmt --check` clean.
 
 ## Owner calls and follow-ups
 - Owner call: a swing entered while a launch is still under way (a knockback slide, or the airborne stretch after drag spent it) is cancelled. Kept.
@@ -108,8 +108,8 @@ read at: eb444995a
 - Follow-up (stances brief): `smash_windup`'s 400 ms cut is just before the crouch's bottom (hips still sinking; lowest and still at 433-467 ms). A stance holding it freezes slightly short of the crouch.
 - Follow-up: the slam's recovery holds its turn until `smash` ends at 3.7 s, though the brute is back at rest by ~3.2 s. Leave on `animationDone` unless the recovery feels sluggish.
 - Follow-up (stances brief): `punch_windup`'s 467 ms cut is the arm raised in follow-through, after the swipe; the swipe's draw-back is near 167 ms, where the hand is almost still. Recut `punch_windup` and `punch_strike` (a Blender re-export) before a stance plays them.
-- Owner call: a brute flinched mid-slam redraws `attack_slam` on `recover` and replays the slam's clip (now `smash`), holding the slam turn up to the clip's length longer (redraw restarts clip time). Latent: shipped content never flinches the brute. Decide before the stances brief builds on the shared-clip slam.
-- Owner call: an entry whose first drawn clip is an untimed travel variant fires as without `at`, even after a flinch or launch (consistent with "a missing event fires as without `at`").
+- Owner call: a brute flinched mid-slam redraws `attack_slam` on `recover` and replays the slam's clip (now `smash`), holding the slam turn up to the clip's length longer (redraw restarts clip time). Latent: shipped content never flinches the brute. Decide before the stances brief builds on the shared-clip slam. Landed as a follow-up for the stances brief (owner, 2026-11-14).
+- Owner call: an entry whose first drawn clip is an untimed travel variant fires as without `at`, even after a flinch or launch (consistent with "a missing event fires as without `at`"). Kept (owner, 2026-11-14).
 - Follow-up: `crates/ai/src/compute.rs` is past the 600-line guideline; split the Attack block out.
 - Follow-up: a slam started after a target switch could in theory meet its 1,800 ms cooldown at the commit moment.
 - Follow-up: script-reaction animation switches drain once per frame, so their cancel lands on the next frame's first tick; frame splits can change whether such a cancel catches a moment (reaction cadence, not covered by Fire 20).

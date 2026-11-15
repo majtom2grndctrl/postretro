@@ -32,10 +32,12 @@ use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
 use super::mesh::MeshComponent;
 
 mod attack_turns;
+mod clip_clock;
 pub use attack_turns::{
     AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
     MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
 };
+pub use clip_clock::{ClipClock, ClipFacts, note_replaced_mesh};
 
 /// Maximum number of distinct damagers remembered by one brain. Entries age to
 /// the shared damage-recency sentinel and remain until this bounded ledger must
@@ -52,12 +54,14 @@ pub struct RecentAttacker {
     pub time_since_damage_ms: f32,
 }
 
-/// A brain's memory of a knockback launch, which "launched" means for as long as
-/// knockback velocity remains. Storage only; the AI tick owns the rules.
+/// A brain's memory of a knockback launch. An enemy is launched while
+/// knockback velocity remains, or through the airborne stretch a launch began
+/// after drag spends it; either cancels a clip-timed attack's pending moment.
+/// Storage only; the AI tick owns the rules.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct LaunchState {
-    /// Yaw held while launched, latched on the first launched tick. `None` when
-    /// not launched.
+    /// Yaw held while knockback velocity remains, latched on its first tick.
+    /// `None` without knockback velocity.
     #[serde(default)]
     pub impact_yaw: Option<f32>,
     /// Consecutive airborne ticks of a stretch a launch began; `0` on the ground.
@@ -236,6 +240,11 @@ pub struct BrainComponent {
     /// brain never strands a variant clip.
     #[serde(default)]
     pub presented_travel_variant: TravelVariant,
+    /// Game-time clip time for the drawn animation state and the pending
+    /// moment of a clip-timed attack. Serialized beside the activity clocks, so
+    /// a restore mid-entry fires on the same tick; old brains start untracked.
+    #[serde(default)]
+    pub clip_clock: ClipClock,
     /// Entry memory of an engaged `strafe` or `reposition`. Transient: a
     /// restore re-enters fresh, recording new bounds and re-picking direction.
     #[serde(skip)]
@@ -365,6 +374,7 @@ impl BrainComponent {
             locomotion_moving: false,
             launch: LaunchState::default(),
             presented_travel_variant: TravelVariant::Base,
+            clip_clock: ClipClock::default(),
             engaged_motion: EngagedMotionMemory::None,
             attack_turns: AttackTurnState::default(),
             attack_pool: None,

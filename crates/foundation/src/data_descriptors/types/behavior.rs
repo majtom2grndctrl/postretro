@@ -51,15 +51,50 @@ impl MotionVerb {
 
 /// What an activity does besides moving. An attack name resolves against the
 /// root graph's `attacks` map, including from nested layers.
+///
+/// Authored as `{ attack: NAME, at?: EVENT }`; unknown keys reject.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(from = "RawActionVerb", into = "RawActionVerb")]
 pub enum ActionVerb {
-    Attack(String),
+    /// Fire the attack `name`. `at` names a clip event: the attack fires on
+    /// the tick the activity's clip reaches it, once per entry, instead of on
+    /// entry. Only an activity's own action may carry it, and it implies the
+    /// attack's turn mark (`entity_model.md` §7c, Clip-timed attacks).
+    Attack { name: String, at: Option<String> },
 }
 
 impl ActionVerb {
     pub fn all() -> [ActionVerb; 1] {
-        [ActionVerb::Attack("attack".to_string())]
+        [ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: None,
+        }]
+    }
+}
+
+/// The authored object shape of [`ActionVerb`]. The enum keeps one variant
+/// per verb, while authors write the attack's fields side by side.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawActionVerb {
+    attack: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<String>,
+}
+
+impl From<RawActionVerb> for ActionVerb {
+    fn from(raw: RawActionVerb) -> Self {
+        ActionVerb::Attack {
+            name: raw.attack,
+            at: raw.at,
+        }
+    }
+}
+
+impl From<ActionVerb> for RawActionVerb {
+    fn from(action: ActionVerb) -> Self {
+        let ActionVerb::Attack { name, at } = action;
+        RawActionVerb { attack: name, at }
     }
 }
 
@@ -171,6 +206,7 @@ where
 
 mod activity_motion;
 mod attack_turn_marks;
+mod clip_timed_actions;
 mod recursive;
 
 pub use activity_motion::{

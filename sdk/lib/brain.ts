@@ -99,6 +99,11 @@ export interface BrainInputs {
   /** `true` while the enemy holds an attack turn, for any attack, as of the
    * previous tick: it reads true from the tick after the grant (boolean). */
   readonly hasAttackTurn: RuntimeGuardNode;
+  /** `true` from the tick after the selected non-looping animation's clip
+   * reaches its duration; false on a looping state; true for a non-looping state whose
+   * clip did not resolve. Entity-wide: parent and nested rows read one value,
+   * unlike `timeInActivityMs` (boolean). */
+  readonly animationDone: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -149,6 +154,7 @@ export const brain: BrainInputs = Object.freeze({
   damageBearing: input("@brain.damageBearing"),
   damageSourceKnown: input("@brain.damageSourceKnown"),
   hasAttackTurn: input("@brain.hasAttackTurn"),
+  animationDone: input("@brain.animationDone"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

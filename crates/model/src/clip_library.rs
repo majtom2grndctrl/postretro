@@ -308,6 +308,7 @@ impl Binder {
             name: clip.name,
             duration: clip.duration,
             joints,
+            events: clip.events,
         }
     }
 }
@@ -1071,6 +1072,59 @@ mod tests {
             "the embedded clip wins"
         );
         capture.assert_nothing_above(Level::Info);
+    }
+
+    fn evented_library() -> Document {
+        library(vec![root_at(1.0), node("arm").under("pelvis")])
+            .clip(
+                clip("shared")
+                    .rotation(
+                        "arm",
+                        &[0.0, 1.0],
+                        &[Quat::IDENTITY, Quat::from_rotation_y(0.2)],
+                    )
+                    .events(json!([{ "name": "hit", "time": 0.5 }])),
+            )
+            .clip(
+                clip("library_only")
+                    .rotation(
+                        "arm",
+                        &[0.0, 2.0],
+                        &[Quat::IDENTITY, Quat::from_rotation_y(0.4)],
+                    )
+                    .events(json!([{ "name": "hit", "time": 1.25 }])),
+            )
+    }
+
+    #[test]
+    fn library_clip_events_reach_the_bound_character() {
+        let model = load_pair(
+            skinned(vec![root_at(1.0), node("arm").under("pelvis")]),
+            evented_library(),
+        );
+
+        assert_eq!(named(&model, "library_only").event_time("hit"), Some(1.25));
+        assert_eq!(named(&model, "shared").event_time("hit"), Some(0.5));
+    }
+
+    #[test]
+    fn embedded_override_keeps_its_own_events_or_none() {
+        // No events on the embedded `shared`: the library's `hit` must not leak.
+        let model = load_pair(embedding_model(), evented_library());
+        assert!(named(&model, "shared").events.is_empty());
+        assert_eq!(named(&model, "library_only").event_time("hit"), Some(1.25));
+
+        // Its own events replace the library's whole.
+        let rest = Vec3::new(0.0, 1.0, 0.0);
+        let own = skinned(vec![root_at(1.0), node("arm").under("pelvis")]).clip(
+            clip("shared")
+                .translation("pelvis", &[0.0, 1.0], &[rest, rest])
+                .events(json!([{ "name": "kick", "time": 0.25 }])),
+        );
+        let model = load_pair(own, evented_library());
+        let shared = named(&model, "shared");
+        assert_eq!(shared.event_time("kick"), Some(0.25));
+        assert_eq!(shared.event_time("hit"), None);
     }
 
     #[test]

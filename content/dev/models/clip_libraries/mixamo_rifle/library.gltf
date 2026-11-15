@@ -22679,7 +22679,15 @@
 					"interpolation": "LINEAR",
 					"output": 1775
 				}
-			]
+			],
+			"extras": {
+				"events": [
+					{
+						"name": "kick",
+						"time": 0.0
+					}
+				]
+			}
 		},
 		{
 			"channels": [

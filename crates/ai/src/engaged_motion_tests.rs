@@ -217,7 +217,10 @@ fn strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass() {
             activity(
                 "walk",
                 MotionVerb::Strafe,
-                Some(ActionVerb::Attack("shoot".to_string())),
+                Some(ActionVerb::Attack {
+                    name: "shoot".to_string(),
+                    at: None,
+                }),
             ),
         )],
     );
@@ -545,7 +548,10 @@ fn reposition_graph(params: Option<RepositionParams>) -> BehaviorGraphDescriptor
                 activity(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("shoot".to_string())),
+                    Some(ActionVerb::Attack {
+                        name: "shoot".to_string(),
+                        at: None,
+                    }),
                 ),
             ),
             ("rest", activity("idle", MotionVerb::Hold, None)),
@@ -1283,7 +1289,10 @@ fn actionless_engaged_slot_verbs_yield_to_rest_animation_at_standstill() {
                     activity(
                         "attack",
                         verb,
-                        Some(ActionVerb::Attack("shoot".to_string())),
+                        Some(ActionVerb::Attack {
+                            name: "shoot".to_string(),
+                            at: None,
+                        }),
                     ),
                 ),
             ],

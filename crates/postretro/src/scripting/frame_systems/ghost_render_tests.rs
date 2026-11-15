@@ -327,6 +327,7 @@ fn aim_pitch_socket_store() -> HitZoneStore {
             JointTracks::default(),
         ],
         travel_speed: None,
+        events: Vec::new(),
     };
     let mut socket = JointMask::new();
     assert!(socket.insert(1));

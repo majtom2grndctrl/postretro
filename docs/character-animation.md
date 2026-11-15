@@ -26,7 +26,7 @@ the rig has facial bones that no character uses, which keeps the library smaller
 Keep the clip folder. To add a clip, place its FBX there and rerun the command.
 A library rebuilds from its sources; it cannot be appended to without them.
 
-Two options edit clips as the library is written, so a rebuild repeats them:
+Three options edit clips as the library is written, so a rebuild repeats them:
 
 - `--in-place smash` holds the named clips' hips at their first position across
   the ground, keeping up and down motion. Use it on an attack that lunges or
@@ -45,11 +45,30 @@ Two options edit clips as the library is written, so a rebuild repeats them:
   first and last hip position over the character. A windup that steps back
   therefore holds with its hips over the character, and its strike starts
   there too.
+- `--event punch:hit=620` names a moment in a clip: `hit`, 620 ms into `punch`.
+  An enemy attack can fire on it. The clip stores it in its extras, in seconds:
 
-Both apply to a library or to a character that keeps its own clips, never with
-`--clip-library`. When the characters on a library all need the same `--yaw`,
-build the library with it too, so root motion such as a lunge runs the way they
-face.
+  ```json
+  { "name": "punch", "extras": { "events": [{ "name": "hit", "time": 0.62 }] } }
+  ```
+
+  Every character on the library shares the clip's events. A name starts with a
+  letter or underscore and holds only letters, digits and underscores, and case
+  counts: `hit` and `Hit` are two events. Repeat `--event` for each one. The
+  converter refuses an event past its clip's end, a name used twice in one clip,
+  and a clip it cannot find.
+
+  Events are added before trims are cut, and each trim keeps the events inside
+  it. A range shifts them by its start key: with `hit` at 767 ms,
+  `--trim punch_strike=punch:467-` starts on the key at 466.7 ms and has `hit`
+  at about 300 ms. An event on a range's start key lands at 0 in that range, not
+  in a windup ending on that key, so a windup keeps only the events before its
+  last pose.
+
+All three apply to a library or to a character that keeps its own clips, never
+with `--clip-library`. When the characters on a library all need the same
+`--yaw`, build the library with it too, so root motion such as a lunge runs the
+way they face.
 
 ## Bind a character
 

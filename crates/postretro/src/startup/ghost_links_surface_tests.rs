@@ -1962,7 +1962,8 @@ fn assert_wave_beat(
 /// The final wave fights: the door sinks open, the brutes walk out and every
 /// monster engages a player in room A, under the real AI tick. Whether a hit
 /// lands is left to play: a limitator firing past a brute can start the
-/// monsters fighting each other.
+/// monsters fighting each other, and a brute retaliating against a limitator
+/// still in the closet need not walk out.
 fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monsters: &[EntityId]) {
     let shut: Vec<f32> = doors.iter().map(|&door| level.position(door).y).collect();
     let players = [level.pawn, level.partner];
@@ -1972,6 +1973,8 @@ fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monster
         .collect();
     let mut engaged: HashSet<EntityId> = HashSet::new();
     let mut left_closet: HashSet<EntityId> = HashSet::new();
+    // A brute a closet limitator shot retaliates against it in the closet.
+    let mut infighting: HashSet<EntityId> = HashSet::new();
     for _ in 0..BATTLE_FRAMES {
         level.frame();
         // A monster can fall to the others' crossfire; the dead are removed.
@@ -1989,6 +1992,12 @@ fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monster
             {
                 engaged.insert(npc);
             }
+            if brain
+                .acquired_target
+                .is_some_and(|target| monsters.contains(&target))
+            {
+                infighting.insert(npc);
+            }
             // Quake x is engine −z.
             if -level.position(npc).z * UNITS_PER_METRE < FINAL_CLOSET_X {
                 left_closet.insert(npc);
@@ -1998,8 +2007,8 @@ fn assert_wave_engages(map: &str, level: &mut Level, doors: &[EntityId], monster
     for &npc in monsters {
         if classes[&npc] == "reference_enemy" {
             assert!(
-                left_closet.contains(&npc),
-                "{map}: every final-wave brute walks out of the closet"
+                left_closet.contains(&npc) || infighting.contains(&npc),
+                "{map}: every final-wave brute walks out of the closet, unless it turned on a monster"
             );
         }
     }

@@ -448,7 +448,10 @@ mod statechart_tests {
                     activity(
                         "commit",
                         None,
-                        Some(ActionVerb::Attack("slam".to_string())),
+                        Some(ActionVerb::Attack {
+                            name: "slam".to_string(),
+                            at: None,
+                        }),
                         BTreeMap::new(),
                     ),
                 ),
@@ -691,7 +694,10 @@ mod statechart_tests {
         );
         assert_eq!(
             action_for_path(&programs, &mut scope, &brain),
-            Some(&ActionVerb::Attack("slam".to_string())),
+            Some(&ActionVerb::Attack {
+                name: "slam".to_string(),
+                at: None
+            }),
             "AC7/AC17: the active offense leaf supplies the one edge-fired action"
         );
         let snapshot = AllocSnapshot::arm();
@@ -750,7 +756,10 @@ mod statechart_tests {
                     BehaviorSelectorRow {
                         when: None,
                         motion: Some(MotionVerb::ChaseTarget),
-                        action: Some(ActionVerb::Attack("slam".to_string())),
+                        action: Some(ActionVerb::Attack {
+                            name: "slam".to_string(),
+                            at: None,
+                        }),
                     },
                 )]),
             )]),

@@ -7,6 +7,7 @@ use glam::{Quat, Vec3};
 use gltf::accessor::{DataType, Dimensions};
 use gltf::json::validation::Checked;
 
+use super::clip_events::{ClipEvent, read_clip_events};
 use super::gltf_loader::{accessor_read_refusal, format_accessor_shape};
 use super::skeleton::{AnimationClip, Interp, JointTracks, Track};
 
@@ -224,6 +225,7 @@ pub(crate) struct ParsedClip {
     pub(crate) name: String,
     pub(crate) duration: f32,
     pub(crate) joints: Vec<JointTracks>,
+    pub(crate) events: Vec<ClipEvent>,
 }
 
 impl ParsedClip {
@@ -245,6 +247,7 @@ impl ParsedClip {
             duration: self.duration,
             joints: self.joints,
             travel_speed,
+            events: self.events,
         }
     }
 }
@@ -405,10 +408,14 @@ pub(crate) fn parse_clip(
         }
     }
 
+    // Events read after every channel, so they are checked against the
+    // clip's full duration.
+    let events = read_clip_events(anim.extras(), duration, &name, path_str);
     ParsedClip {
         name,
         duration,
         joints,
+        events,
     }
 }
 
@@ -546,6 +553,39 @@ mod tests {
             merge_fields(&mut root["accessors"][accessor_index], accessor);
             merge_fields(&mut root["bufferViews"][view_index], view);
         });
+    }
+
+    #[test]
+    fn malformed_clip_events_warn_once_and_keep_the_keys() {
+        for (label, events) in [
+            ("not a list", json!({ "name": "hit", "time": 0.5 })),
+            (
+                "non-numeric time",
+                json!([{ "name": "hit", "time": "soon" }]),
+            ),
+            ("negative time", json!([{ "name": "hit", "time": -0.1 }])),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = two_channel_model(&[0.0, 1.0], &[Vec3::Y, Vec3::Y])
+                .write(&dir.path().join("model.gltf"));
+            patch_document(&path, |root| {
+                root["animations"][0]["extras"] = json!({ "events": events });
+            });
+            let capture = LogCapture::start();
+            let model = load_model(&path).expect("malformed events never fail the load");
+
+            let sway = &model.clips[0];
+            assert!(sway.events.is_empty(), "{label}: no events load");
+            assert_eq!(sway.duration, 1.0, "{label}: the keys load");
+            assert!(
+                !sway
+                    .joints
+                    .iter()
+                    .all(|joint| joint.rotation.times.is_empty()),
+                "{label}: the tracks load"
+            );
+            capture.assert_logged_once(Level::Warn, "malformed extras.events on clip 'sway'");
+        }
     }
 
     // Regression: gltf trusted stride, count and sparse shape. A short stride

@@ -6,6 +6,7 @@
 // groups from these plain Pod types. Keep it that way.
 
 pub mod anim;
+pub mod clip_events;
 pub mod clip_library;
 #[cfg(test)]
 mod clip_library_test_fixtures;

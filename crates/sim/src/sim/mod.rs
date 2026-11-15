@@ -979,6 +979,7 @@ where
                 descriptor_generation,
                 factions,
                 faction_sentiment,
+                clips: Some(hit_zone_store),
             },
             &mut host,
         )
@@ -3092,6 +3093,7 @@ mod tests {
             duration,
             joints: Vec::new(),
             travel_speed: None,
+            events: Vec::new(),
         };
         let mut hit_zones = HitZoneStore::new();
         hit_zones.insert_for_test(

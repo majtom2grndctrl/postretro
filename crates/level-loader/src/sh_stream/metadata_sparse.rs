@@ -128,6 +128,7 @@ pub(super) fn read_optional_sparse_metadata(
             section as u32
         )));
     }
+    // Offsets per the fixed header layout; they hold while the body flag stays its last byte.
     let affinity_dims = [
         read_u32(&header, 2),
         read_u32(&header, 6),

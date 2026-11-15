@@ -53,7 +53,9 @@ use postretro_level_format::{SectionBlob, SectionId, read_container, write_prl};
 use std::sync::Arc;
 
 use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES;
-use postretro_level_format::sh_body::{SH_BODY_SECTIONS, read_sh_body_presence};
+use postretro_level_format::sh_body::{
+    SH_BODY_SECTIONS, read_sh_body_presence, sh_body_header_len,
+};
 
 use crate::lightmap_stream::LightmapStreamingMode;
 use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
@@ -210,13 +212,10 @@ fn streaming_loads_omitted_sh_bodies_as_it_loads_present_ones() {
     let omitted = write_stream_fixture_omitting(&SH_BODY_SECTIONS);
     for section in SH_BODY_SECTIONS {
         assert_eq!(sh_body_presence(&omitted, section), ShBodyPresence::Omitted);
-        // This fixture's id 27 has no delta tiles, so only its flag differs.
-        if section != SectionId::DeltaShVolumes {
-            assert!(
-                section_size(&omitted, section) < section_size(&present, section),
-                "{section:?} is written without its body"
-            );
-        }
+        assert!(
+            section_size(&omitted, section) < section_size(&present, section),
+            "{section:?} is written without its body"
+        );
     }
     for mode in [ShStreamingMode::SyncProof, ShStreamingMode::Async] {
         let load = |fixture: &StreamFixture| {
@@ -315,6 +314,112 @@ fn a_level_without_id50_refuses_an_omitted_sh_body_whatever_the_mode() {
             "{message}"
         );
     }
+}
+
+// A whole SH load judges body presence from header prefixes on the retained
+// file, before the image read or any container: a default bake under `off` is
+// refused without reading the image or any SH body. Without id 50 nothing
+// else reads the file, so each SH section gives up its header alone.
+#[test]
+fn off_refuses_a_default_bake_before_reading_its_image() {
+    let streamable = write_stream_fixture_omitting(&SH_BODY_SECTIONS);
+    let whole_only = into_whole_load_fixture(write_stream_fixture_omitting(&SH_BODY_SECTIONS));
+    for (fixture, streamable) in [(&streamable, true), (&whole_only, false)] {
+        let path = fixture.path.to_str().unwrap();
+        let data = std::fs::read(path).unwrap();
+        let table = read_container(&mut std::io::Cursor::new(&data)).unwrap();
+        let (result, report) = observe_positional_reads(Vec::new(), || {
+            load_prl_with_streaming_mode_for_test(path, ShStreamingMode::Off)
+        });
+        assert!(
+            matches!(
+                &result,
+                Err(PrlLoadError::ShBodiesOmitted { section_ids, streamable: s })
+                    if *section_ids == sh_body_ids(&SH_BODY_SECTIONS) && *s == streamable
+            ),
+            "{result:?}"
+        );
+        let read_in = |range: Range<u64>| -> u64 {
+            report
+                .reads
+                .iter()
+                .map(|read| {
+                    read.end
+                        .min(range.end)
+                        .saturating_sub(read.start.max(range.start))
+                })
+                .sum()
+        };
+        let total: u64 = report.reads.iter().map(|read| read.end - read.start).sum();
+        assert!(
+            total < data.len() as u64 / 2,
+            "streamable {streamable}: read {total} of {} bytes",
+            data.len()
+        );
+        if streamable {
+            // The manifest reads id 50's metadata, never its payloads.
+            let payloads = table
+                .find_section(SectionId::ClusterShPayloads as u32)
+                .unwrap();
+            let payload_start = payloads.offset + fixture.id50_metadata_len as u64;
+            assert_eq!(read_in(payload_start..payloads.offset + payloads.size), 0);
+        } else {
+            for section in SH_BODY_SECTIONS {
+                let entry = table.find_section(section as u32).unwrap();
+                let header_len = sh_body_header_len(section).unwrap() as u64;
+                assert_eq!(
+                    read_in(entry.offset..entry.offset + entry.size),
+                    header_len.min(entry.size),
+                    "{section:?} gives up its header alone"
+                );
+            }
+        }
+    }
+}
+
+// A current-version header whose body-presence flag is neither 0 nor 1 fails
+// every load by the flag's name: streaming meets it in the metadata readers,
+// a whole load at the gate, never at a soft "malformed -> disable" path.
+#[test]
+fn an_invalid_sh_body_flag_fails_every_load_alike() {
+    for section in [
+        SectionId::DirectShDeltaVolumes,
+        SectionId::AnimatedDirectShDeltaVolumes,
+    ] {
+        let streamable = write_stream_fixture(Id50Body::Valid);
+        set_sh_body_flag(&streamable, section, 2);
+        let whole_only = into_whole_load_fixture(write_stream_fixture(Id50Body::Valid));
+        set_sh_body_flag(&whole_only, section, 2);
+        for (fixture, mode) in [
+            (&streamable, ShStreamingMode::Async),
+            (&streamable, ShStreamingMode::SyncProof),
+            (&streamable, ShStreamingMode::Off),
+            (&whole_only, ShStreamingMode::Off),
+        ] {
+            let error = load_prl_with_streaming_mode_for_test(fixture.path.to_str().unwrap(), mode)
+                .expect_err("an invalid flag is a hard failure");
+            let message = error.to_string();
+            assert!(
+                matches!(error, PrlLoadError::FormatError(_))
+                    && message.contains(&format!(
+                        "section {} body-presence flag 2 is invalid",
+                        section as u32
+                    )),
+                "{section:?} {mode:?}: {message}"
+            );
+        }
+    }
+}
+
+/// Overwrite the body-presence flag of `section`, the last byte of its
+/// fixed header (ids 27/41/45 carry it as a `u8`).
+fn set_sh_body_flag(fixture: &StreamFixture, section: SectionId, flag: u8) {
+    let mut data = std::fs::read(&fixture.path).unwrap();
+    let table = read_container(&mut std::io::Cursor::new(&data)).unwrap();
+    let entry = table.find_section(section as u32).unwrap();
+    let at = entry.offset as usize + sh_body_header_len(section).unwrap() - 1;
+    data[at] = flag;
+    std::fs::write(&fixture.path, data).unwrap();
 }
 
 // The 128 MiB delta binding floor sizes a whole-loaded id 27/41/45 body.
@@ -1089,12 +1194,12 @@ fn indirect_delta_section() -> DeltaShVolumesSection {
         affinity_dims: AFFINITY_DIMENSIONS,
         tile_dimension: 6,
         tile_border: 1,
-        animation_descriptor_indices: Vec::new(),
+        animation_descriptor_indices: vec![0],
         valid_probe_masks: vec![u64::MAX; AFFINITY_COUNT as usize],
         cell_levels: vec![0; AFFINITY_COUNT as usize],
-        affinity_offsets: vec![0; AFFINITY_COUNT as usize + 1],
-        affinity_lights: Vec::new(),
-        delta_subblocks: Vec::new(),
+        affinity_offsets: one_entry_offsets(),
+        affinity_lights: vec![0],
+        delta_subblocks: vec![0; sparse_tile_f16_count()],
     }
 }
 
@@ -1267,7 +1372,7 @@ fn valid_id50(
     let mover_bytes = mover_block
         .as_ref()
         .map_or(0, |(_, body)| body.len() as u64);
-    let chunk = dense_and_empty_sparse_chunk(mover_block);
+    let chunk = dense_and_sparse_chunk(mover_block);
     let payload = chunk.clone();
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
@@ -1291,7 +1396,7 @@ fn valid_id50(
                 payload_len: chunk.len() as u64,
                 decoded_bytes: decoded_chunk_bytes() + mover_bytes,
                 requested_resident_bytes: u64::from(STORED_TILES) * 2 * 8 * 8 * 8
-                    + 2 * (16 + sparse_tile_f16_count() as u64 * 2)
+                    + 3 * (16 + sparse_tile_f16_count() as u64 * 2)
                     + mover_bytes,
                 stored_tile_count: STORED_TILES,
                 dense_patch_count: PROBE_COUNT,
@@ -1322,7 +1427,7 @@ fn valid_id50(
 
 /// The fixture's one chunk, with id 57's row block (row count, body) last
 /// when given.
-fn dense_and_empty_sparse_chunk(mover_block: Option<(u32, Vec<u8>)>) -> Vec<u8> {
+fn dense_and_sparse_chunk(mover_block: Option<(u32, Vec<u8>)>) -> Vec<u8> {
     let isolated_layout = cluster_sh_isolated_atlas_array_layout(STORED_TILES).unwrap();
     let isolated_atlas_len = isolated_layout.layer_count as usize
         * isolated_layout.atlas_width as usize
@@ -1333,7 +1438,7 @@ fn dense_and_empty_sparse_chunk(mover_block: Option<(u32, Vec<u8>)>) -> Vec<u8> 
             SectionId::DeltaShVolumes,
             3,
             AFFINITY_COUNT,
-            empty_sparse_rows(),
+            one_entry_sparse_rows(),
         ),
         (
             SectionId::OctahedralShVolume,
@@ -1407,8 +1512,7 @@ fn decoded_chunk_bytes() -> u64 {
             * 8;
     u64::from(PROBE_COUNT) * 16
         + 2 * isolated_atlas_body_len
-        + sparse_rows_len() as u64
-        + 2 * one_entry_sparse_rows_len() as u64
+        + 3 * one_entry_sparse_rows_len() as u64
 }
 
 fn probe_patches() -> Vec<u8> {
@@ -1442,20 +1546,6 @@ fn isolated_atlas_body(
     push_u32(&mut bytes, layout.atlas_height);
     push_u32(&mut bytes, layout.layer_count);
     bytes.resize(20 + atlas_len, 0);
-    bytes
-}
-
-fn empty_sparse_rows() -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(sparse_rows_len());
-    push_u32(&mut bytes, AFFINITY_COUNT);
-    push_u32(&mut bytes, 0);
-    push_u32(&mut bytes, 0);
-    push_u32(&mut bytes, 0);
-    for row in 0..AFFINITY_COUNT {
-        push_u32(&mut bytes, row);
-        push_u32(&mut bytes, 0);
-        push_u32(&mut bytes, 0);
-    }
     bytes
 }
 
@@ -1517,7 +1607,9 @@ fn streamed_body_ranges(fixture: &StreamFixture) -> Vec<Range<u64>> {
     let sparse_metadata_len = u64::from(AFFINITY_COUNT) * 9 + 4 * 17;
     let indirect_delta_body_start = indirect_delta.offset
         + header(DeltaShVolumesSection::FIXED_HEADER_SIZE)
-        + sparse_metadata_len;
+        + 4
+        + sparse_metadata_len
+        + 4;
     let direct_delta_body_start = direct_delta.offset
         + header(DirectShDeltaVolumesSection::FIXED_HEADER_SIZE)
         + sparse_metadata_len

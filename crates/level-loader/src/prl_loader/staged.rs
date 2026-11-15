@@ -42,7 +42,7 @@ use super::spatial::SpatialDecode;
 use super::{
     LoadManifests, cell_draw_index, cluster_directory, entities, finalize_lighting, geometry,
     lighting, lighting_sh, log_loaded, mover_probe_channel, spatial, validate_reflection_probes,
-    validation, whole_load_sh,
+    validation,
 };
 use crate::lightmap_stream::{LightmapStorage, LightmapStreamingMode};
 use crate::prl_container::PrlContainer;
@@ -358,14 +358,9 @@ pub(crate) fn load_prl_staged_from_container(
     }
     let streaming = stream_manifest.as_deref();
 
-    // The whole-load SH gate, as the monolithic parse runs it: before any
-    // hand-out, so a refused level hands nothing out.
-    stage_boundary!();
-    if streaming.is_none() {
-        whole_load_sh::require_whole_load_sh_bodies(&container)?;
-    }
-
-    // Hand-out 1, before the first section read.
+    // Hand-out 1, before the first section decode. The whole-load SH gate ran
+    // at the open, before the container existed, so a refused level hands
+    // nothing out.
     stage_boundary!();
     sink(HandOut::ShManifest(ShManifestHandOut {
         manifest: stream_manifest.clone().map(ShManifestMetadata),

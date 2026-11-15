@@ -876,9 +876,10 @@ fn late_validation_rejects_after_hand_outs() {
     );
 }
 
-// The whole-load SH gate runs first in both parses: a level whose id 45
-// omits its body is refused by name before hand-out 1, under either lightmap
-// mode, where the soft id-45 path would otherwise disable animated direct SH.
+// The whole-load SH gate runs at the open, ahead of both parses: a level whose
+// id 45 omits its body is refused by name before hand-out 1, under either
+// lightmap mode, where the soft id-45 path would otherwise disable animated
+// direct SH.
 #[test]
 fn staged_parse_refuses_an_omitted_sh_body_before_any_hand_out() {
     let fixture = write_stream_fixture_omitting(&[SectionId::AnimatedDirectShDeltaVolumes]);

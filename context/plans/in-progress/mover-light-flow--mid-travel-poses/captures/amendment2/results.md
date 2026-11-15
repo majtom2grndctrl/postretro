@@ -817,3 +817,126 @@ The dark state and edge copy never touch termini.
   - `logs\`: bakes and captures.
   - `cap\`: 11,919 frames, 1.5 GB.
   - `results\`: `bsummary.json`, `bexit.json`.
+
+## M9 sightings (Windows, 2026-11-15)
+
+Classifies the two things the owner saw in the M9 in-engine check, against same-rule dense truths. Binaries are `amend3\bin\` (dbacdfdf2; the engine and every mover-channel output are unchanged at HEAD 4dcbddc2b). Settings are as in the big-room re-capture: offscreen 960×540, `sync-proof`, `force_full_resident_sh_compose`, reflections off, one forced mover t′. "Indirect only" is `light_term_mask` 0x02.
+
+### Answers first
+
+- **Sweeper corner: not reproduced at the corner; nothing there is (S).**
+  - From the owner's position, the east face's top-left (south-top) corner tracks the truth within +0.72 / −0.94 over the whole trip, in 16 u face-anchored cells. Its largest one-frame step is 0.93 in HEAD and in the truth. No transient appears there in either build. The same holds on a riding close-up of the corner (+1.01 / −1.00) and with the eye read as feet + 0.6 m, above the slab's top.
+  - HEAD departs from the truth by more than 2 levels in two places only, and neither is the upper-left corner:
+    - **(S), floor at the face's foot.** At t′ 0.728–0.777 (about 4 frames at 60 fps), the floor within 3 u in front of the east face reads up to **+3.5** (HEAD 21.1, truth 17.5). The probes are layer x 1496.8, z 23.4, inside the slab. HEAD's enclosure run there is **two knots**, both edge copies, so the probe reads lit through the whole enclosure, where the truth stores dark from 0.7321.
+    - **(L), south wall beside the slab's south end.** At t′ 0.009–0.055, the wall at x 1260–1278, z 10–62 reads up to **+2.5**. The slab never encloses the probes there. HEAD skips their mid poses, giving one stored interval from t′ 0 to 0.29–0.70, while the truth stores or reads the base from t′ 0.009.
+  - Both are under 4 levels, and only visible ×4 in the difference (`m9-sweeper.png`). If the owner's light is one of them, it is most likely the (L) strip, which runs along the brush's left edge just after it leaves the west end. Otherwise it is outside what an offscreen capture shows (see Not tested).
+- **Big room, door side: (R).** The door side shows no short run, and HEAD tracks the truth.
+  - In static indirect, every door-side surface is within **1.4** of the truth over the whole trip: door wall face 0.89, floor by the door 1.34, ceiling by the door 1.42. The only larger block is −4.66 seen through the arch (the floor-top crossing at t′ 0.9226, also in `bfloor`).
+  - With all light terms, the moving light on the door side is real and identical in both builds:
+    - the lit patch through the arch sweeps onto the floor at t′ 0.72–0.80, floor-by-door mean 1.0 → 16.3, at most 2.7 per frame in both;
+    - the view through the arch steps 5–17 per frame in both;
+    - the ceiling over the arch brightens at the t′ 0.7695 and 0.913 exits, as the re-capture found.
+  - HEAD's full-frame departures from the truth there are at most **6.7**: the ceiling over the arch at t′ 0.794, HEAD darker, inside a 16.5-frame stored interval (knots 0.7795–0.8193). They are absent in static indirect, so they are (L), the long-interval share the Motion-proof follow-up holds.
+- **Fixable in this brief:** only the sweeper's floor-at-the-foot excess (S), +3.5 for about 4 frames. A bounding dark pose would remove it, but **at 1 u it merges into the existing inside knot and does nothing** (below).
+
+### Bakes
+
+| Bake | Wall time (cold `--release`, fresh cache) | em_sweeper knots | id 57 |
+|---|---|---|---|
+| `enemy-movers` HEAD | 54.7 s (25c: 16.5 s; same knots, so likely machine load) | 31 (7 even + 24 geometry), identical to 25c | 4,551,545 B |
+| `enemy-movers` truth, `light_poses 113` | 24.6 s | 113 even, 1/112 apart; no `held the probe` / band line in the log | 5,864,676 B |
+| `mover-setpiece` HEAD and truth | reused from the big-room re-capture | room_big 74 / 98 | — |
+
+The geometry check (`tools/m9runs.py`) re-implements the bake's enclosing rule (inside one posed brush by `enclosure_inset` on every plane). It agrees with every stored depth mark in id 57: dark tile exactly where enclosed. That is 0 disagreements over 1,243 / 2,263 sweeper tiles and 25,664 / 28,869 big-room tiles (HEAD / truth).
+
+### Sweeper (owner's view `sweeper_east`, (1654, 197, 79), yaw 168, pitch −5; 346 samples at 0.0029 t′, about 4 per 60 fps frame)
+
+**Enclosure runs.** Every probe in an x layer shares its run, since the slab spans the layer's y and z.
+
+| Probe layer x | HEAD run (t′, knots) | Truth run | HEAD − truth, worst block in the 0.07 t′ after entry (samples > +2) |
+|---|---|---|---|
+| 1299.97 | 0–0.0763, 2 (terminus + edge) | 0–0.0714, 9 | +2.51 at 0.035 (17), the (L) wall strip, not fed by these probes |
+| 1339.34 | 0.1085–0.2301, 3 (even pose 0.1429 dark) | 14 | +1.33 (0) |
+| 1378.71 | 0.2623–0.3839, 3 | 14 | +1.99 (0) |
+| 1418.08 | 0.4161–0.5377, 3 | 14 | +1.18 (0) |
+| 1457.45 | 0.5699–0.6915, **2** | 14 | +1.96 (0) |
+| **1496.82** | **0.7236–0.8453, 2** | 14 | **+3.52 at 0.760 (18)** |
+| 1536.19 | 0.8774–1.0, **2** (ends at the terminus) | 14 | +2.21 at 0.893 (1) |
+
+**The (S) event, probe 2123 at (1496.8, 197.0, 23.4).** Values are id-57 bounce tile means.
+
+| | HEAD | Truth |
+|---|---|---|
+| Entry | 0.7236: 0.040, copied from clear knot 0.7182 | 0.7232: 0.040, copied |
+| Inside | blends 0.040 → 0.147 linearly, so lit throughout | **0.000** stored at 0.7321 and 0.8304; dark between |
+| Exit | 0.8453: 0.147, copied from 0.8507 | 0.8393: 0.150, copied |
+| Depth | dark tile at both enclosed knots | dark tile |
+
+- The floor at the face's foot looks up the z 23.4 layer. Inside the slab, that probe keeps its 0.03 floor weight, a large share there.
+- In HEAD that share carries a lit value; in the truth it carries zero. Hence +3.0 to +3.5 on floor blocks 2–3 u in front of the face, from t′ 0.728 to 0.777.
+- The 3-knot runs, whose even pose sits 0.034 t′ inside, stay under +2.
+
+**The (L) strip.** These probes are never enclosed (the slab's y ≥ 64), so this is not (S).
+
+| Probe | HEAD stores | Truth stores |
+|---|---|---|
+| (1260.6, 39.6, 62.7) | t′ 0, then 0.697 | t′ 0, base at 0.009, then 0.241 |
+| (1299.97, 39.6, 62.7) | t′ 0, then 0.429 | t′ 0, base at 0.116–0.134, then 0.25 |
+
+Skipping left HEAD one long stored interval where the truth tracks the slab leaving.
+
+**Face and corner.**
+
+| | Corner cells (y 64–128, z 48–96) | Whole face | Corner 1-frame step, HEAD / truth |
+|---|---|---|---|
+| Owner's view | +0.72 / −0.94 | +1.09 / −1.78 | 0.93 / 0.93 |
+| Riding close-up `m9corner` | +1.01 / −0.93 | +1.01 / −1.00 | 0.93 / 0.93 |
+
+- With the eye 0.6 m higher (`m9high`), the only block over +3 is the same (S) floor event (+3.63 at 0.731).
+- With direct off but specular and AO on (mask 0x147, 88 samples), HEAD − truth is at most +2.90, the same floor event. The only bright pixels near the corner are rock specular behind it (48 in both).
+
+### Big room, door side
+
+- **View.** `m9door` rides the room at local (1728, 1740, −196), yaw 270, fov 100, square on to the south wall, arch, jambs, and the floor and ceiling by the door. It takes 416 samples per trip (60 fps), indirect only and all terms, HEAD and truth. Earlier `bs`, `bw` and `bfloor` series were reused.
+- **Runs feeding the door side.** Every probe within reach of the door side (x 1679–1797, y ≤ 1393) has runs of 4 knots or more in HEAD: 13–66 after t′ 0.6. The truth's are 8–88.
+- **HEAD's only short runs on this mover:**
+  - 182 probes of layer z 215.2: 0.9692–1.0, 2 knots, ending at the terminus; the truth has 4. They sit in the roof slab and feed only the roof top.
+  - Two arch-top probes, 0–0.014 and 0–0.021: 2 and 3 knots, starting at the terminus, the same as the truth.
+
+| Static indirect (mask 02) | HEAD range | Max \|HEAD − truth\| block |
+|---|---|---|
+| Door wall face | 0.0–0.4 | 0.89 |
+| Floor by the door (y < 1460) | 0.0–2.3 | 1.34 |
+| Ceiling by the door | 0.0–4.7 | 1.42 |
+| Whole frame | — | +1.98 / −4.66 (t′ 0.9264, through the arch: the floor-top crossing) |
+| `bs` / `bw` / `bfloor` (re-capture frames) | — | +1.79 / −2.05; +1.00 / −1.00; +2.00 / −5.15 (the same 0.9264 crossing) |
+
+| All terms | HEAD | Truth |
+|---|---|---|
+| Floor by the door, mean, t′ 0.70 → 0.80 | 1.0 → 16.3 (max block 52.8) | 1.05 → 16.25 |
+| Its largest block step per frame, t′ 0.70–0.80 | 2.74 | 2.73 |
+| Through the arch, largest step | 17.26 at 0.7454 | 17.26 |
+| Worst HEAD − truth | −6.67 at 0.794 (ceiling over the arch, y 1395); +5.09 at 0.926 | — |
+
+### What a bounding dark pose would change
+
+- **Runs that gain a dark interior knot.**
+  - Sweeper: every 2-knot run gains two dark knots: x 1457.45 and 1496.82, and the interior ends of 1299.97 and 1536.19. The 3-knot runs gain dark knots near both ends. So the floor-at-the-foot excess (+3.5) and its +2.0–2.2 siblings fall toward the truth.
+  - Big room: only the roof-top layer z 215.2 changes, at t′ 0.969–1.0. The door side does not change, and neither does the (L) wall strip.
+- **Cost.** About one knot per non-terminus enclosure end: sweeper 31 → about 43 poses, big room 74 → about 108. Bounce bake time grows with them (sweeper 4.2 s at 31 poses).
+- **Merge trap (code reading, not run).**
+  - A second inside margin "about 1 u" in `INSIDE_KNOT_MARGINS_M` (0.01 → 0.0354 m) gives two inside windows per enclosure end, [0.001, 0.035] and [0.0104, 0.0604] m of travel. `KNOT_MERGE_TOLERANCE_M` is 0.025.
+  - `stab()` groups windows that share a point, so it merges these into one knot at about 0.023 m. Edge copy then makes that knot the run's lit edge, and no dark pose results.
+  - A bounding pose needs about 0.06 m (2.4 u) from the edge knot, or a merge that keeps one end's inside windows apart. The comment on `INSIDE_KNOT_MARGINS_M` ("a dark interior pose with no change there") assumes they do not merge.
+
+### Not tested
+
+- The owner ran in-engine with streaming and live compose. Offscreen capture forces `sync-proof` and full-resident compose at one t′ per frame, so a one-frame compose lag or a streaming miss at a crossing cannot appear here. If the corner light is real and not one of the two departures above, an in-engine frame dump with `t′` printed is the next step.
+
+### Files (M9)
+
+- Here:
+  - sheets: `m9-sweeper.png` (the (L) strip at t′ 0.0348; the (S) floor event at 0.7308 and 0.7598) and `m9-bigroom-door.png` (indirect at 0.7937 and 0.9264; all terms at 0.6996, 0.7599 and 0.7937);
+  - clips: `clips/m9-sweeper-foot-0.7236.mp4` (t′ 0.696–0.800 at 4 samples per 60 fps frame, 16× slow) and `clips/m9-bigroom-door-0.70.mp4` (t′ 0.70–0.82, all terms, 4× slow). Each shows HEAD | truth | (HEAD − truth) ×4.
+  - tools: `tools/m9cap.py`, `m9id57.py` (id-57 epoch-7 reader: knots, bounce and depth marks per pose, direct q), `m9runs.py` (enclosure runs and edge-copy sources from geometry, checked against id 57), `m9face.py`, `m9sweep.py`, `m9room.py`, `m9doorana.py`, `m9clip.py`, `m9lattice.py`, `m9bake.sh`.
+- Scratch `m9class\`: the cited frames, `*-blocks.npz` and `*-series.npz`, and bake logs in `logs\`. The `enemy-movers` PRLs are in `amend3\ws\content\dev\maps\`.

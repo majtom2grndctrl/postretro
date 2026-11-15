@@ -97,7 +97,7 @@ light.
     ceiling keeps texture strength × `_glow` × a curve peak finite in the scene
     target.
   - The glow set is every render face derived from the entity's `_e` sides,
-    including slivers the emit set drops (O8), so no strip of the pane leaves
+    including slivers the emit set drops (O8, O38), so no strip of the pane leaves
     its light.
   - The light is its faces' one glow controller: an `emissive_volume` never
     takes a `light_area` face. Area lights add entries to emissive-volumes' glow
@@ -345,8 +345,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   With `_glow` at 0, 0.5 and 8 the emissive term scales by that factor,
   reflection capture draws the faces at texture strength × `_glow` × `_color`,
   id 60 carries the new `_glow`, and every section but ReflectionProbes (id 54)
-  and Emissive (id 60) stays byte-identical. A negative `_glow` warns and reads
-  0; a non-finite one reads 1.0.
+  and Emissive (id 60) stays byte-identical. A negative `_glow` reads 0, a
+  non-finite one 1.0, and one past the ceiling the ceiling, each warning by
+  light and key.
 - [ ] A texture at the strength ceiling under an area light whose `_glow` is at
   its ceiling and whose brightness curve peaks above 1 presents finite glow and
   finite bloom.
@@ -354,9 +355,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   strength × `_glow` × `_color`, and its id 60 entry carries the static
   sentinel. For an area light with an AlphaLights record, its entry's colour
   and reference intensity equal that record's. `_bake_only` with
-  `_start_inactive` warns.
-- [ ] A sliver piece the emit set drops still glows with its light and is never
-  a volume member (research.md O8).
+  `_start_inactive` warns, and its faces and room stay dark.
+- [ ] A sliver piece the emit set drops still glows with its light, sits in the
+  light's id 60 face list and is never a volume member (research.md O8, O38).
 - [ ] Reflection capture: a static area light's faces enter the static term,
   an animated one's its per-light term. Scripted to 0, an animated panel's
   reflected faces go dark with the room, and a `_start_inactive` panel reflects
@@ -366,6 +367,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - [ ] A volume whose every `_e` face an area light took warns, naming that
   light; a volume with other `_e` faces stays silent; a volume with none keeps
   its own warning (research.md O29).
+- [ ] A volume whose `_e` faces an area light and a smaller volume took
+  between them keeps the no-`_e`-face warning and names no light. One whose
+  faces two area lights took warns, naming both (research.md O36).
 - [ ] A `colorShift` moves the glow's colour and the room's colour together.
 - [ ] With `_falloff_range` set, doubling an area light's `light` doubles its
   lightmap and probe output and leaves its faces' emissive term unchanged
@@ -374,16 +378,21 @@ Glow and light identity (orderings in `research.md` §Pin table):
   all-glowing `_e` maps, one on a texture with `materials.toml` strength 4 and a
   white `_e` map and one on a plain texture with a red `_e` map, produce
   byte-identical lightmap, SH and scatter sections.
-- [ ] Changing only `_glow` re-keys the reflection-capture entry alone, and id 60
+- [ ] Changing only `_glow`, on a static and on an animated area light a water
+  probe sees, re-keys the reflection-capture entry alone, and id 60
   carries the new `_glow`: a warm rebuild reads every lightmap, weight-map,
   surface-radiance, SH, scatter, mover-channel and bounce-delta entry from the
   cache.
-- [ ] Two builds of one area light, `_color 255 255 255` with `light 300` and
-  `_color 85 85 85` with `light 900`, each miss the reflection-capture cache the
-  other built, and the second captures its faces at one third of the first's
-  glow.
+- [ ] Two builds of one area light with `_falloff_range` set, `_color 255 255
+  255` with `light 300` and `_color 85 85 85` with `light 900`, light the room
+  alike within 1e-6 relative and each miss the reflection-capture cache the
+  other built. The second's captured emissive term at a face hit is one third
+  of the first's within 1e-5 relative: for a static light in the static term,
+  and for an animated light with no curve in its per-light term
+  (research.md O37).
 - [ ] Editing only the `materials.toml` strength of a texture an area light's
-  faces use misses the reflection-capture cache and rewrites id 60 only
+  faces use misses the reflection-capture cache, and every section but
+  ReflectionProbes (id 54) and Emissive (id 60) stays byte-identical
   (research.md O27).
 - [ ] An area light on a texture with `emissive = 0` lights the room as at
   strength 1, and its faces draw no glow (research.md O28).
@@ -420,6 +429,24 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - [ ] An area light is never an `emissive` member or record: a tagged
   `setEmissiveBrightness` skips it with a warning, and its glow follows its
   replicated light animation on a client and a late joiner (research.md O31).
+- [ ] An area light with `light 0`, static and animated with a looping curve,
+  compiles with reach 0 and lights nothing. No bake output and no presented
+  frame holds a NaN. Its faces glow at `_e` × texture strength × `_glow` ×
+  `_color`, times the curve when animated (research.md O32, O33).
+- [ ] An animated area light with `light 900` and no curve glows at `_e` ×
+  texture strength × `_glow` × `_color`, equal to the same light static within
+  1e-6 relative (research.md O34).
+- [ ] Editing only the level script so a `levelLoad` pulse targets a static area
+  light ahead of an animated one gives each its new compose slot in id 60 and
+  moves the first light's reflected glow into its per-light term, and the warm
+  build matches a cold one byte for byte (research.md O35).
+- [ ] `docs/level_design.md` gains a `light_area` section under Lights: emitting
+  faces are exposed sides with an `_e` map; brightness per area and derived
+  reach; `_glow`, its default and bad-value rules; no `emissive_volume` takes
+  its faces, and the warning a volume they empty gives; `_bake_only` with
+  `_start_inactive` warns; its glow and room light are not flash-limited until
+  E23 lands. `docs/scripting-reference.md` lists `"Area"` among light kinds and
+  `sweep`'s refusal on it (grep gate on `light_area` and `"Area"`).
 - [ ] At promotion, E23's source-floor draft names `light_area` glow as a clamp
   source through its light's animation, fed the faces' shown glow (grep gate
   on `light_area`).

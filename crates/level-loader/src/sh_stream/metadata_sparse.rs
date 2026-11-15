@@ -7,7 +7,8 @@ use postretro_level_format::SectionEntry;
 use postretro_level_format::SectionId;
 use postretro_level_format::delta_sh_volumes::DELTA_SH_VOLUMES_VERSION;
 use postretro_level_format::direct_sh_delta_volumes::DIRECT_SH_DELTA_VOLUMES_VERSION;
-use postretro_level_format::direct_sh_volume::DIRECT_SH_VOLUME_VERSION;
+use postretro_level_format::direct_sh_volume::{DIRECT_SH_VOLUME_VERSION, DirectShVolumeSection};
+use postretro_level_format::sh_body::{ShBodyPresence, read_sh_body_presence, sh_body_header_len};
 
 use super::manifest::ensure_section_floor;
 use super::metadata_base::{checked_product, read_f32, read_u32, read_u32_vec, read_u64};
@@ -21,11 +22,13 @@ pub(super) fn read_optional_direct_metadata(
     let Some(entry) = entry else {
         return Ok(None);
     };
-    ensure_section_floor(entry, 76, "id-35 header")?;
-    let header = read_vec_at(file, entry.offset, 76, "id-35 header")?;
+    const HEADER: u64 = DirectShVolumeSection::HEADER_SIZE as u64;
+    ensure_section_floor(entry, HEADER, "id-35 header")?;
+    let header = read_vec_at(file, entry.offset, HEADER, "id-35 header")?;
     if read_u32(&header, 0) != DIRECT_SH_VOLUME_VERSION {
         return Err(stream_error("id 35 has an unsupported internal version"));
     }
+    let body = read_body_presence(SectionId::DirectShVolume, &header)?;
     let grid_origin = [
         read_f32(&header, 4),
         read_f32(&header, 8),
@@ -62,8 +65,9 @@ pub(super) fn read_optional_direct_metadata(
         atlas_len_header,
     )
     .map_err(PrlLoadError::FormatError)?;
-    let expected_section_size = 76u64
-        .checked_add(atlas_len)
+    // The header keeps the full atlas length either way.
+    let expected_section_size = HEADER
+        .checked_add(body_bytes(body, atlas_len))
         .ok_or_else(|| stream_error("id-35 section size overflows"))?;
     if entry.size != expected_section_size {
         return Err(stream_error(
@@ -97,7 +101,10 @@ pub(super) fn read_optional_sparse_metadata(
         section,
         SectionId::DeltaShVolumes | SectionId::AnimatedDirectShDeltaVolumes
     );
-    let fixed_len = if has_descriptor_map { 26u64 } else { 22u64 };
+    let fixed_len = u64::try_from(
+        sh_body_header_len(section).ok_or_else(|| stream_error("not a streamed sparse section"))?,
+    )
+    .map_err(|_| stream_error("fixed sparse header exceeds u64"))?;
     ensure_section_floor(entry, fixed_len, "streamed sparse header")?;
     let header = read_vec_at(file, entry.offset, fixed_len, "streamed sparse header")?;
     let expected_version = match section {
@@ -114,6 +121,7 @@ pub(super) fn read_optional_sparse_metadata(
             section as u32
         )));
     }
+    let body = read_body_presence(section, &header)?;
     if header[1] != postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR {
         return Err(stream_error(format!(
             "section {} has a mismatched affinity factor",
@@ -165,16 +173,17 @@ pub(super) fn read_optional_sparse_metadata(
             "streamed sparse metadata exceeds section bounds",
         ));
     }
+    // The header is already read: each metadata byte is read once, so the
+    // manifest never reads more than a section holds, body or not.
     let prefix = read_vec_at(
         file,
-        entry.offset,
-        before_entries,
+        entry.offset + fixed_len,
+        before_entries - fixed_len,
         "streamed sparse metadata",
     )?;
     let cell_count_usize = usize::try_from(cell_count)
         .map_err(|_| stream_error("streamed sparse affinity cell count exceeds usize"))?;
-    let mut cursor = usize::try_from(fixed_len)
-        .map_err(|_| stream_error("fixed sparse header exceeds usize"))?;
+    let mut cursor = 0usize;
     let descriptor_count_usize = usize::try_from(descriptor_count)
         .map_err(|_| stream_error("sparse descriptor count exceeds usize"))?;
     let mut animation_descriptor_indices = read_u32_vec(
@@ -251,8 +260,10 @@ pub(super) fn read_optional_sparse_metadata(
         &affinity_offsets,
         tile_dimension,
     )?;
+    // The payload length derives from metadata either way; an omitted body
+    // leaves only the metadata on the wire.
     let expected_section_size = metadata_len
-        .checked_add(expected_payload_bytes)
+        .checked_add(body_bytes(body, expected_payload_bytes))
         .ok_or_else(|| stream_error("streamed sparse section size overflows"))?;
     if entry.size != expected_section_size {
         return Err(stream_error(
@@ -281,6 +292,16 @@ pub(super) fn read_optional_sparse_metadata(
         animation_descriptor_indices: std::mem::take(&mut animation_descriptor_indices),
     }))
 }
+/// Either flag value streams: the body comes from id 50.
+fn read_body_presence(section: SectionId, header: &[u8]) -> Result<ShBodyPresence, PrlLoadError> {
+    read_sh_body_presence(section, header).map_err(PrlLoadError::FormatError)
+}
+
+/// On-wire bytes of a body whose metadata implies `len`.
+fn body_bytes(body: ShBodyPresence, len: u64) -> u64 {
+    if body.is_present() { len } else { 0 }
+}
+
 fn sparse_payload_bytes(
     masks: &[u64],
     levels: &[u8],

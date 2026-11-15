@@ -78,6 +78,26 @@ impl ShStreamManifest {
         )
     }
 
+    /// [`Self::content_debug`] without the fields that name the file's
+    /// layout (path, section table, the content tag that binds them), so two
+    /// PRLs of one level that differ only in layout compare equal.
+    pub(crate) fn stream_content_debug(&self) -> String {
+        let Self {
+            file: _,
+            diagnostic_path: _,
+            container: _,
+            cluster_directory,
+            payloads,
+            base,
+            sources,
+            content_tag: _,
+            cluster_portal_topology,
+        } = self;
+        format!(
+            "{cluster_directory:?} {payloads:?} {base:?} {sources:?} {cluster_portal_topology:?}"
+        )
+    }
+
     /// Whether the parse has installed the cluster portal topology yet.
     pub(crate) fn cluster_portal_topology_installed(&self) -> bool {
         self.cluster_portal_topology.get().is_some()

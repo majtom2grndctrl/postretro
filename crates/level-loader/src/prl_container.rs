@@ -221,6 +221,38 @@ impl PrlContainer {
         }
     }
 
+    /// Up to `len` bytes from the start of a section, after validating its
+    /// container bounds. Reads only that prefix and credits no progress: the
+    /// section's own read credits it. Lets a check judge a header before the
+    /// section is decoded.
+    pub(crate) fn section_prefix(
+        &self,
+        section_id: u32,
+        len: u64,
+    ) -> Result<Option<Cow<'_, [u8]>>, PrlLoadError> {
+        let Some(entry) = self.metadata.find_section(section_id) else {
+            return Ok(None);
+        };
+        let len = len.min(entry.size);
+        match &self.backing {
+            PrlBacking::Whole(file_data) => {
+                prl_format::validate_container_entry_bounds(
+                    &self.metadata,
+                    entry,
+                    file_data.len() as u64,
+                )?;
+                // Bounds-validated above, so the range lies inside the image.
+                let start = entry.offset as usize;
+                Ok(Some(Cow::Borrowed(&file_data[start..start + len as usize])))
+            }
+            PrlBacking::Positional { file, .. } => {
+                prl_format::validate_container_entry_bounds(&self.metadata, entry, file.len()?)?;
+                let data = read_vec_at(file, entry.offset, len, "PRL section header")?;
+                Ok(Some(Cow::Owned(data)))
+            }
+        }
+    }
+
     /// A section's length after validating its container bounds, without
     /// reading its body. Lets a size policy refuse a section before it is
     /// read or allocated.

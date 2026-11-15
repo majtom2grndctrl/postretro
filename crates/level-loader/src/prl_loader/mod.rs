@@ -11,6 +11,7 @@ mod mover_probe_channel;
 mod spatial;
 mod staged;
 mod validation;
+mod whole_load_sh;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
@@ -125,6 +126,9 @@ pub(crate) fn load_prl_from_container(
         id50,
     } = manifests;
     let streaming = stream_manifest.as_deref();
+    if streaming.is_none() {
+        whole_load_sh::require_whole_load_sh_bodies(&container)?;
+    }
 
     let parsed_cluster_directory =
         cluster_directory::read_cluster_directory_structure(&container, streaming)?;

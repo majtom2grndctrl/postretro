@@ -188,6 +188,16 @@ pub enum PrlLoadError {
         "AnimatedLightWeightMaps (id 25): {message} — recompile the .prl with the current `prl-build`"
     )]
     AnimatedAtlasLayout { message: String },
+    /// The whole-load SH path (`POSTRETRO_SH_STREAMING=off`, or a PRL without
+    /// id 50) needs every present SH section's body, and these omit theirs.
+    #[error("{}", sh_bodies_omitted_message(.section_ids, *.streamable))]
+    ShBodiesOmitted {
+        /// Ids of the present sections whose body is omitted, in the order
+        /// of [`postretro_level_format::sh_body::SH_BODY_SECTIONS`].
+        section_ids: Vec<u32>,
+        /// Whether the PRL carries id 50, so SH streaming could load it.
+        streamable: bool,
+    },
     #[error(
         "PRL file has no TextureCacheKeys section (section 32) — file is corrupt or was produced by a writer that omits the section; recompile with `prl-build`"
     )]
@@ -252,6 +262,31 @@ pub enum PrlLoadError {
         found: u64,
         expected: u64,
     },
+}
+
+#[cfg(feature = "load-prl")]
+fn sh_bodies_omitted_message(section_ids: &[u32], streamable: bool) -> String {
+    let sections = section_ids
+        .iter()
+        .map(|&id| match prl_format::SectionId::from_u32(id) {
+            Some(section) => format!("{section:?} (id {id})"),
+            None => format!("section {id}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if streamable {
+        format!(
+            "PRL file omits the SH body of {sections}, which the whole-load SH path \
+             (POSTRETRO_SH_STREAMING=off) needs — rebake with `prl-build --whole-load-sh` to load it \
+             with `off`, or load it with SH streaming (POSTRETRO_SH_STREAMING unset, `async`, or `sync-proof`)"
+        )
+    } else {
+        format!(
+            "PRL file omits the SH body of {sections} but has no ClusterShPayloads section (id 50) \
+             to stream SH from, so only a whole load could read it — rebake with \
+             `prl-build --whole-load-sh`"
+        )
+    }
 }
 
 /// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
@@ -6463,7 +6498,9 @@ mod tests {
         let direct = minimal_direct_sh_volume_section();
         let base = base_octahedral_section_for_direct(&direct);
         let mut stale_bytes = direct.to_bytes();
-        stale_bytes[0..4].copy_from_slice(&3u32.to_le_bytes());
+        stale_bytes[0..4].copy_from_slice(
+            &(postretro_level_format::direct_sh_volume::DIRECT_SH_VOLUME_VERSION - 1).to_le_bytes(),
+        );
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -6476,16 +6513,14 @@ mod tests {
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
-        let tmp = write_prl_fixture(sections, "postretro_test_stale_direct_sh_v3.prl");
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_direct_sh_previous.prl");
         let error =
             load_prl(tmp.to_str().unwrap()).expect_err("stale present id-35 must reject the PRL");
         assert!(
             error
                 .to_string()
                 .contains("DirectShVolume validation error")
-                && error
-                    .to_string()
-                    .contains("v4 node-aware stored-atlas format"),
+                && error.to_string().contains("v5 body-presence format"),
             "expected named id-35 stale-format error, got {error}"
         );
         std::fs::remove_file(&tmp).ok();
@@ -6494,7 +6529,9 @@ mod tests {
     #[test]
     fn load_prl_rejects_stale_present_octahedral_sh_volume() {
         let mut stale_bytes = base_octahedral_section([2, 1, 1]).to_bytes();
-        stale_bytes[0..4].copy_from_slice(&10u32.to_le_bytes());
+        stale_bytes[0..4].copy_from_slice(
+            &(postretro_level_format::sh_volume::SH_VOLUME_VERSION - 1).to_le_bytes(),
+        );
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -6506,15 +6543,13 @@ mod tests {
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
-        let tmp = write_prl_fixture(sections, "postretro_test_stale_octahedral_sh_v10.prl");
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_octahedral_sh_previous.prl");
         let error =
             load_prl(tmp.to_str().unwrap()).expect_err("stale present id-34 must reject the PRL");
         assert!(
             error.to_string().contains("PRL format error")
                 && error.to_string().contains("octahedral sh volume")
-                && error
-                    .to_string()
-                    .contains("v11 node-aware stored-atlas format"),
+                && error.to_string().contains("v12 body-presence format"),
             "expected named id-34 stale-format error, got {error}"
         );
         std::fs::remove_file(&tmp).ok();

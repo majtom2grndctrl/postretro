@@ -313,6 +313,11 @@ pub(crate) enum BoundedDeltaSectionData<'a> {
 /// The floor is checked on the table length before the body is borrowed or
 /// read, so no decoder table is allocated before either structural validation
 /// or the binding-floor check.
+///
+/// Only the whole-load SH path calls this, after its gate has refused any
+/// omitted body, so the table length is metadata plus the full body the
+/// metadata implies. Streaming binds no whole delta section and never applies
+/// the floor, with or without bodies.
 #[cfg(test)]
 pub(crate) fn read_bounded_delta_section_data<'a>(
     container: &'a PrlContainer,

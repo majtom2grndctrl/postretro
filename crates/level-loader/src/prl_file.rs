@@ -116,6 +116,17 @@ impl PrlReadCounters {
         })
     }
 
+    /// `(section id, bytes read)` per table entry, in table order.
+    #[cfg(test)]
+    pub(crate) fn section_read_bytes(&self) -> Vec<(u32, u64)> {
+        self.sections.get().map_or_else(Vec::new, |sections| {
+            sections
+                .iter()
+                .map(|section| (section.section_id, section.bytes.load(Ordering::Relaxed)))
+                .collect()
+        })
+    }
+
     /// Bytes read outside every section: the container header and table.
     pub fn bytes_outside_sections(&self) -> u64 {
         self.outside_sections.load(Ordering::Relaxed)

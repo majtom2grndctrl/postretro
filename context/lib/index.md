@@ -53,6 +53,7 @@
 - **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2
 - **Accessibility panel / `ui.openAccessibility` / accessibility field actions / missing-entry warning / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
+- **Area lights / polygon area light / `light_area` / `_glow` / brush-entity emitter / glow that follows its light / windowed reach** → `build_pipeline.md` §Custom FGD, §Compiler pipeline (Area lights) · `rendering_pipeline.md` §4 (Static specular ownership, Promoted static lights) · `resource_management.md` §4.5 · `scripting.md` §12 (Entity addressing)
 - **World static specular / which lights draw specular / shadowmask owners per face / unowned-means-no-specular** → `rendering_pipeline.md` §4 (Static specular ownership) · bake and format: `build_pipeline.md` §PRL (ShadowmaskAtlas ownership)
 - **Animated lightmap compact atlas / block table / section 25 paging / lightmap-family memory meter** → `rendering_pipeline.md` §7.1 (Animated lightmap compose), §7.8 (Lightmap-family byte meter) · format: `build_pipeline.md` §PRL section IDs
 - **Emissive strength / `materials.toml` / `emissive_volume` / scripted glow / neon prefix retirement** (decided, not yet built) → `resource_management.md` §4.5 · `build_pipeline.md` §Custom FGD, §Compiler pipeline step 9, §PRL section IDs · `scripting.md` §10.2a · flash clamp: `rendering_pipeline.md` §7.8 (Photosensitivity limiter) · co-op: `networking.md` §Presentation state
@@ -62,7 +63,7 @@
 - **Captions / subtitles / sound-direction cues / mono audio / bus volume options** → `audio.md` §1 (Mixer bus tree), §5
 - **Damage direction indicator / player damage bearing** → `networking.md` §Presentation events vs. replicated state
 - **Impact burst / spark burst / observer impact cue / which peer spawns the burst** → `networking.md` §Presentation events vs. replicated state
-- **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
+- **UI layer / HUD / widgets / theming / UI state binding / repeated rows (`forEach`)** → `ui.md`
 - **Engine-owned assets / `core/` tree / built-in UI descriptors / splash image / where engine assets live vs. mod content** → `ui.md` §5 · `build_pipeline.md` §Distribution packaging
 - **Resource management / textures / materials** → `resource_management.md`
 - **Surface Depth / height maps / `_h.png` / texel-space parallax / per-texel surface carve / two-channel surface map** → `resource_management.md` §4.6 · `rendering_pipeline.md` §7.3 · bake and `.prm` format: `build_pipeline.md` §Baked texture mips
@@ -70,7 +71,8 @@
 - **3D model / glTF import (scale, pivot, material format, shared clip libraries, Mixamo licence)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
 - **SDK API style / typed handles vs strings / naming authoring options** → `scripting.md` §1 (Authoring API style)
-- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
+- **Session players / player counts and statuses / `session.players` display list / per-tag occupancy (`occupancy.tag`) / all-players condition** → `scripting.md` §5 (Session players, Occupancy) · roster: `networking.md` §Session-state ledger · repeated rows: `ui.md` §1.1
+- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
 - **System reactions / system steps in a sequence** → `scripting.md` §10.4
 - **Per-player events / `players().on` / discrete `assistReceived` / `assistGiven` sources / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)

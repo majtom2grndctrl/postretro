@@ -4,6 +4,8 @@
 use glam::{Quat, Vec3};
 use thiserror::Error;
 
+pub use crate::clip_events::ClipEvent;
+
 /// A joint's rest-pose local transform: the glTF node's default TRS, captured at
 /// load time. The animation sampler holds this for any channel a clip omits —
 /// the shipped clip carries rotation + translation only (no scale), and some
@@ -231,6 +233,20 @@ pub struct AnimationClip {
     /// translation track, or a near-in-place clip (net XZ displacement below the
     /// loader's epsilon).
     pub travel_speed: Option<f32>,
+    /// Named moments authored in the glTF animation's `extras.events`, in
+    /// authored order. A library clip's events reach every bound character; an
+    /// embedded clip overriding it by name brings its own, or none.
+    pub events: Vec<ClipEvent>,
+}
+
+impl AnimationClip {
+    /// The time of the event named `name`, in seconds from the clip's start.
+    pub fn event_time(&self, name: &str) -> Option<f32> {
+        self.events
+            .iter()
+            .find(|event| event.name == name)
+            .map(|event| event.time)
+    }
 }
 
 #[cfg(test)]

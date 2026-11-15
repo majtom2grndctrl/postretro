@@ -1575,6 +1575,7 @@ mod tests {
                 JointTracks::default(),
             ],
             travel_speed: None,
+            events: Vec::new(),
         };
         let mut store = HitZoneStore::new();
         store.insert_for_test(

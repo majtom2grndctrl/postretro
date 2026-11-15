@@ -69,12 +69,22 @@ struct Channel {
 pub(crate) struct Clip {
     name: String,
     channels: Vec<Channel>,
+    extras: Option<Value>,
 }
 
 pub(crate) fn clip(name: &str) -> Clip {
     Clip {
         name: name.to_string(),
         channels: Vec::new(),
+        extras: None,
+    }
+}
+
+impl Clip {
+    /// Author `extras.events` on this animation, as written.
+    pub(crate) fn events(mut self, events: Value) -> Self {
+        self.extras = Some(json!({ "events": events }));
+        self
     }
 }
 
@@ -387,6 +397,11 @@ impl BufferWriter {
                 "interpolation": channel.interpolation,
             }));
         }
-        json!({ "name": clip.name, "samplers": samplers, "channels": channels })
+        let mut animation =
+            json!({ "name": clip.name, "samplers": samplers, "channels": channels });
+        if let Some(extras) = &clip.extras {
+            animation["extras"] = extras.clone();
+        }
+        animation
     }
 }

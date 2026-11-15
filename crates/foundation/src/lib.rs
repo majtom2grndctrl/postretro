@@ -9,6 +9,7 @@ pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_micros(
 pub mod attack_budget;
 pub mod brain;
 pub mod candidate;
+pub mod clip_events;
 pub mod data_descriptors;
 pub mod defense;
 pub mod foundation_pods;
@@ -25,7 +26,7 @@ pub use weapon_activation::*;
 
 pub use brain::{
     ARCHETYPE_TOLERANCE_STATE_FIELD, ATTACK_TURN_FREE_INPUT_PREFIX, ATTACK_TURN_HELD_INPUT_PREFIX,
-    BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
+    BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ANIMATION_DONE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
     BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, BRAIN_DAMAGE_BEARING_INPUT,
     BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
     BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_ATTACK_TURN_INPUT, BRAIN_HAS_TARGET_INPUT,
@@ -44,6 +45,7 @@ pub use candidate::{
     CANDIDATE_TOLERANCE_INPUT, CandidateInputRef, CandidateValidationScope, bind_candidate_filter,
     resolve_candidate_input,
 };
+pub use clip_events::is_clip_event_name;
 pub use data_descriptors::*;
 pub use foundation_pods::{DamagePayload, ModMapEntry, NavAgentParams, knockback_impulse};
 pub use ir::*;

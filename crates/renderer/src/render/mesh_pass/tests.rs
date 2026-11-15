@@ -803,6 +803,7 @@ fn named_clip(name: &str, duration: f32) -> AnimationClip {
         duration,
         joints: Vec::new(),
         travel_speed: None,
+        events: Vec::new(),
     }
 }
 
@@ -1003,6 +1004,7 @@ fn const_x_clip(name: &str, tx: f32) -> AnimationClip {
                 .expect("valid constant scale track"),
         }],
         travel_speed: None,
+        events: Vec::new(),
     }
 }
 

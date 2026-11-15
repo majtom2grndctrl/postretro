@@ -662,6 +662,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_type("ActionVerb")
         .doc("What a behavior activity does besides moving. Omit the key for an activity with no action.")
         .field("attack", "String", "Name of the root graph attack this activity fires.")
+        .field("at?", "String", "Names a clip event, matching `[A-Za-z_][A-Za-z0-9_]*`. The attack fires on the tick the activity's clip reaches it, once per entry, instead of on entry. Only an activity's own action may carry it; a selector row's rejects at load. It implies the attack's turn mark, as `attackTurn` would.")
         .finish();
     registry
         .register_type("AttackParams")

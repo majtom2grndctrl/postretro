@@ -1,7 +1,8 @@
 // The dev mod's shipped enemies under its own attack budget (row S1): the
 // `content/dev` start script initialized as at boot, its reference enemy, rifle
-// troopers and burst rifle spawned from the committed descriptors, and its
-// tokens and `arena` profile installed as the manifest commits them.
+// troopers and burst rifle spawned from the committed descriptors, meshed with
+// their models' clips, and its tokens and `arena` profile installed as the
+// manifest commits them.
 // See: context/lib/entity_model.md §7c (Attack budget, Attack pools)
 
 use std::path::Path;
@@ -18,12 +19,13 @@ use postretro_sim::attack_pools::{
 };
 
 use super::*;
+use crate::scripting_systems::hit_zones::{HitZoneStore, ModelLoadWarningOwner};
 
 /// Long enough that the shipped attacks never run the target down.
 const DURABLE_HP: f32 = 1.0e6;
 
 /// `content/dev/start-script.ts`, bundled and initialized as at boot.
-fn dev_manifest() -> ModManifestResult {
+pub(crate) fn dev_manifest() -> ModManifestResult {
     let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
     let bundle = postretro_script_compiler::bundle_entry(&content.join("start-script.ts"))
         .expect("content/dev start-script.ts bundles");
@@ -56,7 +58,10 @@ fn dev_manifest() -> ModManifestResult {
         .clone()
 }
 
-fn descriptor<'a>(manifest: &'a ModManifestResult, name: &str) -> &'a EntityTypeDescriptor {
+pub(crate) fn descriptor<'a>(
+    manifest: &'a ModManifestResult,
+    name: &str,
+) -> &'a EntityTypeDescriptor {
     manifest
         .entities
         .iter()
@@ -65,7 +70,7 @@ fn descriptor<'a>(manifest: &'a ModManifestResult, name: &str) -> &'a EntityType
 }
 
 /// A registry carrying the dev mod's committed tokens and profiles.
-fn dev_registry(manifest: &ModManifestResult) -> EntityRegistry {
+pub(crate) fn dev_registry(manifest: &ModManifestResult) -> EntityRegistry {
     let mut reg = EntityRegistry::new();
     reg.set_attack_budgets(Arc::new(manifest.attack_budgets.clone()));
     reg
@@ -73,7 +78,7 @@ fn dev_registry(manifest: &ModManifestResult) -> EntityRegistry {
 
 /// The player, too sturdy for the attacks to bring down: a dead target ends
 /// every attack, and these proofs are about pacing.
-fn durable_player(reg: &mut EntityRegistry, position: Vec3) -> EntityId {
+pub(crate) fn durable_player(reg: &mut EntityRegistry, position: Vec3) -> EntityId {
     let pawn = spawn_player(reg, position);
     let mut health = reg.get_component::<HealthComponent>(pawn).unwrap().clone();
     health.max = DURABLE_HP;
@@ -82,26 +87,61 @@ fn durable_player(reg: &mut EntityRegistry, position: Vec3) -> EntityId {
     pawn
 }
 
-/// One of `manifest`'s archetypes, spawned with its shipped behavior graph.
-fn spawn_shipped(
+/// One of `manifest`'s archetypes, spawned facing +X with its shipped
+/// behavior graph and its descriptor's mesh. The mesh's model loads into
+/// `clips` from `content/dev`, its clip library bound, and each state's clip
+/// resolves against it as level load resolves it, so clip-timed attacks and
+/// `brain.animationDone` read the committed clips.
+pub(crate) fn spawn_shipped(
     reg: &mut EntityRegistry,
     manifest: &ModManifestResult,
+    clips: &mut HitZoneStore,
     name: &str,
     position: Vec3,
 ) -> EntityId {
-    let graph = descriptor(manifest, name)
+    let shipped = descriptor(manifest, name);
+    let graph = shipped
         .behavior
         .as_ref()
         .unwrap_or_else(|| panic!("`{name}` ships a behavior graph"));
-    spawn_enemy(reg, position, BrainComponent::from_graph(graph), 100.0)
+    let mesh = shipped
+        .mesh
+        .as_ref()
+        .unwrap_or_else(|| panic!("`{name}` ships a mesh"));
+    let enemy = spawn_enemy(reg, position, BrainComponent::from_graph(graph), 100.0);
+    if clips.get_by_name(&mesh.model).is_none() {
+        let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
+        clips.insert_from_load(&mesh.model, &content, ModelLoadWarningOwner::GameSide);
+    }
+    let model = clips
+        .get_by_name(&mesh.model)
+        .unwrap_or_else(|| panic!("`{}` loads", mesh.model));
+    let mut states = mesh.animations.clone();
+    for state in states.values_mut() {
+        state.clip_index = model.clips.iter().position(|clip| clip.name == state.clip);
+        assert!(
+            state.clip_index.is_some(),
+            "`{name}`'s clip `{}` binds from its model",
+            state.clip
+        );
+    }
+    let default_state = mesh.default_state.clone().expect("an animated mesh");
+    let animation = MeshAnimation::new(states, default_state).with_speed_scale(mesh.speed_scale());
+    reg.set_component(
+        enemy,
+        MeshComponent::animated(mesh.model.clone(), animation),
+    )
+    .unwrap();
+    enemy
 }
 
 fn shipped_reference_enemy(
     reg: &mut EntityRegistry,
     manifest: &ModManifestResult,
+    clips: &mut HitZoneStore,
     position: Vec3,
 ) -> EntityId {
-    let enemy = spawn_shipped(reg, manifest, "reference_enemy", position);
+    let enemy = spawn_shipped(reg, manifest, clips, "reference_enemy", position);
     // Its own armor broken sends it to retreat; the shipped archetype spawns
     // with 120.
     give_reference_armor(reg, enemy);
@@ -164,10 +204,11 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     // Two brutes in jab reach of one player, on opposite sides.
     let mut reg = dev_registry(&manifest);
     let mut runtime = AiRuntime::new();
+    let mut clips = HitZoneStore::new();
     let player = durable_player(&mut reg, Vec3::ZERO);
     let brutes = [
-        shipped_reference_enemy(&mut reg, &manifest, Vec3::new(-1.5, 0.0, 0.2)),
-        shipped_reference_enemy(&mut reg, &manifest, Vec3::new(1.5, 0.0, -0.2)),
+        shipped_reference_enemy(&mut reg, &manifest, &mut clips, Vec3::new(-1.5, 0.0, 0.2)),
+        shipped_reference_enemy(&mut reg, &manifest, &mut clips, Vec3::new(1.5, 0.0, -0.2)),
     ];
     const SECONDS: f32 = 16.0;
     let ticks = (SECONDS / DT) as u32;
@@ -176,7 +217,7 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     let mut last_cooldown = [0.0_f32; 2];
     let mut held_jab = [false; 2];
     for tick in 1..=ticks {
-        tick_with(&mut reg, &mut runtime, &manifest.entities);
+        tick_with_clips(&mut reg, &mut runtime, &manifest.entities, &clips);
         let now = tick as f32 * DT;
         for (index, &brute) in brutes.iter().enumerate() {
             let cooldown = slam_cooldown(&reg, brute);
@@ -219,7 +260,7 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
         .map(|index| {
             let bearing = index as f32 * std::f32::consts::TAU / 3.0;
             let at = Vec3::new(bearing.sin(), 0.0, bearing.cos()) * 6.0;
-            spawn_shipped(&mut reg, &manifest, "rifle_trooper", at)
+            spawn_shipped(&mut reg, &manifest, &mut clips, "rifle_trooper", at)
         })
         .collect();
     let mut most_ranged = 0;
@@ -227,7 +268,7 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     let mut repositioned = [false; 3];
     let mut was_holding = [false; 3];
     for _ in 0..ticks {
-        tick_with(&mut reg, &mut runtime, &manifest.entities);
+        tick_with_clips(&mut reg, &mut runtime, &manifest.entities, &clips);
         let mut ranged = 0;
         for (index, &trooper) in troopers.iter().enumerate() {
             let shooting = holds(&reg, trooper, "shoot");
@@ -262,6 +303,7 @@ fn arena_start_runs_tagged_guards_under_the_arena_profile() {
     let manifest = dev_manifest();
     let mut reg = dev_registry(&manifest);
     let mut runtime = AiRuntime::new();
+    let mut clips = HitZoneStore::new();
     durable_player(&mut reg, Vec3::ZERO);
     let arena = reg
         .try_spawn(Transform::default(), &["arena".to_string()])
@@ -274,7 +316,7 @@ fn arena_start_runs_tagged_guards_under_the_arena_profile() {
     let mut spawn_ring = |index: usize, tag: Option<&str>| {
         let bearing = index as f32 * std::f32::consts::TAU / 4.0;
         let at = Vec3::new(bearing.sin(), 0.0, bearing.cos()) * 6.0;
-        let trooper = spawn_shipped(&mut reg, &manifest, "rifle_trooper", at);
+        let trooper = spawn_shipped(&mut reg, &manifest, &mut clips, "rifle_trooper", at);
         if let Some(tag) = tag {
             reg.set_tags(trooper, vec![tag.to_string()]).unwrap();
         }
@@ -291,7 +333,7 @@ fn arena_start_runs_tagged_guards_under_the_arena_profile() {
     let mut most_outsiders = 0;
     for _ in 0..(8.0 / DT) as u32 {
         apply_attack_pool_requests(&mut reg);
-        tick_with(&mut reg, &mut runtime, &manifest.entities);
+        tick_with_clips(&mut reg, &mut runtime, &manifest.entities, &clips);
         let shooting = |group: &[EntityId]| {
             group
                 .iter()

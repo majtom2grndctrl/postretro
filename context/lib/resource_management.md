@@ -81,7 +81,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
+| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
 | **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` resolves to flat by intent, not by omission; `neon` does until it retires (§4.5, decided, not yet built), after which a former `neon_` texture carves as Default. See §4.6. |
 | **Footstep sounds** | Planned. |
@@ -141,13 +141,18 @@ Optional per-texture normal maps for fine surface detail.
 
 ### 4.5 Emissive Surfaces
 
-Optional emissive color maps add static, per-texel self-illumination to world and
-kinematic-brush surfaces. They do not emit light into lightmaps, SH irradiance or
-neighboring surfaces, and do not create dynamic lights. Glow texels are excluded
-from the per-texture diffuse mean used by SH bounce when non-glowing texels
-remain; an all-glowing texture uses its full average (`build_pipeline.md`
-§Compiler pipeline). Glow strength follows the original material name, as at
-runtime. To light a scene, an author places a separate light entity.
+Optional emissive color maps add per-texel self-illumination to world and
+kinematic-brush surfaces, static except on `light_area` faces (Strength, below).
+They do not emit light into lightmaps, SH irradiance or neighboring surfaces,
+and do not create dynamic lights. Glow texels are excluded from the per-texture
+diffuse mean used by SH bounce when non-glowing texels remain; an all-glowing
+texture uses its full average (`build_pipeline.md` §Compiler pipeline). The
+mean's glow test follows the original material name, as prefix glow does at
+runtime; a `light_area` face's `_glow` never enters it. To light a scene, an
+author places a light entity. A `light_area` is such an entity: its `_e` faces
+form its emitter and glow with it, and its cast light takes the entity's `light`
+and `_color`, never the emissive map or prefix (decided, not yet built;
+`build_pipeline.md` §Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions
@@ -160,8 +165,10 @@ runtime. To light a scene, an author places a separate light entity.
 - **Strength:** a prefix-derived `Material::emissive_strength()` multiplier scales
   the sampled color. `neon_` is 4.0 so an authored bright texel exceeds the
   renderer bloom threshold; other current material prefixes are zero until
-  content establishes a use for them. There is no per-surface runtime scalar in
-  v1.
+  content establishes a use for them. A `light_area` face (decided, not yet
+  built) instead takes its light's `_glow` × the light's live colour and
+  brightness, so its glow follows its light frame for frame. Every other face
+  has no per-surface runtime scalar.
 - **Strength and volumes (decided, not yet built):** brief
   `plans/ready/emissive-volumes`.
   - The `neon` prefix retires. Glow strength is content:
@@ -372,7 +379,7 @@ Solver uses a rigid, proper socket frame at its reference pose. Invalid, sheared
 - **Binding.** The model loader binds at load, into ordinary per-model clips in the mesh's joint order. Runtime consumers never see a library.
 - **Contract.** Joints match by exact name. Library tracks are deltas from the library's rest, composed with the mesh's rest; a rig whose clips are not rest-relative cannot use a library. Root translation scales by the ratio of root rest heights. Non-root translation and all scale drop, so proportions stay the mesh's. Composition keeps the mesh's rest offset in every frame, so a mesh posed unlike its library (an A-pose on a T-pose library) plays every clip off by that difference. Matching rests is content work, not a load-time retarget: `tools/rest_to_library.py` re-rests a bound mesh onto its library's rotations, re-skinning the mesh into that pose.
 - **Precedence.** Embedded clips stay valid and list first. A same-named embedded clip overrides the library's, silently.
-- **Clip events (decided, not yet built).** A glTF animation's `extras.events` lists `{ name, time }`, seconds from the clip's start, with room for an `end`. Events belong to the clip, never the descriptor, so every character on a library shares them, and an overriding embedded clip replaces them with its own. `mixamo_to_gltf.py --event` writes them; `--trim` keeps those inside its range, shifted by the cut's start. Malformed events warn and the clip loads without them. Host-only: clips stay outside the compatibility digest (`networking.md`). Consumer: `entity_model.md` §7c, Clip-timed attacks.
+- **Clip events.** A glTF animation's `extras.events` lists `{ name, time }`, seconds from the clip's start, with room for an `end`. Names start with a letter or underscore and hold letters, digits and underscores. They are case-sensitive and unique within a clip. Descriptor `action.at` checks the same rule. Events belong to the clip, never the descriptor, so every character on a library shares them, and an overriding embedded clip replaces them with its own. `mixamo_to_gltf.py --event` writes them before trims run. Each trim keeps the events inside its half-open span, `[start, end)`, shifted by its start key. So an event on a cut's key belongs to the trim starting there, at time 0, never to the windup ending there. A malformed list warns, and the clip loads with no events. Host-only: clips stay outside the compatibility digest (`networking.md`). Consumer: `entity_model.md` §7c, Clip-timed attacks.
 - **Raw data.** A model's joints and rest stay raw on load. Only two rewrites touch tracks: binding composes library tracks, and root-motion neutralization rewrites a model's own root tracks.
 - **Mechanism vs policy.** The engine names no rig. Joint names are a content contract between a library and its meshes; Mixamo policy lives in the conversion tool.
 - **Clip use.** Shipped characters play each clip as what it shows: walk for walking, run for running. Use the clips a character has, and never stand one in for another when the right one exists.

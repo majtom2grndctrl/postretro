@@ -190,6 +190,7 @@ pub fn switch_animation_state(
     // Pending: the resolve pass fills this from the frame's post-advance clock.
     anim.entered_at = None;
     anim.reset_incoming_playback_time();
+    anim.switches.bump();
 
     // Write the mutated component back. The id was just read successfully, so a
     // write failure would be a logic error, not a recoverable script condition.
@@ -797,5 +798,74 @@ mod tests {
             restart_animation_clip(&mut reg, id, "idle"),
             RestartResult::NotAnimated
         );
+    }
+
+    // An enemy's clip clock reads the counter to see a switch off its drawn
+    // state, even one switched off and back between two AI ticks.
+    #[test]
+    fn switch_counter_counts_only_real_switches_and_never_affects_equality() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        let switches = |reg: &EntityRegistry| {
+            reg.get_component::<MeshComponent>(id)
+                .unwrap()
+                .animation
+                .as_ref()
+                .unwrap()
+                .switches
+                .get()
+        };
+        let before = reg.get_component::<MeshComponent>(id).unwrap().clone();
+        assert_eq!(switches(&reg), 0);
+
+        assert_eq!(
+            switch_animation_state(&mut reg, id, "idle"),
+            SwitchResult::AlreadyInState
+        );
+        assert_eq!(
+            switch_animation_state(&mut reg, id, "missing"),
+            SwitchResult::UnknownState
+        );
+        assert_eq!(switches(&reg), 0, "a no-op switch counts nothing");
+
+        assert_eq!(
+            switch_animation_state(&mut reg, id, "attack"),
+            SwitchResult::Switched
+        );
+        assert_eq!(
+            switch_animation_state(&mut reg, id, "idle"),
+            SwitchResult::Switched
+        );
+        assert_eq!(switches(&reg), 2, "off and back counts both switches");
+        let _ = restart_animation_clip(&mut reg, id, "idle");
+        assert_eq!(switches(&reg), 2, "a restart is not a switch");
+
+        let mut bumped = before.clone();
+        bumped.animation.as_mut().unwrap().switches.bump();
+        assert_eq!(
+            bumped, before,
+            "the counter is bookkeeping, not component identity"
+        );
+    }
+
+    // A restore reads the same switches as foreign as an unsaved run, so the
+    // count survives a save; a mesh saved before it was kept counts from zero.
+    #[test]
+    fn switch_counter_survives_a_save() {
+        let mut reg = EntityRegistry::new();
+        let id = spawn_animated(&mut reg);
+        let _ = switch_animation_state(&mut reg, id, "attack");
+        let _ = switch_animation_state(&mut reg, id, "idle");
+        let mut json =
+            serde_json::to_value(reg.get_component::<MeshComponent>(id).unwrap()).unwrap();
+        let restored: MeshComponent = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.animation.unwrap().switches.get(), 2);
+
+        json["animation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("switches");
+        let old: MeshComponent = serde_json::from_value(json).unwrap();
+        assert_eq!(old.animation.unwrap().switches.get(), 0);
     }
 }

@@ -1159,12 +1159,12 @@ pub(crate) fn run_analysis(
                     world_min: [wmin.x, wmin.y, wmin.z],
                     world_max: [wmax.x, wmax.y, wmax.z],
                 });
-                for local in 0..PROBES_PER_CELL {
+                for (local, tile) in bt.composed.iter().enumerate() {
                     let (lx, ly, lz) = local_xyz(local);
                     let (px, py, pz) = (cx * AF + lx, cy * AF + ly, cz * AF + lz);
                     if px < nx && py < ny && pz < nz {
                         let probe = px + py * nx + pz * nx * ny;
-                        hierarchy_truth[probe] = bt.composed[local].clone();
+                        hierarchy_truth[probe] = tile.clone();
                     }
                 }
 

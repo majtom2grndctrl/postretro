@@ -2431,6 +2431,7 @@ mod tests {
             speed_scale: true,
             locomotion_direction: Default::default(),
             locomotion_jump: Default::default(),
+            switches: Default::default(),
         };
         let live = MeshComponent {
             model: "decraniated".into(),

@@ -686,7 +686,10 @@ mod tests {
                 sound: None,
                 animation: Some("attack".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
-                action: Some(ActionVerb::Attack("slam".to_string())),
+                action: Some(ActionVerb::Attack {
+                    name: "slam".to_string(),
+                    at: None,
+                }),
                 on_enter: None,
                 facing: None,
                 reposition: None,

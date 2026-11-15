@@ -82,6 +82,9 @@ pub(crate) struct BrainFacts {
     pub attacks_fired_in_activity: u32,
     /// Whether the enemy held any attack turn as of the previous tick.
     pub has_attack_turn: bool,
+    /// Whether the animation the active path selects has played through.
+    /// Entity-wide: one value for every level's guards.
+    pub animation_done: bool,
 }
 
 /// A resolved read handle: an index into one of the scope's two snapshots.
@@ -234,6 +237,7 @@ impl BrainScope {
             IrValue::Number(facts.damage_bearing),
             IrValue::Bool(facts.damage_source_known),
             IrValue::Bool(facts.has_attack_turn),
+            IrValue::Bool(facts.animation_done),
         ];
 
         self.defense.seed(registry, Some(entity));
@@ -370,7 +374,7 @@ mod tests {
     use crate::alloc_probe::AllocSnapshot;
     use postretro_entities::Transform;
     use postretro_foundation::{
-        BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
+        BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ANIMATION_DONE_INPUT, BRAIN_ATTACK_COOLDOWN_MS_INPUT,
         BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, BRAIN_DAMAGE_BEARING_INPUT,
         BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
         BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_ATTACK_TURN_INPUT, BRAIN_HAS_TARGET_INPUT,
@@ -462,6 +466,7 @@ mod tests {
             target_visible: true,
             attacks_fired_in_activity: 3,
             has_attack_turn: true,
+            animation_done: true,
         }
     }
 
@@ -592,6 +597,7 @@ mod tests {
             BRAIN_DAMAGE_BEARING_INPUT => IrValue::Number(facts.damage_bearing),
             BRAIN_DAMAGE_SOURCE_KNOWN_INPUT => IrValue::Bool(facts.damage_source_known),
             BRAIN_HAS_ATTACK_TURN_INPUT => IrValue::Bool(facts.has_attack_turn),
+            BRAIN_ANIMATION_DONE_INPUT => IrValue::Bool(facts.animation_done),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"

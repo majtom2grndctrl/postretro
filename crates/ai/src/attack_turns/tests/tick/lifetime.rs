@@ -139,12 +139,18 @@ fn request_names_fire_step_attack_not_cooldown_seed_attack() {
                     }),
                 }),
                 motion: None,
-                action: Some(ActionVerb::Attack("jab".to_string())),
+                action: Some(ActionVerb::Attack {
+                    name: "jab".to_string(),
+                    at: None,
+                }),
             }),
             BehaviorSelectorEntry::Row(BehaviorSelectorRow {
                 when: None,
                 motion: None,
-                action: Some(ActionVerb::Attack("slam".to_string())),
+                action: Some(ActionVerb::Attack {
+                    name: "slam".to_string(),
+                    at: None,
+                }),
             }),
         ]),
     )]);

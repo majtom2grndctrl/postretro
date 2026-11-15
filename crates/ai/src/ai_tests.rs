@@ -152,7 +152,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 authored_state(
                     "attack",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -679,6 +679,7 @@ fn step_graph(
             target_visible: true,
             attacks_fired_in_activity: 0,
             has_attack_turn: false,
+            animation_done: false,
         },
     );
 
@@ -976,6 +977,7 @@ fn target_reachability_reads_the_door_that_cuts_the_only_route() {
                 descriptor_generation: 0,
                 factions: &factions,
                 faction_sentiment: &sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -1170,6 +1172,7 @@ fn reachability_carried_between_docks(wait_ms: f32) -> (bool, bool) {
                 descriptor_generation: 0,
                 factions: &factions,
                 faction_sentiment: &sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2053,6 +2056,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 descriptor_generation: 0,
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2078,6 +2082,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 descriptor_generation: 0,
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2110,6 +2115,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 descriptor_generation: 0,
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
+                clips: None,
             },
             |_| {},
         );
@@ -2259,6 +2265,7 @@ fn run_crossfire_tick(
             descriptor_generation: 0,
             factions,
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3313,6 +3320,7 @@ fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3380,6 +3388,7 @@ fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3452,6 +3461,7 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -3526,6 +3536,7 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| {
             policy_fires += 1;
@@ -3605,6 +3616,7 @@ fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_pol
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| {
             policy_fires += 1;
@@ -3705,6 +3717,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| policies.evaluate_pending_in_registry(registry),
     );
@@ -3745,6 +3758,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| policies.evaluate_pending_in_registry(registry),
     );
@@ -3807,6 +3821,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |registry| {
             registry
@@ -4563,7 +4578,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -7583,7 +7598,10 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
     let mut strike = authored_state(
         "attack",
         MotionVerb::ChaseTarget,
-        Some(ActionVerb::Attack("attack".to_string())),
+        Some(ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: None,
+        }),
     );
     strike.on_enter = Some("gruntSwings".to_string());
     test_behavior_graph!({
@@ -8168,6 +8186,7 @@ fn entering_an_activity_without_on_enter_emits_its_path_and_no_address() {
                 descriptor_generation: 0,
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+                clips: None,
             },
             |_| {},
         )
@@ -8322,7 +8341,10 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(BehaviorSelectorRow {
             when: None,
             motion: None,
-            action: Some(ActionVerb::Attack("attack".to_string())),
+            action: Some(ActionVerb::Attack {
+                name: "attack".to_string(),
+                at: None,
+            }),
         })]);
     let graph = test_behavior_graph!({
         initial: "engage".to_string(),
@@ -8968,7 +8990,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack_jab",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("jab".to_string())),
+                    Some(ActionVerb::Attack { name: "jab".to_string(), at: None }),
                 ),
             ),
             (
@@ -8976,7 +8998,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack_slam",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("slam".to_string())),
+                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
                 ),
             ),
             (
@@ -9118,11 +9140,12 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const CLOSE_STANDOFF: f32 = 1.5;
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
-    const SLAM_WINDUP_MS: f32 = 250.0;
-    const SLAM_COMMIT_MS: f32 = 150.0;
-    const SLAM_RECOVER_MS: f32 = 1450.0;
-    const JAB_STRIKE_MS: f32 = 450.0;
-    const JAB_REST_MS: f32 = 750.0;
+    const SMASH_CROUCHED_MS: f32 = 400.0;
+    const SMASH_HIT_MS: f32 = 1633.0;
+    const SLAM_WINDUP_MS: f32 = SMASH_CROUCHED_MS;
+    const SLAM_COMMIT_MS: f32 = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100.0;
+    const JAB_REST_MS: f32 = 150.0;
+    const JAB_COOLDOWN_MS: f32 = 400.0;
     const PRESS_MS: f32 = 5000.0;
 
     let activity = |animation: Option<&str>,
@@ -9133,7 +9156,11 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             sound: None,
             animation: animation.map(str::to_string),
             motion: None,
-            action: action.map(|attack| ActionVerb::Attack(attack.to_string())),
+            // Both shipped attacks fire at their punch's `hit`.
+            action: action.map(|attack| ActionVerb::Attack {
+                name: attack.to_string(),
+                at: Some("hit".to_string()),
+            }),
             on_enter: None,
             facing: None,
             reposition: None,
@@ -9143,6 +9170,11 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     };
     let leaf = |animation: &str, action: Option<&str>, attack_turn: Option<&str>| {
         activity(Some(animation), action, attack_turn, BTreeMap::new())
+    };
+    // The slam's phases stand their ground.
+    let planted = |action: Option<&str>| BehaviorActivityDescriptor {
+        motion: Some(MotionVerb::Hold),
+        ..leaf("attack_slam", action, Some("slam"))
     };
     let and = |a: IrNode, b: IrNode| IrNode::And {
         a: Box::new(a),
@@ -9190,10 +9222,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 vec![
                     edge(
                         "stalk",
-                        and(
-                            at_least(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, 1.0),
-                            in_activity_ms(JAB_STRIKE_MS),
-                        ),
+                        brain_input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
                     ),
                     edge("stalk", target_beyond(JAB_RANGE)),
                 ],
@@ -9213,18 +9242,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         activities: BTreeMap::from([
             ("hunt".to_string(), jabbing()),
             ("press".to_string(), jabbing()),
-            (
-                "windup".to_string(),
-                leaf("attack_slam", None, Some("slam")),
-            ),
-            (
-                "commit".to_string(),
-                leaf("attack_slam", Some("slam"), Some("slam")),
-            ),
-            (
-                "recover".to_string(),
-                leaf("attack_slam", None, Some("slam")),
-            ),
+            ("windup".to_string(), planted(None)),
+            ("commit".to_string(), planted(Some("slam"))),
+            ("recover".to_string(), planted(None)),
         ]),
         transitions: BTreeMap::from([
             (
@@ -9256,7 +9276,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             ),
             (
                 "recover".to_string(),
-                vec![edge("press", in_activity_ms(SLAM_RECOVER_MS))],
+                vec![edge(
+                    "press",
+                    brain_input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
+                )],
             ),
             (
                 "press".to_string(),
@@ -9481,7 +9504,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     weapon: None,
                     damage: Some(8.0),
                     max_range: Some(JAB_RANGE),
-                    cooldown_ms: Some(1200.0),
+                    cooldown_ms: Some(JAB_COOLDOWN_MS),
                     engagement_radius: None,
                     standoff_distance: None,
                     damage_type: None,
@@ -9737,6 +9760,7 @@ fn step_reference_enemy_graph_with_hostility(
             target_visible,
             attacks_fired_in_activity: 0,
             has_attack_turn: false,
+            animation_done: false,
         },
     );
 
@@ -10109,6 +10133,14 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     give_reference_armor(&mut reg, enemy);
+    // The shipped mesh plays its attacks once. With no clip store their clips
+    // do not resolve, so each has played through (`brain.animationDone`).
+    let mut mesh = reg.get_component::<MeshComponent>(enemy).unwrap().clone();
+    let states = &mut mesh.animation.as_mut().unwrap().states;
+    for attack in ["attack_jab", "attack_slam"] {
+        states.get_mut(attack).unwrap().looping = false;
+    }
+    reg.set_component(enemy, mesh).unwrap();
 
     (0..TICKS)
         .map(|tick| {
@@ -10385,7 +10417,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_jab",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("jab".to_string())),
+                    Some(ActionVerb::Attack { name: "jab".to_string(), at: None }),
                 ),
             ),
             (
@@ -10393,7 +10425,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_slam",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("slam".to_string())),
+                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
                 ),
             ),
             (
@@ -10413,7 +10445,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_slam",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("slam".to_string())),
+                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
                 ),
             ),
         ]),
@@ -10922,7 +10954,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
             authored_state(
                 "attack",
                 MotionVerb::Hold,
-                Some(ActionVerb::Attack("attack".to_string())),
+                Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
             ),
         )]),
         transitions: BTreeMap::new(),
@@ -11082,7 +11114,10 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 authored_state(
                     "shoot",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("shoot".to_string())),
+                    Some(ActionVerb::Attack {
+                        name: "shoot".to_string(),
+                        at: None,
+                    }),
                 ),
             ),
         ]),
@@ -11246,6 +11281,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     )
@@ -11280,6 +11316,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11402,6 +11439,7 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11475,6 +11513,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11519,6 +11558,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11595,6 +11635,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11622,6 +11663,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             descriptor_generation: data.entity_types_generation(),
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -11655,6 +11697,7 @@ fn tick_persistent_enemy_weapon(
             descriptor_generation: generation,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     )
@@ -11954,6 +11997,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -12001,6 +12045,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -12052,6 +12097,7 @@ fn enemy_projectile_attack_emits_its_attack_cue_and_records_its_weapon() {
             descriptor_generation: 1,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );
@@ -12142,6 +12188,7 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     )
@@ -12318,7 +12365,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -12326,7 +12373,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
         ]),
@@ -12767,7 +12814,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack("attack".to_string())),
+                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                 ),
             ),
             (
@@ -12932,7 +12979,10 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
             .activities
             .get_mut("position")
             .unwrap()
-            .action = Some(ActionVerb::Attack("attack".to_string()));
+            .action = Some(ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: None,
+        });
         graph.attacks.insert(
             "attack".to_string(),
             AttackParams {
@@ -12963,10 +13013,13 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         .activities
         .get_mut("position")
         .unwrap()
-        .action = Some(ActionVerb::Attack("attack".to_string()));
+        .action = Some(ActionVerb::Attack {
+        name: "attack".to_string(),
+        at: None,
+    });
     assert!(matches!(
         chase.envelope.activities["position"].action,
-        Some(ActionVerb::Attack(ref name)) if name == "attack"
+        Some(ActionVerb::Attack { ref name, .. }) if name == "attack"
     ));
 }
 
@@ -13000,7 +13053,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                             BehaviorSelectorRow {
                                 when: None,
                                 motion: None,
-                                action: Some(ActionVerb::Attack("attack".to_string())),
+                                action: Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
                             },
                         )]),
                     ),
@@ -13572,6 +13625,9 @@ mod engaged_motion;
 
 #[path = "attack_turns/tests/tick/mod.rs"]
 mod attack_turn_ticks;
+
+#[path = "clip_timed_tests.rs"]
+mod clip_timed;
 
 #[test]
 fn contact_attack_deals_its_damage_type() {

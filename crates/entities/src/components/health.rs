@@ -164,7 +164,7 @@ impl HealthComponent {
 /// Locate the local player pawn and return it paired with its live `Health`
 /// component, when both are present. The registry marker wins; older
 /// fixtures/maps with no marker fall back to the first entity carrying
-/// `PlayerMovement`.
+/// `PlayerMovement` that no other seat owns.
 /// `None` when there is no resolved pawn or it carries no `Health` component.
 /// Note: when the registry marker resolves a pawn that carries `PlayerMovement`
 /// but lacks `Health`, this function returns `None` immediately — it does NOT

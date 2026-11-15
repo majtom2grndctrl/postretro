@@ -39,6 +39,8 @@ mod player_locomotion;
 pub mod presentation_pool;
 pub mod presentation_projection;
 mod projectile_stage;
+#[cfg(test)]
+mod remote_presence_tests;
 pub mod splash;
 pub mod touch;
 #[cfg(any(test, feature = "test-support"))]
@@ -580,6 +582,7 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
+    remote_present: &[(u64, EntityId)],
     command: &SimCommand,
     mut post_movement: impl FnMut(&Rc<RefCell<EntityRegistry>>) -> PostMovementCommand,
     tick_dt: f32,
@@ -757,18 +760,32 @@ where
     sync_player_mesh_origin_offsets(&mut registry.borrow_mut());
     drop(stage);
     let stage = cpu.scope(SimStage::Triggers);
-    let mut players: Vec<AuthoritativePlayer> = remote_pawn_commands
+    // Presence is every owned remote pawn, not only those with a command this
+    // tick: a joiner's pawn presses plates and collects pickups from spawn, while
+    // movement above stays command-gated and holds its pose.
+    let mut players: Vec<AuthoritativePlayer> = remote_present
         .iter()
-        .map(|remote| AuthoritativePlayer {
-            id: PlayerId::Remote(remote.owner_client_id),
-            pawn: remote.pawn,
+        .map(|&(owner_client_id, pawn)| AuthoritativePlayer {
+            id: PlayerId::Remote(owner_client_id),
+            pawn,
         })
         .collect();
+    debug_assert!(
+        remote_pawn_commands
+            .iter()
+            .all(|remote| remote_present.contains(&(remote.owner_client_id, remote.pawn))),
+        "every commanded remote pawn must be in the present roster"
+    );
     let local_player = {
         let registry = registry.borrow();
         registry.local_player_movement_pawn()
     };
-    if let Some(pawn) = local_player {
+    // A defence for owned pawns with no seat, which only fixtures make: the
+    // registry cannot see ownership. It keeps presence from listing such a pawn
+    // twice; it does not keep host input off it.
+    if let Some(pawn) = local_player
+        && !players.iter().any(|player| player.pawn == pawn)
+    {
         players.push(AuthoritativePlayer {
             id: PlayerId::Local(pawn),
             pawn,
@@ -962,6 +979,7 @@ where
                 descriptor_generation,
                 factions,
                 faction_sentiment,
+                clips: Some(hit_zone_store),
             },
             &mut host,
         )
@@ -3075,6 +3093,7 @@ mod tests {
             duration,
             joints: Vec::new(),
             travel_speed: None,
+            events: Vec::new(),
         };
         let mut hit_zones = HitZoneStore::new();
         hit_zones.insert_for_test(

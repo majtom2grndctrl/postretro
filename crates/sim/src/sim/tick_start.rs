@@ -163,6 +163,11 @@ where
             }
         }
     }
+    // Headless callers have no owner table; their commanded pawns are the roster.
+    let remote_present: Vec<(u64, EntityId)> = remote_pawn_commands
+        .iter()
+        .map(|remote| (remote.owner_client_id, remote.pawn))
+        .collect();
     super::simulate_started_tick_with_presentation_aim(
         started,
         registry,
@@ -178,6 +183,7 @@ where
         mover_colliders,
         mover_tick_states,
         &remote_pawn_commands,
+        &remote_present,
         &command,
         post_movement,
         tick_dt,

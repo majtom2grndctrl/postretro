@@ -10,14 +10,14 @@ use postretro_foundation::owner_tokens::{
 };
 use rquickjs::{Ctx, Function as JsFunction, Object as JsObject, Value as JsValue};
 
+#[cfg(test)]
+use super::engine_state_catalog::EngineStateCatalogEntry;
 use super::engine_state_catalog::{
     EngineStateCatalog, EngineStateCatalogError, EngineStateTreeNode, EngineStateValueType,
     engine_state_catalog,
 };
-#[cfg(test)]
-use super::engine_state_catalog::EngineStateCatalogEntry;
-use postretro_entities::engine_state_collections::EngineStateField;
 use super::error::ScriptError;
+use postretro_entities::engine_state_collections::EngineStateField;
 
 pub const GAME_STATE_BRIDGE_GLOBAL: &str = "__postretroGameStateRefs";
 pub const GET_GAME_STATE_GLOBAL: &str = "getGameState";
@@ -392,7 +392,10 @@ fn reject_luau_collision(lua: &mlua::Lua, name: &str) -> Result<(), ScriptError>
     Ok(())
 }
 
-fn luau_fields(lua: &mlua::Lua, fields: &[EngineStateField<'_>]) -> Result<mlua::Table, ScriptError> {
+fn luau_fields(
+    lua: &mlua::Lua,
+    fields: &[EngineStateField<'_>],
+) -> Result<mlua::Table, ScriptError> {
     let pairs = collection_field_kinds(fields)
         .into_iter()
         .map(|(name, kind)| lua.create_sequence_from([name, kind.to_string()]))
@@ -467,7 +470,11 @@ fn build_luau_table(
                 let list = &catalog.lists()[*list_index];
                 let rows: mlua::Table = installers
                     .list
-                    .call((list.wire_prefix(), list.capacity, luau_fields(lua, list.fields)?))
+                    .call((
+                        list.wire_prefix(),
+                        list.capacity,
+                        luau_fields(lua, list.fields)?,
+                    ))
                     .map_err(|e| host_error("failed to build Luau list rows", e))?;
                 table
                     .set(segment.as_str(), rows)

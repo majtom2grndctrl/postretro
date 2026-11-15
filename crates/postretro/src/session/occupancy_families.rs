@@ -115,7 +115,10 @@ impl OccupancyFamilies {
         &mut self,
         session_level: bool,
         registry: &postretro_entities::EntityRegistry,
-        occupied_volumes: &[(postretro_entities::EntityId, Vec<postretro_entities::EntityId>)],
+        occupied_volumes: &[(
+            postretro_entities::EntityId,
+            Vec<postretro_entities::EntityId>,
+        )],
         slot_table: &mut SlotTable,
     ) {
         for member in &self.members {
@@ -206,10 +209,17 @@ mod tests {
         let mut table = SlotTable::new();
         let mut families = OccupancyFamilies::default();
         families.commit_mod(&refs(&["hill"]), &mut table);
-        families.install_level(&refs(&["airlock", "plates"]), &tags(&["plates"]), &mut table);
+        families.install_level(
+            &refs(&["airlock", "plates"]),
+            &tags(&["plates"]),
+            &mut table,
+        );
         assert_eq!(occupants(&table, "airlock"), Some(SlotValue::Number(0.0)));
         assert_eq!(occupants(&table, "hill"), Some(SlotValue::Number(0.0)));
-        capture.assert_logged_once(Level::Warn, "occupancy tag `airlock`, but no trigger volume");
+        capture.assert_logged_once(
+            Level::Warn,
+            "occupancy tag `airlock`, but no trigger volume",
+        );
         capture.assert_not_logged(Level::Warn, "occupancy tag `hill`");
         capture.assert_not_logged(Level::Warn, "occupancy tag `plates`");
     }
@@ -223,7 +233,10 @@ mod tests {
         let mut families = OccupancyFamilies::default();
         families.commit_mod(&refs(&["hill"]), &mut table);
         families.install_level(&refs(&["hill", "a"]), &tags(&["hill", "a"]), &mut table);
-        assert_eq!(table.family_members(&OCCUPANCY_FAMILY), tags(&["a", "hill"]));
+        assert_eq!(
+            table.family_members(&OCCUPANCY_FAMILY),
+            tags(&["a", "hill"])
+        );
         hold(&mut table, "hill", 2.0);
         hold(&mut table, "a", 1.0);
 
@@ -233,7 +246,10 @@ mod tests {
 
         hold(&mut table, "hill", 3.0);
         families.install_level(&refs(&["b"]), &tags(&["b", "hill"]), &mut table);
-        assert_eq!(table.family_members(&OCCUPANCY_FAMILY), tags(&["b", "hill"]));
+        assert_eq!(
+            table.family_members(&OCCUPANCY_FAMILY),
+            tags(&["b", "hill"])
+        );
         assert_eq!(occupants(&table, "hill"), Some(SlotValue::Number(0.0)));
         assert_eq!(occupants(&table, "a"), None);
     }

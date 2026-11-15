@@ -167,8 +167,11 @@ impl TriggerSystem {
             .occupants
             .counted_volumes(&capabilities.occupants, &capabilities.pawns);
         self.effective_counts.clear();
-        self.effective_counts
-            .extend(volumes.iter().map(|(volume, inside)| (*volume, inside.len())));
+        self.effective_counts.extend(
+            volumes
+                .iter()
+                .map(|(volume, inside)| (*volume, inside.len())),
+        );
         volumes
     }
 

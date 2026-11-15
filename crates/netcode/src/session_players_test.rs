@@ -150,7 +150,12 @@ fn row(table: &SlotTable, index: usize) -> (SlotValue, SlotValue, SlotValue, Slo
     (get("present"), get("name"), get("status"), get("isLocal"))
 }
 
-fn shown(present: bool, name: &str, status: &str, is_local: bool) -> (SlotValue, SlotValue, SlotValue, SlotValue) {
+fn shown(
+    present: bool,
+    name: &str,
+    status: &str,
+    is_local: bool,
+) -> (SlotValue, SlotValue, SlotValue, SlotValue) {
     (
         SlotValue::Boolean(present),
         SlotValue::String(name.to_string()),
@@ -192,7 +197,11 @@ fn player_rows_follow_seats_names_and_local_seat() {
     };
     let before = generation(&table);
     writer.write(&mut table, roster_rows(&three, Some(Seat(2))));
-    assert_eq!(generation(&table), before, "an unchanged row is not rewritten");
+    assert_eq!(
+        generation(&table),
+        before,
+        "an unchanged row is not rewritten"
+    );
 
     // Seat 1's hold expires: seat 2 moves up to row 1 and keeps its name.
     let two = vec![three[0].clone(), three[2].clone()];
@@ -201,10 +210,17 @@ fn player_rows_follow_seats_names_and_local_seat() {
     assert_eq!(row(&table, 2), shown(false, "", "loading", false));
 
     // A client returning after its hold mints seat 3.
-    let rejoined = vec![three[0].clone(), three[2].clone(), entry(3, "", roster_status::RECONNECTING)];
+    let rejoined = vec![
+        three[0].clone(),
+        three[2].clone(),
+        entry(3, "", roster_status::RECONNECTING),
+    ];
     writer.write(&mut table, roster_rows(&rejoined, Some(Seat(3))));
     assert_eq!(row(&table, 1), shown(true, "Player 3", "loading", false));
-    assert_eq!(row(&table, 2), shown(true, "Player 4", "reconnecting", true));
+    assert_eq!(
+        row(&table, 2),
+        shown(true, "Player 4", "reconnecting", true)
+    );
 
     writer.clear(&mut table);
     for index in 0..postretro_foundation::seat::SESSION_PLAYER_CAPACITY {

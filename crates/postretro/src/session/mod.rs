@@ -52,10 +52,10 @@ use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
 pub(crate) mod level_streaming;
-pub(crate) mod occupancy_families;
-pub(crate) mod players;
 pub(crate) mod lightmap_residency;
 mod lightmap_streaming_diagnostics;
+pub(crate) mod occupancy_families;
+pub(crate) mod players;
 pub(crate) mod role_state;
 mod sh_async_workers;
 pub(crate) mod sh_residency;

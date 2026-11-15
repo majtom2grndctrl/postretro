@@ -99,7 +99,10 @@ mod tests {
         let slot = table.get("occupancy.hill.occupants").unwrap();
         assert!(slot.schema.readonly);
         assert_eq!(slot.schema.network, ReplicationScope::SharedGlobal);
-        assert_eq!(value(&table, "occupancy.hill.occupants"), Some(SlotValue::Number(0.0)));
+        assert_eq!(
+            value(&table, "occupancy.hill.occupants"),
+            Some(SlotValue::Number(0.0))
+        );
 
         table
             .get_mut("occupancy.hill.occupants")
@@ -108,9 +111,15 @@ mod tests {
         let change = table.replace_family_members(&OCCUPANCY_FAMILY, &keys(&["hill", "arena"]));
         assert_eq!(change.added, vec!["arena"]);
         assert_eq!(change.removed, vec!["airlock"]);
-        assert_eq!(value(&table, "occupancy.hill.occupants"), Some(SlotValue::Number(2.0)));
+        assert_eq!(
+            value(&table, "occupancy.hill.occupants"),
+            Some(SlotValue::Number(2.0))
+        );
         assert!(table.get("occupancy.airlock.occupiedCount").is_none());
-        assert_eq!(table.family_members(&OCCUPANCY_FAMILY), keys(&["arena", "hill"]));
+        assert_eq!(
+            table.family_members(&OCCUPANCY_FAMILY),
+            keys(&["arena", "hill"])
+        );
 
         assert!(
             table
@@ -118,7 +127,10 @@ mod tests {
                 .is_empty()
         );
         table.reset_family_values(&OCCUPANCY_FAMILY);
-        assert_eq!(value(&table, "occupancy.hill.occupants"), Some(SlotValue::Number(0.0)));
+        assert_eq!(
+            value(&table, "occupancy.hill.occupants"),
+            Some(SlotValue::Number(0.0))
+        );
     }
 
     fn mod_declaration(namespace: &str) -> crate::slot_table::StoreDeclaration {

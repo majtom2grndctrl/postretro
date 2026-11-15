@@ -4,10 +4,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::components::weapon::MAX_EFFECTIVE_SPREAD_DEGREES;
+use crate::components::weapon_resource::WEAPON_RESOURCE_KIND_NAMES;
 use crate::engine_state_collections::{
     BUILTIN_ENGINE_STATE_FAMILIES, BUILTIN_ENGINE_STATE_LISTS, EngineStateFamily, EngineStateList,
 };
-use crate::components::weapon_resource::WEAPON_RESOURCE_KIND_NAMES;
 use crate::slot_table::{
     NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
 };
@@ -156,11 +156,17 @@ pub enum EngineStateCatalogError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineStateTreeNode {
     Object(BTreeMap<String, EngineStateTreeNode>),
-    Leaf { entry_index: usize },
+    Leaf {
+        entry_index: usize,
+    },
     /// A node whose accessor reaches a family's members.
-    Family { family_index: usize },
+    Family {
+        family_index: usize,
+    },
     /// A list of rows, one per index up to its capacity.
-    List { list_index: usize },
+    List {
+        list_index: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

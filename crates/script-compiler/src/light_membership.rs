@@ -490,7 +490,11 @@ fn install_js_game_state(ctx: &JsCtx<'_>) -> Result<()> {
     for (path, capacity, fields) in MIRRORED_GAME_STATE_LISTS {
         let (parents, name) = split_sdk_path(path);
         let rows: rquickjs::Value = build_list
-            .call((*path, *capacity, json_to_js(ctx, &mirrored_fields_json(fields))?))
+            .call((
+                *path,
+                *capacity,
+                json_to_js(ctx, &mirrored_fields_json(fields))?,
+            ))
             .context("failed to build QuickJS list rows")?;
         js_parent(&parents)?.set(name, rows)?;
     }

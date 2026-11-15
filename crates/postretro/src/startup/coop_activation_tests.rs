@@ -25,8 +25,7 @@ use postretro_sim::scripting_systems::slot_accumulators::{
 };
 use postretro_sim::scripting_systems::trigger_volume_bridge::TriggerVolumeBridge;
 use postretro_sim::sim::{
-    PostMovementCommand, RemotePawnCommand, TriggerTickContext,
-    simulate_tick_with_presentation_aim,
+    PostMovementCommand, RemotePawnCommand, TriggerTickContext, simulate_tick_with_presentation_aim,
 };
 use postretro_sim::trigger_bindings::TriggerBindingTable;
 use postretro_sim::trigger_system::TriggerSystem;
@@ -316,8 +315,10 @@ impl Host {
             .borrow()
             .family_members(&postretro_entities::engine_state_collections::OCCUPANCY_FAMILY);
         self.triggers = TriggerSystem::default();
-        self.players.end_level(Some(&mut self.seats), &mut self.ctx.slot_table.borrow_mut());
-        self.families.unload_level(&mut self.ctx.slot_table.borrow_mut());
+        self.players
+            .end_level(Some(&mut self.seats), &mut self.ctx.slot_table.borrow_mut());
+        self.families
+            .unload_level(&mut self.ctx.slot_table.borrow_mut());
         let crossings = self.ctx.data_registry.borrow().crossings.clone();
         let mut refs = FamilyReferences::default();
         for tag in &level_tags {
@@ -339,8 +340,11 @@ impl Host {
             registry.populate_level(Vec::new(), crossings, &[]);
         }
         self.detector = CrossingDetector::new();
-        self.detector
-            .initialize(&self.ctx.data_registry.borrow(), &self.ctx.slot_table.borrow(), &self.ctx);
+        self.detector.initialize(
+            &self.ctx.data_registry.borrow(),
+            &self.ctx.slot_table.borrow(),
+            &self.ctx,
+        );
         let mut registry = self.ctx.registry.borrow_mut();
         self.host = Self::spawn_pawn(&mut registry, host_at);
         registry.mark_local_player_pawn(self.host).unwrap();
@@ -356,11 +360,10 @@ impl Host {
 
     /// An undeclared pawn's health reaches zero (or recovers to full).
     pub(super) fn set_dead(&self, pawn: EntityId, dead: bool) {
-        let mut health =
-            HealthComponent::from_descriptor(&postretro_entities::HealthDescriptor {
-                max: 100.0,
-                ..Default::default()
-            });
+        let mut health = HealthComponent::from_descriptor(&postretro_entities::HealthDescriptor {
+            max: 100.0,
+            ..Default::default()
+        });
         health.current = if dead { 0.0 } else { 100.0 };
         self.ctx
             .registry
@@ -508,7 +511,13 @@ impl Host {
     }
 
     pub(super) fn read(&self, slot: &str) -> f32 {
-        match self.ctx.slot_table.borrow().get(slot).and_then(|s| s.value.clone()) {
+        match self
+            .ctx
+            .slot_table
+            .borrow()
+            .get(slot)
+            .and_then(|s| s.value.clone())
+        {
             Some(SlotValue::Number(value)) => value,
             other => panic!("`{slot}` reads {other:?}"),
         }
@@ -595,12 +604,18 @@ fn two_button_door_solves_only_with_both_plates_held() {
     host.place(host.host, OUTSIDE);
     host.frame();
     host.place(partner, PLATE_B);
-    assert!(!fired(&host.frame(), "vault.solve"), "released before the second landed");
+    assert!(
+        !fired(&host.frame(), "vault.solve"),
+        "released before the second landed"
+    );
 
     let mut host = two_plates(solve());
     for at in [PLATE_A, PLATE_B, PLATE_A, PLATE_B] {
         host.place(host.host, at);
-        assert!(!fired(&host.frame(), "vault.solve"), "one player walks plate to plate");
+        assert!(
+            !fired(&host.frame(), "vault.solve"),
+            "one player walks plate to plate"
+        );
     }
     // A dead partner on the other plate is no effective occupant.
     let partner = host.join(PLATE_A);
@@ -627,7 +642,10 @@ fn n_plates_solve_only_when_all_held_on_one_tick() {
     assert!(!fired(&host.frame(), "ring.solve"));
     host.place(second, OUTSIDE);
     host.place(third, PLATE_C);
-    assert!(!fired(&host.frame(), "ring.solve"), "two of three, never all at once");
+    assert!(
+        !fired(&host.frame(), "ring.solve"),
+        "two of three, never all at once"
+    );
     host.place(second, PLATE_B);
     assert!(fired(&host.frame(), "ring.solve"));
 }
@@ -682,7 +700,10 @@ fn all_players_gate_ignores_downed_and_stays_closed_with_none_in_play() {
     for _ in 0..3 {
         assert!(host.frame().is_empty(), "nobody in play");
     }
-    assert_eq!((host.count("inPlay"), host.occupancy("airlock").1), (0.0, 0.0));
+    assert_eq!(
+        (host.count("inPlay"), host.occupancy("airlock").1),
+        (0.0, 0.0)
+    );
     let partner = host.join(ROOM);
     host.set_dead(partner, true);
     assert!(host.frame().is_empty(), "every player downed, one inside");
@@ -698,9 +719,15 @@ fn late_admission_reopens_all_players_gate() {
     assert!(host.frame().is_empty());
     assert_eq!(host.count("loading"), 1.0);
     let joiner = host.spawn(client, OUTSIDE);
-    assert!(host.frame().is_empty(), "the joiner counts in play, outside");
+    assert!(
+        host.frame().is_empty(),
+        "the joiner counts in play, outside"
+    );
     host.place(joiner, ROOM);
-    assert!(fired(&host.frame(), "airlock.allIn"), "fires again on entry");
+    assert!(
+        fired(&host.frame(), "airlock.allIn"),
+        "fires again on entry"
+    );
 }
 
 // P7 (pin P1): with one tick per frame a completing set crosses in its frame,
@@ -709,7 +736,11 @@ fn late_admission_reopens_all_players_gate() {
 #[test]
 fn completed_set_crosses_in_its_frame_and_at_install() {
     let mut host = room_gate(ROOM);
-    assert_eq!(host.count("loading"), 1.0, "install counts the seat as loading");
+    assert_eq!(
+        host.count("loading"),
+        1.0,
+        "install counts the seat as loading"
+    );
     assert!(fired(&host.frame(), "airlock.allIn"));
 
     let mut host = Host::install(
@@ -729,7 +760,10 @@ fn death_inside_leaves_counts_together_and_gate_holds() {
     let mut host = room_gate(OUTSIDE);
     let inside = host.join(ROOM);
     assert!(host.frame().is_empty());
-    assert_eq!((host.count("inPlay"), host.occupancy("airlock").1), (2.0, 1.0));
+    assert_eq!(
+        (host.count("inPlay"), host.occupancy("airlock").1),
+        (2.0, 1.0)
+    );
     host.set_dead(inside, true);
     assert!(host.frame().is_empty());
     let (counts, families) = host.timeline.last().unwrap();
@@ -753,7 +787,11 @@ fn party_gate_waits_for_every_client_after_level_change_and_restart() {
     assert!(fired(&host.frame(), "airlock.allIn"));
     for _restart in 0..2 {
         host.relevel(ROOM);
-        assert_eq!(host.count("loading"), 3.0, "install counts every seat loading");
+        assert_eq!(
+            host.count("loading"),
+            3.0,
+            "install counts every seat loading"
+        );
         assert!(host.frame().is_empty(), "both clients still load");
         assert_eq!(host.count("loading"), 2.0);
         host.spawn(clients[0], ROOM);
@@ -794,7 +832,10 @@ fn king_of_the_hill_drains_by_occupants() {
     assert!((drain(&mut host) - DT).abs() < 1e-4, "one player drains dt");
     host.place(partner, PLATE_A);
     host.frame();
-    assert!((drain(&mut host) - 2.0 * DT).abs() < 1e-4, "two drain twice that");
+    assert!(
+        (drain(&mut host) - 2.0 * DT).abs() < 1e-4,
+        "two drain twice that"
+    );
 }
 
 // P9 (P6): two identical scripted runs on the trigger-driving harness produce
@@ -803,7 +844,11 @@ fn king_of_the_hill_drains_by_occupants() {
 fn scripted_runs_produce_identical_count_timelines() {
     let run = || {
         let mut host = Host::install(
-            &[("airlock", ROOM), ("vault-plates", PLATE_A), ("vault-plates", PLATE_B)],
+            &[
+                ("airlock", ROOM),
+                ("vault-plates", PLATE_A),
+                ("vault-plates", PLATE_B),
+            ],
             &["airlock"],
             &["vault-plates"],
             vec![
@@ -900,7 +945,9 @@ fn dev_map_declares_families_and_matches_across_runtimes() {
         let relevant: Vec<&String> = warnings
             .iter()
             .filter(|message| {
-                message.contains("occupancy") || message.contains("unknown slot") || message.contains("data script")
+                message.contains("occupancy")
+                    || message.contains("unknown slot")
+                    || message.contains("data script")
             })
             .collect();
         assert!(relevant.is_empty(), "{map}: {relevant:#?}");
@@ -911,32 +958,60 @@ fn dev_map_declares_families_and_matches_across_runtimes() {
             .get_mut("occupancy.hill.occupants")
             .unwrap()
             .write_value(Some(SlotValue::Number(2.0)));
-        let before = match ctx.slot_table.borrow().get("kingHill.control").unwrap().value {
+        let before = match ctx
+            .slot_table
+            .borrow()
+            .get("kingHill.control")
+            .unwrap()
+            .value
+        {
             Some(SlotValue::Number(value)) => value,
             ref other => panic!("{other:?}"),
         };
         evaluate_slot_accumulators(
-            &mut app.session.as_mut().unwrap().scripting.slot_accumulator_bindings,
+            &mut app
+                .session
+                .as_mut()
+                .unwrap()
+                .scripting
+                .slot_accumulator_bindings,
             DT,
         );
-        let after = match ctx.slot_table.borrow().get("kingHill.control").unwrap().value {
+        let after = match ctx
+            .slot_table
+            .borrow()
+            .get("kingHill.control")
+            .unwrap()
+            .value
+        {
             Some(SlotValue::Number(value)) => value,
             ref other => panic!("{other:?}"),
         };
-        assert!((before - after - 2.0 * DT).abs() < 1e-4, "{map}: {before} -> {after}");
+        assert!(
+            (before - after - 2.0 * DT).abs() < 1e-4,
+            "{map}: {before} -> {after}"
+        );
 
         let registry = ctx.data_registry.borrow();
         let mut crossings: Vec<String> = registry
             .crossings
             .iter()
-            .filter(|crossing| crossing.fire.iter().any(|fire| fire.starts_with("vault") || fire.starts_with("airlock")))
+            .filter(|crossing| {
+                crossing
+                    .fire
+                    .iter()
+                    .any(|fire| fire.starts_with("vault") || fire.starts_with("airlock"))
+            })
             .map(|crossing| format!("{crossing:?}"))
             .collect();
         crossings.sort();
         assert_eq!(crossings.len(), 2, "{map}: {crossings:#?}");
         lowered.push(crossings);
     }
-    assert_eq!(lowered[0], lowered[1], "TypeScript and Luau lower the same crossings");
+    assert_eq!(
+        lowered[0], lowered[1],
+        "TypeScript and Luau lower the same crossings"
+    );
 }
 
 fn workspace_file(path: &str) -> String {
@@ -960,7 +1035,10 @@ fn scripting_reference_documents_session_players_and_occupancy() {
         "#### Everyone is in",
         "runtime.ge(room, inPlay)",
     ] {
-        assert!(docs.contains(needle), "docs/scripting-reference.md lacks `{needle}`");
+        assert!(
+            docs.contains(needle),
+            "docs/scripting-reference.md lacks `{needle}`"
+        );
     }
 }
 
@@ -983,7 +1061,8 @@ fn effective_occupancy_column_is_dev_tools_only() {
                 && !path.ends_with("startup/coop_activation_tests.rs")
             {
                 let source = std::fs::read_to_string(&path).unwrap();
-                if source.contains(".effective_occupancy") || source.contains("effective_occupancy:")
+                if source.contains(".effective_occupancy")
+                    || source.contains("effective_occupancy:")
                 {
                     namers.push(path.strip_prefix(&root).unwrap().to_path_buf());
                 }

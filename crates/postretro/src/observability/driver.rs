@@ -161,8 +161,7 @@ fn run_headless_inner(
     let mut crossing_detector = CrossingDetector::new();
     let mut mesh_clip_tables = MeshClipTables::new();
     let mut hit_zone_store = HitZoneStore::new();
-    let mut occupancy_families =
-        crate::session::occupancy_families::OccupancyFamilies::default();
+    let mut occupancy_families = crate::session::occupancy_families::OccupancyFamilies::default();
     // Runspecs address raw map paths, not catalog ids. Preserve the raw-path
     // contract: direct `.prl` loads never inherit catalog classification tags.
     let active_level_tags = active_level_tags_for_headless_install();

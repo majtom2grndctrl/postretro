@@ -103,7 +103,13 @@ fn build_time_families_and_lists_match_engine_state_catalog() {
     let expected_lists: Vec<(String, usize, FieldKinds)> = catalog
         .lists()
         .iter()
-        .map(|list| (list.sdk_path.join("."), list.capacity, catalog_fields(list.fields)))
+        .map(|list| {
+            (
+                list.sdk_path.join("."),
+                list.capacity,
+                catalog_fields(list.fields),
+            )
+        })
         .collect();
     let mirrored_lists: Vec<(String, usize, FieldKinds)> = MIRRORED_GAME_STATE_LISTS
         .iter()
@@ -118,9 +124,17 @@ fn build_time_families_and_lists_match_engine_state_catalog() {
 #[test]
 fn build_time_family_and_list_installers_match_runtime_bridge() {
     for (mirror, runtime, name) in [
-        (JS_INSTALL_FAMILY, RUNTIME_QUICKJS_INSTALL_FAMILY, "JS_INSTALL_FAMILY"),
+        (
+            JS_INSTALL_FAMILY,
+            RUNTIME_QUICKJS_INSTALL_FAMILY,
+            "JS_INSTALL_FAMILY",
+        ),
         (JS_BUILD_LIST, RUNTIME_QUICKJS_BUILD_LIST, "JS_BUILD_LIST"),
-        (LUAU_INSTALL_FAMILY, RUNTIME_LUAU_INSTALL_FAMILY, "LUAU_INSTALL_FAMILY"),
+        (
+            LUAU_INSTALL_FAMILY,
+            RUNTIME_LUAU_INSTALL_FAMILY,
+            "LUAU_INSTALL_FAMILY",
+        ),
         (LUAU_BUILD_LIST, RUNTIME_LUAU_BUILD_LIST, "LUAU_BUILD_LIST"),
     ] {
         assert_eq!(

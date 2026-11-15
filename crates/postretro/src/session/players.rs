@@ -72,10 +72,16 @@ impl SessionPlayers {
 
     /// A client received the host's roster: show it while a session level is
     /// installed.
-    pub(crate) fn apply_roster(&mut self, client: &ClientSessionStatus, slot_table: &mut SlotTable) {
+    pub(crate) fn apply_roster(
+        &mut self,
+        client: &ClientSessionStatus,
+        slot_table: &mut SlotTable,
+    ) {
         if self.session_level {
-            self.rows
-                .write(slot_table, roster_rows(client.entries(), client.local_seat()));
+            self.rows.write(
+                slot_table,
+                roster_rows(client.entries(), client.local_seat()),
+            );
         }
     }
 
@@ -108,6 +114,7 @@ impl SessionPlayers {
         let counts = derive_seat_statuses(seats, registry, pawns, &mut self.statuses);
         write_player_counts(slot_table, counts);
         seats.record_statuses(&self.statuses);
-        self.rows.write(slot_table, seat_rows(seats, &self.statuses));
+        self.rows
+            .write(slot_table, seat_rows(seats, &self.statuses));
     }
 }

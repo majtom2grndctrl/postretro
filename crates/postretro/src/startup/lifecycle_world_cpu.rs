@@ -1,10 +1,10 @@
 //! Renderer-free CPU portion of level installation.
 
-use postretro_scripting_core::occupancy_references::FamilyReferences;
 use super::lifecycle_model_sweep::ModelSweep;
 #[cfg(any(test, feature = "observability"))]
 use super::lifecycle_model_sweep::{ParsedModelSweep, ParsedSweepModel};
 use super::*;
+use postretro_scripting_core::occupancy_references::FamilyReferences;
 
 use crate::scripting::builtins::data_archetype::projectile_presentation_assets;
 use crate::scripting::builtins::player_spawn::{first_player_spawn_order, standing_position};

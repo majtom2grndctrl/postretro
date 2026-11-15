@@ -87,6 +87,9 @@ fn for_each_unrolls_rows_with_suffixed_ids_and_matches_across_runtimes() {
     for widget in rows.iter().chain(gated) {
         let parsed: crate::ui::descriptor::Widget = serde_json::from_value(widget.clone())
             .unwrap_or_else(|error| panic!("{widget} is not a widget: {error}"));
-        assert_eq!(serde_json::to_value(&parsed).unwrap()["kind"], widget["kind"]);
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap()["kind"],
+            widget["kind"]
+        );
     }
 }

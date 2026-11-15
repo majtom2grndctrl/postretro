@@ -89,7 +89,11 @@ impl Machine {
     }
 
     fn read(&self, slot: &str) -> Option<SlotValue> {
-        self.ctx.slot_table.borrow().get(slot).and_then(|s| s.value.clone())
+        self.ctx
+            .slot_table
+            .borrow()
+            .get(slot)
+            .and_then(|s| s.value.clone())
     }
 
     fn write(&self, slot: &str, value: f32) {
@@ -126,7 +130,12 @@ impl Session {
     }
 
     fn client(&self, client_id: u64) -> &Machine {
-        &self.clients.iter().find(|(id, _)| *id == client_id).unwrap().1
+        &self
+            .clients
+            .iter()
+            .find(|(id, _)| *id == client_id)
+            .unwrap()
+            .1
     }
 
     /// One host frame: replicate, apply on each client, then every machine's
@@ -206,7 +215,10 @@ fn client_occupancy_converges_and_mirrored_crossing_fires_once() {
     }
     assert_eq!(fires, vec![1, 1, 1], "every machine fires once");
     for client in [1, 2] {
-        assert_eq!(session.client(client).read(HELD), Some(SlotValue::Number(2.0)));
+        assert_eq!(
+            session.client(client).read(HELD),
+            Some(SlotValue::Number(2.0))
+        );
         assert_eq!(
             session.client(client).read("session.playerCounts.inPlay"),
             Some(SlotValue::Number(3.0))
@@ -226,8 +238,15 @@ fn mid_hold_joiner_fires_once_from_baseline() {
 
     session.connect(7, Machine::install(&["vault-plates"], solve()));
     let (host, clients, applied) = session.frame();
-    assert!(applied[0], "the joiner's first snapshot is a full baseline that applies");
-    assert_eq!(count(&clients[0], "vault.solve"), 1, "fires once in the baseline frame");
+    assert!(
+        applied[0],
+        "the joiner's first snapshot is a full baseline that applies"
+    );
+    assert_eq!(
+        count(&clients[0], "vault.solve"),
+        1,
+        "fires once in the baseline frame"
+    );
     assert!(host.is_empty(), "the host does not fire again");
     let (_, clients, _) = session.frame();
     assert!(clients[0].is_empty());
@@ -279,9 +298,16 @@ fn staged_reload_redeclares_mod_families_and_batches_apply() {
     session.replication.reset_schema_for_clients([5]);
     session.host.write("occupancy.arena.occupiedCount", 1.0);
     let (_, _, applied) = session.frame();
-    assert_eq!(applied, vec![true], "batches keep applying after the reload");
+    assert_eq!(
+        applied,
+        vec![true],
+        "batches keep applying after the reload"
+    );
     let client = session.client(5);
-    assert_eq!(client.read("occupancy.hill.occupants"), Some(SlotValue::Number(2.0)));
+    assert_eq!(
+        client.read("occupancy.hill.occupants"),
+        Some(SlotValue::Number(2.0))
+    );
     assert_eq!(
         client.read("occupancy.arena.occupiedCount"),
         Some(SlotValue::Number(1.0))
@@ -341,7 +367,11 @@ fn families_and_counts_read_zero_from_unload_through_install() {
     let (host, clients, _) = session.frame();
     assert_eq!(count(&host, "airlock.held"), 1);
     assert_eq!(count(&clients[0], "airlock.held"), 1);
-    assert_eq!(count(&host, "hill.empty"), 0, "an empty family fires no below crossing");
+    assert_eq!(
+        count(&host, "hill.empty"),
+        0,
+        "an empty family fires no below crossing"
+    );
     assert_eq!(count(&clients[0], "hill.empty"), 0);
 }
 
@@ -358,7 +388,11 @@ fn rows_by_status_match_counts_on_host_and_clients() {
         let a_pawn = registry.spawn(Transform::default());
         (host_pawn, a_pawn)
     };
-    seats.bind_pawn(&mut session.host.ctx.registry.borrow_mut(), Seat(0), host_pawn);
+    seats.bind_pawn(
+        &mut session.host.ctx.registry.borrow_mut(),
+        Seat(0),
+        host_pawn,
+    );
     for client in [11, 12, 13] {
         seats.admit_or_reclaim(client, None, false).unwrap();
         session.connect(client, Machine::install(&[], Vec::new()));
@@ -425,7 +459,9 @@ fn rows_by_status_match_counts_on_host_and_clients() {
             ("reconnecting", "session.playerCounts.reconnecting"),
         ] {
             assert_eq!(
-                Some(SlotValue::Number(by_status.get(name).copied().unwrap_or(0.0))),
+                Some(SlotValue::Number(
+                    by_status.get(name).copied().unwrap_or(0.0)
+                )),
                 table.get(slot).unwrap().value.clone(),
                 "client {client_id}: rows reading `{name}` equal the replicated count"
             );

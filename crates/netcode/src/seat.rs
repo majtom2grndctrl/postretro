@@ -491,9 +491,9 @@ impl SeatTable {
     /// Whether this poll needs one consolidated roster publication.
     pub(crate) fn take_roster_dirty(&mut self) -> bool {
         let status_due = self.status_dirty
-            && self.last_roster_publish.is_none_or(|at| {
-                self.hold_clock.saturating_sub(at) >= STATUS_ROSTER_INTERVAL
-            });
+            && self
+                .last_roster_publish
+                .is_none_or(|at| self.hold_clock.saturating_sub(at) >= STATUS_ROSTER_INTERVAL);
         if !(self.roster_dirty || status_due) {
             return false;
         }

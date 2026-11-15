@@ -197,8 +197,14 @@ mod tests {
             Some(("a.b", "occupants")),
             "a dotted key splits off its field; the caller rejects it"
         );
-        assert_eq!(OCCUPANCY_FAMILY.split_slot_name("occupancy.hill.held"), None);
-        assert_eq!(OCCUPANCY_FAMILY.split_slot_name("occupancyBoard.x.occupants"), None);
+        assert_eq!(
+            OCCUPANCY_FAMILY.split_slot_name("occupancy.hill.held"),
+            None
+        );
+        assert_eq!(
+            OCCUPANCY_FAMILY.split_slot_name("occupancyBoard.x.occupants"),
+            None
+        );
         assert!(EngineStateFamily::is_slot_safe_key("vault-plates"));
         assert!(!EngineStateFamily::is_slot_safe_key("a.b"));
         assert!(!EngineStateFamily::is_slot_safe_key("a:b"));

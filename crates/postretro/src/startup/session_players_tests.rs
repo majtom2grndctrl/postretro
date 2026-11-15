@@ -71,7 +71,11 @@ fn spawn_host_pawn(app: &mut App) -> postretro_entities::EntityId {
     pawn
 }
 
-fn tick(app: &mut App, captured: &[postretro_entities::EntityId], counted: &[postretro_entities::EntityId]) {
+fn tick(
+    app: &mut App,
+    captured: &[postretro_entities::EntityId],
+    counted: &[postretro_entities::EntityId],
+) {
     let ctx = script_ctx(app);
     let session = app.session.as_mut().unwrap();
     session.session_players.publish_tick(
@@ -92,7 +96,13 @@ fn single_player_counts_follow_install_tick_death_and_unload() {
     assert_eq!(counts(&app), [0.0; 5], "no session level yet");
 
     app.install_level_identity(&level_world(LEVEL, 1));
-    assert!(app.session.as_ref().unwrap().session_players.session_level());
+    assert!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .session_level()
+    );
     assert_eq!(counts(&app), [1.0, 1.0, 0.0, 0.0, 0.0]);
 
     let pawn = spawn_host_pawn(&mut app);
@@ -106,15 +116,29 @@ fn single_player_counts_follow_install_tick_death_and_unload() {
     assert!(!player_row(&app, 1).0);
 
     tick(&mut app, &[pawn], &[]);
-    assert_eq!(counts(&app), [1.0, 0.0, 0.0, 1.0, 0.0], "dead: down, not in play");
+    assert_eq!(
+        counts(&app),
+        [1.0, 0.0, 0.0, 1.0, 0.0],
+        "dead: down, not in play"
+    );
     assert_eq!(player_row(&app, 0).2, "down");
 
     app.unload_level();
     assert_eq!(counts(&app), [0.0; 5]);
     assert!(no_rows_present(&app));
-    assert!(!app.session.as_ref().unwrap().session_players.session_level());
+    assert!(
+        !app.session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .session_level()
+    );
     tick(&mut app, &[], &[]);
-    assert_eq!(counts(&app), [0.0; 5], "no tick writes counts without a session level");
+    assert_eq!(
+        counts(&app),
+        [0.0; 5],
+        "no tick writes counts without a session level"
+    );
 }
 
 // A frontend backdrop is not a session level: its ticks write nothing, with or
@@ -143,7 +167,13 @@ fn frontend_backdrop_is_not_a_session_level() {
     assert!(app.frontend_menu_is_present());
 
     app.install_level_identity(&level_world(LEVEL, 1));
-    assert!(!app.session.as_ref().unwrap().session_players.session_level());
+    assert!(
+        !app.session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .session_level()
+    );
     let pawn = spawn_host_pawn(&mut app);
     tick(&mut app, &[pawn], &[pawn]);
     assert_eq!(counts(&app), [0.0; 5]);
@@ -249,7 +279,10 @@ fn dev_hud_player_list_unrolls_one_row_per_seat() {
     assert!(tree.always_on);
     let root = serde_json::to_value(&tree.tree.root).unwrap();
     let rows = root["children"].as_array().unwrap();
-    assert_eq!(rows.len(), postretro_foundation::seat::SESSION_PLAYER_CAPACITY);
+    assert_eq!(
+        rows.len(),
+        postretro_foundation::seat::SESSION_PLAYER_CAPACITY
+    );
     for (index, row) in rows.iter().enumerate() {
         assert_eq!(
             row["visibleWhen"]["slot"],

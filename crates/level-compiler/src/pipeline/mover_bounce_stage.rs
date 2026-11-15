@@ -1,25 +1,25 @@
 //! The mover probe channel's bounce half at its pipeline seam: every
-//! analysed mover posed at both termini and priced by the SH working-set
-//! gate before any SH work; its states re-baked inside the SH base bake;
-//! then id 57's bounce and depth blocks laid out, with the mover tiles
-//! reserved ahead of id 59's.
+//! analysed mover posed at each of its poses, with its near-field domain,
+//! and priced by the SH working-set gate before any SH work; its states
+//! re-baked inside the SH base bake; then id 57's bounce and depth blocks
+//! laid out, with the mover tiles reserved ahead of id 59's.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
-use crate::geometry::GeometryResult;
+use crate::bake_fidelity::BakeMode;
 use crate::map_data::{MapKinematicMover, MapLight};
-use crate::mover_light_gate::{MoverPoses, Terminus};
+use crate::mover_light_gate::MoverPoses;
 use crate::mover_probe_channel::{
-    BounceBlocks, CarriedDepth, DepthReservation, MoverBounceJob, MoverBounceRequest,
-    MoverBounceStates, MoverChannelCost, PosedMovers, PosedScene, ProbeCells, reserve_mover_tiles,
-    sh_base_bounce_count,
+    BounceBlocks, CarriedDepth, DepthReservation, MoverAbsentDepth, MoverBounceJob,
+    MoverBounceRequest, MoverBounceStates, MoverChannelCost, MoverRecords, NearFieldDomain,
+    PosedMovers, PosedScene, ProbeCells, SkipBars, SkipCounts, refuse_cut_short,
+    reserve_mover_tiles, sh_base_bounce_count, skip_redundant_mid_poses,
 };
-use crate::partition::BspTree;
-use crate::sh_bake::{ProbeDepthTiles, effective_tile_cap, probe_grid_layout_of};
+use crate::sh_bake::{ProbeDepthTiles, ProbeGridLayout, effective_tile_cap};
+use crate::surface_radiance::MoverBounceOutcome;
 
 /// What the bounce half reads before the SH gates.
 pub(super) struct BouncePlanInputs<'a> {
@@ -28,15 +28,17 @@ pub(super) struct BouncePlanInputs<'a> {
     /// bounce scenes and the direct half's occluders share these solids.
     pub(super) posed: &'a PosedMovers,
     pub(super) movers: &'a [MapKinematicMover],
-    pub(super) geometry: &'a GeometryResult,
-    pub(super) tree: &'a BspTree,
-    pub(super) exterior_leaves: &'a HashSet<usize>,
+    /// The probe grid, laid out once for placement and this half.
+    pub(super) layout: &'a ProbeGridLayout,
     pub(super) probe_spacing: f32,
     pub(super) bounce_fill: f32,
     /// Every static and animated baked light, for the direct half's bound.
     pub(super) direct_lights: &'a [&'a MapLight],
     pub(super) uncompressed: bool,
     pub(super) tile_cap: u32,
+    /// What the build bakes, from the flags: its fidelity caps each mover's
+    /// posed bounces.
+    pub(super) mode: BakeMode,
 }
 
 /// The bounce half's request and what the SH gate prices for the channel.
@@ -45,18 +47,15 @@ pub(super) struct BounceHalfPlan {
     pub(super) cost: MoverChannelCost,
 }
 
-/// Pose every analysed mover at both termini, its `light_bounces` clamped to
-/// the SH base's bounce count, and price the channel: the scenes, the probe
-/// grid's valid probes (classified now, with no ray) and the direct half's
-/// bound. No analysed mover or no probe grid, no job.
+/// Pose every analysed mover at each of its poses, its `light_bounces`
+/// clamped to the SH base's bounce count and capped by the build's fidelity
+/// (`low` bakes at most 1), with its near-field domain and the
+/// valid probes inside it, and price the channel: the scenes, the probe
+/// grid's valid probes (classified now, with no ray), the domains and the
+/// direct half's bound. No analysed mover or no probe grid, no job.
 pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<BounceHalfPlan> {
     let count = sh_base_bounce_count(inputs.bounce_fill);
-    let layout = probe_grid_layout_of(
-        inputs.geometry,
-        inputs.tree,
-        inputs.exterior_leaves,
-        inputs.probe_spacing,
-    );
+    let layout = inputs.layout;
     let posed = inputs.posed;
     let mut jobs = Vec::new();
     if !layout.is_empty() {
@@ -67,30 +66,37 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
                 .iter()
                 .find(|mover| mover.mover_id == analysed.mover_id)
                 .expect("resolved movers are map movers");
-            let scenes = Terminus::BOTH
-                .into_iter()
-                .map(|terminus| {
-                    PosedScene::new(Arc::clone(&solids.solids[terminus.index()]), terminus).map_err(
-                        |error| {
-                            anyhow::anyhow!("kinematic_mover `{}` posed sides: {error}", mover.name)
-                        },
-                    )
+            debug_assert_eq!(analysed.knots.len(), solids.solids.len());
+            let scenes = solids
+                .solids
+                .iter()
+                .enumerate()
+                .map(|(pose, solid)| {
+                    PosedScene::new(Arc::clone(solid), pose).map_err(|error| {
+                        anyhow::anyhow!("kinematic_mover `{}` posed sides: {error}", mover.name)
+                    })
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
+            let domain = NearFieldDomain::new(analysed, inputs.probe_spacing);
+            let high_bounces = mover
+                .light_bounces
+                .map_or(count, |bounces| bounces.min(count));
             jobs.push(MoverBounceJob {
                 mover_id: mover.mover_id,
                 label: analysed.label.clone(),
-                bounces: mover
-                    .light_bounces
-                    .map_or(count, |bounces| bounces.min(count)),
+                bounces: inputs.mode.fidelity().bounces(high_bounces),
+                high_bounces,
                 scenes,
+                read_knots: solids.read_knots.clone(),
+                domain_probes: domain.valid_probes(layout),
+                domain,
             });
         }
     }
     let depth_cap = effective_tile_cap(inputs.tile_cap);
     let cost = MoverChannelCost::new(
         &jobs,
-        &layout,
+        layout,
         inputs.bounce_fill,
         depth_cap,
         inputs.direct_lights,
@@ -99,13 +105,17 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
     if !jobs.is_empty() {
         log::info!(
             "[MoverLight] probe channel bounce half: {} mover(s), {} re-baking bounce, {} \
-             depth only; {} posed patch(es)",
+             depth only; {} pose(s), {} posed patch(es), {} near-field probe(s)",
             jobs.len(),
             cost.radiance_movers,
             cost.movers - cost.radiance_movers,
+            jobs.iter().map(|job| job.scenes.len()).sum::<usize>(),
             jobs.iter()
                 .flat_map(|job| &job.scenes)
                 .map(|scene| scene.patches.len())
+                .sum::<usize>(),
+            jobs.iter()
+                .map(|job| job.domain_probes.len())
                 .sum::<usize>(),
         );
     }
@@ -119,24 +129,87 @@ pub(super) fn plan_bounce_half(inputs: BouncePlanInputs<'_>) -> anyhow::Result<B
     Ok(BounceHalfPlan { request, cost })
 }
 
+/// Skip every mover's redundant mid-pose bounce and depth states once all
+/// of them have resolved, from the memo or the bake: each mover's knots run
+/// through its author ramp first, which no memo keys, so a ramp edit
+/// re-decides skips over the memoized states. `base` is id 34 and
+/// `depth_tiles` id 59 before mover tiles reserve their range, the bases
+/// the bars read. Logs one line per mover with mid poses, and hands back
+/// each such mover's counts by id.
+///
+/// A bake whose depth passed the tile range `tile_cap` fails by name first,
+/// before any state skips ([`refuse_cut_short`]): skipping can bring the
+/// count back within the range, while movers past a stop or a cut have lost
+/// their states, and the verdict would hang on job order.
+pub(super) fn skip_mid_poses(
+    outcome: &mut MoverBounceOutcome,
+    movers: &[MapKinematicMover],
+    poses: &MoverPoses,
+    base: &OctahedralShVolumeSection,
+    depth_tiles: &ProbeDepthTiles,
+    uncompressed: bool,
+    tile_cap: u32,
+) -> anyhow::Result<Vec<(u32, SkipCounts)>> {
+    refuse_cut_short(&outcome.movers, outcome.stopped, tile_cap)?;
+    let states = &mut outcome.movers;
+    if states.iter().all(|states| states.pose_count <= 2) {
+        return Ok(Vec::new());
+    }
+    let mut skipped = Vec::new();
+    let records = MoverRecords::new(movers, poses);
+    let bars = SkipBars::new(base, MoverAbsentDepth::new(base, depth_tiles), uncompressed);
+    for states in states.iter_mut().filter(|states| states.pose_count > 2) {
+        let record = records
+            .get(states.mover_id)
+            .expect("a mover with states is a map mover");
+        debug_assert_eq!(record.pose_count(), states.pose_count);
+        let started = std::time::Instant::now();
+        let counts = skip_redundant_mid_poses(states, &record.effective_knots(), &bars);
+        log::info!(
+            "[MoverLight] probe channel skipping: mover `{}` (#{}): bounce keeps {} and skips \
+             {} (probe, mid pose) state(s); depth keeps {} and skips {}; {} of the skipped \
+             never read past the ramp; {:.2} s",
+            poses.label(states.mover_id).unwrap_or("?"),
+            states.mover_id,
+            counts.bounce_stored,
+            counts.bounce_skipped,
+            counts.depth_stored,
+            counts.depth_skipped,
+            counts.squeezed,
+            started.elapsed().as_secs_f64(),
+        );
+        skipped.push((states.mover_id, counts));
+    }
+    Ok(skipped)
+}
+
 /// The bounce half's blocks over id 34's grid, with the mover tiles reserved
-/// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room and
-/// logs its counts once against the shrunk cap. Live tiles alone past the
-/// range fail the build by name, with the count a lower bound once the bake
-/// `stopped` short of a job or the range cut a mover sharing the range.
+/// ahead of id 59's: id 59 drops its lowest-ranked tiles to make room,
+/// keeping those of the probes still carrying mover depth, the bases their
+/// skips read, and logs its counts once against the shrunk cap. A bake past
+/// the range has already failed, before skipping ([`skip_mid_poses`]), and
+/// skipping only removes records, so every mover's depth is whole here and
+/// the count exact. The reservation's own refusal of live tiles past the
+/// range is a backstop that earlier refusal makes unreachable. Where the
+/// range cannot hold the carrying probes' own id-59 tiles beside the live
+/// tiles, the build warns and drops the lowest-ranked of them.
 pub(super) fn finish_bounce_half(
     movers: &[MoverBounceStates],
-    stopped: bool,
     base: &OctahedralShVolumeSection,
     depth_tiles: &mut ProbeDepthTiles,
     tile_cap: u32,
 ) -> anyhow::Result<(BounceBlocks, DepthReservation)> {
+    debug_assert!(
+        !movers.iter().any(MoverBounceStates::depth_cut),
+        "a bake the tile range cut short fails before skipping"
+    );
     let cells = ProbeCells::new(base.grid_dimensions, |probe| {
         base.probes[probe].validity != 0
     });
     let blocks = BounceBlocks::new(movers, &cells);
-    let carried = CarriedDepth::new(blocks.live_tile_count(), movers, stopped);
-    let reservation = reserve_mover_tiles(depth_tiles, base, carried, tile_cap)?;
+    let carrying = blocks.live_probes();
+    let carried = CarriedDepth::exact(carrying.len());
+    let reservation = reserve_mover_tiles(depth_tiles, base, carried, &carrying, tile_cap)?;
     if reservation.live > 0 {
         log::info!(
             "[MoverLight] probe depth tiles: {} live tile(s) reserved for mover depth ahead of id \
@@ -145,6 +218,19 @@ pub(super) fn finish_bounce_half(
             effective_tile_cap(tile_cap),
             reservation.shrunk_cap,
             reservation.trimmed,
+        );
+    }
+    if reservation.carrying_trimmed > 0 {
+        log::warn!(
+            "[MoverLight] probe depth tiles: the {}-tile range leaves id 59 {} tile(s) beside the \
+             live tiles, too few for the {} probe(s) carrying mover depth that hold one; {} of \
+             them drop, so those probes' live tiles blend through their averaged moments rather \
+             than the tile their mover states were judged against. Raise \
+             `--probe-depth-tile-cap`",
+            effective_tile_cap(tile_cap),
+            reservation.shrunk_cap,
+            reservation.shrunk_cap as usize + reservation.carrying_trimmed,
+            reservation.carrying_trimmed,
         );
     }
     depth_tiles.log(reservation.shrunk_cap);

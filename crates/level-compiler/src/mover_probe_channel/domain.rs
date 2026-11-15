@@ -56,7 +56,43 @@ pub(crate) fn max_abs_difference(a: &[OctahedralAtlasTexel], b: &[OctahedralAtla
         .fold(0.0, f32::max)
 }
 
-/// The perceptual floor (owner, 2026-11-08): a probe's bounce is
+/// Whether `a` and `b` differ past both of a probe's bounce bars: its id-34
+/// tile's round-trip bar `bar` ([`round_trip_error`]) and the perceptual
+/// floor ([`BOUNCE_FLOOR_LEVELS`]): the two bars the affected-probe rule
+/// applies ([`super::gather::PosedProbe::affected`]). A mid pose's
+/// stored-or-base choice and redundant mid-pose skipping read this test.
+pub(crate) fn clears_bounce_bars(
+    a: &[OctahedralAtlasTexel],
+    b: &[OctahedralAtlasTexel],
+    bar: f32,
+) -> bool {
+    // [`max_abs_difference`] and [`display_levels`] against their bars,
+    // stopping at the first texel past each: skipping runs this per
+    // candidate interval.
+    let pairs = || a.iter().zip(b);
+    exceeds(
+        pairs().flat_map(|(a, b)| {
+            (0..3).map(|c| (f16_bits_to_f32(a.rgba[c]) - f16_bits_to_f32(b.rgba[c])).abs())
+        }),
+        bar,
+    ) && exceeds(
+        pairs().flat_map(|(a, b)| {
+            let (a, b) = (
+                display_rgb(a, DEFAULT_INDIRECT_SCALE),
+                display_rgb(b, DEFAULT_INDIRECT_SCALE),
+            );
+            (0..3).map(move |c| (a[c] - b[c]).abs())
+        }),
+        BOUNCE_FLOOR_LEVELS,
+    )
+}
+
+/// `values.fold(0.0, f32::max) > bar`, stopping at the first value past it.
+fn exceeds(mut values: impl Iterator<Item = f32>, bar: f32) -> bool {
+    values.any(|value| value > bar) || 0.0 > bar
+}
+
+/// The perceptual floor (an owner value): a probe's bounce is
 /// affected only when its change also exceeds this many display levels
 /// ([`display_levels`]). The largest floor that keeps every `mover-closet`
 /// probe the closed door darkens, whose smallest change is 2.30 levels.
@@ -76,12 +112,22 @@ fn srgb_encode(linear: f32) -> f32 {
 }
 
 /// One texel as the display shows it: a mid-grey receiver lit by its RGB
-/// alone through the renderer's indirect scale and soft-knee tonemap, in
+/// alone, weighted by `weight`, through the renderer's soft-knee tonemap, in
 /// 8-bit sRGB levels.
-fn display_rgb(texel: &OctahedralAtlasTexel) -> [f32; 3] {
-    let scale = DISPLAY_ALBEDO * DEFAULT_INDIRECT_SCALE;
+fn display_rgb(texel: &OctahedralAtlasTexel, weight: f32) -> [f32; 3] {
+    let scale = DISPLAY_ALBEDO * weight;
     let lit = [0, 1, 2].map(|c| scale * f16_bits_to_f32(texel.rgba[c]));
     soft_knee_tonemap(lit).map(|channel| 255.0 * srgb_encode(channel))
+}
+
+fn levels_apart(a: &[OctahedralAtlasTexel], b: &[OctahedralAtlasTexel], weight: f32) -> f32 {
+    a.iter()
+        .zip(b)
+        .flat_map(|(a, b)| {
+            let (a, b) = (display_rgb(a, weight), display_rgb(b, weight));
+            (0..3).map(move |c| (a[c] - b[c]).abs())
+        })
+        .fold(0.0, f32::max)
 }
 
 /// How far apart two irradiance tiles read on a display: the largest change,
@@ -90,13 +136,20 @@ fn display_rgb(texel: &OctahedralAtlasTexel) -> [f32; 3] {
 /// tonemap (`indirect_display`). Indirect only, so it never hides a change
 /// behind direct light; local and deterministic like the round-trip bar.
 pub(crate) fn display_levels(a: &[OctahedralAtlasTexel], b: &[OctahedralAtlasTexel]) -> f32 {
-    a.iter()
-        .zip(b)
-        .flat_map(|(a, b)| {
-            let (a, b) = (display_rgb(a), display_rgb(b));
-            (0..3).map(move |c| (a[c] - b[c]).abs())
-        })
-        .fold(0.0, f32::max)
+    levels_apart(a, b, DEFAULT_INDIRECT_SCALE)
+}
+
+/// The renderer's weight on baked direct SH where a probe lights a surface
+/// (`DEFAULT_DYNAMIC_DIRECT_SCALE`, renderer_types.rs); this crate cannot
+/// read the renderer's constant.
+#[cfg(test)]
+const DIRECT_SH_WEIGHT: f32 = 1.0;
+
+/// [`display_levels`] for two direct SH tiles: the same measure at the
+/// renderer's direct weight instead of its indirect scale.
+#[cfg(test)]
+pub(crate) fn direct_display_levels(a: &[OctahedralAtlasTexel], b: &[OctahedralAtlasTexel]) -> f32 {
+    levels_apart(a, b, DIRECT_SH_WEIGHT)
 }
 
 /// A tile's own round-trip error: BC6H-encoded alone and decoded, the

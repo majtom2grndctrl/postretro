@@ -25,7 +25,7 @@ pub(super) fn workspace_root() -> PathBuf {
 /// the wrong tree and silently replaces materials with placeholders — a
 /// specular slot, for one, turns black.
 pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::TempPath {
-    compile_dev_map_with(workspace, map_name, false)
+    compile_dev_map_with(workspace, map_name, &[])
 }
 
 /// [`compile_dev_map`] with `--whole-load-sh`, so the five whole-load SH
@@ -38,13 +38,49 @@ pub(super) fn compile_dev_map_whole_load_sh(
     workspace: &Path,
     map_name: &str,
 ) -> tempfile::TempPath {
-    compile_dev_map_with(workspace, map_name, true)
+    compile_dev_map_with(workspace, map_name, &["--whole-load-sh"])
 }
 
-fn compile_dev_map_with(
+/// [`compile_dev_map`] with `flags` passed to `prl-build`, e.g. `--release`.
+pub(super) fn compile_dev_map_with(
     workspace: &Path,
     map_name: &str,
-    whole_load_sh: bool,
+    flags: &[&str],
+) -> tempfile::TempPath {
+    let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    cargo.args([
+        "run",
+        "--quiet",
+        "-p",
+        "postretro-level-compiler",
+        "--bin",
+        "prl-build",
+        "--",
+    ]);
+    compile_dev_map_by(cargo, workspace, map_name, flags)
+}
+
+/// [`compile_dev_map_with`] through a prebuilt `prl-build` at `compiler`, e.g.
+/// another commit's, run from this checkout on this checkout's map.
+// Only the mover capture rows compare against another compiler; the other
+// targets that share this module would otherwise warn on it.
+#[allow(dead_code)]
+pub(super) fn compile_dev_map_using(
+    compiler: &Path,
+    workspace: &Path,
+    map_name: &str,
+    flags: &[&str],
+) -> tempfile::TempPath {
+    compile_dev_map_by(Command::new(compiler), workspace, map_name, flags)
+}
+
+/// Runs `compile`, a `prl-build` launch with any leading arguments set, on
+/// `map_name`'s source.
+fn compile_dev_map_by(
+    mut compile: Command,
+    workspace: &Path,
+    map_name: &str,
+    flags: &[&str],
 ) -> tempfile::TempPath {
     let source_map = workspace.join(format!("content/dev/maps/{map_name}.map"));
     assert!(
@@ -58,25 +94,12 @@ fn compile_dev_map_with(
         .tempfile_in(workspace.join("content/dev/maps"))
         .expect("reserve capture PRL path in content/dev/maps")
         .into_temp_path();
-    let mut compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-    compile
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "postretro-level-compiler",
-            "--bin",
-            "prl-build",
-            "--",
-        ])
+    let compile = compile
         .arg(&source_map)
         .arg("-o")
         .arg(&map)
-        .arg("--no-tui");
-    if whole_load_sh {
-        compile.arg("--whole-load-sh");
-    }
-    let compile = compile
+        .arg("--no-tui")
+        .args(flags)
         // The lightmap reach cull's verify mode, on in every test bake. Keep
         // this literal in sync with `REACH_VERIFY_ENV` in level-compiler's
         // `tests/prl_build_support/mod.rs` and with `reach_verify.rs`; a

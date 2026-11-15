@@ -22,6 +22,10 @@ A gap U1 leaves open by decision. U1 ships a photosensitivity floor only on the 
 - Add a build-time warning in `prl-build` and the asset bake for light animations and flipbooks that strobe faster than 3 Hz.
 - In `docs/`, tell mod authors to check captures with EA's IRIS or Harding FPA before shipping.
 
+## Already decided elsewhere
+
+- **Emissive volumes** (`plans/ready/emissive-volumes`): each `emissive_volume` is a per-value clamp source through `flash_clamp`, fed the shown glow (brightest member texture's strength × baked mean glow luminance × volume factor, capped at 1) with glow colour × volume colour as the clamp's colour. Left here: colour-only strobes (white ↔ blue at high strength), per-texel variation inside one texture, the bloom halo such strobes drive, and any shared budget across sources.
+
 ## Questions for the session
 
 - **Combined sources.** Two sources can each be within limits and strobe together (a light and a UI panel in phase). Is a per-source floor enough, or does a shared CPU budget across primitives earn its cost?

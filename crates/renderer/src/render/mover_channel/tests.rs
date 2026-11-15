@@ -4,7 +4,7 @@
 
 use postretro_level_format::mover_probe_channel::{
     MOVER_IRRADIANCE_TILE_F16_COUNT, MoverChannelCell, MoverDirectRecord, MoverLightNamespace,
-    MoverLightRampRecord, MoverPayloadPlacement, MoverProbeChannelSection,
+    MoverPayloadPlacement, MoverProbeChannelSection, MoverRecord,
 };
 
 use super::layout::{
@@ -57,7 +57,7 @@ pub(super) fn fixture_section(
         bounce_tiles: Vec::new(),
         depth_records: Vec::new(),
         depth_tiles: Vec::new(),
-        ramps: Vec::new(),
+        mover_records: Vec::new(),
     };
     for &cell in &cells {
         for record in records.iter().filter(|record| record.cell == cell) {
@@ -89,13 +89,9 @@ pub(super) fn fixture_section(
     }
     let mut movers = section.mover_ids();
     movers.dedup();
-    section.ramps = movers
+    section.mover_records = movers
         .into_iter()
-        .map(|mover_id| MoverLightRampRecord {
-            mover_id,
-            start: 0.0,
-            end: 1.0,
-        })
+        .map(|mover_id| MoverRecord::termini(mover_id, 0.0, 1.0))
         .collect();
     section
 }
@@ -213,9 +209,9 @@ fn records_lay_out_static_lights_first_with_their_light_keys_and_mover_slots() {
     assert_eq!(layout.mover_ids(), &[3, 7]);
     let t = layout.t_byte_offset() as usize / 4;
     assert_eq!(
-        &words[t..t + 2],
-        &[NO_STATE.to_bits(); 2],
-        "no state until handed over"
+        &words[t..t + 4],
+        &[NO_STATE.to_bits(), 0, NO_STATE.to_bits(), 0],
+        "no state, bracket 0, until handed over"
     );
     // Mover 7 (slot 1) gates both static records in cell 0; mover 3 (slot 0)
     // one. Pass B rows hold none: no animated light is gated.
@@ -383,6 +379,64 @@ fn a_cell_whose_mask_is_not_tight_is_refused_at_write() {
     assert!(error.to_string().contains("not tight"), "{error}");
 }
 
+/// A three-pose bake-only light at local probes 0 and 33 of cell 0, gated
+/// by mover 7 with q `q` (probe-major, three poses a probe).
+fn three_pose_section(q: Vec<u8>) -> MoverProbeChannelSection {
+    use postretro_level_format::mover_probe_channel::{DirectRecordParts, MoverProbeChannelParts};
+    MoverProbeChannelSection::assemble(
+        MoverProbeChannelParts {
+            affinity_dims: [1, 1, 1],
+            direct: vec![DirectRecordParts {
+                cell: 0,
+                record: MoverDirectRecord {
+                    namespace: MoverLightNamespace::BakeOnlyStaticLight,
+                    carries_own_tile: true,
+                    light_index: 0,
+                    probe_mask: 1 | 1 << 33,
+                },
+                movers: vec![(7, q)],
+                own_tiles: vec![F16_QUARTER; 2 * TILE],
+            }],
+            bounce: Vec::new(),
+            depth: Vec::new(),
+        },
+        |_| u64::MAX,
+        |mover_id| {
+            Ok::<_, ()>(MoverRecord {
+                mover_id,
+                ramp_start: 0.0,
+                ramp_end: 1.0,
+                knots: vec![0.0, 0.5, 1.0],
+            })
+        },
+    )
+    .unwrap()
+    .expect("a record")
+}
+
+/// A mover entry is two words, its slot and its first q byte past the
+/// cell's terms: id 57 epoch 7 has no across marks, so the table carries no
+/// across run. A mid pose's q is an ordinary stored byte, the 0 an enclosed
+/// mid pose traces included, and the cell writes.
+#[test]
+fn a_mover_entry_is_its_slot_and_first_q_byte_and_a_dark_mid_pose_q_writes() {
+    // Probe 33 is enclosed at the mid pose: its traced q there is 0.
+    let section = three_pose_section(vec![0, 40, 255, 255, 0, 255]);
+    let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
+    let words = layout.initial_words();
+    let (entries, descriptors) = (words[4] as usize, words[6] as usize);
+    assert_eq!(descriptors - entries, 2, "one mover entry of two words");
+    assert_eq!(words[entries], 0, "the mover's slot");
+    assert_eq!(
+        words[entries + 1] as usize,
+        2 * TILE * 2,
+        "its q bytes follow the cell's two own tiles"
+    );
+    layout
+        .held_writes(&section, &section.cell_slices(), |_, _| None)
+        .expect("a dark mid-pose q writes");
+}
+
 /// Every direct term is checked finite, as bounce tiles are: an own tile
 /// holding an infinite or NaN half is refused even where the table leaves its
 /// record ungated, and so is a borrowed id-41 term.
@@ -456,12 +510,8 @@ fn a_direct_cell_writes_while_its_bounce_payload_streams() {
     );
     section.bounce_placement = MoverPayloadPlacement::Streamed;
     section.bounce_offsets = vec![0, 1];
-    section.bounce_entries = vec![
-        postretro_level_format::mover_probe_channel::MoverBounceEntry {
-            mover_id: 7,
-            stored_probe_masks: [0b1, 0],
-        },
-    ];
+    section.bounce_entries =
+        vec![postretro_level_format::mover_probe_channel::MoverBounceEntry::termini(7, [0b1, 0])];
     let layout = MoverChannelLayout::build(&inputs(&section, None), false).unwrap();
     let writes = layout
         .held_writes(&section, &section.cell_slices(), |_, _| None)
@@ -919,10 +969,7 @@ mod arrival {
         section.bounce_placement = MoverPayloadPlacement::Streamed;
         section.bounce_offsets = vec![0, 1];
         section.bounce_entries = vec![
-            postretro_level_format::mover_probe_channel::MoverBounceEntry {
-                mover_id: 7,
-                stored_probe_masks: [0b1, 0],
-            },
+            postretro_level_format::mover_probe_channel::MoverBounceEntry::termini(7, [0b1, 0]),
         ];
         section
     }

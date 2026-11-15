@@ -213,7 +213,7 @@ pub struct MapKinematicMover {
     /// FGD `light_ramp_start` and `light_ramp_end`: the travel window, as path
     /// fractions with `0 <= start < end <= 1`, that the mover's light state
     /// ramps across (defaults 0 and 1). They reach runtime through the probe
-    /// channel's ramp record (id 57), never through id 43.
+    /// channel's mover record (id 57), never through id 43.
     pub light_ramp_start: f32,
     pub light_ramp_end: f32,
     /// FGD `light_bounces`: how many static bounces the mover probe channel
@@ -221,6 +221,11 @@ pub struct MapKinematicMover {
     /// the SH base's. `None` (absent) re-bakes every bounce; 0 re-bakes none
     /// and keeps only the posed probe depth.
     pub light_bounces: Option<u32>,
+    /// FGD `light_poses`: how many even poses the mover probe channel bakes
+    /// along the path, termini included, at least 2, and no geometry poses.
+    /// `None` (absent) places even poses about one probe spacing apart, up to
+    /// a cap, plus geometry poses where the mover meets probes.
+    pub light_poses: Option<u32>,
     pub move_mode: KinematicMoveMode,
     pub start_on_spawn: bool,
     pub brush_volumes: Vec<BrushVolume>,

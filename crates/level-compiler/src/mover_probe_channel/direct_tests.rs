@@ -27,7 +27,7 @@ use super::direct::{
 use super::direct_memo::{DirectMemo, MemoPrefix, decode, encode};
 use super::lights::{ChannelLightSources, channel_lights};
 use super::posed_solid::{PosedMovers, box_brush};
-use super::section::{EmittedDirectEntries, MoverRamps, channel_section};
+use super::section::{EmittedDirectEntries, MoverRecords, channel_section};
 use super::visibility::{PosedOccluder, joint_soft_visibility};
 use crate::affinity_grid::{AffinityReachInputs, AffinityReachPolicy};
 use crate::bake_control::BakeControl;
@@ -83,6 +83,7 @@ fn mover(id: u32, brushes: Vec<BrushVolume>, spin: bool) -> MapKinematicMover {
         light_ramp_start: 0.25,
         light_ramp_end: 0.75,
         light_bounces: None,
+        light_poses: None,
     }
 }
 
@@ -314,6 +315,7 @@ fn static_light(light: &MapLight, index: u32) -> ChannelLight<'_> {
         light_index: index,
         baked: light.clone(),
         authored: light,
+        source_index: index as usize,
         seed_axis: u64::from(index) + 3,
         early_out: ProbeEarlyOut::Agreed,
         policy: AffinityReachPolicy::DIRECT,
@@ -476,7 +478,7 @@ fn a_light_whose_samples_never_meet_the_pose_stores_no_entry() {
     assert!(bake.lights.is_empty(), "{:?}", bake.lights);
 }
 
-// Enclosing terminus (owner, 2026-11-09): a valid probe inside a posed
+// Enclosing terminus: a valid probe inside a posed
 // brush stores q = 255 for that pose and reads the light's mover-absent
 // term, though every segment from it starts in solid. With q = 255 at both
 // termini it leaves the record's probe mask, which stays tight: exactly the
@@ -510,7 +512,7 @@ fn an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask() {
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers, &MoverPoses::default()),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| false,
         |_| true,
@@ -541,6 +543,148 @@ fn an_enclosed_probe_stores_q_255_and_leaves_the_tight_mask() {
     assert_eq!(
         MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
         section
+    );
+}
+
+// Direct half, enclosed mid poses and edge copy: a mid pose inside a run of
+// poses that enclose a probe runs the same joint trace as every other pose
+// and stores the q it leaves, 0 here where the light is statically clear: a
+// traced value, never a flag, and nothing is marked across (epoch 7 has no
+// across block). The run's first and last poses compose reads store their
+// read clear neighbour's q instead: under the helper's ramp (0.25, 0.75)
+// compose reads poses 0, 3, 4, 5 and 8, so the run's entry, pose 3, takes
+// terminus 0's q and its exit, pose 5, terminus 8's. The termini keep their
+// own: here the box shadows the probe at the first pose and has sunk below
+// it at the last. And the termini's q is the bake's at `light_poses 2`
+// exactly, so the dark mid poses leave rest bytes untouched.
+#[test]
+fn a_probe_a_mid_pose_encloses_stores_its_traced_q_and_the_termini_are_unchanged() {
+    let world = world();
+    let light = point_light(DVec3::new(0.0, 3.5, 0.0), 10.0, 0.6);
+    let sinker = |light_poses| {
+        let mut sinker = mover(
+            0,
+            vec![box_brush(
+                DVec3::new(1.0, 0.5, 1.0),
+                DVec3::new(3.0, 1.5, 3.0),
+            )],
+            false,
+        );
+        sinker.light_poses = Some(light_poses);
+        let movers = [sinker];
+        let mut mover_poses =
+            MoverPoses::resolve(&movers, &waypoints(0, DVec3::new(0.0, -2.0, 0.0)));
+        mover_poses
+            .place_poses(&movers, 1.0, &ProbeGridLayout::no_probes())
+            .expect("authored poses place");
+        let poses = PosedMovers::resolve(
+            &mover_poses,
+            &movers,
+            &TextureNamesSection { names: Vec::new() },
+        )
+        .expect("the sinker poses");
+        (movers, mover_poses, poses)
+    };
+    let (movers, mover_poses, poses) = sinker(9);
+    let solids = &poses.movers()[0].solids;
+    assert_eq!(solids.len(), 9, "light_poses 9");
+    let inside = world.probe_at([2.0, 0.0, 2.0]);
+    let point = vec3_from(world.layout.probe_positions[inside]);
+    assert_eq!(
+        solids
+            .iter()
+            .map(|solid| solid.encloses(point))
+            .collect::<Vec<_>>(),
+        [false, false, false, true, true, true, false, false, false],
+        "poses 3 to 5 enclose the probe"
+    );
+    let mid = PosedOccluder::new(Arc::clone(&solids[4]));
+    assert!(
+        mid.blocks(point, light.origin.as_vec3()),
+        "the per-ray rule blocks the enclosed probe's segments"
+    );
+
+    let bake = world.bake(&poses, &[static_light(&light, 0)]);
+    let q_of = |bake: &MoverDirectBake, probe: usize| -> Option<Vec<u8>> {
+        bake.lights[0].entries.iter().find_map(|entry| {
+            world
+                .cells
+                .valid_probes(entry.cell as usize)
+                .iter()
+                .position(|&at| at == probe)
+                .map(|slot| entry.poses_at(slot).to_vec())
+        })
+    };
+    let q = q_of(&bake, inside).expect("the sinker gates the probe's cell");
+    assert!(
+        q[0] < 255,
+        "the box shadows the probe at the first pose: {q:?}"
+    );
+    assert_eq!(q[4], 0, "inside the run: traced, every sample blocked");
+    let records = MoverRecords::new(&movers, &mover_poses);
+    let read: Vec<u32> = records
+        .get(0)
+        .expect("the sinker's record")
+        .effective_knots()
+        .iter()
+        .map(|knot| knot.pose)
+        .collect();
+    assert_eq!(
+        read,
+        [0, 3, 4, 5, 8],
+        "the ramp squeezes out poses 1, 2, 6 and 7"
+    );
+    assert_eq!(
+        q[3], q[0],
+        "the run's entry copies the read clear pose before it"
+    );
+    assert_eq!(
+        q[5], q[8],
+        "the run's exit copies the read clear pose after it"
+    );
+    assert_eq!(q[8], 255, "sunk below the probe at the last pose");
+
+    // Rest: every probe's terminus q equals the two-pose bake's.
+    let (_, _, termini_only) = sinker(2);
+    let two = world.bake(&termini_only, &[static_light(&light, 0)]);
+    let mut compared = 0;
+    for probe in (0..world.layout.probe_positions.len()).filter(|&p| world.layout.validity[p] != 0)
+    {
+        let nine = q_of(&bake, probe).map(|q| [q[0], q[8]]);
+        let two = q_of(&two, probe).map(|q| [q[0], q[1]]);
+        assert_eq!(
+            nine.unwrap_or([255; 2]),
+            two.unwrap_or([255; 2]),
+            "probe {probe}: terminus q unchanged by the mid pose"
+        );
+        compared += usize::from(nine.is_some());
+    }
+    assert!(compared > 0);
+
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &records,
+        &super::section::MoverPayloadBars::default(),
+        |_, _, _| false,
+        |_| true,
+    )
+    .unwrap()
+    .expect("the sinker gates the light");
+    assert_eq!(
+        MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
+        section
+    );
+    let view = section
+        .direct_record_views()
+        .find(|view| masked_slot(&world, view, inside).is_some())
+        .expect("the enclosed probe is masked");
+    let slot = masked_slot(&world, &view, inside).unwrap();
+    assert_eq!(
+        view.movers().next().unwrap().probe_q(slot),
+        &q[..],
+        "the section stores the traced q at every pose"
     );
 }
 
@@ -721,6 +865,7 @@ fn an_animated_lights_own_tile_equals_its_id_45_tile() {
         light_index: 0,
         baked,
         authored: &authored,
+        source_index: 0,
         seed_axis: 0,
         early_out: ProbeEarlyOut::Agreed,
         policy: AffinityReachPolicy::DIRECT,
@@ -861,7 +1006,7 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers, &MoverPoses::default()),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| false,
         |_| true,
@@ -884,7 +1029,7 @@ fn a_bake_only_light_blocked_by_a_posed_mover_stores_q_below_one_with_its_own_ti
         .direct_record_views()
         .find_map(|view| Some((view, masked_slot(&world, &view, under)?)))
         .expect("the probe is masked in its cell's record");
-    assert_eq!(view.movers().next().unwrap().q(slot), [first, last]);
+    assert_eq!(view.movers().next().unwrap().probe_q(slot), [first, last]);
     assert_eq!(view.own_tile(slot).expect("its own tile"), tile);
     assert_eq!(
         MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes"),
@@ -930,7 +1075,7 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers, &MoverPoses::default()),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
         |_| true,
@@ -958,7 +1103,7 @@ fn two_movers_gating_one_light_at_one_cell_store_its_tile_once() {
                 let (pair, tile) = probe_payload(&world, gated, mover.mover_id, probe)
                     .expect("each mover's entry covers the probe");
                 assert_eq!(
-                    mover.q(slot),
+                    mover.probe_q(slot),
                     pair,
                     "mover {} probe {probe}",
                     mover.mover_id
@@ -1000,7 +1145,7 @@ fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
         &bake,
         &BounceBlocks::default(),
         &world.cells,
-        &MoverRamps::new(&movers),
+        &MoverRecords::new(&movers, &MoverPoses::default()),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
         |_| true,
@@ -1018,7 +1163,7 @@ fn the_mask_leaves_out_a_probe_every_mover_leaves_at_255() {
             let slot = masked_slot(&world, &view, probe);
             assert_eq!(slot.is_some(), changed, "probe {probe}");
             if let Some(slot) = slot {
-                assert!(view.movers().any(|mover| mover.q(slot) != [255, 255]));
+                assert!(view.movers().any(|mover| mover.probe_q(slot) != [255, 255]));
             } else {
                 excluded += 1;
             }
@@ -1118,6 +1263,7 @@ fn entry(cell: u32, mover_id: u32) -> DirectEntry {
     DirectEntry {
         cell,
         mover_id,
+        pose_count: 2,
         visibility: vec![7; 2],
         tiles: vec![cell as u16 + 1; DEFAULT_DELTA_PROBE_F16_STRIDE],
     }
@@ -1195,7 +1341,10 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
             },
         ],
     };
-    let ramps = MoverRamps::new(&[mover(4, Vec::new(), false), mover(2, Vec::new(), false)]);
+    let ramps = MoverRecords::new(
+        &[mover(4, Vec::new(), false), mover(2, Vec::new(), false)],
+        &MoverPoses::default(),
+    );
     let section = channel_section(
         &bake,
         &BounceBlocks::default(),
@@ -1230,11 +1379,19 @@ fn the_own_tile_flag_follows_ids_41_and_45_as_emitted() {
     assert_eq!(section.own_tiles, vec![2; DEFAULT_DELTA_PROBE_F16_STRIDE]);
     assert_eq!(
         section
-            .ramps
+            .mover_records
             .iter()
-            .map(|ramp| (ramp.mover_id, ramp.start, ramp.end))
+            .map(|record| (
+                record.mover_id,
+                record.ramp_start,
+                record.ramp_end,
+                record.knots.clone()
+            ))
             .collect::<Vec<_>>(),
-        vec![(2, 0.25, 0.75), (4, 0.25, 0.75)]
+        vec![
+            (2, 0.25, 0.75, vec![0.0, 1.0]),
+            (4, 0.25, 0.75, vec![0.0, 1.0])
+        ]
     );
     let decoded = MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes");
     assert_eq!(decoded, section);
@@ -1270,7 +1427,7 @@ fn with_no_id_45_no_animated_baked_record_is_written() {
             bake,
             &BounceBlocks::default(),
             &two_cells(),
-            &MoverRamps::new(&[mover(2, Vec::new(), false)]),
+            &MoverRecords::new(&[mover(2, Vec::new(), false)], &MoverPoses::default()),
             &super::section::MoverPayloadBars::default(),
             |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
             |ns| emitted.composes_gated(ns),
@@ -1332,7 +1489,7 @@ fn a_bake_with_no_entry_makes_no_section() {
         &MoverDirectBake::default(),
         &BounceBlocks::default(),
         &two_cells(),
-        &MoverRamps::new(&[]),
+        &MoverRecords::new(&[], &MoverPoses::default()),
         &super::section::MoverPayloadBars::default(),
         |_, _, _| true,
         |_| true,
@@ -1374,7 +1531,160 @@ fn memo_payloads_round_trip_and_reject_malformed_ones() {
         decode(&encode(&[entry(2, 0)]), &cells, &movers).is_none(),
         "past the grid"
     );
+    let three_poses = DirectEntry {
+        pose_count: 3,
+        visibility: vec![7; 3],
+        ..entry(0, 0)
+    };
+    assert!(
+        decode(&encode(&[three_poses]), &cells, &movers).is_none(),
+        "a pose count unlike the mover's"
+    );
     drop(world);
+}
+
+/// A slab that crosses between the light at (2, 3.5, 2) and the probes
+/// under it only half way along its 20 m path: it starts 10 m west and ends
+/// 10 m east, out of the light's 4 m reach at both termini. Three poses
+/// (`light_poses`), so its middle pose sits right under the light.
+fn crossing_slab(ramp: (f32, f32)) -> (MapKinematicMover, PosedMovers, MoverPoses) {
+    let mut slab = mover(
+        0,
+        vec![box_brush(
+            DVec3::new(-8.5, 1.5, 1.0),
+            DVec3::new(-7.5, 1.6, 3.0),
+        )],
+        false,
+    );
+    slab.light_poses = Some(3);
+    (slab.light_ramp_start, slab.light_ramp_end) = ramp;
+    let waypoints = waypoints(0, DVec3::new(20.0, 0.0, 0.0));
+    let mut poses = MoverPoses::resolve(std::slice::from_ref(&slab), &waypoints);
+    poses
+        .place_poses(
+            std::slice::from_ref(&slab),
+            1.0,
+            &ProbeGridLayout::no_probes(),
+        )
+        .expect("authored poses place");
+    assert_eq!(poses.analysed[0].knots, vec![0.0, 0.5, 1.0]);
+    let posed = PosedMovers::resolve(
+        &poses,
+        std::slice::from_ref(&slab),
+        &TextureNamesSection { names: Vec::new() },
+    )
+    .expect("the slab poses");
+    (slab, posed, poses)
+}
+
+// A light only a mid pose blocks is gated: its reach misses both termini
+// and meets the middle pose, so the channel names it for the mover, and the
+// probe under the slab keeps q below 255 at that pose and 255 at both
+// termini. The gate's report counts it for the mover as gated only at a mid
+// pose. The term record masks it, and the mover's record carries the three
+// knots.
+#[test]
+fn a_light_only_a_mid_pose_blocks_is_gated_at_that_pose_alone() {
+    let world = world();
+    let light = point_light(DVec3::new(2.0, 3.5, 2.0), 4.0, 0.1);
+    let channel = static_light(&light, 0);
+    let (slab, posed, poses) = crossing_slab((0.0, 1.0));
+    let movers = light_movers(&light, &posed);
+    assert_eq!(movers.len(), 1, "a mid pose's reach gates the light");
+    assert_eq!(
+        movers[0]
+            .poses
+            .iter()
+            .map(Option::is_some)
+            .collect::<Vec<_>>(),
+        [false, true, false],
+        "only the middle pose lies in the light's reach"
+    );
+    let bake = world.bake(&posed, std::slice::from_ref(&channel));
+    assert_eq!(bake.lights.len(), 1, "the light is gated");
+    let probe = world.probe_at([2.0, 0.0, 2.0]);
+    let entry = bake.lights[0]
+        .entries
+        .iter()
+        .find(|entry| {
+            world
+                .cells
+                .valid_probes(entry.cell as usize)
+                .contains(&probe)
+        })
+        .expect("the probe's cell has an entry");
+    let slot = world
+        .cells
+        .valid_probes(entry.cell as usize)
+        .iter()
+        .position(|&candidate| candidate == probe)
+        .expect("the probe is valid");
+    let q = entry.poses_at(slot);
+    assert_eq!(q.len(), 3);
+    assert!(q[1] < 255, "the middle pose blocks the light: {q:?}");
+    assert_eq!([q[0], q[2]], [255, 255], "neither terminus blocks it");
+    let reported = super::mid_pose_only_lights(&bake, std::slice::from_ref(&channel));
+    assert_eq!(
+        reported.movers().collect::<Vec<_>>(),
+        [(slab.mover_id, &[0usize][..])],
+        "the report counts the light for the slab alone"
+    );
+
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &MoverRecords::new(std::slice::from_ref(&slab), &poses),
+        &super::section::MoverPayloadBars::default(),
+        |_, _, _| true,
+        |_| true,
+    )
+    .unwrap()
+    .expect("the gated light makes a section");
+    assert_eq!(section.mover_records[0].knots, vec![0.0, 0.5, 1.0]);
+    let decoded = MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("decodes");
+    assert_eq!(decoded, section);
+}
+
+// A ramp of (0.6, 0.9) maps the only blocking pose's knot (t 0.5) onto
+// t′ 0, so compose never reads it. The bake still bakes it (no pose is
+// skipped), and the section id 57 writes from it loads: its record mask is
+// the probes some pose gates, and no mover entry stores 255 at every masked
+// probe, which the loader would refuse.
+#[test]
+fn a_ramped_movers_squeezed_out_blocking_pose_still_bakes_and_its_section_loads() {
+    let world = world();
+    let light = point_light(DVec3::new(2.0, 3.5, 2.0), 4.0, 0.1);
+    let channel = static_light(&light, 0);
+    let (slab, posed, poses) = crossing_slab((0.6, 0.9));
+    let bake = world.bake(&posed, std::slice::from_ref(&channel));
+    let gated: Vec<u8> = bake.lights[0]
+        .entries
+        .iter()
+        .flat_map(|entry| (0..entry.visibility.len() / 3).map(move |slot| entry.poses_at(slot)[1]))
+        .collect();
+    assert!(
+        gated.iter().any(|&q| q < 255),
+        "the squeezed-out pose still bakes its q"
+    );
+    let section = channel_section(
+        &bake,
+        &BounceBlocks::default(),
+        &world.cells,
+        &MoverRecords::new(std::slice::from_ref(&slab), &poses),
+        &super::section::MoverPayloadBars::default(),
+        |_, _, _| true,
+        |_| true,
+    )
+    .unwrap()
+    .expect("a section");
+    let record = &section.mover_records[0];
+    assert_eq!(
+        (record.ramp_start, record.ramp_end, record.knots.clone()),
+        (0.6, 0.9, vec![0.0, 0.5, 1.0]),
+        "knots are path fractions, not ramped"
+    );
+    MoverProbeChannelSection::from_bytes(&section.to_bytes()).expect("id 57 loads");
 }
 
 // Cache: a warm bake from the memo traces no ray and equals cold; the key

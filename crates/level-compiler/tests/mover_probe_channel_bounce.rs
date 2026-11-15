@@ -2,7 +2,8 @@
 //! static brush at its pose and against an animated light added to the
 //! bright room. Every SH base here is stored at uniform L0 (`_sh_coarsen "0"`),
 //! so id 34 reads back per probe; the references and today's id 34 build uncompressed, so they
-//! read the gathered tile itself, and the channel builds BC6H, as production does.
+//! read the gathered tile itself, and the channel builds BC6H `--release`, as production ships:
+//! each mover's own `light_bounces`, as the references' static brushes bounce.
 //! See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
 mod mover_bounce_support;
@@ -11,15 +12,18 @@ mod prl_build_support;
 use std::sync::OnceLock;
 
 use mover_bounce_support::{
-    Built, Cache, Volume, bounce_states_in, build, channel, depth_tiles, dev_map, display_levels,
-    f16_close, max_abs, round_trip_error, staticize, with_worldspawn_key,
+    Built, Cache, Volume, bounce_states_in, build, build_in, channel, depth_tiles, dev_map,
+    display_levels, f16_close, max_abs, round_trip_error, staticize, with_worldspawn_key,
 };
 use postretro_level_format::SectionId;
 use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
+use prl_build_support::BuildDir;
 
 /// The builds `Volume::read` decodes: uncompressed, and id 34 kept whole.
 const WHOLE_UNCOMPRESSED: &[&str] = &["--uncompressed-irradiance", "--whole-load-sh"];
+/// The ship bake: high fidelity, whatever the interactive default.
+const RELEASE: &[&str] = &["--release"];
 
 fn uniform(map: &str) -> String {
     with_worldspawn_key(map, "_sh_coarsen", "0")
@@ -51,9 +55,22 @@ fn closet() -> &'static Closet {
     BUILT.get_or_init(|| {
         let map = uniform(&dev_map("mover-closet.map"));
         Closet {
-            channel: build(&map, "mover-closet", Cache::Cold, &[]),
-            today: build(&map, "mover-closet", Cache::Cold, WHOLE_UNCOMPRESSED),
-            reference: build(
+            channel: build_in(
+                BuildDir::fixture("closet-channel"),
+                &map,
+                "mover-closet",
+                Cache::Cold,
+                RELEASE,
+            ),
+            today: build_in(
+                BuildDir::fixture("closet-today"),
+                &map,
+                "mover-closet",
+                Cache::Cold,
+                WHOLE_UNCOMPRESSED,
+            ),
+            reference: build_in(
+                BuildDir::fixture("closet-reference"),
                 &uniform(&dev_map("mover-closet-static-door.map")),
                 "mover-closet-static-door",
                 Cache::Cold,
@@ -163,14 +180,14 @@ fn closed_door_depth_tiles_match_the_static_door_references_tiles() {
     for (index, &probe) in reference.probe_indices.iter().enumerate() {
         let expected = reference.tile(index);
         let record = channel
-            .depth_record_tiles()
-            .find(|(record, _)| record.mover_id == door && record.probe_index == probe);
-        let actual = match record {
-            Some((_, [Some(closed), _])) => {
+            .depth_record_views()
+            .find(|view| view.record.mover_id == door && view.record.probe_index == probe);
+        let actual = match record.and_then(|view| view.pose_tile(0)) {
+            Some(closed) => {
                 met += 1;
                 closed
             }
-            Some((_, [None, _])) | None => {
+            None => {
                 let tile = today.tile_of_probe(probe).unwrap_or_else(|| {
                     panic!("reference-tiled probe {probe} carries neither mover depth nor id 59")
                 });
@@ -235,9 +252,22 @@ fn setpiece() -> &'static Setpiece {
         let map = uniform(&dev_map("mover-setpiece.map"));
         let raised = staticize(&map, "setpiece_room", "setpiece_room_raised");
         Setpiece {
-            channel: build(&map, "mover-setpiece", Cache::Cold, &[]),
-            today: build(&map, "mover-setpiece", Cache::Cold, WHOLE_UNCOMPRESSED),
-            reference: build(
+            channel: build_in(
+                BuildDir::fixture("setpiece-channel"),
+                &map,
+                "mover-setpiece",
+                Cache::Cold,
+                RELEASE,
+            ),
+            today: build_in(
+                BuildDir::fixture("setpiece-today"),
+                &map,
+                "mover-setpiece",
+                Cache::Cold,
+                WHOLE_UNCOMPRESSED,
+            ),
+            reference: build_in(
+                BuildDir::fixture("setpiece-reference"),
                 &raised,
                 "mover-setpiece-room-raised",
                 Cache::Cold,
@@ -261,6 +291,7 @@ fn in_raised_room(quake: [f64; 3]) -> bool {
 // static-room reference's id 34 than today's id 34 is, and within 3 display
 // levels of it.
 #[test]
+#[ignore = "bakes mover-setpiece cold three times (minutes); run `cargo test -p postretro-level-compiler --test mover_probe_channel_bounce -- --ignored`"]
 fn raised_room_bounce_is_nearer_the_static_room_reference_than_today() {
     let setpiece = setpiece();
     let room = mover_id(&setpiece.channel, "setpiece_room");
@@ -330,7 +361,7 @@ fn an_animated_light_leaves_the_bounce_and_depth_blocks_unchanged() {
     let animated = "{\n\"classname\" \"light\"\n\"origin\" \"320 224 200\"\n\"light\" \
                     \"200\"\n\"_falloff_range\" \"600\"\n\"style\" \"1\"\n}\n";
     let map = format!("{}\n{animated}", uniform(&dev_map("mover-closet.map")));
-    let with_animated = build(&map, "mover-closet", Cache::Cold, &[]);
+    let with_animated = build(&map, "mover-closet", Cache::Cold, RELEASE);
     let (before, after) = (
         channel(&closet.channel.prl).expect("id 57"),
         channel(&with_animated.prl).expect("id 57"),
@@ -342,43 +373,76 @@ fn an_animated_light_leaves_the_bounce_and_depth_blocks_unchanged() {
     assert!(!before.bounce_tiles.is_empty());
 }
 
-// A budget one byte under the SH base gate's mover-priced peak
-// refuses the build with the gate's named error before any posed bounce ray:
-// no mover's bounce half logs a bake.
-#[test]
-fn a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray() {
-    let map = dev_map("mover-closet.map");
-    let admitted = build(&map, "mover-closet", Cache::Cold, &[]);
-    let peak: u64 = admitted
-        .logs
-        .lines()
+/// The SH base gate's logged peak in `logs`.
+fn priced_peak(logs: &str) -> u64 {
+    logs.lines()
         .find_map(|line| line.split_once("SH base working-set gate: estimated peak "))
         .and_then(|(_, tail)| tail.split_once(" bytes"))
         .map(|(peak, _)| peak.parse().expect("a byte count"))
-        .unwrap_or_else(|| panic!("the gate logs its peak\n{}", admitted.logs));
-    assert!(
-        admitted
-            .logs
-            .contains("[MoverLight] probe channel bounce: mover"),
-        "{}",
-        admitted.logs
-    );
-    let budget = (peak - 1).to_string();
-    let logs = mover_bounce_support::try_build(
-        &map,
-        "mover-closet",
-        Cache::Cold,
-        &["--working-set-max-size", &budget],
-    )
-    .err()
-    .expect("the mover channel's peak exceeds the budget");
-    assert!(
-        logs.contains("SH base working-set gate refused before patch shading")
-            && logs.contains("mover bounce"),
-        "{logs}"
-    );
-    assert!(
-        !logs.contains("[MoverLight] probe channel bounce: mover"),
-        "no posed bounce ray before the refusal\n{logs}"
-    );
+        .unwrap_or_else(|| panic!("the gate logs its peak\n{logs}"))
+}
+
+/// The bounce half's mover and pose counts, from its plan line.
+fn bounce_half_poses(logs: &str) -> (u64, u64) {
+    let line = logs
+        .lines()
+        .find_map(|line| line.split_once("probe channel bounce half: "))
+        .map(|(_, tail)| tail)
+        .unwrap_or_else(|| panic!("the bounce half logs its plan\n{logs}"));
+    let count = |after: &str| -> u64 {
+        line.split(after)
+            .next()
+            .and_then(|head| head.rsplit(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("{after} in {line}"))
+    };
+    (count(" mover(s)"), count(" pose(s)"))
+}
+
+// On the setpiece, whose two movers bake mid poses as well as their termini,
+// at `low` and at `high` (`--release`): a budget one byte under the SH base
+// gate's mover-priced peak refuses the build with the gate's named error
+// before any posed bounce ray, so no mover's bounce half logs a bake. The
+// priced peak covers every pose's resident bake at either fidelity; the
+// in-process proof that it covers what the bake holds is
+// `the_sh_base_gate_covers_every_poses_bake_on_the_setpiece_at_either_fidelity`.
+#[test]
+#[ignore = "bakes mover-setpiece cold at low and release (minutes); run `cargo test -p postretro-level-compiler --test mover_probe_channel_bounce -- --ignored`"]
+fn a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray() {
+    let map = dev_map("mover-setpiece.map");
+    for flags in [&["--bake-fidelity", "low"][..], RELEASE] {
+        let admitted = build(&map, "mover-setpiece", Cache::Cold, flags);
+        let peak = priced_peak(&admitted.logs);
+        let (movers, poses) = bounce_half_poses(&admitted.logs);
+        assert!(
+            movers > 0 && poses > 2 * movers,
+            "{flags:?}: the movers bake mid poses ({movers} mover(s), {poses} pose(s))"
+        );
+        assert!(
+            admitted
+                .logs
+                .contains("[MoverLight] probe channel bounce: mover"),
+            "{flags:?}\n{}",
+            admitted.logs
+        );
+        let budget = (peak - 1).to_string();
+        let logs = mover_bounce_support::try_build(
+            &map,
+            "mover-setpiece",
+            Cache::Cold,
+            &[flags, &["--working-set-max-size", &budget]].concat(),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{flags:?}: the mover channel's peak exceeds the budget"));
+        assert!(
+            logs.contains("SH base working-set gate refused before patch shading")
+                && logs.contains(&format!("estimated peak {peak} bytes"))
+                && logs.contains("mover bounce"),
+            "{flags:?}\n{logs}"
+        );
+        assert!(
+            !logs.contains("[MoverLight] probe channel bounce: mover"),
+            "{flags:?}: no posed bounce ray before the refusal\n{logs}"
+        );
+    }
 }

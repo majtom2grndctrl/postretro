@@ -135,7 +135,7 @@ pub(super) fn read_mover_probe_channel(
     apply_light_ramps(&section, kinematic_geometry);
     log::info!(
         "[PRL] MoverProbeChannel: {} mover(s) over {} cell(s), {} direct record(s) with {} mover entr(y/ies) ({:?}, {} B), {} bounce entr(y/ies) ({:?}, {} B), {} depth record(s) ({} live tile(s))",
-        section.ramps.len(),
+        section.mover_records.len(),
         section.cells.len(),
         section.direct_records.len(),
         section.direct_movers.len(),
@@ -268,14 +268,14 @@ fn validate_mover_probe_channel(
         message: error.to_string(),
     })?;
 
-    // Ramp records cover exactly the movers every block names.
-    if let Some(ramp) = section
-        .ramps
+    // Mover records cover exactly the movers every block names.
+    if let Some(record) = section
+        .mover_records
         .iter()
-        .find(|ramp| !inputs.mover_ids.contains(&ramp.mover_id))
+        .find(|record| !inputs.mover_ids.contains(&record.mover_id))
     {
         return Err(Error::UnresolvedMover {
-            mover_id: ramp.mover_id,
+            mover_id: record.mover_id,
         });
     }
 
@@ -411,16 +411,17 @@ fn check_light(
 
 /// Each mover the section names takes its author ramp; every other mover
 /// keeps the identity ramp it loaded with. Only plain numbers cross: no
-/// section type reaches the game.
+/// section type reaches the game. The game hands over t′ = ramp(t) alone;
+/// pose knots stay with the renderer, which maps them through the ramp.
 fn apply_light_ramps(
     section: &MoverProbeChannelSection,
     kinematic_geometry: &mut KinematicGeometry,
 ) {
     for mover in &mut kinematic_geometry.movers {
-        if let Some(ramp) = section.ramp_of(mover.mover_id) {
+        if let Some(record) = section.mover_record(mover.mover_id) {
             mover.light_ramp = MoverLightRamp {
-                start: ramp.start,
-                end: ramp.end,
+                start: record.ramp_start,
+                end: record.ramp_end,
             };
         }
     }

@@ -20,6 +20,7 @@ use postretro_level_format::mover_probe_channel::{
 
 use super::bounce::BounceLayout;
 use super::depth::{DepthBases, MoverDepthTiles, ReferenceChange};
+use super::knots::MoverKnots;
 use super::layout::{
     CellWrite, MoverChannelError, MoverChannelInputs, MoverChannelLayout, MoverChannelRows,
     NO_BASE, TermRow, check_direct_cell,
@@ -188,7 +189,7 @@ fn table_buffer(
 }
 
 /// Id 57's structure a streamed level keeps to write cells as clusters
-/// arrive: indexes, records, masks, mover entries and ramps, and each
+/// arrive: indexes, mover entries and mover records, and each
 /// resident block's payload. Bounce entries stay only while the bounce
 /// payload streams; the depth block is never kept here.
 #[derive(Debug)]
@@ -238,6 +239,7 @@ impl MoverChannelResources {
             inputs.section,
             inputs.indirect_descriptor_indices,
             layout.mover_ids(),
+            layout.knots(),
             pooled_bounce,
         )?;
         let mut direct_words = layout.initial_words().to_vec();
@@ -322,7 +324,7 @@ impl MoverChannelResources {
             ],
         );
         let depth = MoverDepthTiles::new(inputs.section, layout.mover_ids())?;
-        let mut t = MoverTBlock::new(layout.mover_ids());
+        let mut t = MoverTBlock::new(layout.mover_ids(), layout.knots());
         let mut rows = layout.rows().clone();
         rows.bounce_by_mover = bounce_layout.rows_by_mover().clone();
         t.set_feeds(LegacyPass::Direct, |slot| {
@@ -360,8 +362,7 @@ impl MoverChannelResources {
     /// No level: both table headers, no descriptors.
     pub(in crate::render) fn empty(device: &wgpu::Device) -> Self {
         let layout = MoverChannelLayout::empty(&[]);
-        let bounce_layout =
-            BounceLayout::build(None, &[], &[], false).expect("an empty bounce table lays out");
+        let bounce_layout = BounceLayout::empty();
         Self {
             direct: ChannelTable::new(
                 device,
@@ -381,7 +382,7 @@ impl MoverChannelResources {
             bounce_layout,
             rows: MoverChannelRows::default(),
             streamed: None,
-            t: MoverTBlock::new(&[]),
+            t: MoverTBlock::new(&[], &MoverKnots::default()),
             depth: MoverDepthTiles::default(),
         }
     }
@@ -425,9 +426,7 @@ impl MoverChannelResources {
             Some(_) => stand_in(
                 "Mover Probe Channel Bounce Table (whole-load, streamed level)",
                 ShAllocationKind::MoverBounceTable,
-                BounceLayout::build(None, &[], &[], false)
-                    .expect("an empty bounce table lays out")
-                    .initial_words(),
+                BounceLayout::empty().initial_words(),
             ),
         };
         [direct, bounce]
@@ -479,7 +478,7 @@ impl MoverChannelResources {
     }
 
     /// Bind the depth block's live tiles to the installed tile texture;
-    /// `bases` gives the moment set an unstored terminus blends toward. A
+    /// `bases` gives the moment set a pose with no tile reads. A
     /// probe with no base there refuses the install.
     pub(in crate::render) fn bind_depth(
         &mut self,
@@ -1085,6 +1084,6 @@ fn structure(section: &MoverProbeChannelSection) -> MoverProbeChannelSection {
         bounce_tiles: Vec::new(),
         depth_records: Vec::new(),
         depth_tiles: Vec::new(),
-        ramps: section.ramps.clone(),
+        mover_records: section.mover_records.clone(),
     }
 }

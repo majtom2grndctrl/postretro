@@ -91,7 +91,7 @@ There are two authoring paths. When both name the same event, both play; neither
 | Player movement | `movement.sounds` { `land`, `jump` } | Landing, jumping |
 | Fluid | the local fluid declaration's `enterSound`, `exitSound` (`scripting.md` §2) | Swim entry, swim exit, in that fluid |
 | Enemy attack | the attack's `sound` | That attack's `enemyAttack` |
-| Behavior activity | the activity's `sound` | Entry, whether or not `onEnter` is authored |
+| Behavior activity | the activity's `sound` | Entry, whether or not `onEnter` is authored. Decided, not yet built: not on a move within one pose (`entity_model.md` §7c) |
 | Mover | FGD `open_sound`, `close_sound`, `blocked_sound`, `crush_sound` (PRL KinematicGeometry v7, `build_pipeline.md`) | The matching mover edge; crush once per victim |
 | Teleporter | FGD `arrival_sound` per teleporter, default none (PRL id 55, `build_pipeline.md`) | A teleport through it, at the arrival point, on the SFX bus |
 

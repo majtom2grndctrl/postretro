@@ -235,3 +235,29 @@ fn client_counts_read_zero_once_its_level_unloads() {
     assert_eq!(counts(&app), [0.0; 5]);
     assert!(no_rows_present(&app), "a client that leaves shows no rows");
 }
+
+// The dev HUD's player list, the reference `forEach` consumer, loads from the
+// dev mod with one row per seat, each shown only while its seat is present.
+#[test]
+fn dev_hud_player_list_unrolls_one_row_per_seat() {
+    let manifest = crate::startup::fluids_swim_surface_tests::dev_manifest();
+    let tree = manifest
+        .ui_trees
+        .iter()
+        .find(|tree| tree.name == "hud.players")
+        .expect("the dev mod registers its player list");
+    assert!(tree.always_on);
+    let root = serde_json::to_value(&tree.tree.root).unwrap();
+    let rows = root["children"].as_array().unwrap();
+    assert_eq!(rows.len(), postretro_foundation::seat::SESSION_PLAYER_CAPACITY);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            row["visibleWhen"]["slot"],
+            format!("session.players.{index}.present")
+        );
+        assert_eq!(
+            row["children"][0]["bind"]["slot"],
+            format!("session.players.{index}.name")
+        );
+    }
+}

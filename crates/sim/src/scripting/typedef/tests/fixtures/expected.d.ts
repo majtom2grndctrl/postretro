@@ -3185,6 +3185,7 @@ declare module "postretro/ui" {
   import type {
     ComputedRef,
     Ref,
+    StateList,
     ScalarStateValue,
     NumericArrayStateValue,
     GameStateRefs,
@@ -3457,6 +3458,8 @@ declare module "postretro/ui" {
   /** Declare presentation-local cells. `init` keys are cell names; values may be number, boolean, string, or RGBA tuple. Pure; cells live only inside the nearest container using the returned `scope`. */
   export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
   export function Switch(cell: LocalStateHandle<string>, map: Record<string, WidgetDescriptor>): WidgetDescriptor[];
+  /** Unroll a widget once per row of an engine list (`getGameState().session.players`) up to its capacity. A row shows only while its `present` flag and any `visibleWhen` it declares hold; its authored ids get the suffix `.<row>`, and same-row `labelledBy` / `focusNeighbors` targets follow. `i` counts from 0. */
+  export function forEach<Row extends { readonly present: ComputedRef<boolean> }>(list: StateList<Row>, build: (row: Row, i: number) => WidgetDescriptor): WidgetDescriptor[];
   export const ui: { createLocalState: typeof createLocalState };
   export function getGameState(): GameStateRefs;
 

@@ -706,7 +706,7 @@ fn king_of_the_hill_drains_by_occupants() {
         },
     );
     let partner = host.join(OUTSIDE);
-    let mut drain = |host: &mut Host| {
+    let drain = |host: &mut Host| {
         let before = host.read("kingHill.control");
         host.frame();
         before - host.read("kingHill.control")

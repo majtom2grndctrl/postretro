@@ -450,6 +450,7 @@ derivation runs in the staged parse on the engine load pool every load, so its c
 
 - *Layout.* Little-endian: `u32 version` (= 1), `u32 worst_lightmap_layers`, `u32 worst_mask_layers`.
 - *Presence.* Written when id 22 has blocks and id 51 is emitted. The loader requires it on that same test, in either load mode, and refuses an absent section or an unknown version by name. A level with no id 51 has no section and runs all-resident. A level with no camera cell stores 0 and 0.
+- *Sizing* (decided, not yet built; `plans/ready/lightmap-compact-storage`). Mask demand prices each plane at its own extent. The first-generation rule is set by late blocks measured on camera walks, never by the budget warning below.
 - *Build Summary.* Every level with blocks reports what its pools first allocate: the pools' combined bytes, spares included, and each pool's layers, spares not included, the lead and bound they size from, and the cell with the most bytes by id and position, lowest id on a tie. A cell's bytes price its own layers across both pools, with no margin or spare. A level with no id 51 reports all-resident bytes, no spare and no worst cell. Either form warns strictly above 384 MiB, about what the other pools leave of the 2 GB target once SH holds its 512 MiB. Automatic, with no author key.
 
 **Cluster SH payloads (id 50).** Id 50 is a validated, independently readable,
@@ -469,7 +470,7 @@ remain intact, including id 34 v11 and id 35 v4. Id 57's row block (kind 4) is a
 header (`u32` row count, `u32` reserved 0), then one 16 B row per covered listed cell
 (`u32` affinity cell, `u32` direct bytes, `u32` bounce bytes, `u32` reserved 0) with cells
 strictly ascending, then each row's payload in row order, direct (q, then own tiles) before
-bounce, with no trailing bytes.
+bounce, with no trailing bytes. Decided, not yet built (`plans/ready/lightmap-compact-storage`): each chunk becomes one checksummed zstd frame, and the chunk hash covers stored bytes.
 
 **Cell residency set (id 51).** A streaming-owned cell relation: for each camera cell, the
 cells a lightmap-block residency controller must hold. It is keyed by cell and never names
@@ -499,7 +500,9 @@ or warm builds keep serving sets from the old walk. Load rejects: another versio
 that differs from the level's cell count; a length that disagrees with the counts; CSR
 offsets that do not start at 0, decrease, or end anywhere but `entry_count`; an entry naming
 a cell past the cell count; a lead past `max_lead`; and a range that is unsorted or repeats
-a cell.
+a cell. Decided, not yet built (`plans/ready/lightmap-compact-storage`): the section body
+becomes one checksummed zstd frame, decoded whole at load; a corrupt frame fails the load
+by name.
 
 **Coarsened delta sections (ids 27, 41, 45):** The wire representation supports an independent L0/L1/L2 level for every affinity cell in each section. L0 stores every valid probe tile. L1 stores valid brick-corner tiles. L2 stores one synthesized mean tile over the brick's valid probes. Payload size and order follow kept probes and kept rank, not dense probe index. Production adaptively classifies id 41 only. Ids 27 and 45 intentionally emit uniform L0 until animation and script amplitudes have bounded runtime contracts. Protection AABBs force intersecting bricks to L0 in an adaptively classified section before one-level seam smoothing.
 
@@ -511,7 +514,9 @@ a cell.
 
 **Animated billboard-scatter cap:** Id 48 has an independent 64 MiB maximum encoded-section size because every retained CSR entry expands to a dense 64-probe `Rgba16Float` block even when id 45's compact payload is empty. Compiler predicts this size from finalized id 45 before scatter cache lookup or bake and withholds ids 47/48 together on overage; pack repeats the guard. Loader validates container bounds, then soft-drops an over-cap id 48 before decode and preserves id 45. Renderer independently checks every id-48 storage buffer against the active device's storage-binding and single-buffer limits; failure binds the dummy scatter texture and selects legacy billboard lighting. The cap is policy only and adds no wire field or version change. Valid empty id-45/id-48 CSR pairs remain present so compose can base-seed.
 
-**Lightmap (id 22):** versioned section carrying the baked irradiance and dominant direction as per-cell blocks, the residency unit a streaming loader reads one block at a time (`rendering_pipeline.md` §4). Irradiance is BC6H (`Bc6hRgbUfloat`) at rest by default — ~8× smaller than the uncompressed `Rgba16Float` debug path, hardware-decoded and -filterable. Direction is always `Rg8Unorm` octahedral on a nearest sampler (octahedral lerp ≠ slerp, so it is never compressed or linearly filtered). BC6H is lossy, so the lightmap stage is exempt from the byte-identical determinism invariant (correctness is round-trip within tolerance; the cache keys on inputs regardless).
+**Lightmap (id 22):** versioned section carrying the baked irradiance and dominant direction as per-cell blocks, the residency unit a streaming loader reads one block at a time (`rendering_pipeline.md` §4). Irradiance is BC6H (`Bc6hRgbUfloat`) at rest by default — ~8× smaller than the uncompressed `Rgba16Float` debug path, hardware-decoded and -filterable. Direction is always `Rg8Unorm` octahedral on a nearest sampler (octahedral lerp ≠ slerp, so it is never block-compressed or linearly filtered). BC6H is lossy, so the lightmap stage is exempt from the byte-identical determinism invariant (correctness is round-trip within tolerance; the cache keys on inputs regardless).
+
+**Lossless coding and chart placement** (decided, not yet built; `plans/ready/lightmap-compact-storage`). Ids 22 and 42 store each plane as its own checksummed zstd frame. The compiler compresses at encode time, so the memos and the PRL hold the stored form and step 12's one-copy rule holds over stored bytes. A frame that fails decode is never uploaded. Charts may be stored transposed and start on even texels, so every value before BC encoding is the same wherever a chart lands. Id 42 gains its own per-cell mask layout of mask-owning charts only (`rendering_pipeline.md` §4, Separate mask layout). The lightmap layout never depends on lights, so a light edit never repacks it.
 
 Wire layout (version 3, all little-endian, offsets from the section payload start; source of truth `crates/level-format/src/lightmap.rs`):
 
@@ -699,7 +704,7 @@ Disk-backed content-hash cache that lets `prl-build` skip cached bake work when 
 
 **Tracer epoch bump rule.** Bump `TRACER_EPOCH` on any change to the tracer's own answers: the hit test, τ, the box test, the bake tree's padding or the occluder-cache gate. A change that moves only one consumer's bytes, such as reflection-probe capture exclusion, bumps that stage's own version instead. The epoch only rises, and a branch sets its new value in or after its last answer-changing commit, so no cache a mid-branch binary filled hits at landing.
 
-**Determinism invariant.** Byte-identical output for identical inputs — with two scoped carve-outs. The guarantee holds for the direct lightmap before compression and for SH base, warm or cold. New code in `lightmap_bake.rs`, `sh_bake.rs` or `surface_radiance/` must preserve it. Avoid common non-determinism sources: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions. **Exempt:** lossy compressed output (BC6H irradiance) — correctness is round-trip within tolerance, not byte-equality. **Cache-served fidelity** (not built yet): a `low` build's mover bounce also depends on the `high` entries cached (Bake fidelity, above). In every case the cache stays correct: it keys on inputs, not outputs. Every bake is self-consistent — same inputs, same bytes.
+**Determinism invariant.** Byte-identical output for identical inputs — with two scoped carve-outs. The guarantee holds for the direct lightmap before compression and for SH base, warm or cold. New code in `lightmap_bake.rs`, `sh_bake.rs` or `surface_radiance/` must preserve it. Avoid common non-determinism sources: `HashMap` iteration feeding output ordering, non-order-preserving parallel reductions. **Exempt:** lossy compressed output (BC6H irradiance) — correctness is round-trip within tolerance, not byte-equality. **Cache-served fidelity** (not built yet): a `low` build's mover bounce also depends on the `high` entries cached (Bake fidelity, above). In every case the cache stays correct: it keys on inputs, not outputs. Every bake is self-consistent — same inputs, same bytes. A memo that holds zstd-coded bytes folds the codec's identity (library version and level) into its key, since zstd output may change across versions (decided, not yet built; `plans/ready/lightmap-compact-storage`).
 
 **CLI flags.**
 

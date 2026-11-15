@@ -243,6 +243,14 @@ then adds the pool offset (`lightmap_pool_uv`). A block therefore samples identi
 the pools place it, and bilinear taps never reach a neighbour. Table writes happen on install,
 eviction and repack, never per frame.
 
+*Separate mask layout* (decided, not yet built; `plans/ready/lightmap-compact-storage`). Masks
+leave the lightmap layout. Each block's mask block holds only the charts of mask-owning faces,
+each a pure translation of its lightmap chart. Plane B is a sub-rect at the mask block's origin
+holding every chart that owns channel 2 or 3. The table entry doubles in size: today's fields,
+then per-plane mask extents. Each owned face carries its lightmap-to-mask texel offset on
+the owner stream, never on the world vertex. The fragment adds it on the mask path and clamps
+each plane to its own extent. One table write still carries both halves of an entry.
+
 In a level with blocks, entry 0 means no lightmap: zero static irradiance, neutral
 direction, all-visible shadowmask. A real block whose entry is not resident is a miss. A miss drops exactly the
 terms that read the block: lightmap irradiance, owner static specular, and the
@@ -298,6 +306,13 @@ byte-contiguous ranges, so bytes read from ids 22/42 equal the requested ranges 
 index. The drain admits ready work in tier order up to the shared budget, always at least
 one item. Blocks upload in their stored formats with no decode, and a pair is admitted or
 deferred whole.
+
+*Lossless decode* (decided, not yet built; `plans/ready/lightmap-compact-storage`). Lightmap
+pairs and SH chunks arrive zstd-coded; uploads still take BC data unchanged. The issuer only
+reads. One decode pool serves both resources. It spawns and retires with the issuer, whether or
+not SH streams async. A thread takes the highest-tier queued job, so mandatory decode never
+queues behind optional decode of either resource. A pair counts at its decoded size against
+the drain budget and the in-hand caps, and reaches the frame thread already split per plane.
 
 The renderer owns both pools, their placement, upload, growth, repack and retirement; the
 placement policy is wgpu-free logic in `postretro-render-cpu`. One journal covers both pools,

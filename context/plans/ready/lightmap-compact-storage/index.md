@@ -111,9 +111,9 @@ When done:
   3. ids 50/51;
   4. the pool-rule sweep last, on the final layout.
 - **Regenerate** `content/dev/maps/test-fixtures/sh-streaming-hinted-door.prl` when id 50's epoch bumps.
-- **At promotion, update:**
-  - `build_pipeline.md`: the version paragraph, ids 22/42/50/51/58, step 10's slice wording and step 12's one-copy rule, the memo bullets and the CLI table;
-  - `rendering_pipeline.md` §4: residency and the no-decode line;
+- **At landing,** fold each "decided, not yet built" note naming this brief into the text around it, and update what the notes leave out:
+  - `build_pipeline.md`: the version paragraph, the id-22, id-42 and id-58 wire layouts, step 10's slice wording, the memo bullets and the CLI table;
+  - `rendering_pipeline.md` §4: the no-decode line and the block-table layout;
   - `resource_management.md` §8.2.
 
 ## Open questions

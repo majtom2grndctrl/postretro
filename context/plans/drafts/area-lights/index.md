@@ -28,9 +28,9 @@ light.
   brush sides whose texture has an `_e` map. Emission is one-sided, along each
   face's outward normal. An entity with no emitting face fails the build.
 - **Brightness is per area.** A larger brush gives proportionally more light, as
-  in every area-scaled tool (`research.md` §5). Far from the panel, on its axis,
-  a 1 m² panel matches an inverse-squared (`delay 2`) point light of the same
-  `light` value; close in, it is dimmer, which is the point. The entity carries
+  in every area-scaled tool (`research.md` §5). Before the window, far from the
+  panel on its axis, a 1 m² panel matches an inverse-squared (`delay 2`) point
+  light of the same `light` value; close in, it is dimmer, which is the point. The entity carries
   its own `_color` and `light`, and its light never reads a material's emissive
   strength or a texture prefix.
 - **Reach is derived, with an override, and light fades to it.** Reach R is the
@@ -38,7 +38,7 @@ light.
   what a `light 300` point light gives at 1 m. `_falloff_range`, measured the
   same way, overrides it. The term is scaled by the window max(0, 1 − (d/R)⁴)²,
   with d the distance to the nearest polygon (Karis 2013), so light reaches zero
-  at R with no visible edge and nothing beyond R is lit. A hard cut is either
+  at R with no visible edge. A hard cut is either
   visible or reaches hundreds of metres (`research.md` §4).
 - **Unshadowed term: exact, then windowed.** Lambert's polygon irradiance,
   clipped to the receiver's horizon, with the clipped polygon's irradiance
@@ -48,19 +48,21 @@ light.
 - **Shadows: integrand-weighted visibility in the existing separable fold.** Each
   shadow sample counts by its share of the unshadowed light, never as a plain
   clear-ray fraction, which is wrong near a large emitter (`research.md` §2). The
-  `lightmap_layer` partition record does not change. Area lights take the global
-  escalated sample count (`--soft-shadow-samples`), with no per-type count
-  (`research.md` §2).
+  `lightmap_layer` partition record does not change. Area lights take the same
+  sample counts as every light: `--soft-shadow-samples` on texel paths, the
+  fixed default lattice on probe, patch, scatter, mover and bounce paths.
   - The weighting is the Heitz–Hill–McGuire ratio estimator over solid-angle
-    samples. It matched projected-solid-angle sampling for noise in
-    measurement, and probes need solid-angle samples anyway, so one sampler
-    serves texels and probes (`research.md` §2).
+    samples (`research.md` §2: equal noise to projected-solid-angle sampling;
+    one sampler serves texels and probes).
 - **Probe bakes project over the polygon, not along one direction.** This covers
   direct SH, billboard scatter and the mover probe channel. Unshadowed
   coefficients are analytic; shadowing never applies a per-coefficient ratio
   (`research.md` §3).
-  - Bounce comes from the light's own surface-radiance patch layer, as for every
-    light. Its glow never enters the radiance cache, which keeps the
+  - A static area light bounces through its own surface-radiance patch layer,
+    as every static light does. An animated one bounces through the per-hit
+    delta bake (id 27), which gains a polygon arm: one solid-angle sample per
+    hit, weighted against the analytic solid-angle integral, so the delta stays
+    unbiased. Glow never enters the radiance cache, which keeps the
     no-double-count invariant (`context/lib/index.md` §2).
   - The gi-rtx-lite ruling "Emissive bounce: opt-in per material" stays open.
     The record gains one line: `light_area` faces are excluded from any emissive
@@ -73,8 +75,11 @@ light.
   pipeline step 12, Exact skips). Tight polygon hulls are a follow-on, built only
   if the bake-time row asks for them.
 - **Flush emitters are expected.** Buried-light classification and the
-  embedded-emitter test do not apply to this type. Shadow rays are never blocked
-  by the emitter's own faces.
+  embedded-emitter test do not apply to this type. Every shadow-ray target, the
+  receiver floor's centre probe included, lies on an emitting polygon the
+  receiver faces, lifted off it by the tracer tolerance. No shadow ray aims at
+  the light's origin, which can sit inside a pillar or on the glass, and none is
+  blocked by the emitter's own faces.
 - **Glow follows the light.** Each emitting face draws `_e` × `_glow` × the
   light's live colour × its live brightness multiplier, on the same frame as its
   lighting. At rest, the live colour is `_color`, so a red light's white pane
@@ -152,9 +157,9 @@ Polygon term (oracle values in `research.md` §1):
   1 mm under the centre reads within 1e-4 of π.
 - [ ] Small-emitter limit: the ratio to L·A·cosθ_e·cosθ_r/d² is within 1e-3,
   1e-5 and 1e-7 at s = 0.1, 0.01 and 0.001, with the window off. On the axis,
-  4 m from a 1 m² `light 300` panel (reach 16 m), the lit value is 0.972 of an
-  inverse-squared point light of the same `light` value, within 1%; at 1 m it
-  is lower.
+  4 m from a 1 m² `light 300` panel, the resolved reach is 16 m within 1e-4
+  relative and the lit value is 0.972 of an inverse-squared point light of the
+  same `light` value, within 0.1%; at 1 m it is lower.
 - [ ] f32 corners about 1 km from the origin agree with f64 corners.
 
 Shadows and probes:
@@ -183,10 +188,12 @@ Placement, culls and keys:
 - [ ] In one entity holding a frame brush and an `_e` glass brush, only the
   glass's exposed faces emit. The entity's brushes block movement and cast
   shadows like worldspawn.
-- [ ] With `_falloff_range` set, a receiver just past it, measured from the
-  panel, is unlit, and one just inside is lit. Without the key, doubling `light`
-  lengthens reach by √2. Along the axis the lit value falls continuously to 0 at
-  reach, and at half reach it is 0.879 of the unwindowed term.
+- [ ] With `_falloff_range` set shorter than the derived reach, a receiver past
+  it, measured from the panel, is unlit, one at half of it reads 0.879 of the
+  unwindowed term, and the light's falloffRange, reach sphere and layer key use
+  it (research.md O22). Without the key, doubling `light` lengthens reach by √2.
+  Along the axis the lit value falls continuously to 0 at reach, and at half
+  reach it is 0.879 of the unwindowed term.
 - [ ] On the axis of a 1 m² `light 300` panel at half its reach, the lightmap
   texel, the animated weight map at curve 1, the surface-radiance patch, the
   direct-SH probe's L0, billboard scatter and the mover probe channel each read
@@ -240,6 +247,13 @@ Placement, culls and keys:
   it alone lights. World faces beside the panel take no specular from it, nor do
   billboards with billboard scatter withheld.
 - [ ] An animated area light's weight map at curve 1 equals its static bake.
+- [ ] An animated area light's SH bounce delta at curve 1, averaged over the
+  probes in its reach, matches the same light baked static within 2%, and its
+  stored visibility at each hit is weighted, not a plain clear-ray count.
+- [ ] Raising `--soft-shadow-samples` on an area-light map re-bakes its lightmap
+  layers and the weight-map stage, and a warm rebuild still reads its
+  surface-radiance, direct-SH, scatter, mover-channel and bounce-delta entries
+  from the cache.
 - [ ] AlphaLights v5 round-trips area and non-area records. A v4 file and an
   unknown type value are rejected.
 - [ ] On a map with no area light, every bake section is byte-identical to the
@@ -271,8 +285,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   by that factor and every bake section stays byte-identical. A negative `_glow`
   fails the build.
 - [ ] A `colorShift` moves the glow's colour and the room's colour together.
-- [ ] Doubling an area light's `light` doubles its lightmap and probe output and
-  leaves its faces' emissive term unchanged (research.md O2).
+- [ ] With `_falloff_range` set, doubling an area light's `light` doubles its
+  lightmap and probe output and leaves its faces' emissive term unchanged
+  (research.md O2).
 - [ ] Two otherwise equal area lights with the same diffuse map, one on a
   `neon_` texture with a white `_e` map and one on a plain texture with a red
   `_e` map, produce byte-identical lightmap, SH and scatter sections.
@@ -308,8 +323,7 @@ Glow and light identity (orderings in `research.md` §Pin table):
   skylight, against the same patch lit by a 4 × 4 grid of point lights.
 - [ ] Hallway map, recorded in `plan.md`: penumbra RMS noise against a 256-ray
   reference at 32 and 64 escalated rays, 1–3 m from the panel. At the global
-  count of 32 the penumbra looks no noisier than at 64 in the owner's A/B; a
-  shortfall is answered by sample placement, not a per-type count.
+  count of 32 the penumbra looks no noisier than at 64 in the owner's A/B.
 - [ ] Owner A/B: skylight room against the template grid. No hot spots or wall
   ripple, and no visible edge at the reach cutoff.
 - [ ] A scripted flicker: the glow and the room light move together frame for
@@ -329,6 +343,8 @@ Glow and light identity (orderings in `research.md` §Pin table):
     light_contribution_lambert, bounce_contribution}`,
     `sh_bake/probe.rs::bake_probe_direct_rgb_posed`.
   - Mover probe channel: `mover_probe_channel/{direct,visibility,posed_scene}`.
+  - Animated bounce: `sh_bake/bounce.rs` (`soft_visibility_one_sample`),
+    `delta_sh_bake.rs`, and the range guard `light_eval::light_reaches_point`.
   - Billboard scatter: `billboard_direct_scatter_bake`.
 - **Two spheres.** The emitter sphere replaces `light_size` in
   `lightmap_layer/shaft_cull.rs::ShaftCull::new` and the mover occluder tests
@@ -337,8 +353,8 @@ Glow and light identity (orderings in `research.md` §Pin table):
   key's geometry slice (O10).
 - **Solid-angle sampler.** Ureña et al. 2013 for rectangles, an Arvo 1995 fan
   for other convex polygons, picking triangles by solid angle. Each texel sample
-  carries the weight cosθ_r at the texel centre; probe samples feed the
-  control-variate term from the same sampler.
+  carries the weight cosθ_r at the texel centre, and 0 when it lies on a
+  polygon the texel faces away from (O20).
 - **Probe shadowing.** A control-variate term on the 4-ray set, with all-visible
   and none-visible fast paths. The scalar ratio taken from L0 is the cheapest
   fallback (`research.md` §3).
@@ -349,8 +365,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   Key it apart from the count-keyed point/spot snap in `SoftProbes::new`.
 - **Self-occlusion.** Lift each shadow-ray target along its face normal by the
   tracer tolerance τ. The segment then never crosses the emitter's plane, and
-  the lift stays inside the emitter sphere's slack (`research.md` §4). Larger
-  prior-art lifts break that containment.
+  the lift stays inside the emitter sphere's slack (`research.md` §4). The
+  receiver floor's centre probe aims at the lifted point of a faced polygon
+  nearest the centroid's projection, not at `hard_ray_target`'s origin (O19).
 - **Cache digest.** Add the polygon to `surface_radiance/layer.rs::LightDigest::of`
   by hand. Keep `_glow` out of every bake key.
 - **Promotion.** Animated promotion

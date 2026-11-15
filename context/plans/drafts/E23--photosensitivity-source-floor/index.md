@@ -26,6 +26,8 @@ A gap U1 leaves open by decision. U1 ships a photosensitivity floor only on the 
 
 - **Emissive volumes** (`plans/ready/emissive-volumes`): each `emissive_volume` is a per-value clamp source through `flash_clamp`, fed the shown glow (brightest member texture's strength × baked mean glow luminance × volume factor, capped at 1) with glow colour × volume colour as the clamp's colour. Left here: colour-only strobes (white ↔ blue at high strength), per-texel variation inside one texture, the bloom halo such strobes drive, and any shared budget across sources.
 
+- **Area lights** (`plans/ready/area-lights`): `light_area` glow follows its light's animation, and no emissive-volume clamp sees it. This brief clamps it through the light's animation, fed the faces' shown glow (texture strength × `_glow` × baked glow luminance). Until then, an animated area light's glow and room light are unlimited.
+
 ## Questions for the session
 
 - **Combined sources.** Two sources can each be within limits and strobe together (a light and a UI panel in phase). Is a per-source floor enough, or does a shared CPU budget across primitives earn its cost?

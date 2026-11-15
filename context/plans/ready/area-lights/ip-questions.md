@@ -32,7 +32,7 @@ Bake runs offline in the level compiler. Runtime is the forward renderer.
   - L1 from the irradiance vector.
   - L2 by Wang & Ramamoorthi 2018 or by quadrature.
 - Reach uses the window max(0, 1 − (d/R)⁴)² (Karis 2013), with d measured from the polygon.
-- At runtime, an emitting face's glow is emissive texel × authored glow scalar × the light's live brightness and colour.
+- At runtime, an emitting face's glow is emissive texel × texture strength × authored glow scalar × the light's live brightness and colour.
   - It reads the same per-light descriptor that scales the baked animated lightmap, on the same frame.
   - Animated baked lights are per-light weight maps × runtime curves (Quake lightstyle prior art).
 

@@ -5,11 +5,11 @@ Brief · resumable · reads: `context/lib/build_pipeline.md` §Compiler pipeline
 ## Problem
 The owner wants a static light that is a surface. A designer building a big
 ceiling skylight or a glowing light-table floor has no way to make it light the
-room: emissive maps light nothing. The workaround is a grid of point
-lights, which leaves hot spots on nearby surfaces. Under a 4 × 4 m panel a single
-point reads 6.1× too bright at 1 m (`research.md` §1), and every copy adds
-lightmap bake cost. When this is done, a designer can draw a brush entity, give
-its emitting faces an `_e` map, and set a colour and brightness. Those faces glow
+room: emissive maps light nothing. The workaround is a grid of point lights,
+which leaves hot spots on nearby surfaces. Under a 4 × 4 m panel a single point
+reads 6.1× too bright at 1 m (`research.md` §1), and every copy adds lightmap
+bake cost. When this is done, a designer can draw a brush entity, give its
+emitting faces an `_e` map, and set a colour and brightness. Those faces glow
 and light the room as one soft-shadowed area light: in the lightmap, in bounce,
 and on entities. A script can pulse or recolour it, and the glow moves with the
 light.
@@ -85,25 +85,31 @@ light.
 - **Glow follows the light.** Each emitting face draws `_e` × its texture
   strength × `_glow` × the light's live colour × its live brightness multiplier,
   on the same frame as its lighting. At rest, the live colour is `_color`, so a
-  red light's white pane glows red. Glow is drawn for static lights too.
-  - Builds on `plans/ready/emissive-volumes`, which retires the `neon_` prefix:
-    texture strength is the author's per-texture value from `materials.toml`
-    (1.0 by default), and `_glow` scales it per light. This brief builds after
-    that one.
+  red light's white pane glows red. Glow is drawn for static lights too,
+  `_bake_only` ones included.
+  - Builds after `plans/ready/emissive-volumes`: texture strength is that
+    brief's per-texture strength, and `_glow` scales it per light.
   - `_glow` is an authored multiplier, default 1.0, independent of `light`, so a
     game can pair a dim glow with strong cast light, or the reverse
-    (`context/lib/index.md` §2, Defaults for novices, controls for experts).
-    Values ≥ 0 are accepted with no upper clamp; a negative value fails the
-    build.
-  - The light is its faces' one glow controller: an `emissive_volume` skips
-    `light_area` faces. Both briefs share one per-face glow table and one cap
-    of 256 entries per map, volumes and area lights together.
-  - Reflection capture draws `light_area` faces at texture strength × `_glow` ×
-    `_color`, an animated light's at its cycle mean, as capture treats the light
-    itself (`resource_management.md` §5.2). `_glow` enters the reflection-capture
-    key and no other bake key.
-  - Area-light glow follows light animation, so E23's source floor clamps it
-    through the light's animation, not through the emissive-volume clamp.
+    (`context/lib/index.md` §2, Defaults for novices, controls for experts). It
+    follows emissive-volumes' key rules: a negative value reads 0, a non-finite
+    one 1.0, and one past the ceiling the ceiling, each warning by key name. The
+    ceiling keeps texture strength × `_glow` × a curve peak finite in the scene
+    target.
+  - The glow set is every render face derived from the entity's `_e` sides,
+    including slivers the emit set drops (O8), so no strip of the pane leaves
+    its light.
+  - The light is its faces' one glow controller: an `emissive_volume` never
+    takes a `light_area` face. Area lights add entries to emissive-volumes' glow
+    table and count against its cap (Wire format). A volume whose every `_e`
+    face an area light took warns, naming that light as the faces' controller.
+  - Reflection capture draws a static light's faces in the static term at
+    texture strength × `_glow` × `_color`, and an animated light's faces in that
+    light's per-light term, so the reflection dims and pulses with the light and
+    a dark panel reflects dark (`resource_management.md` §5.2). `_glow` enters
+    the reflection-capture key and no other bake key.
+  - `_bake_only` with `_start_inactive` warns: the panel stays dark and no
+    script can reach it.
 - **`_start_inactive` reserves the animated bake.** On an area light, the key
   means the light starts dark, faces and room together, and a script or mod
   reaction can light it. It takes the same animated reservation `_animated 1`
@@ -143,6 +149,14 @@ light.
   - Emissive bounce from ordinary emissive faces: the gi-rtx-lite ruling stays
     open (above).
   - Glow outside `light_area` faces: `plans/ready/emissive-volumes` owns it.
+  - Binding other faces to a light's animation (a lamp's bulb texture): a later
+    front end. The id 60 entry, a compose slot and a face list, already allows
+    it.
+  - Flash limiting of area-light glow and room light:
+    `drafts/E23--photosensitivity-source-floor` owns light animation. Until it
+    lands, an animated area light's glow and room light are unlimited with the
+    flash limiter on (O30), a larger stimulus than a clamped sign. The owner
+    accepts this gap, and `docs/level_design.md` says so.
   - Texture-coloured emission. The cast light's colour is `_color`, so one
     texture can serve lights of different colours.
 
@@ -297,8 +311,8 @@ Placement, culls and keys:
   differs only in its version; id 60 only in its version and an empty
   area-light list.
 - [ ] Emissive (id 60) v2 round-trips a volume list and an area-light list. The
-  loader rejects version 1; an area-light entry whose light reference is
-  invalid; a negative or non-finite glow; a face index out of range,
+  loader rejects version 1; a compose slot out of range that is not the static
+  sentinel; a negative, non-finite or past-ceiling glow, colour or intensity; a face index out of range,
   descending, or owned by a volume or another area light; and volume and
   area-light counts past the shared cap.
 - [ ] A sub-second area-light fixture joins `GATE_FIXTURES`, profiled first, and
@@ -331,8 +345,27 @@ Glow and light identity (orderings in `research.md` §Pin table):
   With `_glow` at 0, 0.5 and 8 the emissive term scales by that factor,
   reflection capture draws the faces at texture strength × `_glow` × `_color`,
   id 60 carries the new `_glow`, and every section but ReflectionProbes (id 54)
-  and Emissive (id 60) stays byte-identical. A negative `_glow` fails the
-  build.
+  and Emissive (id 60) stays byte-identical. A negative `_glow` warns and reads
+  0; a non-finite one reads 1.0.
+- [ ] A texture at the strength ceiling under an area light whose `_glow` is at
+  its ceiling and whose brightness curve peaks above 1 presents finite glow and
+  finite bloom.
+- [ ] A static `_bake_only` area light's faces glow steadily at `_e` × texture
+  strength × `_glow` × `_color`, and its id 60 entry carries the static
+  sentinel. For an area light with an AlphaLights record, its entry's colour
+  and reference intensity equal that record's. `_bake_only` with
+  `_start_inactive` warns.
+- [ ] A sliver piece the emit set drops still glows with its light and is never
+  a volume member (research.md O8).
+- [ ] Reflection capture: a static area light's faces enter the static term,
+  an animated one's its per-light term. Scripted to 0, an animated panel's
+  reflected faces go dark with the room, and a `_start_inactive` panel reflects
+  dark until lit. A probe seeing five animated lights, one a bright panel,
+  keeps the four largest shares, glow included, and the covered-share
+  diagnostic reports the one displaced (research.md O26).
+- [ ] A volume whose every `_e` face an area light took warns, naming that
+  light; a volume with other `_e` faces stays silent; a volume with none keeps
+  its own warning (research.md O29).
 - [ ] A `colorShift` moves the glow's colour and the room's colour together.
 - [ ] With `_falloff_range` set, doubling an area light's `light` doubles its
   lightmap and probe output and leaves its faces' emissive term unchanged
@@ -405,10 +438,6 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - [ ] A scripted flicker: the glow and the room light move together frame for
   frame (research.md O13).
 - [ ] Entities walking under the skylight are lit like the walls beside them.
-- [ ] The roadmap "surface lights" entry reads as a texture-keyed front end on
-  the area-light type that owns the texture-level bounce multiplier, and the
-  gi-rtx-lite "Emissive bounce" record carries the line excluding `light_area`
-  faces.
 
 ## Path
 - **Chokepoints.** Add the polygon arm at these, by symbol:
@@ -499,6 +528,15 @@ AlphaLights (id 18) v5, little-endian throughout, mirroring v4:
   `shadow_type` = 0.
 - A loader rejects any version other than 5 and any unknown type value.
 
-Emissive (id 60) v2, extending `plans/ready/emissive-volumes`' v1 layout unchanged up to its end, little-endian:
-- After the volume records: `u32 area_light_count`, then per area light in AlphaLights order: `u32` AlphaLights index, `f32` glow (`_glow`), `u32 face_count`, then `face_count × u32` Geometry face indices, ascending, each owned by no volume and no other area light.
-- `volume_count + area_light_count` ≤ 256. A loader rejects any version other than 2.
+Emissive (id 60) v2, little-endian, extending `plans/ready/emissive-volumes`'
+v1 layout unchanged up to its end:
+- After the volume records: `u32 area_light_count`, then per area light in
+  entity order: `u32` compose slot (AnimatedBakedLights index, or `0xFFFF_FFFF`
+  for a static light), `f32[3]` rest glow colour (`_color`, linear), `f32`
+  reference intensity (the authored `light` an animated glow divides out; at 0
+  the glow takes colour × curve directly), `f32` glow (`_glow`), `u32
+  face_count`, then `face_count × u32` Geometry face indices, ascending, each in
+  range and owned by no volume and no other area light. The face list is the
+  glow set, slivers included.
+- The cap is emissive-volumes': `volume_count + area_light_count` ≤ 256. A
+  loader rejects any version other than 2.

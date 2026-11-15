@@ -51,6 +51,10 @@ light.
   `lightmap_layer` partition record does not change. Area lights take the global
   escalated sample count (`--soft-shadow-samples`), with no per-type count
   (`research.md` §2).
+  - The weighting is the Heitz–Hill–McGuire ratio estimator over solid-angle
+    samples. It matched projected-solid-angle sampling for noise in
+    measurement, and probes need solid-angle samples anyway, so one sampler
+    serves texels and probes (`research.md` §2).
 - **Probe bakes project over the polygon, not along one direction.** This covers
   direct SH, billboard scatter and the mover probe channel. Unshadowed
   coefficients are analytic; shadowing never applies a per-coefficient ratio
@@ -315,10 +319,10 @@ Glow and light identity (orderings in `research.md` §Pin table):
   (`posed_scene`, `visibility`). One reach-sphere accessor serves the
   `falloff_range` cull readers (`research.md` §Grounding), including the layer
   key's geometry slice (O10).
-- **Visibility weighting.** Two equal options (`research.md` §2): Heitz–Hill–
-  McGuire ratio estimator over solid-angle samples (Ureña for rectangles, an Arvo
-  fan otherwise), or projected-solid-angle sampling (Peters 2021) with plain
-  counting. Pick after the patent search.
+- **Solid-angle sampler.** Ureña et al. 2013 for rectangles, an Arvo 1995 fan
+  for other convex polygons, picking triangles by solid angle. Each texel sample
+  carries the weight cosθ_r at the texel centre; probe samples feed the
+  control-variate term from the same sampler.
 - **Probe shadowing.** A control-variate term on the 4-ray set, with all-visible
   and none-visible fast paths. The scalar ratio taken from L0 is the cheapest
   fallback (`research.md` §3).
@@ -350,11 +354,10 @@ Glow and light identity (orderings in `research.md` §Pin table):
   polygon term cheaply. Its centre-aimed shadows are not this design.
 
 ## Open questions
-- Patent search on polygon area-light baking and on the visibility-weighting
-  options. A first pass (`ip-check.md`) found no filing that combines the
+- Patent search on polygon area-light baking and on ratio-estimator
+  visibility. A first pass (`ip-check.md`) found no filing that combines the
   design's elements, with no CPC or assignee sweep behind it. Its follow-up list
   and counsel's reading remain. — owner: owner / counsel — **blocks build**
-- Visibility weighting option, after the patent search. — **delegated**
 
 ## Boundary inventory
 

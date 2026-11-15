@@ -10,7 +10,8 @@ mod capture_receiver_controls;
 mod capture_support;
 
 use capture_support::{
-    capture_command, compile_dev_map, compile_dev_map_with, load_capture_rgba, workspace_root,
+    capture_command, compile_dev_map, compile_dev_map_whole_load_sh, load_capture_rgba,
+    workspace_root,
 };
 
 const CAPTURE_WIDTH: u32 = 64;
@@ -420,7 +421,7 @@ fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
     // Beside its source, so capture resolves the baked material cache rather
     // than placeholder resources (see `compile_dev_map`). The direct-light
     // control decodes id 45 whole, so the bake keeps its body.
-    let map_guard = compile_dev_map_with(&workspace, "spawner-test", true);
+    let map_guard = compile_dev_map_whole_load_sh(&workspace, "spawner-test");
     let map = map_guard.to_path_buf();
 
     let loaded = postretro_level_loader::load_prl(&map.to_string_lossy())

@@ -296,8 +296,7 @@ recomputing it. After all bakes and final section-presence decisions, that uncac
 addresses only the emitted SH sections. It runs before serialization in warm and cold
 builds. Pack then takes the SH mandatory bound from the chunks' node and row sets, emits
 id 49 with it, and emits id 50 from borrowed finalized SH sources when id 34 is present.
-Neither feeds a bake: global SH rays, coarsening, and legacy section bodies remain
-unchanged. Construction and validation borrow finalized metadata without cloning or
+Neither feeds a bake: global SH rays and coarsening remain unchanged. Construction and validation borrow finalized metadata without cloning or
 re-encoding whole lighting payloads.
 
 ### Progress reporting, controls, and logging
@@ -371,25 +370,25 @@ PRL header `version` is 4. Loading a file with any other version fails.
 | AnimatedLightChunks | 24 | When at least one animated-light chunk bakes a lit texel. Candidates are faces overlapping an animated light's influence sphere (no occlusion, facing, or cone test); after the weight-map bake, chunks with no lit texel are dropped from ids 24 and 25 and from the BVH leaf chunk ranges |
 | AnimatedLightWeightMaps | 25 | Paired 1:1 with id 24; per-texel weight maps for the compose pass, v5 compact and paged. Each animated face is one block, its chart placement rect, whose chart padding is a zero gutter. After the unlit-chunk cull, blocks pack in cell order (MaxRects per page, never revisiting earlier pages) into square, power-of-two pages of one size: at least the largest block, at least 1024² unless the bake layer is smaller, at most the bake-layer size; the fewest-bytes size wins, ties keeping the smaller page. A block table keys each block by its id-22 cell block and block-local texel origin, and maps it to its page and offset; chunk rects are in compact coordinates and keep their offset inside their block. The weights stay in static-lightmap texel space. The compiler never writes a packed layout larger than the identity layout (every block at its bake-layer position, one page per bake layer still holding a chunk, at the bake-layer size); the weight-map stage caches that identity layout. The VRAM budget (`page² × pages × 12 B` ≤ 1 GiB) is checked on the chosen layout. The build fails on a vertex shared between a block-owning face and another face, a bilinear footprint leaving its placement, or a block count over `ANIMATED_BLOCK_CAP`; with a placeholder static lightmap (no static baked lights) the vertex guards and stamping are skipped because vertices carry no lightmap UVs. Geometry (id 17) vertices carry the block id (`n + 1`, 0 = none) in their former pad field, stamped after the animated atlas repack. Loaders accept v5 only. In every build they reject a page size that is not a power of two holding the largest block, and an animated block that names a block past the id-22 table or leaves its cell block's extent. With a zero-block or absent id 22 the block-frame checks are skipped and the map renders without animated light |
 | LightTags | 26 | When at least one light carries a tag; one space-delimited tag-list string per AlphaLight record (empty string = untagged) |
-| DeltaShVolumes | 27 | When the map has at least one animated light; per-light sparse octahedral irradiance delta tiles, with a per-affinity-cell coarsening level. Body written only with `--whole-load-sh` or without id 50 (Whole-load SH bodies, below) |
+| DeltaShVolumes | 27 | When the map has at least one animated light; per-light sparse octahedral irradiance delta tiles, with a per-affinity-cell coarsening level (body: Whole-load SH bodies, below) |
 | DataScript | 28 | When `data_script` KVP present on `worldspawn`; compiled script bytes + original source path |
 | MapEntity | 29 | When the map has at least one non-light, non-worldspawn entity; per-entity classname, origin, angles, tags, and KVP bag for runtime classname dispatch |
 | FogVolumes | 30 | Always (leading `u16` version, then fog_pixel_scale and the volume list; 10-byte overhead when no fog_volume brushes present). Carries no gravity: level gravity lives in EnvironmentVolumes |
 | FogCellMasks | 31 | When at least one fog volume entity is present (fog_volume brush, fog_lamp, or fog_tube) |
 | TextureCacheKeys | 32 | Always; one 32-byte blake3 per TextureNames entry pointing at a `.prm` sidecar under `baked/materials/` |
 | SdfAtlas | 33 | When the map has SDF static occluder data |
-| OctahedralShVolume | 34 | When compiled with lighting; base indirect irradiance as layer-aware octahedral atlas tiles. Body written only with `--whole-load-sh` or without id 50 (Whole-load SH bodies, below) |
-| DirectShVolume | 35 | When the map has static baked lights; metadata-derived stored static-direct layer-aware octahedral irradiance for movers/skinned meshes and legacy billboard fallback; BC6H at rest; no depth moments (read from id 34); same id 34 node set, slot order, geometry, format, and payload contract as OctahedralShVolume; section-internal `DIRECT_SH_VOLUME_VERSION`. Body written only with `--whole-load-sh` or without id 50 (Whole-load SH bodies, below) |
+| OctahedralShVolume | 34 | When compiled with lighting; base indirect irradiance as layer-aware octahedral atlas tiles (body: Whole-load SH bodies, below) |
+| DirectShVolume | 35 | When the map has static baked lights; metadata-derived stored static-direct layer-aware octahedral irradiance for movers/skinned meshes and legacy billboard fallback; BC6H at rest; no depth moments (read from id 34); same id 34 node set, slot order, geometry, format, and payload contract as OctahedralShVolume; section-internal `DIRECT_SH_VOLUME_VERSION` (body: Whole-load SH bodies, below) |
 | NavMesh | 36 | When the map has walkable navigation; baked regions/portals for runtime pathfinding, then mover gate and link tables (§Navigation bake). Version 3; a version 2 section still loads, with no mover records and a rebake warning |
 | CellDrawIndex | 37 | When the BVH has non-empty leaves (omitted for zero-leaf maps); independent of portal presence. Per-cell CSR of owned BVH-leaf spans driving the runtime candidate cull (`rendering_pipeline.md` §7.1) |
 | Cells | 38 | Always; runtime visibility units, each grouping one or more compiler BSP leaves; one cell id space for portal endpoints, fog masks, BVH leaf `cell_id`, and diagnostics |
 | CellLocator | 39 | Always; point-to-cell decision tree used by runtime visibility and object placement diagnostics |
 | EntityShadowLights | 40 | When `DirectShVolume` and usable `DirectShDeltaVolumes` are emitted and the compiler selects at least one baked-tier static light for runtime entity-shadow promotion; ascending indices into `AlphaLights` |
-| DirectShDeltaVolumes | 41 | Required companion for `EntityShadowLights`; sparse per-selected-light direct octahedral irradiance deltas covering every selection index, with a per-affinity-cell coarsening level. Body written only with `--whole-load-sh` or without id 50 (Whole-load SH bodies, below) |
+| DirectShDeltaVolumes | 41 | Required companion for `EntityShadowLights`; sparse per-selected-light direct octahedral irradiance deltas covering every selection index, with a per-affinity-cell coarsening level (body: Whole-load SH bodies, below) |
 | ShadowmaskAtlas | 42 | When any lightmapped face admits an owner, independent of ids 40 and 41; per-face owner lights (up to four compact static spec-light indices per id-17 face) and their baked world-visibility masks. Format tag `SMB8`: an owner table, then up to one BC5 `.rg` group A and group B plane per id-22 block, in id-22 block order; an all-zero plane has no blob. Validated against ids 17, 18 and 22; a malformed section, an invalid owner table, a block count that differs from id 22's, or id 42 without id 22 is a hard load error (§ShadowmaskAtlas ownership) |
 | KinematicGeometry | 43 | Version 8 when the map has at least one `kinematic_mover`; origin-relative mover vertices/indices/face metadata, static spin/blocking authoring, closed-mover portal associations, carried dynamic-light links, mover sound keys, the crush damage type name, and `kinematic_waypoint` records |
 | TriggerVolumes | 44 | When the map has at least one `trigger_volume` or `switch`; trigger AABBs, direct commands, and named enter/exit events. `command` value 4 = `fire`; layout unchanged |
-| AnimatedDirectShDeltaVolumes | 45 | When the map has animated baked lights; sparse per-animated-light direct-SH delta tiles composed into the dynamic-receiver atlas, with a per-affinity-cell coarsening level. Body written only with `--whole-load-sh` or without id 50 (Whole-load SH bodies, below) |
+| AnimatedDirectShDeltaVolumes | 45 | When the map has animated baked lights; sparse per-animated-light direct-SH delta tiles composed into the dynamic-receiver atlas, with a per-affinity-cell coarsening level (body: Whole-load SH bodies, below) |
 | CellVisibility | 46 | Optional, versioned, strictly parsed baked Cell→Cell coupling relation: per-cell reachability component IDs plus canonically ordered coupled-pair distance/aperture graded records. Missing → conservative all-perceivable, no-graded-detail fallback. The relation is symmetric. Owed when runtime-masked couplings land: an armed ghost link couples the cells under its two volumes both ways, masked by armed state, never folded into a reachability component (`networking.md` §Current contract). Id 14 (`LeafPvs`) is a retired hole; do not reuse |
 | BillboardDirectScatterVolume | 47 | Optional dense normal-free direct-scatter base for billboards: `Rgba16Float` RGB plus binary validity alpha in the x-fastest id-34 probe order. Static-only maps omit it when no `static_light_map` source contributes. A map with animated-only `static_light_map` scatter entries may emit an all-zero RGB base solely as the required grid/validity anchor for a valid id-48 companion. Invalid or missing data selects legacy billboard direct lighting |
 | AnimatedBillboardDirectScatterDeltaVolumes | 48 | Optional dense animated billboard direct-scatter deltas: reuses id-45 descriptor mapping and CSR affinity layout, but stores fixed dense 4×4×4 `Rgba16Float` RGB deltas per CSR entry (reserved zero alpha). Required with id 47 whenever id 45 is present; a missing, invalid, or oversized pair selects legacy billboard direct lighting |
@@ -453,9 +452,10 @@ derivation runs in the staged parse on the engine load pool every load, so its c
 **Cluster SH payloads (id 50).** Id 50 is a validated, independently readable,
 cluster-major companion for ids 27/34/35/41/45, and for id 57's payload blocks once they
 pass their resident bars (id-57 paragraph below). It is emitted after id 49 only when id 34
-is present. Ids 47/48 remain whole-resident and do not appear in id 50. Id 50 duplicates
-the streamable payload deliberately: global BC6H atlas blocks cannot be gathered into
-independent cluster cells from legacy compressed bytes. Its source inventory, source
+is present. Ids 47/48 remain whole-resident and do not appear in id 50. In a default bake id 50 is the
+only copy of the streamable payload; a `--whole-load-sh` bake duplicates it in the source
+bodies (Whole-load SH bodies, below). Global BC6H atlas blocks cannot be gathered into
+independent cluster cells from legacy compressed bytes, so id 50 is built from the finalized sources. Its source inventory, source
 versions, index, and chunk hashes must match id 49 and the emitted legacy sections before
 any runtime-mode decision. Invalid id 50 rejects even when streaming is disabled. Sparse
 row records carry no role word. `requested_resident_bytes` covers every node and row the
@@ -463,7 +463,7 @@ chunk touches; clusters share storage, so the figures do not sum to a map total.
 id-49/id-50 levels default to bounded asynchronous residency; `off` selects the validated
 legacy whole-load path and `sync-proof` is the deterministic no-eviction test path.
 Id 50 leaves cache-stage epochs, sampler bindings, and sample taps intact; its source
-versions follow the sources' own (id 27 v7, id 34 v12, id 35 v5, ids 41 and 45 v5).
+versions record each source section's own version.
 Id 57's row block (kind 4) is an 8 B header (`u32` row count, `u32` reserved 0), then one 16 B row per covered listed cell
 (`u32` affinity cell, `u32` direct bytes, `u32` bounce bytes, `u32` reserved 0) with cells
 strictly ascending, then each row's payload in row order, direct (q, then own tiles) before
@@ -478,11 +478,12 @@ from id 50. Only the whole-load path, `off` or any load without id 50, reads bod
   The flag is packing only: no bake stage, cache key or fidelity, and `--release` does not
   imply it.
 - *Wire.* A body-presence flag ends each source's fixed header: 1 present, 0 omitted, any
-  other value rejected. An omitted body keeps every length and count at its full value;
+  other value rejected by every reader, so a bad value fails a streamed load and a
+  whole load alike. An omitted body keeps every length and count at its full value;
   id 34's tail follows its probe records directly.
 - *Whole load.* A level whose sources lack bodies fails with one named error, naming the
-  `--whole-load-sh` rebake, before any SH decode. It never takes a section's soft-disable
-  path.
+  `--whole-load-sh` rebake, before any SH decode. A current-version header with an invalid
+  flag value fails the same way. Neither takes a section's soft-disable path.
 - *Why not rebuild from id 50.* The legacy atlas packs tiles at a 6-texel pitch, so its
   BC6H blocks straddle tiles; id 50 isolates each tile in an 8×8 cell. Rebuilding means a
   load-time BC6H decode and re-encode, and `off` would stop being an independent reference
@@ -525,7 +526,7 @@ a cell.
 
 **Delta tile layout (ids 27, 41, 45):** Each octahedral texel stores three little-endian f16 RGB halves. Probe validity comes from the section mask and kept set; delta texels carry no alpha. Disk payload and renderer storage-buffer layout are identical. Base atlases ids 34/35 keep their independent format, including alpha where their sampler contract needs it. Billboard scatter id 48 also keeps its independent four-half sample format.
 
-**Delta-section loader floor:** Each id 27, 41, and 45 raw payload must fit the 128 MiB storage-buffer binding floor. Loader checks the body length the section's metadata implies, before decoder allocation, so a level judges the same with or without its body on the wire. An over-floor id 27 or id 45 is independently disabled, so compose falls back to its base contribution. An over-floor id 41 clears id 41 and its paired `EntityShadowLights` selection (id 40), preserving the all-or-nothing promotion contract. This loader safety floor is separate from the compiler's post-compaction 256 MiB aggregate cap across ids 27/41/45. The compiler also reports, but does not reject, payload above the 64 MiB authoring target.
+**Delta-section loader floor:** Each id 27, 41, and 45 raw payload must fit the 128 MiB storage-buffer binding floor. On the whole-load path, after the body gate has refused omitted bodies, the loader checks the section's table length against the floor before decoder allocation. A streamed level is never floor-checked, with or without bodies. An over-floor id 27 or id 45 is independently disabled, so compose falls back to its base contribution. An over-floor id 41 clears id 41 and its paired `EntityShadowLights` selection (id 40), preserving the all-or-nothing promotion contract. This loader safety floor is separate from the compiler's post-compaction 256 MiB aggregate cap across ids 27/41/45. The compiler also reports, but does not reject, payload above the 64 MiB authoring target.
 
 **Animated billboard-scatter cap:** Id 48 has an independent 64 MiB maximum encoded-section size because every retained CSR entry expands to a dense 64-probe `Rgba16Float` block even when id 45's compact payload is empty. Compiler predicts this size from finalized id 45 before scatter cache lookup or bake and withholds ids 47/48 together on overage; pack repeats the guard. Loader validates container bounds, then soft-drops an over-cap id 48 before decode and preserves id 45. Renderer independently checks every id-48 storage buffer against the active device's storage-binding and single-buffer limits; failure binds the dummy scatter texture and selects legacy billboard lighting. The cap is policy only and adds no wire field or version change. Valid empty id-45/id-48 CSR pairs remain present so compose can base-seed.
 

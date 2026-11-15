@@ -89,6 +89,34 @@ fn decode_error(id: SectionId, bytes: &[u8]) -> Option<FormatError> {
     }
 }
 
+/// The flagged section decoded in memory and re-encoded with its body omitted.
+fn omitted_from_whole(id: SectionId, whole: &[u8]) -> Vec<u8> {
+    let omitted = ShBodyPresence::Omitted;
+    match id {
+        SectionId::DeltaShVolumes => DeltaShVolumesSection::from_bytes(whole)
+            .expect("decode id 27")
+            .to_bytes_with_body(omitted),
+        SectionId::OctahedralShVolume => OctahedralShVolumeSection::from_bytes(whole)
+            .expect("decode id 34")
+            .try_to_bytes_with_body(omitted)
+            .expect("encode id 34"),
+        SectionId::DirectShVolume => DirectShVolumeSection::from_bytes(whole)
+            .expect("decode id 35")
+            .try_to_bytes_with_body(omitted)
+            .expect("encode id 35"),
+        SectionId::DirectShDeltaVolumes => DirectShDeltaVolumesSection::from_bytes(whole)
+            .expect("decode id 41")
+            .to_bytes_with_body(omitted),
+        SectionId::AnimatedDirectShDeltaVolumes => {
+            AnimatedDirectShDeltaVolumesSection::from_bytes(whole)
+                .expect("decode id 45")
+                .try_to_bytes_with_body(omitted)
+                .expect("encode id 45")
+        }
+        other => panic!("{other:?} carries no SH body"),
+    }
+}
+
 fn bake_both() -> (tempfile::TempDir, Sections, Sections) {
     let dir = tempfile::tempdir().expect("create temp dir");
     let default = bake(dir.path(), "default", &[]);
@@ -134,6 +162,10 @@ fn default_bake_omits_the_five_sh_bodies_and_whole_load_sh_writes_them() {
         assert!(
             decode_error(id, present).is_none(),
             "{id:?} decodes whole under --whole-load-sh"
+        );
+        assert!(
+            *omitted == omitted_from_whole(id, present).as_slice(),
+            "{id:?}: the default section is the flagged one with the flag cleared and the body cut"
         );
     }
 }

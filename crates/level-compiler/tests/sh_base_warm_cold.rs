@@ -469,7 +469,24 @@ fn whole_load_sh_keys_no_stage_and_warm_equals_release() {
         std::fs::read(&warm.prl).unwrap() == std::fs::read(&release.prl).unwrap(),
         "a warm --whole-load-sh build differs from --release --whole-load-sh"
     );
-    assert!(warm.id_34.len() > warm_default.id_34.len());
+    // Without the flag id 34 is the same section less its body: clear the
+    // flag (u32 at 84) and cut `atlas_len` (u32 at 80) bytes after the
+    // 88-byte header and the 8-byte probe records.
+    let u32_at = |bytes: &[u8], at: usize| {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+    };
+    let whole = &warm.id_34;
+    let probes = u32_at(whole, 28) * u32_at(whole, 32) * u32_at(whole, 36);
+    let body_at = 88 + 8 * probes;
+    let atlas_len = u32_at(whole, 80);
+    assert_eq!(u32_at(whole, 84), 1, "the flagged id 34 carries its body");
+    let mut stripped = whole[..body_at].to_vec();
+    stripped.extend_from_slice(&whole[body_at + atlas_len..]);
+    stripped[84..88].copy_from_slice(&0u32.to_le_bytes());
+    assert!(
+        stripped == warm_default.id_34,
+        "default id 34 is not the flagged section less its body"
+    );
     assert!(
         warm.sh_payloads() == warm_default.sh_payloads(),
         "the flag moved id 50"

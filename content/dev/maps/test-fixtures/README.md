@@ -19,7 +19,7 @@ test decodes those sections whole from this fixture, and the level then also
 loads under `POSTRETRO_SH_STREAMING=off`.
 
 For the deterministic-bake check, make two `--no-cache` outputs in temporary
-paths and compare them with `cmp -s`; they must also match this fixture byte
+paths with the same flags as the command above, `--whole-load-sh` included, and compare them with `cmp -s`; they must also match this fixture byte
 for byte. The fixture preserves a near-side resident pin, a far-side priority
 of 3, and a seam whose far endpoint is unpinned so the closed-door controller
 test can assert `SeamWarm` exactly.

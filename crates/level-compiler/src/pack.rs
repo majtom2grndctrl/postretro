@@ -1138,6 +1138,41 @@ mod tests {
         }
     }
 
+    /// One affinity cell, one light, every probe valid: a nonempty body for the
+    /// id 27 and id 45 body checks.
+    fn one_cell_animated_delta() -> AnimatedDirectShDeltaVolumesSection {
+        use postretro_level_format::delta_sh_volumes::{
+            DEFAULT_DELTA_PROBE_F16_STRIDE, PROBES_PER_CELL,
+        };
+
+        AnimatedDirectShDeltaVolumesSection {
+            affinity_dims: [1, 1, 1],
+            animation_descriptor_indices: vec![0],
+            valid_probe_masks: vec![u64::MAX],
+            cell_levels: vec![0u8; 1],
+            affinity_offsets: vec![0, 1],
+            affinity_lights: vec![0],
+            delta_subblocks: vec![0; PROBES_PER_CELL * DEFAULT_DELTA_PROBE_F16_STRIDE],
+            ..minimal_animated_direct_sh_delta_volumes()
+        }
+    }
+
+    fn one_cell_delta() -> DeltaShVolumesSection {
+        let animated = one_cell_animated_delta();
+        DeltaShVolumesSection {
+            affinity_factor: animated.affinity_factor,
+            affinity_dims: animated.affinity_dims,
+            tile_dimension: animated.tile_dimension,
+            tile_border: animated.tile_border,
+            animation_descriptor_indices: animated.animation_descriptor_indices,
+            valid_probe_masks: animated.valid_probe_masks,
+            cell_levels: animated.cell_levels,
+            affinity_offsets: animated.affinity_offsets,
+            affinity_lights: animated.affinity_lights,
+            delta_subblocks: animated.delta_subblocks,
+        }
+    }
+
     fn minimal_animated_direct_sh_delta_volumes() -> AnimatedDirectShDeltaVolumesSection {
         AnimatedDirectShDeltaVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
@@ -1690,6 +1725,8 @@ mod tests {
             light_indices: vec![0],
         };
         let delta = minimal_direct_sh_delta_volumes();
+        let animated_delta = one_cell_delta();
+        let animated_direct = one_cell_animated_delta();
         pack_and_write_portals(
             &output,
             &sample_geo_result(),
@@ -1715,7 +1752,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(&animated_delta),
             None,
             None,
             &FogVolumesSection::default(),
@@ -1726,7 +1763,7 @@ mod tests {
             None,
             Some(&sample_cell_draw_index_section()),
             None,
-            None,
+            Some(&animated_direct),
         )
         .expect("pack should succeed");
 
@@ -1746,10 +1783,14 @@ mod tests {
         let base = section(SectionId::OctahedralShVolume);
         let direct_bytes = section(SectionId::DirectShVolume);
         let delta_bytes = section(SectionId::DirectShDeltaVolumes);
+        let id_27 = section(SectionId::DeltaShVolumes);
+        let id_45 = section(SectionId::AnimatedDirectShDeltaVolumes);
         for (id, bytes) in [
             (SectionId::OctahedralShVolume, &base),
             (SectionId::DirectShVolume, &direct_bytes),
             (SectionId::DirectShDeltaVolumes, &delta_bytes),
+            (SectionId::DeltaShVolumes, &id_27),
+            (SectionId::AnimatedDirectShDeltaVolumes, &id_45),
         ] {
             assert_eq!(
                 read_sh_body_presence(id, bytes).expect("flag reads"),
@@ -1774,6 +1815,18 @@ mod tests {
                 .expect("id 41 decodes whole")
                 .delta_subblocks,
             delta.delta_subblocks
+        );
+        assert_eq!(
+            DeltaShVolumesSection::from_bytes(&id_27)
+                .expect("id 27 decodes whole")
+                .delta_subblocks,
+            animated_delta.delta_subblocks
+        );
+        assert_eq!(
+            AnimatedDirectShDeltaVolumesSection::from_bytes(&id_45)
+                .expect("id 45 decodes whole")
+                .delta_subblocks,
+            animated_direct.delta_subblocks
         );
     }
 

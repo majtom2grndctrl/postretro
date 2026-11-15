@@ -52,8 +52,8 @@ streaming reads it.
 
 ### After the flag
 
-Same map and command with the `--whole-load-sh` build (warm cache from the
-before bake). Ids 27 and 45 are absent on this map.
+Same map and command with the `--whole-load-sh` build on branch
+`claude/gallant-hypatia-grxfto` (warm cache from the before bake). Ids 27 and 45 are absent on this map.
 
 | Id | Before | Default (bodies omitted) | `--whole-load-sh` |
 | --- | ---: | ---: | ---: |
@@ -87,6 +87,9 @@ before bake). Ids 27 and 45 are absent on this map.
   imply the flag, because warm and `--release` builds must bake the same bytes.
   `off` refuses a level without bodies with one named error that names the
   rebake.
+- **Write smaller: not pursued.** The opt-in flag is the "written smaller by
+  default" outcome: the default bake writes no bodies, and a body written under
+  the flag is the full one.
 - **No player path reads the bodies.** `off` has no automatic fallback; it is a
   dev and test mode, so the default costs players nothing. Dev and test runs
   under `off` opt in with the flag.

@@ -18,7 +18,7 @@ mod capture_support;
 #[allow(dead_code)]
 mod mover_capture_support;
 
-use capture_support::{compile_dev_map, compile_dev_map_with};
+use capture_support::{compile_dev_map, compile_dev_map_whole_load_sh};
 use mover_capture_support::{
     Pose, Run, Scene, ScreenBox, frame_mean, luma, masked_mean, max_channel_delta, read_map,
     sibling_map, staticize, with_entity, without_channel,
@@ -151,8 +151,8 @@ fn closet_pool_pixels(pose: Pose) -> impl Fn(u32, u32) -> bool {
 fn k1_closet_closed_reads_as_dark_as_the_static_door_and_open_reads_as_stripped() {
     let run = Run::new();
     // Both modes run on each map, and `off` loads the whole-load SH bodies.
-    let closet = compile_dev_map_with(&run.workspace, "mover-closet", true);
-    let reference = compile_dev_map_with(&run.workspace, "mover-closet-static-door", true);
+    let closet = compile_dev_map_whole_load_sh(&run.workspace, "mover-closet");
+    let reference = compile_dev_map_whole_load_sh(&run.workspace, "mover-closet-static-door");
     let stripped = without_channel(&run.workspace, &closet, "mover-closet-no-id57", false);
     let mut misses = Vec::new();
 
@@ -369,8 +369,8 @@ fn k2_setpiece_wall_closed_darkens_the_held_receiver_like_the_static_wall() {
 fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
     let run = Run::new();
     // The `off` captures load the whole-load SH bodies.
-    let closet = compile_dev_map_with(&run.workspace, "mover-closet", true);
-    let setpiece = compile_dev_map_with(&run.workspace, "mover-setpiece", true);
+    let closet = compile_dev_map_whole_load_sh(&run.workspace, "mover-closet");
+    let setpiece = compile_dev_map_whole_load_sh(&run.workspace, "mover-setpiece");
     let both = vec![(SETPIECE_WALL, 0.5), (SETPIECE_ROOM, 0.5)];
     let cases: [MidTravel; 5] = [
         (

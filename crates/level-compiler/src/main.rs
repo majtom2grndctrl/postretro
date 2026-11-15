@@ -810,8 +810,9 @@ pub struct Args {
     uncompressed_irradiance: bool,
     /// When true, write the bodies of ids 27, 34, 35, 41 and 45 (the SH
     /// atlases and delta tiles), which only `POSTRETRO_SH_STREAMING=off`
-    /// reads. Off by default: the streaming loader takes that payload from
-    /// id 50, so the bodies are written without. Packing only — no stage key
+    /// reads. Off by default: id 50 carries the payload streaming reads, so
+    /// the bodies are omitted whenever id 50 is emitted; a pack without id 50
+    /// always writes them. Packing only — no stage key
     /// folds it, and `--release` does not imply it.
     whole_load_sh: bool,
     /// The probe depth tile range id 59 and the mover probe channel's live

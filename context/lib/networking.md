@@ -440,7 +440,8 @@ policies govern resolution:
   release does. A client that has never sent a command resolves
   to nothing — its pawn holds its authoritative pose, yet is present for triggers and
   touch from spawn: the host's per-tick player set is every owned remote pawn plus the host's own, not
-  the pawns with a command this tick. Clean loopback reaches the empty
+  the pawns with a command this tick. A host without a pawn of its own never borrows a client's:
+  host input moves nothing, and no client's pawn stands in as the host's player. Clean loopback reaches the empty
   frontier at its buffer-empty edge and freezes exactly as before; a lost tick with newer
   data buffered yields. (The frontier test is exact: at the gap decision, the prior advance's
   stale-drop and intake's stale-check guarantee `pending` holds only commands newer than the

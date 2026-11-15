@@ -1048,8 +1048,10 @@ impl EntityRegistry {
 
     /// Resolve the pawn driven by local movement input. A live marked pawn wins when
     /// it carries `PlayerMovement`; otherwise older maps and fixtures fall back to the
-    /// first movement pawn in registry order. This selects identity only. Callers apply
-    /// their own Health, Transform, camera, or presentation requirements afterward.
+    /// first movement pawn in registry order. The fallback never names a pawn another
+    /// seat owns: seat 0 is the local seat, so a host without a pawn of its own has no
+    /// local pawn rather than borrowing a client's. This selects identity only. Callers
+    /// apply their own Health, Transform, camera, or presentation requirements afterward.
     pub fn local_player_movement_pawn(&self) -> Option<EntityId> {
         if let Some(id) = self.local_player_pawn()
             && self.has_component_kind(id, ComponentKind::PlayerMovement) == Ok(true)
@@ -1058,8 +1060,8 @@ impl EntityRegistry {
         }
 
         self.iter_with_kind(ComponentKind::PlayerMovement)
-            .next()
             .map(|(id, _)| id)
+            .find(|id| self.seat_for_pawn(*id).is_none_or(|seat| seat == Seat(0)))
     }
 
     /// Attach the per-placement KVP bag (authored on the source `.map` entity)
@@ -2300,6 +2302,31 @@ mod tests {
             Some(first),
             "a marker without movement does not replace the legacy movement fallback"
         );
+    }
+
+    #[test]
+    fn local_player_movement_pawn_fallback_skips_pawns_other_seats_own() {
+        let mut registry = EntityRegistry::new();
+        let joiner = spawn_test_movement_pawn(&mut registry);
+        registry.bind_pawn_seat(joiner, Seat(3));
+        assert_eq!(
+            registry.local_player_movement_pawn(),
+            None,
+            "a host without a pawn of its own borrows no client's"
+        );
+
+        let host = spawn_test_movement_pawn(&mut registry);
+        registry.bind_pawn_seat(host, Seat(0));
+        assert_eq!(registry.local_player_movement_pawn(), Some(host));
+
+        let unseated = spawn_test_movement_pawn(&mut registry);
+        registry.clear_pawn_seat(host);
+        assert_eq!(
+            registry.local_player_movement_pawn(),
+            Some(host),
+            "an unseated pawn still qualifies, in registry order"
+        );
+        assert_ne!(unseated, host);
     }
 
     #[test]

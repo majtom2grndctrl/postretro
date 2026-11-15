@@ -38,7 +38,8 @@ impl Fixture {
         fixture
     }
 
-    /// A host whose own pawn is gone, so the registry's local fallback names a client's.
+    /// A host whose own pawn is gone. The registry's local fallback skips a
+    /// joiner bound to its seat; an unseated one is left for the tick's guard.
     fn without_host_pawn() -> Self {
         Self {
             registry: Rc::new(RefCell::new(EntityRegistry::new())),
@@ -302,6 +303,45 @@ fn a_host_without_a_pawn_never_lists_a_joiner_as_local() {
     assert_eq!(
         edges(&fixture.tick(&[(7, pawn)]), TriggerEventEdge::Enter),
         vec![(plate, PlayerId::Remote(7))],
-        "the registry's local fallback names the joiner, which enters once, as remote"
+        "the registry's local fallback names the unseated joiner, which enters once, as remote"
+    );
+}
+
+#[test]
+fn a_host_without_a_pawn_never_steps_a_seated_joiner_with_host_input() {
+    let mut fixture = Fixture::without_host_pawn();
+    let spawn = Vec3::new(0.0, 5.0, 0.0);
+    let pawn = fixture.joiner(spawn);
+    {
+        let mut registry = fixture.registry.borrow_mut();
+        registry.bind_pawn_seat(pawn, postretro_foundation::Seat(7));
+        let mut movement = registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .clone();
+        postretro_foundation::enter_life_state(
+            &mut movement,
+            1,
+            &postretro_foundation::LifeStateProfile::default(),
+            0,
+        );
+        registry.set_component(pawn, movement).unwrap();
+    }
+
+    fixture.tick(&[(7, pawn)]);
+
+    let registry = fixture.registry.borrow();
+    let position = registry.get_component::<Transform>(pawn).unwrap().position;
+    assert!(
+        (position - spawn).length() < 1e-6,
+        "host input never steps the joiner, which holds its pose until its own command: {position:?}"
+    );
+    assert_eq!(
+        registry
+            .get_component::<PlayerMovementComponent>(pawn)
+            .unwrap()
+            .life_state_elapsed_ticks,
+        1,
+        "an unstepped joiner's life-state clock still advances"
     );
 }

@@ -119,6 +119,11 @@ Sources:
 | P47 | Fluid uses `fluids/lava_64` (has `_e`) and no world face does; `materials.toml` sets it to 4.0 | material stage (step 9) → fluid surfaces append the name to TextureNames → texture mips (step 13) → emissive section | Fluid presents 4.0. No "names no texture the map uses" warning. Editing the entry leaves the reflection-capture cache warm, since its key covers static world textures only. |
 | P48 | Limiter on; max 1; member strength 4; brightness alternates 0.15 and 0.2 six times a second | static writes | Peak 0.6 ↔ 0.8: dark state below 0.8, swing 0.2, so it is limited. A clamp fed factor × colour without strength sees 0.15 ↔ 0.2. That step is under 0.1 and under the 60 Hz rate cap (0.067), so it passes unlimited. |
 | P50 | A texture whose `materials.toml` value is at the ceiling, inside a volume whose `emissive_max` is at the ceiling; white colour, brightness 1, white `_e` texel | compile → render | Presented glow stays finite in the Rgba16Float scene target, so bloom stays finite. Ceiling² above 65504 overflows to inf. |
+| P42 | Limiter on; max 1, strength 1; `setEmissiveColor` alternates [1, 0.05, 0.02] and [0.02, 1, 0.05] six times a second at brightness 1 | colour writes, each in its own drain | The volume's colour reaches the clamp as its colour; the red state's redness passes `RED_SATURATED`, so the red-flash rule limits the strobe. Brightness and its animation are untouched; scripts and the wire see the written colours. |
+| P43 | Limiter on; max 20, strength 1; colour alternates white and [0.02, 0.05, 1] six times a second at brightness 1 | colour writes | Strength input reads 1 both ways and redness is 0, so nothing limits the shown 1 ↔ 0.11 strobe. Recorded for E23. |
+| P46 | One map references `signs/bar` and `textures/Signs/Bar`; `materials.toml` has `["signs/bar"] emissive = 4` | material stage → section → runtime | Both references resolve to the one entry; both present 4.0. |
+| P49 | Max 1, strength 1; `setEmissiveColor` [100, 100, 100] at brightness 1 | colour write | Channels clamp to 1: the face glows at 1, within the mapper's multiplier. |
+| P51 | `materials.toml` sets `metal/plate emissive = 4`; `metal/plate` has no `_e` map | material stage → material uniform | Warns and packs 0; the forward pass samples no emissive texture for it. |
 
 ## Capture reference state
 
@@ -149,7 +154,9 @@ Per-texture strength needs one value that bake and runtime both read: reflection
 - **Mod manifest:** prl-build reads no mod manifest (`level-compiler` and `postretro-tool` never load `defineMod`). Compile-time script evaluation exists for map data scripts (light membership), but the manifest is mod-wide and no map names it. A baked manifest field would be the only one needing map recompiles, and the runtime would hold a second readable copy.
 - **`postretro.toml`:** read only by `postretro-tool` and `xtask`; the engine and prl-build never read it, and distributions do not carry it as an engine input.
 - **Chosen: `<mod root>/materials.toml`.** Plain data the material stage reads, baked into the level; runtime reads only the baked value. Precedents in the genre: Quake 3 per-collection shader files, Half-Life `lights.rad` (texture names with light values for surface lights).
-- **Mod layering:** one active mod root today (`--mod`); multi-mod discovery and load order are future (`boot_sequence.md`). Per-texture keys merge per key when layering lands.
+- **Mod layering:** one active mod root today (`--mod`); multi-mod discovery and load order are future (`boot_sequence.md`). Per-texture keys can merge per key when layering lands, later mod winning.
+- **Home for material properties:** roadmap "surface lights" (texture marking, per-texture bounce multiplier) and the remaining prefix properties (shininess, surface depth) belong in this file, in later briefs.
+- **Area lights:** coupling a light to a volume's runtime brightness needs a build-time scan of `setEmissive*` targets, as light membership scans `setLightAnimation`.
 
 ## Status lights and animated glow
 

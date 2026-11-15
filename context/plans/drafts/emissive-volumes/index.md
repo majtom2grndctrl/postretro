@@ -4,7 +4,7 @@ Brief · resumable · reads: `context/lib/resource_management.md` §3, §4.5, §
 
 ## Problem
 
-Owner request: mappers set how strongly and in what colour a surface glows, per placement, and scripts animate it. Today glow strength comes only from the texture-name prefix: `neon_` gives 4.0, every other prefix 0 (`Material::emissive_strength`). So only `neon_` textures glow at all, every face sharing a texture glows alike, and nothing at runtime can change it. A prefix named for one game's look sets glow for every game on the engine. When done:
+Owner request: mappers set how strongly and in what colour a surface glows, per placement, and scripts animate it. Today glow strength comes only from the texture-name prefix: `neon_` gives 4.0, every other prefix 0 (`Material::emissive_strength`). So only `neon_` textures glow at all, every face sharing a texture glows alike, and nothing at runtime can change it. A prefix named for one game's look sets glow for every game on the engine. Strength and volumes ship together: bake, flash limiter and runtime must read one strength number, and retiring the prefix needs the strength file to keep existing looks. When done:
 - Each texture's glow strength is content: 1.0 by default, or a value the game sets in its mod's `materials.toml`.
 - A brush volume around a surface scales and tints that glow, from 0 up to an authored multiplier.
 - Scripts pulse, fade, flicker, set or recolour that glow; co-op peers see host-driven changes.
@@ -14,38 +14,37 @@ Owner request: mappers set how strongly and in what colour a surface glows, per 
 - **Retire the `neon` prefix and `Material::Neon`.** Neon's shininess matches Default and its ricochet flag has no reader. Its flat surface depth goes too: a former `neon_` texture with an `_h` map carves as Default does.
   - `tools/gen_emissive.py` uses one default cutoff whatever the prefix; `--cutoff` stays the lever.
   - Diverges from `context/lib` wherever it describes prefix-derived glow, neon flatness or unlimited emissives: `resource_management.md` §3, §4.5, §4.6, §5.2, `rendering_pipeline.md` §7.3, §7.8 and `build_pipeline.md` §Compiler pipeline step 9 (material stage). Each is rewritten at promotion.
-- **Per-texture strength lives in `<mod root>/materials.toml`, and only the bake reads it.** One `emissive` value per texture, keyed by texture name as maps reference it; a texture with an `_e` map and no entry is 1.0, one without `_e` is 0.
-  - prl-build reads the file and bakes each texture's strength into the level. Runtime reads only the baked value, never the file. Bake consumers (reflection capture, bounce means) and runtime see one number.
-  - Content-owned and per asset, as `index.md` §2 allows ("with the map or its assets"). Matches glTF's material-level `KHR_materials_emissive_strength` (`research.md` §Strength source).
-  - Plain data, not the mod manifest: the compiler evaluates no mod startup script, and an edit rebakes like a texture edit.
-  - One file per mod root. Inheritance across mods waits on multi-mod layering (`boot_sequence.md`, mod discovery); entries are per texture so layers can merge per key, later mod winning.
-  - It is the home for content-owned material properties. `emissive` is its first key; roadmap "surface lights" puts its texture marking and bounce multiplier here; the remaining prefix properties (shininess, surface depth) move here in later briefs.
-- **`_e` stays an RGB colour map in linear light; black is zero glow.** `glow = _e × strength`. The diffuse map is the unlit surface and `_e` the lit one, so fading glow to 0 shows a real off state. `_e` alpha is reserved for a future per-texel emissive channel: author it opaque.
+- **Per-texture strength lives in `<mod root>/materials.toml`, and only the bake reads it.** One `emissive` value per texture; a texture with an `_e` map and no entry is 1.0, one without `_e` is 0.
+  - Keys are the texture name as TrenchBroom shows it, `collection/name`, matched case-insensitively with any leading `textures/` stripped.
+  - prl-build bakes each texture's strength into the level; runtime reads only that baked value. An edit re-runs only what reads strength (reflection capture and the emissive section); lightmap and probe caches stay warm.
+  - Content-owned and per asset (`index.md` §2, "with the map or its assets"), as glTF's material-level `KHR_materials_emissive_strength` is (`research.md` §Strength source). Plain data: the compiler evaluates no mod script.
+  - One file per mod root; layering across mods waits on multi-mod discovery (`boot_sequence.md`). It is the home for content-owned material properties, `emissive` first (`research.md` §Strength source).
+  - A broken file never stops the compile: a syntax error warns, naming file and line, and every texture takes its default; an unknown key warns; a non-number value warns and reads its default. An entry for a texture with no `_e` map warns and is ignored.
+- **`_e` stays an RGB colour map in linear light; black is zero glow.** `glow = _e × strength`. The diffuse map is the unlit surface and `_e` the lit one, so fading glow to 0 shows a real off state. `_e` alpha is reserved for a future per-texel emissive channel (phase map or HDR multiplier): author it opaque.
 - **Faces without an `_e` map pay no new per-fragment cost.** The forward pass is the Mac target's usual bottleneck.
 - **`emissive_volume` brush entity scales and tints its faces.** Keys:
-  - `emissive_min` (default 0), `emissive_max` (default 1), `emissive_color` (default white), `_tags`.
+  - `emissive_min` (default 0), `emissive_max` (default 1), `emissive_color` (default white, read as each FGD colour key is: channel ÷ 255, used as linear), `_tags`. A malformed colour warns and reads white.
   - A face's glow is its texture strength × (min + brightness × (max − min)) × colour. Brightness is a scripted value in [0, 1], 1 with no script.
   - Bad values never stop the compile (`index.md` §2, "Designers over structure"). Each key is fixed first: a negative value reads 0, a non-finite one its default, and a value past a ceiling the ceiling, each warning by key name. Then a max below min swaps, with a warning. The ceiling sits far above any look and below the scene target's half-float maximum. The same rules hold for `materials.toml` values.
   - Its brushes never render, collide or bake.
-- **The map owns range and default colour; scripts own brightness and colour.** Lights and fog take absolute values through the same `pulse`/`fade`/`flicker`. Here those methods take brightness in [0, 1], so a script cannot push a surface past the mapper's multiplier (`index.md` §2, "Defaults for novices"). Colour is set, not animated.
+- **The map owns range and default colour; scripts own brightness and colour.** Lights and fog take absolute values through the same `pulse`/`fade`/`flicker`. Here those methods take brightness in [0, 1] and colour channels clamp to [0, 1], so a script cannot push a surface past the mapper's multiplier (`index.md` §2, "Defaults for novices").
 - **Brightness writes and animations.** A brightness write clears any running brightness animation on its targets, as `setSpinRate` does, not as fog's static setters do. Clearing an animation leaves brightness at its last sampled value: the script's value, before any limiter. A colour write leaves brightness and its animation alone.
 - **Membership is compile-time and per static world face.**
   - A face belongs to a volume when its centroid lies inside one of the volume's brush hulls.
   - Overlaps resolve last-in-map-order wins, as `lightmap_scale_region` does.
-  - Warnings: once per pair of volumes that both contain a face centroid (touching, or overlapping in empty space, stays silent); and per volume left with no `_e` face, including one a later volume empties.
+  - A volume left with no `_e` face warns, including one a later volume empties. Nesting a volume inside another is silent.
   - At most 256 volumes per map; past that the compile fails, naming the count.
-- **Movers and fluids take texture strength only.** They bind the per-texture material, so `materials.toml` reaches them; no volume does. Scripted glow on a mover waits for content that asks (a moving platform is the likeliest); the mover's per-instance record is the way in. Model glow stays 0: models load only their diffuse slot.
+- **Movers and fluids take texture strength only.** They bind the per-texture material, so `materials.toml` reaches them; no volume does. Scripted glow on a mover waits for content that asks. Model glow stays 0: models load only their diffuse slot.
 - **Runtime owns brightness and colour; the bake reads the no-script state.** Reflection capture bakes each member face at texture strength × max × colour, its reference state (`research.md` §Capture reference state). Bounce means exclude glow texels on any texture with an `_e` map.
-- **Photosensitivity: the existing clamp, fed what the surface shows.** While `accessibility.flashLimiter` is on, each volume passes the `flash_clamp` per-value rules with min(peak strength, 1). Peak strength is the volume's current factor × its colour's luminance × the largest texture strength among its member faces. The resolve's tonemap is near-identity below 1, so that is displayed luminance; a strobe between two values at or above 1 reads white both ways and is no flash. Scripts and the wire carry the scripted values. E23 owns the bloom halo such a strobe drives, the red-flash rule and any budget shared across sources; at promotion its draft records emissive volumes as a clamp source already built.
-- **Co-op: fog volumes' presentation-state behaviour** (`networking.md` §Presentation state), bound by emissive record index with the 1 cm origin check. It differs only where the Decisions above do: brightness writes clear animations, values are brightness, and the limiter is per machine and never reaches the wire.
+- **Photosensitivity: the existing clamp, fed what the surface shows.** While `accessibility.flashLimiter` is on, each volume passes the `flash_clamp` per-value rules with strength min(peak, 1) and the volume's colour as the clamp's colour, so the existing red-flash rule applies. Peak is the volume's current factor × the largest texture strength among its member faces. The resolve's tonemap is near-identity below 1, so a strobe between two peaks at or above 1 reads white both ways and is no flash. Scripts and the wire carry the scripted values. E23 owns colour-only brightness strobes (white ↔ blue at high strength), the bloom halo and any budget shared across sources; at promotion its draft records emissive volumes as a clamp source already built.
+- **Co-op: fog volumes' presentation-state behaviour** (`networking.md` §Presentation state), bound by emissive record index. It differs only where the Decisions above do: brightness writes clear animations, values are brightness, and the limiter is per machine and never reaches the wire.
 - **Migration.** `tools/migrate_neon_prefix.py` renames `neon_x` to `x` for every slot sibling, rewrites `.map` texture references, and writes `emissive = 4.0` for each renamed texture into the mod's `materials.toml`, so every look survives with no volume.
   - Dry-run by default.
   - Refuses on a name collision, or when `x`'s derived prefix (its first `_` token, case-folded, as the engine parses it) is a known material prefix.
 - **Non-goals.**
   - Colour animation (cross-fades between colours): add when content asks; status lights set a colour.
-  - Per-texel animation (phase-map sweeps, world-surface flipbooks): material authoring, a separate brief. `_e` alpha stays reserved for whichever per-texel channel comes first.
-  - Area lights from glowing faces: a separate brief. Coupling a light to a volume's runtime brightness needs a build-time scan of `setEmissive*` targets, as light membership scans `setLightAnimation`.
-  - Naming the mod entry script in `postretro.toml`: a separate change.
+  - Per-texel animation (phase-map sweeps, world-surface flipbooks): material authoring, a separate brief.
+  - Area lights from glowing faces: a separate brief (`research.md` §Strength source).
 
 ### Scripting surface
 
@@ -59,7 +58,7 @@ for (const sign of signs) {
 reactions.push(defineReaction("powerCut", { primitive: "setEmissiveBrightness", tag: "bar_sign", args: { brightness: 0 } }));
 reactions.push(defineReaction("doorLocked", { primitive: "setEmissiveColor", tag: "status_lamp", args: { color: [1, 0.05, 0.02] } }));
 // Members also carry pulse({ min, max, periodMs }) and fade({ from, to, periodMs }).
-// Brightness values are in [0, 1]; colour channels are linear and ≥ 0. Out-of-range values clamp.
+// Brightness values and linear colour channels are in [0, 1]; out-of-range values clamp.
 // The animation primitive is setEmissiveAnimation, args { periodMs, playCount?, brightness: number[] }
 // with a non-empty curve, or args null to clear it, as setFogAnimation does.
 // A finite playCount settles on its last sample. setEmissiveBrightness clears any running animation.
@@ -72,17 +71,17 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 ### Automated
 - [ ] Texture strength:
   - A texture with an `_e` map and no `materials.toml` entry glows at 1.0, with no prefix and with a known prefix (`metal_`). One without `_e` packs 0 and samples no emissive texture; the forward shader reads the volume table only inside the `emissive_strength > 0` branch (shader-source test). A skinned model with an `_e` sibling still packs 0.
-  - A `materials.toml` entry of 4.0 reaches world faces, a mover, and a fluid whose texture no world face uses; that entry warns nothing, and editing it leaves the reflection-capture cache warm (pin P47). An entry naming no texture the map uses warns once; bad values follow the key rules.
+  - A `materials.toml` entry of 4.0 reaches world faces, a mover, and a fluid whose texture no world face uses; that entry warns nothing, and editing it leaves the reflection-capture cache warm (pin P47). Bad values follow the key rules. An entry for a texture with no `_e` map warns and packs 0. A syntax error, an unknown key and a non-number value each warn, naming file and line, and the compile finishes with defaults. Keys match case-insensitively, with or without a leading `textures/`.
   - Bake and runtime agree for one texture: reflection-capture term, bounce-mean glow exclusion and material uniform. The runtime never opens `materials.toml` (grep gate).
-  - Editing one entry rebakes that texture's outputs and no other texture's.
+  - Editing one entry misses the reflection-capture cache and rewrites the emissive section; lightmap, probe and `.prm` caches stay warm.
   - A former `neon_` name is an unknown prefix, warned once (grep gate: no `neon` in the prefix tables). With an `_h` map it carves as Default.
 - [ ] `gen_emissive.py` without `--cutoff` uses one default whatever the file's prefix.
-- [ ] Glow = texture strength × (min + brightness × (max − min)) × colour, at brightness 0, 0.5 and 1 and a non-white colour. No script means max and the authored colour. Brightness outside [0, 1] clamps, written or sampled from a curve (pin P10); a negative or non-finite colour channel reads 0, with one warning.
+- [ ] Glow = texture strength × (min + brightness × (max − min)) × colour, at brightness 0, 0.5 and 1 and a non-white colour. No script means max and the authored colour. Brightness outside [0, 1] clamps, written or sampled from a curve (pin P10); a negative or non-finite colour channel reads 0, with one warning; a script colour channel above 1 clamps to 1. A malformed `emissive_color` warns and reads white; `255 128 0` reads (1, 0.502, 0).
 - [ ] Bad keys compile, each with one warning naming the key: max < min swaps, a negative value reads 0, a non-finite one its default, one past the ceiling the ceiling. Each key is fixed before the pair swaps (pin P38). Valid keys, 0 included, compile silently. A texture at the ceiling inside a volume whose max is at the ceiling presents finite glow and finite bloom (pin P50).
 - [ ] Membership:
   - A face whose centroid is inside a hull joins; one just outside does not. A face in the plane of a volume brush's side joins (pin P27).
   - A member face the atlas cuts into sub-faces glows as one (pin P29). A volume enclosing a mover brush and a fluid lists neither.
-  - Two volumes that both contain a face centroid: the later wins, and one warning names the pair. Touching or empty overlap stays silent. A volume with no `_e` face warns, including one a later volume empties (pin P28).
+  - Two volumes that both contain a face centroid: the later wins, silently. A volume with no `_e` face warns, including one a later volume empties (pin P28).
   - Volume 256 compiles; volume 257 fails, naming the count.
 - [ ] Adding a default volume (min 0, max 1, white) around `_e` faces changes only the emissive section: every other section is byte-identical to the same map without the volume.
 - [ ] PRL round-trip of the emissive section. A map whose every texture is at its default (1.0 with `_e`, 0 without) and has no volumes emits no section. The loader refuses a version other than 1, counts over their caps, a face index out of range, descending or owned twice, and values the compiler never writes (min above max, negative or non-finite, past the ceiling).
@@ -99,6 +98,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 - [ ] Flash limiter:
   - With the limiter on, the example's rate-6 `flicker` and static writes alternating 0 and 1 six times a second each present at most 3 flashes in any 1 s (pins P14, P34).
   - The clamp reads peak strength, not brightness: on a volume with max 20, writes alternating brightness 0.025 and 0.05 are limited (pin P40). A strobe between strength 4 and 20 reads white both ways and is not (pin P37). A volume whose member texture strength is 4 and max 1, with brightness alternating 0.15 and 0.2, is limited: its peak swings 0.6 to 0.8 (pin P48). On a volume of max 20, a write from brightness 0.025 to 1 rises on screen no faster than the rate cap: min(presented peak, 1) moves at most 4.0/s, then presents 20 (pin P41).
+  - Colour writes alternating red and green six times a second at brightness 1 reach the clamp as its colour, and the red-flash rule limits them (pin P42). A white ↔ blue strobe at max 20 is not limited here; E23 owns it (pin P43).
   - Scripts and the wire see the unclamped values; with the limiter off, a step lands in one frame. While the script clock is paused the clamp keeps aging on presented-frame time, and a flat `fade` counts no flash (pins P9, P13).
   - A volume is limited every frame, in view or not. A frame whose surface acquire fails leaves every clamp where it began. Loading another map starts every clamp fresh; a brightness write does not. Turning the limiter on presents that frame unchanged (pins P15–P18).
 - [ ] The migration script: dry run lists renames and the `materials.toml` entries it would write, writing nothing; a real run renames every slot sibling, rewrites references and writes the entries. With an existing `materials.toml`, a real run keeps every other entry, and an existing entry for `x` refuses as a collision. It refuses a collision with no partial write, and refuses `neon_metal_x` and `neon_Metal_x`; `neon_metalwork_x` and `neon_panel` rename.
@@ -134,11 +134,11 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP / file |
 |---|---|---|---|---|---|
-| Texture strength | material-stage value | f32 per texture | n/a | n/a | `materials.toml`: `["<collection>/<name>"]` table, key `emissive` |
+| Texture strength | material-stage value | f32 per texture | n/a | n/a | `materials.toml`: `["<collection>/<name>"]` table (case-insensitive, optional `textures/`), key `emissive` |
 | Entity class | parsed classname | n/a | n/a | n/a | `emissive_volume` |
 | Range min | record field | f32 | `component.min` | `component.min` | `emissive_min` |
 | Range max | record field | f32 | `component.max` | `component.max` | `emissive_max` |
-| Colour | record + runtime field | f32 × 3 linear (replicated) | `component.color` | `component.color` | `emissive_color` (color255, sRGB) |
+| Colour | record + runtime field | f32 × 3 linear (replicated) | `component.color` | `component.color` | `emissive_color` (color255, channel ÷ 255 as linear) |
 | Brightness | runtime component field | f32 (replicated) | `component.brightness` | `component.brightness` | n/a |
 | Member kind | `getMapEntities` kind | `"emissive"` | `"emissive"` | `"emissive"` | n/a |
 | Set brightness | reaction primitive | `"setEmissiveBrightness"` | `"setEmissiveBrightness"` | `"setEmissiveBrightness"` | n/a |

@@ -29,7 +29,7 @@ pub struct DenseNodeLayout {
     pub layouts: NodeMap<StoredNodeLayout>,
 }
 
-/// Rebuild the v11 stored-node prefix from the always-resident id-34
+/// Rebuild the stored-node prefix from the always-resident id-34
 /// projection. The stream wire's local rank is chunk-relative; installs use
 /// this retained layout to recover the rank *within* the node before adding
 /// the live pool base.

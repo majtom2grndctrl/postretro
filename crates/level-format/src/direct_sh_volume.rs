@@ -531,7 +531,7 @@ fn validate_irradiance_format(irradiance_format: u32) -> crate::Result<()> {
 fn atlas_len_for_header(len: u64) -> crate::Result<u32> {
     u32::try_from(len).map_err(|_| {
         invalid_data(format!(
-            "direct sh volume stored atlas byte length {len} exceeds the v4 u32 header maximum {}",
+            "direct sh volume stored atlas byte length {len} exceeds the current u32 header maximum {}",
             u32::MAX,
         ))
     })

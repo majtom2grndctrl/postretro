@@ -15,7 +15,8 @@ use crate::sh_volume::{OctahedralShVolumeSection, SH_VOLUME_VERSION};
 
 /// Whether a whole-load SH section carries its body (atlas or delta tiles).
 ///
-/// Only `POSTRETRO_SH_STREAMING=off` reads the bodies; the streaming loader
+/// Only the whole-load path (`POSTRETRO_SH_STREAMING=off`, or a PRL without id 50)
+/// reads the bodies; the streaming loader
 /// takes payload from id 50. An omitted body keeps every length and count
 /// field at its full value; only the body bytes are absent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -62,17 +62,17 @@ pub struct OctahedralShProbe {
     pub mean_distance: u16,
     /// Mean squared ray distance `E[d²]`, f16 bits.
     pub mean_sq_distance: u16,
-    /// Per-affinity-brick storage level: 0 = L0, 1 = L1, 2 = L2. v11 requires
+    /// Per-affinity-brick storage level: 0 = L0, 1 = L1, 2 = L2. The current format requires
     /// one shared value per full 4×4×4 brick and L0 on partial edge bricks.
     pub density_level: u8,
-    /// Power-of-two brick-node scale. 0 is one brick; v11 permits 0..=3.
+    /// Power-of-two brick-node scale. 0 is one brick; the current format permits 0..=3.
     pub node_scale: u8,
 }
 
 /// One `Rgba16Float` atlas texel, stored as raw f16 channel bits.
 ///
 /// This remains the compiler's uncompressed tile-packing representation. The
-/// v11 section payload itself is the tagged byte blob on
+/// current section payload itself is the tagged byte blob on
 /// [`OctahedralShVolumeSection::compact_atlas`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OctahedralAtlasTexel {
@@ -155,9 +155,10 @@ impl Default for AnimationDescriptor {
 ///
 ///   Compact atlas blob (compact_atlas_len bytes; absent when body_present
 ///   is 0, so the animation tail follows the probe records), carrying the
-///   stored set in brick-major order (affinity bricks x-fastest): L0 valid probes in local
-///   x-fastest order; L1 all corners in `corner_locals` order with zero tiles
-///   for invalid corners; L2 one valid-probe mean; all-invalid bricks none.
+///   stored set in brick-major order (affinity bricks x-fastest): L0 valid
+///   probes in local x-fastest order; L1 all corners in `corner_locals` order
+///   with zero tiles for invalid corners; L2 one valid-probe mean; all-invalid
+///   bricks none.
 ///     IRRADIANCE_FORMAT_RGBA16F: layer-major, then row-major
 ///                                atlas_width × atlas_height
 ///                                `f16 × 4` texels per layer.
@@ -258,8 +259,8 @@ impl OctahedralShVolumeSection {
             + self.slot_for_map_light.len() * 4)
     }
 
-    /// Encode only a canonical section whose stored payload fits the v11
-    /// `u32` byte-length field.
+    /// Encode only a canonical section whose stored payload fits the
+    /// current `u32` byte-length field.
     pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
         self.try_to_bytes_with_body(ShBodyPresence::Present)
     }
@@ -269,14 +270,9 @@ impl OctahedralShVolumeSection {
     pub fn try_to_bytes_with_body(&self, body: ShBodyPresence) -> crate::Result<Vec<u8>> {
         self.validate_wire_contract()?;
 
-        let total_probes = checked_total_probe_count(self.grid_dimensions)?;
         let compact_atlas_len = compact_atlas_len_for_header(self.compact_atlas.len() as u64)?;
 
-        let mut buf = Vec::with_capacity(
-            Self::HEADER_SIZE
-                + total_probes * OCTAHEDRAL_PROBE_STRIDE as usize
-                + self.compact_atlas.len(),
-        );
+        let mut buf = Vec::with_capacity(self.try_byte_len_with_body(body)?);
 
         buf.extend_from_slice(&SH_VOLUME_VERSION.to_le_bytes());
         for v in &self.grid_origin {
@@ -322,7 +318,7 @@ impl OctahedralShVolumeSection {
     fn validate_wire_contract(&self) -> crate::Result<()> {
         if self.probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11",
+                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for the node-aware format",
                 self.probe_stride,
             )));
         }
@@ -421,7 +417,7 @@ impl OctahedralShVolumeSection {
 
         if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11"
+                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for the node-aware format"
             )));
         }
 
@@ -536,7 +532,7 @@ pub fn validate_metadata_projection(
 ) -> crate::Result<()> {
     if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
         return Err(invalid_data(format!(
-            "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11"
+            "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for the node-aware format"
         )));
     }
     validate_irradiance_format(irradiance_format)?;
@@ -641,7 +637,7 @@ fn checked_total_probe_count(grid_dimensions: [u32; 3]) -> crate::Result<usize> 
         })
 }
 
-/// Validate the complete v11 probe metadata table and derive its canonical
+/// Validate the complete node-aware probe metadata table and derive its canonical
 /// stored-node prefix. This intentionally needs no atlas body, so metadata-only
 /// readers (including id-50 streaming validation) can share the source codec's
 /// exact closure rules.
@@ -1011,7 +1007,7 @@ fn expected_compact_atlas_len(
 fn compact_atlas_len_for_header(len: u64) -> crate::Result<u32> {
     u32::try_from(len).map_err(|_| {
         invalid_data(format!(
-            "octahedral sh volume stored atlas byte length {len} exceeds the v11 u32 header maximum {}",
+            "octahedral sh volume stored atlas byte length {len} exceeds the current u32 header maximum {}",
             u32::MAX,
         ))
     })
@@ -1432,7 +1428,7 @@ mod tests {
         assert!(error.to_string().contains("disagreeing node_scale"));
     }
 
-    // Regression: v11 declares validity as binary, but accepted any nonzero byte.
+    // Regression: the node-aware format declares validity as binary, but accepted any nonzero byte.
     #[test]
     fn octahedral_rejects_non_binary_probe_validity() {
         let section = oct_section([1, 1, 1]);
@@ -1564,7 +1560,7 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("exceeds the v11 u32 header maximum"),
+            msg.contains("exceeds the current u32 header maximum"),
             "expected compact-atlas header-length error, got: {msg}",
         );
     }
@@ -1576,7 +1572,7 @@ mod tests {
         let err = compact_atlas_len_for_header(u64::from(u32::MAX) + 1).unwrap_err();
         assert!(
             err.to_string()
-                .contains("exceeds the v11 u32 header maximum")
+                .contains("exceeds the current u32 header maximum")
         );
     }
 
@@ -1801,8 +1797,9 @@ mod tests {
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("probe_stride") && msg.contains("expected exactly 8 for v11"),
-            "expected exact v11 probe-stride error, got: {msg}",
+            msg.contains("probe_stride")
+                && msg.contains("expected exactly 8 for the node-aware format"),
+            "expected exact probe-stride error, got: {msg}",
         );
     }
 

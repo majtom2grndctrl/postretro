@@ -7,16 +7,19 @@
 // See: context/lib/rendering_pipeline.md §4 (Animated SH delta volumes)
 
 use crate::FormatError;
+use crate::SectionId;
 use crate::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
     RUNTIME_SUPPORTED_TILE_DIMENSION,
 };
+use crate::sh_body::{ShBodyPresence, require_sh_body};
 use crate::sh_reconstruct::{Level, stored_delta_tiles};
 
 /// Section-internal version, written as the first byte of the payload. Bumped
 /// whenever the on-disk layout changes so the loader can reject stale `.prl`
-/// files instead of silently misreading them.
-pub const DELTA_SH_VOLUMES_VERSION: u8 = 6;
+/// files instead of silently misreading them. Version 7 appends a `u8`
+/// body-presence field to the fixed header.
+pub const DELTA_SH_VOLUMES_VERSION: u8 = 7;
 
 /// Affinity cell edge length in base SH probes. An affinity cell is a 4×4×4
 /// cube of base probes. Locked to the compose pass `@workgroup_size(4,4,4)`.
@@ -45,7 +48,7 @@ pub const DEFAULT_DELTA_PROBE_F16_STRIDE: usize = (DEFAULT_IRRADIANCE_TILE_DIMEN
 /// Default byte stride of one serialized probe tile.
 pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 
-/// Delta SH volumes section (ID 27), version 6.
+/// Delta SH volumes section (ID 27), version 7.
 ///
 /// Sparse CSR layout keyed by affinity cell. An affinity cell is a 4×4×4 cube
 /// of base SH probes (`affinity_factor`). `affinity_dims = ceil(base_dims / 4)`
@@ -66,12 +69,14 @@ pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 6)
+///   u8       version                    (= DELTA_SH_VOLUMES_VERSION = 7)
 ///   u8       affinity_factor            (= AFFINITY_FACTOR = 4)
 ///   u32 × 3  affinity_dims              (affinity cells along x/y/z)
 ///   u32      animated_light_count
 ///   u32      tile_dimension             (default 6, border included)
 ///   u32      tile_border                (default 1)
+///   u8       body_present               (1 = delta_subblocks follow,
+///                                        0 = omitted; see `sh_body`)
 ///   u32 × animated_light_count          animation_descriptor_indices
 ///   u64 × affinity_cell_count            valid_probe_masks
 ///   u8  × affinity_cell_count            cell_levels (per-cell coarsening level)
@@ -81,7 +86,8 @@ pub const DEFAULT_DELTA_PROBE_BYTES: usize = DEFAULT_DELTA_PROBE_F16_STRIDE * 2;
 ///       × tile_dimension × tile_dimension × 3
 ///                                       delta_subblocks (one compact kept-probe
 ///                                       sub-block per CSR entry; each probe = one
-///                                       RGB16F octahedral irradiance tile)
+///                                       RGB16F octahedral irradiance tile;
+///                                       absent when body_present is 0)
 /// ```
 ///
 /// Empty animated-light case: `affinity_offsets = [0; affinity_cell_count + 1]`,
@@ -125,6 +131,11 @@ pub struct DeltaShVolumesSection {
 }
 
 impl DeltaShVolumesSection {
+    /// version(1) + affinity_factor(1) + affinity_dims(12) +
+    /// animated_light_count(4) + tile_dimension(4) + tile_border(4) +
+    /// body_present(1).
+    pub const FIXED_HEADER_SIZE: usize = 1 + 1 + 12 + 4 + 4 + 4 + 1;
+
     /// Number of affinity cells implied by `affinity_dims`.
     pub fn affinity_cell_count(&self) -> usize {
         self.affinity_dims[0] as usize
@@ -148,20 +159,32 @@ impl DeltaShVolumesSection {
     }
 
     pub fn byte_len(&self) -> usize {
-        1 + 1
-            + 12
-            + 4
-            + 4
-            + 4
+        self.byte_len_with_body(ShBodyPresence::Present)
+    }
+
+    /// Byte length of the form [`Self::to_bytes_with_body`] writes.
+    pub fn byte_len_with_body(&self, body: ShBodyPresence) -> usize {
+        let body_bytes = if body.is_present() {
+            self.delta_subblocks.len() * 2
+        } else {
+            0
+        };
+        Self::FIXED_HEADER_SIZE
             + self.animation_descriptor_indices.len() * 4
             + self.valid_probe_masks.len() * 8
             + self.cell_levels.len()
             + self.affinity_offsets.len() * 4
             + self.affinity_lights.len() * 4
-            + self.delta_subblocks.len() * 2
+            + body_bytes
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
+        self.to_bytes_with_body(ShBodyPresence::Present)
+    }
+
+    /// Encode with the delta tiles present or omitted. The omitted form keeps
+    /// every table the payload length derives from; only the tiles are absent.
+    pub fn to_bytes_with_body(&self, body: ShBodyPresence) -> Vec<u8> {
         debug_assert_eq!(self.affinity_offsets.len(), self.affinity_cell_count() + 1);
         debug_assert_eq!(self.valid_probe_masks.len(), self.affinity_cell_count());
         debug_assert_eq!(self.cell_levels.len(), self.affinity_cell_count());
@@ -170,7 +193,7 @@ impl DeltaShVolumesSection {
             Some(self.delta_subblocks.len())
         );
 
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.byte_len_with_body(body));
 
         buf.push(DELTA_SH_VOLUMES_VERSION);
         buf.push(self.affinity_factor);
@@ -182,6 +205,7 @@ impl DeltaShVolumesSection {
         buf.extend_from_slice(&light_count.to_le_bytes());
         buf.extend_from_slice(&self.tile_dimension.to_le_bytes());
         buf.extend_from_slice(&self.tile_border.to_le_bytes());
+        buf.push(body.flag());
         for idx in &self.animation_descriptor_indices {
             buf.extend_from_slice(&idx.to_le_bytes());
         }
@@ -198,18 +222,17 @@ impl DeltaShVolumesSection {
         for light in &self.affinity_lights {
             buf.extend_from_slice(&light.to_le_bytes());
         }
-        for half in &self.delta_subblocks {
-            buf.extend_from_slice(&half.to_le_bytes());
+        if body.is_present() {
+            for half in &self.delta_subblocks {
+                buf.extend_from_slice(&half.to_le_bytes());
+            }
         }
 
         buf
     }
 
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
-        // Fixed header: version(1) + affinity_factor(1) + affinity_dims(12) +
-        // animated_light_count(4) + tile_dimension(4) + tile_border(4) = 26 bytes.
-        const FIXED_HEADER_SIZE: usize = 1 + 1 + 12 + 4 + 4 + 4;
-        if data.len() < FIXED_HEADER_SIZE {
+        if data.len() < Self::FIXED_HEADER_SIZE {
             return Err(truncated("header"));
         }
 
@@ -253,6 +276,9 @@ impl DeltaShVolumesSection {
         o += 4;
         let tile_border = read_u32(data, o);
         o += 4;
+        let body_flag = data[o];
+        o += 1;
+        require_sh_body(SectionId::DeltaShVolumes, u32::from(body_flag))?;
         validate_tile_geometry(tile_dimension, tile_border)?;
         let probe_f16_stride = delta_probe_f16_stride_checked(tile_dimension)?;
 
@@ -690,7 +716,7 @@ mod tests {
     fn rejects_truncated_valid_probe_mask_table() {
         let mut bytes = empty_section([1, 1, 1]).to_bytes();
         // Fixed header ends immediately before the one required u64 mask.
-        bytes.truncate(1 + 1 + 12 + 4 + 4 + 4);
+        bytes.truncate(DeltaShVolumesSection::FIXED_HEADER_SIZE);
 
         let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
 
@@ -777,11 +803,9 @@ mod tests {
 
         // Locate the affinity_offsets table in the serialized bytes and corrupt
         // index 1 so it is larger than index 2, breaking the monotonic invariant.
-        // Fixed header: version(1) + affinity_factor(1) + affinity_dims(12) +
-        // animated_light_count(4) + tile_dimension(4) + tile_border(4) +
-        // animation_descriptor_indices(4×1) + valid_probe_masks(8×3) +
-        // cell_levels(1×3) = 33 bytes.
-        let offsets_start = 1 + 1 + 12 + 4 + 4 + 4 + 4 + 3 * 8 + 3;
+        // Fixed header + animation_descriptor_indices(4×1) +
+        // valid_probe_masks(8×3) + cell_levels(1×3).
+        let offsets_start = DeltaShVolumesSection::FIXED_HEADER_SIZE + 4 + 3 * 8 + 3;
         // offsets[1] lives at offsets_start + 1×4; write a value larger than offsets[2].
         let corrupt_offset: u32 = 99;
         let off = offsets_start + 4;
@@ -922,8 +946,8 @@ mod tests {
     #[test]
     fn rejects_out_of_range_cell_level() {
         // A valid single-cell section; the cell_levels byte sits immediately
-        // after the one u64 mask: fixed header (26) + descriptor indices (4) +
-        // masks (8) = byte 38.
+        // after the one u64 mask: fixed header + descriptor indices (4) +
+        // masks (8).
         let section = DeltaShVolumesSection {
             affinity_factor: AFFINITY_FACTOR,
             affinity_dims: [1, 1, 1],
@@ -937,11 +961,51 @@ mod tests {
             delta_subblocks: sample_subblock(11),
         };
         let mut bytes = section.to_bytes();
-        let cell_level_offset = 1 + 1 + 12 + 4 + 4 + 4 + 4 + 8;
+        let cell_level_offset = DeltaShVolumesSection::FIXED_HEADER_SIZE + 4 + 8;
         bytes[cell_level_offset] = 3;
 
         let err = DeltaShVolumesSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("level"), "expected level error: {msg}");
+    }
+
+    #[test]
+    fn delta_body_flag_writes_present_and_omitted_forms() {
+        let section = DeltaShVolumesSection {
+            affinity_factor: AFFINITY_FACTOR,
+            affinity_dims: [2, 1, 1],
+            tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
+            tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
+            animation_descriptor_indices: vec![0, u32::MAX],
+            valid_probe_masks: vec![ALL_VALID_PROBE_MASK; 2],
+            cell_levels: vec![0; 2],
+            affinity_offsets: vec![0, 2, 2],
+            affinity_lights: vec![0, 1],
+            delta_subblocks: [sample_subblock(1), sample_subblock(50)].concat(),
+        };
+        let present = section.to_bytes_with_body(ShBodyPresence::Present);
+        let omitted = section.to_bytes_with_body(ShBodyPresence::Omitted);
+        assert_eq!(present, section.to_bytes());
+        assert_eq!(
+            section.byte_len_with_body(ShBodyPresence::Present),
+            present.len()
+        );
+        assert_eq!(
+            section.byte_len_with_body(ShBodyPresence::Omitted),
+            omitted.len()
+        );
+
+        // No tail: the body runs to the end of the present form.
+        let body_start = omitted.len();
+        crate::sh_body::assert_sh_body_wire_forms(
+            SectionId::DeltaShVolumes,
+            &present,
+            &omitted,
+            body_start..present.len(),
+            |bytes| {
+                assert_eq!(DeltaShVolumesSection::from_bytes(bytes)?, section);
+                Ok(())
+            },
+        );
     }
 }

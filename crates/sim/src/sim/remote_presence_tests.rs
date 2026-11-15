@@ -51,7 +51,7 @@ impl Fixture {
     }
 
     /// A remote pawn as participation entry spawns it: movement and inventory,
-    /// no local-player mark, no command queued.
+    /// no local-player mark, no command queued. Unlike entry, it binds no seat.
     fn joiner(&self, at: Vec3) -> EntityId {
         let mut registry = self.registry.borrow_mut();
         let pawn = registry.spawn(Transform {

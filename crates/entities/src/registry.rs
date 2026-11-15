@@ -997,7 +997,8 @@ impl EntityRegistry {
 
     /// Mark the pawn driven by the single local Phase 0 sim command. Systems
     /// that need "the player" prefer this marker, then fall back to the legacy
-    /// first-`PlayerMovement` lookup for older fixtures and maps.
+    /// first-`PlayerMovement` lookup, skipping pawns other seats own, for older
+    /// fixtures and maps.
     pub fn mark_local_player_pawn(&mut self, id: EntityId) -> Result<(), RegistryError> {
         let _ = self.validate(id)?;
         self.local_player_pawn = Some(id);
@@ -2319,14 +2320,19 @@ mod tests {
         registry.bind_pawn_seat(host, Seat(0));
         assert_eq!(registry.local_player_movement_pawn(), Some(host));
 
-        let unseated = spawn_test_movement_pawn(&mut registry);
         registry.clear_pawn_seat(host);
         assert_eq!(
             registry.local_player_movement_pawn(),
             Some(host),
-            "an unseated pawn still qualifies, in registry order"
+            "an unseated pawn qualifies"
         );
-        assert_ne!(unseated, host);
+
+        registry.mark_local_player_pawn(joiner).unwrap();
+        assert_eq!(
+            registry.local_player_movement_pawn(),
+            Some(joiner),
+            "the marker wins whatever seat its pawn holds"
+        );
     }
 
     #[test]

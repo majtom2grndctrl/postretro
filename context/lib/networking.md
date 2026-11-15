@@ -283,7 +283,7 @@ Seat ids are non-recycled within one session. The `u16` namespace therefore has 
 recovery path after exhaustion: new remote admissions remain unavailable until a
 new session starts.
 
-The pawn a seat currently owns is one fact stored in two directions. The host's seat table keeps seat→pawn; the entity registry keeps the pawn→seat reverse index, as a sparse map parallel to the component columns — never a `ComponentKind`, which would make it a wire discriminant. That reverse index is what lets owner-addressed layers holding only a registry and an `EntityId` — impact effects, impact policy, reaction dispatch — resolve a pawn's owner. The seat table is its sole writer, through one binding call that updates both directions together, so an entry exists exactly while a seat is bound to a live pawn: a rebind clears the outgoing pawn, a rejoin hold clears the held seat's pawn, and `despawn` clears the entry.
+The pawn a seat currently owns is one fact stored in two directions. The host's seat table keeps seat→pawn; the entity registry keeps the pawn→seat reverse index, as a sparse map parallel to the component columns — never a `ComponentKind`, which would make it a wire discriminant. That reverse index is what lets owner-addressed layers holding only a registry and an `EntityId` — impact effects, impact policy, reaction dispatch — resolve a pawn's owner. It also keeps a host without a pawn of its own from borrowing a client's as its local player, so host input moves no client's pawn. The seat table is its sole writer, through one binding call that updates both directions together, so an entry exists exactly while a seat is bound to a live pawn: a rebind clears the outgoing pawn, a rejoin hold clears the held seat's pawn, and `despawn` clears the entry.
 
 Three constraints bind the seat wherever it lands. It sits **above** the participation lifecycle — the exit sweep clears a slot's state, never its seat, or a level change would churn the identity the seat exists to preserve. Its type belongs in `foundation`, the only crate the binary, `entities`, and a later floor-crate consumer can all name; `net` is postretro-free by contract and cannot depend on `foundation`, so a seat minted in `net` forces a duplicate the first time per-seat storage reaches the floor slot table. Seat *ids* may cross the wire as a bare integer, but seat *contents* never do — that is what keeps the transport registry-blind.
 
@@ -440,8 +440,7 @@ policies govern resolution:
   release does. A client that has never sent a command resolves
   to nothing — its pawn holds its authoritative pose, yet is present for triggers and
   touch from spawn: the host's per-tick player set is every owned remote pawn plus the host's own, not
-  the pawns with a command this tick. A host without a pawn of its own never borrows a client's:
-  host input moves nothing, and no client's pawn stands in as the host's player. Clean loopback reaches the empty
+  the pawns with a command this tick. Clean loopback reaches the empty
   frontier at its buffer-empty edge and freezes exactly as before; a lost tick with newer
   data buffered yields. (The frontier test is exact: at the gap decision, the prior advance's
   stale-drop and intake's stale-check guarantee `pending` holds only commands newer than the

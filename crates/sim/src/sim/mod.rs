@@ -780,8 +780,9 @@ where
         let registry = registry.borrow();
         registry.local_player_movement_pawn()
     };
-    // The registry's fallback skips seated client pawns, but an owned pawn not
-    // yet bound to a seat could still be named; presence lists it once, as remote.
+    // A defence for owned pawns with no seat, which only fixtures make: the
+    // registry cannot see ownership. It keeps presence from listing such a pawn
+    // twice; it does not keep host input off it.
     if let Some(pawn) = local_player
         && !players.iter().any(|player| player.pawn == pawn)
     {

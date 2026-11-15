@@ -496,6 +496,7 @@ Ids 27, 41, and 45 use packed RGB16F delta texels in both PRL and renderer stora
   - a face with no lightmap block;
   - placeholder mode.
 - **Eligibility.** Every non-animated static lightmap light, whether or not it is in the entity-shadow selection. Animated-baked lights add no world specular until they can own channels.
+- **Area lights** (decided, not yet built). Never owners. Their placeholder spec record adds no specular on any path, and neither promotion path selects them: promotion shadows from a point, which a large panel is not.
 - **Directional lights.** An owner's highlight follows the light's direction, not its entity origin. An SDF directional light has no bake to follow: its highlight stays at its origin, where its SDF diffuse and visibility trace place it.
 - **Delivery.** The owner list reaches the fragment through a forward-only second vertex stream (§6) as a flat value. It adds no fragment binding and leaves the world vertex format unchanged.
 - **Bake side.** `build_pipeline.md` §PRL (ShadowmaskAtlas ownership) owns admission, ranking and the format.

@@ -147,7 +147,9 @@ neighboring surfaces, and do not create dynamic lights. Glow texels are excluded
 from the per-texture diffuse mean used by SH bounce when non-glowing texels
 remain; an all-glowing texture uses its full average (`build_pipeline.md`
 §Compiler pipeline). Glow strength follows the original material name, as at
-runtime. To light a scene, an author places a separate light entity.
+runtime. To light a scene, an author places a light entity; a `light_area`
+brush entity makes its own `_e` faces that light (decided, not yet built;
+`build_pipeline.md` §Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions
@@ -160,8 +162,10 @@ runtime. To light a scene, an author places a separate light entity.
 - **Strength:** a prefix-derived `Material::emissive_strength()` multiplier scales
   the sampled color. `neon_` is 4.0 so an authored bright texel exceeds the
   renderer bloom threshold; other current material prefixes are zero until
-  content establishes a use for them. There is no per-surface runtime scalar in
-  v1.
+  content establishes a use for them. A `light_area` face (decided, not yet
+  built) instead takes its light's `_glow` × the light's live colour and
+  brightness, so its glow follows its light frame for frame. Every other face
+  has no per-surface runtime scalar.
 - **Composite and fallback:** forward rendering writes `lit + emissive` into the
   renderer-owned HDR scene target. An absent `_e` uses a shared 1×1 black sRGB
   placeholder, an additive no-op. Bloom is a screen-space effect after this

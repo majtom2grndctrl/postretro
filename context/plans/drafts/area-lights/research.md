@@ -193,7 +193,7 @@ Sources: rows 1–4 come from primary source code on GitHub. Rows 5–6 come fro
 
 ## Pin table
 
-Orderings and edges the brief's Acceptance rows cite. Review round 1, 2026-11-15.
+Orderings and edges the brief's Acceptance rows cite. Review rounds 1–2, 2026-11-15.
 
 | Id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
@@ -206,10 +206,15 @@ Orderings and edges the brief's Acceptance rows cite. Review round 1, 2026-11-15
 | O7 | Two overlapping coplanar _e brushes in one entity; an _e face half sunk into a worldspawn wall | Exposure subtracts world solids and sibling brushes, with one coplanar sibling winning, before the light's polygons are fixed | The summed emitting area equals the visible glass area. The buried half emits nothing, and the overlap counts once |
 | O8 | Exposure leaves a sliver or zero-area piece; a texel whose every sample carries weight 0 | Pieces under an area floor are dropped before the light's polygons are fixed. Σw = 0 stores visibility 0 without dividing | No NaN or Inf in any bake output. An entity whose only pieces are slivers fails as having no _e face |
 | O9 | One worker thread builds an area light's probe set and then a point light's at the same count, and the reverse | The polygon lattice never reads or writes the count-keyed point/spot memo | The point light's probe set is identical in both orders |
-| O10 | A wall within reach of a panel's corner, but farther than reach from its centroid, moves between two builds | The layer key's geometry slice uses the same containing sphere as the culls | The light's layer key changes, and the warm rebuild matches a cold build byte for byte |
+| O10 | A wall within reach of a panel's corner, but farther than reach from its centroid, moves between two builds | The layer key's geometry slice uses the reach sphere | The light's layer key changes, and the warm rebuild matches a cold build byte for byte |
 | O11 | Lights in entity order: point light, area light, point light | The area light's polygons wait for exposure against every brush. The light still enters at its entity position, with its start-state entry, before script membership runs | The area light holds index 1 in getMapEntities, the light table, the start-state table and every namespace |
 | O12 | One _e side the BSP splits into several render faces; an emitting face sharing an edge with a non-emitting frame face | The polygon list takes the unsplit side once. The glow id is stamped on every render face derived from that side, on unshared vertices | The light holds that side once. Every piece glows. The frame face draws no glow, and the glass glows to its edge |
 | O13 | A script write in tick N; that frame's compose and forward passes | The bridge upload precedes compose and forward. The glow reads the light's compose descriptor and the frame's time uniform in the shader, never a CPU-evaluated copy | Glow and room light use one curve value per frame |
+| O14 | A tagged or group sweep whose targets, in entity order, are spot S1, area light A, spot S2 | Every target's kind is checked before any target is written, as an argument refusal is today | The command fails with InvalidArgument naming A. S1, A and S2 keep their animations on the host and on every client. A sweep on a spot-only tag still applies and replicates |
+| O15 | A _start_inactive 1 area light whose only levelLoad step carries a direction channel | Scripts-build derives the start state before the runtime refuses the step. A step the runtime refuses for this light contributes no start state | The light starts dark, faces and room, as with no levelLoad step. A brightness-only levelLoad step on the same light still starts it lit |
+| O16 | Lights in entity order: static area light S, then animated area light A holding compose slot 0 | S's glow entries carry no compose slot. The shader takes the static term for a slotless entry and the descriptor for a slotted one | S's faces hold _e × _glow × _color on every frame while A pulses. A's faces follow A |
+| O17 | A finite colour animation (playCount 1) on an animated area light runs to its end | The bridge settles on the first frame past the end: the final colour moves into the light's colour, the curve clears, and the descriptor carries final colour × intensity. Glow reads that descriptor on that frame | The faces glow in the final colour on the settle frame and after, matching the room. The glow never returns to _color |
+| O18 | An area light authored with delay 0, _light_size and spot keys, queried by a level script at bake time and at runtime | Exposure, the centroid and the resolved reach are fixed, and inert keys normalised away, before the bake-time light table is built | Both snapshots read lightType Area, falloffModel InverseSquared, falloffRange equal to the resolved reach, position equal to the area-weighted centroid, and no cone fields |
 
 ---
 

@@ -101,7 +101,6 @@ light.
   4 m panel is wrong.
 - **Wire: AlphaLights (id 18) v5 adds one type value.** No polygon payload ships
   until a runtime consumer reads it. A later specular feature takes its own bump.
-  LightInfluence stays a bounding sphere.
 - **Non-goals.**
   - Two-sided emitters: none of the motivating content needs one.
   - Texture-keyed emission and the texture-level bounce multiplier: the reworded
@@ -174,6 +173,9 @@ Placement, culls and keys:
   buried in solid is still dropped.
 - [ ] A wall texel at a flush emitter's edge stores visibility 1 and matches the
   unoccluded polygon term within 1%.
+- [ ] Every shadow-ray target the polygon lattice yields, after any lift, lies
+  inside the light's emitter sphere, for a 4 × 4 m ceiling panel, a 4 × 0.1 m
+  strip and a light wrapping all four sides of a pillar.
 - [ ] Every bake output is byte-identical with exact skips on and off on an
   area-light map, and the shaft cull still clears tiles there: its cleared-tile
   count is above zero.
@@ -203,11 +205,14 @@ Placement, culls and keys:
   `style` fails the build, naming the light and key. `delay`, `_light_size` and
   each spot key warn, naming the light and key, and leave every bake byte as if
   absent.
+- [ ] Editing only `delay`, `_light_size` or a spot key on an area light re-keys
+  no bake cache entry: a warm rebuild reads every lightmap, surface-radiance and
+  SH entry from the cache.
 - [ ] Promotion selects no area light on either path, though the animated area
   light is in section 45's direct-delta set and an animated spot beside it is
-  selected. The placeholder `SpecLight` is never an id-42 owner, and with
-  billboard scatter withheld, billboards beside the panel take no specular from
-  it.
+  selected. The placeholder `SpecLight` is never an id-42 owner. World faces
+  beside the panel take no specular from it, nor do billboards with billboard
+  scatter withheld.
 - [ ] An animated area light's weight map at curve 1 equals its static bake.
 - [ ] AlphaLights v5 round-trips area and non-area records. A v4 file and an
   unknown type value are rejected.
@@ -222,35 +227,50 @@ Script surface:
   checks both accept `"Area"`.
 - [ ] `sweep` on an area light returns `InvalidArgument` and leaves the light's
   animation unchanged. `sweep` on a spot light still works.
+- [ ] A tagged `sweep` over a spot, an area light and a second spot, in that
+  order, changes no light's animation on the host or a client. The same sweep
+  over the two spots alone applies to both (research.md O14).
+- [ ] An area light carrying `delay 0`, `_light_size` and a spot key has
+  identical bake-time and runtime snapshots: `lightType` `"Area"`,
+  `falloffModel` `"InverseSquared"`, `falloffRange` the resolved reach,
+  `position` the centroid (research.md O18).
 
 Glow and light identity (orderings in `research.md` §Pin table):
-- [ ] A static area light's `_e` faces glow on a texture without the `neon_`
-  prefix, at `_e` × `_glow` × `_color`. With `_glow` at 0, 0.5 and 8, the face's
-  emissive term scales by that factor, and every bake section stays
-  byte-identical. A negative `_glow` fails the build.
-- [ ] A white `_e` pane on a red area light glows red. A `colorShift` moves the
-  glow's colour and the room's colour together.
-- [ ] A `neon_` texture on a `light_area` face glows at `_e` × `_glow` × `_color`.
-  The same texture on a worldspawn face keeps its prefix glow.
+- [ ] A static area light's `_e` faces glow at `_e` × `_glow` × `_color` on a
+  plain or `neon_` texture, so a white pane on a red light glows red. The same
+  textures on a worldspawn face keep their prefix glow, and a plain one stays
+  dark, in the same draw. With `_glow` at 0, 0.5 and 8 the emissive term scales
+  by that factor and every bake section stays byte-identical. A negative `_glow`
+  fails the build.
+- [ ] A `colorShift` moves the glow's colour and the room's colour together.
 - [ ] Doubling an area light's `light` doubles its lightmap and probe output and
   leaves its faces' emissive term unchanged (research.md O2).
 - [ ] Two otherwise equal area lights with the same diffuse map, one on a
   `neon_` texture with a white `_e` map and one on a plain texture with a red
   `_e` map, produce byte-identical lightmap, SH and scatter sections.
-- [ ] A plain-prefix texture with an `_e` map glows on a `light_area` face and
-  stays dark on a worldspawn face in the same draw.
 - [ ] Changing only `_glow` re-keys no bake cache entry: a warm rebuild reads
   every lightmap, surface-radiance and SH entry from the cache.
 - [ ] A script fade from 1 to 0.25 on an animated area light settles with its
   faces' emissive multiplier at 0.25, equal to the room's settled scale, on the
   settle frame and after (research.md O1).
+- [ ] A one-shot colour animation from white to amber on an animated area light
+  settles with its faces' glow colour amber, equal to the room's settled colour,
+  on the settle frame and after (research.md O17).
 - [ ] An area light with `_start_inactive 1` and no `_animated` key gains an
   animated reservation and starts with dark faces and an unlit room. The same
   light under a `levelLoad` pulse starts lit, faces and room together
   (research.md O3).
+- [ ] A `_start_inactive 1` area light whose only `levelLoad` step is a `sweep`
+  starts with dark faces and an unlit room (research.md O15).
+- [ ] A static point light with `_start_inactive 1` and no `_animated` key,
+  curve or script step gains no animated reservation and bakes lit into the
+  static lightmap.
 - [ ] On a map with an animated point light ahead of three animated area lights,
   one of them `_bake_only`, each area light's faces resolve to that light's own
   compose descriptor slot (research.md O4).
+- [ ] A static area light authored ahead of an animated one keeps a steady glow
+  at `_e` × `_glow` × `_color` while the animated light pulses (research.md
+  O16).
 - [ ] A map with no area light carries no glow entries and draws prefix glow
   unchanged. Emitting faces past the glow-table cap fail the build, naming the
   count and the cap, and the loader rejects an over-cap table (research.md O5).
@@ -266,6 +286,10 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - [ ] A scripted flicker: the glow and the room light move together frame for
   frame (research.md O13).
 - [ ] Entities walking under the skylight are lit like the walls beside them.
+- [ ] The roadmap "surface lights" entry reads as a texture-keyed front end on
+  the area-light type that owns the texture-level bounce multiplier, and the
+  gi-rtx-lite "Emissive bounce" record carries the line excluding `light_area`
+  faces.
 
 ## Path
 - **Chokepoints.** Add the polygon arm at these, by symbol:

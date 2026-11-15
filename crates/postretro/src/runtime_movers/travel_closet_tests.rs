@@ -1,7 +1,7 @@
 // Game half, on the compiled `mover-closet`: the door driven by ticks,
 // not forced, opens, reverses at mid-travel and closes, and every frame hands
 // the renderer the t′ its author ramp gives that frame's post-tick phase. The
-// ramp comes from the PRL (id 57's ramp record), so the 0.6/0.9 variant
+// ramp comes from the PRL (id 57's mover record), so the 0.6/0.9 variant
 // proves the keys parsed from the map. The renderer half composes and writes
 // live tiles at these t′ (`renderer` `mover_channel::closet_tests`).
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting)

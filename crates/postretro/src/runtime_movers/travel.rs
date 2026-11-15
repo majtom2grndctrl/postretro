@@ -16,6 +16,9 @@ use crate::render::MoverTravel;
 /// The mover's ramped travel fraction from its travel fraction `t` under its author
 /// ramp: `clamp((t - start) / (end - start), 0, 1)`. A ramp load validation
 /// would have refused (an empty or non-finite window) reads as the identity.
+/// A subnormal span overflows the quotient past the window's end: +∞ reads 1,
+/// and −∞ or NaN reads 0. The id-57 knots mirror this rule
+/// (`postretro_level_format::mover_probe_channel::ramped_knot`).
 pub(crate) fn ramped_travel_fraction(t: f32, ramp: MoverLightRamp) -> f32 {
     let span = ramp.end - ramp.start;
     let ramped = if span.is_finite() && span > 0.0 && ramp.start.is_finite() {
@@ -25,6 +28,8 @@ pub(crate) fn ramped_travel_fraction(t: f32, ramp: MoverLightRamp) -> f32 {
     };
     if ramped.is_finite() {
         ramped.clamp(0.0, 1.0)
+    } else if ramped > 0.0 {
+        1.0
     } else {
         0.0
     }

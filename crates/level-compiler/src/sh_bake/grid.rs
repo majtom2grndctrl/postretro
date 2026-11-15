@@ -27,6 +27,19 @@ pub(crate) struct ProbeGridLayout {
 }
 
 impl ProbeGridLayout {
+    /// A grid with no probes, as a map with no geometry lays out.
+    #[cfg(test)]
+    pub(crate) fn no_probes() -> Self {
+        Self {
+            world_min: DVec3::ZERO,
+            dims: [0, 0, 0],
+            cell_size: [1.0; 3],
+            far_sentinel: 0.0,
+            probe_positions: Vec::new(),
+            validity: Vec::new(),
+        }
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.probe_positions.is_empty()
     }

@@ -143,6 +143,27 @@ fn ramped_travel_fraction_reshapes_t_inside_the_author_window_only() {
     assert_eq!(ramped_travel_fraction(f32::NAN, window), 0.0, "never NaN");
 }
 
+/// A subnormal window overflows the quotient past its end: a mover resting
+/// at its far end hands over 1, not 0, as the id-57 knots read it. The
+/// window's start still reads 0, and −0.0 still reads as 0.
+#[test]
+fn ramped_travel_fraction_reads_one_past_a_subnormal_window() {
+    let subnormal = MoverLightRamp {
+        start: 0.0,
+        end: f32::from_bits(1),
+    };
+    for t in [subnormal.end, 0.5, 1.0] {
+        assert_eq!(ramped_travel_fraction(t, subnormal), 1.0, "t = {t}");
+    }
+    assert_eq!(ramped_travel_fraction(0.0, subnormal), 0.0);
+    assert_eq!(ramped_travel_fraction(f32::NAN, subnormal), 0.0, "NaN");
+    assert_eq!(
+        ramped_travel_fraction(-0.0, MoverLightRamp::IDENTITY),
+        0.0,
+        "−0.0 reads as 0"
+    );
+}
+
 /// Game half: a `start_on_spawn` mover and one held at its seeded
 /// terminus both hand over their seeded t before any tick, so the first
 /// composed frame is gated.

@@ -7,11 +7,13 @@
 use super::*;
 use crate::render::MoverTravel;
 use crate::render::mover_channel::depth_test_support::{
-    depth_section, ramp_tile, stored_depth_section, through_base, uniform_tile,
+    PosedDepth, depth_section, posed_depth_section, ramp_tile, stored_depth_section, through_base,
+    uniform_tile,
 };
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::sh_volume::OctahedralShProbe;
 
+use super::super::knots::MoverKnots;
 use super::super::state::MoverTBlock;
 
 struct Plan {
@@ -396,7 +398,9 @@ fn a_partial_landing_then_no_state_returns_every_probe_to_its_base() {
         (1, 9, uniform_tile(1.0, 2.0), uniform_tile(2.0, 5.0)),
     ]);
     let mut plan = Plan::new(&section, &[]);
-    let mut block = MoverTBlock::new(&section.mover_ids());
+    let ids = section.mover_ids();
+    let knots = MoverKnots::new(Some(&section), &ids).expect("every mover has a record");
+    let mut block = MoverTBlock::new(&ids, &knots);
     // Each probe's reference in the moment texels; absent is its base.
     let mut texels = std::collections::BTreeMap::new();
     let state = [MoverTravel {
@@ -600,7 +604,7 @@ fn a_probe_with_no_base_refuses_the_bind() {
 
     let plan = Plan::with_bases(&section, &id59, &[averaged(1.0, 1.0); 10]);
     assert_eq!(
-        (plan.depth.capacities()[4] * size_of::<[f32; 2]>()) as u64,
+        (plan.depth.capacities()[4] * size_of::<f32>()) as u64,
         plan.depth.host_bytes(),
         "the CPU-held tiles are reserved exactly"
     );
@@ -713,9 +717,282 @@ fn fast_f16_conversions_match_the_shared_converters() {
         }
         value *= 1.0007;
     }
-    for special in [0.0, -0.0, 65504.0, 65519.0, 65520.0, f32::INFINITY] {
+    // Each range's edges: the subnormal ties at 2^-25 and 3·2^-25, the
+    // smallest normal and the f32 below it, and the overflow edge at 65520
+    // with the f32 below it.
+    let edges = [
+        0.0,
+        -0.0,
+        f32::from_bits(0x3300_0000),
+        f32::from_bits(0x33c0_0000),
+        f32::from_bits(0x3880_0000),
+        f32::from_bits(0x387f_ffff),
+        65504.0,
+        65519.0,
+        f32::from_bits(0x477f_efff),
+        65520.0,
+        f32::INFINITY,
+    ];
+    for special in edges.into_iter().flat_map(|edge| [edge, -edge]) {
         assert_eq!(f32_to_f16(special), f32_to_f16_bits(special), "{special}");
     }
+}
+
+/// `a + s·(b − a)` in f32, the blend's own arithmetic.
+fn mix(a: f32, b: f32, s: f32) -> f32 {
+    a + s * (b - a)
+}
+
+/// One `(mean, mean_sq)` moment set, as a uniform tile.
+type Moments = (f32, f32);
+
+fn tile_of(moments: Moments) -> Vec<[u16; 2]> {
+    uniform_tile(moments.0, moments.1)
+}
+
+/// What one mover's blend between `lo` and `hi` at interval weight `w`
+/// holds where a mid pose bounds the interval: the mean lerped and rounded
+/// to f16, the variance (`E[d²] − E[d]²`, at least 0 at each end) lerped,
+/// and `E[d²]` rebuilt from the rounded mean, capped at the largest f16.
+fn mean_variance(lo: Moments, hi: Moments, w: f32) -> Moments {
+    if w <= 0.0 {
+        return lo;
+    }
+    let variance = |m: Moments| (m.1 - m.0 * m.0).max(0.0);
+    let mean = f16(f32_to_f16_bits(mix(lo.0, hi.0, w)));
+    let spread = mix(variance(lo), variance(hi), w).max(0.0);
+    (mean, (spread + mean * mean).min(65504.0))
+}
+
+/// AC 15 (depth half): at each stored pose's t′ the live tile holds that
+/// pose's tile bit for bit; between two stored poses, a mid pose bounding
+/// each interval, it blends their mean and variance (owner, 2026-11-11), so
+/// poses sharing one spread compose that spread with no added variance and
+/// never pass through the base; out and back to one t′ writes the same
+/// bytes.
+#[test]
+fn piecewise_depth_reads_each_stored_pose_exactly_and_blends_mean_and_variance_between() {
+    let knots = vec![0.0, 0.25, 0.5, 1.0];
+    let poses: [Moments; 4] = [(1.0, 2.0), (2.0, 5.0), (4.0, 17.0), (3.0, 10.0)];
+    let base: Moments = (8.0, 65.0);
+    let section = posed_depth_section(
+        &[(1, (0.0, 1.0), knots.clone())],
+        vec![(
+            1,
+            3,
+            poses
+                .iter()
+                .map(|&pose| PosedDepth::Tile(tile_of(pose)))
+                .collect(),
+        )],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 4];
+    probes[3] = averaged(base.0, base.1);
+    let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+    for (pose, &t) in knots.iter().enumerate() {
+        plan.frame(&[(0, t)], &[0]);
+        assert_eq!(
+            plan.tile(0),
+            &tile_of(poses[pose])[..],
+            "pose {pose} at its knot"
+        );
+    }
+    // (t′, lo, hi, w): the intervals [0, 0.25] and [0.5, 1] end at a
+    // terminus and a mid pose, so they blend mean and variance too.
+    for (t, lo, hi, w) in [
+        (0.0625, 0, 1, 0.25),
+        (0.125, 0, 1, 0.5),
+        (0.375, 1, 2, 0.5),
+        (0.625, 2, 3, 0.25),
+        (0.875, 2, 3, 0.75),
+    ] {
+        plan.frame(&[(0, t)], &[0]);
+        let expected = mean_variance(poses[lo], poses[hi], w);
+        assert_eq!(
+            plan.tile(0),
+            &tile_of(expected)[..],
+            "t′ {t} blends poses {lo}–{hi}"
+        );
+        let mean = mix(poses[lo].0, poses[hi].0, w);
+        let texel = plan.tile(0)[0].map(f16);
+        assert!(
+            (texel[1] - texel[0] * texel[0] - 1.0).abs() < 0.02 && (texel[0] - mean).abs() < 0.01,
+            "t′ {t}: every pose's spread is 1, and the blend keeps it: {texel:?}"
+        );
+    }
+    plan.frame(&[(0, 0.375)], &[0]);
+    let out = plan.tile(0).to_vec();
+    plan.frame(&[(0, 0.9)], &[0]);
+    plan.frame(&[(0, 0.375)], &[0]);
+    assert_eq!(plan.tile(0), &out[..], "out and back reads alike");
+}
+
+/// A probe whose mid poses are all unmarked (outside the near-field domain,
+/// or every one skipped) composes the plain through-base blend at every t′,
+/// as a two-pose mover's probe does.
+#[test]
+fn termini_to_termini_depth_runs_through_the_base() {
+    let (d0, d1, base): (Moments, Moments, Moments) = ((1.0, 2.0), (3.0, 10.0), (8.0, 65.0));
+    let section = posed_depth_section(
+        &[
+            (1, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0]),
+            (2, (0.0, 1.0), vec![0.0, 1.0]),
+        ],
+        vec![
+            (
+                1,
+                3,
+                vec![
+                    PosedDepth::Tile(tile_of(d0)),
+                    PosedDepth::Across,
+                    PosedDepth::Across,
+                    PosedDepth::Tile(tile_of(d1)),
+                ],
+            ),
+            (
+                2,
+                5,
+                vec![PosedDepth::Tile(tile_of(d0)), PosedDepth::Tile(tile_of(d1))],
+            ),
+        ],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 6];
+    probes[3] = averaged(base.0, base.1);
+    probes[5] = averaged(base.0, base.1);
+    let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+    for t in [0.0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0] {
+        plan.frame(&[(0, t), (1, t)], &[0, 1]);
+        let expected = (
+            through_base(d0.0, base.0, d1.0, t),
+            through_base(d0.1, base.1, d1.1, t),
+        );
+        for live in [0, 1] {
+            assert_eq!(
+                plan.tile(live),
+                &tile_of(expected)[..],
+                "live tile {live} at t′ {t} runs through the base"
+            );
+        }
+    }
+}
+
+/// AC 16 (depth half): two movers at one probe, with different pose counts
+/// and an unmarked mid pose, each blend mean and variance between the poses
+/// around their t′, then add their blended differences from the base at t′
+/// between knots for both, and clamp to a valid moment set.
+#[test]
+fn two_posed_movers_at_one_probe_add_their_blended_differences() {
+    let base: Moments = (8.0, 65.0);
+    let (a0, a2, a3): (Moments, Moments, Moments) = ((6.0, 37.0), (2.0, 5.0), (7.0, 50.0));
+    let (b0, b1): (Moments, Moments) = ((9.0, 82.0), (10.0, 101.0));
+    let section = posed_depth_section(
+        &[
+            (1, (0.0, 1.0), vec![0.0, 0.25, 0.5, 1.0]),
+            (2, (0.0, 1.0), vec![0.0, 0.5, 1.0]),
+        ],
+        vec![
+            (
+                1,
+                3,
+                vec![
+                    PosedDepth::Tile(tile_of(a0)),
+                    PosedDepth::Across,
+                    PosedDepth::Tile(tile_of(a2)),
+                    PosedDepth::Tile(tile_of(a3)),
+                ],
+            ),
+            (
+                2,
+                3,
+                vec![
+                    PosedDepth::Tile(tile_of(b0)),
+                    PosedDepth::Tile(tile_of(b1)),
+                    PosedDepth::Base,
+                ],
+            ),
+        ],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 4];
+    probes[3] = averaged(base.0, base.1);
+    let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+    // Mover 1 at 0.375 blends across its unmarked pose 1, poses 0 → 2 at
+    // w 0.75; mover 2 at 0.25 blends poses 0 → 1 at w 0.5.
+    plan.frame(&[(0, 0.375), (1, 0.25)], &[0, 1]);
+    let first = mean_variance(a0, a2, 0.75);
+    let second = mean_variance(b0, b1, 0.5);
+    let sum = |moment: fn(Moments) -> f32| {
+        f64::from(moment(base))
+            + (f64::from(moment(first)) - f64::from(moment(base)))
+            + (f64::from(moment(second)) - f64::from(moment(base)))
+    };
+    let mean = sum(|m| m.0).clamp(0.0, 65504.0);
+    let mean_sq = sum(|m| m.1).max(mean * mean).min(65504.0);
+    assert_eq!(
+        plan.tile(0),
+        &tile_of((mean as f32, mean_sq as f32))[..],
+        "base plus both movers' differences"
+    );
+}
+
+/// AC 17 (depth half) / MP1, MP10: with ramp (0.6, 0.9) the game hands
+/// t′ = ramp(t). Every probe reads the first pose for t < 0.6 and the last
+/// for t > 0.9; a mid knot reads its pose at ramp(t_k); poses squeezed onto
+/// t′ 0 or 1 are never read, so t just past 0.6 and just under 0.9 blend
+/// from the first pose and into the last. No state returns the probe to its
+/// base reference.
+#[test]
+fn a_ramped_movers_depth_reads_its_end_poses_past_the_ramp_edges() {
+    // The game's ramp, mirrored.
+    let ramp = |t: f32| ((t - 0.6) / (0.9 - 0.6)).clamp(0.0, 1.0);
+    let knots = vec![0.0, 0.2, 0.4, 0.6, 0.8, 0.95, 1.0];
+    let (first, mid, last, squeezed): (Moments, Moments, Moments, Moments) =
+        ((1.0, 2.0), (2.0, 5.0), (3.0, 10.0), (40.0, 1700.0));
+    let base: Moments = (8.0, 65.0);
+    let pose = |moments: Moments| PosedDepth::Tile(tile_of(moments));
+    let section = posed_depth_section(
+        &[(1, (0.6, 0.9), knots)],
+        vec![(
+            1,
+            3,
+            vec![
+                pose(first),
+                pose(squeezed),
+                pose(squeezed),
+                pose(squeezed),
+                pose(mid),
+                pose(squeezed),
+                pose(last),
+            ],
+        )],
+    );
+    let mut probes = vec![averaged(0.0, 0.0); 4];
+    probes[3] = averaged(base.0, base.1);
+    let mut plan = Plan::with_bases(&section, &no_id59(), &probes);
+    for (t, expected) in [
+        (0.3, first),
+        (0.6, first),
+        (0.8, mid),
+        (0.9, last),
+        (0.97, last),
+    ] {
+        plan.frame(&[(0, ramp(t))], &[0]);
+        assert_eq!(plan.tile(0), &tile_of(expected)[..], "t {t}");
+    }
+    let mid_t = ramp(0.8);
+    for t in [0.61, 0.7] {
+        let w = ramp(t) / mid_t;
+        plan.frame(&[(0, ramp(t))], &[0]);
+        let expected = mean_variance(first, mid, w);
+        assert_eq!(plan.tile(0), &tile_of(expected)[..], "t {t}");
+    }
+    for t in [0.85, 0.89] {
+        let w = (ramp(t) - mid_t) / (1.0 - mid_t);
+        plan.frame(&[(0, ramp(t))], &[0]);
+        let expected = mean_variance(mid, last, w);
+        assert_eq!(plan.tile(0), &tile_of(expected)[..], "t {t}");
+    }
+    plan.frame(&[(0, -1.0)], &[0]);
+    assert_eq!(plan.references, [(3, None)], "no state reads the base");
 }
 
 /// Per-frame CPU cost of one travelling mover's live tiles on a real map:

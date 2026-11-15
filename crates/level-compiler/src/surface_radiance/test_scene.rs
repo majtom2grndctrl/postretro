@@ -425,6 +425,16 @@ impl Scene {
     }
 }
 
+/// [`entries`] less id 34's bake-time record under `volume_key`, which every
+/// gather rewrites with its own measured time.
+pub(super) fn baked_entries(dir: &Path, volume_key: &CacheKey) -> EntryBytes {
+    let mut entries = entries(dir);
+    entries
+        .remove(&super::bake_time::BakeTimeRecord::key(volume_key).as_filename())
+        .expect("id 34's bake time recorded");
+    entries
+}
+
 /// Every cache entry in `dir`, by file name.
 pub(super) fn entries(dir: &Path) -> EntryBytes {
     std::fs::read_dir(dir)

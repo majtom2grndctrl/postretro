@@ -234,6 +234,11 @@ fn vs_main(in: VertexInput, @builtin(instance_index) instance_index: u32) -> Ver
 // See the same split in `forward.wgsl`: Surface Depth's side-wall normal points
 // ALONG the surface (perpendicular to the surface NORMAL), so biasing along it
 // would slide the lookup sideways instead of lifting it off the surface.
+//
+// Both reads lift the lookup SH_MOVER_LOOKUP_OFFSET_CELLS (0.4) cell off the
+// face, not the world's 0.1, and record the lift above the geometric plane so
+// the smooth backface form measures each probe from the surface point itself
+// (`sh_sample.wgsl` SH_BACKFACE_SMOOTH, owner Ruling A).
 fn sample_sh_indirect(
     world_pos: vec3<f32>,
     shading_normal: vec3<f32>,
@@ -243,8 +248,9 @@ fn sample_sh_indirect(
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
-    const SH_NORMAL_OFFSET_M: f32 = 0.1;
+    const SH_NORMAL_OFFSET_M: f32 = SH_MOVER_LOOKUP_OFFSET_CELLS;
     let offset_world = world_pos + offset_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    sh_receiver_lookup_lift = dot(offset_world - world_pos, geo_normal);
     let gdims_u = sh_grid.grid_dimensions;
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
     let cell_coord = (offset_world - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));
@@ -265,8 +271,9 @@ fn sample_sh_direct(
     if sh_grid.has_sh_volume == 0u {
         return vec3<f32>(0.0);
     }
-    const SH_NORMAL_OFFSET_M: f32 = 0.1;
+    const SH_NORMAL_OFFSET_M: f32 = SH_MOVER_LOOKUP_OFFSET_CELLS;
     let offset_world = world_pos + offset_normal * SH_NORMAL_OFFSET_M * sh_grid.cell_size;
+    sh_receiver_lookup_lift = dot(offset_world - world_pos, geo_normal);
     let gdims_u = sh_grid.grid_dimensions;
     let gdims_f = max(vec3<f32>(gdims_u) - vec3<f32>(1.0), vec3<f32>(0.0));
     let cell_coord = (offset_world - sh_grid.grid_origin) / max(sh_grid.cell_size, vec3<f32>(1.0e-6));

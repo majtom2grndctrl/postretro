@@ -81,6 +81,39 @@ pub struct FixturePipeline {
     pub kinematic_waypoints: Vec<MapKinematicWaypoint>,
 }
 
+impl FixturePipeline {
+    /// The probe grid at `probe_spacing`, as the pipeline lays it out for
+    /// mover pose placement and the SH bakes.
+    pub(crate) fn probe_layout(&self, probe_spacing: f32) -> crate::sh_bake::ProbeGridLayout {
+        crate::sh_bake::probe_grid_layout_of(
+            &self.geometry,
+            &self.tree,
+            &self.exterior_leaves,
+            probe_spacing,
+        )
+    }
+
+    /// The map's analysed movers, placed along each path as the pipeline
+    /// places them at `probe_spacing`, geometry knots included.
+    pub(crate) fn placed_mover_poses(
+        &self,
+        probe_spacing: f32,
+    ) -> crate::mover_light_gate::MoverPoses {
+        let mut poses = crate::mover_light_gate::MoverPoses::resolve(
+            &self.kinematic_movers,
+            &self.kinematic_waypoints,
+        );
+        poses
+            .place_poses(
+                &self.kinematic_movers,
+                probe_spacing,
+                &self.probe_layout(probe_spacing),
+            )
+            .expect("the fixture's movers place");
+        poses
+    }
+}
+
 /// Absolute path to a fixture `.map` under `content/dev/maps/`.
 pub fn fixture_path(name: &str) -> PathBuf {
     // CARGO_MANIFEST_DIR = crates/level-compiler/. Workspace root is ../../.

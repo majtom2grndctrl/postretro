@@ -9,7 +9,6 @@ use std::fmt;
 
 use glam::Vec3;
 use postretro_entities::KinematicMoverComponent;
-use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 use super::MoverPathArcLengths;
 #[cfg(doc)]
@@ -63,42 +62,17 @@ pub fn set_mover_phase_at_path_fraction(
     if !t.is_finite() || !(0.0..=1.0).contains(&t) {
         return Err(ForcedPhaseError::FractionOutOfRange(t));
     }
-    let last = mover.waypoints.len().saturating_sub(1);
-    let total = arc_lengths.total_length();
-    let (segment, elapsed_ms, position) = if t == 0.0 || mover.waypoints.len() < 2 {
-        (
-            0,
-            0.0,
-            mover.waypoints.first().copied().unwrap_or(Vec3::ZERO),
-        )
-    } else if t == 1.0 {
-        (last, 0.0, mover.waypoints[last])
+    let at_terminus = t == 0.0 || t == 1.0 || mover.waypoints.len() < 2;
+    if !at_terminus && (!mover.speed_mps.is_finite() || mover.speed_mps <= 0.0) {
+        return Err(ForcedPhaseError::NoTravel);
+    }
+    let point = arc_lengths.point_at(t).ok_or(ForcedPhaseError::NoTravel)?;
+    let elapsed_ms = if at_terminus {
+        0.0
     } else {
-        if !total.is_finite()
-            || total <= 0.0
-            || !mover.speed_mps.is_finite()
-            || mover.speed_mps <= 0.0
-        {
-            return Err(ForcedPhaseError::NoTravel);
-        }
-        let target = t * total;
-        // The last non-degenerate segment that starts at or before the
-        // target: a degenerate segment adds no length, so it is never chosen.
-        let segment = (0..last)
-            .rev()
-            .find(|&index| {
-                let length = (mover.waypoints[index + 1] - mover.waypoints[index]).length();
-                length.is_finite()
-                    && length > KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH
-                    && arc_lengths.at_waypoint(index) <= target
-            })
-            .ok_or(ForcedPhaseError::NoTravel)?;
-        let (from, to) = (mover.waypoints[segment], mover.waypoints[segment + 1]);
-        let length = (to - from).length();
-        let fraction = ((target - arc_lengths.at_waypoint(segment)) / length).clamp(0.0, 1.0);
-        let duration_ms = (length / mover.speed_mps) * 1000.0;
-        (segment, fraction * duration_ms, from.lerp(to, fraction))
+        point.segment_fraction * ((point.segment_length / mover.speed_mps) * 1000.0)
     };
+    let (segment, position) = (point.segment, point.position);
     mover.segment_index = u16::try_from(segment).unwrap_or(u16::MAX);
     mover.direction_sign = 1;
     mover.segment_elapsed_ms = elapsed_ms;

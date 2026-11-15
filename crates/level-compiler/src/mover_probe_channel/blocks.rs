@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use postretro_level_format::mover_probe_channel::{
-    BounceEntryParts, DepthRecordParts, MOVER_BOUNCE_RESIDENT_BYTE_BAR, MoverBounceEntry,
-    MoverDepthRecord,
+    BounceEntryParts, BouncePoseMasks, DepthRecordParts, MOVER_BOUNCE_RESIDENT_BYTE_BAR,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverDepthRecord, PoseMark,
 };
 use postretro_level_format::sh_reconstruct::local_xyz;
 
@@ -31,17 +31,17 @@ pub(crate) struct BounceBlockCounts {
     pub(crate) bounce_entries: usize,
     /// Σ affected probes over bounce entries.
     pub(crate) affected_probes: usize,
-    /// Affected probes storing a state at one terminus only: the other
-    /// composes id 34.
+    /// Affected probes storing a state at some poses only: the others read
+    /// id 34 (at a terminus or a mid pose that marks the base) or blend
+    /// across (at a mid pose that marks nothing).
     pub(crate) one_sided_probes: usize,
     pub(crate) bounce_payload_bytes: u64,
     pub(crate) depth_records: usize,
-    /// Depth records storing a tile at one terminus only: the other reads
-    /// the probe's base.
+    /// Depth records storing a tile at some poses only.
     pub(crate) one_sided_records: usize,
     /// One renderer-owned live tile per distinct depth probe.
     pub(crate) live_tiles: usize,
-    /// CPU-held closed-pose tiles: one per stored (record, terminus).
+    /// CPU-held closed-pose tiles: one per stored (record, pose).
     pub(crate) closed_pose_tiles: usize,
 }
 
@@ -63,22 +63,41 @@ impl BounceBlocks {
             }
             for (cell, mut probes) in by_cell {
                 probes.sort_unstable_by_key(|&(local, _)| local);
-                let mut stored_probe_masks = [0u64; 2];
+                let mut poses = vec![BouncePoseMasks::default(); states.pose_count];
                 for &(local, probe) in &probes {
-                    for (mask, stored) in stored_probe_masks.iter_mut().zip(probe.stored) {
-                        *mask |= u64::from(stored) << local;
+                    debug_assert_eq!(probe.marks.len(), states.pose_count);
+                    for (masks, mark) in poses.iter_mut().zip(&probe.marks) {
+                        match mark {
+                            PoseMark::Stored => masks.stored |= 1 << local,
+                            PoseMark::Base => masks.base |= 1 << local,
+                            PoseMark::Unmarked => {}
+                        }
+                    }
+                }
+                // A probe's tiles run pose by pose; the section's run pose
+                // after pose, then probe by stored rank.
+                let mut tiles = Vec::new();
+                for pose in 0..states.pose_count {
+                    for &(_, probe) in &probes {
+                        if probe.marks[pose] == PoseMark::Stored {
+                            let at = probe.marks[..pose]
+                                .iter()
+                                .filter(|&&mark| mark == PoseMark::Stored)
+                                .count();
+                            tiles.extend_from_slice(
+                                &probe.tiles[at * MOVER_IRRADIANCE_TILE_F16_COUNT..]
+                                    [..MOVER_IRRADIANCE_TILE_F16_COUNT],
+                            );
+                        }
                     }
                 }
                 blocks.bounce.push(BounceEntryParts {
                     cell,
                     entry: MoverBounceEntry {
                         mover_id: states.mover_id,
-                        stored_probe_masks,
+                        poses,
                     },
-                    tiles: probes
-                        .into_iter()
-                        .flat_map(|(_, probe)| probe.tiles.iter().copied())
-                        .collect(),
+                    tiles,
                 });
             }
             for probe in &states.depth {
@@ -86,7 +105,7 @@ impl BounceBlocks {
                     record: MoverDepthRecord {
                         mover_id: states.mover_id,
                         probe_index: probe.probe,
-                        stored_termini: probe.stored,
+                        marks: probe.marks.clone(),
                     },
                     tiles: probe.tiles.clone(),
                 });
@@ -110,8 +129,12 @@ impl BounceBlocks {
                 .bounce
                 .iter()
                 .map(|part| {
-                    let [m0, m1] = part.entry.stored_probe_masks;
-                    (m0 ^ m1).count_ones() as usize
+                    let every = part
+                        .entry
+                        .poses
+                        .iter()
+                        .fold(u64::MAX, |mask, pose| mask & pose.stored);
+                    (part.entry.affected_probe_mask() & !every).count_ones() as usize
                 })
                 .sum(),
             bounce_payload_bytes: self
@@ -123,7 +146,7 @@ impl BounceBlocks {
             one_sided_records: self
                 .depth
                 .iter()
-                .filter(|part| part.record.stored_tile_count() == 1)
+                .filter(|part| part.record.stored_tile_count() < part.record.pose_count())
                 .count(),
             live_tiles: self.live_tile_count(),
             closed_pose_tiles: self
@@ -137,11 +160,15 @@ impl BounceBlocks {
     /// Distinct probes carrying mover depth: one live tile each, however many
     /// movers change the probe.
     pub(crate) fn live_tile_count(&self) -> usize {
+        self.live_probes().len()
+    }
+
+    /// The probes carrying mover depth, each composing a live tile.
+    pub(crate) fn live_probes(&self) -> BTreeSet<u32> {
         self.depth
             .iter()
             .map(|part| part.record.probe_index)
-            .collect::<BTreeSet<_>>()
-            .len()
+            .collect()
     }
 
     /// Log the blocks once per build. Where each payload is placed is
@@ -150,8 +177,8 @@ impl BounceBlocks {
         let counts = self.counts();
         log::info!(
             "[MoverLight] MoverProbeChannel (id 57) bounce block: {} entr(y/ies) from {} \
-             mover(s), {} affected probe(s) ({} storing one terminus), payload {} B (resident \
-             bar {} B); depth block: {} record(s) ({} storing one terminus) from {} mover(s), {} \
+             mover(s), {} affected probe(s) ({} storing some poses only), payload {} B (resident \
+             bar {} B); depth block: {} record(s) ({} storing some poses only) from {} mover(s), {} \
              live tile(s), {} CPU-held closed-pose tile(s)",
             counts.bounce_entries,
             counts.bounce_movers,

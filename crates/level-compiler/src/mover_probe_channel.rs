@@ -1,24 +1,35 @@
-// Mover probe channel: what a mover posed at a terminus changes in the baked
-// probe data. The direct half bakes each gated light's surviving visibility
+// Mover probe channel: what a mover posed along its path changes in the
+// baked probe data. The direct half bakes each gated light's surviving visibility
 // (id 57's direct block); the bounce half re-bakes the SH base with each
 // mover posed (id 57's bounce block), and the same posed gather bins its
 // closed-pose depth tiles (id 57's depth block).
 // See: context/lib/build_pipeline.md §Compiler pipeline step 12 (Mover probe channel)
 
+mod absent_bounces;
+mod absent_memo;
 mod bake;
 mod blocks;
 mod bounce;
-mod bounce_memo;
 mod cost;
 mod depth;
 mod direct;
 mod direct_memo;
 mod domain;
+mod edge_copy;
 mod gather;
 mod lights;
+mod mid_pose;
+mod mid_pose_only;
+mod near_field;
+mod near_field_bounce;
+mod pose_bake;
+mod pose_lookup;
+mod pose_memo;
+mod pose_payload;
 mod posed_scene;
 mod posed_solid;
 mod section;
+mod skip;
 mod states;
 mod visibility;
 
@@ -27,35 +38,53 @@ mod direct_tests;
 #[cfg(test)]
 mod fixture_cost_tests;
 #[cfg(test)]
-mod fixture_scene;
+pub(crate) mod fixture_scene;
+#[cfg(test)]
+mod later_bounce_tests;
 #[cfg(test)]
 mod raised_room_tests;
 #[cfg(test)]
+pub(crate) mod reference_maps;
+#[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-pub(crate) use bake::PosedBounce;
+pub(crate) use absent_bounces::AbsentLaterBounces;
+pub(crate) use absent_memo::AbsentBounceMemo;
 pub(crate) use bake::{
-    MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverSlot, StaticBounce, StaticTail,
-    bake_mover_bounce, sh_base_bounce_count,
+    MoverBounceBake, MoverBounceJob, MoverBounceRequest, StaticBounce, bake_mover_bounce,
+    poses_progress_units, sh_base_bounce_count,
 };
 pub(crate) use blocks::BounceBlocks;
-pub(crate) use bounce_memo::BounceMemo;
-pub(crate) use cost::MoverChannelCost;
-pub(crate) use depth::{CarriedDepth, DepthReservation, reserve_mover_tiles};
+pub(crate) use cost::{MoverChannelCost, pose_held_bytes};
+pub(crate) use depth::{
+    CarriedDepth, DepthReservation, MoverAbsentDepth, refuse_cut_short, reserve_mover_tiles,
+};
 pub(crate) use direct::{DirectScene, MoverDirectBake, ProbeCells, bake_direct};
+#[cfg(test)]
+pub(crate) use domain::direct_display_levels;
 #[cfg(test)]
 pub(crate) use domain::{
     BOUNCE_FLOOR_LEVELS, compact_tile, display_levels, max_abs_difference, round_trip_error,
 };
+#[cfg(test)]
+pub(crate) use edge_copy::value_sources;
 pub(crate) use gather::PosedGather;
 #[cfg(test)]
-pub(crate) use gather::compact_slots;
+pub(crate) use gather::{DomainProbe, compact_slots};
 pub(crate) use lights::{ChannelLightSources, channel_lights};
-pub(crate) use posed_scene::PosedScene;
-pub(crate) use posed_solid::PosedMovers;
+pub(crate) use mid_pose_only::mid_pose_only_lights;
+pub(crate) use near_field::NearFieldDomain;
 #[cfg(test)]
-pub(crate) use posed_solid::enclosure_inset;
-pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRamps, channel_section};
+pub(crate) use pose_bake::PosedBounce;
+pub(crate) use pose_lookup::{HitReduction, MoverPoseBounces, PoseLookup};
+pub(crate) use pose_memo::PoseMemo;
+pub(crate) use posed_scene::PosedScene;
+pub(crate) use posed_solid::{PosedMovers, enclosure_inset};
+#[cfg(test)]
+pub(crate) use posed_solid::{PosedSolid, box_brush as sided_box_brush};
+pub(crate) use section::{EmittedDirectEntries, MoverPayloadBars, MoverRecords, channel_section};
+pub(crate) use skip::{SkipBars, SkipCounts, skip_redundant_mid_poses};
 pub(crate) use states::MoverBounceStates;
+#[cfg(test)]
+pub(crate) use states::{BounceProbe, DepthProbe};
 pub(crate) use visibility::{JointVisibility, PosedOccluder, joint_soft_visibility};

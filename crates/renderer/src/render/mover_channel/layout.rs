@@ -1,6 +1,7 @@
 // Mover probe channel table: id 57's direct block laid out for the two
 // direct-SH compose passes, each gated light's term T resolved once per
-// masked probe, and the per-mover row lists the streamed planner recomposes.
+// masked probe, and the per-mover row lists the streamed planner recomposes
+// (`rows.rs`).
 // Each listed cell's payload is one run of words its base word points at:
 // fixed in a whole table, placed per resident cell in a pooled one.
 // wgpu-free; `gpu.rs` owns the buffer this lays out.
@@ -9,21 +10,27 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+pub(in crate::render) use super::cell_writes::CellWrite;
+pub(in crate::render) use super::direct_checks::check_direct_cell;
+use super::knots::MoverKnots;
+#[cfg(test)]
+pub(in crate::render) use super::rows::NO_MOVER_ROWS;
+pub(in crate::render) use super::rows::{MoverChannelRows, MoverRows};
+use super::state::{T_SLOT_WORDS, write_no_state};
+pub(in crate::render) use super::terms::{TermFamily, TermRow, WholeTermRows};
 use postretro_level_format::mover_probe_channel::{
-    DirectRecordView, MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-    MoverCellPayload, MoverCellSlices, MoverChannelBlock, MoverHalves, MoverLightNamespace,
-    MoverProbeChannelSection, MoverStreamedRow,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverLightNamespace, MoverProbeChannelSection,
 };
-use postretro_level_format::sh_reconstruct::{Level, kept_mask, stored_delta_tiles};
 
 /// Header words, in `mover_channel.wgsl`'s `MC_HEADER_*` order.
-const HEADER_WORDS: usize = 9;
+const HEADER_WORDS: usize = 10;
 /// Words per term record (`MC_RECORD_WORDS`): probe mask (two words), light
 /// key, mover entry range, first term half within the cell's payload, and
 /// the cell's listed position.
 const RECORD_WORDS: usize = 8;
-/// Words per (record, mover) entry: mover slot, then its first q byte
-/// within the cell's payload.
+/// Words per (record, mover) entry: mover slot and its first q byte within
+/// the cell's payload. The mover's N q bytes per masked probe follow
+/// probe-major, as id 57 stores them; its knot run gives N.
 const MOVER_ENTRY_WORDS: usize = 2;
 /// A cell base word while its payload is not resident: the cell composes as
 /// with no section.
@@ -55,125 +62,13 @@ impl std::fmt::Display for MoverChannelError {
     }
 }
 
-fn fail<T>(message: String) -> Result<T, MoverChannelError> {
+pub(super) fn fail<T>(message: String) -> Result<T, MoverChannelError> {
     Err(MoverChannelError(message))
-}
-
-/// One sparse delta family (id 41 or id 45) as resident metadata: the same
-/// in a whole load and a streamed one, where only its tiles stream.
-#[derive(Clone, Copy, Debug)]
-pub(in crate::render) struct TermFamily<'a> {
-    pub(in crate::render) name: &'static str,
-    pub(in crate::render) valid_probe_masks: &'a [u64],
-    pub(in crate::render) cell_levels: &'a [u8],
-    /// CSR, one offset per affinity cell plus a trailing total.
-    pub(in crate::render) affinity_offsets: &'a [u32],
-    pub(in crate::render) affinity_lights: &'a [u32],
-}
-
-impl TermFamily<'_> {
-    /// The cell-local entry holding `light`'s per-probe term. The channel
-    /// never rebuilds T from corners, so the cell must sit at L0 and keep
-    /// every probe `mask` names.
-    fn entry_in_cell(
-        &self,
-        cell: usize,
-        light: u32,
-        mask: u64,
-    ) -> Result<usize, MoverChannelError> {
-        let name = self.name;
-        let (Some(&level), Some(&valid), Some(range)) = (
-            self.cell_levels.get(cell),
-            self.valid_probe_masks.get(cell),
-            self.affinity_offsets.get(cell..cell + 2),
-        ) else {
-            return fail(format!("affinity cell {cell} is outside {name}"));
-        };
-        if Level::from_u8(level) != Some(Level::L0) {
-            return fail(format!(
-                "{name} stores affinity cell {cell} at level {level}, not L0, under gated probes"
-            ));
-        }
-        if mask & !kept_mask(Level::L0, valid) != 0 {
-            return fail(format!(
-                "a gated probe of affinity cell {cell} is not a valid {name} probe"
-            ));
-        }
-        let lights = self
-            .affinity_lights
-            .get(range[0] as usize..range[1] as usize)
-            .unwrap_or(&[]);
-        match lights.iter().position(|&entry| entry == light) {
-            Some(entry) => Ok(entry),
-            None => fail(format!(
-                "{name} holds no entry for light {light} at affinity cell {cell}, and the record carries no tile of its own"
-            )),
-        }
-    }
-}
-
-/// One affinity cell's tiles in a delta family: each entry's first f16 half
-/// in `tiles`, and the cell's valid probes, which an L0 cell keeps in order.
-#[derive(Clone, Copy, Debug)]
-pub(in crate::render) struct TermRow<'a> {
-    pub(in crate::render) entry_offsets: &'a [u32],
-    pub(in crate::render) tiles: &'a [u16],
-    pub(in crate::render) valid_probe_mask: u64,
-}
-
-impl<'a> TermRow<'a> {
-    fn tile(&self, entry: usize, local_probe: u32) -> Option<&'a [u16]> {
-        let below = (1u64 << local_probe) - 1;
-        let rank = (self.valid_probe_mask & below).count_ones() as usize;
-        let start = *self.entry_offsets.get(entry)? as usize + rank * TILE_HALVES;
-        self.tiles.get(start..start + TILE_HALVES)
-    }
-}
-
-/// A whole-loaded delta family's rows: each CSR entry's first f16 half in
-/// the family's compact payload, entries in CSR order.
-pub(in crate::render) struct WholeTermRows<'a> {
-    family: TermFamily<'a>,
-    tiles: &'a [u16],
-    entry_offsets: Vec<u32>,
-}
-
-impl<'a> WholeTermRows<'a> {
-    pub(in crate::render) fn new(family: TermFamily<'a>, tiles: &'a [u16]) -> Self {
-        let cells = family.affinity_offsets.len().saturating_sub(1);
-        let mut entry_offsets = Vec::with_capacity(family.affinity_lights.len());
-        let mut next = 0u32;
-        for cell in 0..cells {
-            let level = Level::from_u8(family.cell_levels[cell]).unwrap_or(Level::L0);
-            let kept = stored_delta_tiles(level, family.valid_probe_masks[cell]) as u32;
-            for _ in family.affinity_offsets[cell]..family.affinity_offsets[cell + 1] {
-                entry_offsets.push(next);
-                next = next.saturating_add(kept * TILE_HALVES as u32);
-            }
-        }
-        Self {
-            family,
-            tiles,
-            entry_offsets,
-        }
-    }
-
-    pub(in crate::render) fn row(&self, cell: u32) -> Option<TermRow<'_>> {
-        let cell = cell as usize;
-        let range = self.family.affinity_offsets.get(cell..cell + 2)?;
-        Some(TermRow {
-            entry_offsets: self
-                .entry_offsets
-                .get(range[0] as usize..range[1] as usize)?,
-            tiles: self.tiles,
-            valid_probe_mask: *self.family.valid_probe_masks.get(cell)?,
-        })
-    }
 }
 
 /// Where a GPU record's term T comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TermSource {
+pub(super) enum TermSource {
     /// The record's own tile, from id 57's payload.
     Own,
     /// Cell-local entry of id 41 (the light's selection slot).
@@ -183,29 +78,29 @@ enum TermSource {
 }
 
 #[derive(Clone, Debug)]
-struct RecordPlan {
+pub(super) struct RecordPlan {
     /// Index into the section's `direct_records`.
-    section_record: usize,
-    term: TermSource,
-    probe_mask: u64,
+    pub(super) section_record: usize,
+    pub(super) term: TermSource,
+    pub(super) probe_mask: u64,
 }
 
 /// One listed cell the table carries records for. Its payload is one run of
 /// words: its records' terms (f16 halves), then their q bytes, so the whole
 /// cell sits wherever its base word points.
 #[derive(Clone, Debug)]
-struct CellPlan {
-    cell: u32,
+pub(super) struct CellPlan {
+    pub(super) cell: u32,
     /// Position in the section's `cells`.
-    position: usize,
+    pub(super) position: usize,
     /// Its records in `MoverChannelLayout::records`: static lights first.
-    records: Range<usize>,
+    pub(super) records: Range<usize>,
     /// f16 halves of the term run (even, so word aligned).
-    tile_halves: usize,
+    pub(super) tile_halves: usize,
     /// Bytes of the visibility run, padded to a word.
-    q_bytes: usize,
-    needs_static_terms: bool,
-    needs_animated_terms: bool,
+    pub(super) q_bytes: usize,
+    pub(super) needs_static_terms: bool,
+    pub(super) needs_animated_terms: bool,
     /// The cell's valid probes in ids 41 and 45, which an L0 cell keeps in
     /// order: a streamed row's tile rank.
     static_valid: u64,
@@ -213,94 +108,8 @@ struct CellPlan {
 }
 
 impl CellPlan {
-    fn payload_words(&self) -> usize {
+    pub(super) fn payload_words(&self) -> usize {
         self.tile_halves / 2 + self.q_bytes / 4
-    }
-}
-
-/// Rows per mover slot, CSR: which affinity rows carry a mover's entries in
-/// one pass.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in crate::render) struct MoverRows {
-    offsets: Vec<u32>,
-    rows: Vec<u32>,
-}
-
-impl MoverRows {
-    pub(super) fn from_sets(sets: Vec<Vec<u32>>) -> Self {
-        let mut offsets = Vec::with_capacity(sets.len() + 1);
-        let mut rows = Vec::new();
-        offsets.push(0);
-        for mut set in sets {
-            set.sort_unstable();
-            set.dedup();
-            rows.extend(set);
-            offsets.push(rows.len() as u32);
-        }
-        Self { offsets, rows }
-    }
-
-    /// Rows carrying mover slot `slot`'s entries, ascending.
-    pub(in crate::render) fn rows(&self, slot: u32) -> &[u32] {
-        let slot = slot as usize;
-        match self.offsets.get(slot..slot + 2) {
-            Some(range) => &self.rows[range[0] as usize..range[1] as usize],
-            None => &[],
-        }
-    }
-
-    /// Whether slot `slot` carries any entry in this pass.
-    pub(super) fn has_rows(&self, slot: u32) -> bool {
-        !self.rows(slot).is_empty()
-    }
-}
-
-/// What the streamed planner reads of the channel: per-mover row lists for
-/// each pass, and the rows whose membership the channel widens.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in crate::render) struct MoverChannelRows {
-    /// Pass A: rows carrying a mover's gated static lights. Pass B follows
-    /// Pass A's planned rows on its own.
-    pub(in crate::render) static_by_mover: MoverRows,
-    /// Pass B: rows carrying a mover's gated animated-baked lights.
-    pub(in crate::render) animated_by_mover: MoverRows,
-    /// The indirect pass: rows carrying a mover's bounce entries.
-    pub(in crate::render) bounce_by_mover: MoverRows,
-    /// Rows with a gated static light that can promote: a promotion weight
-    /// change moves their handoff even with no id-41 entry there.
-    pub(in crate::render) promotable: Vec<u32>,
-    /// Rows with a gated animated-baked light: its curve moves them even
-    /// with no id-45 entry there.
-    pub(in crate::render) animated: Vec<u32>,
-}
-
-/// A level with no channel, borrowable for any lifetime: planner tests that
-/// hand the frame no mover rows.
-#[cfg(test)]
-pub(in crate::render) static NO_MOVER_ROWS: MoverChannelRows = MoverChannelRows {
-    static_by_mover: MoverRows {
-        offsets: Vec::new(),
-        rows: Vec::new(),
-    },
-    animated_by_mover: MoverRows {
-        offsets: Vec::new(),
-        rows: Vec::new(),
-    },
-    bounce_by_mover: MoverRows {
-        offsets: Vec::new(),
-        rows: Vec::new(),
-    },
-    promotable: Vec::new(),
-    animated: Vec::new(),
-};
-
-impl MoverChannelRows {
-    pub(in crate::render) fn has_promotable(&self, row: u32) -> bool {
-        self.promotable.binary_search(&row).is_ok()
-    }
-
-    pub(in crate::render) fn has_animated(&self, row: u32) -> bool {
-        self.animated.binary_search(&row).is_ok()
     }
 }
 
@@ -334,20 +143,14 @@ impl<'a> MoverChannelInputs<'a> {
     }
 }
 
-/// One listed cell's payload words, ready to place: its records' terms, then
-/// their q bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::render) struct CellWrite {
-    pub(in crate::render) plan: usize,
-    pub(in crate::render) words: Vec<u32>,
-}
-
 /// The laid-out table and what writes and plans against it.
 #[derive(Debug, Clone)]
 pub(in crate::render) struct MoverChannelLayout {
     initial_words: Vec<u32>,
     /// Slot → id 43 `mover_id`, ascending.
     mover_ids: Vec<u32>,
+    /// Each slot's knots through its ramp, in the table's knot block too.
+    knots: MoverKnots,
     t_word: usize,
     /// First word of each cell's base word.
     bases_word: usize,
@@ -356,8 +159,8 @@ pub(in crate::render) struct MoverChannelLayout {
     payload_word: usize,
     /// Each cell's payload at a fixed base (`None`: pooled per resident cell).
     whole_bases: Option<Vec<u32>>,
-    cells: Vec<CellPlan>,
-    records: Vec<RecordPlan>,
+    pub(super) cells: Vec<CellPlan>,
+    pub(super) records: Vec<RecordPlan>,
     rows: MoverChannelRows,
     /// Records the table leaves ungated: their delta family is absent or
     /// disabled at load (id 41 is disabled by a cleared id-40 selection,
@@ -388,7 +191,10 @@ impl MoverChannelLayout {
             .map(|(slot, &light)| (light, slot as u32))
             .collect();
         let mover_ids = section.mover_ids();
+        let knots = MoverKnots::new(Some(section), &mover_ids)?;
         let slot_of = |mover: u32| mover_ids.binary_search(&mover).ok().map(|slot| slot as u32);
+        let poses_of =
+            |mover: u32| slot_of(mover).map_or(0, |slot| knots.pose_count(slot as usize));
 
         let mut records = Vec::new();
         let mut keys = Vec::new();
@@ -462,9 +268,11 @@ impl MoverChannelLayout {
                     };
                     let probes = record.masked_probe_count();
                     tile_halves += probes * TILE_HALVES;
-                    q_bytes += probes
-                        * MOVER_VISIBILITY_BYTES_PER_PROBE
-                        * section.record_movers(index).len();
+                    q_bytes += section
+                        .record_movers(index)
+                        .iter()
+                        .map(|&mover| probes * poses_of(mover))
+                        .sum::<usize>();
                     records.push(RecordPlan {
                         section_record: index,
                         term,
@@ -508,8 +316,9 @@ impl MoverChannelLayout {
         let records_word = bases_word + cells.len();
         let entries_word = records_word + records.len() * RECORD_WORDS;
         let descriptors_word = entries_word + mover_entries * MOVER_ENTRY_WORDS;
-        let t_word = descriptors_word + inputs.animation_descriptor_indices.len();
-        let payload_word = t_word + mover_ids.len();
+        let knots_word = descriptors_word + inputs.animation_descriptor_indices.len();
+        let t_word = knots_word + knots.table_word_count();
+        let payload_word = t_word + T_SLOT_WORDS * mover_ids.len();
         let whole_payload: usize = cells.iter().map(CellPlan::payload_words).sum();
         let total_words = payload_word + if pooled { 0 } else { whole_payload };
         // The shader addresses q bytes and tile halves within the table, a
@@ -529,6 +338,8 @@ impl MoverChannelLayout {
         words[6] = descriptors_word as u32;
         words[7] = inputs.animation_descriptor_indices.len() as u32;
         words[8] = bases_word as u32;
+        words[9] = knots_word as u32;
+        knots.write_table(&mut words, knots_word);
         let mut whole_bases = (!pooled).then(|| Vec::with_capacity(cells.len()));
         let mut static_rows = vec![Vec::new(); mover_ids.len()];
         let mut animated_rows = vec![Vec::new(); mover_ids.len()];
@@ -570,7 +381,7 @@ impl MoverChannelLayout {
                     let at_entry = entries_word + entry * MOVER_ENTRY_WORDS;
                     words[at_entry] = slot;
                     words[at_entry + 1] = q_at as u32;
-                    q_at += probes * MOVER_VISIBILITY_BYTES_PER_PROBE;
+                    q_at += probes * knots.pose_count(slot as usize);
                     entry += 1;
                     if at < static_ends[index] {
                         static_rows[slot as usize].push(cell.cell);
@@ -588,13 +399,14 @@ impl MoverChannelLayout {
             }
         }
         words[cell_records_word + 2 * cells.len()] = records.len() as u32;
-        words[descriptors_word..t_word].copy_from_slice(inputs.animation_descriptor_indices);
-        words[t_word..payload_word].fill(NO_STATE.to_bits());
+        words[descriptors_word..knots_word].copy_from_slice(inputs.animation_descriptor_indices);
+        write_no_state(&mut words[t_word..payload_word]);
         promotable.dedup();
         animated_cells.dedup();
         Ok(Self {
             initial_words: words,
             mover_ids,
+            knots,
             t_word,
             bases_word,
             payload_word,
@@ -625,8 +437,10 @@ impl MoverChannelLayout {
         words[6] = descriptors_word as u32;
         words[7] = animation_descriptor_indices.len() as u32;
         words[8] = descriptors_word as u32;
+        words[9] = words.len() as u32;
         words[descriptors_word..].copy_from_slice(animation_descriptor_indices);
         Self {
+            knots: MoverKnots::default(),
             t_word: words.len(),
             bases_word: descriptors_word,
             payload_word: words.len(),
@@ -650,7 +464,14 @@ impl MoverChannelLayout {
         &self.mover_ids
     }
 
-    /// Byte offset of the t′ block: one f32 per mover slot.
+    /// Each slot's knots through its ramp: the bounce table and the depth
+    /// live tiles read the same.
+    pub(super) fn knots(&self) -> &MoverKnots {
+        &self.knots
+    }
+
+    /// Byte offset of the t′ block: per mover slot, its t′ then its knot
+    /// bracket ([`T_SLOT_WORDS`]).
     pub(in crate::render) fn t_byte_offset(&self) -> u64 {
         self.t_word as u64 * 4
     }
@@ -718,232 +539,9 @@ impl MoverChannelLayout {
     pub(super) fn whole_base(&self, plan: usize) -> Option<u32> {
         self.whole_bases.as_ref()?.get(plan).copied()
     }
-
-    /// Cell `plan`'s write: its records' terms then their q bytes, as words.
-    /// `payload` is the listed cell's payload
-    /// (`MoverProbeChannelSection::cell_payload`), already checked by
-    /// [`check_direct_cell`]; each family's row is needed only when a record
-    /// borrows from it, and a borrowed term must be finite.
-    pub(in crate::render) fn cell_write(
-        &self,
-        section: &MoverProbeChannelSection,
-        plan: usize,
-        payload: MoverCellPayload<'_>,
-        static_row: Option<TermRow<'_>>,
-        animated_row: Option<TermRow<'_>>,
-    ) -> Result<CellWrite, MoverChannelError> {
-        let cell = &self.cells[plan];
-        let Some(view) = section.direct_cell_at(cell.position, payload) else {
-            return fail(format!(
-                "affinity cell {} holds no direct record",
-                cell.cell
-            ));
-        };
-        let wire_start = section.direct_offsets[cell.position] as usize;
-        let views: Vec<DirectRecordView<'_>> = view.records().collect();
-        let mut tile_halves = Vec::with_capacity(cell.tile_halves);
-        let mut q_bytes = Vec::with_capacity(cell.q_bytes);
-        for record in &self.records[cell.records.clone()] {
-            let view = &views[record.section_record - wire_start];
-            q_bytes.extend_from_slice(view.visibility);
-            let mut mask = record.probe_mask;
-            let mut slot = 0usize;
-            while mask != 0 {
-                let local = mask.trailing_zeros();
-                mask &= mask - 1;
-                let term = match record.term {
-                    TermSource::Own => view.own_tile(slot).map(|tile| tile.to_vec()),
-                    TermSource::Static(entry) => static_row
-                        .and_then(|row| row.tile(entry, local))
-                        .map(<[u16]>::to_vec),
-                    TermSource::Animated(entry) => animated_row
-                        .and_then(|row| row.tile(entry, local))
-                        .map(<[u16]>::to_vec),
-                };
-                let Some(term) = term.filter(|term| term.len() == TILE_HALVES) else {
-                    return fail(format!(
-                        "affinity cell {}'s direct record {} has no term tile at local probe {local}",
-                        cell.cell, record.section_record
-                    ));
-                };
-                if let Some(bad) = first_non_finite(term.iter().copied()) {
-                    return fail(format!(
-                        "affinity cell {}'s direct record {} borrows a non-finite term at local probe {local} ({bad:#06x})",
-                        cell.cell, record.section_record
-                    ));
-                }
-                tile_halves.extend_from_slice(&term);
-                slot += 1;
-            }
-        }
-        debug_assert_eq!(tile_halves.len(), cell.tile_halves);
-        q_bytes.resize(cell.q_bytes, 0);
-        let mut words = Vec::with_capacity(cell.payload_words());
-        words.extend(
-            tile_halves.chunks(2).map(|pair| {
-                u32::from(pair[0]) | (u32::from(pair.get(1).copied().unwrap_or(0)) << 16)
-            }),
-        );
-        words.extend(
-            q_bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|quad| u32::from_le_bytes(*quad)),
-        );
-        Ok(CellWrite { plan, words })
-    }
-
-    /// Every cell `section`'s held direct payload can write now, with the
-    /// whole-load delta rows `rows` supplies. A streamed payload not held, or
-    /// a family row `rows` cannot give, leaves the cell for a later install.
-    /// Every listed cell's held payload is checked first, gated or not.
-    pub(in crate::render) fn held_writes<'a>(
-        &self,
-        section: &MoverProbeChannelSection,
-        slices: &[MoverCellSlices],
-        mut rows: impl FnMut(u32, bool) -> Option<TermRow<'a>>,
-    ) -> Result<Vec<CellWrite>, MoverChannelError> {
-        if !section.payload_held(MoverChannelBlock::Direct) {
-            return Ok(Vec::new());
-        }
-        for (position, cell_slices) in slices.iter().enumerate() {
-            check_direct_cell(section, position, held_direct_payload(section, cell_slices))?;
-        }
-        let mut writes = Vec::new();
-        for (plan, cell) in self.cells.iter().enumerate() {
-            let static_row = if cell.needs_static_terms {
-                match rows(cell.cell, false) {
-                    Some(row) => Some(row),
-                    None => continue,
-                }
-            } else {
-                None
-            };
-            let animated_row = if cell.needs_animated_terms {
-                match rows(cell.cell, true) {
-                    Some(row) => Some(row),
-                    None => continue,
-                }
-            } else {
-                None
-            };
-            let payload = held_direct_payload(section, &slices[cell.position]);
-            writes.push(self.cell_write(section, plan, payload, static_row, animated_row)?);
-        }
-        Ok(writes)
-    }
-
-    /// Cell `plan`'s direct payload for a write: held in `section`, or from
-    /// the cell's streamed id-50 row. A held direct payload reads nothing
-    /// else, so a bounce block streaming beside it, its tiles absent from
-    /// `streamed` or never brought, never stops the write.
-    pub(in crate::render) fn plan_direct_payload<'a>(
-        &self,
-        section: &'a MoverProbeChannelSection,
-        slices: &[MoverCellSlices],
-        plan: usize,
-        streamed: Option<MoverStreamedRow<'a>>,
-    ) -> Result<MoverCellPayload<'a>, MoverChannelError> {
-        let position = self.cells[plan].position;
-        if section.payload_held(MoverChannelBlock::Direct) {
-            return Ok(held_direct_payload(section, &slices[position]));
-        }
-        section
-            .cell_payload(position, &slices[position], streamed)
-            .map_err(|error| MoverChannelError(error.to_string()))
-    }
 }
 
 fn as_u32(value: usize, what: &str) -> Result<u32, MoverChannelError> {
     u32::try_from(value)
         .map_err(|_| MoverChannelError(format!("the table's {what} ({value}) overflows u32")))
-}
-
-/// A listed cell's held direct payload alone. A direct write reads nothing
-/// else, so a bounce block streamed beside a resident direct block, whose
-/// tiles arrive with the cell's clusters, never stops the cell's write.
-fn held_direct_payload<'a>(
-    section: &'a MoverProbeChannelSection,
-    slices: &MoverCellSlices,
-) -> MoverCellPayload<'a> {
-    MoverCellPayload {
-        visibility: &section.visibility[slices.visibility.clone()],
-        own_tiles: MoverHalves::Decoded(&section.own_tiles[slices.own_tiles.clone()]),
-        bounce_tiles: MoverHalves::Decoded(&[]),
-    }
-}
-
-/// Check listed cell `position`'s direct payload as it loads or arrives:
-/// every term record's probe mask tight against its q bytes, and every own
-/// tile finite. It covers every record, whether the table gates it or leaves
-/// it ungated, so a PRL is accepted or refused alike in every mode: the
-/// whole load checks every record's tightness at decode or attach.
-pub(in crate::render) fn check_direct_cell(
-    section: &MoverProbeChannelSection,
-    position: usize,
-    payload: MoverCellPayload<'_>,
-) -> Result<(), MoverChannelError> {
-    let Some(view) = section.direct_cell_at(position, payload) else {
-        return Ok(());
-    };
-    let first = section.direct_offsets[position] as usize;
-    for (offset, record) in view.records().enumerate() {
-        let index = first + offset;
-        check_tight(index, record.cell, &record)?;
-        if let Some(bad) = record
-            .own_tiles
-            .and_then(|tiles| first_non_finite(tiles.iter()))
-        {
-            return fail(format!(
-                "affinity cell {}'s direct record {index} holds a non-finite own tile value ({bad:#06x})",
-                record.cell
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// A record's probe mask must be exactly the probes where some gating mover
-/// leaves q below 255 at a terminus, and each mover must store one such q.
-fn check_tight(
-    record: usize,
-    cell: u32,
-    view: &DirectRecordView<'_>,
-) -> Result<(), MoverChannelError> {
-    let probes = view.record.masked_probe_count();
-    let expected = probes * MOVER_VISIBILITY_BYTES_PER_PROBE * view.mover_ids.len();
-    if view.visibility.len() != expected {
-        return fail(format!(
-            "affinity cell {cell}'s direct record {record} holds {} visibility byte(s), expected {expected}",
-            view.visibility.len()
-        ));
-    }
-    let mut touched = 0u64;
-    for mover in view.movers() {
-        let mut stores = false;
-        for slot in 0..probes {
-            if mover.q(slot).iter().any(|&q| q < u8::MAX) {
-                touched |= 1 << slot;
-                stores = true;
-            }
-        }
-        if !stores {
-            return fail(format!(
-                "affinity cell {cell}'s direct record {record} lists mover {} with no q below 255",
-                mover.mover_id
-            ));
-        }
-    }
-    let all = if probes == 64 {
-        u64::MAX
-    } else {
-        (1u64 << probes) - 1
-    };
-    if touched != all {
-        return fail(format!(
-            "affinity cell {cell}'s direct record {record} has a probe mask that is not tight"
-        ));
-    }
-    Ok(())
 }

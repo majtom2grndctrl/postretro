@@ -31,7 +31,7 @@ use crate::partition::Aabb;
 use crate::ray_traversal::RAY_EPSILON;
 use crate::sh_bake::ProbeGridLayout;
 
-fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
+pub(super) fn box_brush(min: DVec3, max: DVec3) -> BrushVolume {
     let planes = [
         (DVec3::X, max.x),
         (DVec3::NEG_X, -min.x),
@@ -54,7 +54,12 @@ fn posed(min: DVec3, max: DVec3) -> PosedBrush {
     PosedBrush::translated(&box_brush(min, max), DVec3::ZERO)
 }
 
-fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> MapKinematicMover {
+pub(super) fn mover(
+    mover_id: u32,
+    name: &str,
+    path: &str,
+    brushes: Vec<BrushVolume>,
+) -> MapKinematicMover {
     MapKinematicMover {
         mover_id,
         name: name.to_string(),
@@ -87,10 +92,11 @@ fn mover(mover_id: u32, name: &str, path: &str, brushes: Vec<BrushVolume>) -> Ma
         light_ramp_start: 0.0,
         light_ramp_end: 1.0,
         light_bounces: None,
+        light_poses: None,
     }
 }
 
-fn waypoint(name: &str, next: &str, origin: DVec3) -> MapKinematicWaypoint {
+pub(super) fn waypoint(name: &str, next: &str, origin: DVec3) -> MapKinematicWaypoint {
     MapKinematicWaypoint {
         name: name.to_string(),
         next: next.to_string(),
@@ -125,10 +131,7 @@ fn last_terminus_poses_the_authored_brushes_moved_by_the_waypoint_offset() {
     let door = &poses.analysed[0];
     let first = door.pose(Terminus::First);
     let last = door.pose(Terminus::Last);
-    assert_eq!(
-        (first.waypoint.as_str(), last.waypoint.as_str()),
-        ("a", "b")
-    );
+    assert_eq!((first.name.as_str(), last.name.as_str()), ("a", "b"));
     assert_eq!(last.bounds.min, DVec3::new(3.0, 0.0, 0.0));
     assert_eq!(last.bounds.max, DVec3::new(4.0, 2.0, 0.25));
 
@@ -155,8 +158,8 @@ fn termini_are_the_first_and_last_waypoints_of_a_three_waypoint_chain() {
     ];
     let poses = MoverPoses::resolve(&movers, &waypoints);
     let lift = &poses.analysed[0];
-    assert_eq!(lift.pose(Terminus::First).waypoint, "bottom");
-    assert_eq!(lift.pose(Terminus::Last).waypoint, "top");
+    assert_eq!(lift.pose(Terminus::First).name, "bottom");
+    assert_eq!(lift.pose(Terminus::Last).name, "top");
     assert_eq!(
         lift.pose(Terminus::Last).bounds.min,
         DVec3::new(0.0, 5.0, 0.0)
@@ -955,4 +958,441 @@ fn the_gate_anchors_and_lifts_each_texel_where_the_bake_walk_does() {
             assert_eq!(gated, expected, "chart {chart} on layer {layer}");
         }
     }
+}
+
+// ---- Mid-travel pose placement (mover probe channel) ----
+
+use std::sync::Arc;
+
+use super::placement::{AUTO_POSE_CAP, MAX_POSES, even_knots, knot, pose_count};
+use crate::mover_probe_channel::{
+    NearFieldDomain, PosedMovers, PosedScene, PosedSolid, pose_held_bytes, sided_box_brush,
+};
+use postretro_physics::kinematic_mover::MoverPathArcLengths;
+use postretro_test_log_capture::LogCapture;
+
+/// Texture names no mover side matches: the pose costs read none.
+const NO_TEXTURES: TextureNamesSection = TextureNamesSection { names: Vec::new() };
+
+/// A 1 m cube on a path of `points`, waypoints `w0`, `w1`, ….
+fn cube_on_path(points: &[DVec3], light_poses: Option<u32>) -> MoverPoses {
+    let (mut poses, cube) = unplaced_cube_on_path(points, light_poses);
+    poses
+        .place_poses(
+            std::slice::from_ref(&cube),
+            1.0,
+            &ProbeGridLayout::no_probes(),
+        )
+        .expect("a cube with no probes places");
+    poses
+}
+
+/// [`cube_on_path`] resolved to its termini, before placement.
+fn unplaced_cube_on_path(
+    points: &[DVec3],
+    light_poses: Option<u32>,
+) -> (MoverPoses, MapKinematicMover) {
+    let mut cube = mover(0, "lift", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    cube.light_poses = light_poses;
+    let waypoints: Vec<MapKinematicWaypoint> = points
+        .iter()
+        .enumerate()
+        .map(|(index, &origin)| {
+            let next = if index + 1 < points.len() {
+                format!("w{}", index + 1)
+            } else {
+                String::new()
+            };
+            waypoint(&format!("w{index}"), &next, origin)
+        })
+        .collect();
+    let poses = MoverPoses::resolve(std::slice::from_ref(&cube), &waypoints);
+    (poses, cube)
+}
+
+#[test]
+fn automatic_pose_count_is_one_per_probe_spacing_plus_one_capped_at_sixteen() {
+    for (length, count, capped_from) in [
+        (0.0, 2, None),
+        (0.4, 2, None),
+        (1.0, 2, None),
+        (4.4704, 6, None),
+        (6.5024, 8, None),
+        (15.0, 16, None),
+        (15.5, AUTO_POSE_CAP, Some(17)),
+        (50.0, AUTO_POSE_CAP, Some(51)),
+    ] {
+        let placed = pose_count(length, 1.0, None);
+        assert_eq!(placed.count, count, "path {length} m");
+        assert_eq!(placed.capped_from, capped_from, "path {length} m");
+    }
+    let authored = pose_count(50.0, 1.0, Some(20));
+    assert_eq!((authored.count, authored.capped_from), (20, None));
+    assert_eq!(
+        pose_count(50.0, 1.0, Some(2)).count,
+        2,
+        "2 bakes the termini only"
+    );
+    assert_eq!(even_knots(5), vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+}
+
+#[test]
+fn mid_poses_sit_at_even_arc_length_by_the_runtimes_rule_and_termini_are_unchanged() {
+    // Unequal segments with a degenerate one between: 1 m along +x, a
+    // repeated waypoint, then 3 m along +y. Four metres want five poses.
+    let points = [
+        DVec3::new(2.0, 0.0, 0.0),
+        DVec3::new(3.0, 0.0, 0.0),
+        DVec3::new(3.0, 0.0, 0.0),
+        DVec3::new(3.0, 3.0, 0.0),
+    ];
+    let placed = cube_on_path(&points, None);
+    let termini_only = cube_on_path(&points, Some(2));
+    let lift = &placed.analysed[0];
+    assert_eq!(lift.knots, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+    assert_eq!(lift.poses.len(), 5);
+    let reference = &termini_only.analysed[0];
+    assert_eq!(reference.poses.len(), 2);
+    for terminus in Terminus::BOTH {
+        let (placed_bounds, reference_bounds) = (
+            &lift.pose(terminus).bounds,
+            &reference.pose(terminus).bounds,
+        );
+        assert_eq!(
+            (placed_bounds.min, placed_bounds.max),
+            (reference_bounds.min, reference_bounds.max),
+            "{} terminus keeps its exact pose",
+            terminus.label()
+        );
+        assert_eq!(lift.pose(terminus).name, reference.pose(terminus).name);
+    }
+    let runtime_path: Vec<Vec3> = points.iter().map(|p| p.as_vec3()).collect();
+    let arc = MoverPathArcLengths::from_waypoints(&runtime_path);
+    for (index, &t) in lift.knots.iter().enumerate().skip(1).take(3) {
+        let at = arc
+            .point_at(t)
+            .expect("a mid fraction on a path with length")
+            .position;
+        let offset = (at - runtime_path[0]).as_dvec3();
+        assert_eq!(
+            lift.poses[index].bounds.min, offset,
+            "pose {index} at t {t}"
+        );
+        assert_eq!(lift.poses[index].name, format!("t {t:.2}"));
+    }
+    // t 0.25 is the end of the 1 m leg, past the degenerate segment; t 0.5
+    // is 1 m up the 3 m leg.
+    assert_eq!(lift.poses[1].bounds.min, DVec3::new(1.0, 0.0, 0.0));
+    assert!((lift.poses[2].bounds.min - DVec3::new(1.0, 1.0, 0.0)).length() < 1.0e-6);
+
+    // A zero-length path bakes its two coincident termini, as before.
+    let still = cube_on_path(&[DVec3::ONE, DVec3::ONE], None);
+    assert_eq!(still.analysed[0].poses.len(), 2);
+    assert_eq!(still.analysed[0].knots, vec![0.0, 1.0]);
+}
+
+#[test]
+fn a_path_past_the_cap_spreads_sixteen_poses_and_warns_once_naming_the_mover() {
+    let capture = LogCapture::start();
+    let exactly = cube_on_path(&[DVec3::ZERO, DVec3::new(15.0, 0.0, 0.0)], None);
+    assert_eq!(exactly.analysed[0].poses.len(), 16);
+    capture.assert_not_logged(log::Level::Warn, "light_poses");
+
+    let long = cube_on_path(&[DVec3::ZERO, DVec3::new(15.5, 0.0, 0.0)], None);
+    assert_eq!(long.analysed[0].poses.len(), 16);
+    assert_eq!(
+        *long.analysed[0].knots.last().unwrap(),
+        1.0,
+        "spread over the full path"
+    );
+    capture.assert_logged_once(log::Level::Warn, "kinematic_mover 'lift'");
+    capture.assert_logged_once(log::Level::Warn, "1.03 m apart");
+    capture.assert_logged_once(log::Level::Warn, "`light_poses`");
+    capture.clear();
+
+    let authored = cube_on_path(&[DVec3::ZERO, DVec3::new(15.5, 0.0, 0.0)], Some(20));
+    assert_eq!(authored.analysed[0].poses.len(), 20);
+    capture.assert_not_logged(log::Level::Warn, "light_poses");
+}
+
+#[test]
+fn near_field_domain_is_the_swept_brushes_widened_by_lift_and_one_spacing() {
+    // The cube sweeps x 0..4 (1 m cube over a 3 m leg), y and z 0..1.
+    let poses = cube_on_path(&[DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)], None);
+    let domain = NearFieldDomain::new(&poses.analysed[0], 1.0);
+    for inside in [
+        Vec3::new(2.0, 0.5, 0.5),
+        Vec3::new(-0.9, 0.5, 0.5),
+        Vec3::new(4.9, 1.9, 1.9),
+        Vec3::new(2.0, -1.0, 0.5),
+    ] {
+        assert!(domain.contains(inside), "{inside} is near the sweep");
+    }
+    for outside in [
+        Vec3::new(5.1, 0.5, 0.5),
+        Vec3::new(2.0, 2.1, 0.5),
+        Vec3::new(2.0, 0.5, -1.1),
+    ] {
+        assert!(
+            !domain.contains(outside),
+            "{outside} is past the near field"
+        );
+    }
+    // A bent path sweeps its legs, not their joint bounds: the corner's far
+    // side stays outside.
+    let bent = cube_on_path(
+        &[
+            DVec3::ZERO,
+            DVec3::new(4.0, 0.0, 0.0),
+            DVec3::new(4.0, 4.0, 0.0),
+        ],
+        None,
+    );
+    let domain = NearFieldDomain::new(&bent.analysed[0], 1.0);
+    assert!(domain.contains(Vec3::new(4.5, 4.5, 0.5)));
+    assert!(
+        !domain.contains(Vec3::new(0.5, 4.5, 0.5)),
+        "inside the hull, far from both legs"
+    );
+}
+
+#[test]
+fn knots_stay_strictly_ascending_up_to_the_most_poses_and_one_more_collapses_the_last_two() {
+    // Knots crowd closest below 1, where the f32 spacing is widest.
+    let last = MAX_POSES - 1;
+    assert_eq!(last, 1 << 24);
+    assert!(knot(last - 1, last) < knot(last, last));
+    assert_eq!(knot(last, last), 1.0);
+    let past = MAX_POSES;
+    assert_eq!(
+        knot(past - 1, past),
+        knot(past, past),
+        "one more pose rounds its last two knots onto 1"
+    );
+}
+
+#[test]
+fn a_light_poses_past_the_most_poses_fails_by_name_before_placement() {
+    let path = [DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)];
+    for count in [MAX_POSES + 1, u32::MAX] {
+        let (poses, cube) = unplaced_cube_on_path(&path, Some(count));
+        // The check reads the count alone, so it refuses at once whatever
+        // the budget, and nothing is placed.
+        let error = poses
+            .admit_pose_counts(std::slice::from_ref(&cube), &NO_TEXTURES, u64::MAX)
+            .expect_err("past the most poses")
+            .to_string();
+        let wanted: [&str; 4] = [
+            "kinematic_mover 'lift'",
+            &format!("`light_poses` {count}"),
+            &MAX_POSES.to_string(),
+            "Lower `light_poses`",
+        ];
+        for named in wanted {
+            assert!(error.contains(named), "{named:?} in {error}");
+        }
+        assert_eq!(poses.analysed[0].poses.len(), 2);
+    }
+    // The most poses itself is not this check's to refuse.
+    let (poses, cube) = unplaced_cube_on_path(&path, Some(MAX_POSES));
+    poses
+        .admit_pose_counts(std::slice::from_ref(&cube), &NO_TEXTURES, u64::MAX)
+        .expect("the most poses keeps its knots apart");
+}
+
+#[test]
+fn an_authored_count_whose_poses_alone_pass_the_budget_fails_by_name_before_the_sh_base_gate() {
+    let path = [DVec3::ZERO, DVec3::new(3.0, 0.0, 0.0)];
+    let (poses, cube) = unplaced_cube_on_path(&path, Some(100));
+    let error = poses
+        .admit_pose_counts(std::slice::from_ref(&cube), &NO_TEXTURES, 1024)
+        .expect_err("100 posed cubes hold more than 1 KiB")
+        .to_string();
+    for named in [
+        "mover poses' working set refused before the SH base gate",
+        "past the `--working-set-max-size` budget of 1024 bytes",
+        "kinematic_mover 'lift'",
+        "`light_poses`",
+    ] {
+        assert!(error.contains(named), "{named:?} in {error}");
+    }
+    poses
+        .admit_pose_counts(std::slice::from_ref(&cube), &NO_TEXTURES, 16 << 30)
+        .expect("a default budget holds 100 poses");
+    // An automatic count is the SH base gate's to price, after placement.
+    let (automatic, cube) = unplaced_cube_on_path(&path, None);
+    automatic
+        .admit_pose_counts(std::slice::from_ref(&cube), &NO_TEXTURES, 0)
+        .expect("an automatic count is not refused here");
+}
+
+/// A sided 1 m cube, `light_poses` `count`, on a 3 m path, resolved to its
+/// termini.
+fn unplaced_sided_cube(count: u32) -> (MoverPoses, MapKinematicMover) {
+    let mut cube = mover(
+        0,
+        "lift",
+        "w0",
+        vec![sided_box_brush(DVec3::ZERO, DVec3::ONE)],
+    );
+    cube.light_poses = Some(count);
+    let waypoints = [
+        waypoint("w0", "w1", DVec3::ZERO),
+        waypoint("w1", "", DVec3::new(3.0, 0.0, 0.0)),
+    ];
+    let poses = MoverPoses::resolve(std::slice::from_ref(&cube), &waypoints);
+    (poses, cube)
+}
+
+#[test]
+fn a_pose_costs_its_knot_placed_pose_posed_solid_and_patches() {
+    let (poses, cube) = unplaced_sided_cube(2);
+    let terminus = poses.analysed[0].pose(Terminus::First);
+    // The terminus's solid as the compile resolves it.
+    let resolved = PosedMovers::resolve(&poses, std::slice::from_ref(&cube), &NO_TEXTURES)
+        .expect("the cube is a map mover");
+    let solid = &resolved.movers()[0].solids[0];
+    let patches = PosedScene::new(Arc::clone(solid), 0)
+        .expect("a cube's sides fit the patch cap")
+        .patches
+        .heap_bytes();
+    assert!(
+        solid.heap_bytes() > 0 && patches > 0,
+        "the cube's sides carry geometry and patches"
+    );
+    let knot = size_of::<f32>() as u64;
+    let placed = size_of::<super::pose::Pose>() as u64 + terminus.brush_heap_bytes();
+    let held_solid =
+        (size_of::<Arc<PosedSolid>>() + 2 * size_of::<usize>() + size_of::<PosedSolid>()) as u64
+            + solid.pose().brush_heap_bytes()
+            + solid.heap_bytes();
+    let scene = size_of::<PosedScene>() as u64 + patches;
+    assert_eq!(
+        pose_held_bytes(&cube, terminus, &NO_TEXTURES),
+        knot + placed + held_solid + scene,
+    );
+}
+
+#[test]
+fn a_unit_box_at_the_most_poses_is_refused_at_the_default_budget() {
+    let (poses, cube) = unplaced_sided_cube(MAX_POSES);
+    let per_pose = pose_held_bytes(&cube, poses.analysed[0].pose(Terminus::First), &NO_TEXTURES);
+    let default_budget: u64 = 16 << 30;
+    // A sided unit box holds 4,784 bytes a pose on a 64-bit build, its
+    // patches and posed geometry most of it, so 2^24 + 1 poses hold about
+    // 80.3 GB: past 16 GiB, whose break-even is just under 1,024 bytes a
+    // pose.
+    assert!(
+        per_pose * u64::from(MAX_POSES) > default_budget,
+        "{per_pose} bytes a pose"
+    );
+    let error = poses
+        .admit_pose_counts(std::slice::from_ref(&cube), &NO_TEXTURES, default_budget)
+        .expect_err("the most poses of a unit box pass 16 GiB")
+        .to_string();
+    for named in [
+        "mover poses' working set refused before the SH base gate",
+        "kinematic_mover 'lift'",
+        &format!(
+            "({MAX_POSES} poses, {} bytes)",
+            per_pose * u64::from(MAX_POSES)
+        ),
+        "--working-set-max-size",
+    ] {
+        assert!(error.contains(named), "{named:?} in {error}");
+    }
+    assert_eq!(poses.analysed[0].poses.len(), 2, "nothing is placed");
+}
+
+// Regression: each mover's authored count was checked alone against the
+// whole budget, so several large counts together passed and then ran out of
+// memory before any named error.
+#[test]
+fn authored_counts_that_each_fit_alone_but_not_together_fail_naming_every_mover() {
+    let count = 100;
+    let names = ["lift_a", "lift_b", "lift_c"];
+    let movers: Vec<MapKinematicMover> = names
+        .iter()
+        .enumerate()
+        .map(|(id, name)| {
+            let mut cube = mover(
+                id as u32,
+                name,
+                "w0",
+                vec![box_brush(DVec3::ZERO, DVec3::ONE)],
+            );
+            cube.light_poses = Some(count);
+            cube
+        })
+        .collect();
+    let waypoints = [
+        waypoint("w0", "w1", DVec3::ZERO),
+        waypoint("w1", "", DVec3::new(3.0, 0.0, 0.0)),
+    ];
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    assert_eq!(poses.analysed.len(), 3);
+    let each = pose_held_bytes(
+        &movers[0],
+        poses.analysed[0].pose(Terminus::First),
+        &NO_TEXTURES,
+    ) * u64::from(count);
+    // Room for two movers' poses and a half, so any one alone fits.
+    let budget = each * 5 / 2;
+    for single in &movers {
+        poses
+            .admit_pose_counts(std::slice::from_ref(single), &NO_TEXTURES, budget)
+            .expect("one mover's poses fit the budget alone");
+    }
+    poses
+        .admit_pose_counts(&movers[..2], &NO_TEXTURES, budget)
+        .expect("two movers' poses fit together");
+    let error = poses
+        .admit_pose_counts(&movers, &NO_TEXTURES, budget)
+        .expect_err("three movers' poses together pass the budget")
+        .to_string();
+    let total = (each * 3).to_string();
+    let budget_named = format!("budget of {budget} bytes");
+    let mut wanted = vec![
+        "mover poses' working set refused before the SH base gate",
+        total.as_str(),
+        budget_named.as_str(),
+        "`light_poses`",
+        "--working-set-max-size",
+    ];
+    let labels: Vec<String> = names
+        .iter()
+        .map(|name| format!("kinematic_mover '{name}' ({count} poses"))
+        .collect();
+    wanted.extend(labels.iter().map(String::as_str));
+    for named in wanted {
+        assert!(error.contains(named), "{named:?} in {error}");
+    }
+    // Equal costs keep mover-id order.
+    let first = error.find("lift_a").expect("lift_a named");
+    let last = error.find("lift_c").expect("lift_c named");
+    assert!(first < last, "{error}");
+}
+
+#[test]
+fn the_largest_authored_pose_cost_is_named_first() {
+    let waypoints = [
+        waypoint("w0", "w1", DVec3::ZERO),
+        waypoint("w1", "", DVec3::new(3.0, 0.0, 0.0)),
+    ];
+    let mut small = mover(0, "small", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    small.light_poses = Some(10);
+    let mut large = mover(1, "large", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    large.light_poses = Some(1000);
+    // An automatic mover contributes nothing and is not named.
+    let automatic = mover(2, "auto", "w0", vec![box_brush(DVec3::ZERO, DVec3::ONE)]);
+    let movers = [small, large, automatic];
+    let poses = MoverPoses::resolve(&movers, &waypoints);
+    let error = poses
+        .admit_pose_counts(&movers, &NO_TEXTURES, 0)
+        .expect_err("any authored count passes a zero budget")
+        .to_string();
+    let large_at = error.find("'large'").expect("large named");
+    let small_at = error.find("'small'").expect("small named");
+    assert!(large_at < small_at, "{error}");
+    assert!(!error.contains("'auto'"), "{error}");
 }

@@ -19,6 +19,7 @@ Owner request: mappers set how strongly and in what colour a surface glows, per 
   - Content-owned and per asset, as `index.md` §2 allows ("with the map or its assets"). Matches glTF's material-level `KHR_materials_emissive_strength` (`research.md` §Strength source).
   - Plain data, not the mod manifest: the compiler evaluates no mod startup script, and an edit rebakes like a texture edit.
   - One file per mod root. Inheritance across mods waits on multi-mod layering (`boot_sequence.md`, mod discovery); entries are per texture so layers can merge per key, later mod winning.
+  - It is the home for content-owned material properties. `emissive` is its first key; roadmap "surface lights" puts its texture marking and bounce multiplier here; the remaining prefix properties (shininess, surface depth) move here in later briefs.
 - **`_e` stays an RGB colour map in linear light; black is zero glow.** `glow = _e × strength`. The diffuse map is the unlit surface and `_e` the lit one, so fading glow to 0 shows a real off state. `_e` alpha is reserved for a future per-texel emissive channel: author it opaque.
 - **Faces without an `_e` map pay no new per-fragment cost.** The forward pass is the Mac target's usual bottleneck.
 - **`emissive_volume` brush entity scales and tints its faces.** Keys:
@@ -33,9 +34,9 @@ Owner request: mappers set how strongly and in what colour a surface glows, per 
   - Overlaps resolve last-in-map-order wins, as `lightmap_scale_region` does.
   - Warnings: once per pair of volumes that both contain a face centroid (touching, or overlapping in empty space, stays silent); and per volume left with no `_e` face, including one a later volume empties.
   - At most 256 volumes per map; past that the compile fails, naming the count.
-- **Movers and fluids take texture strength only.** They bind the per-texture material, so `materials.toml` reaches them; no volume does. Model glow stays 0: models load only their diffuse slot.
+- **Movers and fluids take texture strength only.** They bind the per-texture material, so `materials.toml` reaches them; no volume does. Scripted glow on a mover waits for content that asks (a moving platform is the likeliest); the mover's per-instance record is the way in. Model glow stays 0: models load only their diffuse slot.
 - **Runtime owns brightness and colour; the bake reads the no-script state.** Reflection capture bakes each member face at texture strength × max × colour, its reference state (`research.md` §Capture reference state). Bounce means exclude glow texels on any texture with an `_e` map.
-- **Photosensitivity: the existing clamp, fed what the surface shows.** While `accessibility.flashLimiter` is on, each volume passes the `flash_clamp` per-value rules with min(peak strength, 1). Peak strength is the volume's current factor × its colour's luminance × the largest texture strength among its member faces. The resolve's tonemap is near-identity below 1, so that is displayed luminance; a strobe between two values at or above 1 reads white both ways and is no flash. Scripts and the wire carry the scripted values. E23 owns the bloom halo such a strobe drives, the red-flash rule and any budget shared across sources.
+- **Photosensitivity: the existing clamp, fed what the surface shows.** While `accessibility.flashLimiter` is on, each volume passes the `flash_clamp` per-value rules with min(peak strength, 1). Peak strength is the volume's current factor × its colour's luminance × the largest texture strength among its member faces. The resolve's tonemap is near-identity below 1, so that is displayed luminance; a strobe between two values at or above 1 reads white both ways and is no flash. Scripts and the wire carry the scripted values. E23 owns the bloom halo such a strobe drives, the red-flash rule and any budget shared across sources; at promotion its draft records emissive volumes as a clamp source already built.
 - **Co-op: fog volumes' presentation-state behaviour** (`networking.md` §Presentation state), bound by emissive record index with the 1 cm origin check. It differs only where the Decisions above do: brightness writes clear animations, values are brightness, and the limiter is per machine and never reaches the wire.
 - **Migration.** `tools/migrate_neon_prefix.py` renames `neon_x` to `x` for every slot sibling, rewrites `.map` texture references, and writes `emissive = 4.0` for each renamed texture into the mod's `materials.toml`, so every look survives with no volume.
   - Dry-run by default.
@@ -56,7 +57,7 @@ for (const sign of signs) {
   reactions.push(defineReaction("levelLoad", { sequence: sign.flicker({ min: 0.3, max: 1, rate: 6 }) }));
 }
 reactions.push(defineReaction("powerCut", { primitive: "setEmissiveBrightness", tag: "bar_sign", args: { brightness: 0 } }));
-reactions.push(defineReaction("doorLocked", { primitive: "setEmissiveColor", tag: "door_lamp", args: { color: [1, 0.05, 0.02] } }));
+reactions.push(defineReaction("doorLocked", { primitive: "setEmissiveColor", tag: "status_lamp", args: { color: [1, 0.05, 0.02] } }));
 // Members also carry pulse({ min, max, periodMs }) and fade({ from, to, periodMs }).
 // Brightness values are in [0, 1]; colour channels are linear and ≥ 0. Out-of-range values clamp.
 // The animation primitive is setEmissiveAnimation, args { periodMs, playCount?, brightness: number[] }

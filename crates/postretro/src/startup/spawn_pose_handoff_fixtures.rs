@@ -292,6 +292,56 @@ impl Relay {
         }
     }
 
+    /// After the host ends its session: one exchange through its closing
+    /// transport, which the frame loop pumps in place of the endpoint.
+    /// Returns whether the transport is still open.
+    pub(super) fn step_closing(&mut self) -> bool {
+        for index in 0..self.clients.len() {
+            let client_id = self.clients[index].id;
+            let packets = {
+                let client = &mut self.clients[index].client;
+                client.update_connections(STEP);
+                client.packets_to_send()
+            };
+            let Some(server) = self
+                .app
+                .session
+                .as_mut()
+                .unwrap()
+                .closing_host_transport
+                .as_mut()
+            else {
+                return false;
+            };
+            for packet in packets {
+                server.process_packet_from(&packet, client_id);
+            }
+        }
+        let Some(server) = self
+            .app
+            .session
+            .as_mut()
+            .unwrap()
+            .closing_host_transport
+            .as_mut()
+        else {
+            return false;
+        };
+        server.update_connections(STEP);
+        let _ = server.poll_handshakes();
+        for index in 0..self.clients.len() {
+            let client_id = self.clients[index].id;
+            let packets = server.packets_to_send(client_id);
+            let client = &mut self.clients[index];
+            for packet in packets {
+                client.client.process_packet(&packet);
+            }
+            let arrivals = client.client.drain_control_with_markers();
+            client.log.extend(arrivals);
+        }
+        true
+    }
+
     pub(super) fn pump_until(&mut self, done: impl Fn(&Self) -> bool) {
         for _ in 0..160 {
             self.step();

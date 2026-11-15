@@ -194,6 +194,8 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "loadLevel",
         "restartLevel",
         "returnToFrontend",
+        "leaveSession",
+        "endSession",
         "setSentiment",
         "adjustSentiment",
         "openTextEntry",
@@ -371,6 +373,9 @@ fn typescript_ui_module_declaration_is_generated() {
             && ui_module.contains("export function showDialog(")
             && ui_module.contains("export function setSentiment(from: string, to: string, value: number): SystemReactionStep;")
             && ui_module.contains("export function adjustSentiment(from: string, to: string, delta: number): SystemReactionStep;")
+            && ui_module.contains("export function returnToFrontend(): SystemReactionStep;")
+            && ui_module.contains("export function leaveSession(): SystemReactionStep;")
+            && ui_module.contains("export function endSession(): SystemReactionStep;")
             && ui_module.contains("export function getGameState(): GameStateRefs;")
             && ui_module.contains(
                 "export type ThemeToken<Category extends \"color\" | \"font\" | \"spacing\">"
@@ -1091,6 +1096,10 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
         !luau.contains("points: {{number}},"),
         "patrol points must retain their fixed `[x, z]` arity"
     );
+    assert!(
+        ts.contains("at?: string;") && luau.contains("at: string?,"),
+        "emitted `ActionVerb` must carry its optional clip event `at`"
+    );
     assert!(ts.contains("arc?: readonly [number, number];"));
     assert!(
         luau.contains("arc: {number, number}?,"),
@@ -1098,7 +1107,10 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
     );
     assert_eq!(
         ActionVerb::all(),
-        [ActionVerb::Attack("attack".to_string())],
+        [ActionVerb::Attack {
+            name: "attack".to_string(),
+            at: None,
+        }],
         "`ActionVerb::all()` must retain its representative named payload"
     );
 }

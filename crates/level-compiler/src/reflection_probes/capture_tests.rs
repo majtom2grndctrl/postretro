@@ -277,7 +277,7 @@ fn stored_shares_are_each_lights_fraction_of_the_captured_light_per_lobe() {
     let room = shares_room();
     let full = bake(&room, &pool()).unwrap();
     let total = lobe_integrals(&full, 0);
-    for light in 0..2usize {
+    for (light, descriptor) in room.extras.sh.animation_descriptors[..2].iter().enumerate() {
         let mut alone = shares_room();
         // Every other light off: brightness 0 gives reference 0.
         for (other, d) in alone.extras.sh.animation_descriptors.iter_mut().enumerate() {
@@ -293,10 +293,7 @@ fn stored_shares_are_each_lights_fraction_of_the_captured_light_per_lobe() {
             .iter()
             .find(|e| e.roster_index == light as u32)
             .expect("both lights are stored");
-        assert_eq!(
-            entry.reference,
-            reference_value(&room.extras.sh.animation_descriptors[light])
-        );
+        assert_eq!(entry.reference, reference_value(descriptor));
         for lobe in 0..REFLECTION_PROBE_LOBE_COUNT {
             for c in 0..3 {
                 let expected = if total[lobe][c] > 0.0 {

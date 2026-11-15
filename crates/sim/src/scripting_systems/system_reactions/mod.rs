@@ -104,6 +104,7 @@ pub fn apply_adjust_sentiment(
 /// - Screen-space effects: `vignette`, `screenShake`
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
 /// - Game flow: `loadLevel`, `restartLevel`, `returnToFrontend`
+/// - Session membership: `leaveSession`, `endSession`
 /// - Slot write: `setState`
 /// - Live faction sentiment writes: `setSentiment`, `adjustSentiment`
 /// - Ghost bus override: `setGhostAudio`
@@ -325,8 +326,31 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
         });
         Ok(())
     });
+    // Navigation and the membership verbs carry their fire's source and origin
+    // so the app drain can refuse one by role and log it once per source, at
+    // warn only when this machine's own input or state fired it.
     registry.register("returnToFrontend", |_args, queue| {
-        queue.push(SystemReactionCommand::ReturnToFrontend);
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::ReturnToFrontend {
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
+        Ok(())
+    });
+    registry.register("leaveSession", |_args, queue| {
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::LeaveSession {
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
+        Ok(())
+    });
+    registry.register("endSession", |_args, queue| {
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::EndSession {
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
         Ok(())
     });
     // `setState` writes a value to a writable store slot at the game-logic stage.

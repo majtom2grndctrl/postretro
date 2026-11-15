@@ -189,6 +189,32 @@ impl SeatTable {
         self.carried.contains_key(&seat)
     }
 
+    /// Every seat this table holds, ascending: the local seat, then connected
+    /// and held remote seats.
+    #[must_use]
+    pub fn seats(&self) -> Vec<Seat> {
+        let mut seats: Vec<Seat> = self.carried.keys().copied().collect();
+        seats.sort_unstable_by_key(|seat| seat.0);
+        seats
+    }
+
+    /// Release every remote seat, connected or held, keeping the local seat
+    /// with its pawn binding and carried state: a host that ends its session
+    /// holds no seats for anyone. The caller has torn down each remote pawn.
+    /// Returns the released seats so their per-owner slot values can clear.
+    pub fn release_remote_seats(&mut self, registry: &mut EntityRegistry) -> Vec<Seat> {
+        let remote: Vec<Seat> = self
+            .seats()
+            .into_iter()
+            .filter(|seat| *seat != Seat(0))
+            .collect();
+        for seat in &remote {
+            self.set_pawn_binding(registry, *seat, None);
+            self.release_seat(*seat);
+        }
+        remote
+    }
+
     /// Advance the session-relative hold clock once for this rendered frame.
     ///
     /// The caller is the sole frame-timing seam. Polling can happen more than

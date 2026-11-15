@@ -37,6 +37,8 @@
 - **Enemy AI / behavior state graph / transition guards / brain component** → `entity_model.md` §7c · `scripting.md` §11
 - **Hierarchical enemy behavior / statecharts / nested activities / layers / committed attack phases** → `entity_model.md` §7c · `scripting.md` §11
 - **Enemy combat pacing / attack budget / attack tokens / turns / refresh / `ai_attack_pool` / strafe and reposition / activity facing** → `entity_model.md` §7c (Engaged motion, Attack budget) · `scripting.md` §2 (Attack token declarations), §11 (attack turn facts), §12 (Entity addressing) · `build_pipeline.md` §Custom FGD
+- **Enemy stances / poses / queued attack rows / typed attack handles** → `entity_model.md` §7c (Stances and attacks) · `scripting.md` §2 (Attack and stance declarations)
+- **Clip-timed attacks / clip events / `action.at` / `animationDone` / enemy clip time on the game tick** → `entity_model.md` §7c (Clip-timed attacks) · event format and converter: `resource_management.md` §7 (Clip events)
 - **Build pipeline / FGD / TrenchBroom** → `build_pipeline.md`
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
 - **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
@@ -51,22 +53,26 @@
 - **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2
 - **Accessibility panel / `ui.openAccessibility` / accessibility field actions / missing-entry warning / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
+- **Area lights / polygon area light / `light_area` / `_glow` / brush-entity emitter / glow that follows its light / windowed reach** → `build_pipeline.md` §Custom FGD, §Compiler pipeline (Area lights) · `rendering_pipeline.md` §4 (Static specular ownership, Promoted static lights) · `resource_management.md` §4.5 · `scripting.md` §12 (Entity addressing)
 - **World static specular / which lights draw specular / shadowmask owners per face / unowned-means-no-specular** → `rendering_pipeline.md` §4 (Static specular ownership) · bake and format: `build_pipeline.md` §PRL (ShadowmaskAtlas ownership)
 - **Animated lightmap compact atlas / block table / section 25 paging / lightmap-family memory meter** → `rendering_pipeline.md` §7.1 (Animated lightmap compose), §7.8 (Lightmap-family byte meter) · format: `build_pipeline.md` §PRL section IDs
+- **Emissive strength / `materials.toml` / `emissive_volume` / scripted glow / neon prefix retirement** (decided, not yet built) → `resource_management.md` §4.5 · `build_pipeline.md` §Custom FGD, §Compiler pipeline step 9, §PRL section IDs · `scripting.md` §10.2a · flash clamp: `rendering_pipeline.md` §7.8 (Photosensitivity limiter) · co-op: `networking.md` §Presentation state
 - **Photosensitivity / flash limiter / strobe safety** → `rendering_pipeline.md` §7.8 (Photosensitivity limiter)
 - **Screen reader / assistive technology / accessibility snapshot / hidden-window adapter boot** → `ui.md` §4.2 · `boot_sequence.md` §Window visibility
 - **Theme variants / high contrast / text scale / contrast diagnostic / focus visuals** → `ui.md` §1, §2
 - **Captions / subtitles / sound-direction cues / mono audio / bus volume options** → `audio.md` §1 (Mixer bus tree), §5
 - **Damage direction indicator / player damage bearing** → `networking.md` §Presentation events vs. replicated state
 - **Impact burst / spark burst / observer impact cue / which peer spawns the burst** → `networking.md` §Presentation events vs. replicated state
-- **UI layer / HUD / widgets / theming / UI state binding** → `ui.md`
+- **UI layer / HUD / widgets / theming / UI state binding / repeated rows (`forEach`)** → `ui.md`
 - **Engine-owned assets / `core/` tree / built-in UI descriptors / splash image / where engine assets live vs. mod content** → `ui.md` §5 · `build_pipeline.md` §Distribution packaging
 - **Resource management / textures / materials** → `resource_management.md`
 - **Surface Depth / height maps / `_h.png` / texel-space parallax / per-texel surface carve / two-channel surface map** → `resource_management.md` §4.6 · `rendering_pipeline.md` §7.3 · bake and `.prm` format: `build_pipeline.md` §Baked texture mips
 - **Texture memory accounting / per-slot or per-mip byte cost / what a level's textures cost** → `build_pipeline.md` §Baked texture mips (Byte accounting)
 - **3D model / glTF import (scale, pivot, material format, shared clip libraries, Mixamo licence)** → `resource_management.md` §7
 - **Scripting / primitives / SDK types / scripting crate boundaries / VM compile firewall** → `scripting.md`
-- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / occupancy exposure / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
+- **SDK API style / typed handles vs strings / naming authoring options** → `scripting.md` §1 (Authoring API style)
+- **Session players / player counts and statuses / `session.players` display list / per-tag occupancy (`occupancy.tag`) / all-players condition** → `scripting.md` §5 (Session players, Occupancy) · roster: `networking.md` §Session-state ledger · repeated rows: `ui.md` §1.1
+- **Reaction dispatch model / event sources / dispatch scopes / reaction parameters / array bodies / where `wait` tails land, source classes and tail clocks** → `scripting.md` §12
 - **System reactions / system steps in a sequence** → `scripting.md` §10.4
 - **Per-player events / `players().on` / discrete `assistReceived` / `assistGiven` sources / reacting to one player's state in co-op / presenting on that player's machine** → `scripting.md` §12 (Player events) · delivery: `networking.md` §Presentation events vs. replicated state
 - **Entity addressing / map members (`getMapEntities`) vs. groups (`npcs`, `players`) vs. subject tokens / per-member `.on` sources / spawned-NPC tags** → `scripting.md` §12 (Entity addressing)
@@ -74,6 +80,7 @@
 - **What reaches clients in co-op / networked-by-default classification / display copies / host-only light, fog, emitter changes as replicated state / join baseline budget / trigger presentation `audience`** → `networking.md` §Current contract · §Presentation events vs. replicated state · `scripting.md` §12 (Entity addressing)
 - **Live introspection channel / observe-live / localhost debug socket / reading a running session's state over a socket** → `networking.md` §Not netcode: the live introspection channel
 - **Joining a session / admission vs content parity / slot lifecycle / revealed term and revealed holds / host level change / host same-map restart and `Relevel` level life / what gates vs what replicates** → `networking.md` §Admission and content parity · §Slot lifecycle · §What gates, and what replicates instead
+- **Leaving or ending a session / `leaveSession` / `endSession` / host-side endings / final character on close / role moving to single-player / client saves keeping their own world** → `networking.md` §Slot lifecycle (Leaving and ending a session), §Role model · verbs and warnings: `scripting.md` §10.4 · saves: `scripting.md` §5
 - **Spawn-pose hint / a joining client's first view / spawn reservation before promotion / host-named loads and the client's frontend menu on join / backdrop vs played level** → `networking.md` §Slot lifecycle (Spawn-pose hint, The host names the next map, A host restart is a relevel) · `boot_sequence.md` §1 (Presented pose, `--connect` client) · host resolver `crates/postretro/src/spawn_pose.rs`
 - **First-person weapon placement / viewmodel offset / where a weapon sits in view / placement vs view-feel / FP vs TP weapon vantage** → `networking.md` §Weapon placement is content
 - **Projectile fire origin / muzzle point / where a shot spawns / camera-eye vs barrel** → `networking.md` §Weapon placement is content (Fire origin composes on placement)
@@ -142,6 +149,7 @@ Design inputs for every renderer, baker, and netcode decision, not stretch goals
 | **Baked over computed** | Spatial data and indirect lighting are baked offline; portal traversal normally computes visibility per frame from baked portal geometry. Defined fallback cases use per-cell AABB frustum culling; an over-budget walk falls back too, bounded to frustum-culled sets that drive drawing and fog reach. Direct light may be baked (static lightmaps; baked layers for movers) or evaluated at runtime — whether a light is authored static (baked) or dynamic (runtime) is an **authoring choice, not an engine rule**. The one engine invariant: a physical light's contribution must never be **double-counted on a given receiver** — overlapping static and dynamic light must not over-brighten the same fragment. Lighting techniques compose additively in the forward pass. |
 | **Physical bake, stylized runtime** | Bake-time light transport may be physical: area emitters, soft shadows, coloured multi-bounce, energy conservation. Runtime shading stays a closed retro material vocabulary, never PBR (`rendering_pipeline.md` §13). An input only the compiler reads widens transport, not that vocabulary. |
 | **Defaults for novices, controls for experts** | Every author-facing control ships a default that looks right untouched; experienced authors opt into range. Look and mood live with the map or its assets, never in compiler flags — flags trade bake quality for time. |
+| **Designers over structure** | Code structure never blocks a designer. If the engine can make a placement work, it does; load errors are for placements that cannot work. |
 | **Subsystem boundaries** | Renderer, audio, input, game logic are distinct modules with explicit contracts. |
 | **Frame ordering** | Input → Game logic → Audio → Render → Present. Later stages depend on earlier ones. |
 | **No `unsafe`** | The crate stack provides safe APIs. If `unsafe` appears necessary, stop and consult the project owner. |

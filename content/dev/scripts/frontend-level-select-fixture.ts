@@ -1,4 +1,5 @@
-// Mod frontend hub fixture: catalog-driven level select and game-flow calls.
+// Mod frontend hub fixture: catalog-driven level select, game-flow calls and
+// the session membership verbs.
 //
 // This file is a committed TypeScript review gate. It is not imported by the
 // dev mod at runtime; `content/dev/scripts/tsconfig.json` includes it so
@@ -18,6 +19,8 @@ import {
   Tree,
   VStack,
   defineUiTree,
+  endSession,
+  leaveSession,
   loadLevel,
   restartLevel,
   returnToFrontend,
@@ -63,6 +66,11 @@ function levelButton(entry: ModMapEntry) {
 const restartCurrentLevel = defineReaction("frontend.restartCurrentLevel", restartLevel());
 const backToFrontend = defineReaction("frontend.returnToFrontend", returnToFrontend());
 
+// A client's "Leave game" button.
+export const leave = defineReaction("pause.leaveSession", leaveSession());
+// A run's end on a map-end crossing: every role runs the same steps.
+export const runEnd = defineReaction("run.end", [endSession(), returnToFrontend()]);
+
 const levelSelect = defineUiTree({
   name: "frontend.levelSelect.fixture",
   tree: Tree(
@@ -96,6 +104,11 @@ const levelSelect = defineUiTree({
           label: "Quit To Menu Action",
           onPress: QUIT_TO_MENU_ACTION,
         }),
+        Button({
+          id: "leave-session",
+          label: "Leave Game",
+          onPress: leave,
+        }),
       ],
     ),
   ),
@@ -119,6 +132,8 @@ export default defineMod({
   reactions: [
     restartCurrentLevel,
     backToFrontend,
+    leave,
+    runEnd,
     ...mapCatalog.map((entry) =>
       defineReaction(`frontend.catalog.${entry.id}`, loadLevel(entry.id)),
     ),

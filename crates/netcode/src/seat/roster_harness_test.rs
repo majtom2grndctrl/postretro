@@ -108,7 +108,8 @@ fn drain_rosters(
             ServerControlMessage::Divergence(_)
             | ServerControlMessage::Relevel { .. }
             | ServerControlMessage::Tuning(_)
-            | ServerControlMessage::SpawnPoseHint(_) => None,
+            | ServerControlMessage::SpawnPoseHint(_)
+            | ServerControlMessage::FinalCharacter { .. } => None,
         })
         .collect()
 }

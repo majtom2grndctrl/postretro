@@ -18,9 +18,10 @@ pub enum MachineRole {
 /// machine stays on that machine. The client tail filter, the late-joiner
 /// convergence and the player-event install rule all read this one predicate.
 ///
-/// `returnToFrontend` is machine-local only on a client, where it unloads that
-/// client's level and changes nothing the host owns. `args` names the slot a
-/// `setState` writes; an unknown slot is not machine-local.
+/// `returnToFrontend` and `leaveSession` are machine-local only on a client,
+/// so a client tail parks and lands them; the app drain then decides what each
+/// does by role. `endSession` is a host consequence everywhere. `args` names
+/// the slot a `setState` writes; an unknown slot is not machine-local.
 pub fn system_reaction_is_machine_local(
     kind: SystemReactionKind,
     args: &serde_json::Value,
@@ -35,7 +36,10 @@ pub fn system_reaction_is_machine_local(
             .and_then(|slot| slot_table.get(slot))
             .is_some_and(|record| record.schema.network == ReplicationScope::None),
         SystemReactionClass::HostConsequence => {
-            kind == SystemReactionKind::ReturnToFrontend && role == MachineRole::Client
+            matches!(
+                kind,
+                SystemReactionKind::ReturnToFrontend | SystemReactionKind::LeaveSession
+            ) && role == MachineRole::Client
         }
     }
 }
@@ -54,8 +58,9 @@ pub fn primitive_is_machine_local(
 
 /// How a client lands a tail: every machine-local step, or, for a segment due
 /// before the host tick this client revealed at (a late joiner's), only the
-/// steps that converge state. Transient presentation and `returnToFrontend` are
-/// skipped there, since the moment they belonged to has passed.
+/// steps that converge state. Transient presentation, `returnToFrontend` and
+/// `leaveSession` are skipped there, since the moment they belonged to has
+/// passed: a late joiner stays connected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientLanding {
     Land,
@@ -75,7 +80,10 @@ impl ClientLanding {
             Self::Land => true,
             Self::Converge => {
                 kind.class() != SystemReactionClass::Presentation
-                    && kind != SystemReactionKind::ReturnToFrontend
+                    && !matches!(
+                        kind,
+                        SystemReactionKind::ReturnToFrontend | SystemReactionKind::LeaveSession
+                    )
             }
         }
     }
@@ -99,6 +107,9 @@ pub struct LandingScope {
     /// reaction that holds it (the landing's own, or a `fire` target's) and
     /// its primitive.
     first_dropped: RefCell<Option<DroppedStep>>,
+    /// The landing kept a `leaveSession`: the client leaves when it drains,
+    /// so what the landing drops after it is routine, never a mistake.
+    left: Cell<bool>,
 }
 
 impl LandingScope {
@@ -118,18 +129,31 @@ impl LandingScope {
             self.host_capture.replace(host_capture),
             self.client.replace(client),
             self.first_dropped.take(),
+            self.left.replace(false),
         );
         LandingScopeGuard {
             scope: self,
             previous: Some(previous),
         }
     }
-    /// Record a step a client landing did not apply.
-    pub fn note_dropped(&self, reaction: &str, primitive: &str) {
+    /// Record a step a client landing kept.
+    pub fn note_kept(&self, primitive: &str) {
+        if primitive == SystemReactionKind::LeaveSession.primitive_name() {
+            self.left.set(true);
+        }
+    }
+    /// Record a step a client landing did not apply. Returns `false` for a
+    /// step after a kept `leaveSession`, which is not reported: the steps
+    /// after a leave drop on every path (`scripting.md` §10.4).
+    pub fn note_dropped(&self, reaction: &str, primitive: &str) -> bool {
+        if self.left.get() {
+            return false;
+        }
         let mut first = self.first_dropped.borrow_mut();
         if first.is_none() {
             *first = Some((reaction.to_string(), primitive.to_string()));
         }
+        true
     }
     /// The first dropped step of the landing in scope.
     pub fn first_dropped(&self) -> Option<DroppedStep> {
@@ -139,15 +163,16 @@ impl LandingScope {
 
 pub struct LandingScopeGuard<'a> {
     scope: &'a LandingScope,
-    previous: Option<(bool, Option<ClientLanding>, Option<DroppedStep>)>,
+    previous: Option<(bool, Option<ClientLanding>, Option<DroppedStep>, bool)>,
 }
 
 impl Drop for LandingScopeGuard<'_> {
     fn drop(&mut self) {
-        if let Some((host_capture, client, first_dropped)) = self.previous.take() {
+        if let Some((host_capture, client, first_dropped, left)) = self.previous.take() {
             self.scope.host_capture.set(host_capture);
             self.scope.client.set(client);
             *self.scope.first_dropped.borrow_mut() = first_dropped;
+            self.scope.left.set(left);
         }
     }
 }

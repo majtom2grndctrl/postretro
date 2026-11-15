@@ -126,7 +126,10 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
-                        action: Some(ActionVerb::Attack("claw".to_string())),
+                        action: Some(ActionVerb::Attack {
+                            name: "claw".to_string(),
+                            at: None,
+                        }),
                         on_enter: None,
                         facing: None,
                         reposition: None,

@@ -1,8 +1,10 @@
 """Tests for the Mixamo converter's Blender-free logic: the post-export pass and
 bone-prefix matching."""
 
+import contextlib
 import copy
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -792,6 +794,134 @@ class ClipEditTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     CONVERTER.trim_clip(gltf, data, new, source, end_ms)
 
+    def test_trim_range_starts_on_the_windup_last_pose_shifted_to_zero(self):
+        gltf, data = clip_document()
+
+        CONVERTER.trim_clip(gltf, data, "smash_windup", "smash", 1000 / 30)
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 1000 / 30)
+
+        _, windup, strike = gltf["animations"]
+        self.assertEqual(strike["channels"], gltf["animations"][0]["channels"])
+        inputs = {s["input"] for s in strike["samplers"]}
+        self.assertEqual(len(inputs), 1, "a shared time accessor stays shared")
+        (times,) = inputs
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, times)),
+                         [(0.0,), (0.0333,), (0.0667,)])
+        self.assertEqual(gltf["accessors"][times]["min"], [0.0])
+        self.assertAlmostEqual(gltf["accessors"][times]["max"][0], 2 / 30, places=6)
+        # The root's ground position starts where the source starts (the engine
+        # holds the windup there); its height and the motion after it are kept.
+        moves = rounded(CONVERTER.read_floats(gltf, data, strike["samplers"][0]["output"]))
+        self.assertEqual(moves, [(0.0, 0.9, 0.0), (0.1, 1.1, -0.2), (0.2, 0.8, -0.4)])
+        windup_moves = rounded(CONVERTER.read_floats(gltf, data, windup["samplers"][0]["output"]))
+        self.assertEqual(windup_moves[-1][1], moves[0][1], "the strike starts at the windup's height")
+        windup_turns = CONVERTER.read_floats(gltf, data, windup["samplers"][1]["output"])
+        strike_turns = CONVERTER.read_floats(gltf, data, strike["samplers"][1]["output"])
+        self.assertEqual(rounded(windup_turns)[-1], rounded(strike_turns)[0],
+                         "the strike starts on the windup's last rotations")
+        self.assertEqual(gltf["buffers"][0]["byteLength"], len(data))
+
+    def test_trim_range_rounds_its_start_down_and_keeps_an_end(self):
+        gltf, data = clip_document()
+
+        CONVERTER.trim_clip(gltf, data, "middle", "smash", 80, 50)
+
+        clip = gltf["animations"][1]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, clip["samplers"][0]["input"])),
+                         [(0.0,), (0.0333,)])
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, clip["samplers"][0]["output"])),
+                         [(0.0, 0.9, 0.0), (0.1, 1.1, -0.2)])
+
+    def test_trim_range_holds_a_track_keyed_only_before_its_start(self):
+        import struct
+        gltf, data = clip_document()
+        data.extend(struct.pack("<f", 0.0))
+        gltf["bufferViews"].append({"buffer": 0, "byteOffset": len(data) - 4, "byteLength": 4})
+        gltf["accessors"].append({"bufferView": len(gltf["bufferViews"]) - 1,
+                                  "componentType": 5126, "count": 1, "type": "SCALAR",
+                                  "min": [0.0], "max": [0.0]})
+        data.extend(struct.pack("<4f", 0.0, 0.0, 0.7071, 0.7071))
+        gltf["bufferViews"].append({"buffer": 0, "byteOffset": len(data) - 16, "byteLength": 16})
+        gltf["accessors"].append({"bufferView": len(gltf["bufferViews"]) - 1,
+                                  "componentType": 5126, "count": 1, "type": "VEC4"})
+        gltf["buffers"][0]["byteLength"] = len(data)
+        gltf["nodes"].append({"name": "mixamorig:Spine"})
+        gltf["animations"][0]["samplers"].append(
+            {"input": len(gltf["accessors"]) - 2, "output": len(gltf["accessors"]) - 1})
+        gltf["animations"][0]["channels"].append(
+            {"sampler": 2, "target": {"node": 2, "path": "rotation"}})
+
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 50)
+
+        held = gltf["animations"][1]["samplers"][2]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, held["input"])), [(0.0,)])
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, held["output"])),
+                         [(0.0, 0.0, 0.7071, 0.7071)])
+
+    def test_trim_range_refusals(self):
+        for new, end_ms, start_ms in (("past", None, 100), ("late", None, 150),
+                                      ("backwards", 30, 60), ("empty", 50, 50),
+                                      ("one_pose", 50, 40)):
+            with self.subTest(new=new):
+                gltf, data = clip_document()
+                with self.assertRaises(ValueError):
+                    CONVERTER.trim_clip(gltf, data, new, "smash", end_ms, start_ms)
+
+    def test_trim_range_samples_a_track_with_no_key_at_its_start(self):
+        # The root keys off the other track's 30 fps grid, so it has no key at
+        # the start; the copy's first pose samples it between its neighbours.
+        import struct
+        gltf, data = clip_document()
+        offset = gltf["bufferViews"][0]["byteOffset"]
+        struct.pack_into("<4f", data, offset, 0.0, 0.02, 0.05, 0.1)
+        gltf["accessors"].append(dict(gltf["accessors"][0]))
+        gltf["accessors"][-1]["bufferView"] = len(gltf["bufferViews"])
+        times = struct.pack("<4f", 0.0, 1 / 30, 2 / 30, 3 / 30)
+        gltf["bufferViews"].append({"buffer": 0, "byteOffset": len(data), "byteLength": 16})
+        data.extend(times)
+        gltf["buffers"][0]["byteLength"] = len(data)
+        gltf["animations"][0]["samplers"][1]["input"] = len(gltf["accessors"]) - 1
+
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 1000 / 30)
+
+        moved = gltf["animations"][1]["samplers"][0]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, moved["input"])),
+                         [(0.0,), (0.0167,), (0.0667,)])
+        weight = (1 / 30 - 0.02) / 0.03
+        # Sampled between its neighbours, then started at the source's ground position.
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, moved["output"]))[0],
+                         rounded([(0.0, 0.9 + 0.2 * weight, 0.0)])[0])
+
+    def test_sample_track_blends_steps_and_renormalizes_rotations(self):
+        times = [0.0, 1.0]
+        quarter_turn = (0.0, 0.7071068, 0.0, 0.7071068)
+        rotations = [(0.0, 0.0, 0.0, 1.0), quarter_turn]
+
+        blended = CONVERTER.sample_track(times, rotations, 0.5, "LINEAR", True, "test")
+        self.assertEqual(rounded([blended]), [(0.0, 0.3827, 0.0, 0.9239)], "an eighth turn")
+        self.assertEqual(CONVERTER.sample_track(times, rotations, 0.5, "STEP", True, "test"),
+                         rotations[0])
+        self.assertEqual(CONVERTER.sample_track(times, rotations, 1.0, "LINEAR", True, "test"),
+                         quarter_turn)
+        flipped = [rotations[0], tuple(-c for c in quarter_turn)]
+        same = CONVERTER.sample_track(times, flipped, 0.5, "LINEAR", True, "test")
+        self.assertEqual(rounded([same]), rounded([blended]), "takes the short way round")
+        with self.assertRaises(ValueError):
+            CONVERTER.sample_track([0.5, 1.0], rotations, 0.25, "LINEAR", True, "test")
+
+    def test_trim_range_shifts_only_the_hips_translation(self):
+        # Without a Hips joint nothing is the root, not even a channel that names
+        # no node (an animation pointer): the copy keeps the source's values.
+        gltf, data = clip_document()
+        gltf["nodes"][1]["name"] = "Pelvis"
+        del gltf["animations"][0]["channels"][0]["target"]["node"]
+
+        CONVERTER.trim_clip(gltf, data, "smash_strike", "smash", None, 1000 / 30)
+
+        moves = gltf["animations"][1]["samplers"][0]["output"]
+        self.assertEqual(rounded(CONVERTER.read_floats(gltf, data, moves)),
+                         [(0.1, 0.9, -0.2), (0.2, 1.1, -0.4), (0.3, 0.8, -0.6)])
+
     def test_main_pins_before_trimming(self):
         gltf, data = clip_document()
         with tempfile.TemporaryDirectory() as directory:
@@ -812,6 +942,222 @@ class ClipEditTests(unittest.TestCase):
         windup = result["animations"][1]["samplers"][0]["output"]
         self.assertEqual(rounded(CONVERTER.read_floats(result, out, windup)),
                          [(0.0, 0.8, 0.0), (0.0, 0.9, 0.0)])
+
+    def test_main_writes_open_ranges(self):
+        gltf, data = clip_document()
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, bytes(data))
+            argv = ["blender", "--", "--input-dir", "clips", "--base", "rig.fbx",
+                    "--output", str(path), "--library",
+                    "--trim", "smash_copy=smash:0-", "--trim", "smash_strike=smash:40-"]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(CONVERTER, "clean_scene"), \
+                    mock.patch.object(CONVERTER, "merge_animations"), \
+                    mock.patch.object(CONVERTER, "validate_model"), \
+                    mock.patch.object(CONVERTER, "export_gltf"):
+                CONVERTER.main()
+            result = json.loads(path.read_text(encoding="utf-8"))
+            out = path.with_suffix(".bin").read_bytes()
+
+        self.assertEqual([a["name"] for a in result["animations"]],
+                         ["smash", "smash_copy", "smash_strike"])
+        copy_times = result["animations"][1]["samplers"][0]["input"]
+        self.assertEqual(len(CONVERTER.read_floats(result, out, copy_times)), 4,
+                         "a range from 0 with no end copies the whole clip")
+
+
+def event_document(**keys):
+    """A library whose clips each turn the Hips over `keys[name]` keys at 30 fps,
+    one time accessor per clip."""
+    import struct
+    data = bytearray()
+    gltf = {
+        "asset": {"version": "2.0"},
+        "nodes": [{"name": "Armature", "children": [1]}, {"name": "mixamorig:Hips"}],
+        "accessors": [], "bufferViews": [], "animations": [],
+    }
+    for name, count in keys.items():
+        times = [k / 30 for k in range(count)]
+        for chunk, kind, bounds in ((struct.pack(f"<{count}f", *times), "SCALAR", True),
+                                    (struct.pack("<4f", 0.0, 0.0, 0.0, 1.0) * count, "VEC4",
+                                     False)):
+            gltf["bufferViews"].append(
+                {"buffer": 0, "byteOffset": len(data), "byteLength": len(chunk)})
+            data.extend(chunk)
+            accessor = {"bufferView": len(gltf["bufferViews"]) - 1, "componentType": 5126,
+                        "count": count, "type": kind}
+            if bounds:
+                accessor.update(min=[0.0], max=[times[-1]])
+            gltf["accessors"].append(accessor)
+        gltf["animations"].append({
+            "name": name,
+            "channels": [{"sampler": 0, "target": {"node": 1, "path": "rotation"}}],
+            "samplers": [{"input": len(gltf["accessors"]) - 2,
+                          "output": len(gltf["accessors"]) - 1, "interpolation": "LINEAR"}],
+        })
+    gltf["buffers"] = [{"byteLength": len(data), "uri": "model.bin"}]
+    return gltf, data
+
+
+# 30 fps: the punch:467 cut rounds down to key 14, at 466.67 ms.
+KEY_14_MS = 1000 * 14 / 30
+
+
+def clip_named(result, name):
+    return next(a for a in result["animations"] if a["name"] == name)
+
+
+def events_of(result, name):
+    return (clip_named(result, name).get("extras") or {}).get("events")
+
+
+class ClipEventTests(unittest.TestCase):
+    def postprocess(self, events=(), trims=(), **keys):
+        gltf, data = event_document(**(keys or {"punch": 31}))
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, bytes(data))
+            CONVERTER.postprocess_gltf(path, tag=False, events=events, trims=trims)
+            return json.loads(path.read_text(encoding="utf-8"))
+
+    def strike_and_windup(self, event_ms):
+        result = self.postprocess(
+            events=[("punch", "hit", event_ms)],
+            trims=[("punch_windup", "punch", 0.0, 467.0),
+                   ("punch_strike", "punch", 467.0, None)])
+        return events_of(result, "punch_strike"), events_of(result, "punch_windup")
+
+    def test_event_flag_writes_seconds_into_its_source_clip_only(self):
+        gltf, data = event_document(punch=31, swipe=31, idle=31)
+        gltf["animations"][0]["extras"] = {"note": "kept"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, bytes(data))
+            argv = ["blender", "--", "--input-dir", "clips", "--base", "rig.fbx",
+                    "--output", str(path), "--library",
+                    "--event", "punch:hit=620", "--event", "swipe:claw=300"]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.object(CONVERTER, "clean_scene"), \
+                    mock.patch.object(CONVERTER, "merge_animations"), \
+                    mock.patch.object(CONVERTER, "validate_model"), \
+                    mock.patch.object(CONVERTER, "export_gltf"):
+                CONVERTER.main()
+            result = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(clip_named(result, "punch")["extras"],
+                         {"note": "kept", "events": [{"name": "hit", "time": 0.62}]})
+        self.assertEqual(events_of(result, "swipe"), [{"name": "claw", "time": 0.3}])
+        self.assertNotIn("extras", clip_named(result, "idle"))
+
+    def test_range_trim_carries_an_event_shifted_by_its_start_key(self):
+        strike, windup = self.strike_and_windup(767.0)
+
+        self.assertEqual(len(strike), 1)
+        self.assertEqual(strike[0]["name"], "hit")
+        self.assertAlmostEqual(strike[0]["time"], 0.767 - 14 / 30, places=6)
+        self.assertIsNone(windup, "a windup ending before the moment carries none")
+
+    def test_range_start_between_keys_shifts_by_the_key_it_rounds_down_to(self):
+        strike, windup = self.strike_and_windup(467.0)
+
+        self.assertAlmostEqual(strike[0]["time"], 0.467 - 14 / 30, places=6)
+        self.assertGreater(strike[0]["time"], 0.0)
+        self.assertIsNone(windup)
+
+    def test_event_on_the_shared_key_lands_at_zero_in_the_range_not_the_windup(self):
+        strike, windup = self.strike_and_windup(KEY_14_MS)
+
+        self.assertEqual(strike, [{"name": "hit", "time": 0.0}])
+        self.assertIsNone(windup)
+
+    def test_windup_keeps_events_before_its_end_key(self):
+        result = self.postprocess(events=[("punch", "lift", 100.0)],
+                                  trims=[("punch_windup", "punch", 0.0, 467.0)])
+
+        self.assertEqual(events_of(result, "punch_windup"), [{"name": "lift", "time": 0.1}])
+
+    def test_closed_range_drops_events_outside_it(self):
+        result = self.postprocess(events=[("punch", "early", 100.0), ("punch", "hit", 767.0)],
+                                  trims=[("punch_mid", "punch", 200.0, 700.0)])
+
+        self.assertIsNone(events_of(result, "punch_mid"))
+
+    def test_cut_keeping_the_last_key_keeps_an_event_there(self):
+        result = self.postprocess(events=[("punch", "done", 1000.0)],
+                                  trims=[("punch_copy", "punch", 0.0, 1000.0),
+                                         ("punch_tail", "punch", 900.0, None)])
+
+        self.assertEqual(events_of(result, "punch_copy"), [{"name": "done", "time": 1.0}])
+        self.assertEqual(events_of(result, "punch_tail"), [{"name": "done", "time": 0.1}])
+
+    def test_carried_span_end_shifts_and_clamps_to_the_cut(self):
+        carried = CONVERTER.carried_events(
+            [{"name": "swing", "time": 0.5, "end": 0.9, "tag": "x"}], 0.4, 0.8, False)
+
+        self.assertEqual(len(carried), 1)
+        self.assertAlmostEqual(carried[0]["time"], 0.1)
+        self.assertAlmostEqual(carried[0]["end"], 0.4)
+        self.assertEqual(carried[0]["tag"], "x")
+
+    def test_event_rejects_each_name_the_flag(self):
+        cases = {
+            "past its clip's end": [("punch", "hit", 1100.0)],
+            "before its clip's start": [("punch", "hit", -5.0)],
+            "duplicate name": [("punch", "hit", 100.0), ("punch", "hit", 200.0)],
+            "unknown clip": [("kick", "hit", 100.0)],
+            "malformed name": [("punch", "9hit", 100.0)],
+        }
+        for case, events in cases.items():
+            with self.subTest(case=case), self.assertRaisesRegex(ValueError, "--event"):
+                self.postprocess(events=events)
+
+    def test_event_on_a_bound_character_rejects_naming_the_flag(self):
+        gltf, data = fake_document()
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, data)
+            with self.assertRaisesRegex(ValueError, "--event"):
+                CONVERTER.postprocess_gltf(path, clip_library=LIBRARY,
+                                           events=[("walk", "hit", 10.0)])
+
+    def test_stamping_a_built_library_matches_a_rebuild_with_events(self):
+        events = [("punch", "hit", 767.0), ("punch", "lift", 100.0), ("swipe", "hit", 400.0)]
+        trims = [("punch_windup", "punch", 0.0, 467.0), ("punch_strike", "punch", 467.0, None),
+                 ("swipe_strike", "swipe", 300.0, None), ("swipe_late", "swipe_strike", 50.0, None)]
+        rebuilt = self.postprocess(events=events, trims=trims, punch=31, swipe=31)
+
+        gltf, data = event_document(punch=31, swipe=31)
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, bytes(data))
+            CONVERTER.postprocess_gltf(path, tag=False, trims=trims)
+            CONVERTER.stamp_events_in_library(path, events, trims)
+            stamped = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(stamped["animations"], rebuilt["animations"])
+        self.assertIsNotNone(events_of(stamped, "swipe_late"), "a trim of a trim carries")
+
+    def test_stamping_rejects_an_event_on_a_trims_new_clip(self):
+        trims = [("punch_strike", "punch", 467.0, None)]
+        gltf, data = event_document(punch=31)
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_model(directory, gltf, bytes(data))
+            CONVERTER.postprocess_gltf(path, tag=False, trims=trims)
+            with self.assertRaisesRegex(ValueError, "punch_strike.*trimmed clip"):
+                CONVERTER.stamp_events_in_library(
+                    path, [("punch_strike", "hit", 100.0)], trims)
+
+    def test_existing_events_a_loader_would_reject_fail_naming_the_clip(self):
+        bad = {
+            "malformed name": [{"name": "9hit", "time": 0.1}],
+            "duplicate name": [{"name": "hit", "time": 0.1}, {"name": "hit", "time": 0.2}],
+            "out of bounds": [{"name": "hit", "time": 5.0}],
+        }
+        for case, events in bad.items():
+            gltf, data = event_document(punch=31)
+            gltf["animations"][0]["extras"] = {"events": events}
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                path = write_model(directory, gltf, bytes(data))
+                with self.assertRaisesRegex(ValueError, "clip 'punch'"):
+                    CONVERTER.postprocess_gltf(
+                        path, tag=False,
+                        trims=[("punch_strike", "punch", 467.0, None)])
 
 
 def fcurve(bone, channel="rotation_quaternion"):
@@ -917,11 +1263,20 @@ class ConverterArgumentTests(unittest.TestCase):
                           "--trim", "smash_windup=smash:400", "--trim", "swipe_windup=swipe:900.5")
 
         self.assertEqual(args.in_place, ["smash", "run"])
-        self.assertEqual(args.trim, [("smash_windup", "smash", 400.0),
-                                     ("swipe_windup", "swipe", 900.5)])
+        self.assertEqual(args.trim, [("smash_windup", "smash", 0.0, 400.0),
+                                     ("swipe_windup", "swipe", 0.0, 900.5)])
+
+    def test_trim_ranges_parse(self):
+        args = self.parse("--base", "rig.fbx", "--library",
+                          "--trim", "smash_strike=smash:400-",
+                          "--trim", "swipe_mid=swipe:100.5-800")
+
+        self.assertEqual(args.trim, [("smash_strike", "smash", 400.0, None),
+                                     ("swipe_mid", "swipe", 100.5, 800.0)])
 
     def test_rejects_malformed_trims(self):
-        for spec in ("smash_windup=smash", "smash:400", "smash=smash:400", "a=b:-1"):
+        for spec in ("smash_windup=smash", "smash:400", "smash=smash:400", "a=b:-1",
+                     "a=b:-", "a=b:300-200", "a=b:300-300", "a=b:1-2-3"):
             with self.subTest(spec=spec), self.assertRaises(SystemExit):
                 self.parse("--base", "rig.fbx", "--library", "--trim", spec)
 
@@ -929,6 +1284,28 @@ class ConverterArgumentTests(unittest.TestCase):
         for flags in (("--in-place", "smash"), ("--trim", "a=b:10")):
             with self.subTest(flags=flags), self.assertRaises(SystemExit):
                 self.parse("--base", "rig.fbx", "--clip-library", LIBRARY, *flags)
+
+    def test_events_parse(self):
+        args = self.parse("--base", "rig.fbx", "--library",
+                          "--event", "punch:hit=620", "--event", "swipe:_Claw2=300.5")
+
+        self.assertEqual(args.event, [("punch", "hit", 620.0), ("swipe", "_Claw2", 300.5)])
+
+    def test_rejects_malformed_events_naming_the_flag(self):
+        for spec in ("punch:hit", "punch=620", "punch:hit=-5", "punch:hit=", ":hit=5",
+                     "punch:9hit=5", "punch:hit-2=5", "punch:h it=5", "a:b:c=5"):
+            stderr = io.StringIO()
+            with self.subTest(spec=spec), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(stderr):
+                self.parse("--base", "rig.fbx", "--library", "--event", spec)
+            self.assertIn("--event", stderr.getvalue())
+
+    def test_rejects_events_on_a_bound_character_naming_the_flag(self):
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(stderr):
+            self.parse("--base", "rig.fbx", "--clip-library", LIBRARY,
+                       "--event", "punch:hit=620")
+        self.assertIn("--event", stderr.getvalue())
 
     def test_rejects_a_malformed_clip_library_path(self):
         with self.assertRaises(SystemExit):

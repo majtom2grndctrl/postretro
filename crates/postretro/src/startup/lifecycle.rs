@@ -78,6 +78,11 @@ mod lifecycle_unload_tests;
 mod lifecycle_world_cpu;
 #[path = "lifecycle_world_handles.rs"]
 mod lifecycle_world_handles;
+#[path = "session_membership.rs"]
+pub(crate) mod session_membership;
+#[cfg(test)]
+#[path = "session_membership_tests.rs"]
+mod session_membership_tests;
 #[cfg(test)]
 #[path = "spawn_pose_handoff_fixtures.rs"]
 mod spawn_pose_handoff_fixtures;

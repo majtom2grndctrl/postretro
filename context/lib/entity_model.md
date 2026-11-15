@@ -278,6 +278,8 @@ Enemy behavior is an **authored hierarchical statechart**, not an engine-closed 
 
 The line between the two halves of targeting is **perceivable vs. worth engaging**. The floor decides what an enemy could possibly perceive — a question with one right answer, so it is correctness. Whether a perceivable pawn is worth attacking is taste: a blind grunt, a psychic boss, and an enemy that ignores the wounded are all valid designs. Candidacy can only narrow the offer set, never widen it.
 
+**Smarter and dumber enemies author alike.** Intelligence comes from guards and options on one vocabulary, never a separate mechanism.
+
 **One brain authoring surface.** `components.behavior` is the sole enemy-brain authoring surface. The descriptor materializes one retained graph component.
 
 Invariants the evaluator upholds:
@@ -311,6 +313,19 @@ Invariants the evaluator upholds:
 - **Held enemies.** A held enemy leaves the AI set and its turns end. Held ownership keeps its weapon execution, but arbitration cancels any execution of a drawn attack whose holder holds no turn for it, so a dropped enemy never resumes a drawn burst. An undrawn burst may resume.
 - **Reload.** A reload that drops a token an attack draws warns on that reload and ignores the draw. A load or reload that drops a profile a placed pool names warns, and the pool uses `default`.
 - **Host-only, outside the co-op compatibility digest.** Clients never read the budget, and turns never replicate.
+
+**Stances and attacks (decided, not yet built).** Stances and attacks are authoring vocabulary. Load-time lowering turns them into activities and sets `pose` and `queue` itself; authors never write either (`scripting.md` §2). The runtime gains three things:
+
+- **Pose.** Activities sharing a `pose` act as one: moving between them restarts no clip, plays no second sound, and keeps time in activity, `activityRoll` and `damageInActivity`. Entering from outside starts them fresh. A `"*"` or ancestor row into the current pose is skipped. A pose retains its target like an engaging activity. So does any activity marked for an attack.
+- **Queued rows.** A row carrying `queue` requests its attack's turn from an unmarked activity while its guard and the attack's reach pass. A grant survives into the next evaluation, as a mark's does, and the row passes once the turn reads held. One request per enemy: a mark's outranks a queued row's, which outranks a pending unmarked attack. Rows into hand-written marks do not queue.
+- **Release draw.** An attack's hold releases once its pose has lasted a hidden per-hold draw. No guard reads it, so branching on the roll never leaks timing (`networking.md` §Current contract, engine randomness).
+
+**Clip-timed attacks.** An attack may fire at a named moment in its clip (`action.at`, `resource_management.md` §7 clip events) instead of on entry.
+
+- **Clip time is game time.** The brain accumulates clip time per AI tick for the animation its path selects, scaled by that state's playback rate. It never reads the animation clock, which is per frame and dev-scaled, so arbitration stays deterministic. This is the one exception to a single animation clock: presentation may lead or trail a moment by a frame, and without bound under the dev time scale. Activities sharing a state share its clip; a looping state starts at the enemy's drawn phase and wraps. A travel variant switch restarts clip time, and so does dropping a held enemy: the drop attaches a fresh mesh. Clip time and the moment's latch serialize, so a restore resumes mid-swing. Decision cadence work keeps the accumulator and the moment check on every tick.
+- **One chance per entry.** The moment is checked after transitions, as attacks are. Every gate applies there; a failed gate is a whiff, and nothing fires later in that entry. Leaving first, entering a non-looping clip already past the moment, a knockback launch, or any switch off the path's animation other than a travel variant (an impact effect, a reaction) fires nothing that entry. Script reactions switch animations once per frame, so whether one cancels a moment can depend on how frames split ticks. A weapon attack starts its activation at the moment; the weapon's steps time the rest.
+- **The mark is implied.** `at` holds its attack's turn from entry as `attackTurn` would, so the budget is asked before the swing plays. Load rejects `at` on a selector row or where the path selects no animation. A missing event warns when clips bind and fires as without `at`.
+- **Clip end.** `animationDone` turns true the tick after a non-looping clip reaches its duration, so a last-tick moment fires before an exit on it.
 
 Graph evaluation is host-only. Clients consume replicated animation state and never evaluate guards.
 

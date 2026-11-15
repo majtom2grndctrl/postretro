@@ -70,7 +70,9 @@ pub fn presentation_command_to_wire(
         SystemReactionCommand::PushTree { .. }
         | SystemReactionCommand::LoadLevel { .. }
         | SystemReactionCommand::RestartLevel { .. }
-        | SystemReactionCommand::ReturnToFrontend
+        | SystemReactionCommand::ReturnToFrontend { .. }
+        | SystemReactionCommand::LeaveSession { .. }
+        | SystemReactionCommand::EndSession { .. }
         | SystemReactionCommand::PopTree
         | SystemReactionCommand::SetState { .. }
         | SystemReactionCommand::SetSentiment { .. }

@@ -70,7 +70,7 @@ pub(crate) fn collect_agent_overlay_snapshots_for_view(
                 active_behavior_path_label(brain).map(|state_path| {
                     let firing_attack = (0..brain.active_depth()).rev().find_map(|depth| {
                         let (_, activity) = brain.activity_at_depth(depth)?;
-                        let ActionVerb::Attack(name) = activity.action.as_ref()?;
+                        let ActionVerb::Attack { name, .. } = activity.action.as_ref()?;
                         Some(name.clone())
                     });
                     (state_path, firing_attack)

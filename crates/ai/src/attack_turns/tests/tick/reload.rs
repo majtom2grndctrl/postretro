@@ -213,6 +213,7 @@ fn tick_at(
             descriptor_generation: generation,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
         },
         |_| {},
     );

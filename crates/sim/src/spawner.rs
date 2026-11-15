@@ -103,6 +103,11 @@ impl SpawnContext {
         };
     }
 
+    /// Whether this session materializes runtime spawns: the authority's role.
+    pub fn runtime_spawn_authority(&self) -> bool {
+        self.state.borrow().can_materialize_runtime_spawns
+    }
+
     pub fn set_runtime_spawn_authority(&self, enabled: bool) {
         self.state.borrow_mut().can_materialize_runtime_spawns = enabled;
     }
@@ -681,7 +686,10 @@ mod tests {
                 sound: None,
                 animation: Some("attack".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
-                action: Some(ActionVerb::Attack("slam".to_string())),
+                action: Some(ActionVerb::Attack {
+                    name: "slam".to_string(),
+                    at: None,
+                }),
                 on_enter: None,
                 facing: None,
                 reposition: None,

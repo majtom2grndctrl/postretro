@@ -26,7 +26,7 @@ When this is done:
   - The target must be within attack range from the point: the activity's attack's resolved range, or the archetype's longest resolved range when the activity has none.
   - `arc` and `minTravel` still filter. Agent spacing and docked-mover overlap still apply; the ring's direct-path filter does not, since it rejects most spots behind walls.
   - Qualifying points rank by route cost, penalty included, cheapest first. With none, the enemy holds, as the ring does.
-- **Body stance per activity: `stance: "stand" | "crouch"`.** Crouching is behavior: hiding behind cover, or a melee enemy coiling for a sweep. It shares the word with the `stance()` builder (`drafts/E10--enemy-stances-and-telegraphs`) and diverges from player life states' `posture` (`scripting.md` §12).
+- **Body stance per activity: `stance: "stand" | "crouch"`.** Crouching is behavior: hiding behind cover, or a melee enemy coiling for a sweep. It shares the word with the `stance()` builder (`ready/E10--enemy-stances-and-telegraphs`) and diverges from player life states' `posture` (`scripting.md` §12).
   - It resolves like `motion`: the innermost activity that declares it wins, and stand applies when none does.
   - **`crouchHeight`**, authored per archetype in metres from the feet, sets the crouched top of the damage box and the crouched eye. It must lie above 0 and below the standing eye. An archetype that crouches, or uses `cover: "half"` or `"any"`, fails load without it, naming the archetype. An enemy with hit zones also crouches through its posed zones.
   - The collision capsule stays full height, so standing up never sticks.

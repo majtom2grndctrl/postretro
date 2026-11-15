@@ -357,7 +357,10 @@ mod tests {
                                 sound: None,
                                 animation: Some("idle".to_string()),
                                 motion: Some(MotionVerb::Hold),
-                                action: Some(ActionVerb::Attack("attack".to_string())),
+                                action: Some(ActionVerb::Attack {
+                                    name: "attack".to_string(),
+                                    at: None,
+                                }),
                                 on_enter: None,
                                 facing: None,
                                 reposition: None,

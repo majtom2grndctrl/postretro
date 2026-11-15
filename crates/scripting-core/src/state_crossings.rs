@@ -279,6 +279,13 @@ impl CrossingDetector {
         self.watchers.clear();
     }
 
+    /// Re-arm every watcher on the table's current values without firing. A
+    /// wholesale store restore, such as a client's leave, is not a crossing;
+    /// the next real change fires as usual.
+    pub fn rebaseline(&mut self, slot_table: &SlotTable) {
+        let _ = self.detect(slot_table);
+    }
+
     #[cfg(test)]
     fn watcher_count(&self) -> usize {
         self.watchers.len()
@@ -583,6 +590,33 @@ mod tests {
         // Stay below: no re-fire (no fresh crossing).
         set(&mut table, "test.health", 10.0);
         assert!(detector.detect(&table).is_empty());
+    }
+
+    // Pin P2: a leaving client's store restore moves a watched slot across
+    // its threshold, which is not a crossing; the next real change is.
+    #[test]
+    fn rebaseline_arms_on_restored_values_without_firing() {
+        let mut table = table_with("test.health", Some(100.0));
+        let reg = registry_with(vec![below_crossing(
+            "test.health",
+            20.0,
+            100.0,
+            &["lowHealth"],
+        )]);
+        let mut detector = CrossingDetector::new();
+        detector.initialize(&reg, &table, &ScriptCtx::new());
+
+        set(&mut table, "test.health", 10.0);
+        detector.rebaseline(&table);
+        assert!(
+            detector.detect(&table).is_empty(),
+            "the restore fired nothing"
+        );
+
+        set(&mut table, "test.health", 80.0);
+        assert!(detector.detect(&table).is_empty());
+        set(&mut table, "test.health", 5.0);
+        assert_eq!(detector.detect(&table), vec!["lowHealth".to_string()]);
     }
 
     #[test]

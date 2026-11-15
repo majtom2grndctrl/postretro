@@ -1,7 +1,8 @@
--- Mod frontend hub Luau example: catalog-driven level select and game-flow
--- calls. The repo's generated `sdk/types/postretro.d.luau` surface is guarded
--- by drift tests; this file gives reviewers a committed Luau call-site shape
--- under the dev script fixtures.
+-- Mod frontend hub Luau example: catalog-driven level select, game-flow calls
+-- and the session membership verbs. The repo's generated
+-- `sdk/types/postretro.d.luau` surface is guarded by drift tests; this file
+-- gives reviewers a committed Luau call-site shape under the dev script
+-- fixtures.
 
 local Postretro = require("postretro")
 local UI = require("postretro/ui")
@@ -66,6 +67,11 @@ end
 local restartCurrentLevel = Postretro.defineReaction("frontend.restartCurrentLevel", UI.restartLevel())
 local backToFrontend = Postretro.defineReaction("frontend.returnToFrontend", UI.returnToFrontend())
 
+-- A client's "Leave game" button.
+local leave = Postretro.defineReaction("pause.leaveSession", UI.leaveSession())
+-- A run's end on a map-end crossing: every role runs the same steps.
+local runEnd = Postretro.defineReaction("run.end", { UI.endSession(), UI.returnToFrontend() })
+
 local children = {
   UI.Text({ content = "Campaign" }),
 }
@@ -86,6 +92,11 @@ table.insert(children, UI.Button({
   id = "quit-to-menu-action",
   label = "Quit To Menu Action",
   onPress = UI.QUIT_TO_MENU_ACTION,
+}))
+table.insert(children, UI.Button({
+  id = "leave-session",
+  label = "Leave Game",
+  onPress = leave,
 }))
 
 local levelSelect = UI.defineUiTree({
@@ -111,6 +122,8 @@ for _, entry in mapCatalog do
 end
 table.insert(catalogStartReactions, restartCurrentLevel)
 table.insert(catalogStartReactions, backToFrontend)
+table.insert(catalogStartReactions, leave)
+table.insert(catalogStartReactions, runEnd)
 
 return Postretro.defineMod({
   name = "frontend-level-select-fixture",

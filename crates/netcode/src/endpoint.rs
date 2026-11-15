@@ -729,15 +729,19 @@ impl NetEndpoint {
                 client, time_sync, ..
             } => {
                 // `NetClient::update` reports the failure once, naming the host.
-                if client.update(dt).is_err() {
+                let failed = client.update(dt).is_err();
+                // A world-less frame can never apply snapshots. Drain current-
+                // epoch bytes too: otherwise a snapshot queued between unload
+                // and replacement install can mutate the new world later.
+                discard_world_less_snapshots(client);
+                discard_world_less_input(client, time_sync);
+                // Control drains even on a failed update: a host's closing
+                // cause and final character arrive with its disconnect.
+                let controls = client.drain_control();
+                if failed && controls.is_empty() {
                     WorldLessPoll::Failed
                 } else {
-                    // A world-less frame can never apply snapshots. Drain current-
-                    // epoch bytes too: otherwise a snapshot queued between unload
-                    // and replacement install can mutate the new world later.
-                    discard_world_less_snapshots(client);
-                    discard_world_less_input(client, time_sync);
-                    WorldLessPoll::Client(client.drain_control())
+                    WorldLessPoll::Client(controls)
                 }
             }
         }

@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use glam::Vec3;
+use postretro_entities::components::brain::note_replaced_mesh;
 use postretro_entities::components::inventory::Inventory;
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::components::touchable::TouchableComponent;
@@ -361,6 +362,9 @@ impl TouchSystem {
             let _ = registry.remove_component::<MeshComponent>(item);
             if let Some(mesh) = descriptor_mesh_component(descriptor, None) {
                 let _ = registry.set_component(item, mesh);
+                // A dropped enemy's brain accounts for the fresh mesh and
+                // draws its state on it again.
+                note_replaced_mesh(registry, item);
                 events.dropped_item_meshes.push(item);
             }
 
@@ -1897,6 +1901,53 @@ mod tests {
         }
     }
 
+    // A dropped enemy's brain accounts for the fresh mesh, so only a switch on
+    // it is foreign, and asks the AI to draw its state on it again.
+    #[test]
+    fn dropping_a_held_enemy_hands_its_fresh_mesh_to_the_brain() {
+        use crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
+        use postretro_entities::components::brain::BrainComponent;
+
+        let mut registry = EntityRegistry::new();
+        let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
+        let item = spawn_item(
+            &mut registry,
+            "ion",
+            Vec3::new(10.0, 2.0, 0.0),
+            TouchMode::Auto,
+            7,
+        );
+        let enemy = behavior_enemy_descriptor("ion");
+        let mut brain = BrainComponent::from_graph(enemy.behavior.as_ref().unwrap());
+        brain.clip_clock.mesh_switches = Some(4);
+        registry.set_component(item, brain).unwrap();
+        held_item(&mut registry, pawn, item);
+        let mut descriptor = drop_descriptor("ion", TouchMode::Auto, 0.1);
+        descriptor.mesh = enemy.mesh;
+        let players = players(&[(PlayerId::Local(pawn), pawn)]);
+
+        let events = tick_with_edges(
+            &mut TouchSystem::default(),
+            &mut registry,
+            &floor_world(),
+            &[descriptor],
+            &players,
+            &[],
+            &[(PlayerId::Local(pawn), true)],
+        );
+
+        assert_eq!(events.dropped_item_meshes, vec![item]);
+        let mesh = registry.get_component::<MeshComponent>(item).unwrap();
+        let fresh = mesh.animation.as_ref().expect("fixture: an animated mesh");
+        let clock = &registry
+            .get_component::<BrainComponent>(item)
+            .unwrap()
+            .clip_clock;
+        assert_eq!(clock.mesh_switches, Some(fresh.switches.get()));
+        assert_eq!(clock.mesh_switches, Some(0));
+        assert!(clock.redraw, "the AI draws the brain's state again");
+    }
+
     #[test]
     fn auto_drop_reacquires_only_after_the_dropper_leaves_and_reenters() {
         let mut registry = EntityRegistry::new();
@@ -2496,7 +2547,7 @@ mod tests {
         let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
         let mut items = Vec::new();
         let mut inventory = Inventory::default();
-        for slot in 0..3 {
+        for (slot, wieldable) in inventory.wieldables[..3].iter_mut().enumerate() {
             let item = spawn_item(
                 &mut registry,
                 "ion",
@@ -2513,7 +2564,7 @@ mod tests {
             component.lower_ms = 100;
             component.raise_ms = 50;
             registry.set_component(item, component).unwrap();
-            inventory.wieldables[slot] = Some(item);
+            *wieldable = Some(item);
             items.push(item);
         }
         registry.set_component(pawn, inventory).unwrap();

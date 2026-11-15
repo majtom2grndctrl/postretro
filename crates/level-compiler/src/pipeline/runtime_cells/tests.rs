@@ -164,8 +164,9 @@ fn all_occluding_fixture_keeps_each_empty_leaf_its_own_cell() {
     let cells = Cells::of(&map);
     let view = &cells.runtime.cells;
     assert_eq!(view.tree.leaves.len(), cells.full_tree().leaves.len());
-    for leaf in 0..cells.full_tree().leaves.len() {
-        assert_eq!(view.leaf_cell[leaf], leaf, "leaf {leaf} reads its own id");
+    let leaves = cells.full_tree().leaves.len();
+    for (leaf, &cell) in view.leaf_cell[..leaves].iter().enumerate() {
+        assert_eq!(cell, leaf, "leaf {leaf} reads its own id");
     }
     assert!(!cells.runtime.portals.is_empty());
     assert_portals_join_interior_cells(&cells);

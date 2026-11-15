@@ -76,6 +76,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // here, once per frame, because a Splash/install frame can drain the
     // transport more than once.
     app.advance_seat_hold_clock(frame_dt);
+    // An ended host delivers its closing causes in every boot state.
+    app.pump_closing_host_transport(std::time::Duration::from_secs_f32(frame_dt.max(0.0)));
 
     // Drain changed paths every frame so the watcher channel does
     // not back up even when the summary is empty. ScriptRuntime
@@ -480,6 +482,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::SnapshotApply);
     let applied = frame_order::run_snapshot_apply_stage(app, engine_frame, frame_dt);
     drop(stage_scope);
+    // A client whose session ended in this frame's Control drain, or earlier
+    // in this frame, runs nothing more in the host's level: no tick, crossing
+    // or command drain. The leave's queued unload drains next frame.
+    if app.level_stopped_by_session_end() {
+        return;
+    }
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FixedStep);
 
     // Accumulate app-side residual and post-tick events across all ticks;
@@ -871,6 +879,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let environment_fluid_viscosity = app.environment_fluids.viscosities();
             let session = app.session.as_mut().expect("running session installed");
             let net_endpoint = &mut session.net_endpoint;
+            let remote_present = match net_endpoint.as_ref() {
+                Some(netcode::NetEndpoint::Host { owners, .. }) => owners.present_remote_pawns(),
+                _ => Vec::new(),
+            };
             let hit_zone_store = &session.hit_zone_store;
             let progress_tracker = &mut session.progress_tracker;
             let scripting = &mut session.scripting;
@@ -925,6 +937,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &app.kinematic_mover_colliders,
                 &mut app.kinematic_mover_tick_states,
                 &remote_pawn_commands,
+                &remote_present,
                 &command,
                 |registry| {
                     // Camera follows the selected local pawn before
@@ -1469,6 +1482,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     if !script_ctx.system_commands.is_empty() {
         app.dispatch_system_commands();
     }
+    // A leave landed in that drain: the level stops before its crossings.
+    if app.level_stopped_by_session_end() {
+        return;
+    }
 
     // Player HUD state: republish engine-owned health/ammo/reload slots
     // after game logic settles and before crossing detection / UI
@@ -1551,6 +1568,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     app.update_player_options(frame_dt, options_menu_was_open);
     app.commit_render_extents();
+
+    // A client that has participated holds a character its host sent, so
+    // its leave saves it; one that never did keeps its saved character.
+    if app
+        .session
+        .as_ref()
+        .and_then(|session| session.net_endpoint.as_ref())
+        .and_then(netcode::NetEndpoint::client_per_owner_save_context)
+        .is_some_and(|(_, participating, _)| participating)
+    {
+        app.client_participated = true;
+    }
 
     // Connected-client per-owner persistence runs exactly after the
     // second command drain: every fixed tick and same-frame crossing

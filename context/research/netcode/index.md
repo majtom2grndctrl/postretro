@@ -66,8 +66,9 @@ code, so enemy-replication detail is grounded, not assumed.
   derived from replicated state plus local input. Server-confirmed outcomes (damage,
   kills) drive their own client-side event on confirmation; no sound rides the wire.
 - **Save/load of networked sessions, voice chat, server browser / NAT punchthrough
-  matchmaking service.** Direct connect (IP/invite) only for this epic. A networked
-  session disables the single-player save/persist path.
+  matchmaking service.** Direct connect (IP/invite) only for this epic. Superseded for
+  per-player saves: each player saves their own character on their own device, and a run
+  save stays open (`../coop-session-lifecycle.md` §7).
 
 ## Build shape: horizontal, not a vertical slice
 

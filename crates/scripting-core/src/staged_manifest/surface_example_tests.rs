@@ -1,12 +1,15 @@
-// The E10 Scripting surface example (row S1) in both runtimes: the token
-// module, the `defineMod` registration with its `arena` profile, the reference
-// enemy's draws, the rifle trooper's strafe-burst-reposition graph, and the
-// level script's `arena.start` reaction parse identically.
+// E10 Scripting surface examples in both runtimes. Attack budget (row S1): the
+// token module, the `defineMod` registration with its `arena` profile, the
+// reference enemy's draws, the rifle trooper's strafe-burst-reposition graph,
+// and the level script's `arena.start` reaction parse identically. Clip-timed
+// attacks (row Surf 1): a jab fired `at` a clip event that leaves on
+// `brain.animationDone` lowers identically.
 // See: context/lib/scripting.md §2 (Attack token declarations) · context/lib/entity_model.md §7c
 
 use std::fs;
 
 use postretro_foundation::attack_budget::TokenBudget;
+use postretro_foundation::{ActionVerb, BRAIN_ANIMATION_DONE_INPUT, IrNode};
 
 use super::tests::temp_mod_root;
 use super::*;
@@ -303,5 +306,98 @@ fn scripting_surface_example_parses_identically_in_both_runtimes() {
     assert!(
         step.contains("startAttackPool") && step.contains(&POOL_ID.to_string()),
         "arena.start starts the tagged pool: {step}"
+    );
+}
+
+const CLIP_TIMED_TS: &str = r#"
+import { attackTurnFree, brain, defineMod } from "postretro";
+
+const jabs = {
+  initial: "stalk",
+  moveSpeed: 3,
+  attacks: { jab: { damage: 8, maxRange: 2, cooldownMs: 1200 } },
+  activities: {
+    stalk: { animation: "walk" },
+    jab: {
+      animation: "attack_jab",                   // a state playing clip "punch"
+      action: { attack: "jab", at: "hit" },      // fires when punch reaches `hit`;
+    },                                           // holds the jab's turn from entry
+  },
+  transitions: {
+    stalk: [{ to: "jab", when: brain.targetDistance.le(2).and(attackTurnFree("jab")) }],
+    jab: [{ to: "stalk", when: brain.animationDone }], // the punch has played through
+  },
+};
+
+export default defineMod({
+  name: "Clip timed", id: "e10.clip-timed", version: "1",
+  entities: [{ canonicalName: "brute", components: { behavior: jabs } }],
+});
+"#;
+
+const CLIP_TIMED_LUAU: &str = r#"
+local inReach = brain.targetDistance:le(2)
+
+local jabs = {
+  initial = "stalk",
+  moveSpeed = 3,
+  attacks = { jab = { damage = 8, maxRange = 2, cooldownMs = 1200 } },
+  activities = {
+    stalk = { animation = "walk" },
+    jab = {
+      animation = "attack_jab",                  -- a state playing clip "punch"
+      action = { attack = "jab", at = "hit" },   -- fires when punch reaches `hit`;
+    },                                           -- holds the jab's turn from entry
+  },
+  transitions = {
+    stalk = { { to = "jab", when = inReach["and"](inReach, attackTurnFree("jab")) } },
+    jab = { { to = "stalk", when = brain.animationDone } }, -- the punch has played through
+  },
+}
+
+return defineMod({
+  name = "Clip timed", id = "e10.clip-timed", version = "1",
+  entities = { { canonicalName = "brute", components = { behavior = jabs } } },
+})
+"#;
+
+// Surf 1 (lowering half): the clip-timed jab lowers identically in TypeScript
+// and Luau, its action carrying `at`, its implied turn mark set, and its exit
+// reading `brain.animationDone`.
+#[test]
+fn clip_timed_surface_example_lowers_identically_in_both_runtimes() {
+    let ts = built(
+        "clip_timed_ts",
+        &[(
+            "start-script.js",
+            &bundle_typescript("clip_timed", &[("start-script.ts", CLIP_TIMED_TS)]),
+        )],
+    );
+    let luau = built("clip_timed_luau", &[("start-script.luau", CLIP_TIMED_LUAU)]);
+    assert_eq!(ts.entities, luau.entities);
+
+    let behavior = ts.entities[0]
+        .behavior
+        .as_ref()
+        .expect("the brute has a behavior");
+    let jab = &behavior.envelope.activities["jab"];
+    assert_eq!(
+        jab.action,
+        Some(ActionVerb::Attack {
+            name: "jab".to_string(),
+            at: Some("hit".to_string()),
+        })
+    );
+    assert_eq!(
+        jab.attack_turn.as_deref(),
+        Some("jab"),
+        "`at` implies the jab's turn mark"
+    );
+    assert_eq!(
+        behavior.envelope.transitions["jab"][0].when,
+        IrNode::Input {
+            name: BRAIN_ANIMATION_DONE_INPUT.to_string(),
+            owner: None,
+        }
     );
 }

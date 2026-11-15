@@ -14,6 +14,14 @@
 
 When adding a feel detail, design to the spectrum: name its axis, expose it as a tunable or scriptable parameter, seed the default. Expose the axis, not a catalog of points along it — breadth grows with demand, not ahead of it. The spectrum is bounded by quality: every point is a valid feel, not a degenerate one. A jitter bug is not the low end of a sway range. This governs taste, not correctness: the floor above has no spectrum — owned, not exposed.
 
+**Authoring API style.** The shape follows Vue 3's Composition API. A `define*` call returns a typed value that editors, type checkers and agents all see. An entry point reads as setup: typed inputs, room for the author's own logic, then a typed return, so only valid values reach the next consumer. `defineMod` takes `ModManifestInput` and returns `ModManifest`; `setupLevel(ctx)` returns its bundle the same way. It guides new surfaces without binding every one. Within it, an author writes intent once, in their own terms:
+- **Handles over strings.** A name shared across files or archetypes is a `define*` handle named by its binding, as damage types and attack tokens are (§2). Strings remain where a map or content resolves the name: activity keys, animation states, sounds, map-referenced styles.
+- **The dependent names its prerequisite.** An attack lists the tokens it draws; a token never lists its attacks. One prerequisite then serves many dependents.
+- **References carry their obvious rules.** A reference implies the gates any author would write beside it. A list the SDK can infer from references is optional. An explicit list replaces the inferred one, so a variant reuses its parent with fewer entries.
+- **No assembly steps.** Authors point at what they mean; the SDK and load-time lowering build the plumbing. A builder, a merge and a lookup for one idea is the smell.
+- **Paired options read as a pair.** The second defaults to the first where that is the common case.
+- **Names work in both runtimes.** No Luau keywords, such as `then`.
+
 Two runtimes run side by side: **QuickJS** (TypeScript/JavaScript, via rquickjs) and **Luau** (via mlua). Each serves the same primitive surface. Scripts dispatch by file extension: `.ts`/`.js` → QuickJS, `.luau` → Luau. Both runtimes are always present; no runtime selection. The QuickJS and Luau descriptor parsers are behavioral twins — same validation, same degradation: a malformed field that warns-and-degrades on one must never abort on the other. An optional block whose loss leaves a legitimate design may drop alone: a `movement.swim` or `movement.vault` block failing validation is dropped with a warning naming the field, and the player wades or cannot vault while the rest of the descriptor loads (`movement.md` §4). Both lower authored values through one JSON bridge, which rejects non-finite numbers (`Infinity`, `-Infinity`, `NaN`) and names the path to the field. JSON cannot spell them, so degrading would emit null — indistinguishable from an unauthored optional field, and a silent default where every other bad number is a clean error.
 
 All engine capabilities are exposed through a **primitive registry** — a shared table of registered Rust functions. Register a primitive once and it installs in every future QuickJS and Luau context. Scripts call primitives as global functions.
@@ -73,6 +81,8 @@ Validation follows the fluid policy above: a rule broken drops that fluid with a
 **Ghost style declarations.** `ModManifest.ghostStyles` declares named ghost presentation with `defineGhostStyle`, a pure identity helper: `name`, `tint`, `opacity`, `saturation`, and whether sound and impact sound carry (`entity_model.md` §7d). A map's `ghost_link` names a style. Validation, local resolution by name, staged reload and the digest stance all follow fluids. The name is an explicit field, not binding-name sugar, because map files reference it as a string. A link naming no style uses the engine floor style: neutral and legible, carrying no sound. An undeclared name uses it too and warns once at install. Which archetypes can ghost is a descriptor attribute, `ghost`, defaulting to false; a malformed value rejects mod init like any descriptor field.
 
 **Attack token declarations.** `defineAttackToken` follows the binding-name rule below and, like a damage type carrying its matrix, carries data: its object is the token's default budget, `{ limit, refreshMs }`. A token reference elsewhere is the handle, or `token.with({ ... })` with the fields its position allows: `limit` and `refreshMs` in a profile override, `cost` in an attack's draw. A reference crosses as `{ kind, name }`; the budget rides the declaration `defineMod` resolves. The SDK declares and registers `defaultToken`, which a mod never lists. Contract: `entity_model.md` §7c, Attack budget.
+
+**Attack and stance declarations (decided, not yet built).** `defineAttack` and `defineStance` follow the binding-name rule below. Their handles carry their declarations. `scripting-core` lowering resolves them once per mod load, for `defineEntity` and bare `defineMod` entities alike. A stance is a pose an enemy rests in. An attack names its `beginningStance` and an optional `endingStance`, which defaults to the beginning. It owns its `release` and `recover`. A row's `to` takes a `Stance` or an `Attack`. A row to an attack is legal only from its beginning stance's rest, and queues for its turn (`entity_model.md` §7c). A behavior's attacks are inferred from its references; an explicit `attacks` list is exhaustive. A row's `when` is optional; omitted, the row is always enabled. Lowering rejects an authored `pose` or `queue`. It warns when a stance's hold can start below the co-op floor: the remote interpolation ceiling plus a reaction budget.
 
 **Damage type and defense layer declarations.** `defineDamageType` and `defineDefenseLayer` declare a mod's damage vocabulary (§11, Defense layers). Unlike ghost styles, each is named by the binding it is declared under: TS binding-name sugar inserts the name at build, as it does for `defineStore`, `defineImpactEvent` and `definePresentationTemplate`; TS may pass the name explicitly, and Luau always does. A handle carries its name from creation, as a store ref carries its dotted name, so a level script or a repeated Luau `require` references the vocabulary by name, and renaming a binding renames the type or layer. The map's one reference, a mover's FGD `crush_damage_type`, uses the same name. The mover keeps the name and resolves it on each hit, so a hot reload that reorders `damageTypes` never retypes a crusher; an unknown name warns once per level load and deals the default type. `defineMod({ damageTypes, defenseLayers, defaultDamageType? })` registers the vocabulary, as `stores` registers stores. The manifest's declaration is the one in force: a re-run declaration yields only handles, and every reference resolves by name. A duplicate name fails load rather than warn-and-drop, since a silent drop would hide which declaration a reference reaches. A bad reference (an unregistered name, a bare string, or a handle of the other kind) is caught by the surface that holds it: load fails on a descriptor, a brain guard included, install drops that one reaction, impact policy or condition, a UI binding warns once at tree build, and an overlay skips that shield pair.
 
@@ -143,13 +153,13 @@ Primitive closures access engine state through a shared handle (`ScriptCtx`) cap
 
 ### Durable State Store
 
-The state store has engine-global lifetime and is never cleared on level unload, platform suspend, or hot reload. Slots use stable dotted names grouped into unique namespaces.
+The state store has engine-global lifetime and is never cleared on level unload, platform suspend, or hot reload. Slots use stable dotted names grouped into unique namespaces. Decided, not yet built: an `occupancy` family that only a level's script references is the one exception, and lives for that level (Engine State SDK, Occupancy).
 
 Authored dotted names are in-memory addresses, not durable identity. Every mod-owned persisted writable or replicated slot requires `<mod-root>/identity.json` version 1, with `slots` mapping each dotted name to its opaque key. Run `postretro-tool mint-identity <mod>` after adding one (`build_pipeline.md` §Distribution packaging); the tool execs the `mint-identity` binary rather than linking it. A rename moves the authored-name side and keeps the key. The engine only reads and validates this snapshot. Missing durable identity rejects the declaration attempt; ordinary malformed saved values still warn and degrade to defaults. Persistence uses the bare durable key. Replicated schemas use the mod-qualified durable identity.
 
 `defineStore` is a pure SDK builder. It returns a frozen store handle whose enumerable top-level keys are the schema's references: `store.key`, not a nested state tree. Pass that handle through `defineMod({ stores: [store] })`; `defineMod` resolves its declaration data by object identity before the manifest crosses the FFI. Calling either helper performs no FFI and changes no engine state. An unreturned store handle commits no slots when the short-lived setup VM drops. `state` and `declaration` are ordinary valid slot names — the identity map, not an author-visible property, carries the declaration.
 
-Names beginning with `@` are reserved for ephemeral dispatch inputs (§12). Store declarations reject a namespace or slot name beginning with `@`.
+Names beginning with `@` are reserved for ephemeral dispatch inputs (§12). Store declarations reject a namespace or slot name beginning with `@`. They will also reject `occupancy` and any namespace overlapping it, with or without a level loaded, because the engine declares that namespace at runtime (decided, not yet built).
 
 Engine-owned slots may be readonly to scripts while remaining writable by engine systems. Engine writes bypass readonly but still apply declared type, enum, finite-number, and range validation. Mod-owned slots are script-writable unless declared otherwise. Scripts and engine systems address slots by dotted name so references remain valid after the authoring VM drops.
 
@@ -170,7 +180,14 @@ Each successful commit also replaces current declaration membership. Persistence
 
 Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.
 
-Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connected client saves its per-owner values periodically and at clean exit; it never saves global slots. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts.
+Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts. Character progress (per-owner rows) and world progress (globals and faction sentiment) stay separate. A connected client saves periodically and at clean exit; its saves keep the world it booted with (its boot document's globals and faction sentiment) and replace only its own character rows, so the host's world never reaches its disk.
+
+When its session ends (`networking.md` §Slot lifecycle), a client applies the final character its host returned, saves its character only if it participated on that connection, then restores its store as single-player:
+
+- Replicated globals and faction sentiment return to its boot world.
+- Per-owner values move from its session seat to seat 0. A slot that never replicates keeps the client's write; a replicated persisted one keeps the latest character. A value it never received or never held comes from its saved rows.
+- Non-replicated globals keep the client's writes.
+- Crossing watchers re-arm on the restored values without firing.
 
 Live faction sentiment persists beside the slot store as a directional sparse
 set. Authored factions use their names. The player and default-enemy indices use
@@ -212,6 +229,8 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | `getGameState().input.mode` | `input.mode` |
 | `getGameState().ui.textEntry` | `ui.textEntry` |
 
+The catalog will also declare entries the host computes and shares with every machine, families keyed by data and reached through a generated accessor, and lists: families keyed by row, each row carrying a `present` flag (decided, not yet built).
+
 The runtime installs the generated tree before SDK prelude evaluation, captures it into a language-native `getGameState()` closure, and hides the bridge global before author code runs. Calling `getGameState()` invokes no host callback or FFI.
 
 `player.health` and `player.maxHealth` are direct readonly refs for HUD authors. `player.health` is current HP. `player.maxHealth` is maximum HP. The engine does not publish `player.healthFraction`; consumers derive fractions from the two direct refs. Use `bindState(ref, options)` for bind-only options such as text formatting or bar tweening, and use `player.maxHealth` directly as the health bar denominator. The same contract applies in Luau. Do not import `"postretro/game-state"` and do not call `.get()` on state refs.
@@ -228,7 +247,19 @@ The runtime installs the generated tree before SDK prelude evaluation, captures 
 
 **Assist progress.** `player.assistProgress` is the pawn's progress as an assist helper; `player.assistReceivedProgress` is the highest progress among its helpers, 0 with none or while the pawn's state declares no `assistable`. Both are owner-private readonly Numbers in 0..1, read from the pawn's components like every other per-player slot. There are two because owner-private slots never reach another player's machine: a target's client cannot read its helper's slot, and a pawn helping while being helped needs both. Conditions, crossings and the store see only host values; only UI reads substitute a predicted or projected display value (`ui.md` §3, `networking.md` §What gates, and what replicates instead).
 
-`session.openSeats` is a readonly client-local projection of the host's status roster. It is absent before admission and never carries player claims or display names. The roster Control message remains its only transport path.
+`session.openSeats` is a readonly client-local projection of the host's status roster. It is absent before admission and after a leave. The roster Control message remains its only transport path.
+
+**Session players** (decided, not yet built). The host derives one status per seat, its own included: `loading` (connected, no live pawn), `inPlay` (live pawn counted by the life-state `occupancy` rule, §12), `down` (live pawn not counted), `reconnecting` (held after a disconnect).
+- `session.playerCounts` holds readonly Numbers `connected`, `loading`, `inPlay`, `down` and `reconnecting`, host-computed and shared with every machine; `connected` sums the first three. Gameplay reads these.
+- `session.players` is a display list: one row per seat, dense and in seat order up to the session's player capacity, each `present`, `name`, `status` and `isLocal`. Every machine holds the same rows; clients fill them from the roster (`networking.md` §Session-state ledger). An empty name reads `Player N`, N being the seat plus 1.
+- Counts and rows hold no players from unload until the next install writes them, and on a machine with no session level. A frontend backdrop is not a session level.
+
+**Occupancy** (decided, not yet built). `occupancy.tag(tag)` reads `occupiedCount` (player-occupied trigger volumes carrying the tag, armed or not) and `occupants` (distinct counted players inside any of them), host-computed and shared.
+- A family exists for each tag the scripts reference, collected from what they evaluate to, never from source text. Mod-scope references are replaced at each mod commit; a level's `setupLevel` references live that level.
+- A family reads 0 where no trigger volume carries its tag; a level reference to such a tag warns once at install.
+- Every machine derives the set from the scripts it runs, so a peer running different scripts gets a different replicated schema and drops every replicated slot (`networking.md` §What gates).
+- Counts and occupancy are written once per authoritative tick, after the trigger stage and before accumulators and crossing detection; a set completing on a tick crosses in that tick's frame.
+- `occupants <= inPlay` on every tick. "Everyone is in" is `loading == 0 && inPlay > 0 && occupants >= inPlay`.
 
 ---
 
@@ -407,6 +438,10 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 **`setFogAnimation`** installs (or, when args is `null`, clears) a `FogAnimation` curve on every target. `FogAnimation` carries four independent channels — `density`, `saturation`, `minBrightness`, and `lightRange` — that share `periodMs`, `phase`, and `playCount`. Any channel may be `null`; at install time the validator rejects an animation that has none of the four curves when `playCount` is finite, since it would have nothing to settle to. Each channel's per-sample validation: `density`, `saturation`, and `minBrightness` accept `[0, +∞)` and clamp negative or non-finite samples to `0.0`; `lightRange` accepts `(0, +∞)` and clamps non-positive or non-finite samples to `0.001` (a `light_range` of zero would collapse the shader's distance term, so the channel cannot pass through zero). An empty curve on any channel is rejected — use `null` to omit a channel. `phase` is normalized into `[0, 1)` via `rem_euclid`; non-finite phase coerces to `null`. `playCount = 0` coerces to `1` (one-shot). On completion of a finite-count animation the bridge writes back each channel's final keyframe as static `density` / `saturation` / `minBrightness` / `lightRange` on the component; channels with `null` curves leave the corresponding component field unchanged.
 
+### 10.2a Emissive Reaction Primitives (decided, not yet built)
+
+Three tag-targeted reaction primitives, `setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation`, write every matching `emissive_volume`, mirroring the fog primitives (§10.2). Brightness in [0, 1] maps onto the volume's authored min–max; colour channels are linear in [0, 1]. Out-of-range values clamp. No primitive writes min or max: the map owns the range. A brightness write clears a running animation, as `setSpinRate` does; a colour write leaves it running. Brief: `plans/ready/emissive-volumes`.
+
 ### 10.3 Mesh Animation
 
 `setAnimationState` is a tag-targeted reaction primitive: it switches each matching mesh entity's animation state by name. States are declared as descriptor data on `components.mesh` — state name → clip name, loop, crossfade, interrupt policy — with a required `defaultState`. The animation runtime plays whatever state is set and never decides transitions: selection logic stays caller-side. Reactions, impact policies, and the enemy behavior graph (`entity_model.md` §7c) all wrap the same engine switch path — an enemy state names the animation state it requests, and an unresolvable name warns and keeps the prior animation rather than aborting.
@@ -476,19 +511,44 @@ at bind. A per-player edge evaluated on the host is a player event (§12).
 
 Game-flow helpers are system reactions. `loadLevel(map)` carries a map catalog
 id and requests a lifecycle load. `restartLevel()` reloads the active map from
-the retained catalog id or raw dev path. `returnToFrontend()` unloads to the
-frontend menu and reloads the declared backdrop if the frontend has one. Mods
-bind `playerDied` to whichever game-flow policy they want; the engine has no
-built-in death policy.
+the retained catalog id or raw dev path. `returnToFrontend()` is navigation
+outside a session: it unloads to the frontend menu and reloads the declared
+backdrop if the frontend has one. A host and a connected client refuse it
+(Session membership, below). Mods bind `playerDied` to whichever game-flow
+policy they want; the engine has no built-in death policy.
 
-`loadLevel` and `restartLevel` are host-only. A session started as a client
-(`--connect`) drops them from every source it runs (levelLoad, crossings, UI
-presses), including after its connection has ended or before it establishes,
-leaves its modal stack untouched, and warns once per firing source and verb for
-the session. The client still changes level, but only by following the host's
-relevel (`networking.md` §Slot lifecycle). A client whose host is gone stays a
-client until relaunch. `returnToFrontend` is not gated yet: on a client it
-unloads locally and keeps the connection.
+`loadLevel` and `restartLevel` are host-only. A connected client drops them
+from every source it runs (levelLoad, crossings, UI presses), including before
+its connection establishes, leaves its modal stack untouched, and warns once
+per firing source and verb. The client still changes level, but only by
+following the host's relevel (`networking.md` §Slot lifecycle).
+
+**Session membership.** `leaveSession()` and `endSession()` change membership
+and never navigate. Navigation never changes membership, and the frontend is
+outside every session, so a run's end composes the two: `endSession()` then
+`returnToFrontend()` runs in every role.
+
+| Role | `leaveSession` | `endSession` | `returnToFrontend` | `ui.quitToMenu` |
+|---|---|---|---|---|
+| Single-player | no-op | no-op | frontend | frontend |
+| Host | warned no-op | end; stays in its level as single-player | refused | end, then frontend |
+| Connected client | leave | refused | refused | leave |
+
+Role alone decides what a step does. Single-player no-ops log at debug. A host
+warns once per source and verb, naming the membership verbs. A client follows
+the rule its tail landings already use (§12, Steps after a `wait`): it warns
+once per source and verb when its own input or own state fired a step only its
+host can take, and logs at debug when its host fires the same step. A client's
+refused `endSession` names `leaveSession`, at the drain and when a landing
+drops it. Every refusal latch clears with a role change.
+
+Once a leave lands in the frame-end command drain, the rest of that drain drops
+at debug: the drain cannot tell which reaction queued a command, and what
+remains belongs to the level being unloaded. Store writes and grants have
+already applied at dispatch (§12, Body order). After a `wait`, a client landing
+drops the steps after a kept `leaveSession` at debug. What leave and end do to
+the connection: `networking.md` §Slot lifecycle; to a client's store and saves:
+§5.
 
 Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions
@@ -496,8 +556,8 @@ intercepted before named-reaction dispatch; they are not reactions a mod
 registers. `CLOSE_DIALOG_ACTION` exports the exact wire value
 `"ui.closeDialog"` for the "close the active modal" button pattern,
 `EXIT_TO_DESKTOP_ACTION` exports `"ui.exitToDesktop"` for UI-initiated clean
-shutdown, and `QUIT_TO_MENU_ACTION` exports `"ui.quitToMenu"` for returning to
-the frontend through the same path as `returnToFrontend()`.
+shutdown, and `QUIT_TO_MENU_ACTION` exports `"ui.quitToMenu"` for quitting to
+the frontend menu, resolved by role (membership table above).
 
 ### 10.5 Damage
 
@@ -582,7 +642,7 @@ Start the node set minimal: named-input leaves, arithmetic, `clamp`, `lerp`, `se
 - **Impact policies** — authored hit policy over an entity/impact scope, including writes to per-entity numeric state fields.
 - **Enemy behavior graphs** — authored transition guards over a brain scope, and authored target candidacy over a candidate scope (`entity_model.md` §7c). Both are read-only: neither resolves any output.
   - The **brain scope** pairs a fixed table of engine-computed facts about the evaluating enemy and its selected target (target presence and distance, whether the target is hostile and whether it is nav-reachable, the target's health and whether its death latch has fired, the enemy's distance from its home anchor, time in state, attack cooldown, damage and sight recency, `distanceToLastKnown` with a no-memory sentinel, `damageBearing` meaningful only while damage is recent and its source is known, whether the latest damaging hit supplied a spatial source, whether acquisition is re-evaluated this tick, own health) with the same per-entity state fields impact policies write. Facts are no longer only target-relative — home-anchor distance and damage provenance are about the enemy's relation to the world. The table is append-only: new facts extend it at the tail, never reorder.
-  - **Attack turn facts:** `hasAttackTurn` in the fixed table (a turn is held, for any attack), and the named reads `attackTurnHeld(attack)` and `attackTurnFree(attack)`, free Bool functions beside `state(name)` and `defense(layer)` whose argument is checked against the archetype's attacks at load. Each fact means one thing wherever a guard reads it; none depends on the active path.
+  - **Attack turn facts:** `hasAttackTurn` in the fixed table (a turn is held, for any attack), and the named reads `attackTurnHeld(attack)` and `attackTurnFree(attack)`, free Bool functions beside `state(name)` and `defense(layer)` whose argument is checked against the archetype's attacks at load. Each fact means one thing wherever a guard reads it; none depends on the active path. Decided, not yet built: both named reads take attack handles. `animationDone` follows `hasAttackTurn`. It is entity-wide, not scope-relative: true from the tick after the path's non-looping clip reaches its duration, false on a loop (`entity_model.md` §7c, Clip-timed attacks). Decided, not yet built: `activityRoll` (uniform in [0, 1)) and `damageInActivity` append after `animationDone`. Like time in state, both are scope-relative and span a pose.
   - The **candidate scope** is a second scope over its own fixed fact table, resolved against a *different* entity than the one evaluating — refreshed per (enemy, candidate) pair during a ranking scan. It is the only per-pair context over a fixed fact table: any enemy × candidate relation that reduces to a number or a boolean belongs there as a fact, not as new per-pair storage on the brain.
 - **Player assist** (the scope, its value-free twin, host pair evaluation and the host accumulator that consumes them are built) — authored per-pair values over an **interaction-pair scope** (`scripting-core` `ir/pair_scope.rs`), a second per-pair context with two roles, actor and subject, over player sides rather than a fixed fact table. The consumer supplies the role tokens and side kinds, so a later hold-to-interact reuses the scope; assist binds `assist.helper` and `assist.target` (§12). Each side reads engine per-player slots, its seat's per-owner store values and `inLifeState`; global store values read as everywhere. No per-entity state, local-only player slot or assist progress slot is readable, and the `@pair.` prefix is reserved for facts about the pair itself and holds no names. Only the host evaluates it; clients receive results and never evaluate pair IR.
 - **Defense layers** — each layer parameter (capacity, recharge delay and rate, a resist value) is a literal or a Number expression over global store values, the entity's own per-entity state and, on the player entity only, its seat's per-owner values. A parameter changes by derivation, never by a write verb: leveling and gear raise a store slot the expression reads, so persistence and co-op stay single-source. Only the host evaluates. A literal binds to a constant and never evaluates per tick. At tick start, before that tick's hits, an expression that reads only global slots and constants evaluates once per descriptor and field, and every entity of that descriptor takes the result, so its cost scales with descriptors, not entities; one that reads the entity's own state or a per-owner value evaluates per entity. Spawn, seat bind, respawn, the join seed and grants evaluate on demand, per entity and unshared, so each sees the store as it stands; a per-owner read on a pawn whose seat has not bound keeps the value in force without faulting. A hot reload rebinds, re-arming the fault warnings, and evaluates nothing itself: its first evaluation is the next tick start. Results clamp into the literal ranges. A fault, a non-finite result included, keeps each entity's own last good value and warns once per descriptor and field, unlike assist's fall to zero, which would clamp a live layer empty.
@@ -628,7 +688,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 
 **Per-tick is accumulator-only.** There is no bare per-tick reaction source. A Number slot may declare `accumulate: (t: TickParams) => delta`; the engine adds that delta each authoritative tick and clamps the result to the slot's declared range. `TickParams.dt` is available only to this schema tracer, never to `defineReaction`. A bare `onTick` reaction is added only if a concrete case blocks on it.
 
-**Trigger-event params have two channels.** `activators` and `trigger` are opaque command-target tokens. They are legal only in trigger-event reactions, `activators` in teleport events too; other sources publish their own tokens (`emitter` and `player`, below). `on.activators` carries `damage`, `grantHealth`, `grantAmmo` and `addSlot` and targets the fire's activators; `on.trigger` carries `arm` and `disarm` and targets the firing volume. `occupancy` is a numeric runtime input: the effective occupant count at the enter or exit fire. It composes through `runtime` like other numeric inputs. Trigger events publish only `enter` and `exit`; occupancy-based conditions use crossings over ambient state.
+**Trigger-event params have two channels.** `activators` and `trigger` are opaque command-target tokens. They are legal only in trigger-event reactions, `activators` in teleport events too; other sources publish their own tokens (`emitter` and `player`, below). `on.activators` carries `damage`, `grantHealth`, `grantAmmo` and `addSlot` and targets the fire's activators; `on.trigger` carries `arm` and `disarm` and targets the firing volume. `occupancy` is a numeric runtime input: the effective occupant count at the enter or exit fire. It composes through `runtime` like other numeric inputs. Trigger events publish only `enter` and `exit`; occupancy-based conditions use crossings over the `occupancy` family (§5).
 
 **Teleport events.** The host fires a teleporter's `teleport` once per pawn per authoritative teleport, never from prediction or replay, dispatched inside the tick after every pawn has moved, so a disarm it queues governs the very next tick, even within one catch-up frame. `on.activators` resolves to the teleported player; `on.teleporter` carries `arm` and `disarm` for the teleporter that fired. Install drops, with a warning, a bound reaction that reads an input the event does not publish, `occupancy` and `on.trigger` included. A brush's `on_teleport` KVP names a reaction as `on_fire` does. Teleporter `arm` and `disarm`, from a member step, a named primitive or the token, queue in listed order and apply on the host only, at the start of its next movement tick, before the firing test (`movement.md` §6, Teleport). On a connected client they are dropped by the shared role predicate below, whatever path issued them.
 
@@ -641,6 +701,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | mover member | `getMapEntities("mover")` | `start`, `stop`, `reverse`, `goToPathNode`, `setSpinRate`, `setBlockPolicy` |
 | light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
+| emissive member (decided, not yet built) | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker`; values are brightness in [0, 1] |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on("teleport", …)` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
@@ -658,6 +719,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 - **Members.** `getMapEntities(kind, { tag? })` returns the map-placed instances of one kind, in authored map order, as an array the author inspects in JS. No match returns an empty array; an unknown kind (`npc`, `transform`) fails to compile in TS and raises in Luau.
   - Handle methods bake the instance id into steps, returned as step arrays that nest unspread in a body or sequence. A stale id warn-skips at dispatch, generation-checked.
   - Membership is fixed at install. Members are the only form the build-time light pass sees, and the only form that allows per-member authored arguments, because the IR has no iteration. Members never convert to groups.
+  - An area light (decided, not yet built) is a light member: `sweep` on it is refused with `InvalidArgument`, and its `lightType` reads `"Area"`.
   - The query keeps map placements and entities with no spawn provenance, for every kind. A light, emitter or other instance carried by a runtime spawn or a player pawn never appears.
   - Callable in a level's data script (module evaluation or `setupLevel`); in a mod start script it raises (§3). Mod-global definitions therefore cannot name map entities, except through trigger-event rules (below).
   - A spawner member's `fire()` spawns one batch from that spawner only, never from a sibling sharing its tag — on named dispatch, after a `wait`, and in a trigger's tick. Two `fire()` steps spawn two batches; steps are not deduplicated.
@@ -680,12 +742,12 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | Host-mirrored: the host decides, each machine fires | `levelLoad`; crossings reading only shared slots; weapon events, NPC shots and observer cues | `levelLoad`: host timeline; the rest: each machine's own |
 | Own-state: each machine fires for its own player | crossings reading any own, owner-private or local slot; movement events; UI presses | each machine's own |
 
-- **Machine-local** is one shared predicate: never replicated and not consequential. It holds for presentation and machine-local system reactions, cell writes included, for `setState` on a non-replicated slot, and on a client for `returnToFrontend`. Level flow, sentiment and `setGhostAudio` are otherwise never machine-local. The client tail filter and the player-event install rule share it.
+- **Machine-local** is one shared predicate: never replicated and not consequential. It holds for presentation and machine-local system reactions, cell writes included, for `setState` on a non-replicated slot, and on a client for `returnToFrontend` and `leaveSession`. Level flow, sentiment and `setGhostAudio` are otherwise never machine-local. The client tail filter and the player-event install rule share it.
 - **Where tails land.** An own-state tail parks on every machine its source fires on. A host-mirrored or host-timeline tail parks on a client only when it holds a machine-local step or a `fire`; otherwise the host lands it alone. The host lands every step. A client lands only machine-local steps, dispatches a post-wait `fire` through the same filter, and treats an interruptible wait as non-interruptible. A segment enrolled during a landing is due at its parent's due tick plus its wait, on the parent's clock, and lands in the same drain if already overdue, so chain timing follows the tick timeline, not frame rate; a drain takes landings in (due tick, enrollment id) order, and a client lands a reading's host-timeline catch-up first, then the frame's other landings in enrollment order. Only an own-state landing's drop warns: once per reaction, naming the first dropped step and the `fire` target holding it, re-armed at level teardown, suspend, hot reload and role change. Every other client tail path logs at debug.
 - **Audience.** A landing presents to the audience the same step reaches before the wait. A step routed to the host's own player presents on the host; one routed to a departed player presents nowhere, though a trigger's or teleport's default-audience sound still plays everywhere. On the host, host-only and host-mirrored landings record light, fog and emitter steps as host-only overrides; an own-state landing captures a networked target and applies a client-local one uncaptured on the host; a client that crossed drops a non-machine-local step and warns once.
 - **Context.** A wait drops subject tokens, `on.emitter` and dispatch inputs and keeps the origin, which routes the landing. Install drops a reaction whose post-wait step, its own or a `fire` target's, reads any of them.
 - **Host timeline.** A `levelLoad`-class tail counts the host's fixed ticks since the current level installed, where `levelLoad` fires, never the previous level's. A client reads that count from the level tick every snapshot carries, plus its own time since the newest snapshot and half the RTT, that extrapolation capped at three snapshot intervals (`networking.md` §Presentation state). A host stall longer than that cap therefore holds the client too: its reading runs at most the cap past the host's stamped tick plus transit, and the next snapshot re-anchors it, so only a beat due within that margin of the stall can land early. Otherwise a client lands a beat on the host's landing tick, off by about the error of its half-RTT transit estimate.
-- **Late joiner.** A client that revealed after a segment's due host tick converges state and skips presentation. Its reveal tick is fixed once per level, at its first host-clock reading less its level clock (unclamped time since its reveal, the clock the reading extrapolates on) in ticks, so a client live before a beat lands it even when that reading comes after the beat fell due, or after a hitch cost it fixed ticks. Because the join subtracts the client's wall-clock time since reveal, a host stall past the tick clamp between this client's reveal and its first reading puts the join early by the ticks the host lost, and beats the host landed just before the reveal replay live. A late joiner applies due UI-stack verbs, text and cell edits and non-replicated `setState` in authored order; due sounds, screen effects, rumbles and `returnToFrontend` skip at debug. Later segments land on schedule. Pre-wait steps run at the joiner's own install.
+- **Late joiner.** A client that revealed after a segment's due host tick converges state and skips presentation. Its reveal tick is fixed once per level, at its first host-clock reading less its level clock (unclamped time since its reveal, the clock the reading extrapolates on) in ticks, so a client live before a beat lands it even when that reading comes after the beat fell due, or after a hitch cost it fixed ticks. Because the join subtracts the client's wall-clock time since reveal, a host stall past the tick clamp between this client's reveal and its first reading puts the join early by the ticks the host lost, and beats the host landed just before the reveal replay live. A late joiner applies due UI-stack verbs, text and cell edits and non-replicated `setState` in authored order; due sounds, screen effects, rumbles, `returnToFrontend` and `leaveSession` skip at debug. Later segments land on schedule. Pre-wait steps run at the joiner's own install.
 - **Teardown.** Level teardown, suspend and hot reload drop client tails at debug; a role change drops every tail without a log. Teardown, suspend and role change restart the level tick and the join tick; a hot reload keeps the level, so its tick keeps counting. A host `restartLevel` on a catalog map tears each connected client's level down and reinstalls it too, so no tail or join tick crosses into the new life; an uncatalogued host level is not followed (`networking.md` §Slot lifecycle). Exit cancel and re-fire restart cover system steps.
 
 **Group wire.** A primitive descriptor or sequence entry may carry `kind` (`npc` or `player`) beside an optional `tag`. Parse rejects, naming the reaction, an entry carrying both `id` and `kind`, or any other `kind` — in both runtimes. A kindless tag-keyed descriptor stays valid raw wire data and resolves over every tagged entity, as before; the SDK emits none. The NPC state primitive is `updateNpcState`. The net wire is unchanged: group commands are host-side manifest data, and `NetworkId` never reaches scripts.

@@ -37,6 +37,14 @@ impl SlotPawns {
         Self::default()
     }
 
+    /// Every client holding a slot-owned pawn, ascending.
+    #[must_use]
+    pub fn client_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.pawns.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
     /// The pawn entity for a slot, if one is registered. Used by lifecycle tests and
     /// available to the host owner-lookup path.
     #[allow(dead_code)]

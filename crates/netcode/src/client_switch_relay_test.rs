@@ -371,10 +371,10 @@ impl SwitchRelay {
         );
         let pawn = self.host_pawn().expect("entry spawns the slot's pawn");
         let mut inventory = Inventory::default();
-        for slot in 0..3 {
+        for slot in &mut inventory.wieldables[..3] {
             let weapon = self.host_registry.spawn(Transform::default());
             self.host_registry.set_component(weapon, rifle()).unwrap();
-            inventory.wieldables[slot] = Some(weapon);
+            *slot = Some(weapon);
         }
         self.host_registry.set_component(pawn, inventory).unwrap();
         self.owners.set(pawn, client_id);

@@ -66,9 +66,9 @@ pub(super) fn resolve_facing_policy(
 /// Resolve the one direction this tick's facing slews toward, for compute's
 /// post-slew attack gate and apply's transform write alike.
 ///
-/// `steering_velocity` excludes knockback. While launched (`impact_yaw` is
-/// `Some`), travel facing holds the impact yaw; target facing keeps re-aiming
-/// at the normal slew rate.
+/// `steering_velocity` excludes knockback. While knockback remains
+/// (`impact_yaw` is `Some`), travel facing holds the impact yaw; target facing
+/// keeps re-aiming at the normal slew rate.
 pub(super) fn facing_direction(
     policy: Option<FacingPolicy>,
     steering_velocity: Option<Vec3>,

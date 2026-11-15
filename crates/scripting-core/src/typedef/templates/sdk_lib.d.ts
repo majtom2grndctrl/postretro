@@ -1360,6 +1360,8 @@
     readonly damageSourceKnown: RuntimeGuardNode;
     /** `true` while the enemy holds an attack turn, for any attack, as of the previous tick: it reads true from the tick after the grant (boolean). */
     readonly hasAttackTurn: RuntimeGuardNode;
+    /** `true` from the tick after the selected non-looping animation's clip reaches its duration; false on a looping state; true for a non-looping state whose clip did not resolve. Entity-wide: parent and nested rows read one value, unlike `timeInActivityMs` (boolean). */
+    readonly animationDone: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

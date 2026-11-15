@@ -631,8 +631,7 @@ fn stored_bound_equals_the_runtime_union_on_the_compiled_fixture() {
     for entry in stored {
         let mut worst = 0;
         let mut worst_cell = None;
-        for cell in 0..world.cells.len() {
-            let data = &world.cells[cell];
+        for (cell, data) in world.cells.iter().enumerate() {
             if data.is_solid || data.is_exterior {
                 continue;
             }

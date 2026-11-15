@@ -26,6 +26,8 @@ impl App {
         // creation. Without this, the `Booting` guard in `resumed()` would
         // no-op and the engine would stay permanently renderer-less.
         self.boot_state = BootState::Booting;
+        // The suspend drops the queued unload that would have cleared it.
+        self.level_stopped_by_session_end = false;
         self.splash_frame = 0;
         self.os_wait_from = None;
         self.pending_level_log = false;

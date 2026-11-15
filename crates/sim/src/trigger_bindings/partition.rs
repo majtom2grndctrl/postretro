@@ -46,7 +46,13 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     postretro_foundation::STOP_ATTACK_POOL,
 ];
 
-const LIFECYCLE_PRIMITIVES: &[&str] = &["loadLevel", "restartLevel", "returnToFrontend"];
+const LIFECYCLE_PRIMITIVES: &[&str] = &[
+    "loadLevel",
+    "restartLevel",
+    "returnToFrontend",
+    "leaveSession",
+    "endSession",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrimitiveClass {

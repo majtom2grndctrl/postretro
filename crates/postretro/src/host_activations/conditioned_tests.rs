@@ -1141,6 +1141,7 @@ impl Fixture {
             &[],
             &mut self.movers,
             &commands,
+            &self.owners.present_remote_pawns(),
             &neutral(),
             |_| sim::PostMovementCommand {
                 aim_origin: Vec3::ZERO,

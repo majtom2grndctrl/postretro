@@ -4,6 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::components::weapon::MAX_EFFECTIVE_SPREAD_DEGREES;
+use crate::engine_state_collections::{
+    BUILTIN_ENGINE_STATE_FAMILIES, BUILTIN_ENGINE_STATE_LISTS, EngineStateFamily, EngineStateList,
+};
 use crate::components::weapon_resource::WEAPON_RESOURCE_KIND_NAMES;
 use crate::slot_table::{
     NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
@@ -84,7 +87,7 @@ impl EngineStateCatalogEntry<'_> {
 }
 
 impl EngineStateValueType<'_> {
-    fn slot_type(self) -> SlotType {
+    pub(crate) fn slot_type(self) -> SlotType {
         match self {
             Self::Number => SlotType::Number,
             Self::Boolean => SlotType::Boolean,
@@ -126,7 +129,7 @@ impl EngineStateValueType<'_> {
 }
 
 impl EngineStateDefault<'_> {
-    fn slot_value(self) -> Option<SlotValue> {
+    pub(crate) fn slot_value(self) -> Option<SlotValue> {
         match self {
             Self::None => None,
             Self::Number(value) => Some(SlotValue::Number(value)),
@@ -154,6 +157,10 @@ pub enum EngineStateCatalogError {
 pub enum EngineStateTreeNode {
     Object(BTreeMap<String, EngineStateTreeNode>),
     Leaf { entry_index: usize },
+    /// A node whose accessor reaches a family's members.
+    Family { family_index: usize },
+    /// A list of rows, one per index up to its capacity.
+    List { list_index: usize },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,7 +177,9 @@ impl EngineStateTree {
     fn leaf_paths(&self) -> Vec<String> {
         fn collect(prefix: &mut Vec<String>, node: &EngineStateTreeNode, out: &mut Vec<String>) {
             match node {
-                EngineStateTreeNode::Leaf { .. } => out.push(prefix.join(".")),
+                EngineStateTreeNode::Leaf { .. }
+                | EngineStateTreeNode::Family { .. }
+                | EngineStateTreeNode::List { .. } => out.push(prefix.join(".")),
                 EngineStateTreeNode::Object(children) => {
                     for (segment, child) in children {
                         prefix.push(segment.clone());
@@ -195,12 +204,22 @@ impl EngineStateTree {
 #[derive(Clone, Debug)]
 pub struct EngineStateCatalog {
     entries: Vec<EngineStateCatalogEntry<'static>>,
+    families: &'static [EngineStateFamily<'static>],
+    lists: &'static [EngineStateList<'static>],
     tree: EngineStateTree,
 }
 
 impl EngineStateCatalog {
     pub fn entries(&self) -> &[EngineStateCatalogEntry<'static>] {
         &self.entries
+    }
+
+    pub fn families(&self) -> &'static [EngineStateFamily<'static>] {
+        self.families
+    }
+
+    pub fn lists(&self) -> &'static [EngineStateList<'static>] {
+        self.lists
     }
 
     pub fn tree(&self) -> &EngineStateTree {
@@ -219,17 +238,37 @@ impl EngineStateCatalog {
                 .or_default()
                 .push((slot_name.to_string(), entry.slot_record()));
         }
+        // List rows exist for the process's life, beside their namespace's
+        // entries. Family members are declared at run time instead.
+        for list in self.lists {
+            namespaces
+                .entry(list.sdk_path[0].to_string())
+                .or_default()
+                .extend(list.namespace_slots());
+        }
         namespaces.into_iter().collect()
     }
 }
 
 pub fn engine_state_catalog() -> Result<EngineStateCatalog, EngineStateCatalogError> {
-    EngineStateCatalog::from_entries(BUILTIN_ENGINE_STATE)
+    EngineStateCatalog::from_parts(
+        BUILTIN_ENGINE_STATE,
+        BUILTIN_ENGINE_STATE_FAMILIES,
+        BUILTIN_ENGINE_STATE_LISTS,
+    )
 }
 
 impl EngineStateCatalog {
     pub fn from_entries(
         entries: &[EngineStateCatalogEntry<'static>],
+    ) -> Result<Self, EngineStateCatalogError> {
+        Self::from_parts(entries, &[], &[])
+    }
+
+    pub fn from_parts(
+        entries: &[EngineStateCatalogEntry<'static>],
+        families: &'static [EngineStateFamily<'static>],
+        lists: &'static [EngineStateList<'static>],
     ) -> Result<Self, EngineStateCatalogError> {
         let mut sorted = entries.to_vec();
         sorted.sort_by(|left, right| {
@@ -237,9 +276,25 @@ impl EngineStateCatalog {
                 .cmp(right.sdk_path)
                 .then_with(|| left.wire_name.cmp(right.wire_name))
         });
-        let tree = validate_entries(&sorted)?;
+        let mut tree = validate_entries(&sorted)?;
+        for (family_index, family) in families.iter().enumerate() {
+            insert_collection_node(
+                &mut tree.root,
+                family.sdk_path,
+                EngineStateTreeNode::Family { family_index },
+            )?;
+        }
+        for (list_index, list) in lists.iter().enumerate() {
+            insert_collection_node(
+                &mut tree.root,
+                list.sdk_path,
+                EngineStateTreeNode::List { list_index },
+            )?;
+        }
         Ok(Self {
             entries: sorted,
+            families,
+            lists,
             tree,
         })
     }
@@ -319,7 +374,11 @@ fn insert_tree_path(
                         sdk_path: prefix.join("."),
                     });
                 }
-                Some(EngineStateTreeNode::Leaf { .. }) => {
+                Some(
+                    EngineStateTreeNode::Leaf { .. }
+                    | EngineStateTreeNode::Family { .. }
+                    | EngineStateTreeNode::List { .. },
+                ) => {
                     return Err(EngineStateCatalogError::DuplicateSdkPath {
                         sdk_path: prefix.join("."),
                     });
@@ -337,7 +396,9 @@ fn insert_tree_path(
                 .or_insert_with(|| EngineStateTreeNode::Object(BTreeMap::new()));
             match node {
                 EngineStateTreeNode::Object(next) => children = next,
-                EngineStateTreeNode::Leaf { .. } => {
+                EngineStateTreeNode::Leaf { .. }
+                | EngineStateTreeNode::Family { .. }
+                | EngineStateTreeNode::List { .. } => {
                     return Err(EngineStateCatalogError::LeafObjectPathCollision {
                         sdk_path: prefix.join("."),
                     });
@@ -345,6 +406,43 @@ fn insert_tree_path(
             }
         }
     }
+    Ok(())
+}
+
+/// Place a family or list node at `path`, which must be free: a collection
+/// node owns its whole subtree.
+fn insert_collection_node(
+    root: &mut BTreeMap<String, EngineStateTreeNode>,
+    path: &[&str],
+    node: EngineStateTreeNode,
+) -> Result<(), EngineStateCatalogError> {
+    let sdk_path = path.join(".");
+    let Some((last, parents)) = path.split_last() else {
+        return Err(EngineStateCatalogError::InvalidSdkPathSegment {
+            wire_name: sdk_path,
+            segment: String::new(),
+        });
+    };
+    if let Some(segment) = path.iter().find(|segment| !is_valid_sdk_segment(segment)) {
+        return Err(EngineStateCatalogError::InvalidSdkPathSegment {
+            wire_name: sdk_path,
+            segment: (*segment).to_string(),
+        });
+    }
+    let mut children = root;
+    for segment in parents {
+        let next = children
+            .entry((*segment).to_string())
+            .or_insert_with(|| EngineStateTreeNode::Object(BTreeMap::new()));
+        match next {
+            EngineStateTreeNode::Object(grandchildren) => children = grandchildren,
+            _ => return Err(EngineStateCatalogError::LeafObjectPathCollision { sdk_path }),
+        }
+    }
+    if children.contains_key(*last) {
+        return Err(EngineStateCatalogError::DuplicateSdkPath { sdk_path });
+    }
+    children.insert((*last).to_string(), node);
     Ok(())
 }
 

@@ -1359,6 +1359,8 @@ export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, o
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+--- An engine catalog list: row tables 1..capacity, row `i` holding the refs of slot row `i - 1`. Each row's `present` says whether it holds anything. Render rows with `forEach` from `"postretro/ui"`.
+export type StateList<Row> = { [number]: Row }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
 --- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
 --- event's player (`on.player`), or a side of an assist pair expression

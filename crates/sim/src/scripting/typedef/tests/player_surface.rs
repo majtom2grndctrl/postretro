@@ -100,6 +100,22 @@ fn seat_identifiers_stay_off_the_sdk_surface_and_the_player_state_tree_has_no_me
         assert!(hits.is_empty(), "{name} names a seat identifier: {hits:?}");
     }
 
+    // The catalog's families and lists are the only nodes with an accessor or
+    // a list marker; every other interior node is a plain tree of refs.
+    let catalog = postretro_entities::engine_state_catalog::engine_state_catalog().unwrap();
+    let collections: Vec<String> = catalog
+        .families()
+        .iter()
+        .map(|family| family.sdk_path.join("."))
+        .chain(catalog.lists().iter().map(|list| list.sdk_path.join(".")))
+        .collect();
+    let js_collections = serde_json::to_string(&collections).unwrap();
+    let luau_collections = collections
+        .iter()
+        .map(|path| format!("[\"{path}\"] = true"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     // QuickJS: interior nodes hold no functions (enumerable or not); a leaf
     // enumerates exactly `slot` and `kind`.
     let runtime = rquickjs::Runtime::new().unwrap();
@@ -111,7 +127,9 @@ fn seat_identifiers_stay_off_the_sdk_surface_and_the_player_state_tree_has_no_me
                 r#"
                 (() => {{
                   const out = [];
+                  const collections = {js_collections};
                   function walk(node, path) {{
+                    if (collections.includes(path)) return;
                     if (typeof node.slot === "string") {{
                       const keys = Object.keys(node).sort().join(",");
                       if (keys !== "kind,slot") out.push(`${{path}} enumerates ${{keys}}`);
@@ -140,7 +158,9 @@ fn seat_identifiers_stay_off_the_sdk_surface_and_the_player_state_tree_has_no_me
         .load(format!(
             r#"
             local out = {{}}
+            local collections = {{ {luau_collections} }}
             local function walk(node, path)
+              if collections[path] then return end
               if type(rawget(node, "slot")) == "string" then
                 local keys = {{}}
                 for key in pairs(node) do table.insert(keys, key) end

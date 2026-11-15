@@ -453,6 +453,47 @@ fn install_js_game_state(ctx: &JsCtx<'_>) -> Result<()> {
             .call::<_, ()>((leaf,))
             .context("failed to install QuickJS byPlayer")?;
     }
+    let install_family: JsFunction = ctx
+        .eval(JS_INSTALL_FAMILY)
+        .context("failed to build QuickJS family installer")?;
+    let build_list: JsFunction = ctx
+        .eval(JS_BUILD_LIST)
+        .context("failed to build QuickJS list builder")?;
+    let js_parent = |path: &[&str]| -> Result<JsObject> {
+        let mut node = root.clone();
+        for segment in path {
+            let next: Option<JsObject> = node.get(*segment)?;
+            node = match next {
+                Some(next) => next,
+                None => {
+                    let created = JsObject::new(ctx.clone())?;
+                    node.set(*segment, created.clone())?;
+                    created
+                }
+            };
+        }
+        Ok(node)
+    };
+    for (path, accessor, fields) in MIRRORED_GAME_STATE_FAMILIES {
+        let (parents, name) = split_sdk_path(path);
+        let node = JsObject::new(ctx.clone())?;
+        install_family
+            .call::<_, ()>((
+                node.clone(),
+                *accessor,
+                *path,
+                json_to_js(ctx, &mirrored_fields_json(fields))?,
+            ))
+            .context("failed to install QuickJS family accessor")?;
+        js_parent(&parents)?.set(name, node)?;
+    }
+    for (path, capacity, fields) in MIRRORED_GAME_STATE_LISTS {
+        let (parents, name) = split_sdk_path(path);
+        let rows: rquickjs::Value = build_list
+            .call((*path, *capacity, json_to_js(ctx, &mirrored_fields_json(fields))?))
+            .context("failed to build QuickJS list rows")?;
+        js_parent(&parents)?.set(name, rows)?;
+    }
     ctx.globals()
         .set("__postretroGameStateRefs", bridge)
         .context("failed to install QuickJS getGameState bridge")?;
@@ -558,6 +599,42 @@ fn install_lua_game_state(lua: &Lua) -> mlua::Result<()> {
                 leaf = leaf.get::<LuaTable>(segment)?;
             }
             install.call::<()>(leaf)?;
+        }
+        let install_family: LuaFunction = lua.load(LUAU_INSTALL_FAMILY).eval()?;
+        let build_list: LuaFunction = lua.load(LUAU_BUILD_LIST).eval()?;
+        let lua_parent = |path: &[&str]| -> mlua::Result<LuaTable> {
+            let mut node = root.clone();
+            for segment in path {
+                node = match node.get::<Option<LuaTable>>(*segment)? {
+                    Some(next) => next,
+                    None => {
+                        let created = lua.create_table()?;
+                        node.set(*segment, created.clone())?;
+                        created
+                    }
+                };
+            }
+            Ok(node)
+        };
+        for (path, accessor, fields) in MIRRORED_GAME_STATE_FAMILIES {
+            let (parents, name) = split_sdk_path(path);
+            let node = lua.create_table()?;
+            install_family.call::<()>((
+                node.clone(),
+                *accessor,
+                *path,
+                json_to_lua(lua, &mirrored_fields_json(fields))?,
+            ))?;
+            lua_parent(&parents)?.set(name, node)?;
+        }
+        for (path, capacity, fields) in MIRRORED_GAME_STATE_LISTS {
+            let (parents, name) = split_sdk_path(path);
+            let rows: LuaTable = build_list.call((
+                *path,
+                *capacity,
+                json_to_lua(lua, &mirrored_fields_json(fields))?,
+            ))?;
+            lua_parent(&parents)?.set(name, rows)?;
         }
     }
     lua.globals().set("__postretroGameStateRefs", bridge)?;
@@ -1086,6 +1163,111 @@ const LUAU_INSTALL_BY_PLAYER_TEMPLATE: &str = r#"return function(leaf)
   end
   setmetatable(leaf, table.freeze({ __index = table.freeze({ byPlayer = byPlayer }) }))
 end"#;
+
+/// The engine catalog's families, mirrored: SDK path of the accessor node,
+/// accessor name, and each member's `(field, kind)`. The drift guard in
+/// `postretro-sim` compares them with the catalog.
+#[doc(hidden)]
+pub const MIRRORED_GAME_STATE_FAMILIES: &[(&str, &str, &[(&str, &str)])] = &[(
+    "occupancy",
+    "tag",
+    &[("occupiedCount", "number"), ("occupants", "number")],
+)];
+
+/// The engine catalog's lists, mirrored: SDK path, row capacity, and each
+/// row's `(field, kind)`.
+#[doc(hidden)]
+pub const MIRRORED_GAME_STATE_LISTS: &[(&str, usize, &[(&str, &str)])] = &[(
+    "session.players",
+    postretro_foundation::seat::SESSION_PLAYER_CAPACITY,
+    &[
+        ("present", "boolean"),
+        ("name", "string"),
+        ("status", "enum"),
+        ("isLocal", "boolean"),
+    ],
+)];
+
+/// Mirrors scripting-core's `QUICKJS_INSTALL_FAMILY`.
+#[doc(hidden)]
+pub const JS_INSTALL_FAMILY: &str = r#"(node, accessor, prefix, fields) => {
+  Object.defineProperty(node, accessor, {
+    value: function (key) {
+      if (typeof key !== "string") {
+        throw new TypeError(prefix + "." + accessor + "(key) takes a string key");
+      }
+      const member = {};
+      for (const [name, kind] of fields) {
+        member[name] = Object.freeze({ slot: prefix + "." + key + "." + name, kind });
+      }
+      return Object.freeze(member);
+    },
+    enumerable: false,
+  });
+}"#;
+
+/// Mirrors scripting-core's `QUICKJS_BUILD_LIST`.
+#[doc(hidden)]
+pub const JS_BUILD_LIST: &str = r#"(prefix, capacity, fields) => {
+  const rows = [];
+  for (let row = 0; row < capacity; row++) {
+    const refs = {};
+    for (const [name, kind] of fields) {
+      refs[name] = Object.freeze({ slot: prefix + "." + row + "." + name, kind });
+    }
+    rows.push(Object.freeze(refs));
+  }
+  Object.defineProperty(rows, "__list", { value: prefix, enumerable: false });
+  return Object.freeze(rows);
+}"#;
+
+/// Mirrors scripting-core's `LUAU_INSTALL_FAMILY`.
+#[doc(hidden)]
+pub const LUAU_INSTALL_FAMILY: &str = r#"return function(node, accessor, prefix, fields)
+  local function access(_self, key)
+    if type(key) ~= "string" then
+      error(prefix .. "." .. accessor .. "(key) takes a string key", 2)
+    end
+    local member = {}
+    for _, field in fields do
+      member[field[1]] = table.freeze({ slot = prefix .. "." .. key .. "." .. field[1], kind = field[2] })
+    end
+    return table.freeze(member)
+  end
+  setmetatable(node, table.freeze({ __index = table.freeze({ [accessor] = access }) }))
+end"#;
+
+/// Mirrors scripting-core's `LUAU_BUILD_LIST`.
+#[doc(hidden)]
+pub const LUAU_BUILD_LIST: &str = r#"return function(prefix, capacity, fields)
+  local rows = {}
+  for row = 0, capacity - 1 do
+    local refs = {}
+    for _, field in fields do
+      refs[field[1]] = table.freeze({ slot = prefix .. "." .. row .. "." .. field[1], kind = field[2] })
+    end
+    rows[row + 1] = table.freeze(refs)
+  end
+  setmetatable(rows, table.freeze({ __index = table.freeze({ __list = prefix }) }))
+  return table.freeze(rows)
+end"#;
+
+/// `[[field, kind], ...]`, the installers' field list.
+fn mirrored_fields_json(fields: &[(&str, &str)]) -> JsonValue {
+    JsonValue::Array(
+        fields
+            .iter()
+            .map(|(name, kind)| json!([name, kind]))
+            .collect(),
+    )
+}
+
+/// Split a dotted SDK path into its parent segments and final name.
+fn split_sdk_path(path: &str) -> (Vec<&str>, &str) {
+    let mut segments: Vec<&str> = path.split('.').collect();
+    let name = segments.pop().expect("mirrored SDK paths are non-empty");
+    (segments, name)
+}
 
 fn game_state_refs_json() -> JsonValue {
     let mut root = JsonMap::new();

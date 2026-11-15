@@ -53,6 +53,10 @@ Every Decision premise holds at `01d5db4f`. The sequencing prerequisite, the fir
 - Committed typedefs regenerate with `cargo run -p postretro-sim --bin gen-script-types`; copy both outputs to `crates/sim/src/scripting/typedef/tests/fixtures/expected.d.{ts,luau}`, which the full-registry snapshot tests compare.
 - Netcode replication fixtures that observe only their own records call `localize_engine_shared_slots`, since the counts are the first shared engine slots.
 
+## Clarifications
+- `session.players` is a frozen array of row refs in QuickJS and a frozen sequence in Luau (rows 1..capacity, row `i` holding slot row `i - 1`); both carry a non-enumerable `__list` marker so `forEach` accepts only engine lists. Typed `StateList<Row>`.
+- `occupancy` family members insert as engine slots under no namespace record; `RESERVED_ENGINE_NAMESPACES` rejects `occupancy` and overlaps on both mod declaration paths with `EngineReservedNamespace`.
+
 ## AC-to-proof
 Test names are proposals; final names land with each task. `two-endpoint` means real `NetServer` / `NetClient` endpoints in-process.
 
@@ -85,8 +89,8 @@ Test names are proposals; final names land with each task. `two-endpoint` means 
 | L4 flapping status rate-limited; final and other-seat changes within one interval (P19) | `status_only_roster_updates_respect_rate_limit` | achievable as stated |
 | L5 rows by status equal counts on host each tick and clients within one interval, incl. undeclared death and respawn and joiner bind (P24) | `rows_by_status_match_counts_on_host_and_clients` (two-endpoint) | achievable as stated |
 | L6 `forEach` rows, present-only, id suffix, same-row `labelledBy` / `focusNeighbors`, no rebuild | `for_each_unrolls_rows_with_suffixed_ids_and_never_rebuilds` (TS and Luau) | achievable as stated |
-| C1 script `setState` on counts, rows, family warns, unchanged | `engine_session_and_occupancy_slots_reject_script_writes` (log capture) | achievable as stated |
-| C2 `occupancy` / overlapping store rejected with and without level; `occupancyBoard` loads; engine insert succeeds (P5) | `occupancy_namespace_is_reserved_for_the_engine` | achievable as stated |
+| C1 script `setState` on counts, rows, family warns, unchanged | `engine_session_and_occupancy_slots_reject_script_writes` (log capture) | achievable as stated; passing (task 3) |
+| C2 `occupancy` / overlapping store rejected with and without level; `occupancyBoard` loads; engine insert succeeds (P5) | `occupancy_namespace_is_reserved_for_the_engine` | achievable as stated; passing (task 3) |
 | C3 tag with `.` or `:` warns once, no family; others get theirs | `unformable_tag_warns_once_and_gets_no_family` | achievable as stated |
 | C4 level reference to absent tag reads 0 and warns once; mod-scope reads 0 silently | `absent_tag_warns_for_level_reference_only` | achievable as stated |
 | C5 run-time tag from `getMapEntities` gets its family | `runtime_built_tag_gets_its_family` | achievable as stated |
@@ -112,7 +116,7 @@ Each task ends green and committed with this file. Hot path: the per-tick write 
 |---|---|---|---|---|
 | 1 | **Thin slice through the riskiest seams:** `MAX_CLIENTS` to `foundation`; static `SharedGlobal` readonly `session.playerCounts.*` catalog entries with typedefs and mirror; sim returns the tick's counted-player set on `TickEvents`; one host function derives seat status from `SeatTable`, registry live pawns and that set; the write in `frame_loop` before accumulators; session-level flag, zeroing at unload and leave. Proves S1–S5, S7 and the client half of S1 over two endpoints. | integrating executor | — | done: S3, S5, S7 pass; S1 and S4 partial as noted; full suites of postretro, netcode, sim, entities, script-compiler, foundation and scripting-core green |
 | 2 | Split occupant tracking out of `trigger_system.rs`, behavior-preserving, own commit | integrating executor | — | done: `sim::trigger_occupants::TriggerOccupants`; sim lib (1990), netcode and app trigger filters green |
-| 3 | Catalog `Family` and `List` nodes: both runtime installers, build-time twin, typedef emit, drift guards; value-preserving family slot replace; `occupancy` reservation; readonly proof (C1, C2, C12 typedef part) | integrating executor | 1 | |
+| 3 | Catalog `Family` and `List` nodes: both runtime installers, build-time twin, typedef emit, drift guards; value-preserving family slot replace; `occupancy` reservation; readonly proof (C1, C2, C12 typedef part) | integrating executor | 1 | in progress: written, focused tests green, full suites running |
 | 4 | Roster names and statuses: `RosterEntry` fields, `WIRE_VERSION` 40, status dirty marking and 250 ms gate, client `entries` accessor; `session.players` rows on host, single player and clients; `Player N`; privacy tests and doc comments rewritten (L1–L5) | integrating executor | 1, 3 | |
 | 5 | `forEach` in TS and Luau, `present` gating, id and reference suffixing, export inventories; HUD reference list (L6) | delegable worker (SDK files only) | 3 | |
 | 6 | Referenced-tag collection over lowered descriptors; mod-scope families at first init and staged commit; level families at install, removed at unload unless mod-shared; absent and unformable tag warnings (C3–C11) | integrating executor | 3 | |

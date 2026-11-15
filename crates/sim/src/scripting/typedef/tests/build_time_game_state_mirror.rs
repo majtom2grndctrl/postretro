@@ -6,11 +6,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use postretro_entities::engine_state_catalog::engine_state_catalog;
 use postretro_foundation::owner_tokens::BY_PLAYER_OWNER_TOKENS;
 use postretro_script_compiler::light_membership::{
-    JS_INSTALL_BY_PLAYER, LUAU_INSTALL_BY_PLAYER, MIRRORED_GAME_STATE_LEAVES,
+    JS_BUILD_LIST, JS_INSTALL_BY_PLAYER, JS_INSTALL_FAMILY, LUAU_BUILD_LIST,
+    LUAU_INSTALL_BY_PLAYER, LUAU_INSTALL_FAMILY, MIRRORED_GAME_STATE_FAMILIES,
+    MIRRORED_GAME_STATE_LEAVES, MIRRORED_GAME_STATE_LISTS,
 };
 use postretro_scripting_core::game_state_refs::{
+    LUAU_BUILD_LIST as RUNTIME_LUAU_BUILD_LIST,
     LUAU_INSTALL_BY_PLAYER as RUNTIME_LUAU_INSTALL_BY_PLAYER,
-    QUICKJS_INSTALL_BY_PLAYER as RUNTIME_QUICKJS_INSTALL_BY_PLAYER, state_ref_kind,
+    LUAU_INSTALL_FAMILY as RUNTIME_LUAU_INSTALL_FAMILY,
+    QUICKJS_BUILD_LIST as RUNTIME_QUICKJS_BUILD_LIST,
+    QUICKJS_INSTALL_BY_PLAYER as RUNTIME_QUICKJS_INSTALL_BY_PLAYER,
+    QUICKJS_INSTALL_FAMILY as RUNTIME_QUICKJS_INSTALL_FAMILY, collection_field_kinds,
+    state_ref_kind,
 };
 
 /// SDK path → (slot, kind, per-player), the shape both trees serve per leaf.
@@ -52,6 +59,75 @@ fn build_time_game_state_mirror_matches_engine_state_catalog() {
         "script-compiler's MIRRORED_GAME_STATE_LEAVES (light_membership.rs) drifted from \
          engine_state_catalog(); update the mirror to match the catalog"
     );
+}
+
+/// `(field, kind)` per member or row, as both trees serve them.
+type FieldKinds = Vec<(String, String)>;
+
+fn owned(fields: &[(&str, &str)]) -> FieldKinds {
+    fields
+        .iter()
+        .map(|(name, kind)| (name.to_string(), kind.to_string()))
+        .collect()
+}
+
+#[test]
+fn build_time_families_and_lists_match_engine_state_catalog() {
+    let catalog = engine_state_catalog().expect("engine-state catalog is valid");
+    let catalog_fields = |fields| -> FieldKinds {
+        collection_field_kinds(fields)
+            .into_iter()
+            .map(|(name, kind)| (name, kind.to_string()))
+            .collect()
+    };
+    let expected_families: Vec<(String, String, FieldKinds)> = catalog
+        .families()
+        .iter()
+        .map(|family| {
+            (
+                family.sdk_path.join("."),
+                family.accessor.to_string(),
+                catalog_fields(family.fields),
+            )
+        })
+        .collect();
+    let mirrored_families: Vec<(String, String, FieldKinds)> = MIRRORED_GAME_STATE_FAMILIES
+        .iter()
+        .map(|(path, accessor, fields)| (path.to_string(), accessor.to_string(), owned(fields)))
+        .collect();
+    assert_eq!(
+        mirrored_families, expected_families,
+        "light_membership.rs MIRRORED_GAME_STATE_FAMILIES drifted from the catalog's families"
+    );
+
+    let expected_lists: Vec<(String, usize, FieldKinds)> = catalog
+        .lists()
+        .iter()
+        .map(|list| (list.sdk_path.join("."), list.capacity, catalog_fields(list.fields)))
+        .collect();
+    let mirrored_lists: Vec<(String, usize, FieldKinds)> = MIRRORED_GAME_STATE_LISTS
+        .iter()
+        .map(|(path, capacity, fields)| (path.to_string(), *capacity, owned(fields)))
+        .collect();
+    assert_eq!(
+        mirrored_lists, expected_lists,
+        "light_membership.rs MIRRORED_GAME_STATE_LISTS drifted from the catalog's lists"
+    );
+}
+
+#[test]
+fn build_time_family_and_list_installers_match_runtime_bridge() {
+    for (mirror, runtime, name) in [
+        (JS_INSTALL_FAMILY, RUNTIME_QUICKJS_INSTALL_FAMILY, "JS_INSTALL_FAMILY"),
+        (JS_BUILD_LIST, RUNTIME_QUICKJS_BUILD_LIST, "JS_BUILD_LIST"),
+        (LUAU_INSTALL_FAMILY, RUNTIME_LUAU_INSTALL_FAMILY, "LUAU_INSTALL_FAMILY"),
+        (LUAU_BUILD_LIST, RUNTIME_LUAU_BUILD_LIST, "LUAU_BUILD_LIST"),
+    ] {
+        assert_eq!(
+            mirror, runtime,
+            "light_membership.rs {name} drifted from its game_state_refs.rs original"
+        );
+    }
 }
 
 #[test]

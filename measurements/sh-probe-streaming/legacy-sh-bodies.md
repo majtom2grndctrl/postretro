@@ -1,8 +1,10 @@
 # Legacy SH bodies in ids 34/35/41
 
-**Status: decided, keep (2026-11-15).** Ids 34, 35 and 41 stay written in full.
-The durable contract is in `context/lib/build_pipeline.md` §PRL section IDs
-(Cluster SH payloads, id 50).
+**Status: decided, opt-in flag (2026-11-15); supersedes the earlier keep
+decision.** The owner chose `prl-build --whole-load-sh`, default off: it writes
+the bodies of ids 27/34/35/41/45, and without it they are omitted whenever id 50
+is emitted. The measurements below stand. The durable contract is in
+`context/lib/build_pipeline.md` §PRL section IDs (Whole-load SH bodies).
 
 ## Question
 
@@ -48,9 +50,9 @@ For scale: the PRL is 1,128,432,757 B (1,076 MiB). Id 22 is 490 MiB, id 42
 figure is the body total; the 20 MiB of metadata is not removable while
 streaming reads it.
 
-Before and after are identical: this decision changes no bytes.
+After: see the build's after-bake table (to be filled)
 
-## Why keep
+## Decision
 
 - **Dropping in favour of id 50 has no cheap reconstruction.** The legacy
   atlas packs 6×6 tiles (border included) at a 6-texel pitch, so 4×4 BC6H
@@ -58,20 +60,21 @@ Before and after are identical: this decision changes no bytes.
   `off` from id 50 means a CPU BC6H decode and re-encode of every dense tile at
   load, or uploading Rgba16Float atlases 8× larger than today's. Either way
   `off` would sample id 50's encoding, so it would stop being an independent
-  reference for the streamed path.
-- **Writing smaller means a second PRL shape.** Omitting bodies only on ship
-  bakes needs a body-present flag in three sections, a compiler flag that the
-  distribution stage passes, and a named `off` refusal. `--release` cannot imply
-  it, because warm and `--release` builds must bake the same bytes. That weight
-  buys 3% of this file.
+  reference for the streamed path. Rejected.
+- **A second PRL shape, opt-in.** Chosen by the owner over keeping the bodies,
+  which this record first concluded because the weight bought 3% of this file.
+  Ids 27/34/35/41/45 each bump their section version and carry a body-presence
+  flag. `--whole-load-sh` writes the bodies; the default omits them when id 50
+  is emitted. A level without id 50 always carries them. `--release` does not
+  imply the flag, because warm and `--release` builds must bake the same bytes.
+  `off` refuses a level without bodies with one named error that names the
+  rebake.
 - **No player path reads the bodies.** `off` has no automatic fallback; it is a
-  dev and test mode. The cost is disk and download size only. Load time in the
-  default modes is unaffected.
+  dev and test mode, so the default costs players nothing. Dev and test runs
+  under `off` opt in with the flag.
 
 ## Revisit when
 
-- `off` is retired or rebuilt on the streaming pool. Ids 34/35/41 then become
-  metadata-only: the streaming manifest already reads only their prefixes.
-- The lightmap-compression work (ids 22/42/50/51) shrinks the file enough that
-  34 MiB becomes a large share. If id 22 and id 42 shrink 4×, the bodies would
-  be about 6% of this map.
+- `off` is retired or rebuilt on the streaming pool. The flag and the bodies
+  then retire with it: the streaming manifest already reads only the sections'
+  metadata.

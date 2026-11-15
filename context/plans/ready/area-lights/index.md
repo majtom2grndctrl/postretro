@@ -118,14 +118,21 @@ light.
 - **Light curves are capped, for every light.** Glow multiplies its light's
   curve, and an unbounded curve overflows the scene target, which bloom then
   spreads (O39). Brightness and colour curve samples read into [0, C],
-  authored (`brightness_curve`, `color_curve`) or scripted (`setLightAnimation`
-  and the light handle's methods): a negative sample reads 0, a non-finite one
-  1, and one past C reads C. The compiler warns once per light and key; the
-  runtime clamps and warns once per call, as the fog and emissive primitives
-  clamp (`context/lib/index.md` §2, Primitive surface is a contract). C sits far
-  above any look. With texture strength and `_glow` at their ceilings and both
-  curves at their evaluated peak, glow stays below the scene target's
-  half-float maximum, with headroom for bloom's sum.
+  authored (`brightness_curve`, `color_curve` keyframes, as the mapper typed
+  them) or scripted (`setLightAnimation` and the light handle's methods): a
+  negative sample reads 0 and one past C reads C. A non-finite keyframe reads
+  1; a script cannot pass one, since the script boundary already rejects
+  non-finite numbers. The compiler warns once per light and key; the runtime
+  clamps and warns once per call, as the fog and emissive primitives clamp
+  (`context/lib/index.md` §2, Primitive surface is a contract).
+  - A finished animation never leaves a light's intensity above C × its
+    authored intensity, so repeated fades cannot compound past the cap (O41).
+  - C sits far above any look. With texture strength and `_glow` at their
+    ceilings and both curves at their evaluated peak, glow stays below the
+    scene target's half-float maximum, with headroom for bloom's sum. An
+    authored curve is smoothed twice, by the compiler's resample and the
+    GPU's evaluation, so its peak is 1.125² × C; a scripted one's 1.125 × C
+    (O39).
 - **Keys: inert keys warn, contradictory keys fail.** Changing a `light` to
   `light_area` in the editor keeps its keys. So `delay`, `_light_size` and the
   spot keys warn, naming the light and key, and are ignored. `_shadow_type sdf`,
@@ -133,7 +140,9 @@ light.
   fail the build. So does `light 0` on an animated area light: its glow
   would lose its fades and its reflection, so the message points at
   `emissive_volume` for glow without light. A static `light 0` area light is a
-  glow-only panel. `_bake_only` with `_start_inactive` warns: the panel stays
+  glow-only panel. A negative `light` on an area light fails the build, naming
+  the light and key: a panel cannot emit negative light. `_bake_only` with
+  `_start_inactive` warns: the panel stays
   dark and no script can reach it.
 - **v1 refusals.** No area-light specular: the light keeps an inert placeholder
   `SpecLight` record, is never a shadowmask owner, and adds no specular on any
@@ -287,8 +296,8 @@ Placement, culls and keys:
   id (research.md O12).
 - [ ] On one thread, a point light's probe set is the same whether or not an
   area light's probe set was built first at the same count (research.md O9).
-- [ ] An entity with no `_e` face, `_shadow_type sdf`, `direction_curve` or
-  `style` fails the build, naming the light and key. `delay`, `_light_size` and
+- [ ] An entity with no `_e` face, a negative `light`, `_shadow_type sdf`,
+  `direction_curve` or `style` fails the build, naming the light and key. `delay`, `_light_size` and
   each spot key warn, naming the light and key, and leave every bake byte as if
   absent.
 - [ ] Editing only `delay`, `_light_size` or a spot key on an area light re-keys
@@ -359,12 +368,18 @@ Glow and light identity (orderings in `research.md` §Pin table):
   and Emissive (id 60) stays byte-identical. A negative `_glow` reads 0, a
   non-finite one 1.0, and one past the ceiling the ceiling, each warning by
   light and key.
-- [ ] A brightness or colour curve sample of 1e30, −1 or NaN, authored on a
-  point, a spot and an area light and written by a script, reads C, 0 and 1,
-  each with one warning naming the light. Samples within [0, C] compile and run
-  unchanged and silently. A texture at the strength ceiling under an area light
-  whose `_glow` is at its ceiling and whose brightness and colour curves peak at
-  C presents finite glow, finite room light and finite bloom (research.md O39).
+- [ ] A brightness or colour keyframe of 1e30, −1 or NaN, authored on a point,
+  a spot and an area light, reads C, 0 and 1; a scripted sample of 1e30 or −1
+  reads C or 0. Each warns once, naming the light. Keyframes within [0, C]
+  compile and run unchanged and silently, even where the compiler's resample
+  overshoots them. A texture at the strength ceiling under an area light
+  whose `_glow` is at its ceiling and whose brightness and colour keyframes
+  peak at C presents finite glow, finite room light and finite bloom
+  (research.md O39).
+- [ ] Two successive script fades from 1 to C on an animated area light whose
+  texture strength and `_glow` are at their ceilings settle with intensity C ×
+  the authored intensity, not C², and glow, room light and bloom stay finite
+  (research.md O41).
 - [ ] A static `_bake_only` area light's faces glow steadily at `_e` × texture
   strength × `_glow` × `_color`, and its id 60 entry carries the static
   sentinel. For an area light with an AlphaLights record, its entry's colour

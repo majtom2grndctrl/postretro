@@ -1,0 +1,4333 @@
+diff --git a/crates/level-compiler/src/animated_light_chunks.rs b/crates/level-compiler/src/animated_light_chunks.rs
+index 33cabab..5f200cf 100644
+--- a/crates/level-compiler/src/animated_light_chunks.rs
++++ b/crates/level-compiler/src/animated_light_chunks.rs
+@@ -731,6 +731,7 @@ mod tests {
+             x: 0,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         }];
+         let (section, ranges) = build_placed_animated_light_chunks(
+             &bvh,
+diff --git a/crates/level-compiler/src/animated_light_weight_maps/face_bake.rs b/crates/level-compiler/src/animated_light_weight_maps/face_bake.rs
+index 4afdb61..bba5e5d 100644
+--- a/crates/level-compiler/src/animated_light_weight_maps/face_bake.rs
++++ b/crates/level-compiler/src/animated_light_weight_maps/face_bake.rs
+@@ -83,6 +83,9 @@ impl ChunkLayout<'_> {
+ pub(super) struct FaceSetup<'a> {
+     face: usize,
+     chart: &'a Chart,
++    /// SPIKE (rotation): the face's placement is transposed.
++    transposed: bool,
++    placement: crate::chart_raster::ChartPlacement,
+     chunks: Vec<ChunkLayout<'a>>,
+     /// Distinct non-`sdf` lights the face's chunks list, ascending.
+     pub(super) lights: Vec<u32>,
+@@ -141,16 +144,32 @@ impl<'a> FaceSetup<'a> {
+                     "chunk {index} lists a light twice: {lights:?}"
+                 );
+                 // Texels past the chart's interior (outward rounding) stay empty.
+-                let interior_origin = [
+-                    x as i32 - placement.x as i32 - padding,
+-                    y as i32 - placement.y as i32 - padding,
+-                ];
++                // SPIKE (rotation): origin and extent in the canonical frame.
++                let (interior_origin, canon_w, canon_h) = if placement.transposed {
++                    (
++                        [
++                            y as i32 - placement.y as i32 - padding,
++                            x as i32 - placement.x as i32 - padding,
++                        ],
++                        height,
++                        width,
++                    )
++                } else {
++                    (
++                        [
++                            x as i32 - placement.x as i32 - padding,
++                            y as i32 - placement.y as i32 - padding,
++                        ],
++                        width,
++                        height,
++                    )
++                };
+                 let span = if chart_usable {
+                     [
+                         interior_origin[0].max(0),
+-                        (interior_origin[0] + width as i32).min(interior_w),
++                        (interior_origin[0] + canon_w as i32).min(interior_w),
+                         interior_origin[1].max(0),
+-                        (interior_origin[1] + height as i32).min(interior_h),
++                        (interior_origin[1] + canon_h as i32).min(interior_h),
+                     ]
+                 } else {
+                     [0; 4]
+@@ -190,6 +209,8 @@ impl<'a> FaceSetup<'a> {
+         Self {
+             face,
+             chart,
++            transposed: placement.transposed,
++            placement,
+             chunks: layouts,
+             lights,
+             frame: TexelFrame::for_chart(chart),
+@@ -322,10 +343,17 @@ impl<'a> FaceSetup<'a> {
+                     };
+                     let rect_x = tx - chunk.interior_origin[0];
+                     let rect_y = ty - chunk.interior_origin[1];
+-                    let at = rect_y as u32 * chunk.rect.width + rect_x as u32;
++                    let at = if self.transposed {
++                        rect_x as u32 * chunk.rect.width + rect_y as u32
++                    } else {
++                        rect_y as u32 * chunk.rect.width + rect_x as u32
++                    };
+                     chunk_entries.push((at, entry));
+                 }
+             }
++            if self.transposed {
++                chunk_entries.sort_unstable_by_key(|&(at, _)| at);
++            }
+             entries.push((position, slot, chunk_entries));
+         }
+ 
+@@ -371,10 +399,59 @@ impl<'a> FaceSetup<'a> {
+                 entries[position][slot] = chunk_entries;
+             }
+         }
+-        self.chunks
++        let face = self.face;
++        let placement = self.placement;
++        let results: Vec<ChunkBakeResult> = self
++            .chunks
+             .into_iter()
+             .zip(entries)
+             .map(|(chunk, entries)| chunk.into_result(entries))
+-            .collect()
++            .collect();
++        spike_dump_weights(face, placement, &results);
++        results
++    }
++}
++
++/// SPIKE (rotation): with `POSTRETRO_SPIKE_WEIGHTS_OUT=<path>`, one line per
++/// stored weight-map entry, keyed by its canonical chart texel read back
++/// through the stored rect: `face tx ty light weight_bits dir_u dir_v`.
++static SPIKE_WEIGHTS_OUT: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>> =
++    std::sync::Mutex::new(None);
++
++fn spike_dump_weights(
++    face: usize,
++    placement: crate::chart_raster::ChartPlacement,
++    results: &[ChunkBakeResult],
++) {
++    use std::io::Write;
++    let Some(path) = std::env::var_os("POSTRETRO_SPIKE_WEIGHTS_OUT") else {
++        return;
++    };
++    let mut lines = String::new();
++    for result in results {
++        let rect = &result.rect;
++        for ry in 0..rect.height {
++            for rx in 0..rect.width {
++                let entry = &result.offset_counts[(ry * rect.width + rx) as usize];
++                let (tx, ty) = placement.chart_texel(rect.compact_x + rx, rect.compact_y + ry);
++                for light in &result.texel_lights
++                    [entry.offset as usize..(entry.offset + entry.count) as usize]
++                {
++                    lines += &format!(
++                        "{face} {tx} {ty} {} {} {} {}\n",
++                        light.light_index,
++                        light.weight.to_bits(),
++                        light.direction_oct[0],
++                        light.direction_oct[1]
++                    );
++                }
++            }
++        }
+     }
++    let mut out = SPIKE_WEIGHTS_OUT.lock().unwrap();
++    let out = out.get_or_insert_with(|| {
++        std::io::BufWriter::new(std::fs::File::create(path).expect("spike weights dump"))
++    });
++    out.write_all(lines.as_bytes()).unwrap();
++    out.flush().unwrap();
+ }
+diff --git a/crates/level-compiler/src/animated_light_weight_maps/static_atlas_frame.rs b/crates/level-compiler/src/animated_light_weight_maps/static_atlas_frame.rs
+index 2d4ffbe..676e6d3 100644
+--- a/crates/level-compiler/src/animated_light_weight_maps/static_atlas_frame.rs
++++ b/crates/level-compiler/src/animated_light_weight_maps/static_atlas_frame.rs
+@@ -33,13 +33,9 @@ pub(super) fn static_frame_blocks(
+         .iter()
+         .map(|&face| {
+             let face = face as usize;
+-            rebase_to_cell_block(
+-                layout,
+-                face,
+-                face_placements[face],
+-                face_charts[face].width_texels,
+-                face_charts[face].height_texels,
+-            )
++            // SPIKE (rotation): the placed footprint.
++            let (width, height) = face_placements[face].extent(&face_charts[face]);
++            rebase_to_cell_block(layout, face, face_placements[face], width, height)
+         })
+         .collect::<Result<Vec<_>, _>>()?;
+     Ok((block_faces, blocks))
+@@ -140,6 +136,24 @@ pub(super) fn chunk_atlas_rect(
+     let fy_min_interior = snap_to_int((chunk_uv_min[1] - chart.uv_min[1]) * scale_v - 0.5);
+     let fy_max_interior = snap_to_int((chunk_uv_max[1] - chart.uv_min[1]) * scale_v - 0.5);
+ 
++    // SPIKE (rotation): a transposed chart's canonical u span lies along the
++    // bake layer's y.
++    let (fx_min_interior, fx_max_interior, fy_min_interior, fy_max_interior) =
++        if placement.transposed {
++            (
++                fy_min_interior,
++                fy_max_interior,
++                fx_min_interior,
++                fx_max_interior,
++            )
++        } else {
++            (
++                fx_min_interior,
++                fx_max_interior,
++                fy_min_interior,
++                fy_max_interior,
++            )
++        };
+     let fx_min_unclamped = placement.x as f32 + padding + fx_min_interior.ceil();
+     let fx_max_unclamped = placement.x as f32 + padding + fx_max_interior.ceil();
+     let fy_min_unclamped = placement.y as f32 + padding + fy_min_interior.ceil();
+diff --git a/crates/level-compiler/src/animated_light_weight_maps/tests.rs b/crates/level-compiler/src/animated_light_weight_maps/tests.rs
+index c4717d2..0dc1d2d 100644
+--- a/crates/level-compiler/src/animated_light_weight_maps/tests.rs
++++ b/crates/level-compiler/src/animated_light_weight_maps/tests.rs
+@@ -1768,6 +1768,7 @@ fn sibling_chunks_with_shared_uv_edge_pack_without_overlap() {
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     };
+     let atlas_size = 64u32;
+ 
+@@ -1848,6 +1849,7 @@ fn sibling_chunks_with_drifted_shared_uv_edge_pack_without_overlap() {
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     };
+     let atlas_size = 4096u32;
+ 
+@@ -1898,6 +1900,7 @@ fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
+         x: atlas_size - 1,
+         y: atlas_size - 1,
+         layer: 0,
++        transposed: false,
+     };
+     let (ax, ay, w, h) = chunk_atlas_rect(
+         &chart,
+@@ -1926,6 +1929,7 @@ fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
+         x: atlas_size + 100,
+         y: atlas_size + 100,
+         layer: 0,
++        transposed: false,
+     };
+     let (ax2, ay2, w2, h2) = chunk_atlas_rect(
+         &chart,
+diff --git a/crates/level-compiler/src/bc5.rs b/crates/level-compiler/src/bc5.rs
+index 779193a..70e8f56 100644
+--- a/crates/level-compiler/src/bc5.rs
++++ b/crates/level-compiler/src/bc5.rs
+@@ -216,7 +216,8 @@ fn fit_bc4_block(texels: &[u8; 16], ep0: u8, ep1: u8, palette: &[u8; 8]) -> Bc4F
+ /// palette modes. Interpolants use integer division, so they match the GPU's
+ /// float interpolation within 1 LSB (truncated low); endpoints, the 6-value
+ /// mode's explicit 0 / 255, and constant blocks match exactly.
+-#[cfg(test)]
++#[allow(dead_code)]
++// SPIKE (packing): the comparison decodes masks
+ // The `1 *` coefficients keep the rows aligned with the D3D BC4 coefficient ladders (6:1 … 1:6 and 4:1 … 1:4).
+ #[allow(clippy::identity_op)]
+ fn decode_bc4_block(block: &[u8; 8]) -> [u8; 16] {
+@@ -260,7 +261,7 @@ fn decode_bc4_block(block: &[u8; 8]) -> [u8; 16] {
+ 
+ /// Decode a full BC5 RG payload back into an RG byte buffer (2 bytes/texel,
+ /// row-major). Mirrors the GPU sampler's view of BC5.
+-#[cfg(test)]
++#[allow(dead_code)] // SPIKE (packing): the comparison decodes masks
+ pub(crate) fn decode_bc5_rg(blocks: &[u8], width: u32, height: u32) -> Vec<u8> {
+     let blocks_x = width / 4;
+     let blocks_y = height / 4;
+diff --git a/crates/level-compiler/src/bc6h.rs b/crates/level-compiler/src/bc6h.rs
+index 924af14..122084f 100644
+--- a/crates/level-compiler/src/bc6h.rs
++++ b/crates/level-compiler/src/bc6h.rs
+@@ -345,7 +345,7 @@ pub enum Bc6hDecodeError {
+ /// Blocks are row-major, `ceil(width/4)·ceil(height/4)` of them; texels a
+ /// partial edge block covers past `width`/`height` are dropped. Every block
+ /// must be Mode 11 — the only mode the encoder emits — or the decode fails.
+-#[cfg(test)]
++#[allow(dead_code)] // SPIKE (packing): the comparison decodes irradiance
+ pub fn decode_bc6h_rgb_to_f32_rgba(
+     bytes: &[u8],
+     width: u32,
+diff --git a/crates/level-compiler/src/chart_raster.rs b/crates/level-compiler/src/chart_raster.rs
+index 41dca2d..db5f69e 100644
+--- a/crates/level-compiler/src/chart_raster.rs
++++ b/crates/level-compiler/src/chart_raster.rs
+@@ -26,6 +26,38 @@ pub struct ChartPlacement {
+     /// Internal bake layer this chart landed on: a compiler working plane that
+     /// never ships. Charts pack per cell block, and blocks pack into layers.
+     pub layer: u32,
++    /// SPIKE (rotation): the chart is stored transposed: its canonical
++    /// interior texel `(tx, ty)` lands at bake-layer texel
++    /// `(x + pad + ty, y + pad + tx)`, and its padded footprint is
++    /// `height_texels × width_texels`. Every bake keys and walks the chart in
++    /// its canonical frame; only where a texel is stored moves.
++    pub transposed: bool,
++}
++
++impl ChartPlacement {
++    /// Placed padded extent of `chart`: its own extent, swapped when transposed.
++    pub fn extent(&self, chart: &Chart) -> (u32, u32) {
++        if self.transposed {
++            (chart.height_texels, chart.width_texels)
++        } else {
++            (chart.width_texels, chart.height_texels)
++        }
++    }
++
++    /// Bake-layer texel of canonical chart-interior texel `(tx, ty)`.
++    pub fn atlas_texel(&self, tx: i32, ty: i32) -> (i32, i32) {
++        let pad = CHART_PADDING_TEXELS as i32;
++        let (a, b) = if self.transposed { (ty, tx) } else { (tx, ty) };
++        (self.x as i32 + pad + a, self.y as i32 + pad + b)
++    }
++
++    /// Canonical chart-interior texel of bake-layer texel `(ax, ay)`.
++    pub fn chart_texel(&self, ax: u32, ay: u32) -> (i32, i32) {
++        let pad = CHART_PADDING_TEXELS as i32;
++        let a = ax as i32 - self.x as i32 - pad;
++        let b = ay as i32 - self.y as i32 - pad;
++        if self.transposed { (b, a) } else { (a, b) }
++    }
+ }
+ 
+ /// Interior (non-padded) dimensions of a chart in atlas texels. Clamped to at
+diff --git a/crates/level-compiler/src/lightmap_bake.rs b/crates/level-compiler/src/lightmap_bake.rs
+index 419ae7f..3df8a12 100644
+--- a/crates/level-compiler/src/lightmap_bake.rs
++++ b/crates/level-compiler/src/lightmap_bake.rs
+@@ -20,6 +20,7 @@ mod charts;
+ mod encode;
+ mod face_cut;
+ mod reference;
++pub(crate) mod spike_pack;
+ mod working_set;
+ #[cfg(test)]
+ pub(crate) use working_set::minimum_working_set_bytes;
+@@ -298,7 +299,15 @@ impl CompositedAtlas {
+     /// would drag a different chart's irradiance into the gutter and corrupt
+     /// bilinear samples near layer-adjacent charts.
+     pub fn dilate(&mut self) {
++        self.dilate_with(None);
++    }
++
++    /// [`Self::dilate`] on a one-layer plane whose `turned` texels (SPIKE
++    /// (rotation): transposed placements' footprints) sum their neighbours
++    /// in canonical order.
++    pub fn dilate_with(&mut self, turned: Option<&[bool]>) {
+         let plane = (self.atlas_width * self.atlas_height) as usize;
++        debug_assert!(turned.is_none() || self.layer_count == 1);
+         for layer in 0..self.layer_count as usize {
+             let texel_start = layer * plane;
+             let texel_end = texel_start + plane;
+@@ -308,6 +317,7 @@ impl CompositedAtlas {
+                 &mut self.coverage[texel_start..texel_end],
+                 self.atlas_width,
+                 self.atlas_height,
++                turned,
+             );
+         }
+     }
+@@ -561,6 +571,7 @@ fn bake_atlas_layer_controlled(
+                 x: placement.x,
+                 y: placement.y,
+                 layer: 0,
++                transposed: false,
+             };
+             scatter_chart_into_atlas(&chart_atlas, &rebased_placement, &mut atlas);
+         }
+@@ -1341,6 +1352,7 @@ fn dilate_edges(
+     coverage: &mut [bool],
+     atlas_w: u32,
+     atlas_h: u32,
++    turned: Option<&[bool]>,
+ ) {
+     let w = atlas_w as i32;
+     let h = atlas_h as i32;
+@@ -1360,8 +1372,13 @@ fn dilate_edges(
+                 let mut sum_b = 0.0;
+                 let mut sum_dir = Vec3::ZERO;
+                 let mut count = 0u32;
+-                for dy in -1..=1 {
+-                    for dx in -1..=1 {
++                // SPIKE (rotation): a transposed chart's canonical row order
++                // is its placed column order, so its f32 sums match the
++                // untransposed placement's bit for bit.
++                let is_turned = turned.is_some_and(|t| t[idx]);
++                for a in -1..=1 {
++                    for b in -1..=1 {
++                        let (dx, dy) = if is_turned { (a, b) } else { (b, a) };
+                         if dx == 0 && dy == 0 {
+                             continue;
+                         }
+diff --git a/crates/level-compiler/src/lightmap_bake/atlas_layout.rs b/crates/level-compiler/src/lightmap_bake/atlas_layout.rs
+index f66aa6a..18d3fd7 100644
+--- a/crates/level-compiler/src/lightmap_bake/atlas_layout.rs
++++ b/crates/level-compiler/src/lightmap_bake/atlas_layout.rs
+@@ -389,8 +389,17 @@ pub(super) fn assign_lightmap_uvs(
+                     continue;
+                 }
+                 let vert = &mut geom_section.vertices[vi];
+-                let (tx, ty) =
+-                    chart_texel_position(chart, local_x, local_y, Vec3::from(vert.position));
++                // SPIKE (rotation): a transposed chart maps its canonical
++                // texel position with the block-local origin's axes swapped,
++                // then swaps the result, so an untransposed chart's UV is
++                // HEAD's expression bit for bit.
++                let (tx, ty) = if placements[face_index].transposed {
++                    let (a, b) =
++                        chart_texel_position(chart, local_y, local_x, Vec3::from(vert.position));
++                    (b, a)
++                } else {
++                    chart_texel_position(chart, local_x, local_y, Vec3::from(vert.position))
++                };
+                 vert.lightmap_uv = [
+                     quantize_lightmap_uv(tx, block.width),
+                     quantize_lightmap_uv(ty, block.height),
+diff --git a/crates/level-compiler/src/lightmap_bake/atlas_pack.rs b/crates/level-compiler/src/lightmap_bake/atlas_pack.rs
+index 98748ad..6433685 100644
+--- a/crates/level-compiler/src/lightmap_bake/atlas_pack.rs
++++ b/crates/level-compiler/src/lightmap_bake/atlas_pack.rs
+@@ -174,7 +174,8 @@ pub(crate) fn pack_groups_into_layers(
+         ChartPlacement {
+             x: 0,
+             y: 0,
+-            layer: 0
++            layer: 0,
++            transposed: false
+         };
+         sizes.len()
+     ];
+@@ -302,7 +303,12 @@ fn place_group(
+         }
+     }
+     for (i, x, y) in staged {
+-        placements[i] = ChartPlacement { x, y, layer };
++        placements[i] = ChartPlacement {
++            x,
++            y,
++            layer,
++            transposed: false,
++        };
+     }
+     true
+ }
+diff --git a/crates/level-compiler/src/lightmap_bake/block_layout.rs b/crates/level-compiler/src/lightmap_bake/block_layout.rs
+index fa83777..deff415 100644
+--- a/crates/level-compiler/src/lightmap_bake/block_layout.rs
++++ b/crates/level-compiler/src/lightmap_bake/block_layout.rs
+@@ -9,7 +9,10 @@ use postretro_level_format::lightmap::{LightmapHeader, LightmapMode, MAX_LIGHTMA
+ use rayon::prelude::*;
+ 
+ use super::atlas_pack::{GroupPackError, pack_groups_into_layers};
+-use super::cell_blocks::{CellSubBlock, PackedBlock, pack_cell_sub_blocks};
++#[cfg(test)]
++#[allow(unused_imports)]
++use super::cell_blocks::pack_cell_sub_blocks;
++use super::cell_blocks::{CellSubBlock, PackedBlock};
+ use super::charts::Chart;
+ use super::encode::normalized_direction_texel_scale;
+ use super::{LightmapBakeError, MAX_ATLAS_DIMENSION};
+@@ -117,6 +120,9 @@ pub struct BlockOrdering<'a> {
+     /// Cluster of each runtime cell, indexed by cell id. Empty orders blocks
+     /// by cell id alone (tests without a partition).
+     pub cell_clusters: &'a [u32],
++    /// SPIKE (ownership): per chart, whether the pre-pack owner estimate
++    /// may give its face a mask owner. Empty marks none.
++    pub owned_estimate: &'a [bool],
+ }
+ 
+ impl BlockOrdering<'_> {
+@@ -124,6 +130,7 @@ impl BlockOrdering<'_> {
+         BlockOrdering {
+             direction_texel_scale,
+             cell_clusters: &[],
++            owned_estimate: &[],
+         }
+     }
+ 
+@@ -191,6 +198,9 @@ pub(crate) fn pack_cell_blocks_within(
+ ) -> Result<BlockedPack, LightmapBakeError> {
+     let direction_texel_scale = normalized_direction_texel_scale(ordering.direction_texel_scale);
+     let alignment = block_alignment(direction_texel_scale);
++    // SPIKE (packing): the configured per-cell packer; rotation cannot ship.
++    let pack_config = super::spike_pack::PackConfig::from_env();
++    log::info!("[spike] cell block packer: {pack_config:?}");
+ 
+     // Charts of each cell in chart (face) order.
+     let mut by_cell: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+@@ -200,7 +210,7 @@ pub(crate) fn pack_cell_blocks_within(
+     let mut cells: Vec<(u32, Vec<usize>)> = by_cell.into_iter().collect();
+     cells.sort_by_key(|(cell_id, _)| ordering.sort_key(*cell_id));
+ 
+-    let per_cell: Vec<Vec<CellSubBlock>> = cells
++    let per_cell: Vec<Vec<(CellSubBlock, Vec<bool>, (u32, u32))>> = cells
+         .par_iter()
+         .map(|(_, members)| {
+             let _permit = control.governor().enter();
+@@ -208,9 +218,35 @@ pub(crate) fn pack_cell_blocks_within(
+                 .iter()
+                 .map(|&i| (charts[i].width_texels, charts[i].height_texels))
+                 .collect();
+-            pack_cell_sub_blocks(&sizes, alignment, pool_edge)
++            // A sub-chart windows its parent's grid: its cell packs
++            // untransposed (spike scope: its cut seams key on parent rows).
++            let mut cfg = pack_config.clone();
++            cfg.rotate &= members.iter().all(|&i| charts[i].window.is_none());
++            let owned: Vec<bool> = members
++                .iter()
++                .map(|&i| ordering.owned_estimate.get(i).copied().unwrap_or(false))
++                .collect();
++            super::spike_pack::pack_cell_sub_blocks_cfg(&sizes, alignment, pool_edge, &cfg, &owned)
++                .into_iter()
++                .map(|spike| (spike.sub, spike.rotated, spike.mask_extent))
++                .collect()
+         })
+         .collect();
++    let mut rotated = vec![false; charts.len()];
++    let mut owned_rects = Vec::new();
++    for ((_, members), sub_blocks) in cells.iter().zip(&per_cell) {
++        for (sub, flags, owned_rect) in sub_blocks {
++            owned_rects.push(*owned_rect);
++            for (&m, &r) in sub.members.iter().zip(flags) {
++                rotated[members[m]] = r;
++            }
++        }
++    }
++    *super::spike_pack::LAST_OWNED_RECTS.lock().unwrap() = owned_rects;
++    let per_cell: Vec<Vec<CellSubBlock>> = per_cell
++        .into_iter()
++        .map(|blocks| blocks.into_iter().map(|(sub, _, _)| sub).collect())
++        .collect();
+ 
+     // Flatten to block-id order; members become chart indices.
+     let packed: Vec<(u32, Vec<usize>, PackedBlock)> = cells
+@@ -247,6 +283,7 @@ pub(crate) fn pack_cell_blocks_within(
+             x: 0,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         };
+         charts.len()
+     ];
+@@ -273,6 +310,7 @@ pub(crate) fn pack_cell_blocks_within(
+                 x: origin.x + x,
+                 y: origin.y + y,
+                 layer: origin.layer,
++                transposed: rotated[chart],
+             };
+         }
+     }
+diff --git a/crates/level-compiler/src/lightmap_bake/block_layout/tests.rs b/crates/level-compiler/src/lightmap_bake/block_layout/tests.rs
+index 5ce3c73..5be8a9b 100644
+--- a/crates/level-compiler/src/lightmap_bake/block_layout/tests.rs
++++ b/crates/level-compiler/src/lightmap_bake/block_layout/tests.rs
+@@ -114,6 +114,7 @@ fn cell_block_order_is_cluster_major_then_cell_id() {
+         BlockOrdering {
+             direction_texel_scale: 2,
+             cell_clusters: &clusters,
++            owned_estimate: &[],
+         },
+     );
+     let order: Vec<u32> = clustered.layout.blocks.iter().map(|b| b.cell_id).collect();
+@@ -358,6 +359,7 @@ fn multi_block_cells_are_contiguous_in_cluster_cell_sub_block_order() {
+         BlockOrdering {
+             direction_texel_scale: 2,
+             cell_clusters: &clusters,
++            owned_estimate: &[],
+         },
+         pool_edge,
+         &BakeControl::unrestricted(),
+diff --git a/crates/level-compiler/src/lightmap_bake/encode.rs b/crates/level-compiler/src/lightmap_bake/encode.rs
+index 96c215e..091c30e 100644
+--- a/crates/level-compiler/src/lightmap_bake/encode.rs
++++ b/crates/level-compiler/src/lightmap_bake/encode.rs
+@@ -37,9 +37,20 @@ impl<'a> BlockSectionBuilder<'a> {
+ 
+     /// Encode one dilated bake-layer plane and keep its blocks.
+     pub(crate) fn push_layer(&mut self, layer: u32, plane: &CompositedAtlas) {
++        self.push_layer_with(layer, plane, None);
++    }
++
++    /// [`Self::push_layer`] whose `turned` texels reduce direction in
++    /// canonical order (SPIKE (rotation)).
++    pub(crate) fn push_layer_with(
++        &mut self,
++        layer: u32,
++        plane: &CompositedAtlas,
++        turned: Option<&[bool]>,
++    ) {
+         let scale = self.layout.direction_texel_scale;
+         let (irradiance, direction) =
+-            encode_atlas_layer(plane, self.uncompressed_irradiance, scale);
++            encode_atlas_layer_with(plane, self.uncompressed_irradiance, scale, turned);
+         let (irr_unit, irr_unit_bytes) = if self.uncompressed_irradiance {
+             (1, IRRADIANCE_TEXEL_BYTES)
+         } else {
+@@ -150,10 +161,20 @@ impl CompositedAtlas {
+ /// The whole-atlas encoder applies these same operations independently to each
+ /// plane. Keeping this helper plane-only makes the cold path's append order
+ /// explicit while preserving BC6H blocks, direction reduction, and Rg8 output.
++#[allow(dead_code)]
+ pub(crate) fn encode_atlas_layer(
+     atlas: &CompositedAtlas,
+     uncompressed_irradiance: bool,
+     direction_texel_scale: u32,
++) -> (Vec<u8>, Vec<u8>) {
++    encode_atlas_layer_with(atlas, uncompressed_irradiance, direction_texel_scale, None)
++}
++
++pub(crate) fn encode_atlas_layer_with(
++    atlas: &CompositedAtlas,
++    uncompressed_irradiance: bool,
++    direction_texel_scale: u32,
++    turned: Option<&[bool]>,
+ ) -> (Vec<u8>, Vec<u8>) {
+     debug_assert_eq!(atlas.layer_count, 1);
+ 
+@@ -170,13 +191,14 @@ pub(crate) fn encode_atlas_layer(
+     let direction = if direction_texel_scale == 1 {
+         encode_direction_rg8(&atlas.direction, &atlas.coverage)
+     } else {
+-        let (direction, coverage) = reduce_direction_atlas(
++        let (direction, coverage) = reduce_direction_atlas_with(
+             &atlas.direction,
+             &atlas.coverage,
+             atlas.atlas_width,
+             atlas.atlas_height,
+             1,
+             direction_texel_scale,
++            turned,
+         );
+         encode_direction_rg8(&direction, &coverage)
+     };
+@@ -219,6 +241,7 @@ pub(crate) fn normalized_direction_texel_scale(scale: u32) -> u32 {
+ /// Each output layer reads only its matching input plane. Within a block the
+ /// loop is fixed row-major, coverage is ORed, and covered cancelling vectors
+ /// resolve to neutral up rather than normalizing zero.
++#[allow(dead_code)]
+ pub(super) fn reduce_direction_atlas(
+     direction: &[Vec3],
+     coverage: &[bool],
+@@ -227,6 +250,30 @@ pub(super) fn reduce_direction_atlas(
+     layer_count: u32,
+     factor: u32,
+ ) -> (Vec<Vec3>, Vec<bool>) {
++    reduce_direction_atlas_with(
++        direction,
++        coverage,
++        atlas_width,
++        atlas_height,
++        layer_count,
++        factor,
++        None,
++    )
++}
++
++/// [`reduce_direction_atlas`] where a group whose first texel is `turned`
++/// (SPIKE (rotation): inside a transposed placement) sums column-major: its
++/// canonical row order. `turned` is per texel of one layer.
++pub(super) fn reduce_direction_atlas_with(
++    direction: &[Vec3],
++    coverage: &[bool],
++    atlas_width: u32,
++    atlas_height: u32,
++    layer_count: u32,
++    factor: u32,
++    turned: Option<&[bool]>,
++) -> (Vec<Vec3>, Vec<bool>) {
++    debug_assert!(turned.is_none() || layer_count == 1);
+     debug_assert!(factor.is_power_of_two());
+     debug_assert!(factor > 0);
+     debug_assert_eq!(atlas_width % factor, 0);
+@@ -245,8 +292,11 @@ pub(super) fn reduce_direction_atlas(
+             for x in 0..reduced_width {
+                 let mut sum = Vec3::ZERO;
+                 let mut covered = false;
+-                for block_y in 0..factor {
+-                    for block_x in 0..factor {
++                let first = (y * factor) as usize * atlas_width as usize + (x * factor) as usize;
++                let is_turned = turned.is_some_and(|t| t[first]);
++                for a in 0..factor {
++                    for b in 0..factor {
++                        let (block_x, block_y) = if is_turned { (a, b) } else { (b, a) };
+                         let source_x = x * factor + block_x;
+                         let source_y = y * factor + block_y;
+                         let index = layer_start
+diff --git a/crates/level-compiler/src/lightmap_bake/spike_pack.rs b/crates/level-compiler/src/lightmap_bake/spike_pack.rs
+new file mode 100644
+index 0000000..bdde83c
+--- /dev/null
++++ b/crates/level-compiler/src/lightmap_bake/spike_pack.rs
+@@ -0,0 +1,879 @@
++// SPIKE (packing): configurable deterministic per-cell chart packer for measuring tighter lightmap blocks.
++// See: context/lib/build_pipeline.md §Compiler pipeline (atlas preparation)
++//
++// Every variant is a pure function of the cell's chart extents and its
++// configuration: fixed candidate lists, fixed tie-breaks, no hashing.
++
++use super::cell_blocks::{CellSubBlock, PackedBlock, pack_cell_sub_blocks};
++use crate::chart_raster::ChartPlacement;
++
++/// Per texel of bake layer `layer`, whether it lies in a transposed
++/// placement's padded footprint; `None` when the layer holds none.
++pub(crate) fn turned_mask(
++    charts: &[super::Chart],
++    placements: &[ChartPlacement],
++    layer: u32,
++    width: u32,
++    height: u32,
++) -> Option<Vec<bool>> {
++    let mut mask: Option<Vec<bool>> = None;
++    for (chart, placement) in charts.iter().zip(placements) {
++        if placement.layer != layer || !placement.transposed {
++            continue;
++        }
++        let mask = mask.get_or_insert_with(|| vec![false; width as usize * height as usize]);
++        let (w, h) = placement.extent(chart);
++        for y in placement.y..placement.y + h {
++            let row = y as usize * width as usize;
++            mask[row + placement.x as usize..row + (placement.x + w) as usize].fill(true);
++        }
++    }
++    mask
++}
++
++/// Free-rectangle choice rule for MaxRects.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum Heuristic {
++    /// Best short side fit (HEAD).
++    Bssf,
++    /// Best long side fit.
++    Blsf,
++    /// Best area fit.
++    Baf,
++    /// Bottom-left: lowest top edge, then leftmost.
++    BottomLeft,
++    /// Most perimeter touching the bin edge or placed rects.
++    ContactPoint,
++}
++
++/// Chart insertion order, descending, ties by input index.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum SortKey {
++    Area,
++    MaxSide,
++    Height,
++    Width,
++    Perimeter,
++}
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct PackConfig {
++    /// Exactly HEAD's packer; every other field is ignored.
++    pub head: bool,
++    pub heuristics: Vec<Heuristic>,
++    pub sorts: Vec<SortKey>,
++    /// 0: HEAD's eight width factors. n > 0: those plus n widths evenly
++    /// spaced on the alignment grid from the widest chart to `2·sqrt(area)`.
++    pub dense_widths: u32,
++    /// Chart origins and footprints are multiples of this (1, 2 or 4).
++    pub chart_align: u32,
++    /// Allow a chart to be stored transposed (its footprint's sides swap).
++    /// The bake keys every texel on the chart's canonical frame, so a
++    /// transposed chart stores the same values, transposed.
++    pub rotate: bool,
++    /// Pack charts the pre-pack owner estimate marks first, into a top-left
++    /// sub-rect of each block, so a mask plane needs only that sub-rect.
++    pub owned_first: bool,
++}
++
++impl PackConfig {
++    pub(crate) fn head() -> Self {
++        Self {
++            head: true,
++            heuristics: vec![Heuristic::Bssf],
++            sorts: vec![SortKey::Area],
++            dense_widths: 0,
++            chart_align: 1,
++            rotate: false,
++            owned_first: false,
++        }
++    }
++
++    /// Parse `head` or `h=bssf+cp,s=area+maxside,w=24,a=1,r=0`.
++    pub(crate) fn parse(spec: &str) -> Result<Self, String> {
++        if spec.trim() == "head" {
++            return Ok(Self::head());
++        }
++        let mut cfg = Self {
++            head: false,
++            heuristics: vec![Heuristic::Bssf],
++            sorts: vec![SortKey::Area],
++            dense_widths: 0,
++            chart_align: 1,
++            rotate: false,
++            owned_first: false,
++        };
++        for part in spec.split(',').filter(|p| !p.is_empty()) {
++            let (key, value) = part
++                .split_once('=')
++                .ok_or_else(|| format!("bad spec part {part:?}"))?;
++            match key {
++                "h" => {
++                    cfg.heuristics = value
++                        .split('+')
++                        .map(|h| match h {
++                            "bssf" => Ok(Heuristic::Bssf),
++                            "blsf" => Ok(Heuristic::Blsf),
++                            "baf" => Ok(Heuristic::Baf),
++                            "bl" => Ok(Heuristic::BottomLeft),
++                            "cp" => Ok(Heuristic::ContactPoint),
++                            other => Err(format!("unknown heuristic {other}")),
++                        })
++                        .collect::<Result<_, _>>()?
++                }
++                "s" => {
++                    cfg.sorts = value
++                        .split('+')
++                        .map(|s| match s {
++                            "area" => Ok(SortKey::Area),
++                            "maxside" => Ok(SortKey::MaxSide),
++                            "h" => Ok(SortKey::Height),
++                            "w" => Ok(SortKey::Width),
++                            "perim" => Ok(SortKey::Perimeter),
++                            other => Err(format!("unknown sort {other}")),
++                        })
++                        .collect::<Result<_, _>>()?
++                }
++                "w" => cfg.dense_widths = value.parse().map_err(|e| format!("{e}"))?,
++                "a" => cfg.chart_align = value.parse().map_err(|e| format!("{e}"))?,
++                "r" => cfg.rotate = value == "1",
++                "o" => cfg.owned_first = value == "1",
++                other => return Err(format!("unknown key {other}")),
++            }
++        }
++        if ![1, 2, 4].contains(&cfg.chart_align) {
++            return Err("chart_align must be 1, 2 or 4".into());
++        }
++        Ok(cfg)
++    }
++
++    /// The production packer: `POSTRETRO_SPIKE_PACKER` when set, else the
++    /// spike's chosen default.
++    pub(crate) fn from_env() -> Self {
++        match std::env::var("POSTRETRO_SPIKE_PACKER") {
++            Ok(spec) => {
++                Self::parse(&spec).unwrap_or_else(|e| panic!("POSTRETRO_SPIKE_PACKER: {e}"))
++            }
++            Err(_) => Self::parse(DEFAULT_SPEC).expect("default spec parses"),
++        }
++    }
++}
++
++/// The spike's chosen production packer.
++pub(crate) const DEFAULT_SPEC: &str = "h=bssf+bl+cp+baf,s=area+maxside+h+w,w=24,a=2,r=1,o=1";
++
++/// The last pack's per-block estimated-owner sub-rect, from the block origin,
++/// in block order; for the spike's chart dump only.
++pub(crate) static LAST_OWNED_RECTS: std::sync::Mutex<Vec<(u32, u32)>> =
++    std::sync::Mutex::new(Vec::new());
++
++/// A packed block plus which members were rotated (all false unless `rotate`).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) struct SpikeSubBlock {
++    pub sub: CellSubBlock,
++    pub rotated: Vec<bool>,
++    /// Aligned bounding box, from the block origin, of its owned members;
++    /// (0, 0) when none is owned.
++    pub mask_extent: (u32, u32),
++}
++
++/// Fill each sub-block's owned bounding box.
++fn with_mask_extents(
++    mut blocks: Vec<SpikeSubBlock>,
++    charts: &[(u32, u32)],
++    owned: &[bool],
++    align: u32,
++) -> Vec<SpikeSubBlock> {
++    let up = |v: u32| v.div_ceil(align) * align;
++    for b in &mut blocks {
++        let (mut w, mut h) = (0, 0);
++        for ((&m, &(x, y)), &r) in b
++            .sub
++            .members
++            .iter()
++            .zip(&b.sub.block.placements)
++            .zip(&b.rotated)
++        {
++            if owned.get(m).copied().unwrap_or(false) {
++                let (cw, ch) = if r {
++                    (charts[m].1, charts[m].0)
++                } else {
++                    charts[m]
++                };
++                w = w.max(x + cw);
++                h = h.max(y + ch);
++            }
++        }
++        b.mask_extent = (up(w).min(b.sub.block.width), up(h).min(b.sub.block.height));
++    }
++    blocks
++}
++
++/// Pack one cell's padded chart extents under `cfg`, mirroring
++/// [`pack_cell_sub_blocks`]'s multi-block contract.
++pub(crate) fn pack_cell_sub_blocks_cfg(
++    charts: &[(u32, u32)],
++    align: u32,
++    pool_edge: u32,
++    cfg: &PackConfig,
++    owned: &[bool],
++) -> Vec<SpikeSubBlock> {
++    let blocks = pack_cell_sub_blocks_inner(charts, align, pool_edge, cfg, owned);
++    with_mask_extents(blocks, charts, owned, align)
++}
++
++fn pack_cell_sub_blocks_inner(
++    charts: &[(u32, u32)],
++    align: u32,
++    pool_edge: u32,
++    cfg: &PackConfig,
++    owned: &[bool],
++) -> Vec<SpikeSubBlock> {
++    if cfg.head {
++        return pack_cell_sub_blocks(charts, align, pool_edge)
++            .into_iter()
++            .map(|sub| {
++                let n = sub.members.len();
++                SpikeSubBlock {
++                    sub,
++                    rotated: vec![false; n],
++                    mask_extent: (0, 0),
++                }
++            })
++            .collect();
++    }
++    let owned_units: Vec<bool> = (0..charts.len())
++        .map(|i| cfg.owned_first && owned.get(i).copied().unwrap_or(false))
++        .collect();
++    let k = cfg.chart_align;
++    assert!(align.is_multiple_of(k) && pool_edge.is_multiple_of(k));
++    let units: Vec<(u32, u32)> = charts
++        .iter()
++        .map(|&(w, h)| (w.div_ceil(k), h.div_ceil(k)))
++        .collect();
++    let (align_u, pool_u) = (align / k, pool_edge / k);
++    let area_of = |&(w, h): &(u32, u32)| u64::from(w) * u64::from(h);
++    let pool_area = u64::from(pool_u) * u64::from(pool_u);
++    let mut remaining: Vec<usize> = (0..charts.len()).collect();
++    let mut out = Vec::new();
++    while !remaining.is_empty() {
++        let area: u64 = remaining.iter().map(|&i| area_of(&units[i])).sum();
++        if area <= pool_area {
++            let sizes: Vec<(u32, u32)> = remaining.iter().map(|&i| units[i]).collect();
++            let own: Vec<bool> = remaining.iter().map(|&i| owned_units[i]).collect();
++            let found = if own.iter().any(|&o| o) && own.iter().any(|&o| !o) {
++                best_block_owned_first(&sizes, &own, align_u, pool_u, cfg)
++            } else {
++                best_block(&sizes, align_u, pool_u, cfg)
++            };
++            if let Some((block, rotated)) = found
++                && block.fits(pool_u)
++            {
++                out.push(scale(
++                    CellSubBlock {
++                        members: remaining,
++                        block,
++                    },
++                    rotated,
++                    k,
++                ));
++                break;
++            }
++        }
++        let (filled, rotated, rest) =
++            fill_block(&units, &owned_units, &remaining, align_u, pool_u, cfg);
++        out.push(scale(filled, rotated, k));
++        remaining = rest;
++    }
++    out
++}
++
++fn scale(mut sub: CellSubBlock, rotated: Vec<bool>, k: u32) -> SpikeSubBlock {
++    let mask_extent = (0, 0);
++    sub.block.width *= k;
++    sub.block.height *= k;
++    for p in &mut sub.block.placements {
++        p.0 *= k;
++        p.1 *= k;
++    }
++    SpikeSubBlock {
++        sub,
++        rotated,
++        mask_extent,
++    }
++}
++
++fn order_by(sizes: &[(u32, u32)], indices: &[usize], key: SortKey) -> Vec<usize> {
++    order_by_owned(sizes, indices, key, &[])
++}
++
++/// [`order_by`], owned charts (`owned[i]`) ahead of the rest.
++fn order_by_owned(
++    sizes: &[(u32, u32)],
++    indices: &[usize],
++    key: SortKey,
++    owned: &[bool],
++) -> Vec<usize> {
++    let first = |i: usize| !owned.get(i).copied().unwrap_or(false);
++    let k = |i: usize| -> (u64, u64) {
++        let (w, h) = sizes[i];
++        let (w, h) = (u64::from(w), u64::from(h));
++        match key {
++            SortKey::Area => (w * h, 0),
++            SortKey::MaxSide => (w.max(h), w.min(h)),
++            SortKey::Height => (h, w),
++            SortKey::Width => (w, h),
++            SortKey::Perimeter => (w + h, w * h),
++        }
++    };
++    let mut order = indices.to_vec();
++    order.sort_by(|&a, &b| {
++        first(a)
++            .cmp(&first(b))
++            .then(k(b).cmp(&k(a)))
++            .then(a.cmp(&b))
++    });
++    order
++}
++
++/// HEAD's fill of one `pool²` block, under each heuristic and sort; the
++/// candidate placing the most chart area wins, ties to the first.
++fn fill_block(
++    units: &[(u32, u32)],
++    owned: &[bool],
++    remaining: &[usize],
++    align: u32,
++    pool: u32,
++    cfg: &PackConfig,
++) -> (CellSubBlock, Vec<bool>, Vec<usize>) {
++    let align_up = |v: u32| v.div_ceil(align) * align;
++    let area_of = |i: usize| u64::from(units[i].0) * u64::from(units[i].1);
++    let mut best: Option<(u64, Vec<(usize, (u32, u32, bool))>, Vec<usize>)> = None;
++    for &sort in &cfg.sorts {
++        let order = order_by_owned(units, remaining, sort, owned);
++        for &heuristic in &cfg.heuristics {
++            let mut bin = Bin::new(pool, pool);
++            let mut placed = Vec::new();
++            let mut rest = Vec::new();
++            for &index in &order {
++                let (w, h) = units[index];
++                match bin.insert(w, h, heuristic, cfg.rotate) {
++                    Some(p) => placed.push((index, p)),
++                    None => rest.push(index),
++                }
++            }
++            let area: u64 = placed.iter().map(|&(i, _)| area_of(i)).sum();
++            if best.as_ref().is_none_or(|b| area > b.0) {
++                best = Some((area, placed, rest));
++            }
++        }
++    }
++    let (_, mut placed, mut rest) = best.expect("at least one candidate");
++    assert!(!placed.is_empty(), "the largest chart fits an empty block");
++    placed.sort_unstable_by_key(|&(index, _)| index);
++    rest.sort_unstable();
++    let dims = |i: usize, rot: bool| {
++        if rot {
++            (units[i].1, units[i].0)
++        } else {
++            units[i]
++        }
++    };
++    let width = align_up(
++        placed
++            .iter()
++            .map(|&(i, (x, _, r))| x + dims(i, r).0)
++            .max()
++            .unwrap(),
++    );
++    let height = align_up(
++        placed
++            .iter()
++            .map(|&(i, (_, y, r))| y + dims(i, r).1)
++            .max()
++            .unwrap(),
++    );
++    (
++        CellSubBlock {
++            members: placed.iter().map(|&(i, _)| i).collect(),
++            block: PackedBlock {
++                width,
++                height,
++                placements: placed.iter().map(|&(_, (x, y, _))| (x, y)).collect(),
++            },
++        },
++        placed.iter().map(|&(_, (_, _, r))| r).collect(),
++        rest,
++    )
++}
++
++/// Smallest-area block over every (sort, heuristic, width) candidate; ties
++/// keep the first (squarer shape breaks equal areas, as in HEAD).
++fn best_block(
++    sizes: &[(u32, u32)],
++    align: u32,
++    pool: u32,
++    cfg: &PackConfig,
++) -> Option<(PackedBlock, Vec<bool>)> {
++    if sizes.is_empty() {
++        return None;
++    }
++    let align_up = |v: u32| v.div_ceil(align) * align;
++    let area: u64 = sizes
++        .iter()
++        .map(|&(w, h)| u64::from(w) * u64::from(h))
++        .sum();
++    // With rotation a chart's narrow side may lie along the width.
++    let max_width = sizes
++        .iter()
++        .map(|&(w, h)| if cfg.rotate { w.min(h) } else { w })
++        .max()
++        .unwrap_or(0);
++    let max_height = sizes
++        .iter()
++        .map(|&(w, h)| if cfg.rotate { w.min(h) } else { h })
++        .max()
++        .unwrap_or(0);
++    let widths = candidate_widths(area, max_width, align, pool, cfg);
++    let indices: Vec<usize> = (0..sizes.len()).collect();
++    let key = |b: &PackedBlock| (!b.fits(pool), b.area(), b.width.max(b.height));
++    let mut best: Option<(PackedBlock, Vec<bool>)> = None;
++    for &sort in &cfg.sorts {
++        let order = order_by(sizes, &indices, sort);
++        for &heuristic in &cfg.heuristics {
++            for &width in &widths {
++                let floor = align_up(max_height.max(area.div_ceil(u64::from(width)) as u32));
++                let candidate = shortest(
++                    sizes, &order, width, floor, align, heuristic, cfg.rotate, None,
++                );
++                if best.as_ref().is_none_or(|b| key(&candidate.0) < key(&b.0)) {
++                    best = Some(candidate);
++                }
++            }
++        }
++    }
++    best
++}
++
++fn candidate_widths(
++    area: u64,
++    max_width: u32,
++    align: u32,
++    pool: u32,
++    cfg: &PackConfig,
++) -> Vec<u32> {
++    let align_up = |v: u32| v.div_ceil(align) * align;
++    let side = (area as f64).sqrt();
++    const FACTORS: [f64; 8] = [0.5, 0.7, 0.85, 1.0, 1.15, 1.3, 1.6, 2.0];
++    let mut widths: Vec<u32> = FACTORS
++        .iter()
++        .map(|&f| align_up(((side * f).ceil() as u32).max(max_width)))
++        .collect();
++    widths.push(align_up(max_width));
++    if align_up(max_width) <= pool {
++        widths.push(pool);
++    }
++    if cfg.dense_widths > 0 {
++        let lo = align_up(max_width);
++        let hi = align_up(((side * 2.0).ceil() as u32).max(lo)).min(pool.max(lo));
++        let n = cfg.dense_widths;
++        for i in 0..=n {
++            let w = lo + ((u64::from(hi - lo) * u64::from(i)) / u64::from(n)) as u32;
++            widths.push(align_up(w));
++        }
++    }
++    widths.sort_unstable();
++    widths.dedup();
++    widths
++}
++
++/// Owned charts packed alone into the smallest top-left block, then the rest
++/// around that reserved rect; the smallest whole block wins.
++fn best_block_owned_first(
++    sizes: &[(u32, u32)],
++    owned: &[bool],
++    align: u32,
++    pool: u32,
++    cfg: &PackConfig,
++) -> Option<(PackedBlock, Vec<bool>)> {
++    let align_up = |v: u32| v.div_ceil(align) * align;
++    let own_idx: Vec<usize> = (0..sizes.len()).filter(|&i| owned[i]).collect();
++    let rest_idx: Vec<usize> = (0..sizes.len()).filter(|&i| !owned[i]).collect();
++    let own_sizes: Vec<(u32, u32)> = own_idx.iter().map(|&i| sizes[i]).collect();
++    let (own_block, own_rot) = best_block(&own_sizes, align, pool, cfg)?;
++    let reserved = (own_block.width, own_block.height);
++    let area: u64 = sizes
++        .iter()
++        .map(|&(w, h)| u64::from(w) * u64::from(h))
++        .sum::<u64>()
++        + own_block.area()
++        - own_sizes
++            .iter()
++            .map(|&(w, h)| u64::from(w) * u64::from(h))
++            .sum::<u64>();
++    let max_width = rest_idx
++        .iter()
++        .map(|&i| {
++            if cfg.rotate {
++                sizes[i].0.min(sizes[i].1)
++            } else {
++                sizes[i].0
++            }
++        })
++        .max()
++        .unwrap_or(0)
++        .max(reserved.0);
++    let max_height = rest_idx
++        .iter()
++        .map(|&i| {
++            if cfg.rotate {
++                sizes[i].0.min(sizes[i].1)
++            } else {
++                sizes[i].1
++            }
++        })
++        .max()
++        .unwrap_or(0)
++        .max(reserved.1);
++    let widths = candidate_widths(area, max_width, align, pool, cfg);
++    let key = |b: &PackedBlock| (!b.fits(pool), b.area(), b.width.max(b.height));
++    let mut best: Option<(PackedBlock, Vec<bool>)> = None;
++    for &sort in &cfg.sorts {
++        let order = order_by(sizes, &rest_idx, sort);
++        for &heuristic in &cfg.heuristics {
++            for &width in &widths {
++                let floor = align_up(max_height.max(area.div_ceil(u64::from(width)) as u32));
++                let (mut block, mut rot) = shortest(
++                    sizes,
++                    &order,
++                    width,
++                    floor,
++                    align,
++                    heuristic,
++                    cfg.rotate,
++                    Some(reserved),
++                );
++                for (k, &i) in own_idx.iter().enumerate() {
++                    block.placements[i] = own_block.placements[k];
++                    rot[i] = own_rot[k];
++                }
++                block.width = block.width.max(reserved.0);
++                block.height = block.height.max(reserved.1);
++                if best.as_ref().is_none_or(|b| key(&block) < key(&b.0)) {
++                    best = Some((block, rot));
++                }
++            }
++        }
++    }
++    best
++}
++
++fn shortest(
++    sizes: &[(u32, u32)],
++    order: &[usize],
++    width: u32,
++    floor: u32,
++    align: u32,
++    heuristic: Heuristic,
++    rotate: bool,
++    reserved: Option<(u32, u32)>,
++) -> (PackedBlock, Vec<bool>) {
++    let align_up = |v: u32| v.div_ceil(align) * align;
++    let mut fail = None;
++    let mut height = floor;
++    let mut placed = loop {
++        match try_pack(sizes, order, width, height, heuristic, rotate, reserved) {
++            Some(p) => break p,
++            None => {
++                fail = Some(height);
++                height = align_up(height + (height / 8).max(align));
++            }
++        }
++    };
++    if let Some(mut low) = fail {
++        while height - low > align {
++            let mid = align_up(low + (height - low) / 2);
++            match try_pack(sizes, order, width, mid, heuristic, rotate, reserved) {
++                Some(p) => {
++                    height = mid;
++                    placed = p;
++                }
++                None => low = mid,
++            }
++        }
++    }
++    // Trim: a heuristic need not fill the full width.
++    let dims = |i: usize, r: bool| {
++        if r {
++            (sizes[i].1, sizes[i].0)
++        } else {
++            sizes[i]
++        }
++    };
++    let used_w = align_up(
++        order
++            .iter()
++            .map(|&i| placed[i].0 + dims(i, placed[i].2).0)
++            .max()
++            .unwrap_or(0),
++    );
++    let used_h = align_up(
++        order
++            .iter()
++            .map(|&i| placed[i].1 + dims(i, placed[i].2).1)
++            .max()
++            .unwrap_or(0),
++    );
++    (
++        PackedBlock {
++            width: used_w.min(width),
++            height: used_h.min(height),
++            placements: placed.iter().map(|&(x, y, _)| (x, y)).collect(),
++        },
++        placed.iter().map(|&(_, _, r)| r).collect(),
++    )
++}
++
++fn try_pack(
++    sizes: &[(u32, u32)],
++    order: &[usize],
++    width: u32,
++    height: u32,
++    heuristic: Heuristic,
++    rotate: bool,
++    reserved: Option<(u32, u32)>,
++) -> Option<Vec<(u32, u32, bool)>> {
++    let mut bin = Bin::new(width, height);
++    if let Some((rw, rh)) = reserved {
++        if rw > width || rh > height {
++            return None;
++        }
++        bin.insert(rw, rh, Heuristic::BottomLeft, false)?;
++    }
++    let mut placements = vec![(0, 0, false); sizes.len()];
++    for &index in order {
++        placements[index] = bin.insert(sizes[index].0, sizes[index].1, heuristic, rotate)?;
++    }
++    Some(placements)
++}
++
++#[derive(Clone, Copy)]
++struct Rect {
++    x: u32,
++    y: u32,
++    w: u32,
++    h: u32,
++}
++
++/// MaxRects (Jylänki 2010) with a selectable heuristic and optional rotation.
++/// With `Heuristic::Bssf` and no rotation it places exactly as HEAD's
++/// [`super::MaxRects`].
++pub(crate) struct Bin {
++    width: u32,
++    height: u32,
++    free: Vec<Rect>,
++    used: Vec<Rect>,
++}
++
++impl Bin {
++    pub(crate) fn new(width: u32, height: u32) -> Self {
++        Self {
++            width,
++            height,
++            free: vec![Rect {
++                x: 0,
++                y: 0,
++                w: width,
++                h: height,
++            }],
++            used: Vec::new(),
++        }
++    }
++
++    fn contact(&self, x: u32, y: u32, w: u32, h: u32) -> u64 {
++        let overlap = |a0: u32, a1: u32, b0: u32, b1: u32| -> u64 {
++            if a1 <= b0 || b1 <= a0 {
++                0
++            } else {
++                u64::from(a1.min(b1) - a0.max(b0))
++            }
++        };
++        let mut score = 0u64;
++        if x == 0 || x + w == self.width {
++            score += u64::from(h);
++        }
++        if y == 0 || y + h == self.height {
++            score += u64::from(w);
++        }
++        for u in &self.used {
++            if u.x == x + w || u.x + u.w == x {
++                score += overlap(u.y, u.y + u.h, y, y + h);
++            }
++            if u.y == y + h || u.y + u.h == y {
++                score += overlap(u.x, u.x + u.w, x, x + w);
++            }
++        }
++        score
++    }
++
++    fn score(&self, r: &Rect, w: u32, h: u32, heuristic: Heuristic) -> (i64, i64) {
++        let lx = i64::from(r.w - w);
++        let ly = i64::from(r.h - h);
++        match heuristic {
++            Heuristic::Bssf => (lx.min(ly), lx.max(ly)),
++            Heuristic::Blsf => (lx.max(ly), lx.min(ly)),
++            Heuristic::Baf => (
++                i64::from(r.w) * i64::from(r.h) - i64::from(w) * i64::from(h),
++                lx.min(ly),
++            ),
++            Heuristic::BottomLeft => (i64::from(r.y + h), i64::from(r.x)),
++            Heuristic::ContactPoint => (-(self.contact(r.x, r.y, w, h) as i64), i64::from(r.y)),
++        }
++    }
++
++    pub(crate) fn insert(
++        &mut self,
++        w: u32,
++        h: u32,
++        heuristic: Heuristic,
++        rotate: bool,
++    ) -> Option<(u32, u32, bool)> {
++        let mut best: Option<(usize, (i64, i64), bool)> = None;
++        for (idx, r) in self.free.iter().enumerate() {
++            for rot in [false, true] {
++                if rot && (!rotate || w == h) {
++                    continue;
++                }
++                let (cw, ch) = if rot { (h, w) } else { (w, h) };
++                if r.w >= cw && r.h >= ch {
++                    let s = self.score(r, cw, ch, heuristic);
++                    if best.is_none_or(|(_, b, _)| s < b) {
++                        best = Some((idx, s, rot));
++                    }
++                }
++            }
++        }
++        let (idx, _, rot) = best?;
++        let (cw, ch) = if rot { (h, w) } else { (w, h) };
++        let placed = Rect {
++            x: self.free[idx].x,
++            y: self.free[idx].y,
++            w: cw,
++            h: ch,
++        };
++        let mut i = 0;
++        while i < self.free.len() {
++            if let Some(splits) = split_free(&self.free[i], &placed) {
++                self.free.swap_remove(i);
++                self.free.extend(splits);
++            } else {
++                i += 1;
++            }
++        }
++        self.prune();
++        if heuristic == Heuristic::ContactPoint {
++            self.used.push(placed);
++        }
++        Some((placed.x, placed.y, rot))
++    }
++
++    fn prune(&mut self) {
++        let mut i = 0;
++        while i < self.free.len() {
++            let mut removed = false;
++            let mut j = 0;
++            while j < self.free.len() {
++                if i != j && contains(&self.free[j], &self.free[i]) {
++                    self.free.swap_remove(i);
++                    removed = true;
++                    break;
++                }
++                j += 1;
++            }
++            if !removed {
++                i += 1;
++            }
++        }
++    }
++}
++
++fn contains(outer: &Rect, inner: &Rect) -> bool {
++    inner.x >= outer.x
++        && inner.y >= outer.y
++        && inner.x + inner.w <= outer.x + outer.w
++        && inner.y + inner.h <= outer.y + outer.h
++}
++
++fn split_free(free: &Rect, placed: &Rect) -> Option<Vec<Rect>> {
++    let no_overlap = placed.x >= free.x + free.w
++        || placed.x + placed.w <= free.x
++        || placed.y >= free.y + free.h
++        || placed.y + placed.h <= free.y;
++    if no_overlap {
++        return None;
++    }
++    let mut out = Vec::with_capacity(4);
++    if placed.x > free.x {
++        out.push(Rect {
++            x: free.x,
++            y: free.y,
++            w: placed.x - free.x,
++            h: free.h,
++        });
++    }
++    if placed.x + placed.w < free.x + free.w {
++        out.push(Rect {
++            x: placed.x + placed.w,
++            y: free.y,
++            w: (free.x + free.w) - (placed.x + placed.w),
++            h: free.h,
++        });
++    }
++    if placed.y > free.y {
++        out.push(Rect {
++            x: free.x,
++            y: free.y,
++            w: free.w,
++            h: placed.y - free.y,
++        });
++    }
++    if placed.y + placed.h < free.y + free.h {
++        out.push(Rect {
++            x: free.x,
++            y: placed.y + placed.h,
++            w: free.w,
++            h: (free.y + free.h) - (placed.y + placed.h),
++        });
++    }
++    Some(out)
++}
++
++/// MaxRects placement of `sizes`, tallest first, first fit over every open
++/// `edge²` layer: an alternative pool placement for the bound (measurement
++/// only; the runtime shelf allocator is HEAD's).
++pub(crate) fn maxrects_layers(sizes: &[(u32, u32)], edge: u32, heuristic: Heuristic) -> u32 {
++    let mut order: Vec<usize> = (0..sizes.len()).collect();
++    order.sort_by(|&a, &b| {
++        (sizes[b].1, sizes[b].0)
++            .cmp(&(sizes[a].1, sizes[a].0))
++            .then(a.cmp(&b))
++    });
++    let mut layers: Vec<Bin> = Vec::new();
++    for i in order {
++        let (w, h) = sizes[i];
++        let mut placed = false;
++        for bin in layers.iter_mut() {
++            if bin.insert(w, h, heuristic, false).is_some() {
++                placed = true;
++                break;
++            }
++        }
++        if !placed {
++            let mut bin = Bin::new(edge, edge);
++            bin.insert(w, h, heuristic, false)
++                .expect("a block fits an empty layer");
++            layers.push(bin);
++        }
++    }
++    layers.len() as u32
++}
+diff --git a/crates/level-compiler/src/lightmap_bake/tests.rs b/crates/level-compiler/src/lightmap_bake/tests.rs
+index 575c46b..e540a24 100644
+--- a/crates/level-compiler/src/lightmap_bake/tests.rs
++++ b/crates/level-compiler/src/lightmap_bake/tests.rs
+@@ -1338,6 +1338,7 @@ fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
+         x: 0,
+         y: 0,
+         layer: 1,
++        transposed: false,
+     }];
+ 
+     let whole = bake_monolithic_atlas(
+@@ -1395,11 +1396,13 @@ fn per_layer_parallel_scatter_joins_before_dilation() {
+             x: 0,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         },
+         ChartPlacement {
+             x: 32,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         },
+     ];
+     let expected = bake_monolithic_atlas(
+@@ -1459,11 +1462,13 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
+             x: 0,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         },
+         ChartPlacement {
+             x: 0,
+             y: 0,
+             layer: 1,
++            transposed: false,
+         },
+     ];
+     let layout = BlockLayout::whole_layers(64, 64, &placements, DIRECTION_TEXEL_SCALE);
+@@ -1522,6 +1527,7 @@ fn monolithic_atlas_counts_degenerate_chart_progress_without_scatter() {
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     }];
+     let progress = StageProgress::with_total(placements.len());
+     let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
+@@ -2872,6 +2878,7 @@ fn direction_scale_one_emits_rg8_bytes() {
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     }];
+ 
+     let section = atlas.encode_section(&BlockLayout::whole_layers(2, 2, &placements, 1), true);
+@@ -2952,7 +2959,12 @@ fn direction_reduction_keeps_array_layers_separate() {
+         atlas_height: 2,
+         layer_count: 2,
+     };
+-    let placements = [0, 1].map(|layer| ChartPlacement { x: 0, y: 0, layer });
++    let placements = [0, 1].map(|layer| ChartPlacement {
++        x: 0,
++        y: 0,
++        layer,
++        transposed: false,
++    });
+     let section = atlas.encode_section(&BlockLayout::whole_layers(4, 2, &placements, 2), true);
+     assert_eq!(section.blocks.len(), 2);
+     for (block, expected) in section.blocks.iter().zip([Vec3::X, -Vec3::X]) {
+diff --git a/crates/level-compiler/src/lightmap_layer.rs b/crates/level-compiler/src/lightmap_layer.rs
+index 9683d9e..9dd91d7 100644
+--- a/crates/level-compiler/src/lightmap_layer.rs
++++ b/crates/level-compiler/src/lightmap_layer.rs
+@@ -345,11 +345,8 @@ impl IncrementalLayerAccumulator {
+             let face_idx = face_idx as usize;
+             let chart = &atlas.charts[face_idx];
+             let placement = &atlas.placements[face_idx];
+-            let padding = crate::chart_raster::CHART_PADDING_TEXELS;
+-            let atlas_x = texel.idx % atlas.atlas_width;
+-            let atlas_y = texel.idx / atlas.atlas_width;
+-            let tx = (atlas_x - placement.x - padding) as i32;
+-            let ty = (atlas_y - placement.y - padding) as i32;
++            let (tx, ty) =
++                placement.chart_texel(texel.idx % atlas.atlas_width, texel.idx / atlas.atlas_width);
+             let world_p = chart_texel_world_position(chart, tx, ty);
+             let (irradiance, weighted_dir) =
+                 reconstruct_light_texel(light, world_p, chart.normal, texel.raw_visibility);
+diff --git a/crates/level-compiler/src/lightmap_layer/cache_keys.rs b/crates/level-compiler/src/lightmap_layer/cache_keys.rs
+index d7bfc7a..e1a783a 100644
+--- a/crates/level-compiler/src/lightmap_layer/cache_keys.rs
++++ b/crates/level-compiler/src/lightmap_layer/cache_keys.rs
+@@ -72,6 +72,12 @@ pub(crate) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
+         // Fold the atlas layer so a repack that moves a chart to a different
+         // array layer (same x/y) still invalidates the per-light cache.
+         hasher.update(&p.layer.to_le_bytes());
++        // SPIKE (rotation): a transposed placement stores its records at
++        // other indices. Folded only when set, so untransposed layouts keep
++        // their keys.
++        if p.transposed {
++            hasher.update(b"T");
++        }
+     }
+     let layout = atlas.layout;
+     hasher.update(&layout.direction_texel_scale.to_le_bytes());
+@@ -363,11 +369,9 @@ pub fn validate_layer_partition(
+             continue;
+         }
+         let (interior_width, interior_height) = chart_interior_dims(chart);
+-        let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
+         for y in 0..interior_height {
+             for x in 0..interior_width {
+-                let atlas_x = placement.x as i32 + padding + x;
+-                let atlas_y = placement.y as i32 + padding + y;
++                let (atlas_x, atlas_y) = placement.atlas_texel(x, y);
+                 let expected_idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
+                 covered[expected_idx as usize] = true;
+             }
+diff --git a/crates/level-compiler/src/lightmap_layer/chart_walk.rs b/crates/level-compiler/src/lightmap_layer/chart_walk.rs
+index 7306753..1c651cd 100644
+--- a/crates/level-compiler/src/lightmap_layer/chart_walk.rs
++++ b/crates/level-compiler/src/lightmap_layer/chart_walk.rs
+@@ -510,12 +510,11 @@ pub(crate) fn for_each_light_layer_chart_texel(
+         return;
+     }
+ 
+-    let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
+     let (interior_w, interior_h) = chart_interior_dims(chart);
+     for ty in 0..interior_h {
+         for tx in 0..interior_w {
+-            let atlas_x = placement.x as i32 + padding + tx;
+-            let atlas_y = placement.y as i32 + padding + ty;
++            // SPIKE (rotation): canonical walk, transposed store.
++            let (atlas_x, atlas_y) = placement.atlas_texel(tx, ty);
+             // Within-layer index — the atlas layer lives in the enclosing
+             // `LightmapLayer.target_layer`, not folded into `idx`.
+             let idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
+diff --git a/crates/level-compiler/src/lightmap_layer/reach_walk.rs b/crates/level-compiler/src/lightmap_layer/reach_walk.rs
+index 119885b..0b097e1 100644
+--- a/crates/level-compiler/src/lightmap_layer/reach_walk.rs
++++ b/crates/level-compiler/src/lightmap_layer/reach_walk.rs
+@@ -10,7 +10,7 @@ use glam::{DVec3, Vec3};
+ 
+ use super::chart_cull::ExactSkips;
+ use super::{LayerTexel, SharedAtlas};
+-use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_world_position};
++use crate::chart_raster::chart_texel_world_position;
+ use crate::lightmap_bake::Chart;
+ use crate::lightmap_reach::{ChartReach, LightmapReachIndex};
+ 
+@@ -168,9 +168,7 @@ pub(super) fn check_rewalk(
+     };
+     let placement = &atlas.placements[face_idx];
+     let chart = &atlas.charts[face_idx];
+-    let padding = CHART_PADDING_TEXELS as i32;
+-    let tx = (idx % atlas.atlas_width) as i32 - placement.x as i32 - padding;
+-    let ty = (idx / atlas.atlas_width) as i32 - placement.y as i32 - padding;
++    let (tx, ty) = placement.chart_texel(idx % atlas.atlas_width, idx / atlas.atlas_width);
+     walk.mismatch.record(
+         (walk.light, face_idx, idx),
+         ReachMismatch {
+diff --git a/crates/level-compiler/src/lightmap_layer/tests.rs b/crates/level-compiler/src/lightmap_layer/tests.rs
+index d3fa929..d8e5cab 100644
+--- a/crates/level-compiler/src/lightmap_layer/tests.rs
++++ b/crates/level-compiler/src/lightmap_layer/tests.rs
+@@ -222,6 +222,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     }];
+     let shared = SharedAtlas {
+         charts: &charts,
+@@ -1191,6 +1192,7 @@ fn lone_chart_layout_fingerprint(
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     }];
+     atlas_layout_fingerprint(&SharedAtlas {
+         charts: &charts,
+@@ -2091,6 +2093,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     }];
+     let shared = SharedAtlas {
+         charts: &charts,
+@@ -2164,6 +2167,7 @@ fn all_sdf_section_cache_rekeys_when_prepared_dimensions_change() {
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     }];
+     let layout_a = SharedAtlas {
+         charts: &charts,
+diff --git a/crates/level-compiler/src/lightmap_residency_dry_run/layouts.rs b/crates/level-compiler/src/lightmap_residency_dry_run/layouts.rs
+index bb36f37..4221948 100644
+--- a/crates/level-compiler/src/lightmap_residency_dry_run/layouts.rs
++++ b/crates/level-compiler/src/lightmap_residency_dry_run/layouts.rs
+@@ -80,6 +80,7 @@ pub(crate) fn stored_layout(input: &DryRunInput) -> Layout {
+                 x: chart.x,
+                 y: chart.y,
+                 layer: chart.layer,
++                transposed: false,
+             })
+             .collect(),
+     }
+@@ -137,6 +138,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, edge: u32) -> Layout {
+             x: 0,
+             y: 0,
+             layer: u32::MAX,
++            transposed: false,
+         };
+         input.charts.len()
+     ];
+diff --git a/crates/level-compiler/src/main.rs b/crates/level-compiler/src/main.rs
+index b333046..938bec4 100644
+--- a/crates/level-compiler/src/main.rs
++++ b/crates/level-compiler/src/main.rs
+@@ -608,6 +608,15 @@ fn should_run_config_screen(reporter_mode: ReporterMode, args: &Args) -> bool {
+ }
+ 
+ fn main() -> anyhow::Result<()> {
++    // SPIKE (packing): offline packer sweep and per-chart texel comparison.
++    let raw: Vec<String> = std::env::args().collect();
++    match raw.get(1).map(String::as_str) {
++        Some("--spike-packsim") => return pack::spike_sim::run_sim(&raw[2..]),
++        Some("--spike-compare") => return pack::spike_sim::run_compare(&raw[2..]),
++        Some("--spike-compare2") => return pack::spike_cmp::run_compare2(&raw[2..]),
++        Some("--spike-ownercheck") => return pack::spike_cmp::run_ownercheck(&raw[2..]),
++        _ => {}
++    }
+     let started = Instant::now();
+     let mut args = parse_args()?;
+     // Install capture immediately after argument parsing so every subsequent
+diff --git a/crates/level-compiler/src/mover_light_gate/animated.rs b/crates/level-compiler/src/mover_light_gate/animated.rs
+index d87d67b..1255635 100644
+--- a/crates/level-compiler/src/mover_light_gate/animated.rs
++++ b/crates/level-compiler/src/mover_light_gate/animated.rs
+@@ -112,6 +112,14 @@ fn gate_chunk(gate: &mut TexelGate<'_>, scene: &AnimatedScene<'_>, index: usize,
+     let origin_x = (i64::from(rect.compact_x) - i64::from(block.compact_x) - padding) as i32;
+     let origin_y = (i64::from(rect.compact_y) - i64::from(block.compact_y) - padding) as i32;
+     let lift = chart.normal * RAY_EPSILON;
++    // SPIKE (rotation): a transposed block's footprint swaps the chart's
++    // sides; the packer never transposes a square chart.
++    let transposed = block.width as u32 != chart.width_texels;
++    let (origin_x, origin_y) = if transposed {
++        (origin_y, origin_x)
++    } else {
++        (origin_x, origin_y)
++    };
+     for ry in 0..rect.height {
+         for rx in 0..rect.width {
+             let entry =
+@@ -123,8 +131,12 @@ fn gate_chunk(gate: &mut TexelGate<'_>, scene: &AnimatedScene<'_>, index: usize,
+             if !lit {
+                 continue;
+             }
+-            let centre =
+-                chart_texel_world_position(chart, origin_x + rx as i32, origin_y + ry as i32);
++            let (cx, cy) = if transposed {
++                (ry as i32, rx as i32)
++            } else {
++                (rx as i32, ry as i32)
++            };
++            let centre = chart_texel_world_position(chart, origin_x + cx, origin_y + cy);
+             gate.add_texel(centre, centre + lift, block.lightmap_block);
+         }
+     }
+diff --git a/crates/level-compiler/src/mover_light_gate/texels.rs b/crates/level-compiler/src/mover_light_gate/texels.rs
+index f50def4..29ac975 100644
+--- a/crates/level-compiler/src/mover_light_gate/texels.rs
++++ b/crates/level-compiler/src/mover_light_gate/texels.rs
+@@ -243,6 +243,13 @@ pub(super) fn for_each_lit_texel(
+     }
+     let placement = shared.placements[chart_index];
+     let (width, height) = chart_interior_dims(chart);
++    // SPIKE (rotation): walk the placed interior's rows; each record maps
++    // back to its canonical texel.
++    let (width, height) = if placement.transposed {
++        (height, width)
++    } else {
++        (width, height)
++    };
+     let lift = chart.normal * RAY_EPSILON;
+     let texels = &partition.texels;
+     let mut cursor = 0;
+@@ -255,7 +262,11 @@ pub(super) fn for_each_lit_texel(
+             && texel.idx < start + width as u32
+         {
+             if texel.raw_visibility > 0.0 {
+-                let centre = chart_texel_world_position(chart, (texel.idx - start) as i32, ty);
++                let (tx, ty) = placement.chart_texel(
++                    texel.idx % shared.atlas_width,
++                    texel.idx / shared.atlas_width,
++                );
++                let centre = chart_texel_world_position(chart, tx, ty);
+                 visit(centre, centre + lift);
+             }
+             cursor += 1;
+diff --git a/crates/level-compiler/src/pack.rs b/crates/level-compiler/src/pack.rs
+index c87c558..58d7086 100644
+--- a/crates/level-compiler/src/pack.rs
++++ b/crates/level-compiler/src/pack.rs
+@@ -115,6 +115,7 @@ mod lightmap_pool_bound;
+ mod sh_mandatory_bound;
+ use lightmap_pool_bound::{LightmapPoolBoundInputs, resolve_lightmap_pool_bound};
+ pub(crate) use lightmap_pool_bound::{all_resident_layers, pool_demand};
++pub(crate) use lightmap_pool_bound::{spike_cmp, spike_sim};
+ use sh_mandatory_bound::{ShMandatoryBoundInputs, resolve_sh_mandatory_bound};
+ 
+ /// Convert translated map lights into an `AlphaLightsSection` for the format
+diff --git a/crates/level-compiler/src/pack/lightmap_pool_bound.rs b/crates/level-compiler/src/pack/lightmap_pool_bound.rs
+index 7b348ff..e1e164a 100644
+--- a/crates/level-compiler/src/pack/lightmap_pool_bound.rs
++++ b/crates/level-compiler/src/pack/lightmap_pool_bound.rs
+@@ -20,6 +20,8 @@ use crate::cell_residency_bake::camera_cells;
+ mod cell_input;
+ mod demand;
+ mod report;
++pub(crate) mod spike_cmp;
++pub(crate) mod spike_sim;
+ #[cfg(test)]
+ mod tests;
+ 
+diff --git a/crates/level-compiler/src/pack/lightmap_pool_bound/demand.rs b/crates/level-compiler/src/pack/lightmap_pool_bound/demand.rs
+index 6743688..68b0d00 100644
+--- a/crates/level-compiler/src/pack/lightmap_pool_bound/demand.rs
++++ b/crates/level-compiler/src/pack/lightmap_pool_bound/demand.rs
+@@ -57,7 +57,7 @@ pub(crate) fn pool_demand(
+             section.blocks.len(),
+         );
+     }
+-    Ok(PoolDemand::new(
++    let demand = PoolDemand::new(
+         lightmap.header().block_alignment(),
+         lightmap
+             .blocks
+@@ -71,7 +71,62 @@ pub(crate) fn pool_demand(
+                 .map(|planes| planes.each_ref().map(|plane| !plane.is_empty()))
+                 .collect()
+         }),
+-    ))
++    );
++    // SPIKE (ownership): `POSTRETRO_SPIKE_MASK_EXTENT=full` keeps HEAD's
++    // whole-block mask items.
++    let Some(section) = shadowmask else {
++        return Ok(demand);
++    };
++    if std::env::var("POSTRETRO_SPIKE_MASK_EXTENT").as_deref() == Ok("full") {
++        return Ok(demand);
++    }
++    let alignment = demand.alignment();
++    let extents = owned_mask_extents(lightmap, section, alignment);
++    Ok(demand.with_mask_extents(extents))
++}
++
++/// SPIKE (ownership): each block's owned sub-rect, anchored at its origin:
++/// the aligned extent holding every nonzero texel of either stored plane.
++/// Owned charts pack first into a block's top-left, so this is their
++/// bounding rect less any owned edge that baked zero; a texel past it reads
++/// zero, exactly what the plane stores there. Blocks with no plane keep
++/// their whole extent (they place no plane).
++pub(crate) fn owned_mask_extents(
++    lightmap: &LightmapSection,
++    section: &ShadowmaskAtlasSection,
++    alignment: u32,
++) -> Vec<(u32, u32)> {
++    use rayon::prelude::*;
++    let up = |v: u32| v.div_ceil(alignment) * alignment;
++    lightmap
++        .blocks
++        .par_iter()
++        .zip(&section.blocks)
++        .map(|(block, planes)| {
++            let (w, h) = (u32::from(block.width), u32::from(block.height));
++            let (mut x_end, mut y_end) = (0, 0);
++            for plane in planes.iter().filter(|plane| !plane.is_empty()) {
++                let rg = crate::bc5::decode_bc5_rg(plane, w, h);
++                for y in 0..h {
++                    for x in 0..w {
++                        let o = ((y * w + x) * 2) as usize;
++                        if rg[o] != 0 || rg[o + 1] != 0 {
++                            x_end = x_end.max(x + 1);
++                            y_end = y_end.max(y + 1);
++                        }
++                    }
++                }
++            }
++            if planes.iter().all(|plane| plane.is_empty()) {
++                (w, h)
++            } else {
++                (
++                    up(x_end).min(w).max(alignment),
++                    up(y_end).min(h).max(alignment),
++                )
++            }
++        })
++        .collect()
+ }
+ 
+ /// The layers holding every block at once.
+diff --git a/crates/level-compiler/src/pack/lightmap_pool_bound/spike_cmp.rs b/crates/level-compiler/src/pack/lightmap_pool_bound/spike_cmp.rs
+new file mode 100644
+index 0000000..184ecfe
+--- /dev/null
++++ b/crates/level-compiler/src/pack/lightmap_pool_bound/spike_cmp.rs
+@@ -0,0 +1,438 @@
++//! SPIKE (rotation): placement-invariance gate. Maps every chart texel of two
++//! bakes of one map, under two layouts, onto the chart's canonical padded grid
++//! and compares what each stores before GPU block compression.
++//! `prl-build --spike-compare2 <a.tsv> <a.prl> <a.masks> <b.tsv> <b.prl> <b.masks>`
++
++use std::collections::{BTreeMap, HashMap};
++use std::io::Read;
++
++use anyhow::Context;
++use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
++
++use super::spike_sim::{ChartRow, Prl, read_charts, read_prl};
++use crate::chart_raster::CHART_PADDING_TEXELS;
++
++/// Raw RGBA8 mask of each block, from `POSTRETRO_SPIKE_MASK_RAW_OUT`.
++fn read_masks(path: &str) -> anyhow::Result<HashMap<u32, (u32, u32, Vec<u8>)>> {
++    let mut bytes = Vec::new();
++    std::fs::File::open(path)
++        .with_context(|| path.to_string())?
++        .read_to_end(&mut bytes)?;
++    let mut out = HashMap::new();
++    let mut at = 0;
++    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
++    while at < bytes.len() {
++        let (id, w, h) = (word(at), word(at + 4), word(at + 8));
++        at += 12;
++        let len = (w * h * 4) as usize;
++        let previous = out.insert(id, (w, h, bytes[at..at + len].to_vec()));
++        anyhow::ensure!(previous.is_none(), "block {id} dumped twice");
++        at += len;
++    }
++    Ok(out)
++}
++
++/// What one category of chart texel compared: per ring 0 (interior), 1, 2.
++#[derive(Default, Clone, Copy)]
++struct Tally {
++    compared: [u64; 3],
++    differing: [u64; 3],
++    max: [u32; 3],
++}
++
++impl Tally {
++    fn add(&mut self, ring: usize, delta: u32) {
++        self.compared[ring] += 1;
++        if delta != 0 {
++            self.differing[ring] += 1;
++            self.max[ring] = self.max[ring].max(delta);
++        }
++    }
++    fn merge(&mut self, o: &Tally) {
++        for r in 0..3 {
++            self.compared[r] += o.compared[r];
++            self.differing[r] += o.differing[r];
++            self.max[r] = self.max[r].max(o.max[r]);
++        }
++    }
++    fn line(&self) -> String {
++        (0..3)
++            .map(|r| {
++                format!(
++                    "ring{r} {}/{} differ (max {})",
++                    self.differing[r], self.compared[r], self.max[r]
++                )
++            })
++            .collect::<Vec<_>>()
++            .join(" | ")
++    }
++}
++
++const VALUES: [&str; 4] = [
++    "irradiance RGBA16F bits",
++    "direction RG8 (reduced)",
++    "mask u8 (pre-BC5)",
++    "mask u8 (BC5 decoded)",
++];
++
++/// Chart classes: same orientation and both at the canonical phase (origin
++/// even on both axes), same orientation with the phase moved, transposed in
++/// one layout only.
++const CLASSES: [&str; 4] = [
++    "same orientation, both canonical phase",
++    "same orientation, phase differs from canonical in a layout",
++    "transposed in exactly one layout, both canonical phase",
++    "transposed in exactly one layout, phase differs from canonical in a layout",
++];
++
++struct Side<'a> {
++    prl: &'a Prl,
++    masks: &'a HashMap<u32, (u32, u32, Vec<u8>)>,
++}
++
++/// The block texel of canonical padded texel `(cx, cy)` of `row`.
++fn block_texel(row: &ChartRow, cx: u32, cy: u32) -> (u32, u32) {
++    let (px, py) = if row.rotated { (cy, cx) } else { (cx, cy) };
++    (row.lx + px, row.ly + py)
++}
++
++pub(crate) fn run_compare2(args: &[String]) -> anyhow::Result<()> {
++    anyhow::ensure!(
++        args.len() == 6,
++        "usage: a.tsv a.prl a.masks b.tsv b.prl b.masks"
++    );
++    let rows_a = read_charts(&args[0])?;
++    let prl_a = read_prl(&args[1], true)?;
++    let masks_a = read_masks(&args[2])?;
++    let rows_b = read_charts(&args[3])?;
++    let prl_b = read_prl(&args[4], true)?;
++    let masks_b = read_masks(&args[5])?;
++    anyhow::ensure!(rows_a.len() == rows_b.len(), "chart counts differ");
++    for (a, b) in rows_a.iter().zip(&rows_b) {
++        anyhow::ensure!(
++            a.face == b.face && a.cell == b.cell && (a.w, a.h) == (b.w, b.h),
++            "chart {} differs between dumps",
++            a.face
++        );
++    }
++    for prl in [&prl_a, &prl_b] {
++        anyhow::ensure!(
++            prl.lightmap.irradiance_format == IRRADIANCE_FORMAT_RGBA16F,
++            "bake with --uncompressed-irradiance"
++        );
++    }
++    let scale = prl_a.lightmap.direction_texel_scale;
++    anyhow::ensure!(scale == prl_b.lightmap.direction_texel_scale);
++    let a = Side {
++        prl: &prl_a,
++        masks: &masks_a,
++    };
++    let b = Side {
++        prl: &prl_b,
++        masks: &masks_b,
++    };
++
++    // Owner tables must agree for mask channels to mean the same lights.
++    let owners_equal = match (&prl_a.shadowmask, &prl_b.shadowmask) {
++        (Some(x), Some(y)) => x.owners == y.owners,
++        (None, None) => true,
++        _ => false,
++    };
++    println!(
++        "faces {}; owner tables equal: {owners_equal}; direction scale {scale}",
++        rows_a.len()
++    );
++
++    let mut tallies = vec![[Tally::default(); VALUES.len()]; CLASSES.len()];
++    let mut class_faces = [0usize; CLASSES.len()];
++    let mut edge_dir = [[0u64; 2]; CLASSES.len()];
++    let mut samples: Vec<String> = Vec::new();
++    let mut decoded_a: BTreeMap<u32, [Option<Vec<u8>>; 2]> = BTreeMap::new();
++    let mut decoded_b: BTreeMap<u32, [Option<Vec<u8>>; 2]> = BTreeMap::new();
++    let pad = CHART_PADDING_TEXELS;
++    for i in 0..rows_a.len() {
++        let (ra, rb) = (&rows_a[i], &rows_b[i]);
++        let canonical = |r: &ChartRow| r.lx % 2 == 0 && r.ly % 2 == 0;
++        let both = canonical(ra) && canonical(rb);
++        let class = match (ra.rotated != rb.rotated, both) {
++            (false, true) => 0,
++            (false, false) => 1,
++            (true, true) => 2,
++            (true, false) => 3,
++        };
++        class_faces[class] += 1;
++        let t = &mut tallies[class];
++        let decode =
++            |side: &Side<'_>, cache: &mut BTreeMap<u32, [Option<Vec<u8>>; 2]>, block: u32| {
++                cache
++                    .entry(block)
++                    .or_insert_with(|| {
++                        let rec = &side.prl.lightmap_index.records[block as usize];
++                        let (w, h) = (u32::from(rec.width), u32::from(rec.height));
++                        std::array::from_fn(|g| {
++                            side.prl.shadowmask.as_ref().and_then(|m| {
++                                let p = &m.blocks[block as usize][g];
++                                (!p.is_empty()).then(|| crate::bc5::decode_bc5_rg(p, w, h))
++                            })
++                        })
++                    })
++                    .clone()
++            };
++        let planes_a = decode(&a, &mut decoded_a, ra.block);
++        let planes_b = decode(&b, &mut decoded_b, rb.block);
++        let block_a = &prl_a.lightmap.blocks[ra.block as usize];
++        let block_b = &prl_b.lightmap.blocks[rb.block as usize];
++        let mask_a = a.masks.get(&ra.block);
++        let mask_b = b.masks.get(&rb.block);
++        for cy in 0..ra.h {
++            for cx in 0..ra.w {
++                let ring_of = |v: u32, n: u32| {
++                    if v < pad {
++                        pad - v
++                    } else if v >= n - pad {
++                        v - (n - pad) + 1
++                    } else {
++                        0
++                    }
++                };
++                let ring = ring_of(cx, ra.w).max(ring_of(cy, ra.h)) as usize;
++                let (xa, ya) = block_texel(ra, cx, cy);
++                let (xb, yb) = block_texel(rb, cx, cy);
++                let wa = u32::from(block_a.width);
++                let wb = u32::from(block_b.width);
++                let ia = (ya * wa + xa) as usize;
++                let ib = (yb * wb + xb) as usize;
++                let irr_a = &block_a.irradiance[ia * 8..ia * 8 + 8];
++                let irr_b = &block_b.irradiance[ib * 8..ib * 8 + 8];
++                let irr_delta = (0..4)
++                    .map(|k| {
++                        let va = u16::from_le_bytes([irr_a[2 * k], irr_a[2 * k + 1]]);
++                        let vb = u16::from_le_bytes([irr_b[2 * k], irr_b[2 * k + 1]]);
++                        u32::from(va.abs_diff(vb))
++                    })
++                    .max()
++                    .unwrap();
++                t[0].add(ring, irr_delta);
++                if irr_delta != 0 && samples.len() < 60 {
++                    samples.push(format!(
++                        "irr face {} class {class} canon ({cx},{cy}) ring {ring}: A {:?} B {:?}",
++                        ra.face, irr_a, irr_b
++                    ));
++                }
++                let ja = (((ya / scale) * (wa / scale) + xa / scale) * 2) as usize;
++                let jb = (((yb / scale) * (wb / scale) + xb / scale) * 2) as usize;
++                let dir_delta = u32::from(block_a.direction[ja].abs_diff(block_b.direction[jb]))
++                    .max(u32::from(
++                        block_a.direction[ja + 1].abs_diff(block_b.direction[jb + 1]),
++                    ));
++                t[1].add(ring, dir_delta);
++                if dir_delta != 0 {
++                    // A direction group at an odd far edge holds one texel
++                    // outside the chart: a neighbour's or an empty one.
++                    let odd_edge =
++                        (cx == ra.w - 1 && ra.w % 2 == 1) || (cy == ra.h - 1 && ra.h % 2 == 1);
++                    edge_dir[class][usize::from(odd_edge)] += 1;
++                }
++                if dir_delta != 0 && (class == 0 || class == 2) && samples.len() < 120 {
++                    samples.push(format!(
++                        "dir face {} class {class} canon ({cx},{cy}) ring {ring}: A {:?} B {:?}",
++                        ra.face,
++                        &block_a.direction[ja..ja + 2],
++                        &block_b.direction[jb..jb + 2]
++                    ));
++                }
++                let raw = |m: Option<&(u32, u32, Vec<u8>)>, x: u32, y: u32| -> [u8; 4] {
++                    m.map_or([0; 4], |(w, _, raw)| {
++                        let o = ((y * w + x) * 4) as usize;
++                        [raw[o], raw[o + 1], raw[o + 2], raw[o + 3]]
++                    })
++                };
++                let (ma, mb) = (raw(mask_a, xa, ya), raw(mask_b, xb, yb));
++                let mask_delta = (0..4)
++                    .map(|c| u32::from(ma[c].abs_diff(mb[c])))
++                    .max()
++                    .unwrap();
++                t[2].add(ring, mask_delta);
++                if mask_delta != 0 && samples.len() < 180 {
++                    samples.push(format!(
++                        "mask face {} class {class} canon ({cx},{cy}) ring {ring}: A {ma:?} B {mb:?}",
++                        ra.face
++                    ));
++                }
++                let bc = |planes: &[Option<Vec<u8>>; 2], w: u32, x: u32, y: u32| -> [u8; 4] {
++                    let o = ((y * w + x) * 2) as usize;
++                    let g = |p: &Option<Vec<u8>>| p.as_ref().map_or([0, 0], |p| [p[o], p[o + 1]]);
++                    let (p, q) = (g(&planes[0]), g(&planes[1]));
++                    [p[0], p[1], q[0], q[1]]
++                };
++                let (da, db) = (bc(&planes_a, wa, xa, ya), bc(&planes_b, wb, xb, yb));
++                let bc_delta = (0..4)
++                    .map(|c| u32::from(da[c].abs_diff(db[c])))
++                    .max()
++                    .unwrap();
++                t[3].add(ring, bc_delta);
++            }
++        }
++    }
++    println!("ring 0 = chart interior, rings 1-2 = padding (1 next to the interior)");
++    for (class, name) in CLASSES.iter().enumerate() {
++        println!("== {name}: {} charts", class_faces[class]);
++        for (value, tally) in VALUES.iter().zip(&tallies[class]) {
++            println!("  {value:<26} {}", tally.line());
++        }
++        println!(
++            "  direction diffs at an odd far edge (group straddles the chart edge): {} of {}",
++            edge_dir[class][1],
++            edge_dir[class][0] + edge_dir[class][1]
++        );
++    }
++    let mut all = [Tally::default(); VALUES.len()];
++    for class in &tallies {
++        for (x, y) in all.iter_mut().zip(class) {
++            x.merge(y);
++        }
++    }
++    println!("== all charts");
++    for (value, tally) in VALUES.iter().zip(&all) {
++        println!("  {value:<26} {}", tally.line());
++    }
++    for s in samples {
++        println!("  {s}");
++    }
++    Ok(())
++}
++
++/// `prl-build --spike-ownercheck <charts.tsv> <level.prl>`: the pre-pack
++/// owner estimate against the real owners, containment of every owned chart
++/// in its block's estimated-owner sub-rect, and the pool bound under each
++/// mask item extent.
++pub(crate) fn run_ownercheck(args: &[String]) -> anyhow::Result<()> {
++    use super::cell_input::BoundCellInput;
++    use super::demand::LayerPrices;
++    use super::{CellBlocks, worst_cell_demand};
++    use crate::cell_residency_bake::camera_cells;
++    use postretro_level_format::lightmap_pool::{
++        MASK_POOL_LAYER_BYTES, first_generation_layers, lightmap_pool_layer_bytes,
++        streamed_pool_bytes,
++    };
++    let rows = read_charts(&args[0])?;
++    let prl = read_prl(&args[1], true)?;
++    let mask = prl.shadowmask.as_ref().context("no id 42")?;
++    let owned = |r: &ChartRow| mask.owners[r.face].iter().any(|&o| o != u16::MAX);
++    let texels = |r: &ChartRow| u64::from(r.w) * u64::from(r.h);
++    let (mut est, mut est_tex, mut own, mut own_tex, mut missed) = (0, 0u64, 0, 0u64, 0);
++    let (mut outside, mut owned_with_rect) = (0, 0);
++    for r in &rows {
++        if r.estimate {
++            est += 1;
++            est_tex += texels(r);
++        }
++        if owned(r) {
++            own += 1;
++            own_tex += texels(r);
++            missed += usize::from(!r.estimate);
++            let (pw, ph) = if r.rotated { (r.h, r.w) } else { (r.w, r.h) };
++            owned_with_rect += 1;
++            if r.lx + pw > r.owned_rect.0 || r.ly + ph > r.owned_rect.1 {
++                outside += 1;
++            }
++        }
++    }
++    println!(
++        "charts {}; estimate {est} ({:.2}M padded texels); owned {own} ({:.2}M); owned charts the estimate misses: {missed}; owned charts outside their block's estimated-owner sub-rect: {outside} of {owned_with_rect}",
++        rows.len(),
++        est_tex as f64 / 1e6,
++        own_tex as f64 / 1e6
++    );
++    // Nonzero mask texels outside the estimated-owner sub-rect.
++    let mut rect_of: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
++    for r in &rows {
++        rect_of.insert(r.block, r.owned_rect);
++    }
++    let mut stray = 0u64;
++    for (block, planes) in mask.blocks.iter().enumerate() {
++        let rec = &prl.lightmap_index.records[block];
++        let (w, h) = (u32::from(rec.width), u32::from(rec.height));
++        let (ow, oh) = rect_of.get(&(block as u32)).copied().unwrap_or((0, 0));
++        for plane in planes.iter().filter(|p| !p.is_empty()) {
++            let rg = crate::bc5::decode_bc5_rg(plane, w, h);
++            for y in 0..h {
++                for x in 0..w {
++                    let o = ((y * w + x) * 2) as usize;
++                    if (rg[o] != 0 || rg[o + 1] != 0) && (x >= ow || y >= oh) {
++                        stray += 1;
++                    }
++                }
++            }
++        }
++    }
++    println!("nonzero decoded mask texels outside the estimated-owner sub-rect: {stray}");
++
++    let header = prl.lightmap.header();
++    let align = header.block_alignment();
++    let lm_layer = lightmap_pool_layer_bytes(&header).context("format")?;
++    let prices = LayerPrices::of(&prl.lightmap)?;
++    let cells_n = prl.cells.cells.len();
++    let input = BoundCellInput::new(&prl.residency, &prl.directory)?;
++    let cameras = camera_cells(&prl.cells);
++    let blocks = CellBlocks::new_from_index(&prl.lightmap_index, cells_n)?;
++    let full = postretro_level_format::lightmap_pool::PoolDemand::new(
++        align,
++        prl.lightmap_index
++            .records
++            .iter()
++            .map(|r| (u32::from(r.width), u32::from(r.height)))
++            .collect(),
++        Some(
++            mask.blocks
++                .iter()
++                .map(|planes| planes.each_ref().map(|p| !p.is_empty()))
++                .collect(),
++        ),
++    );
++    let up = |v: u32| v.div_ceil(align) * align;
++    let estimated: Vec<(u32, u32)> = (0..full.block_count() as u32)
++        .map(|b| {
++            let e = full.extents()[b as usize];
++            rect_of.get(&b).map_or(e, |&(w, h)| {
++                (up(w).max(align).min(e.0), up(h).max(align).min(e.1))
++            })
++        })
++        .collect();
++    let nonzero = super::demand::owned_mask_extents(&prl.lightmap, mask, align);
++    for (label, demand) in [
++        ("whole block (HEAD)", full.clone()),
++        (
++            "estimated-owner sub-rect",
++            full.clone().with_mask_extents(estimated),
++        ),
++        (
++            "nonzero texels' sub-rect (compiler bound)",
++            full.clone().with_mask_extents(nonzero),
++        ),
++    ] {
++        let worst = worst_cell_demand(
++            &cameras,
++            |c, s| input.cells_of(c, s),
++            &blocks,
++            &demand,
++            prices,
++        )?;
++        let all = super::all_resident_layers(&demand)?;
++        let lm = first_generation_layers(worst.layers.lightmap, all.lightmap);
++        let mk = first_generation_layers(worst.layers.mask, all.mask);
++        let lm_b = streamed_pool_bytes(lm, lm_layer);
++        let mk_b = streamed_pool_bytes(mk, MASK_POOL_LAYER_BYTES);
++        println!(
++            "{label:<44} worst {}/{} -> layers {lm}/{mk} (+1 spare each), all-resident {}/{}: lightmap {:.1} + mask {:.1} = {:.1} MiB",
++            worst.layers.lightmap,
++            worst.layers.mask,
++            all.lightmap,
++            all.mask,
++            lm_b as f64 / 1048576.0,
++            mk_b as f64 / 1048576.0,
++            (lm_b + mk_b) as f64 / 1048576.0
++        );
++    }
++    Ok(())
++}
+diff --git a/crates/level-compiler/src/pack/lightmap_pool_bound/spike_sim.rs b/crates/level-compiler/src/pack/lightmap_pool_bound/spike_sim.rs
+new file mode 100644
+index 0000000..8ee686f
+--- /dev/null
++++ b/crates/level-compiler/src/pack/lightmap_pool_bound/spike_sim.rs
+@@ -0,0 +1,1159 @@
++//! SPIKE (packing): offline sweep of per-cell packers and pool placements
++//! against a compiled PRL's cells, residency set and masks, through the
++//! bound's own cell input and worst-cell loop.
++//! `prl-build --spike-packsim <charts.tsv> <head.prl> <spec>...`
++
++use std::collections::{BTreeMap, HashMap};
++use std::fs::File;
++use std::io::{BufRead, BufReader};
++use std::time::Instant;
++
++use anyhow::Context;
++use postretro_level_format::cell_residency_set::CellResidencySetSection;
++use postretro_level_format::cells::CellsSection;
++use postretro_level_format::cluster_directory::ClusterDirectorySection;
++use postretro_level_format::lightmap::{
++    LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapSection,
++};
++use postretro_level_format::lightmap_pool::{
++    MASK_POOL_LAYER_BYTES, PackScratch, PerPool, PoolDemand, first_generation_layers,
++    lightmap_pool_layer_bytes, streamed_pool_bytes,
++};
++use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, ShadowmaskOwnerBounds};
++use postretro_level_format::{SectionId, read_container, read_section_data};
++use rayon::prelude::*;
++
++use super::cell_input::BoundCellInput;
++use super::demand::{LayerPrices, layers_of};
++use super::{CellBlocks, worst_cell_demand};
++use crate::cell_residency_bake::camera_cells;
++use crate::lightmap_bake::spike_pack::{
++    Heuristic, PackConfig, maxrects_layers, pack_cell_sub_blocks_cfg,
++};
++
++/// One dumped chart: its padded extent and HEAD's block and block-local origin.
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct ChartRow {
++    pub face: usize,
++    pub cell: u32,
++    pub w: u32,
++    pub h: u32,
++    pub block: u32,
++    pub lx: u32,
++    pub ly: u32,
++    pub bw: u32,
++    pub bh: u32,
++    pub rotated: bool,
++    /// The pre-pack owner estimate marked the chart.
++    pub estimate: bool,
++    pub windowed: bool,
++    /// The block's estimated-owner sub-rect, from its origin.
++    pub owned_rect: (u32, u32),
++}
++
++pub(crate) fn read_charts(path: &str) -> anyhow::Result<Vec<ChartRow>> {
++    let file = BufReader::new(File::open(path).with_context(|| path.to_string())?);
++    let mut rows = Vec::new();
++    for line in file.lines().skip(1) {
++        let line = line?;
++        let f: Vec<u64> = line.split('\t').map(|v| v.parse().unwrap()).collect();
++        rows.push(ChartRow {
++            face: f[0] as usize,
++            cell: f[1] as u32,
++            w: f[2] as u32,
++            h: f[3] as u32,
++            block: f[4] as u32,
++            lx: f[5] as u32,
++            ly: f[6] as u32,
++            bw: f[7] as u32,
++            bh: f[8] as u32,
++            rotated: f.get(10).is_some_and(|&v| v == 1),
++            estimate: f.get(11).is_some_and(|&v| v == 1),
++            windowed: f.get(9).is_some_and(|&v| v == 1),
++            owned_rect: (
++                f.get(12).copied().unwrap_or(0) as u32,
++                f.get(13).copied().unwrap_or(0) as u32,
++            ),
++        });
++    }
++    Ok(rows)
++}
++
++pub(crate) struct Prl {
++    pub cells: CellsSection,
++    pub directory: ClusterDirectorySection,
++    pub residency: CellResidencySetSection,
++    pub lightmap: LightmapSection,
++    pub lightmap_index: LightmapBlockIndex,
++    pub shadowmask: Option<ShadowmaskAtlasSection>,
++}
++
++pub(crate) fn read_prl(path: &str, payloads: bool) -> anyhow::Result<Prl> {
++    let mut reader = BufReader::new(File::open(path).with_context(|| path.to_string())?);
++    let meta = read_container(&mut reader)?;
++    let mut sec = |id: SectionId| -> anyhow::Result<Vec<u8>> {
++        read_section_data(&mut reader, &meta, id as u32)?.with_context(|| format!("missing {id:?}"))
++    };
++    let cells = CellsSection::from_bytes(&sec(SectionId::Cells)?)?;
++    let directory = ClusterDirectorySection::from_bytes(&sec(SectionId::ClusterDirectory)?)
++        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
++    let residency =
++        CellResidencySetSection::from_bytes(&sec(SectionId::CellResidencySet)?, cells.cells.len())?;
++    let lm_bytes = sec(SectionId::Lightmap)?;
++    let lightmap_index = LightmapBlockIndex::from_prefix(&lm_bytes, lm_bytes.len() as u64)?;
++    let lightmap = if payloads {
++        LightmapSection::from_bytes(&lm_bytes)?
++    } else {
++        LightmapSection {
++            direction_texel_scale: lightmap_index.header.direction_texel_scale,
++            irradiance_format: lightmap_index.header.irradiance_format,
++            mode: lightmap_index.header.mode,
++            blocks: Vec::new(),
++        }
++    };
++    drop(lm_bytes);
++    let shadowmask = match sec(SectionId::ShadowmaskAtlas) {
++        Ok(bytes) => {
++            let bounds = ShadowmaskOwnerBounds::from_section_header(&bytes)?;
++            Some(ShadowmaskAtlasSection::from_bytes(
++                &bytes,
++                &lightmap_index,
++                bounds,
++            )?)
++        }
++        Err(_) => None,
++    };
++    Ok(Prl {
++        cells,
++        directory,
++        residency,
++        lightmap,
++        lightmap_index,
++        shadowmask,
++    })
++}
++
++/// Whether each chart's padded rect holds a nonzero texel in HEAD's plane A/B.
++fn chart_planes(rows: &[ChartRow], prl: &Prl) -> Vec<[bool; 2]> {
++    let Some(mask) = &prl.shadowmask else {
++        return vec![[false; 2]; rows.len()];
++    };
++    let mut by_block: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
++    for (i, r) in rows.iter().enumerate() {
++        by_block.entry(r.block).or_default().push(i);
++    }
++    let per_block: Vec<Vec<(usize, [bool; 2])>> = by_block
++        .par_iter()
++        .map(|(&block, members)| {
++            let rec = &prl.lightmap_index.records[block as usize];
++            let (bw, bh) = (u32::from(rec.width), u32::from(rec.height));
++            let planes: Vec<Option<Vec<u8>>> = mask.blocks[block as usize]
++                .iter()
++                .map(|p| (!p.is_empty()).then(|| crate::bc5::decode_bc5_rg(p, bw, bh)))
++                .collect();
++            members
++                .iter()
++                .map(|&i| {
++                    let r = rows[i];
++                    let (pw, ph) = if r.rotated { (r.h, r.w) } else { (r.w, r.h) };
++                    let present = std::array::from_fn(|g| {
++                        planes[g].as_ref().is_some_and(|rg| {
++                            (r.ly..r.ly + ph).any(|y| {
++                                (r.lx..r.lx + pw).any(|x| {
++                                    let t = ((y * bw + x) * 2) as usize;
++                                    rg[t] != 0 || rg[t + 1] != 0
++                                })
++                            })
++                        })
++                    });
++                    (i, present)
++                })
++                .collect()
++        })
++        .collect();
++    let mut out = vec![[false; 2]; rows.len()];
++    for (i, p) in per_block.into_iter().flatten() {
++        out[i] = p;
++    }
++    out
++}
++
++struct Packed {
++    extents: Vec<(u32, u32)>,
++    /// Owned sub-rect of each block, from its origin.
++    mask_extents: Vec<(u32, u32)>,
++    /// The real owners' bounding rect of each block, from its origin.
++    actual_extents: Vec<(u32, u32)>,
++    planes: Vec<[bool; 2]>,
++    /// SPIKE (separate mask layout): per block, the extent of a mask block
++    /// holding only its really-owned charts, packed tightly in their lightmap
++    /// orientation, and the plane-B sub-rect (charts with a plane-B texel
++    /// packed first). `None` unless `SPIKE_SEP_MASK_SPEC` is set.
++    sep_mask: Option<Vec<((u32, u32), (u32, u32))>>,
++    runs: Vec<std::ops::Range<u32>>,
++    chart_area: u64,
++    footprint_area: u64,
++    multi_block_cells: usize,
++    elapsed: f64,
++}
++
++fn pack_all(
++    rows: &[ChartRow],
++    chart_planes: &[[bool; 2]],
++    owned: &[bool],
++    actual: &[bool],
++    cell_count: usize,
++    align: u32,
++    cfg: &PackConfig,
++) -> Packed {
++    let mut by_cell: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
++    for (i, r) in rows.iter().enumerate() {
++        by_cell.entry(r.cell).or_default().push(i);
++    }
++    let cells: Vec<(u32, Vec<usize>)> = by_cell.into_iter().collect();
++    let started = Instant::now();
++    let up = |v: u32| v.div_ceil(align) * align;
++    let sep_cfg: Option<PackConfig> = std::env::var("SPIKE_SEP_MASK_SPEC")
++        .ok()
++        .map(|spec| PackConfig::parse(&spec).expect("SPIKE_SEP_MASK_SPEC"));
++    let sep_masks: std::sync::Mutex<BTreeMap<(u32, usize), ((u32, u32), (u32, u32))>> =
++        std::sync::Mutex::new(BTreeMap::new());
++    let per_cell: Vec<Vec<(Vec<usize>, (u32, u32), (u32, u32), (u32, u32))>> = cells
++        .par_iter()
++        .map(|(_, members)| {
++            let sizes: Vec<(u32, u32)> = members.iter().map(|&i| (rows[i].w, rows[i].h)).collect();
++            let own: Vec<bool> = members.iter().map(|&i| owned[i]).collect();
++            let mut cfg = cfg.clone();
++            cfg.rotate &= members.iter().all(|&i| !rows[i].windowed);
++            pack_cell_sub_blocks_cfg(&sizes, align, LIGHTMAP_POOL_LAYER_EDGE, &cfg, &own)
++                .into_iter()
++                .enumerate()
++                .map(|(sub_i, s)| {
++                    if let Some(mcfg) = &sep_cfg {
++                        // The block's really-owned charts, in their lightmap
++                        // orientation (the mask copy is a pure translation).
++                        let mut m_sizes = Vec::new();
++                        let mut m_b = Vec::new();
++                        for (&m, &r) in s.sub.members.iter().zip(&s.rotated) {
++                            if actual[members[m]] {
++                                m_sizes.push(if r { (sizes[m].1, sizes[m].0) } else { sizes[m] });
++                                m_b.push(chart_planes[members[m]][1]);
++                            }
++                        }
++                        let ext = if m_sizes.is_empty() {
++                            ((0, 0), (0, 0))
++                        } else {
++                            let mut mcfg = mcfg.clone();
++                            mcfg.rotate = false;
++                            let packed = pack_cell_sub_blocks_cfg(
++                                &m_sizes,
++                                4,
++                                LIGHTMAP_POOL_LAYER_EDGE,
++                                &mcfg,
++                                &m_b,
++                            );
++                            assert_eq!(packed.len(), 1, "owned charts of one block fit one mask block");
++                            let p = &packed[0];
++                            let b_ext = if mcfg.owned_first {
++                                p.mask_extent
++                            } else {
++                                (p.sub.block.width, p.sub.block.height)
++                            };
++                            ((p.sub.block.width, p.sub.block.height), b_ext)
++                        };
++                        sep_masks.lock().unwrap().insert((members[0] as u32, sub_i), ext);
++                    }
++                    // The real owners' bounding rect under this packing.
++                    let (mut w, mut h) = (0, 0);
++                    for ((&m, &(x, y)), &r) in s
++                        .sub
++                        .members
++                        .iter()
++                        .zip(&s.sub.block.placements)
++                        .zip(&s.rotated)
++                    {
++                        if actual[members[m]] {
++                            let (cw, ch) = if r {
++                                (sizes[m].1, sizes[m].0)
++                            } else {
++                                sizes[m]
++                            };
++                            w = w.max(x + cw);
++                            h = h.max(y + ch);
++                        }
++                    }
++                    (
++                        s.sub.members.iter().map(|&m| members[m]).collect(),
++                        (s.sub.block.width, s.sub.block.height),
++                        s.mask_extent,
++                        (up(w).min(s.sub.block.width), up(h).min(s.sub.block.height)),
++                    )
++                })
++                .collect()
++        })
++        .collect();
++    let elapsed = started.elapsed().as_secs_f64();
++    let mut extents = Vec::new();
++    let mut mask_extents = Vec::new();
++    let mut actual_extents = Vec::new();
++    let mut planes = Vec::new();
++    let mut runs = vec![0..0; cell_count];
++    let mut multi = 0;
++    let mut sep_order: Vec<(u32, usize)> = Vec::new();
++    let cell_first: BTreeMap<u32, u32> =
++        cells.iter().map(|(c, m)| (*c, m[0] as u32)).collect();
++    let cell_first = |c: &u32| cell_first[c];
++    // Buckets by member count: blocks, block texels, chart texels.
++    let edges = [1usize, 2, 4, 10, 30, 100, usize::MAX];
++    let mut buckets = vec![(0u64, 0u64, 0u64); edges.len() - 1];
++    for ((cell, _), blocks) in cells.iter().zip(per_cell) {
++        let start = extents.len() as u32;
++        multi += usize::from(blocks.len() > 1);
++        for (sub_i, (members, extent, mask_extent, actual_extent)) in blocks.into_iter().enumerate() {
++            sep_order.push((cell_first(cell), sub_i));
++            actual_extents.push(actual_extent);
++            let bi = edges
++                .windows(2)
++                .position(|e| members.len() >= e[0] && members.len() < e[1])
++                .unwrap();
++            buckets[bi].0 += 1;
++            buckets[bi].1 += u64::from(extent.0) * u64::from(extent.1);
++            buckets[bi].2 += members
++                .iter()
++                .map(|&m| u64::from(rows[m].w) * u64::from(rows[m].h))
++                .sum::<u64>();
++            extents.push(extent);
++            mask_extents.push(mask_extent);
++            let mut p = [false; 2];
++            for &m in &members {
++                p[0] |= chart_planes[m][0];
++                p[1] |= chart_planes[m][1];
++            }
++            planes.push(p);
++        }
++        runs[*cell as usize] = start..extents.len() as u32;
++    }
++    if std::env::var_os("SPIKE_BUCKETS").is_some() {
++        let names = ["1", "2-3", "4-9", "10-29", "30-99", "100+"];
++        for (n, b) in names.iter().zip(&buckets) {
++            println!(
++                "#   charts/block {n:>6}: {:>5} blocks, {:>7.2}M block texels, eff {:.3}, waste {:.2}M",
++                b.0,
++                b.1 as f64 / 1e6,
++                b.2 as f64 / b.1.max(1) as f64,
++                (b.1 - b.2) as f64 / 1e6
++            );
++        }
++    }
++    let k = if cfg.head { 1 } else { cfg.chart_align };
++    let sep_mask = sep_cfg.as_ref().map(|_| {
++        let map = sep_masks.into_inner().unwrap();
++        sep_order.iter().map(|key| map[key]).collect()
++    });
++    Packed {
++        sep_mask,
++        extents,
++        mask_extents,
++        actual_extents,
++        planes,
++        runs,
++        chart_area: rows.iter().map(|r| u64::from(r.w) * u64::from(r.h)).sum(),
++        footprint_area: rows
++            .iter()
++            .map(|r| u64::from(r.w.div_ceil(k) * k) * u64::from(r.h.div_ceil(k) * k))
++            .sum(),
++        multi_block_cells: multi,
++        elapsed,
++    }
++}
++
++const MIB: f64 = 1024.0 * 1024.0;
++
++fn pool_mib(bound: PerPool<u32>, all: PerPool<u32>, lm_layer: u64) -> f64 {
++    let lm = first_generation_layers(bound.lightmap, all.lightmap);
++    let mk = first_generation_layers(bound.mask, all.mask);
++    (streamed_pool_bytes(lm, lm_layer) + streamed_pool_bytes(mk, MASK_POOL_LAYER_BYTES)) as f64
++        / MIB
++}
++
++pub(crate) fn run_sim(args: &[String]) -> anyhow::Result<()> {
++    let mut rows = read_charts(&args[0])?;
++    // Measurement: charts with `n` fewer padding texels per side.
++    if let Some(n) = std::env::var("SPIKE_SHRINK")
++        .ok()
++        .and_then(|v| v.parse::<u32>().ok())
++    {
++        for r in &mut rows {
++            r.w -= 2 * n;
++            r.h -= 2 * n;
++        }
++        println!("# charts shrunk by {n} padding texel(s) per side");
++    }
++    let prl = read_prl(&args[1], false)?;
++    let specs = &args[2..];
++    let header = prl.lightmap.header();
++    let align = header.block_alignment();
++    let lm_layer = lightmap_pool_layer_bytes(&header).unwrap();
++    let prices = LayerPrices::of(&prl.lightmap)?;
++    let cell_count = prl.cells.cells.len();
++    let input = BoundCellInput::new(&prl.residency, &prl.directory)?;
++    let cameras = camera_cells(&prl.cells);
++    let elision: Option<Vec<(u32, usize)>> = std::env::var("SPIKE_ELIDE").ok().map(|path| {
++        // Lines "block plane" naming HEAD planes to treat as absent.
++        std::fs::read_to_string(path)
++            .unwrap()
++            .lines()
++            .filter_map(|l| {
++                let mut it = l.split_whitespace();
++                Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
++            })
++            .collect()
++    });
++
++    // HEAD's own stored blocks, as the bound saw them.
++    let stored_planes: Vec<[bool; 2]> = prl.shadowmask.as_ref().map_or_else(
++        || vec![[false; 2]; prl.lightmap_index.records.len()],
++        |m| {
++            m.blocks
++                .iter()
++                .map(|[a, b]| [!a.is_empty(), !b.is_empty()])
++                .collect()
++        },
++    );
++    let t = Instant::now();
++    let cplanes = chart_planes(&rows, &prl);
++    let actual: Vec<bool> = rows
++        .iter()
++        .map(|r| {
++            prl.shadowmask
++                .as_ref()
++                .is_some_and(|m| m.owners[r.face].iter().any(|&o| o != u16::MAX))
++        })
++        .collect();
++    // SPIKE (ownership): `SPIKE_OWNED=estimate` packs owned-first from the
++    // dump's pre-pack estimate; the default packs from the real owners.
++    let owned: Vec<bool> = if std::env::var("SPIKE_OWNED").as_deref() == Ok("estimate") {
++        println!("# owned-first ordering from the pre-pack estimate");
++        rows.iter().map(|r| r.estimate).collect()
++    } else {
++        actual.clone()
++    };
++    let missed = actual
++        .iter()
++        .zip(&rows)
++        .filter(|(a, r)| **a && !r.estimate)
++        .count();
++    println!(
++        "estimate {} charts ({:.2}M padded texels); actual owned {} charts; owned charts the estimate misses: {missed}",
++        rows.iter().filter(|r| r.estimate).count(),
++        rows.iter()
++            .filter(|r| r.estimate)
++            .map(|r| u64::from(r.w) * u64::from(r.h))
++            .sum::<u64>() as f64
++            / 1e6,
++        actual.iter().filter(|&&a| a).count(),
++    );
++    let present_unowned = cplanes
++        .iter()
++        .zip(&owned)
++        .filter(|(p, o)| (p[0] || p[1]) && !**o)
++        .count();
++    println!(
++        "owned charts {} of {}; owned padded texels {:.2}M of {:.2}M; charts with a plane but no owner: {present_unowned}",
++        owned.iter().filter(|&&o| o).count(),
++        rows.len(),
++        rows.iter()
++            .zip(&owned)
++            .filter(|(_, o)| **o)
++            .map(|(r, _)| u64::from(r.w) * u64::from(r.h))
++            .sum::<u64>() as f64
++            / 1e6,
++        rows.iter()
++            .map(|r| u64::from(r.w) * u64::from(r.h))
++            .sum::<u64>() as f64
++            / 1e6,
++    );
++    // Validate per-chart presence against HEAD's stored planes.
++    let mut derived = vec![[false; 2]; stored_planes.len()];
++    for (r, p) in rows.iter().zip(&cplanes) {
++        derived[r.block as usize][0] |= p[0];
++        derived[r.block as usize][1] |= p[1];
++    }
++    let mismatches = derived
++        .iter()
++        .zip(&stored_planes)
++        .filter(|(a, b)| a != b)
++        .count();
++    println!(
++        "charts {} blocks(HEAD) {} cells {} camera cells {}; chart plane presence derived in {:.1}s, {} block mismatches vs stored id 42",
++        rows.len(),
++        stored_planes.len(),
++        cell_count,
++        cameras.len(),
++        t.elapsed().as_secs_f64(),
++        mismatches
++    );
++
++    let mut stored_demand_planes = stored_planes.clone();
++    if let Some(elide) = &elision {
++        for &(block, plane) in elide {
++            stored_demand_planes[block as usize][plane] = false;
++        }
++        let stored_extents: Vec<(u32, u32)> = prl
++            .lightmap_index
++            .records
++            .iter()
++            .map(|r| (u32::from(r.width), u32::from(r.height)))
++            .collect();
++        let demand = PoolDemand::new(align, stored_extents, Some(stored_demand_planes.clone()));
++        let blocks = CellBlocks::new_from_index(&prl.lightmap_index, cell_count)?;
++        let worst = worst_cell_demand(
++            &cameras,
++            |c, s| input.cells_of(c, s),
++            &blocks,
++            &demand,
++            prices,
++        )?;
++        let all = super::all_resident_layers(&demand)?;
++        println!(
++            "HEAD stored layout with {} elided planes: bound {}/{} layers, all-resident {}/{}, pool {:.1} MiB",
++            elide.len(),
++            worst.layers.lightmap,
++            worst.layers.mask,
++            all.lightmap,
++            all.mask,
++            pool_mib(worst.layers, all, lm_layer)
++        );
++    }
++
++    println!(
++        "spec\tblocks\tmulti_cells\tblock_Mtex\tchart_Mtex\tfootprint_Mtex\teff\tpack_s\tbound_lm\tbound_mask\tall_lm\tall_mask\tpool_MiB\tworst_set_fill"
++    );
++    for spec in specs {
++        let cfg = PackConfig::parse(spec).map_err(|e| anyhow::anyhow!(e))?;
++        let packed = pack_all(&rows, &cplanes, &owned, &actual, cell_count, align, &cfg);
++        if cfg.head {
++            // HEAD must reproduce the dump's blocks exactly.
++            let mut dumped: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
++            for r in &rows {
++                dumped.insert(r.block, (r.bw, r.bh));
++            }
++            let mine: Vec<(u32, u32)> = packed.extents.clone();
++            let theirs: Vec<(u32, u32)> = dumped.values().copied().collect();
++            let mut a = mine.clone();
++            let mut b = theirs.clone();
++            a.sort_unstable();
++            b.sort_unstable();
++            println!("# head reproduces dumped block extents: {}", a == b);
++        }
++        let block_area: u64 = packed
++            .extents
++            .iter()
++            .map(|&(w, h)| u64::from(w) * u64::from(h))
++            .sum();
++        let demand = PoolDemand::new(align, packed.extents.clone(), Some(packed.planes.clone()));
++        let blocks = CellBlocks(packed.runs.clone());
++        let t = Instant::now();
++        let worst = worst_cell_demand(
++            &cameras,
++            |c, s| input.cells_of(c, s),
++            &blocks,
++            &demand,
++            prices,
++        )?;
++        let all = super::all_resident_layers(&demand)?;
++        // Fill of the worst lightmap set: its block area over its layers.
++        let fill = worst_set_fill(&cameras, &input, &blocks, &demand, worst.layers.lightmap)?;
++        println!(
++            "{spec}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{:.1}\t{}\t{}\t{}\t{}\t{:.1}\t{:.4}\t(bound {:.1}s)",
++            packed.extents.len(),
++            packed.multi_block_cells,
++            block_area as f64 / 1e6,
++            packed.chart_area as f64 / 1e6,
++            packed.footprint_area as f64 / 1e6,
++            packed.chart_area as f64 / block_area as f64,
++            packed.elapsed,
++            worst.layers.lightmap,
++            worst.layers.mask,
++            all.lightmap,
++            all.mask,
++            pool_mib(worst.layers, all, lm_layer),
++            fill,
++            t.elapsed().as_secs_f64()
++        );
++        if !cfg.head {
++            subrect_bound(
++                &cameras,
++                &input,
++                &blocks,
++                &packed,
++                &packed.mask_extents,
++                "packed owned sub-rect",
++                align,
++            )?;
++            subrect_bound(
++                &cameras,
++                &input,
++                &blocks,
++                &packed,
++                &packed.actual_extents,
++                "real owners' rect",
++                align,
++            )?;
++        }
++        if let Some(sep) = &packed.sep_mask {
++            let lm_gen = first_generation_layers(worst.layers.lightmap, all.lightmap);
++            let lm_mib = streamed_pool_bytes(lm_gen, lm_layer) as f64 / MIB;
++            for b_sub in [false, true] {
++                sep_mask_bound(&cameras, &input, &blocks, &packed, sep, b_sub, lm_gen, lm_mib)?;
++            }
++        }
++        if std::env::var_os("SPIKE_POOL_ALT").is_some() {
++            pool_alternatives(&cameras, &input, &blocks, &demand, worst.layers)?;
++        }
++    }
++    Ok(())
++}
++
++impl CellBlocks {
++    pub(super) fn new_from_index(
++        index: &LightmapBlockIndex,
++        cell_count: usize,
++    ) -> anyhow::Result<Self> {
++        let mut runs = vec![0..0; cell_count];
++        for (block, record) in index.records.iter().enumerate() {
++            let block = block as u32;
++            let run = &mut runs[record.cell_id as usize];
++            if run.start == run.end {
++                *run = block..block + 1;
++            } else {
++                run.end += 1;
++            }
++        }
++        Ok(Self(runs))
++    }
++}
++
++/// The largest lightmap block area of any camera cell's set over the worst
++/// lightmap layer count: how full the shelf packing of the worst set is.
++fn worst_set_fill(
++    cameras: &[u32],
++    input: &BoundCellInput<'_>,
++    blocks: &CellBlocks,
++    demand: &PoolDemand,
++    worst_layers: u32,
++) -> anyhow::Result<f64> {
++    let mut set = Vec::new();
++    let mut ids = Vec::new();
++    let mut best = 0u64;
++    let mut scratch = PackScratch::default();
++    let mut seen: HashMap<Box<[u32]>, ()> = HashMap::new();
++    for &cell in cameras {
++        set.clear();
++        input.cells_of(cell, &mut set);
++        blocks.collect(&set, &mut ids)?;
++        if seen.insert(ids.as_slice().into(), ()).is_some() {
++            continue;
++        }
++        let layers = layers_of(demand, &ids, &mut scratch)?;
++        if layers.lightmap == worst_layers {
++            let area: u64 = ids
++                .iter()
++                .map(|&b| {
++                    let (w, h) = demand.extents()[b as usize];
++                    u64::from(w) * u64::from(h)
++                })
++                .sum();
++            best = best.max(area);
++        }
++    }
++    let layer = u64::from(LIGHTMAP_POOL_LAYER_EDGE) * u64::from(LIGHTMAP_POOL_LAYER_EDGE);
++    Ok(best as f64 / (u64::from(worst_layers) * layer) as f64)
++}
++
++/// The worst distinct sets under the shelf, re-placed by MaxRects layers and
++/// by the area lower bound, to price the pool placement lever.
++fn pool_alternatives(
++    cameras: &[u32],
++    input: &BoundCellInput<'_>,
++    blocks: &CellBlocks,
++    demand: &PoolDemand,
++    shelf_worst: PerPool<u32>,
++) -> anyhow::Result<()> {
++    let mut set = Vec::new();
++    let mut ids = Vec::new();
++    let mut scratch = PackScratch::default();
++    let mut sets: HashMap<Box<[u32]>, PerPool<u32>> = HashMap::new();
++    for &cell in cameras {
++        set.clear();
++        input.cells_of(cell, &mut set);
++        blocks.collect(&set, &mut ids)?;
++        if sets.contains_key(ids.as_slice()) {
++            continue;
++        }
++        let layers = layers_of(demand, &ids, &mut scratch)?;
++        sets.insert(ids.as_slice().into(), layers);
++    }
++    let layer = u64::from(LIGHTMAP_POOL_LAYER_EDGE) * u64::from(LIGHTMAP_POOL_LAYER_EDGE);
++    let align = demand.alignment();
++    let up = |v: u32| v.div_ceil(align) * align;
++    // Lower bound on every set: area / layer, over all sets.
++    let mut lb = PerPool::<u32>::default();
++    for ids in sets.keys() {
++        let mut area = PerPool::<u64>::default();
++        for &b in ids.iter() {
++            let (w, h) = demand.extents()[b as usize];
++            let a = u64::from(up(w)) * u64::from(up(h));
++            area.lightmap += a;
++            area.mask += a * demand.planes(b).iter().filter(|&&p| p).count() as u64;
++        }
++        lb.lightmap = lb.lightmap.max(area.lightmap.div_ceil(layer) as u32);
++        lb.mask = lb.mask.max(area.mask.div_ceil(layer) as u32);
++    }
++    // MaxRects on the sets within 3 layers of the shelf worst, per pool.
++    let mut candidates: Vec<(&Box<[u32]>, &PerPool<u32>)> = sets
++        .iter()
++        .filter(|(_, l)| l.lightmap + 3 >= shelf_worst.lightmap || l.mask + 3 >= shelf_worst.mask)
++        .collect();
++    candidates.sort_by_key(|(ids, _)| ids.to_vec());
++    let results: Vec<(PerPool<u32>, PerPool<u32>)> = candidates
++        .par_iter()
++        .map(|(ids, shelf)| {
++            let lm: Vec<(u32, u32)> = ids
++                .iter()
++                .map(|&b| {
++                    let (w, h) = demand.extents()[b as usize];
++                    (up(w), up(h))
++                })
++                .collect();
++            let mk: Vec<(u32, u32)> = ids
++                .iter()
++                .flat_map(|&b| {
++                    let (w, h) = demand.extents()[b as usize];
++                    let n = demand.planes(b).iter().filter(|&&p| p).count();
++                    std::iter::repeat_n((up(w), up(h)), n)
++                })
++                .collect();
++            let mr = PerPool {
++                lightmap: maxrects_layers(&lm, LIGHTMAP_POOL_LAYER_EDGE, Heuristic::Bssf),
++                mask: maxrects_layers(&mk, LIGHTMAP_POOL_LAYER_EDGE, Heuristic::Bssf),
++            };
++            (**shelf, mr)
++        })
++        .collect();
++    let mut mr_worst = PerPool::<u32>::default();
++    for (_, mr) in &results {
++        mr_worst.lightmap = mr_worst.lightmap.max(mr.lightmap);
++        mr_worst.mask = mr_worst.mask.max(mr.mask);
++    }
++    println!(
++        "#   pool placement: shelf {}/{}; maxrects-bssf (over {} near-worst sets) {}/{}; area lower bound {}/{} ({} distinct sets)",
++        shelf_worst.lightmap,
++        shelf_worst.mask,
++        results.len(),
++        mr_worst.lightmap,
++        mr_worst.mask,
++        lb.lightmap,
++        lb.mask,
++        sets.len()
++    );
++    Ok(())
++}
++
++/// The bound with each present plane placed at its block's owned sub-rect
++/// instead of the whole block, through the runtime's own placement.
++fn subrect_bound(
++    cameras: &[u32],
++    input: &BoundCellInput<'_>,
++    blocks: &CellBlocks,
++    packed: &Packed,
++    sub_extents: &[(u32, u32)],
++    label: &str,
++    align: u32,
++) -> anyhow::Result<()> {
++    use postretro_level_format::lightmap_pool::place_all_resident;
++    let edge = LIGHTMAP_POOL_LAYER_EDGE;
++    let mut set = Vec::new();
++    let mut ids = Vec::new();
++    let mut seen: HashMap<Box<[u32]>, ()> = HashMap::new();
++    let mut worst = PerPool::<u32>::default();
++    let mut mask_items = Vec::new();
++    for &cell in cameras {
++        set.clear();
++        input.cells_of(cell, &mut set);
++        blocks.collect(&set, &mut ids)?;
++        if seen.insert(ids.as_slice().into(), ()).is_some() {
++            continue;
++        }
++        mask_items.clear();
++        for &b in &ids {
++            let n = packed.planes[b as usize].iter().filter(|&&p| p).count();
++            let e = sub_extents[b as usize];
++            if n > 0 {
++                anyhow::ensure!(
++                    e.0 > 0 && e.1 > 0,
++                    "block {b} has a plane but no owned chart"
++                );
++            }
++            mask_items.extend(std::iter::repeat_n(e, n));
++        }
++        let mk = place_all_resident(&mask_items, align, edge)
++            .ok_or_else(|| anyhow::anyhow!("mask item past a layer"))?
++            .layer_count;
++        worst.mask = worst.mask.max(mk);
++    }
++    let all_items: Vec<(u32, u32)> = (0..packed.extents.len())
++        .flat_map(|b| {
++            let n = packed.planes[b].iter().filter(|&&p| p).count();
++            std::iter::repeat_n(sub_extents[b], n)
++        })
++        .collect();
++    let all_mask = place_all_resident(&all_items, align, edge)
++        .unwrap()
++        .layer_count;
++    let mask_gen = first_generation_layers(worst.mask, all_mask);
++    let full_area: u64 = (0..packed.extents.len())
++        .map(|b| {
++            let n = packed.planes[b].iter().filter(|&&p| p).count() as u64;
++            n * u64::from(packed.extents[b].0) * u64::from(packed.extents[b].1)
++        })
++        .sum();
++    let sub_area: u64 = all_items
++        .iter()
++        .map(|&(w, h)| u64::from(w) * u64::from(h))
++        .sum();
++    println!(
++        "#   {label}: mask worst {} gen {} ({:.1} MiB), all-resident {}; plane texels {:.1}M -> {:.1}M",
++        worst.mask,
++        mask_gen,
++        streamed_pool_bytes(mask_gen, MASK_POOL_LAYER_BYTES) as f64 / MIB,
++        all_mask,
++        full_area as f64 / 1e6,
++        sub_area as f64 / 1e6,
++    );
++    Ok(())
++}
++
++/// SPIKE (separate mask layout): the mask bound with each block's planes
++/// placed at its own tightly packed owned-chart mask block; plane B at its
++/// owned-first sub-rect when `b_sub`.
++#[allow(clippy::too_many_arguments)]
++fn sep_mask_bound(
++    cameras: &[u32],
++    input: &BoundCellInput<'_>,
++    blocks: &CellBlocks,
++    packed: &Packed,
++    sep: &[((u32, u32), (u32, u32))],
++    b_sub: bool,
++    lm_gen: u32,
++    lm_mib: f64,
++) -> anyhow::Result<()> {
++    use postretro_level_format::lightmap_pool::place_all_resident;
++    let edge = LIGHTMAP_POOL_LAYER_EDGE;
++    let items_of = |b: usize, out: &mut Vec<(u32, u32)>| {
++        let (whole, bsub) = sep[b];
++        let p = packed.planes[b];
++        if p[0] {
++            out.push(whole);
++        }
++        if p[1] {
++            out.push(if b_sub { bsub } else { whole });
++        }
++    };
++    let mut set = Vec::new();
++    let mut ids = Vec::new();
++    let mut seen: HashMap<Box<[u32]>, ()> = HashMap::new();
++    let mut worst = 0u32;
++    let mut worst_area = 0u64;
++    let mut items = Vec::new();
++    for &cell in cameras {
++        set.clear();
++        input.cells_of(cell, &mut set);
++        blocks.collect(&set, &mut ids)?;
++        if seen.insert(ids.as_slice().into(), ()).is_some() {
++            continue;
++        }
++        items.clear();
++        for &b in &ids {
++            items_of(b as usize, &mut items);
++        }
++        for &(w, h) in &items {
++            anyhow::ensure!(w > 0 && h > 0, "a present plane with an empty mask block");
++        }
++        let mk = place_all_resident(&items, 4, edge)
++            .ok_or_else(|| anyhow::anyhow!("mask item past a layer"))?
++            .layer_count;
++        worst = worst.max(mk);
++        worst_area = worst_area.max(items.iter().map(|&(w, h)| u64::from(w) * u64::from(h)).sum());
++    }
++    let mut all_items = Vec::new();
++    for b in 0..packed.extents.len() {
++        items_of(b, &mut all_items);
++    }
++    let all_mask = place_all_resident(&all_items, 4, edge).unwrap().layer_count;
++    let mask_gen = first_generation_layers(worst, all_mask);
++    let mask_mib = streamed_pool_bytes(mask_gen, MASK_POOL_LAYER_BYTES) as f64 / MIB;
++    let area: u64 = all_items.iter().map(|&(w, h)| u64::from(w) * u64::from(h)).sum();
++    let blocks_with = sep.iter().filter(|(w, _)| w.0 > 0).count();
++    println!(
++        "#   separate mask layout ({}): mask worst {worst} gen {mask_gen} ({mask_mib:.1} MiB), all-resident {all_mask}; plane texels {:.1}M; worst-set plane area {:.2} layers; mask blocks {blocks_with}; lightmap gen {lm_gen} ({lm_mib:.1} MiB); pool total {:.1} MiB",
++        if b_sub { "plane B at its sub-rect" } else { "plane B at the whole mask block" },
++        area as f64 / 1e6,
++        worst_area as f64 / (f64::from(edge) * f64::from(edge)),
++        lm_mib + mask_mib,
++    );
++    Ok(())
++}
++
++/// One block's texels, decoded for comparison.
++struct DecodedBlock {
++    w: u32,
++    /// RGBA16F bits when the level stores raw irradiance.
++    irr_bits: Option<Vec<[u16; 4]>>,
++    irr: Vec<[f32; 3]>,
++    dir: Vec<u8>,
++    planes: [Option<Vec<u8>>; 2],
++}
++
++fn decode_block(prl: &Prl, block: u32) -> DecodedBlock {
++    use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
++    let b = &prl.lightmap.blocks[block as usize];
++    let (w, h) = (u32::from(b.width), u32::from(b.height));
++    let (irr_bits, irr) = if prl.lightmap.irradiance_format == IRRADIANCE_FORMAT_RGBA16F {
++        let bits: Vec<[u16; 4]> = b
++            .irradiance
++            .chunks_exact(8)
++            .map(|c| std::array::from_fn(|k| u16::from_le_bytes([c[2 * k], c[2 * k + 1]])))
++            .collect();
++        let f = bits
++            .iter()
++            .map(|t| std::array::from_fn(|k| crate::bc6h::f16_bits_to_f32(t[k])))
++            .collect();
++        (Some(bits), f)
++    } else {
++        let rgba = crate::bc6h::decode_bc6h_rgb_to_f32_rgba(&b.irradiance, w, h).expect("bc6h");
++        (
++            None,
++            rgba.chunks_exact(4).map(|c| [c[0], c[1], c[2]]).collect(),
++        )
++    };
++    let planes = std::array::from_fn(|g| {
++        prl.shadowmask.as_ref().and_then(|m| {
++            let p = &m.blocks[block as usize][g];
++            (!p.is_empty()).then(|| crate::bc5::decode_bc5_rg(p, w, h))
++        })
++    });
++    DecodedBlock {
++        w,
++        irr_bits,
++        irr,
++        dir: b.direction.clone(),
++        planes,
++    }
++}
++
++#[derive(Default, Clone)]
++struct Tally {
++    /// [ring 0 interior, ring 1, ring 2]: compared, differing.
++    compared: [u64; 3],
++    differing: [u64; 3],
++    max_delta: [f64; 3],
++    sum_delta: [f64; 3],
++}
++
++impl Tally {
++    fn add(&mut self, ring: usize, delta: f64) {
++        self.compared[ring] += 1;
++        if delta != 0.0 {
++            self.differing[ring] += 1;
++        }
++        self.max_delta[ring] = self.max_delta[ring].max(delta);
++        self.sum_delta[ring] += delta;
++    }
++    fn merge(&mut self, o: &Tally) {
++        for r in 0..3 {
++            self.compared[r] += o.compared[r];
++            self.differing[r] += o.differing[r];
++            self.max_delta[r] = self.max_delta[r].max(o.max_delta[r]);
++            self.sum_delta[r] += o.sum_delta[r];
++        }
++    }
++    fn line(&self, name: &str) -> String {
++        let mut out = format!("{name:<28}");
++        for r in 0..3 {
++            out += &format!(
++                " | ring{r}: {} of {} differ, max {:.4e}, mean {:.4e}",
++                self.differing[r],
++                self.compared[r],
++                self.max_delta[r],
++                self.sum_delta[r] / self.compared[r].max(1) as f64
++            );
++        }
++        out
++    }
++}
++
++const TALLIES: [&str; 11] = [
++    "irradiance bits (RGBA16F)",
++    "irradiance R",
++    "irradiance G",
++    "irradiance B",
++    "direction (parity kept)",
++    "direction (parity moved)",
++    "mask A.r",
++    "mask A.g",
++    "mask B.r",
++    "mask B.g",
++    "faces moved parity",
++];
++
++/// `prl-build --spike-compare <a.tsv> <a.prl> <b.tsv> <b.prl>`: map each
++/// face's chart texels across two layouts and compare what each stores.
++pub(crate) fn run_compare(args: &[String]) -> anyhow::Result<()> {
++    let rows_a = read_charts(&args[0])?;
++    let rows_b = read_charts(&args[2])?;
++    let prl_a = read_prl(&args[1], true)?;
++    let prl_b = read_prl(&args[3], true)?;
++    anyhow::ensure!(rows_a.len() == rows_b.len(), "chart counts differ");
++    for (a, b) in rows_a.iter().zip(&rows_b) {
++        let same = if a.rotated == b.rotated {
++            (a.w, a.h) == (b.w, b.h)
++        } else {
++            (a.w, a.h) == (b.h, b.w)
++        };
++        anyhow::ensure!(
++            a.face == b.face && a.cell == b.cell && same,
++            "chart {} differs between dumps",
++            a.face
++        );
++    }
++    let scale = prl_a.lightmap.direction_texel_scale;
++    anyhow::ensure!(scale == prl_b.lightmap.direction_texel_scale);
++    let mut by_cell: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
++    for (i, r) in rows_a.iter().enumerate() {
++        by_cell.entry(r.cell).or_default().push(i);
++    }
++    let cells: Vec<Vec<usize>> = by_cell.into_values().collect();
++    let samples = std::sync::Mutex::new(Vec::<String>::new());
++    // Mask texel diffs on unturned charts: [phase mod 4 kept?][depth from the
++    // padded rect's edge, 0..=4+].
++    let mask_depth = std::sync::Mutex::new([[0u64; 6]; 2]);
++    let tallies: Vec<Tally> = cells
++        .par_iter()
++        .map(|members| {
++            let mut tt = vec![Tally::default(); 2 * TALLIES.len()];
++            let mut cache_a: BTreeMap<u32, DecodedBlock> = BTreeMap::new();
++            let mut cache_b: BTreeMap<u32, DecodedBlock> = BTreeMap::new();
++            for &i in members {
++                let (ra, rb) = (rows_a[i], rows_b[i]);
++                cache_a.entry(ra.block).or_insert_with(|| decode_block(&prl_a, ra.block));
++                cache_b.entry(rb.block).or_insert_with(|| decode_block(&prl_b, rb.block));
++                let (da, db) = (&cache_a[&ra.block], &cache_b[&rb.block]);
++                let turned = ra.rotated != rb.rotated;
++                let t = &mut tt[if turned { TALLIES.len() } else { 0 }..][..TALLIES.len()];
++                let parity_kept = !turned && ra.lx % scale == rb.lx % scale && ra.ly % scale == rb.ly % scale;
++                t[10].add(0, f64::from(u8::from(!parity_kept)));
++                let pad = crate::chart_raster::CHART_PADDING_TEXELS;
++                for y in 0..ra.h {
++                    for x in 0..ra.w {
++                        let ring = |v: u32, n: u32| {
++                            if v < pad {
++                                pad - v
++                            } else if v >= n - pad {
++                                v - (n - pad) + 1
++                            } else {
++                                0
++                            }
++                        };
++                        let r = ring(x, ra.w).max(ring(y, ra.h)) as usize;
++                        // B's texel for A's padded (x, y): a quarter turn maps
++                        // it to (y, w - 1 - x) of B's padded grid.
++                        let (bx, by) = if turned { (y, ra.w - 1 - x) } else { (x, y) };
++                        let ia = ((ra.ly + y) * da.w + ra.lx + x) as usize;
++                        let ib = ((rb.ly + by) * db.w + rb.lx + bx) as usize;
++                        if let (Some(a), Some(b)) = (&da.irr_bits, &db.irr_bits) {
++                            t[0].add(r, f64::from(u8::from(a[ia] != b[ib])));
++                            if a[ia] != b[ib] {
++                                let mut s = samples.lock().unwrap();
++                                if s.len() < 40 {
++                                    s.push(format!("irr face {} texel ({x},{y}) ring {r}: {:?} vs {:?}", ra.face, a[ia], b[ib]));
++                                }
++                            }
++                        }
++                        for c in 0..3 {
++                            t[1 + c].add(r, f64::from((da.irr[ia][c] - db.irr[ib][c]).abs()));
++                        }
++                        let dw_a = da.w / scale;
++                        let dw_b = db.w / scale;
++                        let ja = (((ra.ly + y) / scale) * dw_a + (ra.lx + x) / scale) as usize * 2;
++                        let jb = (((rb.ly + by) / scale) * dw_b + (rb.lx + bx) / scale) as usize * 2;
++                        let dd = f64::from(
++                            (i16::from(da.dir[ja]) - i16::from(db.dir[jb])).abs()
++                                .max((i16::from(da.dir[ja + 1]) - i16::from(db.dir[jb + 1])).abs()),
++                        );
++                        t[if parity_kept { 4 } else { 5 }].add(r, dd);
++                        if parity_kept && dd != 0.0 {
++                            let mut s = samples.lock().unwrap();
++                            if s.len() < 80 {
++                                s.push(format!("dir face {} texel ({x},{y}) ring {r}: {:?} vs {:?}", ra.face, &da.dir[ja..ja + 2], &db.dir[jb..jb + 2]));
++                            }
++                        }
++                        for g in 0..2 {
++                            for c in 0..2 {
++                                let va = da.planes[g].as_ref().map_or(0, |p| p[ia * 2 + c]);
++                                let vb = db.planes[g].as_ref().map_or(0, |p| p[ib * 2 + c]);
++                                let d = f64::from((i16::from(va) - i16::from(vb)).abs());
++                                t[6 + g * 2 + c].add(r, d);
++                                if d != 0.0 && !turned {
++                                    let kept = usize::from(ra.lx % 4 == rb.lx % 4 && ra.ly % 4 == rb.ly % 4);
++                                    let depth = x.min(y).min(ra.w - 1 - x).min(ra.h - 1 - y).min(5) as usize;
++                                    mask_depth.lock().unwrap()[kept][depth] += 1;
++                                }
++                                if d != 0.0 && r <= 1 {
++                                    let mut s = samples.lock().unwrap();
++                                    if s.len() < 120 {
++                                        s.push(format!("mask{g}.{c} face {} texel ({x},{y}) ring {r}: {va} vs {vb} (A at {},{} B at {},{})", ra.face, ra.lx, ra.ly, rb.lx, rb.ly));
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++            tt
++        })
++        .reduce(
++            || vec![Tally::default(); 2 * TALLIES.len()],
++            |mut a, b| {
++                for (x, y) in a.iter_mut().zip(&b) {
++                    x.merge(y);
++                }
++                a
++            },
++        );
++    println!(
++        "faces {}; ring 0 = chart interior rect, rings 1-2 = padding",
++        rows_a.len()
++    );
++    for (half, label) in [
++        "charts in the same orientation",
++        "charts turned a quarter turn",
++    ]
++    .iter()
++    .enumerate()
++    {
++        println!("== {label}");
++        for (name, t) in TALLIES.iter().zip(&tallies[half * TALLIES.len()..]) {
++            println!("{}", t.line(name));
++        }
++    }
++    let md = mask_depth.into_inner().unwrap();
++    println!(
++        "mask texel diffs (unturned charts) by depth from padded edge 0,1,2,3,4,5+: phase mod 4 moved {:?}; phase kept {:?}",
++        md[0], md[1]
++    );
++    for s in samples.into_inner().unwrap() {
++        println!("  {s}");
++    }
++    Ok(())
++}
+diff --git a/crates/level-compiler/src/pipeline/atlas_stage.rs b/crates/level-compiler/src/pipeline/atlas_stage.rs
+index 44511e5..f992e7e 100644
+--- a/crates/level-compiler/src/pipeline/atlas_stage.rs
++++ b/crates/level-compiler/src/pipeline/atlas_stage.rs
+@@ -107,6 +107,7 @@ pub(super) fn prepare_atlas_stage(
+         bvh: rebuilt.as_ref().map_or(bvh_section, |r| &r.bvh_section),
+     })?;
+ 
++    let owned_estimate = spike_owned_estimate(inputs.static_lights, &cut.charts, &cut.cut_parents);
+     let prepared = lightmap_bake::pack_cut_charts(
+         geometry,
+         inputs.static_lights,
+@@ -115,11 +116,13 @@ pub(super) fn prepare_atlas_stage(
+         BlockOrdering {
+             direction_texel_scale: inputs.config.direction_texel_scale,
+             cell_clusters: &partition.cell_clusters(),
++            owned_estimate: &owned_estimate,
+         },
+         LIGHTMAP_POOL_LAYER_EDGE,
+         inputs.control,
+     )
+     .map_err(prepare_error)?;
++    spike_dump_charts(&prepared);
+     // Without placements the animated passes emit nothing, so there is no
+     // block to bound.
+     if !prepared.placements.is_empty() {
+@@ -199,3 +202,143 @@ fn remap_leaf_face_ranges(leaves: &mut BspLeavesSection, face_remap: &[Range<usi
+ 
+ #[cfg(test)]
+ mod tests;
++
++/// SPIKE (packing): with `POSTRETRO_SPIKE_CHARTS_OUT=<path>`, write one TSV row
++/// per chart (face, cell, padded extent, block, block-local origin, block
++/// extent, windowed); with `POSTRETRO_SPIKE_EXIT_AFTER_ATLAS=1` too, exit.
++fn spike_dump_charts(prepared: &PreparedAtlas) {
++    use std::io::Write;
++    let Some(path) = std::env::var_os("POSTRETRO_SPIKE_CHARTS_OUT") else {
++        return;
++    };
++    let mut out = std::io::BufWriter::new(std::fs::File::create(&path).expect("spike dump"));
++    writeln!(
++        out,
++        "face\tcell\tw\th\tblock\tlx\tly\tbw\tbh\twindowed\trotated\testimate\tow\toh"
++    )
++    .unwrap();
++    let owned_rects = crate::lightmap_bake::spike_pack::LAST_OWNED_RECTS
++        .lock()
++        .unwrap()
++        .clone();
++    let estimate = SPIKE_LAST_ESTIMATE.lock().unwrap().clone();
++    for (face, chart) in prepared.charts.iter().enumerate() {
++        if prepared.placements.is_empty() {
++            break;
++        }
++        let block_id = prepared.layout.chart_blocks[face];
++        let block = &prepared.layout.blocks[block_id as usize];
++        let (lx, ly) = prepared
++            .layout
++            .local_placement(face, &prepared.placements[face]);
++        let (ow, oh) = owned_rects
++            .get(block_id as usize)
++            .copied()
++            .unwrap_or((0, 0));
++        writeln!(
++            out,
++            "{face}\t{}\t{}\t{}\t{block_id}\t{lx}\t{ly}\t{}\t{}\t{}\t{}\t{}\t{ow}\t{oh}",
++            chart.leaf_index,
++            chart.width_texels,
++            chart.height_texels,
++            block.width,
++            block.height,
++            u8::from(chart.window.is_some()),
++            u8::from(prepared.placements[face].transposed),
++            u8::from(estimate.get(face).copied().unwrap_or(false)),
++        )
++        .unwrap();
++    }
++    out.flush().unwrap();
++    log::info!(
++        "[spike] dumped {} charts in {} blocks to {}",
++        prepared.charts.len(),
++        prepared.layout.blocks.len(),
++        std::path::Path::new(&path).display()
++    );
++    if std::env::var_os("POSTRETRO_SPIKE_EXIT_AFTER_ATLAS").is_some() {
++        std::process::exit(0);
++    }
++}
++
++/// SPIKE (ownership): the last estimate, for the chart dump only.
++static SPIKE_LAST_ESTIMATE: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
++
++/// SPIKE (ownership): a conservative pre-pack superset of the charts whose
++/// face can end up with a mask owner. A face owns a light only where one of
++/// its interior texels stores nonzero quantized visibility from that light's
++/// partition, and a partition holds only the (light, chart) pairs that pass
++/// the range reach (`light_may_reach`) and the chart coverage cull
++/// (`chart_may_cover`); owners are `StaticLightMap` lights. Both tests read the
++/// chart and the light alone, never a placement. A cut face shares one owner
++/// set across its sub-faces, so every sub-face of a parent any sub-face
++/// admits is marked. `POSTRETRO_SPIKE_ESTIMATE=none` marks nothing (owned-first
++/// ordering off); `all` marks every chart.
++fn spike_owned_estimate(
++    static_lights: &StaticBakedLights<'_>,
++    charts: &[lightmap_bake::Chart],
++    cut_parents: &[lightmap_bake::CutParent],
++) -> Vec<bool> {
++    use crate::lightmap_layer::{chart_may_cover, chart_texel_bounds, light_may_reach};
++    use crate::map_data::ShadowType;
++    use rayon::prelude::*;
++    let started = std::time::Instant::now();
++    let mode = std::env::var("POSTRETRO_SPIKE_ESTIMATE").unwrap_or_default();
++    let lights: Vec<&crate::map_data::MapLight> = static_lights
++        .entries()
++        .iter()
++        // Owner eligibility (`shadowmask_bake::eligibility`): a bake-only
++        // light has no AlphaLights record and a dynamic one no static spec
++        // index, so neither owns a channel.
++        .filter(|entry| {
++            entry.light.shadow_type == ShadowType::StaticLightMap
++                && (mode == "lightmap" || (!entry.light.bake_only && !entry.light.is_dynamic))
++        })
++        .map(|entry| entry.light)
++        .collect();
++    let mut owned: Vec<bool> = match mode.as_str() {
++        "none" => vec![false; charts.len()],
++        "all" => vec![true; charts.len()],
++        _ => charts
++            .par_iter()
++            .map(|chart| {
++                let bounds = chart_texel_bounds(chart);
++                bounds.is_some()
++                    && lights.iter().any(|light| {
++                        light_may_reach(light, bounds) && chart_may_cover(light, chart)
++                    })
++            })
++            .collect(),
++    };
++    for cut in cut_parents {
++        if cut.faces.clone().any(|face| owned[face]) {
++            for face in cut.faces.clone() {
++                owned[face] = true;
++            }
++        }
++    }
++    let texels = |pick: bool| -> u64 {
++        charts
++            .iter()
++            .zip(&owned)
++            .filter(|(_, o)| **o == pick)
++            .map(|(c, _)| u64::from(c.width_texels) * u64::from(c.height_texels))
++            .sum()
++    };
++    log::info!(
++        "[spike] owner estimate ({}): {} of {} charts, {:.2}M of {:.2}M padded texels, {} candidate owner lights, {:.2}s",
++        if mode.is_empty() {
++            "reach+cover"
++        } else {
++            mode.as_str()
++        },
++        owned.iter().filter(|&&o| o).count(),
++        charts.len(),
++        texels(true) as f64 / 1e6,
++        (texels(true) + texels(false)) as f64 / 1e6,
++        lights.len(),
++        started.elapsed().as_secs_f64(),
++    );
++    *SPIKE_LAST_ESTIMATE.lock().unwrap() = owned.clone();
++    owned
++}
+diff --git a/crates/level-compiler/src/pipeline/lightmap_stage.rs b/crates/level-compiler/src/pipeline/lightmap_stage.rs
+index 02de044..57c2a72 100644
+--- a/crates/level-compiler/src/pipeline/lightmap_stage.rs
++++ b/crates/level-compiler/src/pipeline/lightmap_stage.rs
+@@ -603,8 +603,17 @@ pub(crate) fn bake_fused_with_movers(
+             let mut close_layer =
+                 |(layer, accumulator): (u32, lightmap_layer::IncrementalLayerAccumulator)| {
+                     let mut plane = accumulator.finish();
+-                    plane.dilate();
+-                    builder.push_layer(layer, &plane);
++                    // SPIKE (rotation): transposed footprints reduce in
++                    // canonical order.
++                    let turned = lightmap_bake::spike_pack::turned_mask(
++                        &prepared.charts,
++                        &prepared.placements,
++                        layer,
++                        prepared.atlas_width,
++                        prepared.atlas_height,
++                    );
++                    plane.dilate_with(turned.as_deref());
++                    builder.push_layer_with(layer, &plane, turned.as_deref());
+                 };
+             window::consume_in_order(
+                 &source,
+diff --git a/crates/level-compiler/src/pipeline/lightmap_stage/texel_steps.rs b/crates/level-compiler/src/pipeline/lightmap_stage/texel_steps.rs
+index 2e37fbd..a07d9f8 100644
+--- a/crates/level-compiler/src/pipeline/lightmap_stage/texel_steps.rs
++++ b/crates/level-compiler/src/pipeline/lightmap_stage/texel_steps.rs
+@@ -98,6 +98,12 @@ impl<'a> StepDetector<'a> {
+         let placement = self.shared.placements[face];
+         let (width, height) = chart_interior_dims(chart);
+         let (width, height) = (width as u32, height as u32);
++        // SPIKE (rotation): rows of the placed interior.
++        let (placed_w, placed_h) = if placement.transposed {
++            (height, width)
++        } else {
++            (width, height)
++        };
+         let row_start = |ty: u32| {
+             (placement.y + CHART_PADDING_TEXELS + ty) * self.shared.atlas_width
+                 + placement.x
+@@ -106,10 +112,11 @@ impl<'a> StepDetector<'a> {
+         let texels = &partition.texels;
+         let mut cursor = texels.partition_point(|texel| texel.idx < row_start(0));
+         // A chart the light left without a record costs one search.
+-        let last = row_start(height - 1) + width;
++        let last = row_start(placed_h - 1) + placed_w;
+         if texels.get(cursor).is_none_or(|texel| texel.idx >= last) {
+             return None;
+         }
++        let atlas_width = self.shared.atlas_width;
+         scan_chart(
+             chart,
+             face,
+@@ -121,6 +128,17 @@ impl<'a> StepDetector<'a> {
+                 height,
+             },
+             |ty, row| {
++                if placement.transposed {
++                    // Canonical row `ty` is a placed column: look each up.
++                    for (tx, slot) in row.iter_mut().enumerate() {
++                        let (ax, ay) = placement.atlas_texel(tx as i32, ty as i32);
++                        let idx = ay as u32 * atlas_width + ax as u32;
++                        if let Ok(i) = texels.binary_search_by_key(&idx, |texel| texel.idx) {
++                            *slot = Some(texels[i].raw_visibility);
++                        }
++                    }
++                    return;
++                }
+                 let start = row_start(ty);
+                 cursor += texels[cursor..].partition_point(|texel| texel.idx < start);
+                 while let Some(texel) = texels.get(cursor)
+diff --git a/crates/level-compiler/src/shadowmask_bake/carry.rs b/crates/level-compiler/src/shadowmask_bake/carry.rs
+index b0d0cf9..d0e589d 100644
+--- a/crates/level-compiler/src/shadowmask_bake/carry.rs
++++ b/crates/level-compiler/src/shadowmask_bake/carry.rs
+@@ -71,21 +71,25 @@ mod tests {
+                     x: 0,
+                     y: 0,
+                     layer: 0,
++                    transposed: false,
+                 },
+                 ChartPlacement {
+                     x: 0,
+                     y: 0,
+                     layer: 2,
++                    transposed: false,
+                 },
+                 ChartPlacement {
+                     x: 4,
+                     y: 0,
+                     layer: 0,
++                    transposed: false,
+                 },
+                 ChartPlacement {
+                     x: 0,
+                     y: 0,
+                     layer: 3,
++                    transposed: false,
+                 },
+             ],
+             atlas_width: 16,
+diff --git a/crates/level-compiler/src/shadowmask_bake/fill.rs b/crates/level-compiler/src/shadowmask_bake/fill.rs
+index e598086..bf53cf0 100644
+--- a/crates/level-compiler/src/shadowmask_bake/fill.rs
++++ b/crates/level-compiler/src/shadowmask_bake/fill.rs
+@@ -192,6 +192,11 @@ impl<'a> OwnershipFill<'a> {
+         self.advance_layer(partition.target_layer, shared);
+         self.face_map.ensure(partition.target_layer, shared);
+         let mut sums: BTreeMap<usize, (u32, f64)> = BTreeMap::new();
++        // SPIKE (rotation): a transposed face's records arrive in canonical
++        // column order; its terms sum in canonical row order, as an
++        // untransposed placement sums them, so the f64 sum is placement
++        // invariant.
++        let mut turned: BTreeMap<usize, Vec<(u64, f64)>> = BTreeMap::new();
+         for chunk in partition.texels.chunks(SHADOWMASK_FILL_CHECKPOINT_TEXELS) {
+             self.checkpoint();
+             for texel in chunk {
+@@ -214,11 +219,30 @@ impl<'a> OwnershipFill<'a> {
+                 let world_p = texel_world_position(shared, face, texel.idx);
+                 let (contribution, _) =
+                     light_contribution_and_direction(light.light, world_p, chart.normal);
+-                let sum = sums.entry(face).or_default();
+-                sum.0 += 1;
+-                sum.1 += f64::from(contribution.x + contribution.y + contribution.z)
++                let term = f64::from(contribution.x + contribution.y + contribution.z)
+                     * f64::from(visibility)
+                     / 255.0;
++                let placement = &shared.placements[face];
++                if placement.transposed {
++                    let (tx, ty) = placement.chart_texel(
++                        texel.idx % shared.atlas_width,
++                        texel.idx / shared.atlas_width,
++                    );
++                    let key = (u64::from(ty as u32) << 32) | u64::from(tx as u32);
++                    turned.entry(face).or_default().push((key, term));
++                    continue;
++                }
++                let sum = sums.entry(face).or_default();
++                sum.0 += 1;
++                sum.1 += term;
++            }
++        }
++        for (face, mut terms) in turned {
++            terms.sort_unstable_by_key(|&(key, _)| key);
++            let sum = sums.entry(face).or_default();
++            for (_, term) in terms {
++                sum.0 += 1;
++                sum.1 += term;
+             }
+         }
+ 
+@@ -317,8 +341,8 @@ impl<'a> OwnershipFill<'a> {
+         let window = shared.charts[face]
+             .window
+             .expect("a cut sub-face's chart windows its parent");
+-        let tx = idx % shared.atlas_width - placement.x - CHART_PADDING_TEXELS;
+-        let ty = idx / shared.atlas_width - placement.y - CHART_PADDING_TEXELS;
++        let (tx, ty) = placement.chart_texel(idx % shared.atlas_width, idx / shared.atlas_width);
++        let (tx, ty) = (tx as u32, ty as u32);
+         u.contains(&(window.origin[0] + tx)) && v.contains(&(window.origin[1] + ty))
+     }
+ 
+@@ -396,7 +420,9 @@ impl<'a> OwnershipFill<'a> {
+     ) -> impl Iterator<Item = usize> + use<> {
+         let chart = &shared.charts[face];
+         let (width, x, y) = self.face_rect(face, shared);
+-        let (chart_w, chart_h) = (chart.width_texels as usize, chart.height_texels as usize);
++        // SPIKE (rotation): the placed footprint.
++        let (chart_w, chart_h) = shared.placements[face].extent(chart);
++        let (chart_w, chart_h) = (chart_w as usize, chart_h as usize);
+         (0..chart_h).flat_map(move |row| {
+             let start = (y + row) * width + x;
+             (start..start + chart_w).map(|texel| texel * SHADOWMASK_OWNER_CHANNELS)
+@@ -464,9 +490,13 @@ impl<'a> OwnershipFill<'a> {
+         let (atlas_width, placement_x, placement_y) = self.face_rect(face, shared);
+         let data = self.face_data_mut(face, shared);
+         let padding = i64::from(CHART_PADDING_TEXELS);
+-        // Inclusive interior bounds in padded-rect coordinates.
+-        let (x_lo, x_hi) = (padding, i64::from(chart.width_texels) - padding - 1);
+-        let (y_lo, y_hi) = (padding, i64::from(chart.height_texels) - padding - 1);
++        // Inclusive interior bounds in padded-rect coordinates. SPIKE
++        // (rotation): over the placed footprint. The ring mean is an integer
++        // sum over a symmetric neighbourhood, so a transposed chart's padding
++        // holds its canonical values transposed.
++        let (placed_w, placed_h) = shared.placements[face].extent(chart);
++        let (x_lo, x_hi) = (padding, i64::from(placed_w) - padding - 1);
++        let (y_lo, y_hi) = (padding, i64::from(placed_h) - padding - 1);
+         debug_assert!(x_lo <= x_hi && y_lo <= y_hi, "a lit chart has an interior");
+         // Chebyshev distance from the interior: 0 inside, ring `n` in padding.
+         let ring_of =
+@@ -522,10 +552,7 @@ fn rect_perimeter(x0: i64, x1: i64, y0: i64, y1: i64) -> impl Iterator<Item = (i
+ /// World position of the chart-interior texel at bake-layer index `idx`.
+ fn texel_world_position(shared: &SharedAtlas<'_>, face: usize, idx: u32) -> glam::Vec3 {
+     let placement = &shared.placements[face];
+-    let atlas_x = idx % shared.atlas_width;
+-    let atlas_y = idx / shared.atlas_width;
+-    let tx = (atlas_x - placement.x - CHART_PADDING_TEXELS) as i32;
+-    let ty = (atlas_y - placement.y - CHART_PADDING_TEXELS) as i32;
++    let (tx, ty) = placement.chart_texel(idx % shared.atlas_width, idx / shared.atlas_width);
+     chart_texel_world_position(&shared.charts[face], tx, ty)
+ }
+ 
+diff --git a/crates/level-compiler/src/shadowmask_bake/fill/layers.rs b/crates/level-compiler/src/shadowmask_bake/fill/layers.rs
+index 95ea35f..cc2d3ab 100644
+--- a/crates/level-compiler/src/shadowmask_bake/fill/layers.rs
++++ b/crates/level-compiler/src/shadowmask_bake/fill/layers.rs
+@@ -90,6 +90,7 @@ impl OwnershipFill<'_> {
+             let block = self.blocks[block_id];
+             #[cfg(test)]
+             self.record_block_snapshot(block, &raw);
++            spike_dump_mask_block(block_id, block.width, block.height, &raw);
+             let local = CellBlock {
+                 x: 0,
+                 y: 0,
+@@ -123,6 +124,15 @@ impl OwnershipFill<'_> {
+                 );
+                 self.carry[block_id] = Some(RawFillBuffer::new(raw, &self.probe));
+             } else {
++                if spike_mask_dump_enabled() {
++                    let raw = copy_unit_rect(
++                        self.data.as_ref().unwrap(),
++                        self.width,
++                        4,
++                        [block.x, block.y, block.width, block.height],
++                    );
++                    spike_dump_mask_block(block_id, block.width, block.height, &raw);
++                }
+                 ready.push(CellBlock { layer: 0, ..block });
+                 ready_ids.push(block_id);
+             }
+@@ -185,3 +195,29 @@ impl OwnershipFill<'_> {
+         }
+     }
+ }
++
++/// SPIKE (rotation): with `POSTRETRO_SPIKE_MASK_RAW_OUT=<path>`, every block's
++/// raw RGBA8 mask before BC5, as `u32 id, u32 width, u32 height` then the
++/// block-local texels.
++static SPIKE_MASK_OUT: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>> =
++    std::sync::Mutex::new(None);
++
++fn spike_mask_dump_enabled() -> bool {
++    std::env::var_os("POSTRETRO_SPIKE_MASK_RAW_OUT").is_some()
++}
++
++fn spike_dump_mask_block(block_id: usize, width: u32, height: u32, raw: &[u8]) {
++    use std::io::Write;
++    let Some(path) = std::env::var_os("POSTRETRO_SPIKE_MASK_RAW_OUT") else {
++        return;
++    };
++    let mut out = SPIKE_MASK_OUT.lock().unwrap();
++    let out = out.get_or_insert_with(|| {
++        std::io::BufWriter::new(std::fs::File::create(path).expect("spike mask dump"))
++    });
++    out.write_all(&(block_id as u32).to_le_bytes()).unwrap();
++    out.write_all(&width.to_le_bytes()).unwrap();
++    out.write_all(&height.to_le_bytes()).unwrap();
++    out.write_all(raw).unwrap();
++    out.flush().unwrap();
++}
+diff --git a/crates/level-compiler/src/shadowmask_bake/tests.rs b/crates/level-compiler/src/shadowmask_bake/tests.rs
+index 8db7950..a0419b1 100644
+--- a/crates/level-compiler/src/shadowmask_bake/tests.rs
++++ b/crates/level-compiler/src/shadowmask_bake/tests.rs
+@@ -54,6 +54,7 @@ impl Atlas {
+                 x: face as u32 * CHART,
+                 y: 0,
+                 layer: 0,
++                transposed: false,
+             })
+             .collect();
+         Self {
+@@ -573,6 +574,7 @@ fn a_chart_on_a_later_layer_and_row_dilates_its_own_padding() {
+         x: 4,
+         y: 4,
+         layer: 1,
++        transposed: false,
+     };
+     let atlas = Atlas::new(1).placed(placement, 16, 16, 2);
+     let light = light_over(0, 2.0);
+diff --git a/crates/level-compiler/src/texel_footprint/test_fixtures.rs b/crates/level-compiler/src/texel_footprint/test_fixtures.rs
+index 6fc2465..63c899f 100644
+--- a/crates/level-compiler/src/texel_footprint/test_fixtures.rs
++++ b/crates/level-compiler/src/texel_footprint/test_fixtures.rs
+@@ -409,6 +409,7 @@ impl Fixture {
+             x: 0,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         }];
+         let (atlas_width, atlas_height) = (charts[0].width_texels, charts[0].height_texels);
+         let layout = BlockLayout::whole_layers(atlas_width, atlas_height, &placements, 2);
+@@ -457,6 +458,7 @@ impl Fixture {
+             x: 0,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         }];
+         let (atlas_width, atlas_height) = (chart.width_texels, chart.height_texels);
+         let layout = BlockLayout::whole_layers(atlas_width, atlas_height, &placements, 2);
+diff --git a/crates/level-compiler/src/texel_footprint/tests.rs b/crates/level-compiler/src/texel_footprint/tests.rs
+index 4224058..63274c4 100644
+--- a/crates/level-compiler/src/texel_footprint/tests.rs
++++ b/crates/level-compiler/src/texel_footprint/tests.rs
+@@ -2080,6 +2080,7 @@ fn single_chart_atlas<R>(
+         x: 0,
+         y: 0,
+         layer: 0,
++        transposed: false,
+     }];
+     let (w, h) = (charts[0].width_texels, charts[0].height_texels);
+     let layout = crate::lightmap_bake::BlockLayout::whole_layers(w, h, &placements, 2);
+@@ -2315,11 +2316,13 @@ fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
+             x: 0,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         },
+         ChartPlacement {
+             x: charts[0].width_texels,
+             y: 0,
+             layer: 0,
++            transposed: false,
+         },
+     ];
+     let atlas_width = charts[0].width_texels + charts[1].width_texels;
+diff --git a/crates/level-format/src/lightmap_pool/demand.rs b/crates/level-format/src/lightmap_pool/demand.rs
+index 6231d66..29ad8b7 100644
+--- a/crates/level-format/src/lightmap_pool/demand.rs
++++ b/crates/level-format/src/lightmap_pool/demand.rs
+@@ -23,6 +23,10 @@ pub struct PoolDemand {
+     /// `None` for a level with no mask pool at all: no id 42. Distinct from a
+     /// level whose every plane is absent, which has masks that read zero.
+     planes: Option<Vec<PlanePresence>>,
++    /// SPIKE (ownership): per block, the extent a present plane places at,
++    /// anchored at the block origin: its owned sub-rect. `None` places each
++    /// plane at its block's whole extent.
++    mask_extents: Option<Vec<(u32, u32)>>,
+ }
+ 
+ /// Every plane of a level placed at once: the all-resident mask pool.
+@@ -55,9 +59,29 @@ impl PoolDemand {
+             alignment: alignment.max(1),
+             extents,
+             planes,
++            mask_extents: None,
+         }
+     }
+ 
++    /// SPIKE (ownership): place each present plane at `mask_extents[block]`,
++    /// its owned sub-rect from the block origin, instead of the whole block.
++    pub fn with_mask_extents(mut self, mask_extents: Vec<(u32, u32)>) -> Self {
++        assert_eq!(
++            mask_extents.len(),
++            self.extents.len(),
++            "one extent per block"
++        );
++        self.mask_extents = Some(mask_extents);
++        self
++    }
++
++    /// The extent a present plane of `block` places at.
++    pub fn mask_extent(&self, block: u32) -> (u32, u32) {
++        self.mask_extents
++            .as_ref()
++            .map_or(self.extents[block as usize], |m| m[block as usize])
++    }
++
+     /// A level with no mask pool.
+     pub fn lightmap_only(alignment: u32, extents: Vec<(u32, u32)>) -> Self {
+         Self::new(alignment, extents, None)
+@@ -162,7 +186,7 @@ impl PoolDemand {
+             scratch.lightmap.push(extent);
+             for stored in self.planes(block) {
+                 if stored {
+-                    scratch.mask.push(extent);
++                    scratch.mask.push(self.mask_extent(block));
+                 }
+             }
+         }
+@@ -183,7 +207,7 @@ impl PoolDemand {
+         let items = self.items(PoolKind::Mask);
+         let extents: Vec<(u32, u32)> = items
+             .iter()
+-            .map(|&item| self.extents[PoolKind::Mask.block_of(item) as usize])
++            .map(|&item| self.mask_extent(PoolKind::Mask.block_of(item)))
+             .collect();
+         let pool = self.pack(&extents, edge)?;
+         let mut planes = vec![[None; 2]; self.extents.len()];
+diff --git a/crates/renderer/src/shaders/forward.wgsl b/crates/renderer/src/shaders/forward.wgsl
+index f35f8a7..f961bf7 100644
+--- a/crates/renderer/src/shaders/forward.wgsl
++++ b/crates/renderer/src/shaders/forward.wgsl
+@@ -346,7 +346,9 @@ struct LightSpaceMatrices {
+ // `postretro_render_cpu::lightmap_pool::BlockTableEntry`. The vertex stage
+ // reads one entry per vertex and hands the fragment stage flat varyings, so no
+ // fragment binding is spent.
+-@group(6) @binding(0) var<storage, read> lightmap_block_table: array<vec4<u32>>;
++// SPIKE (mask layout): two vec4<u32> per entry, `LightmapBlockEntry` in
++// lightmap_sample.wgsl.
++@group(6) @binding(0) var<storage, read> lightmap_block_table: array<LightmapBlockEntry>;
+ 
+ 
+ struct VertexInput {
+@@ -362,6 +364,9 @@ struct VertexInput {
+     // The vertex's face owners from the second, forward-only vertex buffer
+     // (one Uint16x4): compact static spec-light indices, 0xFFFF = empty.
+     @location(6) spec_owners: vec4<u32>,
++    // SPIKE (mask layout): the face's mask chart translation in texels, from
++    // the same forward-only owner stream (one Sint16x2 after the owners).
++    @location(7) mask_delta: vec2<i32>,
+ };
+ 
+ struct VertexOutput {
+@@ -387,7 +392,9 @@ struct VertexOutput {
+     @location(9) @interpolate(flat) spec_owners: vec4<u32>,
+     // Plane A and plane B pool addresses, packed: only the mask path decodes
+     // them.
+-    @location(10) @interpolate(flat) lightmap_plane_addresses: vec2<u32>,
++    @location(10) @interpolate(flat) lightmap_plane_addresses: vec4<u32>,
++    // SPIKE (mask layout): the face's mask chart translation, i16 x | i16 y << 16.
++    @location(11) @interpolate(flat) mask_delta: u32,
+ };
+ 
+ fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
+@@ -433,6 +440,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
+     out.lightmap_plane_addresses = block.plane_addresses;
+     out.animated_block = in.lightmap_block_ids.y;
+     out.spec_owners = in.spec_owners;
++    out.mask_delta = (bitcast<u32>(in.mask_delta.x) & 0xffffu)
++        | (bitcast<u32>(in.mask_delta.y) << 16u);
+ 
+     return out;
+ }
+@@ -962,7 +971,8 @@ fn shadowmask_union_subtraction(
+     lightmap_texel: vec2<f32>,
+     lightmap_layer_flags: u32,
+     lightmap_rect: vec4<u32>,
+-    lightmap_plane_addresses: vec2<u32>,
++    lightmap_plane_addresses: vec4<u32>,
++    mask_delta: u32,
+     mesh_n: vec3<f32>,
+     bump_n: vec3<f32>,
+     owners: vec4<u32>,
+@@ -993,6 +1003,7 @@ fn shadowmask_union_subtraction(
+         lightmap_layer_flags,
+         lightmap_rect,
+         lightmap_plane_addresses,
++        mask_delta,
+     );
+     let promoted_count = uniforms.total_light_count - promoted_start;
+     let influence_len = arrayLength(&light_influence);
+@@ -1305,6 +1316,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+             in.lightmap_layer_flags,
+             in.lightmap_rect,
+             in.lightmap_plane_addresses,
++            in.mask_delta,
+             mesh_n,
+             N_shade,
+             in.spec_owners,
+@@ -1341,6 +1353,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+                 in.lightmap_layer_flags,
+                 in.lightmap_rect,
+                 in.lightmap_plane_addresses,
++                in.mask_delta,
+             );
+         }
+         specular_sum = world_static_specular(
+diff --git a/crates/renderer/src/shaders/lightmap_sample.wgsl b/crates/renderer/src/shaders/lightmap_sample.wgsl
+index 6227191..dde54c0 100644
+--- a/crates/renderer/src/shaders/lightmap_sample.wgsl
++++ b/crates/renderer/src/shaders/lightmap_sample.wgsl
+@@ -31,6 +31,18 @@ const LIGHTMAP_EXTENT_BITS: u32 = 12u;
+ const LIGHTMAP_EXTENT_MASK: u32 = 4095u;
+ const LIGHTMAP_FLAGS_SHIFT: u32 = 24u;
+ 
++// SPIKE (mask layout): one block-table entry. `lightmap` is the HEAD entry
++// (lightmap address, plane A address, plane B address, extent and flags);
++// `mask` carries each plane's own extent, since a plane is the block's mask
++// block, packed apart from its lightmap block: `.x` plane A extent w (12) |
++// h (12) << 12, `.y` plane B extent (plane B may be a sub-rect of A from the
++// mask block origin), `.zw` reserved. Static per block: install and eviction
++// write it unchanged.
++struct LightmapBlockEntry {
++    lightmap: vec4<u32>,
++    mask: vec4<u32>,
++};
++
+ // What the vertex stage hands the fragment stage for one vertex's block.
+ struct LightmapBlockVaryings {
+     // Block-local texel: the block-local UV times the block extent.
+@@ -39,9 +51,9 @@ struct LightmapBlockVaryings {
+     layer_flags: u32,
+     // Pool offset (xy) and block extent (zw), in pool texels.
+     rect: vec4<u32>,
+-    // Plane A and plane B pool addresses, still packed: only the mask path
+-    // decodes them.
+-    plane_addresses: vec2<u32>,
++    // Plane A and plane B pool addresses (xy) and extents (zw), still
++    // packed: only the mask path decodes them.
++    plane_addresses: vec4<u32>,
+ };
+ 
+ fn lightmap_address_offset(address: u32) -> vec2<u32> {
+@@ -60,7 +72,8 @@ fn lightmap_address_layer(address: u32) -> u32 {
+ // 0, so placeholder mode's one-entry table serves every vertex.
+ fn resolve_lightmap_block(block: u32, uv: vec2<f32>) -> LightmapBlockVaryings {
+     let index = select(0u, block, block < arrayLength(&lightmap_block_table));
+-    let entry = lightmap_block_table[index];
++    let both = lightmap_block_table[index];
++    let entry = both.lightmap;
+     let extent = vec2<u32>(
+         entry.w & LIGHTMAP_EXTENT_MASK,
+         (entry.w >> LIGHTMAP_EXTENT_BITS) & LIGHTMAP_EXTENT_MASK,
+@@ -69,7 +82,7 @@ fn resolve_lightmap_block(block: u32, uv: vec2<f32>) -> LightmapBlockVaryings {
+     out.texel = uv * vec2<f32>(extent);
+     out.layer_flags = lightmap_address_layer(entry.x) | ((entry.w >> LIGHTMAP_FLAGS_SHIFT) << 16u);
+     out.rect = vec4<u32>(lightmap_address_offset(entry.x), extent);
+-    out.plane_addresses = entry.yz;
++    out.plane_addresses = vec4<u32>(entry.yz, both.mask.xy);
+     return out;
+ }
+ 
+@@ -182,11 +195,33 @@ fn animated_block_uv(block_texel: vec2<f32>, block_id: u32) -> AnimatedBlockUv {
+ // One plane's two mask channels at its own pool address. The block's
+ // half-texel clamp keeps bilinear taps inside the plane's own texels, never in
+ // a neighbouring placement.
+-fn sample_shadowmask_plane(texel: vec2<f32>, rect: vec4<u32>, address: u32) -> vec2<f32> {
++fn lightmap_unpack_extent(packed: u32) -> vec2<u32> {
++    return vec2<u32>(
++        packed & LIGHTMAP_EXTENT_MASK,
++        (packed >> LIGHTMAP_EXTENT_BITS) & LIGHTMAP_EXTENT_MASK,
++    );
++}
++
++// SPIKE (mask layout): a face's texel in its block's mask block: the
++// block-local lightmap texel plus the face's integer chart translation
++// (mask origin − lightmap origin, i16 x | i16 y << 16, from the owner
++// stream). Same arithmetic as `animated_block_uv`'s compact offset.
++fn lightmap_mask_texel(texel: vec2<f32>, mask_delta: u32) -> vec2<f32> {
++    let offset = vec2<f32>(
++        f32(bitcast<i32>(mask_delta << 16u) >> 16u),
++        f32(bitcast<i32>(mask_delta) >> 16u),
++    );
++    return texel + offset;
++}
++
++fn sample_shadowmask_plane(texel: vec2<f32>, address: u32, extent: u32) -> vec2<f32> {
+     return textureSampleLevel(
+         shadowmask_atlas,
+         lightmap_filtering_sampler,
+-        lightmap_pool_uv(texel, vec4<u32>(lightmap_address_offset(address), rect.zw)),
++        lightmap_pool_uv(
++            texel,
++            vec4<u32>(lightmap_address_offset(address), lightmap_unpack_extent(extent)),
++        ),
+         i32(lightmap_address_layer(address)),
+         0.0,
+     ).rg;
+@@ -203,7 +238,8 @@ fn sample_shadowmask_atlas(
+     texel: vec2<f32>,
+     layer_flags: u32,
+     rect: vec4<u32>,
+-    plane_addresses: vec2<u32>,
++    plane_addresses: vec4<u32>,
++    mask_delta: u32,
+ ) -> vec4<f32> {
+     let flags = layer_flags >> 16u;
+     if (flags & LIGHTMAP_BLOCK_NONE) != 0u {
+@@ -215,13 +251,14 @@ fn sample_shadowmask_atlas(
+     if (flags & LIGHTMAP_BLOCK_NO_MASK_POOL) != 0u {
+         return vec4<f32>(1.0);
+     }
++    let mask_texel = lightmap_mask_texel(texel, mask_delta);
+     var group_a = vec2<f32>(0.0);
+     var group_b = vec2<f32>(0.0);
+     if (flags & LIGHTMAP_BLOCK_PLANE_A) != 0u {
+-        group_a = sample_shadowmask_plane(texel, rect, plane_addresses.x);
++        group_a = sample_shadowmask_plane(mask_texel, plane_addresses.x, plane_addresses.z);
+     }
+     if (flags & LIGHTMAP_BLOCK_PLANE_B) != 0u {
+-        group_b = sample_shadowmask_plane(texel, rect, plane_addresses.y);
++        group_b = sample_shadowmask_plane(mask_texel, plane_addresses.y, plane_addresses.w);
+     }
+     return vec4<f32>(group_a, group_b);
+ }

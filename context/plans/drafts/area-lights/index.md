@@ -303,7 +303,7 @@ Glow and light identity (orderings in `research.md` §Pin table):
   (`animated_baked_shadow_candidates_with_direct_delta`) needs an explicit type
   refusal. `is_promotable_base_light` already has one.
 - **Glow table.** Follow the `animated_block` id → uniform-table precedent; the
-  forward pass has no texture binding to spare (`research.md` §Grounding). The
+  forward pass has no texture binding to spare (`research.md` §6). The
   glow reads the compose descriptor and the frame's time uniform in-shader (O13).
 - **Strongest rival:** texture-keyed polygon lights, which use the roadmap's
   mark-a-texture-once authoring with this brief's maths. They win for many small

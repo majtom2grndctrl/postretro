@@ -199,7 +199,7 @@ Orderings and edges the brief's Acceptance rows cite. Review round 1, 2026-11-15
 |---|---|---|---|
 | O1 | A script fade (finite play_count) on an animated area light runs to its end | The bridge settles on the first frame past the end. The final brightness folds into the light's intensity, the curve clears, and the compose descriptor carries the settled radiance with no curve. Glow reads that same descriptor on that frame | Faces hold the faded level, final brightness × _e × _glow, on the settle frame and after. The glow never returns to full while the room stays faded |
 | O2 | One area light compiled at light L and again at 2L, _glow unchanged | The compose descriptor carries _color × intensity. The glow divides out the authored intensity before it applies _glow and the live multiplier | The room's light doubles. The faces' emissive term is identical |
-| O3 | An _animated area light with _start_inactive 1, compiled once with no levelLoad pulse and once with one targeting it | Translation records the authored start. Script membership overrides it, and then the glow table and descriptors are written. The first frame reads the post-manifest state | Without the pulse, the faces are dark and the room is unlit until a script activates the light. With the pulse, the faces and the room are lit from the first frame |
+| O3 | An area light with _start_inactive 1 (with or without _animated), compiled once with no levelLoad pulse and once with one targeting it | Translation records the authored start. Script membership overrides it, and then the glow table and descriptors are written. The first frame reads the post-manifest state | Without the pulse, the faces are dark and the room is unlit until a script activates the light. With the pulse, the faces and the room are lit from the first frame |
 | O4 | Lights in entity order: an animated point light, animated area light A, _bake_only animated area light B, animated area light C | The glow table is written after the namespaces are fixed. Each face entry names its own light's compose descriptor slot (AnimatedBakedLights order), never an authored, AlphaLights or forward-loop index | Pulsing A moves only A's faces. B's faces follow B's compose slot although B has no AlphaLights record. C's faces follow C |
 | O5 | A map with no area light; a map whose emitting faces exceed the glow-table cap | The compiler checks the cap before it writes the table. The loader rejects an over-cap table | With none, there are no glow entries and every face draws its prefix glow. Over the cap, the build fails, naming the count and the cap |
 | O6 | One 4 × 4 m panel brush, against four 2 × 2 m brushes tiling the same panel in one entity | Polygon terms sum. Reach uses the light's total L·A and the distance to its nearest polygon | Every receiver matches within 1e-5 relative, and the resolved reach is identical |
@@ -214,6 +214,8 @@ Orderings and edges the brief's Acceptance rows cite. Review round 1, 2026-11-15
 ---
 
 ## Handoff
+
+The draft session's record. `index.md` supersedes it for Decisions and Acceptance.
 
 Changes from the cloud session's handoff are marked **[web]** where research changed them and **[source]** where this session's source reads did.
 

@@ -110,8 +110,8 @@ light.
   `falloffModel` reports `"InverseSquared"`, and `position` is the area-weighted
   centroid. A direction channel (`sweep`) on an area light is refused when it
   runs: that light is skipped with a logged `InvalidArgument` naming it, and
-  the step's other targets apply, as a target with no light component is
-  skipped today.
+  the other lights it targets still apply, as a target with no light
+  component is skipped today.
   Co-op replication of light animation is unchanged.
 - **Keys: inert keys warn, contradictory keys fail.** Changing a `light` to
   `light_area` in the editor keeps its keys. So `delay`, `_light_size` and the
@@ -176,7 +176,7 @@ export function setupLevel(_ctx: unknown) {
 }
 // p.component.lightType === "Area"; p.position is the emitting faces' centroid.
 // A sweep step on an area light skips it with a logged InvalidArgument;
-// spot targets in the same step still sweep.
+// spot lights in the same sweep still apply.
 ```
 
 ## Acceptance
@@ -323,8 +323,6 @@ Script surface:
   its faces' glow entries name that reserved slot, `lightType` reads `"Area"`,
   and `p.position` is the area-weighted centroid. The TypeScript and Luau type
   checks both accept `"Area"`.
-- [ ] `sweep` on an area light returns `InvalidArgument` and leaves the light's
-  animation unchanged. `sweep` on a spot light still works.
 - [ ] A tagged `sweep` over a spot, an area light and a second spot, in that
   order, as per-member steps and as one tag descriptor, sweeps both spots and
   leaves the area light's animation unchanged with one warning naming it, on

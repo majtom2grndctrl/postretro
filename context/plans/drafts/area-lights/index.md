@@ -37,13 +37,14 @@ light.
   distance from the polygons at which the bound E ≤ L·A/d² falls to 1/256 of
   what a `light 300` point light gives at 1 m. `_falloff_range`, measured the
   same way, overrides it. The term is scaled by the window max(0, 1 − (d/R)⁴)²,
-  with d the distance to the nearest polygon (Karis 2013), so light reaches zero at R with no visible edge
-  and nothing beyond R is lit. A hard cut is either visible or reaches hundreds of
-  metres (`research.md` §4).
-- **Unshadowed term: exact, then windowed.** Lambert's polygon irradiance, clipped to the
-  receiver's horizon, with the clipped polygon's irradiance vector as the stored
-  direction (`research.md` §1). A receiver on or behind the emitter's plane gets
-  zero, so the emitter's own faces take no direct light from it.
+  with d the distance to the nearest polygon (Karis 2013), so light reaches zero
+  at R with no visible edge and nothing beyond R is lit. A hard cut is either
+  visible or reaches hundreds of metres (`research.md` §4).
+- **Unshadowed term: exact, then windowed.** Lambert's polygon irradiance,
+  clipped to the receiver's horizon, with the clipped polygon's irradiance
+  vector as the stored direction (`research.md` §1). A receiver on or behind the
+  emitter's plane gets zero, so the emitter's own faces take no direct light
+  from it.
 - **Shadows: integrand-weighted visibility in the existing separable fold.** Each
   shadow sample counts by its share of the unshadowed light, never as a plain
   clear-ray fraction, which is wrong near a large emitter (`research.md` §2). The

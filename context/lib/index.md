@@ -55,6 +55,7 @@
 - **Accessibility panel / `ui.openAccessibility` / accessibility field actions / missing-entry warning / first-launch panel hold** → `ui.md` §4.1 · `input.md` §5 · `boot_sequence.md` §First-launch hold
 - **World static specular / which lights draw specular / shadowmask owners per face / unowned-means-no-specular** → `rendering_pipeline.md` §4 (Static specular ownership) · bake and format: `build_pipeline.md` §PRL (ShadowmaskAtlas ownership)
 - **Animated lightmap compact atlas / block table / section 25 paging / lightmap-family memory meter** → `rendering_pipeline.md` §7.1 (Animated lightmap compose), §7.8 (Lightmap-family byte meter) · format: `build_pipeline.md` §PRL section IDs
+- **Emissive strength / `materials.toml` / `emissive_volume` / scripted glow / neon prefix retirement** (decided, not yet built) → `resource_management.md` §4.5 · `build_pipeline.md` §Compiler pipeline step 9, §PRL section IDs · `scripting.md` §10.2a · flash clamp: `rendering_pipeline.md` §7.8
 - **Photosensitivity / flash limiter / strobe safety** → `rendering_pipeline.md` §7.8 (Photosensitivity limiter)
 - **Screen reader / assistive technology / accessibility snapshot / hidden-window adapter boot** → `ui.md` §4.2 · `boot_sequence.md` §Window visibility
 - **Theme variants / high contrast / text scale / contrast diagnostic / focus visuals** → `ui.md` §1, §2

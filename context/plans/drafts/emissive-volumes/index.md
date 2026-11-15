@@ -14,11 +14,12 @@ Owner request: mappers set how strongly a surface glows, per placement, and scri
 - **Retire the `neon` prefix and `Material::Neon`.** Neon's shininess matches Default and its ricochet flag has no reader. Its flat surface depth goes too: a former `neon_` texture with an `_h` map carves as Default does.
   - Glow strength becomes 1.0 wherever a material's `_e` slot is loaded, 0 otherwise. Runtime and bake read the one predicate.
   - `tools/gen_emissive.py` uses one default cutoff whatever the prefix; `--cutoff` stays the lever.
-  - Diverges from `context/lib` wherever it describes prefix-derived glow, neon flatness or unlimited emissives: `resource_management.md` §3, §4.5, §5.2 and `rendering_pipeline.md` §7.3, §7.8. Each is rewritten at promotion.
+  - Diverges from `context/lib` wherever it describes prefix-derived glow, neon flatness or unlimited emissives: `resource_management.md` §3, §4.5, §4.6, §5.2, `rendering_pipeline.md` §7.3, §7.8 and `build_pipeline.md` §Compiler pipeline step 9 (material stage). Each is rewritten at promotion.
 - **`_e` stays an RGB colour map in linear light; black is zero glow.** `glow = _e × strength`. The diffuse map is the unlit surface and `_e` the lit one, so fading glow to 0 shows a real off state. Matches glTF `emissiveTexture` × `KHR_materials_emissive_strength` (`research.md`).
+- **Faces without an `_e` map pay no new per-fragment cost.** The forward pass is the Mac target's usual bottleneck.
 - **`emissive_volume` brush entity.** Keys:
   - `emissive_min` (default 0), `emissive_max` (default 1), `_tags`.
-  - A bad value never stops the compile (`index.md` §2, "Designers over structure"). A negative value clamps to 0 and a non-finite one takes its key's default, each with a warning naming the key. A max below min swaps, with a warning.
+  - A bad value never stops the compile (`index.md` §2, "Designers over structure"). Each key is fixed first, then the pair: a negative value reads 0, a non-finite one its default, and a value past a ceiling the ceiling, each with a warning naming the key; then a max below min swaps, with a warning. The ceiling sits far above any look and below the scene target's half-float maximum.
   - A scripted **brightness** in [0, 1] sets strength = min + brightness × (max − min). With no script, brightness is 1.
   - Its brushes never render, collide or bake.
 - **The map owns the range; scripts own only brightness.** Lights and fog take absolute values through the same `pulse`/`fade`/`flicker`. Here those methods take brightness in [0, 1], so a script cannot push a surface past the mapper's maximum (`index.md` §2, "Defaults for novices").
@@ -33,16 +34,9 @@ Owner request: mappers set how strongly a surface glows, per placement, and scri
 - **Static world faces only.**
   - Kinematic movers and fluids keep strength 1.0 with no lever. Accepted regression: a `neon_` face on a mover or fluid drops from 4.0 to 1.0. No dev map has one.
   - Model glow stays 0: models load only their diffuse slot.
-- **Runtime owns brightness; the bake reads max.** Reflection-probe capture bakes each member face at its volume's max, its reference state (`research.md` §Capture reference state). A scripted pulse does not move a reflection. Bounce means exclude glow texels on any texture with an `_e` map.
-- **Photosensitivity: one HDR rule in `flash_clamp`.**
-  - The per-value clamp takes values in [0, 1]. A new shared rule lets it judge an HDR value s ≥ 0: s enters as s ÷ (s + 1), with 1 the bloom threshold, and the clamped result maps back exactly. Every HDR step counts, compressed as the tonemap compresses it.
-  - Emissive volumes are the rule's first source; `E23--photosensitivity-source-floor` reuses it for lights.
-  - While `accessibility.flashLimiter` is on, each volume's presented strength passes the clamp. Scripts and the wire carry the scripted brightness.
-  - The red-flash rule and any shared budget across sources stay with E23.
-- **Co-op: fog volumes' presentation-state behaviour, with three deliberate differences.** A host-only write replicates bound by emissive record index with the 1 cm origin check (`networking.md` §Presentation state); a machine-local write stays local. The differences:
-  - the brightness-write clearing rule above
-  - brightness units in place of absolute values
-  - a per-machine limiter that never reaches the wire
+- **Runtime owns brightness; the bake reads max.** Reflection-probe capture bakes each member face at its volume's max, its reference state (`research.md` §Capture reference state). Bounce means exclude glow texels on any texture with an `_e` map.
+- **Photosensitivity: the existing clamp, fed what the surface shows.** While `accessibility.flashLimiter` is on, each volume's presented strength passes the `flash_clamp` per-value rules as min(strength, 1). The resolve's tonemap is near-identity below 1, so that is the surface's displayed luminance. A strobe between two strengths at or above 1 reads white both ways and is no flash under those rules. Scripts and the wire carry the scripted brightness. E23 owns the bloom halo such a strobe drives, the red-flash rule and any budget shared across sources; it can reuse this source as its first emissive clamp site.
+- **Co-op: fog volumes' presentation-state behaviour** (`networking.md` §Presentation state), bound by emissive record index with the 1 cm origin check. It differs only where the Decisions above do: brightness writes clear animations, values are brightness, and the limiter is per machine and never reaches the wire.
 - **Migration.** `tools/migrate_neon_prefix.py` renames `neon_x` to `x` for every slot sibling and rewrites `.map` texture references.
   - Dry-run by default.
   - Refuses on a name collision, or when `x`'s derived prefix (its first `_` token, case-folded, as the engine parses it) is a known material prefix.
@@ -76,30 +70,21 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 
 ### Automated
 - [ ] Textures:
-  - A texture with an `_e` map glows at strength 1.0, with no prefix and with a known prefix (`metal_`). The predicate ignores the material.
-  - One without `_e` packs 0 and skips the emissive sample. This is a regression guard on forward-pass cost.
-  - A former `neon_` name is an unknown prefix, warned once (grep gate: no `neon` in the prefix tables).
-  - A former `neon_` texture with an `_h` map carves as Default.
-  - A skinned model with an `_e` sibling still packs 0.
+  - A texture with an `_e` map glows at 1.0, with no prefix and with a known prefix (`metal_`). One without `_e` packs 0 and samples no emissive texture. A skinned model with an `_e` sibling still packs 0.
+  - A former `neon_` name is an unknown prefix, warned once (grep gate: no `neon` in the prefix tables). With an `_h` map it carves as Default.
 - [ ] Bake and runtime agree on the `_e`-loaded predicate for one texture: bounce-mean glow exclusion, reflection-capture term and material uniform. That texture's bounce mean excludes its glow texels.
 - [ ] `gen_emissive.py` without `--cutoff` uses one default whatever the file's prefix: a `neon_` file and any other give the same `_e`.
 - [ ] Strength = min + brightness × (max − min) at brightness 0, 0.5 and 1. No script means max. Brightness outside [0, 1] clamps on both sides, written or sampled from a curve (pin P10).
-- [ ] Bad keys compile, each with one warning naming the key: max < min swaps, a negative value reads 0, and a non-finite value reads its default. Valid keys, 0 included, compile silently. Each key is read before the pair swaps: `emissive_min` 2 with a non-finite `emissive_max` stores min 1 and max 2, with two warnings (pin P38).
+- [ ] Bad keys compile, each with one warning naming the key: max < min swaps, a negative value reads 0, a non-finite value reads its default, and a value past the ceiling reads the ceiling. Valid keys, 0 included, compile silently. Each key is read before the pair swaps: `emissive_min` 2 with a non-finite `emissive_max` stores min 1 and max 2, with two warnings (pin P38).
 - [ ] Membership:
   - A face whose centroid is inside a hull joins; one just outside does not. A face in the plane of a volume brush's side (the volume flush on a wall) joins (pin P27).
   - A member face the atlas cuts into sub-faces glows as one: every sub-face carries its membership, and the section indexes the shipped Geometry faces (pin P29).
   - A volume enclosing a mover brush and a fluid lists neither. Both glow at 1.0 with an `_e` map, at any brightness.
-  - Overlap warnings:
-    - Two volumes that both contain a face centroid: the later wins, and one warning names the pair.
-    - Volumes that only touch, or overlap where no centroid lies, stay silent.
-    - A volume with no `_e` face warns, including one a later volume empties (pin P28).
+  - Two volumes that both contain a face centroid: the later wins, and one warning names the pair. Volumes that only touch, or overlap where no centroid lies, stay silent.
+  - A volume with no `_e` face warns, including one a later volume empties (pin P28).
   - Volume 256 compiles; volume 257 fails, naming the count.
 - [ ] Adding a default volume (min 0, max 1) around `_e` faces changes only the emissive-volumes section: every other section is byte-identical to the same map without the volume.
-- [ ] PRL round-trip of the emissive-volumes section. A map with no volumes emits no section. The loader refuses:
-  - a version other than 1
-  - a count over 256
-  - a face index out of range or descending
-  - a face owned twice
+- [ ] PRL round-trip of the emissive-volumes section. A map with no volumes emits no section. The loader refuses a version other than 1, a count over 256, a face index out of range or descending, a face owned twice, and a range the compiler never writes: min above max, a negative or non-finite value, or a value past the ceiling.
 - [ ] At runtime:
   - A member face presents its volume's strength, and a non-member face sharing a vertex with it presents 1.0, at brightness 0 and 1.
   - In a 256-volume map, a face in the last volume presents that volume's strength (pin P36).
@@ -109,21 +94,15 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - `flicker` moves brightness within [0.3, 1].
   - `powerCut` holds 0.
   - A finite `fade` settles on its last sample.
-- [ ] Fog parity: the fog volume animation and presentation-state tests pass when run against the emissive kind (pins P6–P11, P13, P19–P26, P35), except a case where a scalar write meets a running animation: the differences row governs those (pin P30). Each cited pin has a case in the shared suite; where no fog test covers one, that case is added and runs for both kinds. That covers:
-  - install validation, settle and re-install
-  - pause and tag dispatch
-  - host-only replication and machine-local writes
-  - late joins during and after an animation
-  - wait tails, demotion and re-promotion, restart
-  - the wire's key cap, mismatched bindings, and a fog record never binding an emissive volume
+- [ ] Fog parity: the fog volume animation and presentation-state tests pass when run against the emissive kind (pins P6–P11, P13, P19–P26, P35), except a case where a scalar write meets a running animation: the differences row governs those (pin P30). Each cited pin has a case in the shared suite; where no fog test covers one, that case is added and runs for both kinds.
 - [ ] Deliberate differences from fog:
   - A brightness write clears a running animation and holds (pins P1, P4). In one body the later write wins: animation then brightness holds the brightness; brightness then animation runs the curve (pins P2, P3). A later identical animation restarts from its first sample (pin P30).
   - The same holds across co-op. A host write reaches a client mid-flicker as that brightness with no animation (pin P31). A joiner after `powerCut` holds 0, although its own `levelLoad` installs the flicker (pin P32).
   - Clearing with args `null` leaves the last sampled brightness, before the limiter, and the wire carries it (pins P5, P33).
   - Only `setEmissiveBrightness` and `setEmissiveAnimation` write a volume, and neither carries min or max (grep gate: the emissive primitive list and payload fields).
 - [ ] Flash limiter:
-  - The HDR rule maps s to s ÷ (s + 1) and back exactly.
-  - With the limiter on, a strobe between strength 4 and 20 is limited (pin P37). So are the example's rate-6 `flicker` and static writes alternating 0 and 1 six times a second: each presents at most 3 flashes in any 1 s (pins P14, P34).
+  - With the limiter on, the example's rate-6 `flicker` and static writes alternating 0 and 1 six times a second each present at most 3 flashes in any 1 s (pins P14, P34).
+  - The clamp reads strength, not brightness: on a volume with max 20, writes alternating brightness 0.025 and 0.05 (strength 0.5 and 1) are limited (pin P40). A strobe between strength 4 and 20 is not: it reads white both ways (pin P37).
   - Scripts and the wire see the unclamped brightness. With the limiter off, a step lands in one frame.
   - While the script clock is paused, the clamp keeps aging on presented-frame time; a `fade` whose `from` equals `to` counts no flash (pins P9, P13).
   - A volume is limited every frame, in view or not. A frame whose surface acquire fails leaves every clamp where it began. Loading another map starts every clamp fresh; a brightness write does not. Turning the limiter on presents that frame unchanged (pins P15–P18).
@@ -131,7 +110,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - Dry run lists renames and touched maps, writing nothing. A real run renames every slot sibling and rewrites references.
   - Refuses a collision with no partial write. Also refuses `neon_metal_x` and `neon_Metal_x`; `neon_metalwork_x` and `neon_panel` rename.
   - Names a former `neon_` texture on a mover or fluid face separately.
-- [ ] combat-demo and reflection-probes-test compile with every former `neon_` face in a volume of max 4.0. At that max the bright panel's peak passes the bloom threshold and the dim panel's stays under it. This replaces `neon_emissive_strength_clears_the_bloom_threshold`, which reads `Material::Neon`.
+- [ ] combat-demo and reflection-probes-test compile with every former `neon_` face in a volume of max 4.0. At that max the bright panel's peak passes the bloom threshold and the dim panel's stays under it.
 
 ### Manual
 - [ ] combat-demo: the bright panel blooms and the dim one does not, as before. A script pulsing the bright panel's volume visibly breathes; at brightness 0 the panel shows its unlit diffuse.
@@ -147,8 +126,8 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - First slice: one volume around one face, one vertex shared with a non-member face, checking whether the shared vertex breaks the per-vertex id.
 - Ownership rival: glow keys on the brush entity that owns the faces. Not chosen; argued in `research.md` §Ownership rival.
 - Volume parse and peel follow `fog_volume`; several hulls per entity follow the environment volumes (`research.md` §Precedents).
-- Scripting and replication: copy `sdk/lib/entities/fog_volumes.{ts,luau}`, the `setFog*` reaction primitives and the fog presentation binding. Reuse `AnimatableScalar<"brightness">`. Brightness is sampled on the CPU, as fog density is. Make the fog suites generic over kind rather than copying them, so parity stays one set of tests.
-- Flash clamp: the HDR rule sits beside `ValueClamp` in `render-cpu` `flash_clamp`, where E23 finds it (`research.md` §Precedents for the keyed container).
+- Scripting and replication: copy `sdk/lib/entities/fog_volumes.{ts,luau}`, the `setFog*` reaction primitives and the fog presentation binding. Reuse `AnimatableScalar<"brightness">`. Brightness is sampled on the CPU, as fog density is. Fog's presentation cases share test functions with lights, emitters and spin (`presentation_state.rs`, `presentation_conditioned_tests.rs`); parameterise only the cases the parity row cites, not the whole suite.
+- Flash clamp: no change to `flash_clamp`; each volume feeds min(strength, 1) to a public `ValueClamp` (`research.md` §Precedents for the keyed container).
 - Docs: FGD entry; `docs/level_design.md` material table and an Emissive volumes section; `docs/scripting-reference.md` member table and primitives, saying beside the member table that emissive methods take brightness in [0, 1].
 
 ## Open questions

@@ -26,7 +26,7 @@ Every reader of the `neon` prefix or `emissive_strength()`:
 - **Tools and docs:**
   - `tools/gen_emissive.py` `DEFAULT_CUTOFFS` (neon 0.35, default 0.75)
   - `docs/level_design.md` material tables
-  - `resource_management.md` §4.5
+  - the `context/lib` sections the brief's retirement Decision lists
 - **Models:** skinned models load only their diffuse slot (`ModelDiffuseOnly` in `loaded_texture.rs`), so model `_e` never glows. Unchanged here.
 
 ## Per-face strength path
@@ -86,7 +86,7 @@ Sources:
 | P11 | Tag matches 0 volumes; tag matches a non-emissive entity | dispatch | 0 volumes: debug no-op. Non-emissive target: warn, skip that target, others still written. |
 | P12 | Brightness written by a reaction drained in frame N | Game logic drain → RenderPrep bridge tick → Render | Packed into frame N's strength table, not N+1. |
 | P13 | Script time frozen (pause) mid-flicker | freeze, keep presenting | Brightness holds its sample (bridge samples the freeze-aware script clock); flash clamp keeps aging on presented-frame time. |
-| P14 | Limiter on; flicker at `rate` 6 | each presented frame | Presented strength shows ≤ 3 flashes per 1 s window and moves ≤ 4.0/s; scripted brightness (scripts, wire) unchanged. |
+| P14 | Limiter on; flicker at `rate` 6 | each presented frame | Presented strength shows ≤ 3 flashes per 1 s window and moves ≤ 4.0/s in clamp units (min(strength, 1)); scripted brightness (scripts, wire) unchanged. |
 | P15 | Limiter turned on mid-flicker; turned off mid-hold | toggle frame | On: that frame presents unchanged, history starts fresh. Off: scripted brightness presents the same frame, no history kept. |
 | P16 | Volume out of view for 2 s, then in view | limit every frame | Clamp limits every volume every frame, culled or not; turning to face it counts no appearance. |
 | P17 | Surface acquire fails on one frame | begin → acquire fail → next frame | Every volume's clamp returns to where the frame began; its time merges into the next frame. |
@@ -109,8 +109,9 @@ Sources:
 | P34 | Limiter on; a reaction writes brightness 0 and 1 alternately six times a second, no animation | static writes, each in its own drain | Presented strength shows ≤ 3 flashes in any 1 s, as the rate-6 `flicker` does (P14). Scripts and the wire see the written values. |
 | P35 | Client: a host record and a client-local write on one volume in one frame | SnapshotApply → ScriptDrain → RenderPrep | Local write lands after the record and holds; the client re-applies only when the host's record changes (last-applied memo). |
 | P36 | Map with 256 volumes; a face in volume index 255 and a non-member face | load → per-vertex id stream → strength table | Volume 255's face presents volume 255's strength; the non-member presents 1.0. No volume index aliases "no volume". |
-| P37 | Limiter on; volume max 20 flickering between brightness 0.2 and 1 (strength 4 to 20, wholly above the bloom threshold) | each presented frame | The HDR rule maps 4 → 0.8 and 20 → 0.95; the swing counts and the strobe is limited. |
+| P37 | Limiter on; volume max 20 flickering between brightness 0.2 and 1 (strength 4 to 20) | each presented frame | Both states enter the clamp as 1: no flash, nothing limited. The halo such a strobe drives is E23's. |
 | P38 | `emissive_min` 2 with `emissive_max` NaN; `emissive_min` +inf with `emissive_max` 0.5 | per-key read (negative → 0, non-finite → default) vs max < min swap | Each key is read first, then the pair swaps. (2, NaN) stores min 1, max 2, with a non-finite warning and a swap warning. (+inf, 0.5) stores min 0, max 0.5. The stored min never exceeds max. Swapping first would store (2, 1): NaN < 2 is false. |
+| P40 | Limiter on; volume max 20; a reaction writes brightness 0.025 and 0.05 alternately six times a second | each presented frame | Strength 0.5 ↔ 1 enters as 0.5 ↔ 1: dark state below 0.8, swing over 0.1, so the strobe is limited. A clamp fed brightness would see a 0.025 step and pass it. |
 
 ## Capture reference state
 
@@ -125,12 +126,12 @@ Glow keys could sit on the brush entity that owns the faces: `func_group` alread
 
 Overlap rule rival: smallest containing volume wins (`reflection_volume`, environment volumes), so nesting needs no warning. Last-wins kept: both emissive volumes and `lightmap_scale_region` override a surface property, not a region's physics.
 
-## HDR clamp rule
+## Clamp input
 
-The per-value clamp (`ValueClamp::limit`) clamps its input to [0, 1], and `BLOOM_THRESHOLD` is 1.0. Dividing strength by the threshold saturates everything at or above it, so a strobe between strength 4 and 20 would pass unlimited. s ÷ (s + 1) keeps every HDR step distinct, compresses bright values as the soft-knee tonemap does, and inverts exactly (s = v ÷ (1 − v)). An SDR step from 0 to 1 enters as 0 to 0.5, still a counted flash. Rivals:
-- strength ÷ threshold, saturated: ignores HDR strobes
-- strength ÷ the volume's max: weighs one step less on brighter volumes
+`ValueClamp::limit` takes [0, 1], counts a flash only when the darker state is below 0.8 and the swing is at least 0.1, and `BLOOM_THRESHOLD` is 1.0. The resolve's soft-knee tonemap is near-identity below 0.98. So min(strength, 1) is the luminance a member face shows, and the clamp's own flash definition then decides. A strobe wholly at or above 1 is white to white on the surface: not a flash.
+
+Rejected: s ÷ (s + 1) (review round 3). Its states above strength 4 sit at or above 0.8, so the darker-state rule ignored the strobe it was meant to catch, and its inverse is inexact in f32 and infinite near 1.7e7.
 
 ## Compile-time key handling
 
-`index.md` §2 "Designers over structure": load errors are for placements that cannot work. A swapped, negative or non-finite emissive key has an obvious working reading (swap, 0, default), so each warns and compiles. `lightmap_scale_region` fails on a bad scale; it predates this reading and is not changed here.
+`index.md` §2 "Designers over structure": load errors are for placements that cannot work. A swapped, negative, non-finite or over-ceiling emissive key has an obvious working reading (swap, 0, default, ceiling), so each warns and compiles. Keys are fixed before the swap so the stored min never exceeds max (pin P38). `lightmap_scale_region` fails on a bad scale; it predates this reading and is not changed here.

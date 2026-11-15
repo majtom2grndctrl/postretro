@@ -71,8 +71,16 @@ light.
     this type.
   - Shadow rays must not be blocked by the emitter's own faces.
 - **Glow follows the light.**
-  - Each emitting face draws `_e` × a per-entity glow strength × the light's
-    live brightness and colour multipliers, on the same frame as its lighting.
+  - Each emitting face draws `_e` × `_glow` × the light's live brightness and
+    colour multipliers, on the same frame as its lighting.
+  - `_glow` is an authored number, independent of `light`, so a game can pair
+    a dim glow with strong cast light, or the reverse.
+    - Default 4.0, today's `neon_` look, above the bloom threshold.
+    - Any value ≥ 0 is accepted, with no upper clamp; 0 is a light with
+      unlit faces.
+    - A negative value is a compile error.
+    - No preset names and no prefix lookup (`context/lib/index.md` §2,
+      Defaults for novices, controls for experts).
   - The id → runtime table follows the `animated_block` precedent.
   - Glow is drawn even when the light is static.
 - **Script surface is the existing light family.** Area lights appear in
@@ -163,7 +171,9 @@ Placement, identity and refusals:
 - [ ] The Scripting surface example runs as a `content/dev` script: the pulse
   reaches the light and its glow.
 - [ ] A static area light's `_e` faces glow on a texture without the `neon_`
-  prefix. A `_start_inactive` light's faces start dark.
+  prefix, at `_e` × `_glow`. With `_glow` at 0, 0.5 and 8, the face's emissive
+  term scales by that factor, and the room's light does not change. A negative
+  `_glow` fails the build. A `_start_inactive` light's faces start dark.
 
 ### Manual
 - [ ] Hallway map, recorded in `plan.md`: cold and warm bake time for one 4 × 4 m
@@ -220,9 +230,6 @@ Placement, identity and refusals:
 - Patent search on polygon area-light baking and on ratio-estimator visibility,
   charted per `context/research/gi-rtx-lite/ip-check.md`. Prior art only so far
   (`research.md` §5). — owner: owner / counsel — **blocks build**
-- Glow strength key: name, and default (recommend `_glow`, default 4.0, today's
-  `neon_` look). Should it scale with `light` instead? — owner: owner —
-  **blocks build**
 - Reach cutoff constant: no visible edge in the owner A/B. — **delegated**
 - Escalated sample count for area lights, from the noise row. — **delegated**
 - Self-occlusion mechanism: lift or exclude. — **delegated**
@@ -235,7 +242,7 @@ Placement, identity and refusals:
 | Light type | `LightType::Area` | `AlphaLightType` value 3 | n/a | n/a |
 | Brightness, colour, override reach | `MapLight` intensity, color, falloff_range | existing record fields | `light`, `_color`, `_falloff_range` | same |
 | Animation keys | existing | existing | `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase`, `_animated`, `_start_inactive`, `_bake_only`, `_tags` | same |
-| Glow strength | per-entity scalar | glow table (not AlphaLights) | `_glow` (open question) | same |
+| Glow strength | per-entity f32 | glow table (not AlphaLights) | `_glow(float)`, default 4.0 | same |
 
 ## Wire format
 AlphaLights (id 18) v5, little-endian throughout, mirroring v4:

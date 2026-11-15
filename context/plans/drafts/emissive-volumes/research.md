@@ -135,3 +135,16 @@ Rejected: s ÷ (s + 1) (review round 3). Its states above strength 4 sit at or a
 ## Compile-time key handling
 
 `index.md` §2 "Designers over structure": load errors are for placements that cannot work. A swapped, negative, non-finite or over-ceiling emissive key has an obvious working reading (swap, 0, default, ceiling), so each warns and compiles. Keys are fixed before the swap so the stored min never exceeds max (pin P38). `lightmap_scale_region` fails on a bad scale; it predates this reading and is not changed here.
+
+## Strength source
+
+Per-texture strength needs one value that bake and runtime both read: reflection capture multiplies `_e` by it, and roadmap "surface lights" will need it in the compiler.
+- **Mod manifest:** prl-build reads no mod manifest (`level-compiler` and `postretro-tool` never load `defineMod`). Compile-time script evaluation exists for map data scripts (light membership), but the manifest is mod-wide and no map names it. A baked manifest field would be the only one needing map recompiles, and the runtime would hold a second readable copy.
+- **`postretro.toml`:** read only by `postretro-tool` and `xtask`; the engine and prl-build never read it, and distributions do not carry it as an engine input.
+- **Chosen: `<mod root>/materials.toml`.** Plain data the material stage reads, baked into the level; runtime reads only the baked value. Precedents in the genre: Quake 3 per-collection shader files, Half-Life `lights.rad` (texture names with light values for surface lights).
+- **Mod layering:** one active mod root today (`--mod`); multi-mod discovery and load order are future (`boot_sequence.md`). Per-texture keys merge per key when layering lands.
+
+## Status lights and animated glow
+
+- Two lamps on separate faces: one volume each, scripts set brightness. One lamp changing colour: grey `_e` plus the volume's colour. Two lamps painted in one texture on one face: per-texel channels, not this brief; build them as separate faces.
+- Quake-style animated buttons: a uniform pulse is the volume's `pulse`. A spatial sweep needs a per-texel phase (`glow = _e × wave(t + phase)`), and Quake-faithful frames need world-material texture arrays; the forward pass is at 16/16 sampled textures. Both are per-texel material animation, a separate brief. `_e` alpha is reserved for whichever lands first: an HDR multiplier (RGBM-style) or a phase map.

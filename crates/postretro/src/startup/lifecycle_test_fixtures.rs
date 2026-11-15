@@ -165,6 +165,7 @@ pub(crate) fn test_app() -> App {
             closing_host_transport: None,
             seat_table: None,
             session_players: Default::default(),
+            occupancy_families: Default::default(),
             audio: None,
             #[cfg(feature = "dev-tools")]
             debug_ui: None,
@@ -552,6 +553,7 @@ pub(crate) fn install_descriptor_world(
             impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
             mesh_clip_tables: &mut session.mesh_clip_tables,
             hit_zone_store: &mut session.hit_zone_store,
+            occupancy_families: &mut session.occupancy_families,
             trigger_pool_policy: policy,
             suppress_host_replicated,
             suppress_boot_pawn: suppress_host_replicated,
@@ -617,6 +619,7 @@ pub(crate) fn install_capture_world(
         impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
         mesh_clip_tables: &mut session.mesh_clip_tables,
         hit_zone_store: &mut session.hit_zone_store,
+        occupancy_families: &mut session.occupancy_families,
         trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
         suppress_host_replicated: false,
         suppress_boot_pawn: true,

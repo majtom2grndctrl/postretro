@@ -1,5 +1,6 @@
 //! Renderer-free CPU portion of level installation.
 
+use postretro_scripting_core::occupancy_references::FamilyReferences;
 use super::lifecycle_model_sweep::ModelSweep;
 #[cfg(any(test, feature = "observability"))]
 use super::lifecycle_model_sweep::{ParsedModelSweep, ParsedSweepModel};
@@ -129,6 +130,7 @@ pub(crate) fn install_world_cpu_with_models(
         impact_policy_runtime,
         mesh_clip_tables,
         hit_zone_store,
+        occupancy_families,
         trigger_pool_policy,
         suppress_host_replicated,
         suppress_boot_pawn,
@@ -242,9 +244,29 @@ pub(crate) fn install_world_cpu_with_models(
         } else {
             LevelManifest::default()
         };
+        let mut level_references = FamilyReferences::default();
         if world.data_script.is_some() {
             manifest.reactions =
                 validate_sequence_primitives(manifest.reactions, sequence_registry);
+            for crossing in &manifest.crossings {
+                level_references.note_crossing(crossing);
+            }
+            for reaction in &manifest.reactions {
+                level_references.note_reaction(&reaction.descriptor);
+            }
+            for registered in &manifest.ui_trees {
+                level_references.note_ui_tree(&registered.tree);
+            }
+        }
+        // The level's `occupancy` references join the mod's before anything
+        // binds them: the UI bind warning, crossings and accumulators below.
+        // Every family reads 0 until the first authoritative tick writes it.
+        occupancy_families.install_level(
+            &level_references,
+            &trigger_volume_tags(&script_ctx.registry.borrow()),
+            &mut script_ctx.slot_table.borrow_mut(),
+        );
+        if world.data_script.is_some() {
             // Register level-scope UI trees before the data-script VM context drops
             // and before the manifest is consumed by the data registry.
             postretro_scripting_core::ui::bind_diagnostics::warn_unknown_slot_binds(
@@ -673,4 +695,17 @@ pub(crate) fn install_world_cpu_with_models(
         first_spawn,
         spawn_points,
     }
+}
+
+/// Every tag a trigger volume in the installed level carries. A `switch` is a
+/// trigger volume at the component layer.
+fn trigger_volume_tags(
+    registry: &postretro_entities::EntityRegistry,
+) -> std::collections::BTreeSet<String> {
+    registry
+        .iter_with_kind(postretro_entities::ComponentKind::TriggerVolume)
+        .filter_map(|(id, _)| registry.get_tags(id).ok())
+        .flatten()
+        .cloned()
+        .collect()
 }

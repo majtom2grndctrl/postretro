@@ -288,6 +288,22 @@ impl App {
                     postretro_sim::sim::defense_parameters::DefenseParameters::install(
                         &session.scripting.script_ctx,
                     );
+                    // The commit replaces the mod's `occupancy` references whole,
+                    // before the state schema resets and crossings rebind below.
+                    // Families kept across it keep their values.
+                    let staged_trees: &[postretro_scripting_core::data_descriptors::RegisteredUiTree] =
+                        match &result.status {
+                            StagedManifestBuildStatus::Built(manifest) => &manifest.ui_trees,
+                            _ => &[],
+                        };
+                    let references = crate::session::occupancy_families::mod_scope_references(
+                        &session.scripting.script_ctx,
+                        staged_trees.iter().map(|registered| &registered.tree),
+                    );
+                    session.occupancy_families.commit_mod(
+                        &references,
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                    );
                 }
                 self.install_presentation_templates(presentation_templates);
                 if let Some(endpoint) = self

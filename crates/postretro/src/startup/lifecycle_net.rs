@@ -257,6 +257,11 @@ impl App {
                 session.seat_table.as_mut(),
                 &mut session.scripting.script_ctx.slot_table.borrow_mut(),
             );
+            // The level's `occupancy` references go with it; the mod's stay,
+            // reading 0 until the next install's first tick writes them.
+            session
+                .occupancy_families
+                .unload_level(&mut session.scripting.script_ctx.slot_table.borrow_mut());
             session
                 .scripting
                 .script_ctx

@@ -52,6 +52,7 @@ use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
 pub(crate) mod level_streaming;
+pub(crate) mod occupancy_families;
 pub(crate) mod players;
 pub(crate) mod lightmap_residency;
 mod lightmap_streaming_diagnostics;
@@ -301,6 +302,9 @@ pub(crate) struct Session {
 
     /// Session player status and counts; see `players`.
     pub(crate) session_players: players::SessionPlayers,
+
+    /// Which `occupancy` families exist; see `occupancy_families`.
+    pub(crate) occupancy_families: occupancy_families::OccupancyFamilies,
 
     /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
     /// init fails — the game then runs silent, never a crash.
@@ -800,6 +804,7 @@ impl Session {
             closing_host_transport: None,
             seat_table,
             session_players: Default::default(),
+            occupancy_families: Default::default(),
             audio,
             // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
             // available, reset on suspend. See the field doc.

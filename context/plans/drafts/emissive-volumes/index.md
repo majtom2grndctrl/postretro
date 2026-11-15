@@ -83,8 +83,8 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - A skinned model with an `_e` sibling still packs 0.
 - [ ] Bake and runtime agree on the `_e`-loaded predicate for one texture: bounce-mean glow exclusion, reflection-capture term and material uniform. That texture's bounce mean excludes its glow texels.
 - [ ] `gen_emissive.py` without `--cutoff` uses one default whatever the file's prefix: a `neon_` file and any other give the same `_e`.
-- [ ] Strength = min + brightness × (max − min) at brightness 0, 0.5 and 1. No script means max. Brightness outside [0, 1] clamps on both sides.
-- [ ] Bad keys compile, each with one warning naming the key: max < min swaps, a negative value reads 0, and a non-finite value reads its default. Valid keys, 0 included, compile silently.
+- [ ] Strength = min + brightness × (max − min) at brightness 0, 0.5 and 1. No script means max. Brightness outside [0, 1] clamps on both sides, written or sampled from a curve (pin P10).
+- [ ] Bad keys compile, each with one warning naming the key: max < min swaps, a negative value reads 0, and a non-finite value reads its default. Valid keys, 0 included, compile silently. Each key is read before the pair swaps: `emissive_min` 2 with a non-finite `emissive_max` stores min 1 and max 2, with two warnings (pin P38).
 - [ ] Membership:
   - A face whose centroid is inside a hull joins; one just outside does not. A face in the plane of a volume brush's side (the volume flush on a wall) joins (pin P27).
   - A member face the atlas cuts into sub-faces glows as one: every sub-face carries its membership, and the section indexes the shipped Geometry faces (pin P29).
@@ -109,7 +109,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - `flicker` moves brightness within [0.3, 1].
   - `powerCut` holds 0.
   - A finite `fade` settles on its last sample.
-- [ ] Fog parity: the fog volume animation and presentation-state tests pass when run against the emissive kind (pins P6–P11, P13, P19–P26, P35). That covers:
+- [ ] Fog parity: the fog volume animation and presentation-state tests pass when run against the emissive kind (pins P6–P11, P13, P19–P26, P35), except a case where a scalar write meets a running animation: the differences row governs those (pin P30). Each cited pin has a case in the shared suite; where no fog test covers one, that case is added and runs for both kinds. That covers:
   - install validation, settle and re-install
   - pause and tag dispatch
   - host-only replication and machine-local writes
@@ -117,7 +117,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - wait tails, demotion and re-promotion, restart
   - the wire's key cap, mismatched bindings, and a fog record never binding an emissive volume
 - [ ] Deliberate differences from fog:
-  - A brightness write clears a running animation and holds, in any order within one body (pins P1–P4). A later identical animation restarts from its first sample (pin P30).
+  - A brightness write clears a running animation and holds (pins P1, P4). In one body the later write wins: animation then brightness holds the brightness; brightness then animation runs the curve (pins P2, P3). A later identical animation restarts from its first sample (pin P30).
   - The same holds across co-op. A host write reaches a client mid-flicker as that brightness with no animation (pin P31). A joiner after `powerCut` holds 0, although its own `levelLoad` installs the flicker (pin P32).
   - Clearing with args `null` leaves the last sampled brightness, before the limiter, and the wire carries it (pins P5, P33).
   - Only `setEmissiveBrightness` and `setEmissiveAnimation` write a volume, and neither carries min or max (grep gate: the emissive primitive list and payload fields).
@@ -125,6 +125,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - The HDR rule maps s to s ÷ (s + 1) and back exactly.
   - With the limiter on, a strobe between strength 4 and 20 is limited (pin P37). So are the example's rate-6 `flicker` and static writes alternating 0 and 1 six times a second: each presents at most 3 flashes in any 1 s (pins P14, P34).
   - Scripts and the wire see the unclamped brightness. With the limiter off, a step lands in one frame.
+  - While the script clock is paused, the clamp keeps aging on presented-frame time; a `fade` whose `from` equals `to` counts no flash (pins P9, P13).
   - A volume is limited every frame, in view or not. A frame whose surface acquire fails leaves every clamp where it began. Loading another map starts every clamp fresh; a brightness write does not. Turning the limiter on presents that frame unchanged (pins P15–P18).
 - [ ] The migration script:
   - Dry run lists renames and touched maps, writing nothing. A real run renames every slot sibling and rewrites references.

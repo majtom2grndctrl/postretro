@@ -77,7 +77,7 @@ Sources:
 | P2 | One body: `setEmissiveAnimation` then `setEmissiveBrightness` | same drain, body order | Brightness wins and clears the curve. |
 | P3 | One body: `setEmissiveBrightness` then `setEmissiveAnimation` | same drain, body order | Curve wins from the first bridge tick that sees it. |
 | P4 | Finite `fade` running; `setEmissiveBrightness` 0.5 lands mid-fade | brightness during animation; fade would then end | 0.5 holds; the fade is gone and its settle never writes. |
-| P5 | `setEmissiveAnimation` args `null` mid-flicker | clear, then render | Brightness holds the last presented sample; the host's sample replicates. |
+| P5 | `setEmissiveAnimation` args `null` mid-flicker | clear, then render | Brightness holds the last sampled value, before the limiter; the host's sample replicates. |
 | P6 | Identical animation re-installed while it runs | install, install again | Start time kept (component equality); a running `fade` does not restart. After a finite one settles, re-install restarts it. |
 | P7 | `periodMs` 0, `flicker` `rate` 0 (period ∞), empty `brightness` curve | install | Rejected with a warning; any prior animation and brightness untouched. |
 | P8 | `playCount` 0 | install | Coerced to 1 with a warning; settles once. |
@@ -110,6 +110,7 @@ Sources:
 | P35 | Client: a host record and a client-local write on one volume in one frame | SnapshotApply → ScriptDrain → RenderPrep | Local write lands after the record and holds; the client re-applies only when the host's record changes (last-applied memo). |
 | P36 | Map with 256 volumes; a face in volume index 255 and a non-member face | load → per-vertex id stream → strength table | Volume 255's face presents volume 255's strength; the non-member presents 1.0. No volume index aliases "no volume". |
 | P37 | Limiter on; volume max 20 flickering between brightness 0.2 and 1 (strength 4 to 20, wholly above the bloom threshold) | each presented frame | The HDR rule maps 4 → 0.8 and 20 → 0.95; the swing counts and the strobe is limited. |
+| P38 | `emissive_min` 2 with `emissive_max` NaN; `emissive_min` +inf with `emissive_max` 0.5 | per-key read (negative → 0, non-finite → default) vs max < min swap | Each key is read first, then the pair swaps. (2, NaN) stores min 1, max 2, with a non-finite warning and a swap warning. (+inf, 0.5) stores min 0, max 0.5. The stored min never exceeds max. Swapping first would store (2, 1): NaN < 2 is false. |
 
 ## Capture reference state
 

@@ -130,7 +130,7 @@ Each run pins the fixture, Mac target machine class, cache mode, baseline (the s
 - Upload the volume table only when a value changed; a static frame uploads nothing. Before adding a vertex stream, check whether the 36-byte world vertex has padding that can carry the volume id, which would leave untouched faces with no extra vertex fetch.
 - Volume parse and peel follow `fog_volume`; several hulls per entity follow the environment volumes (`research.md` §Precedents).
 - Scripting and replication: copy `sdk/lib/entities/fog_volumes.{ts,luau}`, the `setFog*` reaction primitives and the fog presentation binding. Reuse `AnimatableScalar<"brightness">`; colour follows fog's `tint`. Fog's presentation cases share test functions with lights, emitters and spin (`presentation_state.rs`, `presentation_conditioned_tests.rs`); parameterise only the cases the parity row cites.
-- Flash clamp: no change to `flash_clamp`; each volume feeds min(peak strength, 1) to a public `ValueClamp` (`research.md` §Precedents for the keyed container).
+- Flash clamp: no change to `flash_clamp`; each volume feeds the Photosensitivity Decision's input to a public `ValueClamp` (`research.md` §Precedents for the keyed container).
 - Docs: FGD entry; `docs/level_design.md` material table, `materials.toml` and an Emissive volumes section; `docs/scripting-reference.md` member table and primitives, saying beside the member table that emissive methods take brightness in [0, 1].
 
 ## Open questions

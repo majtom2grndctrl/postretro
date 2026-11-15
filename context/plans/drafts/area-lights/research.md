@@ -123,6 +123,7 @@ At 1 m the single-direction path under-lights a side-facing entity 3.4× and lea
   - The emitter sphere (centroid, circumradius plus slack) bounds every shadow-ray target. It replaces `light_size` in the shaft cull and the mover occluder tests, which take a (centre, radius) pair and allow 1 mm of slack (`shaft_cull.rs` `EMITTER_SLACK`).
   - The reach sphere (same centre, circumradius plus reach) feeds the reach, influence and cache-key slice readers.
   - One reach sphere for both would stay exact but switch the shaft cull off for every chart in reach.
+- **Reach cutoff.** A hard cut cannot be both invisible and short. Half the darkest 8-bit sRGB step is 1.5e-4 in linear irradiance; cutting there gives a reach of 81 m for a 1 m² `light 300` panel and 325 m for a 4 × 4 m one. Cutting at 1/256 gives 16 m and 64 m, but leaves a visible step in a dark room. The windowed inverse square of Karis 2013 (Unreal Engine 4), (1 − (d/R)⁴)², reaches zero smoothly at R: it keeps 0.992 of the light at quarter reach, 0.879 at half and 0.467 at three quarters. With R at the 1/256 bound, it gives the short reach with no edge.
 - The cost lands on ceiling skylights, whose spheres pull in the slab. Measure that on the hallway map before building a tight polygon hull.
 - Two cheap tightenings, if the measurement asks for them:
   - the front half-space test in each cull;

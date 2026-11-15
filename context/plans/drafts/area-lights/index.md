@@ -33,11 +33,14 @@ light.
   `light` value; close in, it is dimmer, which is the point. The entity carries
   its own `_color` and `light`, and its light never reads a material's emissive
   strength or a texture prefix.
-- **Reach is derived, with an override.** Reach is the distance from the polygons
-  at which the bound E ≤ L·A/d² falls below a fixed cutoff, and nothing beyond it
-  is lit. `_falloff_range`, measured the same way, overrides it (`research.md`
-  §4).
-- **Unshadowed term: exact.** Lambert's polygon irradiance, clipped to the
+- **Reach is derived, with an override, and light fades to it.** Reach R is the
+  distance from the polygons at which the bound E ≤ L·A/d² falls to 1/256.
+  `_falloff_range`, measured the same way, overrides it. The term is scaled by
+  the window (1 − (d/R)⁴)², squared and clamped at 0, of the distance d to the
+  nearest polygon (Karis 2013), so light reaches zero at R with no visible edge
+  and nothing beyond R is lit. A hard cut is either visible or reaches hundreds of
+  metres (`research.md` §4).
+- **Unshadowed term: exact, then windowed.** Lambert's polygon irradiance, clipped to the
   receiver's horizon, with the clipped polygon's irradiance vector as the stored
   direction (`research.md` §1). A receiver on or behind the emitter's plane gets
   zero, so the emitter's own faces take no direct light from it.
@@ -143,9 +146,10 @@ Polygon term (oracle values in `research.md` §1):
 - [ ] Coplanar, behind-the-emitter and emitter-face receivers read 0. A receiver
   1 mm under the centre reads within 1e-4 of π.
 - [ ] Small-emitter limit: the ratio to L·A·cosθ_e·cosθ_r/d² is within 1e-3,
-  1e-5 and 1e-7 at s = 0.1, 0.01 and 0.001. On the axis, 10 m from a 1 m² panel,
-  the lit value is within 1% of an inverse-squared point light of the same
-  `light` value; at 1 m it is lower.
+  1e-5 and 1e-7 at s = 0.1, 0.01 and 0.001, with the window off. On the axis,
+  4 m from a 1 m² `light 300` panel (reach 16 m), the lit value is 0.972 of an
+  inverse-squared point light of the same `light` value, within 1%; at 1 m it
+  is lower.
 - [ ] f32 corners about 1 km from the origin agree with f64 corners.
 
 Shadows and probes:
@@ -169,7 +173,8 @@ Placement, culls and keys:
   shadows like worldspawn.
 - [ ] With `_falloff_range` set, a receiver just past it, measured from the
   panel, is unlit, and one just inside is lit. Without the key, doubling `light`
-  lengthens reach by √2.
+  lengthens reach by √2. Along the axis the lit value falls continuously to 0 at
+  reach, and at half reach it is 0.879 of the unwindowed term.
 - [ ] An area light on all four sides of a pillar, with its centroid inside the
   pillar, is neither dropped as buried nor flagged embedded. A point light
   buried in solid is still dropped.
@@ -347,7 +352,6 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - Patent search on polygon area-light baking and on the visibility-weighting
   options, charted per `context/research/gi-rtx-lite/ip-check.md`. Prior art only
   so far (`research.md` §5). — owner: owner / counsel — **blocks build**
-- Reach cutoff constant: no visible edge in the owner A/B. — **delegated**
 - Visibility weighting option, after the patent search. — **delegated**
 
 ## Boundary inventory

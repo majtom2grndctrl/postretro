@@ -81,7 +81,7 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
+| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
 | **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` and `neon` resolve to flat by intent, not by omission. See §4.6. |
 | **Footstep sounds** | Planned. |
@@ -141,15 +141,16 @@ Optional per-texture normal maps for fine surface detail.
 
 ### 4.5 Emissive Surfaces
 
-Optional emissive color maps add static, per-texel self-illumination to world and
-kinematic-brush surfaces. They do not emit light into lightmaps, SH irradiance or
+Optional emissive color maps add per-texel self-illumination to world and
+kinematic-brush surfaces, static except on `light_area` faces (Strength, below). They do not emit light into lightmaps, SH irradiance or
 neighboring surfaces, and do not create dynamic lights. Glow texels are excluded
 from the per-texture diffuse mean used by SH bounce when non-glowing texels
 remain; an all-glowing texture uses its full average (`build_pipeline.md`
 §Compiler pipeline). Glow strength follows the original material name, as at
-runtime. To light a scene, an author places a light entity; a `light_area`
-brush entity makes its own `_e` faces that light (decided, not yet built;
-`build_pipeline.md` §Custom FGD).
+runtime. To light a scene, an author places a light entity. A `light_area`
+brush entity is one whose `_e` faces form its emitter and glow with it; its cast
+light takes the entity's `light` and `_color`, never the emissive map or prefix
+(decided, not yet built; `build_pipeline.md` §Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions

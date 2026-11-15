@@ -236,10 +236,9 @@ Placement, culls and keys:
   SH entry from the cache.
 - [ ] Promotion selects no area light on either path, though the animated area
   light is in section 45's direct-delta set and an animated spot beside it is
-  selected. The placeholder `SpecLight` is never an id-42 owner, even on a face it
-  alone lights. World faces
-  beside the panel take no specular from it, nor do billboards with billboard
-  scatter withheld.
+  selected. The placeholder `SpecLight` is never an id-42 owner, even on a face
+  it alone lights. World faces beside the panel take no specular from it, nor do
+  billboards with billboard scatter withheld.
 - [ ] An animated area light's weight map at curve 1 equals its static bake.
 - [ ] AlphaLights v5 round-trips area and non-area records. A v4 file and an
   unknown type value are rejected.

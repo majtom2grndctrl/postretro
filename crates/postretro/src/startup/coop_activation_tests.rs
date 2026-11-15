@@ -139,6 +139,9 @@ pub(super) fn all_players_in(tag: &str, fire: &str) -> CrossingDescriptor {
     }
 }
 
+/// One tick's counts and each tag's `(tag, occupiedCount, occupants)`.
+pub(super) type TickRecord = (Vec<f32>, Vec<(String, f32, f32)>);
+
 /// A headless co-op host: its own pawn on seat 0 plus connected clients, the
 /// level's tagged trigger volumes, and the frame's crossing pass.
 pub(super) struct Host {
@@ -157,7 +160,7 @@ pub(super) struct Host {
     input_tick: u32,
     /// Every tick's `(connected, loading, inPlay, down, reconnecting)` and each
     /// tag's `(occupiedCount, occupants)`, in tick order.
-    pub(super) timeline: Vec<(Vec<f32>, Vec<(String, f32, f32)>)>,
+    pub(super) timeline: Vec<TickRecord>,
 }
 
 impl Host {

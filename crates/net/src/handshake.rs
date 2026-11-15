@@ -1072,7 +1072,7 @@ mod switch_tick_epoch_tests {
     #[test]
     fn assist_refuses_wire_38_peers_and_admits_wire_39() {
         const PRE_ASSIST_WIRE_VERSION: u32 = 38;
-        assert!(WIRE_VERSION > PRE_ASSIST_WIRE_VERSION);
+        const { assert!(WIRE_VERSION > PRE_ASSIST_WIRE_VERSION) };
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
         const {
             assert!(

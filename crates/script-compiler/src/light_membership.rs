@@ -1173,7 +1173,10 @@ end"#;
 /// accessor name, and each member's `(field, kind)`. The drift guard in
 /// `postretro-sim` compares them with the catalog.
 #[doc(hidden)]
-pub const MIRRORED_GAME_STATE_FAMILIES: &[(&str, &str, &[(&str, &str)])] = &[(
+/// `(field, kind)` for each field a family member or list row carries.
+type MirroredFields = &'static [(&'static str, &'static str)];
+
+pub const MIRRORED_GAME_STATE_FAMILIES: &[(&str, &str, MirroredFields)] = &[(
     "occupancy",
     "tag",
     &[("occupiedCount", "number"), ("occupants", "number")],
@@ -1182,7 +1185,7 @@ pub const MIRRORED_GAME_STATE_FAMILIES: &[(&str, &str, &[(&str, &str)])] = &[(
 /// The engine catalog's lists, mirrored: SDK path, row capacity, and each
 /// row's `(field, kind)`.
 #[doc(hidden)]
-pub const MIRRORED_GAME_STATE_LISTS: &[(&str, usize, &[(&str, &str)])] = &[(
+pub const MIRRORED_GAME_STATE_LISTS: &[(&str, usize, MirroredFields)] = &[(
     "session.players",
     postretro_foundation::seat::SESSION_PLAYER_CAPACITY,
     &[

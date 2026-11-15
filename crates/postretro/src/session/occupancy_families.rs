@@ -128,7 +128,7 @@ impl OccupancyFamilies {
                 for (volume, inside) in occupied_volumes {
                     let carries = registry
                         .get_tags(*volume)
-                        .is_ok_and(|tags| tags.iter().any(|tag| *tag == member.tag));
+                        .is_ok_and(|tags| tags.contains(&member.tag));
                     if carries {
                         volumes += 1;
                         self.pawns.extend_from_slice(inside);

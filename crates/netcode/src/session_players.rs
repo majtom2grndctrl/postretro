@@ -218,9 +218,9 @@ impl PlayerRowsWriter {
         let list = &SESSION_PLAYERS_LIST;
         self.written.resize(list.capacity, None);
         let mut rows = rows.into_iter();
-        for index in 0..list.capacity {
+        for (index, written) in self.written.iter_mut().enumerate() {
             let row = rows.next();
-            let unchanged = match (&self.written[index], &row) {
+            let unchanged = match (&*written, &row) {
                 (None, None) => true,
                 (Some(written), Some(row)) => {
                     written.seat == row.seat
@@ -250,7 +250,7 @@ impl PlayerRowsWriter {
                         row.status.name(),
                         row.is_local,
                     );
-                    self.written[index] = Some(WrittenRow {
+                    *written = Some(WrittenRow {
                         seat: row.seat,
                         name: row.name.to_string(),
                         status: row.status,
@@ -266,7 +266,7 @@ impl PlayerRowsWriter {
                         SeatStatus::Loading.name(),
                         false,
                     );
-                    self.written[index] = None;
+                    *written = None;
                 }
             }
         }

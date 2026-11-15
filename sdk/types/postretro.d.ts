@@ -1905,6 +1905,13 @@ declare module "postretro" {
       readonly hostAddress: ComputedRef<string>;
       readonly hosting: ComputedRef<boolean>;
       readonly openSeats: ComputedRef<number>;
+      readonly playerCounts: {
+        readonly connected: ComputedRef<number>;
+        readonly down: ComputedRef<number>;
+        readonly inPlay: ComputedRef<number>;
+        readonly loading: ComputedRef<number>;
+        readonly reconnecting: ComputedRef<number>;
+      };
     };
     readonly ui: {
       readonly textEntry: Ref<string>;

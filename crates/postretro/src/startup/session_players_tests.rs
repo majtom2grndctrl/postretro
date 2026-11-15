@@ -129,7 +129,6 @@ fn frontend_backdrop_is_not_a_session_level() {
 fn client_counts_read_zero_once_its_level_unloads() {
     let mut app = test_app();
     super::lifecycle_test_fixtures::connect_test_app_as_client(&mut app);
-    app.install_level_identity(&level_world(LEVEL, 1));
     {
         let ctx = script_ctx(&app);
         let mut table = ctx.slot_table.borrow_mut();

@@ -2016,15 +2016,28 @@ mod tests {
             ]
             .contains(&entry.wire_name)
             {
+                // The host computes these and every machine reads its values.
+                let expected = if HOST_COMPUTED_SHARED.contains(&entry.wire_name) {
+                    ReplicationScope::SharedGlobal
+                } else {
+                    ReplicationScope::None
+                };
                 assert_eq!(
-                    entry.network,
-                    ReplicationScope::None,
-                    "{} must stay local-only",
+                    entry.network, expected,
+                    "{} has the wrong replication scope",
                     entry.wire_name
                 );
             }
         }
     }
+
+    const HOST_COMPUTED_SHARED: &[&str] = &[
+        "session.playerCounts.connected",
+        "session.playerCounts.loading",
+        "session.playerCounts.inPlay",
+        "session.playerCounts.down",
+        "session.playerCounts.reconnecting",
+    ];
 
     #[test]
     fn swim_slots_are_readonly_per_player_and_read_dry_by_default() {

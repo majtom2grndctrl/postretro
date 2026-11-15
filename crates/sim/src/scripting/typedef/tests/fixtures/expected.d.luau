@@ -1904,6 +1904,13 @@ export type GameStateRefs = {
     hostAddress: ComputedRef<string>,
     hosting: ComputedRef<boolean>,
     openSeats: ComputedRef<number>,
+    playerCounts: {
+      connected: ComputedRef<number>,
+      down: ComputedRef<number>,
+      inPlay: ComputedRef<number>,
+      loading: ComputedRef<number>,
+      reconnecting: ComputedRef<number>,
+    },
   },
   ui: {
     textEntry: Ref<string>,

@@ -48,18 +48,23 @@ Every Decision premise holds at `01d5db4f`. The sequencing prerequisite, the fir
 - **Dev map:** a new `content/dev/maps/coop-activation-test.map` with its TS and Luau scripts. `ghost-links` and `coop-presentation-test` each carry surface tests pinned to their layouts, and all four consumers need dedicated geometry: two plates, N separated plates, a room, a hill.
 - **Empty `occupancy` namespace for a mod with no reference:** no. Families register no namespace record, and the reservation is an explicit name check, so nothing needs a placeholder. Peers with the same scripts derive the same (possibly empty) family set either way.
 
+## Session notes
+- Build environment: the workspace needs rustc ≥ 1.99 (`rustup update stable`) and `libasound2-dev libudev-dev` for `cargo check`.
+- Committed typedefs regenerate with `cargo run -p postretro-sim --bin gen-script-types`; copy both outputs to `crates/sim/src/scripting/typedef/tests/fixtures/expected.d.{ts,luau}`, which the full-registry snapshot tests compare.
+- Netcode replication fixtures that observe only their own records call `localize_engine_shared_slots`, since the counts are the first shared engine slots.
+
 ## AC-to-proof
 Test names are proposals; final names land with each task. `two-endpoint` means real `NetServer` / `NetClient` endpoints in-process.
 
 | AC | Proof | Status |
 |---|---|---|
-| S1 host+2 clients `inPlay` 3; loading, down, reconnecting counts | `player_counts_follow_seat_status_across_load_down_and_hold` (two-endpoint) | achievable as stated |
+| S1 host+2 clients `inPlay` 3; loading, down, reconnecting counts | `seat_status_reads_live_pawn_capture_and_hold`, `player_counts_replicate_to_every_client_and_late_joiner` (task 1); real-endpoint run `player_counts_follow_seat_status_across_load_down_and_hold` (task 9) | achievable as stated |
 | S2 never-loading client stays `loading`; disconnect while loading leaves `loading`/`connected` next tick (P15) | `loading_client_disconnect_leaves_loading_on_next_tick` | achievable as stated |
-| S3 joiner counts `inPlay` from spawn, before first command (P16) | `joiner_counts_in_play_from_spawn_before_first_command` | achievable as stated |
-| S4 undeclared zero-health client `down`, no occupant; no-health pawn counts; declared by capability (P17) | `status_follows_effective_rule_for_client_pawns` | achievable as stated |
-| S5 single player `inPlay` 1 / `down`; leaver reads 0 at frontend (P14) | `single_player_counts_and_leaver_zeroes_at_frontend` | achievable as stated |
+| S3 joiner counts `inPlay` from spawn, before first command (P16) | `joiner_counts_in_play_from_spawn_before_first_command` | achievable as stated; passing (task 1) |
+| S4 undeclared zero-health client `down`, no occupant; no-health pawn counts; declared by capability (P17) | `trigger_stage_pawns_count_client_pawns_by_the_effective_rule` + `seat_status_reads_live_pawn_capture_and_hold`; occupant half with task 7 | achievable as stated |
+| S5 single player `inPlay` 1 / `down`; leaver reads 0 at frontend (P14) | `single_player_counts_follow_install_tick_death_and_unload`, `client_counts_read_zero_once_its_level_unloads`, `frontend_backdrop_is_not_a_session_level` | achievable as stated; passing (task 1) |
 | S6 `occupants <= inPlay` every tick | property assertion inside every puzzle and co-op harness tick, plus `occupants_never_exceed_in_play` | achievable as stated |
-| S7 demoted client and host seat read `loading` without a live pawn (P26) | `seat_without_live_pawn_reads_loading` | achievable as stated |
+| S7 demoted client and host seat read `loading` without a live pawn (P26) | `seat_without_live_pawn_reads_loading` | achievable as stated; passing (task 1) |
 | O1 two on one plate 1/2; one on each of two plates 2/2 | `occupancy_counts_volumes_and_distinct_players` | achievable as stated |
 | O2 overlapping volumes: once in `occupants`, twice in `occupiedCount` | same test, overlap case | achievable as stated |
 | O3 disarmed or latched volume counts; `switch` press volume counts | `occupancy_ignores_arm_and_latch_and_counts_switch` | achievable as stated |
@@ -101,11 +106,11 @@ Test names are proposals; final names land with each task. `two-endpoint` means 
 | M1 two-player session on the dev map | owner, in-engine | manual |
 
 ## Tasks
-Each task ends green and committed with this file. Hot path: the per-tick write allocates nothing after the first tick (fixed-capacity per-tag and per-seat buffers reused across ticks). Writes are change-driven where a value is unchanged, and slot names are interned at declaration, never formatted per tick.
+Each task ends green and committed with this file. Hot path: the per-tick write reuses its per-seat and per-tag buffers across ticks; the only per-tick allocation is the two small sorted pawn lists `TickEvents` carries, like its sibling event vectors. Writes are change-driven where a value is unchanged, and slot names are interned at declaration, never formatted per tick.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Thin slice through the riskiest seams:** `MAX_CLIENTS` to `foundation`; static `SharedGlobal` readonly `session.playerCounts.*` catalog entries with typedefs and mirror; sim returns the tick's counted-player set on `TickEvents`; one host function derives seat status from `SeatTable`, registry live pawns and that set; the write in `frame_loop` before accumulators; session-level flag, zeroing at unload and leave. Proves S1–S5, S7 and the client half of S1 over two endpoints. | integrating executor | — | in progress: code and tests written, first compile pending |
+| 1 | **Thin slice through the riskiest seams:** `MAX_CLIENTS` to `foundation`; static `SharedGlobal` readonly `session.playerCounts.*` catalog entries with typedefs and mirror; sim returns the tick's counted-player set on `TickEvents`; one host function derives seat status from `SeatTable`, registry live pawns and that set; the write in `frame_loop` before accumulators; session-level flag, zeroing at unload and leave. Proves S1–S5, S7 and the client half of S1 over two endpoints. | integrating executor | — | done: S3, S5, S7 pass; S1 and S4 partial as noted; netcode lib green, remaining full suites running |
 | 2 | Split occupant tracking out of `trigger_system.rs`, behavior-preserving, own commit | integrating executor | — | |
 | 3 | Catalog `Family` and `List` nodes: both runtime installers, build-time twin, typedef emit, drift guards; value-preserving family slot replace; `occupancy` reservation; readonly proof (C1, C2, C12 typedef part) | integrating executor | 1 | |
 | 4 | Roster names and statuses: `RosterEntry` fields, `WIRE_VERSION` 40, status dirty marking and 250 ms gate, client `entries` accessor; `session.players` rows on host, single player and clients; `Player N`; privacy tests and doc comments rewritten (L1–L5) | integrating executor | 1, 3 | |

@@ -166,15 +166,15 @@ runtime. To light a scene, an author places a separate light entity.
   `plans/ready/emissive-volumes`.
   - The `neon` prefix retires. Glow strength is content:
     `<mod root>/materials.toml` sets `emissive` per normalized texture name, so
-    aliases share one; a texture with an `_e` map and no entry is 1.0.
-    Only prl-build reads the file; runtime reads only the baked value, so bake
-    and runtime see one number. The file is the home for content-owned material
+    aliases share one; a texture with an `_e` map and no entry is 1.0. Only
+    prl-build reads the file; runtime reads only the baked value, so bake and
+    runtime see one number. The file is the home for content-owned material
     properties.
   - An `emissive_volume` brush scales and tints its static world faces: glow =
     texture strength × (min + brightness × (max − min)) × color. The map owns
     min, max and default color; scripts own brightness ([0, 1], 1 with no
-    script) and color, never the range. Movers and fluids take texture
-    strength only.
+    script) and color, never the range. Movers and fluids take texture strength
+    only.
   - `_e` stays an RGB color map; black is zero glow. Alpha is reserved for a
     future per-texel channel: author it opaque.
 - **Composite and fallback:** forward rendering writes `lit + emissive` into the
@@ -234,16 +234,15 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
 - **Per-material tuning:** depth (texels or meters, applied **in each
   direction**), terrace count per direction, march step cap, and fade distance
   are derived from the material name **prefix**, exactly like `shininess`
-  (`postretro-render-data::material::Material::surface_depth`).
-  Surface Depth adds no author-facing material file: authoring is still "drop
-  a correctly-named PNG". `materials.toml` (§4.5, decided, not yet built)
-  carries glow strength, not depth. The four values ride in the per-material
-  uniform's second 16-byte row. A material whose loaded specular slot is not
-  `Rg8Unorm` gets an all-zero row and skips the march entirely.
-  `tools/texture-tool` derives its default height terrace count from the same
-  prefixes (twice the engine's count per direction, so its terraces land on
-  engine plateaus); a test in `postretro-render-data` keeps the two tables in
-  step.
+  (`postretro-render-data::material::Material::surface_depth`). Surface Depth
+  adds no author-facing material file: authoring is still "drop a
+  correctly-named PNG". `materials.toml` (§4.5, decided, not yet built) carries
+  glow strength, not depth. The four values ride in the per-material uniform's
+  second 16-byte row. A material whose loaded specular slot is not `Rg8Unorm`
+  gets an all-zero row and skips the march entirely. `tools/texture-tool`
+  derives its default height terrace count from the same prefixes (twice the
+  engine's count per direction, so its terraces land on engine plateaus); a
+  test in `postretro-render-data` keeps the two tables in step.
 - **Relief band:** at load, the renderer measures each uploaded mip's highest
   raise and lowest sink separately on the CPU (filtering can overshoot the
   base level). The uniform packs the band of the mip the march reads — the

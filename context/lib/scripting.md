@@ -426,7 +426,7 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 ### 10.2a Emissive Reaction Primitives (decided, not yet built)
 
-`setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation` operate on `emissive_volume` members, mirroring the fog primitives (§10.2). Brightness in [0, 1] maps onto the volume's authored min–max; colour channels are linear in [0, 1]. Out-of-range values clamp. No primitive writes min or max: the map owns the range. A brightness write clears a running animation, as `setSpinRate` does; a colour write leaves it running. Brief: `plans/ready/emissive-volumes`.
+Three tag-targeted reaction primitives, `setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation`, write every matching `emissive_volume`, mirroring the fog primitives (§10.2). Brightness in [0, 1] maps onto the volume's authored min–max; colour channels are linear in [0, 1]. Out-of-range values clamp. No primitive writes min or max: the map owns the range. A brightness write clears a running animation, as `setSpinRate` does; a colour write leaves it running. Brief: `plans/ready/emissive-volumes`.
 
 ### 10.3 Mesh Animation
 

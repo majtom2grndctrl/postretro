@@ -1,13 +1,13 @@
 # Polygon Area Lights — Research
 
 **Date:** 2026-11-15. Repo read at `17c2f1e`. No lighting, compiler, renderer or render-data source changed since the cloud session's `eb44499`. The `context/lib` changes since then touch only networking, scripting, UI and player options.
-**Status:** Pre-brief research for a draft session. Planning only.
+**Status:** Research behind the brief, `index.md`. Planning only.
 - Every row is an engineering reading.
 - Prior-art rows record dates and mechanisms for counsel. They reach no legal conclusion.
 - Web agents could not fetch most primary PDFs, because those hosts are outside this session's network allowlist. Each row's confidence says whether it rests on full text, search excerpts, or a derivation checked numerically here.
 
-> **Read this when:** drafting the area-light brief, or changing the bake's emitter shape, its unshadowed light term, or a light-reach cull.
-> **Key finding:** the separable design (analytic unshadowed term × stored visibility) carries a polygon emitter with no change to the lightmap partition format. One condition: the stored visibility must be weighted by the unshadowed integrand (Heitz–Hill–McGuire ratio estimator). Three things do not carry over: the direct-SH single-direction projection, every sphere-shaped emitter lattice, and the two flush-emitter rules.
+> **Read this when:** building or revising the area-light brief, or changing the bake's emitter shape, its unshadowed light term, or a light-reach cull.
+> **Key finding:** the separable design (analytic unshadowed term × stored visibility) carries a polygon emitter with no change to the lightmap partition format. One condition: the stored visibility must be weighted by the unshadowed integrand, either by the Heitz–Hill–McGuire ratio estimator or by projected-solid-angle sampling. Three things do not carry over: the direct-SH single-direction projection, every sphere-shaped emitter lattice, and the two flush-emitter rules.
 > **Related:** `context/lib/build_pipeline.md` §Compiler pipeline step 12, §Build Cache · `context/lib/rendering_pipeline.md` §4 · `context/research/gi-rtx-lite/index.md`, `ip-check.md` · `context/plans/roadmap.md` "surface lights"
 
 ---
@@ -17,7 +17,7 @@
 The cloud session's facts hold at `17c2f1e`. This session found five more:
 
 - **Direct SH projects each light along one direction.** `sh_bake/probe.rs::bake_probe_direct_rgb_posed` calls `accumulate_sh_rgb` once per light, along `incident_radiance_at_point`'s point→light direction, then calls `apply_cosine_lobe_rgb`. The probe atlas works on L2 (`sh_math::sh_basis_l2`, 9 coefficients × RGB) and packs into octahedral irradiance tiles. A polygon that subtends a large solid angle cannot ride that path (§3).
-- **More consumers of the unshadowed term and emitter shape than the handoff listed:**
+- **More consumers of the unshadowed term and emitter shape than the cloud session's grounding listed:**
   - `mover_probe_channel/{direct,visibility,posed_scene}.rs` read `incident_radiance_at_point`, `emitter_radius` and `area_sample_target`, and `PosedOccluder::may_meet` is a sphere test.
   - `billboard_direct_scatter_bake.rs` reads `incident_radiance_at_point`.
   - `surface_radiance/layer.rs` reads `bounce_contribution`.
@@ -76,7 +76,7 @@ The cloud session's facts hold at `17c2f1e`. This session found five more:
 - Fully lit and fully shadowed texels stay exact 1 and 0, so the nine-probe early-out keeps its meaning.
 - Lattice choice: Ureña sampling for rectangles, which the skylight and light-table cases are, with an Arvo fan for other convex polygons. Store w = cosθ_r per sample, since solid-angle sampling already accounts for distance and the emitter cosine.
 - **Lattice dependence.** The polygon lattice depends on the light and on the receiver (solid angle is per point). So the per-thread point/spot snap in `SoftProbes::new`, keyed by sample count alone, must not serve polygon lights. The receiver-floor sector pairing assumes a sphere offset projected onto the receiver; for a polygon, pair by the sample's projected offset in the same way.
-- Whether 32 escalated rays are enough for a 4 m light at 1–3 m is a measurement, not a literature answer. It goes in a Proof row.
+- No published per-texel count exists for large area lights. Weighting spends each ray where the light is, and stratified penumbra noise falls as about N^-0.75, so the global escalated count (32) is the starting point. The hallway noise row confirms it; a shortfall is answered by better sample placement, not a per-type count.
 
 ## 3. SH projection for probe bakes
 
@@ -119,13 +119,16 @@ At 1 m the single-direction path under-lights a side-facing entity 3.4× and lea
 | Bound: E ≤ L·min(π, A/d_min²), where d_min is the distance to the nearest point of the polygon. The reach for cutoff ε is d_reach = √(L·A/ε), measured from the polygon. For a Lambertian emitter of flux Φ, L·A = Φ/π, so the reach depends on flux, not area. A centroid ball is conservative only with radius d_reach + circumradius | PBRT 4e §4.2.3 <https://pbr-book.org/4ed/Radiometry,_Spectra,_and_Color/Working_with_Radiometric_Integrals>; derivation | High | Each `falloff_range` cull reader (§Grounding) |
 
 **Reading for this repo.**
-- v1 can feed every sphere cull a conservative sphere: centroid plus circumradius plus reach. Every exact-skip proof stays valid, because those proofs show zero contribution outside a volume, and a containing sphere still proves it.
-- The cost lands on ceiling skylights, whose sphere pulls in the slab. Measure that on the hallway map before building a tight polygon hull.
+- Two spheres, each containing what it stands for, keep every exact-skip proof valid: those proofs show zero contribution outside a volume, and a containing sphere still proves it.
+  - The emitter sphere (centroid, circumradius plus slack) bounds every shadow-ray target. It replaces `light_size` in the shaft cull and the mover occluder tests, which take a (centre, radius) pair and allow 1 mm of slack (`shaft_cull.rs` `EMITTER_SLACK`).
+  - The reach sphere (same centre, circumradius plus reach) feeds the reach, influence and cache-key slice readers.
+  - One reach sphere for both would stay exact but switch the shaft cull off for every chart in reach.
+- The cost lands on ceiling skylights, whose spheres pull in the slab. Measure that on the hallway map before building a tight polygon hull.
 - Two cheap tightenings, if the measurement asks for them:
   - the front half-space test in each cull;
   - the box-to-box shaft with the polygon's AABB.
 - Tightening is a follow-on, not v1 scope, unless the bake-time row fails.
-- **Self-occlusion.** Shadow rays end on the emitter's own brush face. Lift samples off the plane along n_e by a small offset above the tracer tolerance τ (0.5 mm), in the spirit of ericw-tools' `_surface_offset` (§5). Alternatively, exclude the emitter's own faces from the hit test. How `segment_clear` treats an endpoint lying on a triangle is not verified.
+- **Self-occlusion.** Shadow rays would end on the emitter's own brush face. A segment blocks only on a triangle it crosses, and a segment lying in a face's plane misses that face (`build_pipeline.md` §Ray traversal; `ray_traversal/occlusion.rs::segment_clear`). So a target lifted along n_e by the tracer tolerance τ (0.5 mm) puts the whole segment in front of the emitter's plane, clear of the emitter face and the coplanar ceiling around it. That lift stays inside the emitter sphere's 1 mm slack. The prior-art lifts (2.5 cm to 0.2 m, §5) served single-ray point approximations and would break that containment. Excluding the emitter's faces from the hit test would put a face check in every shadow ray's inner loop.
 
 ## 5. Prior art in game tools
 
@@ -165,7 +168,7 @@ Sources: rows 1–4 come from primary source code on GitHub. Rows 5–6 come fro
   - This design differs in the shadow term: samples over the polygon itself, weighted by the ratio estimator (§2).
   - Reading its shader is a cheap cross-check of the polygon maths, not a source of the shadow method.
 - Source-engine forks kept texlights as templated points. Area lights arrive only as sized point lights (VRAD++) or, in Source 2, as `light_rect`, a baked-only rectangle (~2023).
-- This session searched for prior art only. It ran **no patent search** on polygon area-light baking or on the ratio estimator. The roadmap's "IP check before drafting" is therefore half done (§Handoff, Not verified).
+- This session searched for prior art only. It ran **no patent search** on polygon area-light baking or on the ratio estimator. The roadmap's "IP check before drafting" is therefore half done; the brief carries the patent search as its one open question that blocks the build.
 
 ## 6. Future runtime specular (door only)
 
@@ -180,16 +183,16 @@ Sources: rows 1–4 come from primary source code on GitHub. Rows 5–6 come fro
 - A representative point reuses the Blinn-Phong-to-a-point code with a moved light vector and a lowered exponent, and needs no tables.
 - LTC draws strip- and rectangle-shaped highlights but costs a table binding and four edge integrals per pixel.
 - v1 stays at no specular, as decided.
-- The `AlphaLightRecord` polygon payload should carry the rectangle's centre and half-extents now. A later specular change then needs no second section bump. Whether a non-rectangular convex polygon is in scope settles how that payload generalises (§Decisions).
+- AlphaLights v5 carries no polygon payload, because nothing reads one at runtime yet. The specular feature adds it with its own bump; centre plus two half-extents serves both doors for rectangles, and a non-rectangular polygon needs a vertex list.
 
 ## What the web changed
 
-- **Visibility semantics** (new). The handoff's "term × visibility fraction" stays, but for a polygon the fraction must be integrand-weighted (ratio estimator), or sampled by projected solid angle. An unweighted fraction is wrong near the light, which is exactly the skylight case. The partition format does not change.
+- **Visibility semantics** (new). "Term × visibility fraction" stays, but for a polygon the fraction must be integrand-weighted (ratio estimator), or sampled by projected solid angle. An unweighted fraction is wrong near the light, which is exactly the skylight case. The partition format does not change.
 - **Direct SH needs a polygon projection** (new). The single-direction path is 3.4× off for side-facing receivers at 1 m. This adds the id-35, 41, 45, 47/48 and mover-probe-channel bakes to the polygon arm's scope, not just the lightmap.
 - **The SH ratio must not run per coefficient** (new). Use a control variate or a scalar ratio.
-- **Culls can stay spheres for v1** (narrows scope). A containing sphere keeps every exact-skip proof. A tight hull is a measured follow-on.
+- **Culls stay spheres** (narrows scope). An emitter sphere and a reach sphere, each containing what it stands for, keep every exact-skip proof. A tight hull is a measured follow-on.
 - **Reach is measured from the polygon**, and depends on flux, not area (new, for the brightness convention).
-- **Prior art** shows both polygon-native area lights and templated points in shipped tools (§5). This informs owner question 1. It is not a legal reading.
+- **Prior art** shows both polygon-native area lights and templated points in shipped tools (§5). It informs the choice of a polygon light over templates. It is not a legal reading.
 
 ## Pin table
 
@@ -215,248 +218,3 @@ Orderings and edges the brief's Acceptance rows cite. Review rounds 1–2, 2026-
 | O16 | Lights in entity order: static area light S, then animated area light A holding compose slot 0 | S's glow entries carry no compose slot. The shader takes the static term for a slotless entry and the descriptor for a slotted one | S's faces hold _e × _glow × _color on every frame while A pulses. A's faces follow A |
 | O17 | A finite colour animation (playCount 1) on an animated area light runs to its end | The bridge settles on the first frame past the end: the final colour moves into the light's colour, the curve clears, and the descriptor carries final colour × intensity. Glow reads that descriptor on that frame | The faces glow in the final colour on the settle frame and after, matching the room. The glow never returns to _color |
 | O18 | An area light authored with delay 0, _light_size and spot keys, queried by a level script at bake time and at runtime | Exposure, the centroid and the resolved reach are fixed, and inert keys normalised away, before the bake-time light table is built | Both snapshots read lightType Area, falloffModel InverseSquared, falloffRange equal to the resolved reach, position equal to the area-weighted centroid, and no cone fields |
-
----
-
-## Handoff
-
-The draft session's record. `index.md` supersedes it for Decisions and Acceptance.
-
-Changes from the cloud session's handoff are marked **[web]** where research changed them and **[source]** where this session's source reads did.
-
-```markdown
-Problem: A designer cannot make a big ceiling skylight or a glowing light-table
-floor light a room. Emissive maps light nothing. The only workaround is a grid of
-point lights. That grid leaves hot spots on nearby surfaces: under a 4 × 4 m panel
-a single point reads 6.1× too bright at 1 m. It also loses specular past the 4
-shadowmask owners per face (id 42), and lightmap bake cost grows with every copy.
-
-Outcome: A brush entity whose brushes compile as world brushwork and whose emitting
-faces become one static polygon area light, with its own colour and intensity.
-- It lights the lightmap (direct), the SH bounce (through its own patch layer),
-  and dynamic receivers (direct SH).
-- Soft shadows are correct near the emitter, with no hot spots.
-- Scripts can animate it through the existing weight-map and delta paths.
-- v1 has no specular, no promotion and no SDF shadows.
-
-Read at: 17c2f1e (lighting sources unchanged since eb44499)
-
-Verified facts: (by symbol)
-- Cloud session's list, all still current.
-- [source] Direct SH projects each light along one point→light direction:
-  sh_bake/probe.rs::bake_probe_direct_rgb_posed → accumulate_sh_rgb, then
-  apply_cosine_lobe_rgb.
-  - Probes are real L2 SH (sh_math::sh_basis_l2, 27 floats) packed into octahedral
-    irradiance tiles.
-  - The same single-direction path feeds ids 35, 41, 45, 47/48 and the mover
-    probe channel.
-- [source] More consumers of the term and emitter shape than listed:
-  - mover_probe_channel/{direct,visibility,posed_scene}.rs: emitter_radius,
-    area_sample_target, and a PosedOccluder::may_meet sphere test
-  - billboard_direct_scatter_bake.rs: incident_radiance_at_point
-  - surface_radiance/layer.rs: bounce_contribution
-  - about 25 compiler files that read falloff_range as an origin-centred reach
-    radius
-- [source] The lightmap_layer partition record holds only a texel index and raw
-  visibility. The fold rebuilds irradiance and direction from the unshadowed term
-  at the texel centre. So a polygon light needs a new term and a weighted
-  visibility, and no record change.
-- [source] entity_shadow_select::is_promotable_base_light already refuses any type
-  except Point/Spot. The animated promotion path needs its own refusal.
-- [source] `switch` is the closer precedent: a brush entity that compiles as world
-  geometry and carries a script `name`.
-- [web] Unoccluded term: Lambert/Arvo E = (L/2) Σ Θᵢ (Γᵢ·n) on the polygon clipped
-  to the receiver's horizon. The irradiance vector Φ of the clipped polygon gives
-  the stored direction. Checked to 6 digits against Howell's closed form and
-  midpoint integration (research.md §1).
-- [web] Ratio estimator (Heitz, Hill & McGuire 2018): "term × visibility" stays
-  exact for a polygon only if visibility is weighted by the unshadowed integrand,
-  or sampled by projected solid angle. An unweighted area fraction is 81×
-  mis-weighted at 1 m under a 4 m light.
-- [web] Single-direction SH is 3.4× low for a side-facing receiver at 1 m and leaks
-  onto down-facing normals. A projection over the polygon's solid angle is within
-  a few percent (§3).
-- [web] Any containing sphere keeps every exact-skip proof valid. A tight bound is
-  hull(polygon ∪ box), and the reach is √(L·A/ε) measured from the polygon (§4).
-- [web] Prior art: templated points in qrad3 1997, hlrad 1998 and ericw-tools 2015;
-  exact polygon form factor in id q3map 1999 and q3map2. Baked rectangle area
-  lights in Source 2 `light_rect` (~2023) and Godot 4.7 `AreaLight3D` (2026, MIT,
-  analytic diffuse, shadows from the centre). Godot otherwise treats emission as
-  bounce only, and Strata Source documents no area light. Every game tool offsets
-  the emitter off the plane or biases the ray (§5).
-
-Not verified:
-- IP: no patent search was run. Only game-tool prior art was collected. The
-  roadmap's IP check still needs a claim-level patent search on polygon area-light
-  baking (and on the ratio estimator, if the brief adopts it).
-  - patents.google.com is reachable from the default environment per gi-rtx-lite
-    index.md.
-  - Legal conclusions are for the owner or counsel.
-- How segment_clear treats a segment whose endpoint lies on a triangle. This
-  decides between lifting samples off the plane and excluding the emitter's own
-  faces.
-- Whether 32 escalated rays are enough for a 4 m emitter at 1–3 m. No published
-  count exists, so it must be measured.
-- Lightmass internals and Enlighten near-field behaviour (docs only, medium).
-- The full text of Heitz 2018, Wang & Ramamoorthi 2018, LTC, Arvo 1995 and Howell
-  B-3. These hosts were outside the allowlist; facts were checked against
-  excerpts, and the polygon maths numerically.
-- How a face's visible glow intensity is sourced today, which owner question 3
-  depends on.
-
-Decisions: (owner, settled)
-- Opt-in per placement through a brush entity. Its brushes are world brushwork; its
-  emitting faces form one light. The brief states both divergences (roadmap
-  "surface lights"; gi-rtx-lite "Emissive bounce: opt-in per material") and
-  updates both records.
-- Do not build on Material::emissive_strength or `neon_`. The entity carries its
-  own colour and intensity.
-- Script-animatable through bake-time weight maps and deltas, scaled by runtime
-  curves.
-- v1: no area-light specular (keeps a placeholder SpecLight record, refused as an
-  owner), no promotion on either path, SDF shadow type refused.
-- The emitter's bounce comes from its own patch layer. Its glow is not also put
-  into the surface radiance cache (no double count, index.md §2).
-
-Decisions: (brief to settle; recommendation from the research)
-- [web] Visibility for polygon lights is the ratio estimator. Use Ureña
-  solid-angle sampling for rectangles and an Arvo fan for other convex polygons;
-  store Σ wV / Σ w with w = cosθ_r at the texel centre. The polygon lattice is
-  per light and per receiver, so it never uses the count-keyed point/spot snap.
-- [web] Probe bakes project over the polygon. Use analytic unshadowed coefficients
-  (L0 from Ω, L1 from Φ, L2 from Wang–Ramamoorthi or a fixed quadrature) plus a
-  control-variate shadow term, with all-visible and none-visible fast paths. Never
-  a per-coefficient ratio.
-- [web] Culls in v1 take a containing sphere: centroid, radius = circumradius +
-  reach. Tight hulls follow only if the hallway bake-time row fails.
-- [web] Brightness is radiance-like (per area): output grows with emitter area, as
-  in every area-scaled tool (§5). On the emitter's axis the small-emitter limit is
-  a point light with I = L·A.
-- [web] Reach: derived from flux by the bound √(L·A/ε), with an authored override,
-  zero beyond. This mirrors Lightmass's derived influence radius. ε is a constant
-  chosen by measurement.
-- Flush handling:
-  - Shadow-ray sample points lift off the emitter plane (q3map, qrad and
-    ericw-tools precedent), unless the endpoint check says to exclude the
-    emitter's own faces instead.
-  - buried_lights and the embedded-emitter lattice skip this light type.
-  - The term's d ≤ ε early-out darkens the emitter's own face.
-- The emitter's geometry comes from exposed brush sides before the BSP splits
-  them. The light is a set of convex polygons; the term sums over them, and the
-  lattice spreads samples across them by solid angle.
-- The AlphaLightRecord polygon payload carries enough to open a later specular
-  door (rectangle centre + half-extents, or a bounded polygon list) in the same
-  section bump.
-
-Non-goals:
-- Runtime specular from area lights. LTC or a representative point are recorded
-  doors (§6), not v1.
-- Entity-shadow promotion and SDF shadows for area lights.
-- Template ("_surface") lights across every face of a texture. This is the
-  roadmap entry the owner's ruling replaces.
-- Tight polygon shaft/reach hulls, unless measurement asks for them.
-- Two-sided emitters (q3map's fog case); none of the motivating content needs one.
-- Retiring `neon_` (separate work).
-
-Proof:
-Automated, polygon term (§1 values are the oracle):
-- A unit square, L = 1, facing down, receivers facing up:
-  - h = 0.1 / 0.5 / 1 / 2 / 5 / 10 → 3.042128 / 1.740840 / 0.752275 / 0.230837
-    / 0.039474 / 0.009967, to 1e-5 relative.
-  - These must equal 4X/√(1+X²)·atan(X/√(1+X²)) with X = 1/(2h).
-- At h = 1, receiver tilts 0/30/60/85/90/120° → 0.752275 / 0.651489 / 0.376137 /
-  0.123245 / 0.087510 / 0. The 120° case pins the horizon clip; without the clip
-  it reads negative or nonzero.
-- Off-axis (2, 0, 0) → 0.0437426, matching inclusion–exclusion of Howell B-3. On
-  an edge's line extension → 0.0396548, with no NaN.
-- Grazing: 0.1 mm below the plane, facing the emitter → 1.3554e-5, finite.
-  Coplanar → 0. Behind the emitter → 0. The emitter's own face → 0.
-- Permit side: h = 1 mm under the centre → within 1e-4 of π.
-- Small-emitter limit: s = 0.1 / 0.01 / 0.001 at a skewed pose. The ratio to
-  L·A·cosθ_e·cosθ_r/d² is within 1e-3 / 1e-5 / 1e-7. On the emitter axis this
-  equals the existing InverseSquared point term with I = L·A and range beyond d.
-- f32 corners at about 1 km from the origin agree with f64 corners.
-Automated, visibility:
-- Fully lit and fully shadowed texels store exactly 1 and 0.
-- A half-plane occluder covering the near half of a large emitter versus one
-  covering the far half gives different stored visibility, weighted by
-  integrand. An unweighted fraction would tie; this row fails without the ratio
-  estimator.
-- Fold output equals the unweighted reference for a tiny emitter.
-Automated, probes:
-- With nothing occluding, the probe projection's L0 matches Ω and its L1 matches
-  Φ.
-- 4 × 4 m at 1 m: a side-facing reconstruction within 5% of 0.781, and a
-  down-facing one within 0.05 of 0. Single-direction projection would give 0.230.
-Automated, flush, culls and identity:
-- An area light on a ceiling face is neither dropped by buried_lights nor flagged
-  embedded. A point light buried in solid still is.
-- A wall texel adjacent to the emitter edge is not black (q3map's "black edges"
-  failure).
-- Every bake output is byte-identical with exact skips on and off for an
-  area-light map.
-- Changing any polygon vertex re-keys the lightmap layer, LightDigest::of and the
-  direct-SH memos. An unrelated light's entry does not move.
-- Promotion refuses area lights on both the base and the animated path. The SDF
-  shadow type is refused at compile. The placeholder SpecLight is never an id-42
-  owner.
-- Animated: a weight map with curve = 1 equals the static bake of the same light.
-Measured (hallway map, recorded in the PR):
-- Cold and warm bake time: one area-light skylight against the same patch lit by
-  a 4 × 4 template grid of point lights. Then the same with the sphere cull, to
-  decide on tight hulls.
-- Penumbra noise (RMS against a 256-ray reference) at 32 and 64 escalated rays,
-  1–3 m from a 4 × 4 m emitter. Decide the polygon's sample count from this.
-Manual:
-- Owner A/B of a skylight room against a template grid: hot spots and wall
-  ripple.
-- A scripted flicker with the face glow in sync (if owner question 3 is yes).
-- Entities walking under the skylight match the walls beside them.
-
-Open owner questions:
-1. True polygon light or template lights (roadmap)?
-   Recommend the polygon light.
-   - The web adds two reasons. First, the approach has game-tool precedent:
-     id q3map shipped an exact polygon form factor in 1999, and Source 2
-     (~2023) and Godot 4.7 (2026) bake rectangle area lights. Second, the
-     separable bake absorbs it with no partition format change.
-   - Cost: a polygon arm in the probe bakes, and a sampler that is not a sphere.
-   - IP: prior art is recorded, but no patent search has been run. Run one before
-     the brief is promoted. Its reading is for the owner or counsel.
-2. Which faces emit?
-   Recommend exposed faces whose texture has an `_e` map, the cloud session's
-   choice.
-   - It picks the glass pane over the frame in one mixed entity, and it is the
-     material link the gi-rtx-lite ruling expected.
-   - Add a compile error when no face qualifies.
-   - "Every exposed face" lights a light table's sides and frame.
-   - "Face nearest angles" fails a multi-pane skylight.
-3. Should the entity's brightness also drive its faces' glow?
-   Recommend yes, together with animation.
-   - A flickering light with a steady glowing pane reads as a bug.
-   - This needs a per-face emitter id and a runtime table, following the
-     `animated_block` precedent.
-   - A static-only first slice could defer it, but script animation is in scope,
-     so splitting would land a known-visible defect.
-New, from this research:
-4. Should brightness be per area, so a larger brush gives more light? Recommend
-   yes: every area-scaled tool does this.
-   The alternative is total output fixed regardless of size. That needs a
-   modder-facing unit either way.
-5. Should reach be derived from brightness with an override (Lightmass)? Or
-   authored as falloff_range like point lights? Recommend derived, with an
-   override.
-
-Route: brief
-
-Why this route: Several decisions must be reviewed before code exists:
-- a modder-facing FGD entity and its brightness and reach units;
-- a PRL section version bump (AlphaLightRecord) that sizes the later specular
-  door;
-- two recorded rulings to overturn;
-- an IP check that is still half done.
-One integrating executor can own the work: the term, the sampler, the probe
-projection, the flush rules, the cull feed and the runtime refusals.
-
-Next action: discuss
-```

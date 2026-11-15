@@ -44,7 +44,9 @@ light.
 - **Shadows: integrand-weighted visibility in the existing separable fold.** Each
   shadow sample counts by its share of the unshadowed light, never as a plain
   clear-ray fraction, which is wrong near a large emitter (`research.md` §2). The
-  `lightmap_layer` partition record does not change.
+  `lightmap_layer` partition record does not change. Area lights take the global
+  escalated sample count (`--soft-shadow-samples`), with no per-type count
+  (`research.md` §2).
 - **Probe bakes project over the polygon, not along one direction.** This covers
   direct SH, billboard scatter and the mover probe channel. Unshadowed
   coefficients are analytic; shadowing never applies a per-coefficient ratio
@@ -279,8 +281,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - [ ] Hallway map, recorded in `plan.md`: cold and warm bake time for one 4 × 4 m
   skylight, against the same patch lit by a 4 × 4 grid of point lights.
 - [ ] Hallway map, recorded in `plan.md`: penumbra RMS noise against a 256-ray
-  reference at 32 and 64 escalated rays, 1–3 m from the panel. The chosen count
-  is recorded.
+  reference at 32 and 64 escalated rays, 1–3 m from the panel. At the global
+  count of 32 the penumbra looks no noisier than at 64 in the owner's A/B; a
+  shortfall is answered by sample placement, not a per-type count.
 - [ ] Owner A/B: skylight room against the template grid. No hot spots or wall
   ripple, and no visible edge at the reach cutoff.
 - [ ] A scripted flicker: the glow and the room light move together frame for
@@ -318,9 +321,10 @@ Glow and light identity (orderings in `research.md` §Pin table):
   derived render face (O12).
 - **Lattice snap.** The polygon lattice depends on the light and the receiver.
   Key it apart from the count-keyed point/spot snap in `SoftProbes::new`.
-- **Self-occlusion.** Lift sample points off the plane (q3map, qrad and
-  ericw-tools precedent), or exclude the emitter's faces from the hit test.
-  First check how `segment_clear` treats an endpoint lying on a triangle.
+- **Self-occlusion.** Lift each shadow-ray target along its face normal by the
+  tracer tolerance τ. The segment then never crosses the emitter's plane, and
+  the lift stays inside the emitter sphere's slack (`research.md` §4). Larger
+  prior-art lifts break that containment.
 - **Cache digest.** Add the polygon to `surface_radiance/layer.rs::LightDigest::of`
   by hand. Keep `_glow` out of every bake key.
 - **Promotion.** Animated promotion
@@ -344,8 +348,6 @@ Glow and light identity (orderings in `research.md` §Pin table):
   options, charted per `context/research/gi-rtx-lite/ip-check.md`. Prior art only
   so far (`research.md` §5). — owner: owner / counsel — **blocks build**
 - Reach cutoff constant: no visible edge in the owner A/B. — **delegated**
-- Escalated sample count for area lights, from the noise row. — **delegated**
-- Self-occlusion mechanism: lift or exclude. — **delegated**
 - Visibility weighting option, after the patent search. — **delegated**
 
 ## Boundary inventory

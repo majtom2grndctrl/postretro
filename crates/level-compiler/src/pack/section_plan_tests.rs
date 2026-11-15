@@ -1,10 +1,12 @@
-// Pack-time refusals of id 34 and id 59: the compiler never writes what the loader refuses.
+// Pack-time refusals of id 34 and id 59, and the SH body-presence choice.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::probe_depth_tiles::{PROBE_DEPTH_TILE_TEXELS, ProbeDepthTilesSection};
 use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
 
-use super::refuse_what_the_loader_refuses;
+use postretro_level_format::sh_body::ShBodyPresence;
+
+use super::{legacy_sh_body, refuse_what_the_loader_refuses};
 
 /// A one-row id 34 holding `probes`.
 fn volume(probes: Vec<OctahedralShProbe>) -> OctahedralShVolumeSection {
@@ -68,4 +70,14 @@ fn a_tile_naming_an_invalid_probe_fails_the_build() {
             && message.contains("probe index 1 names an invalid probe"),
         "{message}"
     );
+}
+
+// Ids 27/34/35/41/45 drop their bodies only when id 50 carries the payload
+// and `--whole-load-sh` is off.
+#[test]
+fn sh_bodies_are_omitted_only_beside_id_50_without_the_flag() {
+    assert_eq!(legacy_sh_body(true, false), ShBodyPresence::Omitted);
+    assert_eq!(legacy_sh_body(true, true), ShBodyPresence::Present);
+    assert_eq!(legacy_sh_body(false, false), ShBodyPresence::Present);
+    assert_eq!(legacy_sh_body(false, true), ShBodyPresence::Present);
 }

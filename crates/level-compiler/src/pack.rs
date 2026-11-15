@@ -511,6 +511,8 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,
         None,
+        // No id 50 here, so the bodies are always written; the flag is moot.
+        false,
     )
     .map(|_| ())
 }
@@ -578,6 +580,9 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         FinalizedShPack<'_>,
         &crate::cluster_directory_bake::ClusterDirectoryBake,
     )>,
+    // `--whole-load-sh`: write the bodies of ids 27/34/35/41/45 even though
+    // id 50 carries their payload. Without id 50 they are always written.
+    whole_load_sh: bool,
 ) -> anyhow::Result<PrlFootprint> {
     let texture_cache_keys_section = TextureCacheKeysSection {
         keys: geo_result
@@ -729,6 +734,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         sh_mandatory_bound: sh_bound.entries,
         lightmap_pool_bound: lightmap_pool.section,
         cluster_payload,
+        whole_load_sh,
     })?;
     let descriptors: Vec<_> = sections
         .iter()
@@ -1666,6 +1672,109 @@ mod tests {
         let _ = std::fs::remove_file(&output_without_delta);
         let _ = std::fs::remove_file(&output_without_direct);
         let _ = std::fs::remove_file(&output_empty);
+    }
+
+    // The legacy public helper emits no id 50, so nothing but the bodies
+    // could load its SH: it writes them whatever the flag would say.
+    #[test]
+    fn pack_without_id_50_writes_every_sh_body() {
+        use postretro_level_format::sh_body::{ShBodyPresence, read_sh_body_presence};
+
+        let output = std::env::temp_dir()
+            .join("postretro_test_pack")
+            .join("test_pack_without_id_50_writes_sh_bodies.prl");
+        let _ = std::fs::create_dir_all(output.parent().unwrap());
+        let texture_cache_keys: HashMap<String, [u8; 32]> = HashMap::new();
+        let direct = minimal_direct_sh_volume();
+        let selected = EntityShadowLightsSection {
+            light_indices: vec![0],
+        };
+        let delta = minimal_direct_sh_delta_volumes();
+        pack_and_write_portals(
+            &output,
+            &sample_geo_result(),
+            &texture_cache_keys,
+            &sample_leaves(),
+            &sample_tree(),
+            &PortalsSection {
+                vertices: vec![],
+                portals: vec![],
+            },
+            &HashSet::new(),
+            &sample_bvh(),
+            &[],
+            &empty_alpha_lights(),
+            &empty_light_influence(),
+            &minimal_sh_volume(),
+            Some(&direct),
+            Some(&selected),
+            Some(&delta),
+            None,
+            &placeholder_lightmap(),
+            &placeholder_chunk_light_list(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &FogVolumesSection::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&sample_cell_draw_index_section()),
+            None,
+            None,
+        )
+        .expect("pack should succeed");
+
+        let data = std::fs::read(&output).expect("should read output file");
+        let _ = std::fs::remove_file(&output);
+        let mut cursor = Cursor::new(&data);
+        let meta = read_container(&mut cursor).expect("should read container");
+        assert!(
+            meta.find_section(SectionId::ClusterShPayloads as u32)
+                .is_none()
+        );
+        let mut section = |id: SectionId| {
+            read_section_data(&mut cursor, &meta, id as u32)
+                .expect("section reads")
+                .unwrap_or_else(|| panic!("{id:?} is written"))
+        };
+        let base = section(SectionId::OctahedralShVolume);
+        let direct_bytes = section(SectionId::DirectShVolume);
+        let delta_bytes = section(SectionId::DirectShDeltaVolumes);
+        for (id, bytes) in [
+            (SectionId::OctahedralShVolume, &base),
+            (SectionId::DirectShVolume, &direct_bytes),
+            (SectionId::DirectShDeltaVolumes, &delta_bytes),
+        ] {
+            assert_eq!(
+                read_sh_body_presence(id, bytes).expect("flag reads"),
+                ShBodyPresence::Present,
+                "{id:?}"
+            );
+        }
+        assert_eq!(
+            OctahedralShVolumeSection::from_bytes(&base)
+                .expect("id 34 decodes whole")
+                .compact_atlas,
+            minimal_sh_volume().compact_atlas
+        );
+        assert_eq!(
+            DirectShVolumeSection::from_bytes(&direct_bytes)
+                .expect("id 35 decodes whole")
+                .atlas,
+            direct.atlas
+        );
+        assert_eq!(
+            DirectShDeltaVolumesSection::from_bytes(&delta_bytes)
+                .expect("id 41 decodes whole")
+                .delta_subblocks,
+            delta.delta_subblocks
+        );
     }
 
     #[test]

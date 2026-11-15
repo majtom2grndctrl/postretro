@@ -18,7 +18,8 @@ use postretro_level_format::SectionId;
 use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
-const UNCOMPRESSED: &[&str] = &["--uncompressed-irradiance"];
+/// The builds `Volume::read` decodes: uncompressed, and id 34 kept whole.
+const WHOLE_UNCOMPRESSED: &[&str] = &["--uncompressed-irradiance", "--whole-load-sh"];
 
 fn uniform(map: &str) -> String {
     with_worldspawn_key(map, "_sh_coarsen", "0")
@@ -51,12 +52,12 @@ fn closet() -> &'static Closet {
         let map = uniform(&dev_map("mover-closet.map"));
         Closet {
             channel: build(&map, "mover-closet", Cache::Cold, &[]),
-            today: build(&map, "mover-closet", Cache::Cold, UNCOMPRESSED),
+            today: build(&map, "mover-closet", Cache::Cold, WHOLE_UNCOMPRESSED),
             reference: build(
                 &uniform(&dev_map("mover-closet-static-door.map")),
                 "mover-closet-static-door",
                 Cache::Cold,
-                UNCOMPRESSED,
+                WHOLE_UNCOMPRESSED,
             ),
         }
     })
@@ -235,12 +236,12 @@ fn setpiece() -> &'static Setpiece {
         let raised = staticize(&map, "setpiece_room", "setpiece_room_raised");
         Setpiece {
             channel: build(&map, "mover-setpiece", Cache::Cold, &[]),
-            today: build(&map, "mover-setpiece", Cache::Cold, UNCOMPRESSED),
+            today: build(&map, "mover-setpiece", Cache::Cold, WHOLE_UNCOMPRESSED),
             reference: build(
                 &raised,
                 "mover-setpiece-room-raised",
                 Cache::Cold,
-                UNCOMPRESSED,
+                WHOLE_UNCOMPRESSED,
             ),
         }
     })

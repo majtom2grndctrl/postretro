@@ -31,8 +31,24 @@ fn empty_pin(map_text: &str, textured: bool) -> Fixture {
 }
 
 fn bake(fixture: &Fixture, compiler: &Path, label: &str) -> Bake {
+    bake_with(fixture, compiler, label, &[])
+}
+
+/// The current compiler with id 34's body kept, for a test that decodes it
+/// whole. The pre-colour compiler predates the flag.
+fn bake_current_whole(fixture: &Fixture) -> Bake {
+    bake_with(
+        fixture,
+        &current_compiler(),
+        "current",
+        &["--whole-load-sh"],
+    )
+}
+
+fn bake_with(fixture: &Fixture, compiler: &Path, label: &str, extra: &[&str]) -> Bake {
     let mut flags = vec!["--no-cache", "--jobs", "1"];
     flags.extend(FOUR_SHADOW_SAMPLES);
+    flags.extend(extra);
     // Independent baked roots per label: both compilers see absent sidecars.
     fixture.bake(compiler, label, "info", &flags)
 }
@@ -130,11 +146,7 @@ fn no_fluid_tail_map() -> String {
 #[test]
 #[ignore = "cold real-CLI empty-tail bake"]
 fn no_fluid_only_tail_keeps_grey_lighting_texture_indices_and_one_report() {
-    let current = bake(
-        &empty_pin(&no_fluid_tail_map(), true),
-        &current_compiler(),
-        "current",
-    );
+    let current = bake_current_whole(&empty_pin(&no_fluid_tail_map(), true));
     assert_current_shape(&current);
     let names = current.names();
     assert_eq!(names.len(), 3);
@@ -166,11 +178,7 @@ fn unlit_room_map() -> String {
 #[test]
 #[ignore = "cold real-CLI no-light bake"]
 fn textured_room_without_lights_keeps_base_metadata_and_skips_direct_delta_work() {
-    let current = bake(
-        &empty_pin(&unlit_room_map(), true),
-        &current_compiler(),
-        "current",
-    );
+    let current = bake_current_whole(&empty_pin(&unlit_room_map(), true));
     assert_current_shape(&current);
     assert_eq!(
         current.sidecars.len(),
@@ -235,11 +243,7 @@ fn mover_only_map() -> String {
 #[test]
 #[ignore = "cold real-CLI mover-only/degenerate-grid bake"]
 fn mover_only_names_reach_materials_without_creating_static_world_sh_geometry() {
-    let current = bake(
-        &empty_pin(&mover_only_map(), true),
-        &current_compiler(),
-        "current",
-    );
+    let current = bake_current_whole(&empty_pin(&mover_only_map(), true));
     assert_current_shape(&current);
     assert_eq!(current.names(), ["bounce/red"]);
     assert!(geometry(&current).faces.is_empty());

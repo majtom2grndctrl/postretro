@@ -90,7 +90,13 @@ fn bake_using(
         fixtures::room_map(appearance, true, true)
     };
     let fixture = Fixture::new(&map_text, true);
-    let bake = fixture.bake(binary, "room", "warn", &ORACLE_FLAGS);
+    let mut flags = ORACLE_FLAGS.to_vec();
+    // The oracle decodes ids 27, 41 and 45 whole and digests their full form,
+    // so the current compiler keeps the bodies. The saved one predates the flag.
+    if binary == current_compiler() {
+        flags.push("--whole-load-sh");
+    }
+    let bake = fixture.bake(binary, "room", "warn", &flags);
     // The approved storage dependency applies to id 41 only.
     for id in [27, 45] {
         if let Some(bytes) = bake.sections.get(&id) {

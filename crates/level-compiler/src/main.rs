@@ -808,6 +808,12 @@ pub struct Args {
     /// on disk and in VRAM); the uncompressed form is larger and exists for
     /// debugging and quality comparison against the compressed path.
     uncompressed_irradiance: bool,
+    /// When true, write the bodies of ids 27, 34, 35, 41 and 45 (the SH
+    /// atlases and delta tiles), which only `POSTRETRO_SH_STREAMING=off`
+    /// reads. Off by default: the streaming loader takes that payload from
+    /// id 50, so the bodies are written without. Packing only — no stage key
+    /// folds it, and `--release` does not imply it.
+    whole_load_sh: bool,
     /// The probe depth tile range id 59 and the mover probe channel's live
     /// tiles share: the 15-bit tile reference's, or less to test the trim
     /// and the range error on a small map.
@@ -883,6 +889,7 @@ fn help_text() -> String {
          --no-cache                 Disable the stage cache entirely; wins over --cache-dir (default: off)\n    \
          --release                  Produce a shippable map: the stage cache is neither read nor written (implies --no-cache). The interactive default is a fast warm build that reuses cached stages; ship only --release artifacts (default: off)\n    \
          --uncompressed-irradiance  Store the lightmap irradiance atlas uncompressed as Rgba16Float instead of BC6H — larger; for debugging/quality comparison (default: off, BC6H)\n    \
+         --whole-load-sh            Write the SH bodies of ids 27/34/35/41/45 beside id 50 so POSTRETRO_SH_STREAMING=off can load the level; larger, a dev and test seam (default: off, streaming reads only their metadata)\n    \
          --probe-depth-tile-cap <N> Probe depth tiles (id 59's and the movers' live tiles together) a level may hold, at most {probe_depth_tile_max}; lower only to test the tile trim and range error (default: {probe_depth_tile_max})\n    \
          --mover-payload-resident-bar <SIZE> Bytes of each mover probe channel payload block kept resident in id 57 before it streams with id 50's cells, at most {mover_payload_bar}; lower only to test streamed placement (default: {mover_payload_bar})\n    \
          --direction-texel-scale <N> Per-axis static-direction atlas reduction, power of two in 1..={direction_texel_scale_max} (default: {direction_texel_scale})\n    \
@@ -968,6 +975,7 @@ where
     let mut release = false;
     let mut quality_flag_supplied = false;
     let mut uncompressed_irradiance = false;
+    let mut whole_load_sh = false;
     let mut probe_depth_tile_cap = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
     let mut mover_payload_resident_bar: Option<u64> = None;
     let mut direction_texel_scale = lightmap_bake::DIRECTION_TEXEL_SCALE;
@@ -1119,6 +1127,9 @@ where
             "--uncompressed-irradiance" => {
                 uncompressed_irradiance = true;
             }
+            "--whole-load-sh" => {
+                whole_load_sh = true;
+            }
             "--probe-depth-tile-cap" => {
                 let value = flag_value(&mut args, "--probe-depth-tile-cap")?;
                 let max = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES;
@@ -1236,6 +1247,7 @@ where
         release,
         quality_flag_supplied,
         uncompressed_irradiance,
+        whole_load_sh,
         probe_depth_tile_cap,
         mover_payload_resident_bar,
         direction_texel_scale,
@@ -3188,6 +3200,19 @@ mod tests {
         assert!(!lightmap_config(&disabled, None).penumbra_floor);
 
         assert!(help_text().contains("--no-penumbra-floor"));
+    }
+
+    // Off by default, and `--release` does not imply it: the body choice is
+    // its own flag.
+    #[test]
+    fn whole_load_sh_is_off_by_default_and_only_the_flag_sets_it() {
+        let parse =
+            |args: &[&str]| parse_args_from(args.iter().map(|arg| (*arg).to_owned())).unwrap();
+        assert!(!parse(&["input.map"]).whole_load_sh);
+        assert!(!parse(&["input.map", "--release"]).whole_load_sh);
+        assert!(parse(&["input.map", "--whole-load-sh"]).whole_load_sh);
+        let release = parse(&["input.map", "--release", "--whole-load-sh"]);
+        assert!(release.whole_load_sh && release.release);
     }
 
     #[test]

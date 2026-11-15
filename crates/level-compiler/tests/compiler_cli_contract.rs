@@ -85,7 +85,7 @@ impl Drop for TempBuildDir {
 }
 
 fn compile_fixture(input: &Path, output: &Path, jobs: usize) -> Output {
-    compile_fixture_with_irradiance_format(input, output, jobs, true, None)
+    compile_fixture_with_irradiance_format(input, output, jobs, true, None, &[])
 }
 
 /// Read raw PRL payloads with their container versions, preserving all section
@@ -226,6 +226,7 @@ fn compile_fixture_with_irradiance_format(
     jobs: usize,
     uncompressed_irradiance: bool,
     forced_scale: Option<u8>,
+    extra: &[&str],
 ) -> Output {
     let mut command = prl_build();
     command
@@ -244,7 +245,7 @@ fn compile_fixture_with_irradiance_format(
             .arg("--sh-density-force-scale")
             .arg(scale.to_string());
     }
-    command.output().expect("spawn prl-build")
+    command.args(extra).output().expect("spawn prl-build")
 }
 
 fn compile_fixture_for_layer_cache_order(
@@ -432,6 +433,8 @@ fn forced_hierarchy_output_round_trips_through_production_loader() {
         .arg("--no-tui")
         .arg("--verbose")
         .arg("--uncompressed-irradiance")
+        // The node-scale check decodes id 34 whole, so keep its body.
+        .arg("--whole-load-sh")
         .arg("--sh-probe-spacing")
         .arg("1")
         .arg("--lightmap-density")
@@ -463,7 +466,8 @@ fn read_sh_volume(output: &Path) -> OctahedralShVolumeSection {
     let section = read_section_data(&mut cursor, &metadata, SectionId::OctahedralShVolume as u32)
         .expect("read OctahedralShVolume section")
         .expect("OctahedralShVolume section must be present");
-    OctahedralShVolumeSection::from_bytes(&section).expect("parse v11 OctahedralShVolume")
+    OctahedralShVolumeSection::from_bytes(&section)
+        .expect("parse OctahedralShVolume; bake with --whole-load-sh to keep its body")
 }
 
 fn run_compiler(args: &[&str]) -> Output {
@@ -498,6 +502,21 @@ fn assert_plain_bytes(stream_name: &str, bytes: &[u8]) {
         "{stream_name} contains a terminal control byte: {:?}",
         String::from_utf8_lossy(bytes),
     );
+}
+
+// `--help` lists the opt-in whole-load SH flag with its default and the
+// streaming mode it serves.
+#[test]
+fn help_lists_whole_load_sh_off_by_default() {
+    let help = run_compiler(&["--help"]);
+    assert!(help.status.success());
+    let help = String::from_utf8_lossy(&help.stdout);
+    let line = help
+        .lines()
+        .find(|line| line.trim_start().starts_with("--whole-load-sh "))
+        .unwrap_or_else(|| panic!("--help lists --whole-load-sh:\n{help}"));
+    assert!(line.contains("POSTRETRO_SH_STREAMING=off"), "{line}");
+    assert!(line.contains("(default: off"), "{line}");
 }
 
 #[test]
@@ -1035,8 +1054,16 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
     let bc6h_a = temp.0.join("bc6h-a.prl");
     let bc6h_b = temp.0.join("bc6h-b.prl");
 
+    // Each bake's id 34 decodes whole, so it keeps its body.
     for output in [&uncompressed_a, &uncompressed_b] {
-        let build = compile_fixture_with_irradiance_format(&input, output, 1, true, Some(1));
+        let build = compile_fixture_with_irradiance_format(
+            &input,
+            output,
+            1,
+            true,
+            Some(1),
+            &["--whole-load-sh"],
+        );
         assert_success(&build, 1);
     }
     assert_eq!(
@@ -1051,7 +1078,14 @@ fn gate_heavily_lit_cold_compact_sh_output_is_deterministic() {
     );
 
     for output in [&bc6h_a, &bc6h_b] {
-        let build = compile_fixture_with_irradiance_format(&input, output, 1, false, Some(1));
+        let build = compile_fixture_with_irradiance_format(
+            &input,
+            output,
+            1,
+            false,
+            Some(1),
+            &["--whole-load-sh"],
+        );
         assert_success(&build, 1);
     }
     let first_bc6h = read_sh_volume(&bc6h_a);

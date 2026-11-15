@@ -2,9 +2,10 @@
 //! bytes a cold build of the same map bakes, across a sequence of edits over
 //! one cache directory; a `--release` build caches nothing; a cold build
 //! ignores a populated cache directory; a data script flipping a light to
-//! animated leaves every other layer cached; an invalid `_bounce_fill` warns
-//! once even when the gathered volume hits; and no warm build, help text or
-//! context doc calls warm indirect light approximate.
+//! animated leaves every other layer cached; `--whole-load-sh` keys no stage
+//! and a warm build with it ships the `--release` bytes; an invalid
+//! `_bounce_fill` warns once even when the gathered volume hits; and no warm
+//! build, help text or context doc calls warm indirect light approximate.
 //! See: context/lib/build_pipeline.md §Build Cache
 
 mod prl_build_support;
@@ -444,6 +445,37 @@ fn a_warm_build_after_only_release_builds_misses_everything_and_ships_release_by
     assert_eq!(warm.count("[cache] sh_patch_layer miss"), 2);
 }
 
+// `--whole-load-sh` only chooses what packing writes: a warm build that adds
+// it over a populated cache writes no new entry, and it ships the bytes a
+// `--release` build with the same flag ships. Without the flag, id 34 is the
+// same section less its body.
+#[test]
+fn whole_load_sh_keys_no_stage_and_warm_equals_release() {
+    let temp = TempBuildDir::new("whole-load");
+    let corridor = Corridor::new();
+    let cache = temp.cache();
+    let warm_default = build(&temp, &corridor, "warm-default", Some(&cache), &[]);
+    let populated = cache_entries(&cache);
+    let warm = build(&temp, &corridor, "warm", Some(&cache), WHOLE_LOAD_SH);
+    assert!(
+        cache_entries(&cache).keys().eq(populated.keys()),
+        "--whole-load-sh keyed a stage apart"
+    );
+    assert_eq!(warm.count("[cache] sh_base_volume hit"), 1, "{}", warm.log);
+    assert_eq!(warm.count("[cache] sh_patch_layer miss"), 0, "{}", warm.log);
+
+    let release = build(&temp, &corridor, "release", None, WHOLE_LOAD_SH);
+    assert!(
+        std::fs::read(&warm.prl).unwrap() == std::fs::read(&release.prl).unwrap(),
+        "a warm --whole-load-sh build differs from --release --whole-load-sh"
+    );
+    assert!(warm.id_34.len() > warm_default.id_34.len());
+    assert!(
+        warm.sh_payloads() == warm_default.sh_payloads(),
+        "the flag moved id 50"
+    );
+}
+
 // Two cold bakes that differ only in lightmap density, or only in a
 // `_lightmap_scale` region, bake identical id-34 bytes; a warm build after
 // either edit hits the gathered volume, so it writes it again no more than
@@ -507,7 +539,10 @@ fn is_patch_layer(entry: &[u8]) -> bool {
     entry.get(ENTRY_HEADER_BYTES..ENTRY_HEADER_BYTES + 4) == Some(b"SRPL")
 }
 
-/// The animated slots id 34 describes.
+/// Keep the whole-load SH bodies, so id 34 decodes whole.
+const WHOLE_LOAD_SH: &[&str] = &["--whole-load-sh"];
+
+/// The animated slots id 34 describes, from a build with [`WHOLE_LOAD_SH`].
 fn animated_slots(built: &Built) -> usize {
     OctahedralShVolumeSection::from_bytes(&built.id_34)
         .expect("id 34 decodes")
@@ -626,13 +661,14 @@ fn a_light_a_data_script_flips_to_animated_leaves_every_other_layer_cached() {
     corridor.lights.insert(1, flipped);
     let cache = temp.cache();
 
-    let all_static = build(&temp, &corridor, "static", Some(&cache), &[]);
+    // `animated_slots` decodes id 34 whole, so these builds keep its body.
+    let all_static = build(&temp, &corridor, "static", Some(&cache), WHOLE_LOAD_SH);
     assert_eq!(all_static.count("[cache] sh_patch_layer miss"), 3);
     assert_eq!(animated_slots(&all_static), 0);
     let written = cache_entries(&cache);
 
     corridor.worldspawn.push(("data_script", "flip.ts"));
-    let warm = warm_equals_cold(&temp, &corridor, "scripted", &cache, &[]);
+    let warm = warm_equals_cold(&temp, &corridor, "scripted", &cache, WHOLE_LOAD_SH);
     assert_eq!(
         animated_slots(&warm),
         1,

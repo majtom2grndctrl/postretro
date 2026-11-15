@@ -687,7 +687,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | mover member | `getMapEntities("mover")` | `start`, `stop`, `reverse`, `goToPathNode`, `setSpinRate`, `setBlockPolicy` |
 | light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
-| emissive member (decided, not yet built) | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker`, in brightness units |
+| emissive member (decided, not yet built) | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker`; values are brightness in [0, 1] |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on("teleport", …)` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |

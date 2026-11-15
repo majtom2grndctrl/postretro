@@ -202,8 +202,13 @@ Placement, identity and refusals:
   refusal. `is_promotable_base_light` already has one.
 - **Glow table.** It must be a uniform, not a texture: the forward pass is at
   16/16 textures.
-- **Strongest rival:** template point lights under a hidden emitter. Rejected
-  for hot spots, the owner cap, and per-copy bake cost (`research.md` §1).
+- **Strongest rival:** texture-keyed polygon lights, which use the roadmap's
+  mark-a-texture-once authoring with this brief's maths. They win for many small
+  emitters (screens, signs). The entity wins for the Problem's set pieces: one
+  light per panel, a script handle, and its own colour and brightness.
+- **Template point lights** lose on hot spots and per-copy bake cost
+  (`research.md` §1). They keep up to four specular owners per face, which v1
+  area lights give up.
 - **First slice.** Polygon term plus ratio-estimator visibility in the lightmap
   only, on a test map: the riskiest maths, behind the analytic and visibility
   rows. Then probes, glow, wire and refusals.

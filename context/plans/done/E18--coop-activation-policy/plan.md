@@ -1,7 +1,7 @@
 # E18--coop-activation-policy — plan of record
 
 mode: resumable
-status: approved (results recorded; awaiting "land the plane")
+status: landed
 read at: 01d5db4f
 
 ## Corrections

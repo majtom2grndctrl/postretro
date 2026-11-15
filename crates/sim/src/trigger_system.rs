@@ -106,7 +106,7 @@ impl TriggerFireReport {
 /// across otherwise equivalent authoritative input orderings.
 #[derive(Debug, Default)]
 pub struct TriggerSystem {
-    occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>,
+    occupants: crate::trigger_occupants::TriggerOccupants,
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
     warned_duplicate_players: HashSet<PlayerId>,
     direct_commands: crate::trigger_direct_commands::DirectCommandHandles,
@@ -145,7 +145,7 @@ impl TriggerSystem {
     /// whether the trigger was armed or its activation gate fired.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn occupancy(&self, trigger: EntityId) -> usize {
-        self.occupants.get(&trigger).map_or(0, BTreeSet::len)
+        self.occupants.count(trigger)
     }
 
     /// The set of `(trigger, player)` pairs whose Enter gate has fired and whose
@@ -250,8 +250,7 @@ impl TriggerSystem {
             .copied()
             .filter(|trigger| bridge.aabb(*trigger).is_some())
             .collect();
-        self.occupants
-            .retain(|trigger, _| active_triggers.contains(trigger));
+        self.occupants.retain_triggers(&active_triggers);
         self.paired_enters
             .retain(|(trigger, _)| active_triggers.contains(trigger));
 
@@ -274,27 +273,13 @@ impl TriggerSystem {
             trigger.touch_reactivation_pending = false;
             let _ = registry.set_component(trigger_id, trigger.clone());
 
-            // Retain the authoritative occupancy set in place. The old path
-            // rebuilt, cloned, and unioned a BTreeSet for every trigger on every
-            // tick. Only players that actually leave need temporary storage.
-            let leaving_players = {
-                let occupants = self.occupants.entry(trigger_id).or_default();
-                let leaving_players: Vec<PlayerId> = occupants
-                    .iter()
-                    .copied()
-                    .filter(|player_id| {
-                        let Some((_, center, radius, half_height)) = player_capsules.get(player_id)
-                        else {
-                            return true;
-                        };
-                        !capsule_overlaps_aabb(*center, *radius, *half_height, aabb_min, aabb_max)
+            let leaving_players = self.occupants.take_leaving(trigger_id, |player_id| {
+                player_capsules
+                    .get(&player_id)
+                    .is_some_and(|&(_, center, radius, half_height)| {
+                        capsule_overlaps_aabb(center, radius, half_height, aabb_min, aabb_max)
                     })
-                    .collect();
-                for &player_id in &leaving_players {
-                    occupants.remove(&player_id);
-                }
-                leaving_players
-            };
+            });
 
             let mut edges: Vec<(PlayerId, TriggerEventEdge)> = leaving_players
                 .into_iter()
@@ -303,12 +288,7 @@ impl TriggerSystem {
             for (&player_id, &(_, center, radius, half_height)) in &player_capsules {
                 let overlapping =
                     capsule_overlaps_aabb(center, radius, half_height, aabb_min, aabb_max);
-                let entered = overlapping
-                    && self
-                        .occupants
-                        .entry(trigger_id)
-                        .or_default()
-                        .insert(player_id);
+                let entered = overlapping && self.occupants.enter(trigger_id, player_id);
                 let activated = match trigger.activation {
                     TriggerActivation::Touch => {
                         capabilities.permits_touch(player_id)
@@ -425,15 +405,7 @@ impl TriggerSystem {
         trigger: EntityId,
         alive_players: &HashSet<PlayerId>,
     ) -> Vec<PlayerId> {
-        self.occupants
-            .get(&trigger)
-            .map_or_else(Vec::new, |occupants| {
-                occupants
-                    .iter()
-                    .filter(|player| alive_players.contains(player))
-                    .copied()
-                    .collect()
-            })
+        self.occupants.effective(trigger, alive_players)
     }
 
     #[cfg(test)]

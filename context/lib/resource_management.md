@@ -142,15 +142,17 @@ Optional per-texture normal maps for fine surface detail.
 ### 4.5 Emissive Surfaces
 
 Optional emissive color maps add per-texel self-illumination to world and
-kinematic-brush surfaces, static except on `light_area` faces (Strength, below). They do not emit light into lightmaps, SH irradiance or
-neighboring surfaces, and do not create dynamic lights. Glow texels are excluded
-from the per-texture diffuse mean used by SH bounce when non-glowing texels
-remain; an all-glowing texture uses its full average (`build_pipeline.md`
-§Compiler pipeline). Glow strength follows the original material name, as at
-runtime. To light a scene, an author places a light entity. A `light_area`
-brush entity is one whose `_e` faces form its emitter and glow with it; its cast
-light takes the entity's `light` and `_color`, never the emissive map or prefix
-(decided, not yet built; `build_pipeline.md` §Custom FGD).
+kinematic-brush surfaces, static except on `light_area` faces (Strength, below).
+They do not emit light into lightmaps, SH irradiance or neighboring surfaces,
+and do not create dynamic lights. Glow texels are excluded from the per-texture
+diffuse mean used by SH bounce when non-glowing texels remain; an all-glowing
+texture uses its full average (`build_pipeline.md` §Compiler pipeline). The
+mean's glow test follows the original material name, as prefix glow does at
+runtime; a `light_area` face's `_glow` never enters it. To light a scene, an
+author places a light entity. A `light_area` is such an entity: its `_e` faces
+form its emitter and glow with it, and its cast light takes the entity's `light`
+and `_color`, never the emissive map or prefix (decided, not yet built;
+`build_pipeline.md` §Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions

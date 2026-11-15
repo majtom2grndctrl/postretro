@@ -314,9 +314,10 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - [ ] With `_falloff_range` set, doubling an area light's `light` doubles its
   lightmap and probe output and leaves its faces' emissive term unchanged
   (research.md O2).
-- [ ] Two otherwise equal area lights with the same diffuse map, one on a
-  `neon_` texture with a white `_e` map and one on a plain texture with a red
-  `_e` map, produce byte-identical lightmap, SH and scatter sections.
+- [ ] Two otherwise equal area lights with the same diffuse map and
+  all-glowing `_e` maps, one on a `neon_` texture with a white `_e` map and one
+  on a plain texture with a red `_e` map, produce byte-identical lightmap, SH and
+  scatter sections.
 - [ ] Changing only `_glow` re-keys no bake cache entry: a warm rebuild reads
   every lightmap, surface-radiance and SH entry from the cache.
 - [ ] A script fade from 1 to 0.25 on an animated area light settles with its

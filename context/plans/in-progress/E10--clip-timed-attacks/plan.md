@@ -103,7 +103,8 @@ read at: eb444995a
 
 ## Owner calls and follow-ups
 - Owner call: a swing entered while a launch is still under way (a knockback slide, or the airborne stretch after drag spent it) is cancelled. Kept.
-- Owner call: a brute flinched mid-slam redraws `attack_slam` on `recover` and replays the punch, holding the slam turn ~1 s longer (redraw restarts clip time). Latent: shipped content never flinches the brute. Decide before the stances brief builds on the shared-clip slam.
+- Owner call (2026-11-14, playtest): the brute's slam plays `smash` instead of `punch`, so the slam reads differently from the jab and has a visible windup to test against. Windup 400 ms (the crouch, `smash_windup`'s cut), commit to 100 ms past `hit` (1,667 ms), recover until the 3.7 s clip plays through. `clip_timed_shipped_tests` and the `ai_tests` reference oracle follow it.
+- Owner call: a brute flinched mid-slam redraws `attack_slam` on `recover` and replays the slam's clip (now `smash`), holding the slam turn up to the clip's length longer (redraw restarts clip time). Latent: shipped content never flinches the brute. Decide before the stances brief builds on the shared-clip slam.
 - Owner call: an entry whose first drawn clip is an untimed travel variant fires as without `at`, even after a flinch or launch (consistent with "a missing event fires as without `at`").
 - Follow-up: `crates/ai/src/compute.rs` is past the 600-line guideline; split the Attack block out.
 - Follow-up: a slam started after a target switch could in theory meet its 1,800 ms cooldown at the commit moment.

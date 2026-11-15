@@ -33,24 +33,26 @@ const CLOSE_STANDOFF = 1.5;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// `punch`, on the `mixamo_brute` library, runs 1,100 ms. Its fist is drawn
-// back at 467 ms, where `punch_windup` cuts it, and connects at its `hit`
-// event, 767 ms in. The jab and the slam fire at `hit`.
-const PUNCH_DRAWN_BACK_MS = 467;
-const PUNCH_HIT_MS = 767;
-// The slam's three phases share `attack_slam`, so its punch runs on from the
-// windup's entry: the windup draws the fist back, the commit fires at `hit`
-// and holds 100 ms past it, and the recovery leaves once the punch has played
-// through. The commit must still be active when the punch reaches `hit`, or
-// the slam never fires.
-const SLAM_WINDUP_MS = PUNCH_DRAWN_BACK_MS;
-const SLAM_COMMIT_MS = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100;
+// `punch`, on the `mixamo_brute` library, runs 1,100 ms and connects at its
+// `hit` event, 767 ms in. The jab fires at `hit`.
+// `smash`, the jump attack, runs 3,700 ms. It crouches by 400 ms, where
+// `smash_windup` cuts it, and both hands reach the floor at its `hit`, 1,667 ms
+// in. The slam's three phases share `attack_slam`, so its smash runs on from
+// the windup's entry: the windup crouches, the commit fires at `hit` and holds
+// 100 ms past it, and the recovery leaves once the smash has played through.
+// The commit must still be active when the smash reaches `hit`, or the slam
+// never fires.
+const SMASH_CROUCHED_MS = 400;
+const SMASH_HIT_MS = 1667;
+const SLAM_WINDUP_MS = SMASH_CROUCHED_MS;
+const SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100;
 // A jab fires at the punch's `hit`, leaves once the punch has played through,
 // then rests JAB_REST_MS before it may jab again. A target stepping out of
 // reach can end a jab on the tick after its fire; it then rests and plays a
 // fresh punch to `hit`, so the soonest a re-entered jab's moment follows a
 // fire is 1 + 9 + 47 = 57 ticks (950 ms) on whole 60 Hz ticks. The cooldown
-// sits below JAB_REST_MS + PUNCH_HIT_MS (917 ms), so no jab's moment meets it.
+// sits below JAB_REST_MS plus the punch's `hit` (917 ms), so no jab's moment
+// meets it.
 const JAB_REST_MS = 150;
 const JAB_COOLDOWN_MS = 900;
 // After its own slam the brute only jabs, longer than `heavy`'s 4 s refresh,
@@ -99,7 +101,7 @@ const jabs: BehaviorGraphEnvelope = {
  * - `hunt` and `press` each nest the jab loop. `hunt` starts a slam the
  *   moment `attackTurnFree("slam")` says its turn would be granted.
  * - the slam is a marked windup → commit → recover chain holding one turn,
- *   one punch across all three; it draws two `melee` and the `heavy`, so jabs
+ *   one smash across all three; it draws two `melee` and the `heavy`, so jabs
  *   keep drawing the third `melee` while one brute slams.
  * - after its slam the brute presses with jabs only, so with two brutes on
  *   one target the slams alternate as `heavy` refreshes.
@@ -142,10 +144,11 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           crossfadeMs: 80,
           interrupt: "snap",
         },
-        // The punch's fist connects at its `hit`, 767 ms in, during the
-        // slam's commit. Stances replace this cycle with `smash` and `swipe`.
+        // The smash's hands reach the floor at its `hit`, 1,667 ms in, during
+        // the slam's commit. Stances split it into `smash_windup` and
+        // `smash_strike`.
         attack_slam: {
-          clip: "punch",
+          clip: "smash",
           loop: false,
           crossfadeMs: 80,
           interrupt: "snap",
@@ -209,7 +212,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
               activities: {
                 hunt: { layers: { offense: jabs } },
                 press: { layers: { offense: jabs } },
-                // The slam stands its ground through the whole punch rather
+                // The slam stands its ground through the whole smash rather
                 // than chasing, so the brute does not walk off its target
                 // before `hit`.
                 windup: {

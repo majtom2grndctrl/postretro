@@ -136,25 +136,37 @@ fn entry_tick(paths: &[String], leaf: &str, from: usize) -> Option<usize> {
     })
 }
 
-// The reference brute's slam and jabs land as `punch` reaches its
-// `hit`, timed from each one's entry onto the punch.
+// The reference brute's slam lands as `smash` reaches its `hit`, and its jabs
+// as `punch` reaches its own, each timed from its entry onto the clip.
 #[test]
-fn shipped_brute_jab_and_slam_fire_at_the_punch_hit() {
+fn shipped_brute_slam_fires_at_the_smash_hit_and_jabs_at_the_punch_hit() {
     let mut shipped = Shipped::new(dev_manifest(), Vec3::new(1.5, 0.0, 0.0));
     let brute = shipped.spawn("reference_enemy");
     // Its own armor broken sends it to retreat; the shipped archetype spawns
     // with 120.
     give_reference_armor(&mut shipped.reg, brute);
-    let hit = shipped
-        .clip(brute, "attack_slam")
-        .event_time("hit")
-        .expect("`punch` carries its `hit`");
+    assert_eq!(
+        shipped.clip(brute, "attack_slam").name,
+        "smash",
+        "fixture: the slam plays the smash"
+    );
     assert_eq!(
         shipped.clip(brute, "attack_jab").name,
         "punch",
         "fixture: the jab plays the punch"
     );
-    let moment = one_shot_moment_tick(hit);
+    let slam_hit = shipped
+        .clip(brute, "attack_slam")
+        .event_time("hit")
+        .expect("`smash` carries its `hit`");
+    let jab_hit = shipped
+        .clip(brute, "attack_jab")
+        .event_time("hit")
+        .expect("`punch` carries its `hit`");
+    let (slam_moment, jab_moment) = (
+        one_shot_moment_tick(slam_hit),
+        one_shot_moment_tick(jab_hit),
+    );
 
     let (mut paths, mut slams, mut jabs, mut hurt) = (Vec::new(), Vec::new(), Vec::new(), 0);
     for tick in 0..(8.0 / DT) as usize {
@@ -182,12 +194,12 @@ fn shipped_brute_jab_and_slam_fire_at_the_punch_hit() {
             .filter(|path| !path.ends_with("/windup") && !path.ends_with("/commit"))
             .count(),
         0,
-        "the slam's punch runs from the windup through the commit"
+        "the slam's smash runs from the windup through the commit"
     );
     assert_eq!(
         slams.first().copied(),
-        Some(windup + moment),
-        "the slam fires as the punch, started at the windup's entry, reaches `hit` ({hit} s)"
+        Some(windup + slam_moment),
+        "the slam fires as the smash, started at the windup's entry, reaches `hit` ({slam_hit} s)"
     );
     assert!(!jabs.is_empty(), "the brute jabs after its slam: {paths:?}");
     let mut from = 0;
@@ -195,8 +207,8 @@ fn shipped_brute_jab_and_slam_fire_at_the_punch_hit() {
         let entered = entry_tick(&paths, "jab", from).expect("each jab enters `jab`");
         assert_eq!(
             fired,
-            entered + moment,
-            "a jab fires as its punch reaches `hit` ({hit} s)"
+            entered + jab_moment,
+            "a jab fires as its punch reaches `hit` ({jab_hit} s)"
         );
         from = fired;
     }

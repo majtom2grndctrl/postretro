@@ -9140,10 +9140,10 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const CLOSE_STANDOFF: f32 = 1.5;
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
-    const PUNCH_DRAWN_BACK_MS: f32 = 467.0;
-    const PUNCH_HIT_MS: f32 = 767.0;
-    const SLAM_WINDUP_MS: f32 = PUNCH_DRAWN_BACK_MS;
-    const SLAM_COMMIT_MS: f32 = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100.0;
+    const SMASH_CROUCHED_MS: f32 = 400.0;
+    const SMASH_HIT_MS: f32 = 1667.0;
+    const SLAM_WINDUP_MS: f32 = SMASH_CROUCHED_MS;
+    const SLAM_COMMIT_MS: f32 = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100.0;
     const JAB_REST_MS: f32 = 150.0;
     const JAB_COOLDOWN_MS: f32 = 900.0;
     const PRESS_MS: f32 = 5000.0;

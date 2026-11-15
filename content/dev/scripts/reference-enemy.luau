@@ -21,13 +21,14 @@ local SLAM_RANGE = 3.5
 local CLOSE_STANDOFF = 1.5
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
--- `punch` (1,100 ms) draws its fist back by 467 ms and connects at its `hit`,
--- 767 ms in.
-local PUNCH_DRAWN_BACK_MS = 467
-local PUNCH_HIT_MS = 767
--- The slam's phases share one punch; the commit holds 100 ms past `hit`.
-local SLAM_WINDUP_MS = PUNCH_DRAWN_BACK_MS
-local SLAM_COMMIT_MS = PUNCH_HIT_MS - PUNCH_DRAWN_BACK_MS + 100
+-- `punch` (1,100 ms) connects at its `hit`, 767 ms in.
+-- `smash` (3,700 ms) crouches by 400 ms and both hands reach the floor at its
+-- `hit`, 1,667 ms in. The slam's phases share one smash; the commit holds
+-- 100 ms past `hit`.
+local SMASH_CROUCHED_MS = 400
+local SMASH_HIT_MS = 1667
+local SLAM_WINDUP_MS = SMASH_CROUCHED_MS
+local SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100
 -- A jab re-entered the tick after its fire rests, then plays a fresh punch to
 -- `hit`: 57 ticks (950 ms) at the soonest. The cooldown sits below rest plus
 -- `hit` (917 ms), so no jab's moment meets it.
@@ -114,10 +115,11 @@ M.referenceEnemyEntity = defineEntity({
           crossfadeMs = 80,
           interrupt = "snap",
         },
-        -- The punch's fist connects at its `hit`, 767 ms in, during the
-        -- slam's commit. Stances replace this cycle with `smash` and `swipe`.
+        -- The smash's hands reach the floor at its `hit`, 1,667 ms in, during
+        -- the slam's commit. Stances split it into `smash_windup` and
+        -- `smash_strike`.
         attack_slam = {
-          clip = "punch",
+          clip = "smash",
           loop = false,
           crossfadeMs = 80,
           interrupt = "snap",
@@ -179,7 +181,7 @@ M.referenceEnemyEntity = defineEntity({
               activities = {
                 hunt = { layers = { offense = jabs } },
                 press = { layers = { offense = jabs } },
-                -- The slam stands its ground through the whole punch rather
+                -- The slam stands its ground through the whole smash rather
                 -- than chasing, so the brute does not walk off its target
                 -- before `hit`.
                 windup = {

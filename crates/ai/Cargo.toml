@@ -24,6 +24,8 @@ postretro-collision.workspace = true
 postretro-level-format.workspace = true
 postretro-net.workspace = true
 postretro-physics = { workspace = true, features = ["test-support"] }
+# Clip fixtures (`AnimationClip`, `ClipEvent`) for the clip-timed attack proofs.
+postretro-model.workspace = true
 postretro-scripting-core.workspace = true
 # Bundles the shipped `content/dev` start script, as `scripts-build` does, for
 # the pacing proofs over the dev mod's own descriptors and budgets.

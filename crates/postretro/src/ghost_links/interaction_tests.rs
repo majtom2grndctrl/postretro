@@ -358,6 +358,7 @@ fn acquired_after_ticks(registry: &mut EntityRegistry, enemy: EntityId) -> Optio
                 descriptor_generation: 0,
                 factions: &factions,
                 faction_sentiment: &sentiment,
+                clips: None,
             },
             &mut host,
         );

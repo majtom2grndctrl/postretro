@@ -10,7 +10,7 @@ mod pools;
 mod refresh;
 mod release;
 mod reload;
-mod shipped_content;
+pub(crate) mod shipped_content;
 mod tokens;
 
 use super::*;
@@ -149,7 +149,10 @@ fn striking(attack: &str) -> BehaviorActivityDescriptor {
     authored_state(
         "attack",
         MotionVerb::Hold,
-        Some(ActionVerb::Attack(attack.to_string())),
+        Some(ActionVerb::Attack {
+            name: attack.to_string(),
+            at: None,
+        }),
     )
 }
 
@@ -278,6 +281,25 @@ fn tick_with(
     runtime: &mut AiRuntime,
     descriptors: &[EntityTypeDescriptor],
 ) -> AiTickResult {
+    tick_with_clip_store(reg, runtime, descriptors, None)
+}
+
+/// [`tick_with`], the enemies' clips read from `clips`.
+fn tick_with_clips(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    descriptors: &[EntityTypeDescriptor],
+    clips: &HitZoneStore,
+) -> AiTickResult {
+    tick_with_clip_store(reg, runtime, descriptors, Some(clips))
+}
+
+fn tick_with_clip_store(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    descriptors: &[EntityTypeDescriptor],
+    clips: Option<&HitZoneStore>,
+) -> AiTickResult {
     run_ai_tick_with_navigation_and_impact(
         reg,
         runtime,
@@ -290,6 +312,7 @@ fn tick_with(
             descriptor_generation: 0,
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips,
         },
         |_| {},
     )

@@ -50,9 +50,12 @@ local BrainSdk = {}
 --- `damageBearing` (number; signed XZ yaw from visual `+Z` toward the most
 --- recent damage attacker, zero ahead and opposite signs on each side), and
 --- `damageSourceKnown` (boolean; true only when the latest damaging hit
---- supplied an attacker world position; pair it with damage recency), and
+--- supplied an attacker world position; pair it with damage recency),
 --- `hasAttackTurn` (boolean; an attack turn is held, for any attack, as of the
---- previous tick).
+--- previous tick), and `animationDone` (boolean; true from the tick after the
+--- selected non-looping animation's clip reaches its duration, false on a
+--- looping state, true for a non-looping state whose clip did not resolve; entity-wide,
+--- not scope-relative).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -75,6 +78,7 @@ BrainSdk.brain = table.freeze({
   damageBearing = input("@brain.damageBearing"),
   damageSourceKnown = input("@brain.damageSourceKnown"),
   hasAttackTurn = input("@brain.hasAttackTurn"),
+  animationDone = input("@brain.animationDone"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

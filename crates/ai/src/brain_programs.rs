@@ -98,6 +98,8 @@ pub(crate) struct BrainEntityPrograms {
     resolved_projectile_attacks: HashMap<String, ResolvedProjectileAttack>,
     /// Each attack's resolved draws, in the graph's attack-name order.
     attack_draws: Vec<ResolvedDraws>,
+    /// The entity's clip-timed attacks were checked against its bound clips.
+    clips_checked: bool,
 }
 
 impl BrainEntityPrograms {
@@ -201,6 +203,30 @@ impl BrainPrograms {
         (filter, candidate_scope)
     }
 
+    /// Check each newly bound entity's clip-timed attacks once its clips bind
+    /// (its model is loaded), warning for a clip that cannot time one. An
+    /// entity whose model has not loaded yet is checked on a later tick.
+    pub(crate) fn warn_unclipped_moments(
+        &mut self,
+        registry: &EntityRegistry,
+        clips: &crate::scripting_systems::hit_zones::HitZoneStore,
+        warned: &mut HashSet<String>,
+    ) {
+        for (&entity, entry) in &mut self.entries {
+            if entry.clips_checked || !crate::clip_clock::clips_bound(registry, clips, entity) {
+                continue;
+            }
+            entry.clips_checked = true;
+            crate::clip_clock::warn_unclipped_moments(
+                &entry.graph,
+                registry,
+                clips,
+                entity,
+                warned,
+            );
+        }
+    }
+
     /// Bind changed graphs, refresh descriptor-derived attacks, and release
     /// dead entries. All growth happens here, outside the hot evaluator and
     /// its zero-allocation probe window.
@@ -302,6 +328,7 @@ pub(super) fn bind_graph(
         candidate_filter,
         resolved_projectile_attacks,
         attack_draws,
+        clips_checked: false,
     }
 }
 

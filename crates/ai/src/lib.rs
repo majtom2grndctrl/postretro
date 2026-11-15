@@ -14,6 +14,7 @@ mod attack_turns;
 mod brain_programs;
 mod brain_scope;
 mod candidate_scope;
+mod clip_clock;
 mod combat_slots;
 mod compute;
 mod engaged_motion;
@@ -348,6 +349,11 @@ macro_rules! tick_runner {
 #[macro_export]
 macro_rules! test_tick_runner {
     ($runtime:expr) => {
+        $crate::test_tick_runner!($runtime, None)
+    };
+    // `$clips` is an `Option<&HitZoneStore>` of AI's own sim build, loaded
+    // from the same models as the caller's store, for clip-timed attacks.
+    ($runtime:expr, $clips:expr) => {
         |registry, tick_dt, inputs, host| {
             let rebuilt_nav = inputs.nav_graph.map(|graph| {
                 $crate::__postretro_sim::nav::NavGraph::from_section(&graph.to_section_for_test())
@@ -362,6 +368,10 @@ macro_rules! test_tick_runner {
                 descriptor_generation: inputs.descriptor_generation,
                 factions: inputs.factions,
                 faction_sentiment: inputs.faction_sentiment,
+                // The clip store is a type of the other `postretro_sim` build,
+                // so the caller's cannot cross this bridge: without one built
+                // in AI's build, every clip runs unresolved.
+                clips: $clips,
             };
             let mut on_impact = |registry: &mut $crate::__postretro_entities::EntityRegistry| {
                 host.on_impact(registry)
@@ -398,7 +408,9 @@ macro_rules! test_tick_runner {
 /// happens once per state ENTRY, never per tick.
 ///
 /// Ordering inside the tick, PER enemy:
-/// 1. Tick cooldowns and every active activity clock.
+/// 1. Tick cooldowns and every active activity clock. Close a pending clip
+///    moment the mesh was switched off since the brain's own last switch, then
+///    advance the clip clock at the previous tick's playback rate.
 /// 2. Evaluate outer-to-inner transition rows, `"*"` before source-keyed rows,
 ///    declaration order, first true wins. Every guard is evaluated every armed
 ///    tick; a closed aggro gate is the sole exception, standing the brain down
@@ -408,10 +420,15 @@ macro_rules! test_tick_runner {
 /// 4. Latch-fire an active leaf's action on its first dwell tick that passes its
 ///    cooldown, range, live-target, LOS, and post-slew-facing gates. An
 ///    unmarked attack ready to fire requests an attack turn; the hard gate
-///    drops any drawn attack whose enemy holds no turn for it.
+///    drops any drawn attack whose enemy holds no turn for it. An action fired
+///    `at` a clip event instead proposes only on the tick its clip reaches the
+///    event, once per entry; a launch closes the moment, and a changed drawn
+///    state restarts the clip clock first.
 /// 5. On an activity change, locomotion stop/resume, or an airborne launch's
 ///    `jump_loop` starting or ending, request the one animation state resolved
-///    from the active nested path, or `jump_loop` while it plays.
+///    from the active nested path, or `jump_loop` while it plays. A switch
+///    absorbed since compute closes a pending moment off an entry tick, and
+///    switching the mesh back onto the clip clock's state restarts the clock.
 ///
 /// Between compute and apply run the batch stages, across all enemies: combat
 /// slots, then attack-turn arbitration (releases, requests, grants, the hard
@@ -448,6 +465,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             descriptor_generation: 0,
             factions: &factions,
             faction_sentiment: &faction_sentiment,
+            clips: None,
         },
         |_| {},
     )
@@ -487,6 +505,7 @@ where
         descriptor_generation,
         factions,
         faction_sentiment,
+        clips,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -505,6 +524,9 @@ where
     turns.begin_tick(dt_ms, registry);
     turns.sync_pools(attack_turns::running_attack_pools(registry));
     programs.sync(registry, descriptors, descriptor_generation, warned);
+    if let Some(clips) = clips {
+        programs.warn_unclipped_moments(registry, clips, warned);
+    }
     weapons.sync(registry, programs, |actor| {
         host.is_quiescent(registry, actor)
     });
@@ -582,6 +604,7 @@ where
             collision_world,
             &live_factions,
             turns,
+            clips,
         )
     };
 

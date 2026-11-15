@@ -3,6 +3,7 @@ pub(super) fn should_switch_animation(state_changed: bool, moving: bool, latch: 
 }
 
 use super::attack_turns;
+use super::clip_clock;
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
 use super::graph_eval::animation_for_path;
@@ -351,8 +352,9 @@ where
         }
 
         // Animation: on a state change, locomotion stop/resume, an airborne
-        // launch's clip starting or ending, or a directional travel variant
-        // changing, request the selected animation name for the new
+        // launch's clip starting or ending, a directional travel variant
+        // changing, or a dropped enemy's fresh mesh asking for a redraw,
+        // request the selected animation name for the new
         // graph/locomotion state. A failed switch
         // (`UnknownState`/`NotAnimated`) warns ONCE per distinct name and keeps
         // the prior animation — it never aborts the tick. The latches are still
@@ -371,12 +373,24 @@ where
                 outcome.travel_variant,
             )
         };
+        let mut own_switch = None;
+        // A redraw request stays pending only while the fresh mesh's clip
+        // indices are still filling; a drawn state restarts the clock. A
+        // switch since compute (an earlier slot's contact hit) flinched the
+        // fresh mesh: the flinch stays on screen and the redraw is dropped, as
+        // compute drops it for a switch before the AI stage. The next
+        // compute's check reads that switch as foreign and cancels the moment.
+        let redraw = outcome.brain.clip_clock.redraw
+            && mesh_switches(registry, outcome.id) == outcome.brain.clip_clock.mesh_switches;
+        let mut redraw_pending = false;
+        let mut redrawn = false;
         if should_switch_animation(
             outcome.state_changed,
             locomotion_intent.moving,
             outcome.brain.locomotion_moving,
         ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
             || travel_variant != outcome.brain.presented_travel_variant
+            || redraw
         {
             // Only a variant the mesh declares is requested, so a missing
             // `X_left` plays `X` without warning.
@@ -384,15 +398,32 @@ where
                 .filter(|_| travel_variant != TravelVariant::Base)
                 .map(|name| format!("{name}{}", travel_variant.suffix()));
             if let Some(name) = variant_name.as_deref().or(animation_name) {
-                match switch_animation_state(registry, outcome.id, name) {
-                    SwitchResult::Switched | SwitchResult::AlreadyInState => {}
-                    SwitchResult::UnknownState | SwitchResult::NotAnimated => {
-                        if warned.insert(format!("anim:{name}")) {
-                            log::warn!(
-                                "[AI] enemy animation state `{name}` could not be switched \
-                                 (undeclared/unresolved on the mesh); keeping the prior \
-                                 animation. Warned once per distinct name."
-                            );
+                let tracked = outcome.brain.clip_clock.state.as_deref() == Some(name);
+                let before = mesh_switches(registry, outcome.id);
+                if redraw && declared_but_unresolved(registry, outcome.id, name) {
+                    // A dropped enemy's fresh mesh fills its clip indices after
+                    // the tick it lands: draw once they resolve.
+                    redraw_pending = true;
+                } else {
+                    match switch_animation_state(registry, outcome.id, name) {
+                        SwitchResult::Switched => {
+                            redrawn = tracked;
+                            own_switch = Some(OwnSwitch {
+                                before,
+                                after: mesh_switches(registry, outcome.id),
+                            });
+                        }
+                        // The fresh mesh already draws the state, from its
+                        // start at the drop.
+                        SwitchResult::AlreadyInState => redrawn = redraw && tracked,
+                        SwitchResult::UnknownState | SwitchResult::NotAnimated => {
+                            if warned.insert(format!("anim:{name}")) {
+                                log::warn!(
+                                    "[AI] enemy animation state `{name}` could not be \
+                                     switched (undeclared/unresolved on the mesh); keeping \
+                                     the prior animation. Warned once per distinct name."
+                                );
+                            }
                         }
                     }
                 }
@@ -417,6 +448,26 @@ where
             brain.locomotion_moving = locomotion_intent.moving;
             brain.launch.airborne_presented = airborne_clip.is_some();
             brain.presented_travel_variant = travel_variant;
+            // The brain's own switch overwrites the count a foreign switch
+            // left, so it reads a switch absorbed since compute here: an
+            // earlier outcome's contact hit playing an impact clip flinched
+            // the swing under way, though this switch drew over it. On an
+            // entry tick the entry's own clip replaced it before the swing
+            // began. Without an own switch, the next compute's check reads
+            // any later switch this tick.
+            if let Some(own) = own_switch {
+                if !outcome.state_changed
+                    && let (Some(seen), Some(before)) = (brain.clip_clock.mesh_switches, own.before)
+                    && seen != before
+                {
+                    brain.clip_clock.moment_open = false;
+                }
+                brain.clip_clock.mesh_switches = own.after;
+            }
+            brain.clip_clock.redraw = redraw_pending;
+            if redrawn {
+                clip_clock::redrawn(&mut brain.clip_clock, outcome.id);
+            }
             let _ = registry.set_component(outcome.id, brain);
         }
     }
@@ -425,4 +476,39 @@ where
         events,
         projectile_spawns,
     }
+}
+
+/// The brain's own animation switch this tick, as the clip clock accounts it.
+struct OwnSwitch {
+    /// The mesh's switch count just before the switch.
+    before: Option<u32>,
+    /// The mesh's switch count the switch left.
+    after: Option<u32>,
+}
+
+/// The mesh declares `state`, but its clip index has not filled yet.
+fn declared_but_unresolved(
+    registry: &postretro_entities::EntityRegistry,
+    id: postretro_entities::EntityId,
+    state: &str,
+) -> bool {
+    registry
+        .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
+        .ok()
+        .and_then(|mesh| mesh.animation.as_ref())
+        .and_then(|animation| animation.states.get(state))
+        .is_some_and(|declared| declared.clip_index.is_none())
+}
+
+/// The mesh's switch count, read around the brain's own switch.
+fn mesh_switches(
+    registry: &postretro_entities::EntityRegistry,
+    id: postretro_entities::EntityId,
+) -> Option<u32> {
+    registry
+        .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
+        .ok()?
+        .animation
+        .as_ref()
+        .map(|animation| animation.switches.get())
 }

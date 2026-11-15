@@ -117,12 +117,14 @@ impl Default for PartitionWindow {
 
 impl PartitionWindow {
     /// Whether the stage tests its lights' emitters: always, outside tests.
+    #[cfg(not(test))]
     fn tests_embedded_emitters(&self) -> bool {
-        #[cfg(test)]
-        if self.ignore_embedded_emitters {
-            return false;
-        }
         true
+    }
+
+    #[cfg(test)]
+    fn tests_embedded_emitters(&self) -> bool {
+        !self.ignore_embedded_emitters
     }
 }
 

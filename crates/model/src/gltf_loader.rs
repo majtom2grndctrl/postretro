@@ -3348,6 +3348,35 @@ mod tests {
                 "`{attack}_windup` and `{attack}_strike` together span `{attack}`"
             );
         }
+        // Clip events: a strike inherits its attack's `hit`, shifted by the
+        // windup cut's key, when the windup ends before the moment, and the
+        // windup carries none; `punch_windup` ends after the punch's swipe, so
+        // it keeps the `hit` and its strike carries none.
+        let event = |name: &str| {
+            model
+                .clips
+                .iter()
+                .find(|clip| clip.name == name)
+                .unwrap()
+                .event_time("hit")
+        };
+        for (attack, hit) in [("smash", 1.633), ("swipe", 1.3)] {
+            let windup = duration(&format!("{attack}_windup"));
+            let strike = event(&format!("{attack}_strike")).expect("the strike carries `hit`");
+            assert!((event(attack).expect("the attack carries `hit`") - hit).abs() < 1e-4);
+            assert!(
+                (strike - (hit - windup)).abs() < 1e-4,
+                "`{attack}_strike` hit shifted"
+            );
+            assert_eq!(event(&format!("{attack}_windup")), None);
+        }
+        let punch_hit = 0.267;
+        assert!((event("punch").expect("`punch` carries `hit`") - punch_hit).abs() < 1e-4);
+        assert!(
+            (event("punch_windup").expect("`punch_windup` keeps `hit`") - punch_hit).abs() < 1e-4,
+            "`punch_windup` keeps the punch's `hit` unshifted"
+        );
+        assert_eq!(event("punch_strike"), None);
     }
 
     #[test]

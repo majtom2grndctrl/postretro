@@ -13,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::activity_motion::validate_reposition;
 use super::attack_turn_marks::validate_attack_turn_marks;
+use super::clip_timed_actions::{imply_attack_turn, reject_row_at, validate_at_name};
 use super::{
     ActionVerb, AttackParams, FacingPolicy, MotionVerb, PatrolDescriptor, RepositionParams,
 };
@@ -283,7 +284,7 @@ impl BehaviorGraphDescriptor {
     /// a nested graph layer.
     pub fn engagement_radius_for_action(&self, action: Option<&ActionVerb>) -> f32 {
         match action {
-            Some(ActionVerb::Attack(name)) => self
+            Some(ActionVerb::Attack { name, .. }) => self
                 .attacks
                 .get(name)
                 .and_then(|attack| attack.engagement_radius.or(attack.max_range))
@@ -297,7 +298,7 @@ impl BehaviorGraphDescriptor {
     /// behavior so an attack override remains the positioning default.
     pub fn standoff_distance_for_action(&self, action: Option<&ActionVerb>) -> f32 {
         match action {
-            Some(ActionVerb::Attack(name)) => self
+            Some(ActionVerb::Attack { name, .. }) => self
                 .attacks
                 .get(name)
                 .and_then(|attack| attack.standoff_distance)
@@ -567,6 +568,7 @@ fn validate_activity(
     if let Some(action) = activity.action.as_ref() {
         validate_action(action, &format!("{path}.action"), attacks)?;
     }
+    imply_attack_turn(activity, path)?;
     Ok(ActivePathVerbs {
         position_goal_path: activity
             .motion
@@ -689,7 +691,9 @@ fn validate_unconsumed_selector(
                     validate_motion(motion, &format!("{path}[{index}].motion"), patrol)?;
                 }
                 if let Some(action) = row.action.as_ref() {
-                    validate_action(action, &format!("{path}[{index}].action"), attacks)?;
+                    let action_path = format!("{path}[{index}].action");
+                    reject_row_at(action, &action_path)?;
+                    validate_action(action, &action_path, attacks)?;
                 }
             }
         }
@@ -756,11 +760,10 @@ fn validate_offense_selector(
         if let Some(when) = row.when.as_ref() {
             validate_guard(when, &format!("{path}[{index}].when"))?;
         }
-        validate_action(
-            row.action.as_ref().expect("checked above"),
-            &format!("{path}[{index}].action"),
-            attacks,
-        )?;
+        let action = row.action.as_ref().expect("checked above");
+        let action_path = format!("{path}[{index}].action");
+        reject_row_at(action, &action_path)?;
+        validate_action(action, &action_path, attacks)?;
     }
     Ok(())
 }
@@ -785,19 +788,22 @@ fn validate_action(
     path: &str,
     attacks: &BTreeMap<String, AttackParams>,
 ) -> Result<(), DescriptorError> {
-    match action {
-        ActionVerb::Attack(name) if attacks.contains_key(name) => Ok(()),
-        ActionVerb::Attack(name) if attacks.is_empty() => Err(DescriptorError::InvalidShape {
+    let ActionVerb::Attack { name, .. } = action;
+    if attacks.is_empty() {
+        return Err(DescriptorError::InvalidShape {
             reason: format!(
                 "`{path}.attack` names \"{name}\", so `components.behavior.attacks` must declare at least one entry"
             ),
-        }),
-        ActionVerb::Attack(name) => Err(DescriptorError::InvalidShape {
+        });
+    }
+    if !attacks.contains_key(name) {
+        return Err(DescriptorError::InvalidShape {
             reason: format!(
                 "`{path}.attack` names \"{name}\", which is not declared in `components.behavior.attacks`"
             ),
-        }),
+        });
     }
+    validate_at_name(action, path)
 }
 
 fn validate_motion(
@@ -996,7 +1002,10 @@ mod tests {
             engagement_radius: Some(2.0),
             move_speed: 1.0,
         };
-        let action = ActionVerb::Attack("slam".to_string());
+        let action = ActionVerb::Attack {
+            name: "slam".to_string(),
+            at: None,
+        };
 
         assert_eq!(graph.engagement_radius_for_action(Some(&action)), 3.0);
         assert_eq!(graph.standoff_distance_for_action(Some(&action)), 3.0);

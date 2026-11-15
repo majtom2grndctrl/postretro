@@ -20,8 +20,11 @@ use postretro_model::anim::{
 };
 use postretro_model::gltf_loader::{self, JointZone, SocketBinding};
 use postretro_model::pose_modifier::{LegChain, PoseModifierStack};
+/// An enemy's clip clock starts a looping state at the phase this seeds, so its
+/// game-time moments line up with the clip the renderer and hit zones draw.
+pub use postretro_model::sample_params::instance_phase;
 use postretro_model::sample_params::{
-    CaptureInstruction, ClipSample, FadeSource, MeshSampleParams, instance_phase,
+    CaptureInstruction, ClipSample, FadeSource, MeshSampleParams,
 };
 use postretro_model::skeleton::{AnimationClip, RestLocal, Skeleton};
 use postretro_render_data::cone_frustum::Aabb;
@@ -1634,6 +1637,7 @@ fn pose_rest(skeleton: &Skeleton, out: &mut Vec<Mat4>) {
         duration: 0.0,
         joints: Vec::new(),
         travel_speed: None,
+        events: Vec::new(),
     };
     sample_clip_looped_world(&rest_clip, skeleton, 0.0, Loop::Clamp, out);
 }
@@ -1766,6 +1770,7 @@ mod tests {
             duration: 1.0,
             joints: vec![JointTracks::default(), child_tracks],
             travel_speed: None,
+            events: Vec::new(),
         };
         // Zone on the child with an explicit radius; root has none (default).
         let child_radius = 0.5;
@@ -1823,6 +1828,7 @@ mod tests {
             duration: 1.0,
             joints: vec![tracks],
             travel_speed: None,
+            events: Vec::new(),
         };
         let joint_zones = vec![zone("head", Some(0.1))];
 
@@ -1850,6 +1856,7 @@ mod tests {
             duration: 1.0,
             joints: vec![JointTracks::default()],
             travel_speed: None,
+            events: Vec::new(),
         };
         // Zone present, radius omitted → default applies.
         let joint_zones = vec![zone("torso", None)];
@@ -1883,6 +1890,7 @@ mod tests {
             duration: 0.0,
             joints: vec![JointTracks::default()],
             travel_speed: None,
+            events: Vec::new(),
         };
         let joint_zones = vec![zone("torso", Some(f32::NAN))];
 
@@ -2020,6 +2028,7 @@ mod tests {
                 JointTracks::default(),
             ],
             travel_speed: None,
+            events: Vec::new(),
         };
         let clip_b = AnimationClip {
             name: "b".into(),
@@ -2030,6 +2039,7 @@ mod tests {
                 JointTracks::default(),
             ],
             travel_speed: None,
+            events: Vec::new(),
         };
         let joint_zones = vec![None, None, zone("tip", Some(0.1))];
 
@@ -2095,6 +2105,7 @@ mod tests {
             duration: 1.0,
             joints: vec![JointTracks::default()],
             travel_speed: None,
+            events: Vec::new(),
         }];
         let joint_zones = vec![zone("head", Some(0.2))];
 
@@ -2290,6 +2301,7 @@ mod tests {
             duration: 2.0,
             joints: vec![JointTracks::default(), child_tracks],
             travel_speed: None,
+            events: Vec::new(),
         };
         // Root untagged; child tagged leaf with an explicit radius.
         let joint_zones = vec![None, zone("hand", Some(0.3))];
@@ -2319,6 +2331,7 @@ mod tests {
                 ..Default::default()
             }],
             travel_speed: None,
+            events: Vec::new(),
         }
     }
 
@@ -3233,6 +3246,7 @@ mod tests {
             duration: 0.0,
             joints: vec![JointTracks::default()],
             travel_speed: None,
+            events: Vec::new(),
         }
     }
 

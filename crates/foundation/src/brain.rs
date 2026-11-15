@@ -122,6 +122,11 @@ pub const BRAIN_DAMAGE_SOURCE_KNOWN_INPUT: &str = "@brain.damageSourceKnown";
 /// Whether this enemy held an attack turn, for any attack, as of the previous
 /// tick's arbitration.
 pub const BRAIN_HAS_ATTACK_TURN_INPUT: &str = "@brain.hasAttackTurn";
+/// Whether the animation the active path selects has played through: true
+/// from the tick after a non-looping state's clip reaches its duration, false
+/// on a looping state, and true for a state whose clip did not resolve.
+/// Entity-wide, not scope-relative: every level's guards read one value.
+pub const BRAIN_ANIMATION_DONE_INPUT: &str = "@brain.animationDone";
 
 /// Prefix of the named Bool read `attackTurnHeld(attack)`: a turn is held for
 /// that attack, as of the previous tick.
@@ -161,7 +166,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 21] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 22] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -183,6 +188,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 21] = [
     (BRAIN_DAMAGE_BEARING_INPUT, IrType::Number),
     (BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, IrType::Bool),
     (BRAIN_HAS_ATTACK_TURN_INPUT, IrType::Bool),
+    (BRAIN_ANIMATION_DONE_INPUT, IrType::Bool),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -428,6 +434,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[20],
             (BRAIN_HAS_ATTACK_TURN_INPUT, IrType::Bool),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn animation_done_appends_at_fixed_slot_twenty_one() {
+        assert_eq!(
+            BRAIN_INPUTS[21],
+            (BRAIN_ANIMATION_DONE_INPUT, IrType::Bool),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

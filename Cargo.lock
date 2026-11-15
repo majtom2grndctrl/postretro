@@ -4448,6 +4448,7 @@ dependencies = [
  "postretro-entities",
  "postretro-foundation",
  "postretro-level-format",
+ "postretro-model",
  "postretro-net",
  "postretro-physics",
  "postretro-script-compiler",

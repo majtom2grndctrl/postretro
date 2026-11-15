@@ -247,9 +247,8 @@ fn a_point_between_samples_reaching_further_than_either_keeps_the_count() {
     assert!(edges.step(low_below, SlotClass::Budgeted, true, 0, &mut window));
     assert_eq!(window.len(), 1);
     window.age(0.9);
-    for edge in 0..EDGE_POINTS {
+    for (edge, tracker) in edges.trackers.iter().enumerate() {
         let (albedo, background) = edge_point(edge);
-        let tracker = edges.trackers[edge];
         let beyond = (crossing.at(albedo, background) - tracker.peak) * tracker.dir;
         assert!(beyond <= 0.0, "edge {edge} reaches further");
     }
@@ -353,9 +352,9 @@ fn an_unknown_history_tracker_counts_its_first_move_of_any_size_then_runs_as_usu
 #[test]
 fn unknown_history_starts_every_edge_point_at_what_nothing_drawn_draws() {
     let edges = EdgeTrackers::unknown_history();
-    for edge in 0..EDGE_POINTS {
+    for (edge, tracker) in edges.trackers.iter().enumerate() {
         let (_, background) = edge_point(edge);
-        assert_eq!(edges.trackers[edge].out, background, "edge {edge}");
+        assert_eq!(tracker.out, background, "edge {edge}");
     }
     // The points the exempt rule reads the drawn opacity from.
     assert_eq!(edge_point(LIT_EDGE), (1.0, 0.0));

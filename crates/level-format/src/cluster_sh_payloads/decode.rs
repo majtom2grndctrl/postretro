@@ -254,7 +254,8 @@ fn validate_sparse_rows(
         }
     }
     let entries_base = 16 + row_count * CLUSTER_SH_SPARSE_ROW_RECORD_SIZE;
-    for entry in 0..entry_count {
+    // `entry_count` equals `sparse.entries.len()`, checked above.
+    for (entry, expected_entry) in sparse.entries.iter().enumerate() {
         let offset = entries_base + entry * 16;
         let light = read_u32(bytes, offset);
         let first_tile = read_u32(bytes, offset + 4);
@@ -262,7 +263,6 @@ fn validate_sparse_rows(
         if read_u32(bytes, offset + 12) != 0 || first_tile != tile_cursor {
             return invalid("sparse entry offsets are invalid".into());
         }
-        let expected_entry = &sparse.entries[entry];
         if light != expected_entry.light
             || first_tile != expected_entry.first_tile_f16
             || tile_count != expected_entry.tile_f16_count

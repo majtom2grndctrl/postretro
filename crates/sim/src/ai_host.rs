@@ -71,6 +71,10 @@ pub struct AiTickInputs<'a> {
     pub factions: &'a FactionRegistry,
     /// Engine-owned live sentiment state, borrowed only inside AI compute.
     pub faction_sentiment: &'a RefCell<FactionSentimentState>,
+    /// Every loaded model's clips, for an enemy's clip clock: durations and
+    /// clip events. `None` leaves every clip unresolved: `at` attacks fire as
+    /// without `at`, and a non-looping state reads `brain.animationDone` true.
+    pub clips: Option<&'a crate::scripting_systems::hit_zones::HitZoneStore>,
 }
 
 /// Finalized host-only output from exactly one AI stage invocation.

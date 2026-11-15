@@ -73,7 +73,7 @@ Example prefixes (illustrative, not exhaustive):
 | `metal` | Metal |
 | `concrete` | Concrete |
 | `grate` | Grate |
-| `neon` | Neon — shininess plus a static emissive multiplier for `_e` textures; planned audio/impact behaviors. |
+| `neon` | Neon — shininess plus a static emissive multiplier for `_e` textures; planned audio/impact behaviors. Retiring (decided, not yet built): glow strength moves to `materials.toml` (§4.5). |
 | `glass` | Glass |
 | `wood` | Wood |
 
@@ -81,9 +81,9 @@ The material enum and prefix derivation are implemented. Behavior hooks are plan
 
 | Behavior | Status |
 |----------|--------|
-| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. See §4.5. |
+| **Emissive surfaces** | Implemented — world and kinematic-brush `_e` texels add static self-illumination to HDR scene color, scaled by the prefix-derived material multiplier. They never replace or inject into direct/indirect lighting; bright values bloom in the renderer compositor. A `light_area` face's glow follows its light instead (decided, not yet built). See §4.5. |
 | **Shininess** | Implemented (Epic 5) — specular exponent on enum variant. |
-| **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` and `neon` resolve to flat by intent, not by omission. See §4.6. |
+| **Surface Depth** | Implemented — per-prefix depth (each direction), terrace count, march step cap, and fade distance for the signed texel-space parallax march. `glass` resolves to flat by intent, not by omission; `neon` does until it retires (§4.5, decided, not yet built), after which a former `neon_` texture carves as Default. See §4.6. |
 | **Footstep sounds** | Planned. |
 | **Bullet impact particles** | Planned. |
 | **Ricochet behavior** | Planned. |
@@ -141,13 +141,18 @@ Optional per-texture normal maps for fine surface detail.
 
 ### 4.5 Emissive Surfaces
 
-Optional emissive color maps add static, per-texel self-illumination to world and
-kinematic-brush surfaces. They do not emit light into lightmaps, SH irradiance or
-neighboring surfaces, and do not create dynamic lights. Glow texels are excluded
-from the per-texture diffuse mean used by SH bounce when non-glowing texels
-remain; an all-glowing texture uses its full average (`build_pipeline.md`
-§Compiler pipeline). Glow strength follows the original material name, as at
-runtime. To light a scene, an author places a separate light entity.
+Optional emissive color maps add per-texel self-illumination to world and
+kinematic-brush surfaces, static except on `light_area` faces (Strength, below).
+They do not emit light into lightmaps, SH irradiance or neighboring surfaces,
+and do not create dynamic lights. Glow texels are excluded from the per-texture
+diffuse mean used by SH bounce when non-glowing texels remain; an all-glowing
+texture uses its full average (`build_pipeline.md` §Compiler pipeline). The
+mean's glow test follows the original material name, as prefix glow does at
+runtime; a `light_area` face's `_glow` never enters it. To light a scene, an
+author places a light entity. A `light_area` is such an entity: its `_e` faces
+form its emitter and glow with it, and its cast light takes the entity's `light`
+and `_color`, never the emissive map or prefix (decided, not yet built;
+`build_pipeline.md` §Custom FGD).
 
 - **Naming:** `{name}_e.png` beside the diffuse texture.
 - **Format:** `Rgba8UnormSrgb`, sampled as linear color by hardware. Dimensions
@@ -160,8 +165,25 @@ runtime. To light a scene, an author places a separate light entity.
 - **Strength:** a prefix-derived `Material::emissive_strength()` multiplier scales
   the sampled color. `neon_` is 4.0 so an authored bright texel exceeds the
   renderer bloom threshold; other current material prefixes are zero until
-  content establishes a use for them. There is no per-surface runtime scalar in
-  v1.
+  content establishes a use for them. A `light_area` face (decided, not yet
+  built) instead takes its light's `_glow` × the light's live colour and
+  brightness, so its glow follows its light frame for frame. Every other face
+  has no per-surface runtime scalar.
+- **Strength and volumes (decided, not yet built):** brief
+  `plans/ready/emissive-volumes`.
+  - The `neon` prefix retires. Glow strength is content:
+    `<mod root>/materials.toml` sets `emissive` per normalized texture name, so
+    aliases share one; a texture with an `_e` map and no entry is 1.0. Only
+    prl-build reads the file; runtime reads only the baked value, so bake and
+    runtime see one number. The file is the home for content-owned material
+    properties.
+  - An `emissive_volume` brush scales and tints its static world faces: glow =
+    texture strength × (min + brightness × (max − min)) × color. The map owns
+    min, max and default color; scripts own brightness ([0, 1], 1 with no
+    script) and color, never the range. Movers and fluids take texture strength
+    only.
+  - `_e` stays an RGB color map; black is zero glow. Alpha is reserved for a
+    future per-texel channel: author it opaque.
 - **Composite and fallback:** forward rendering writes `lit + emissive` into the
   renderer-owned HDR scene target. An absent `_e` uses a shared 1×1 black sRGB
   placeholder, an additive no-op. Bloom is a screen-space effect after this
@@ -218,11 +240,11 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   integration, and the hard renderer constraints it honors.
 - **Per-material tuning:** depth (texels or meters, applied **in each
   direction**), terrace count per direction, march step cap, and fade distance
-  are derived from the material name **prefix**, exactly like `shininess` and
-  `emissive_strength` (`postretro-render-data::material::Material::surface_depth`).
-  This engine has no author-facing material descriptor file and Surface Depth
-  deliberately does not introduce one: authoring is still "drop a
-  correctly-named PNG". The four values ride in the per-material uniform's
+  are derived from the material name **prefix**, exactly like `shininess`
+  (`postretro-render-data::material::Material::surface_depth`). Surface Depth
+  adds no author-facing material file: authoring is still "drop a
+  correctly-named PNG". `materials.toml` (§4.5, decided, not yet built) carries
+  glow strength, not depth. The four values ride in the per-material uniform's
   second 16-byte row. A material whose loaded specular slot is not `Rg8Unorm`
   gets an all-zero row and skips the march entirely. `tools/texture-tool`
   derives its default height terrace count from the same prefixes (twice the
@@ -265,7 +287,7 @@ A reflection probe is a compile-time capture of the static world, stored for dis
 
 ### 5.2 Capture
 
-Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do, and small brushes may be excluded (Exclusion, below). Mover state lighting (`rendering_pipeline.md` §4) does not reach a capture, so water behind a closed mover door still mirrors the lit doorway; mover-aware captures are planned, not built. Load-time GPU capture would be runtime texture generation (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect with every animated light's delta. An animated light enters at the cycle mean of its runtime clamped curve, a curveless one at its authored colour, whether or not it starts active. No specular, no dynamic lights. Coupled to the renderer by parity: the indirect weight and per-prefix emissive multipliers must equal the renderer's production values, and the SDF light selection and shading mirror the forward pass's as drawn, quirks included: point and directional SDF lights draw at half brightness (a zero aim meets the cone term), and an animated SDF light's direct is static (only its delta SH animates). Tests pin each, so a runtime change there updates the capture and bumps the capture stage's cache epoch (`build_pipeline.md` §Build Cache); the key hashes no shader text, so without the bump warm builds keep stale tiles. A runtime-tuned dev indirect weight mismatches the bake. The SH depth visibility reads id 59 through the runtime's reference decode, and the key hashes id 59, so the capture loses a thin-wall leak exactly when the live view does (`rendering_pipeline.md` §4, Direction-aware probe visibility).
+Captured in its own cached prl-build stage against the static world (`build_pipeline.md` §Compiler pipeline): movers never appear, `switch` brushes do, and small brushes may be excluded (Exclusion, below). Mover state lighting (`rendering_pipeline.md` §4) does not reach a capture, so water behind a closed mover door still mirrors the lit doorway; mover-aware captures are planned, not built. Load-time GPU capture would be runtime texture generation (§9). Shading is albedo × (direct + indirect) + emissive, as the runtime would draw it at a reference state: the static lightmap, every animated light's weight map, the SDF-shadowed lights the runtime's per-fragment selection picks at each hit, and SH indirect with every animated light's delta. An animated light enters at the cycle mean of its runtime clamped curve, a curveless one at its authored colour, whether or not it starts active. No specular, no dynamic lights. Decided, not yet built (§4.5): emissive enters at the no-script state, texture strength × the face's volume max × colour (strength alone outside a volume). Coupled to the renderer by parity: the indirect weight and emissive strengths must equal the renderer's production values, and the SDF light selection and shading mirror the forward pass's as drawn, quirks included: point and directional SDF lights draw at half brightness (a zero aim meets the cone term), and an animated SDF light's direct is static (only its delta SH animates). Tests pin each, so a runtime change there updates the capture and bumps the capture stage's cache epoch (`build_pipeline.md` §Build Cache); the key hashes no shader text, so without the bump warm builds keep stale tiles. A runtime-tuned dev indirect weight mismatches the bake. The SH depth visibility reads id 59 through the runtime's reference decode, and the key hashes id 59, so the capture loses a thin-wall leak exactly when the live view does (`rendering_pipeline.md` §4, Direction-aware probe visibility).
 
 - **Colour tile.** BC6H, each texel the mean of four rotated-grid rays.
 - **Distance tile.** R16F, each texel the mean over the same rays of 1/|hit − capture point|₁. Inverse L1 is affine across an octahedral octant on a plane, so bilinear filtering reconstructs a wall exactly. 0 means the ray hit nothing, and no finite hit stores 0, so a later sky term can fill exactly the directions the capture saw nothing.
@@ -357,7 +379,7 @@ Solver uses a rigid, proper socket frame at its reference pose. Invalid, sheared
 - **Binding.** The model loader binds at load, into ordinary per-model clips in the mesh's joint order. Runtime consumers never see a library.
 - **Contract.** Joints match by exact name. Library tracks are deltas from the library's rest, composed with the mesh's rest; a rig whose clips are not rest-relative cannot use a library. Root translation scales by the ratio of root rest heights. Non-root translation and all scale drop, so proportions stay the mesh's. Composition keeps the mesh's rest offset in every frame, so a mesh posed unlike its library (an A-pose on a T-pose library) plays every clip off by that difference. Matching rests is content work, not a load-time retarget: `tools/rest_to_library.py` re-rests a bound mesh onto its library's rotations, re-skinning the mesh into that pose.
 - **Precedence.** Embedded clips stay valid and list first. A same-named embedded clip overrides the library's, silently.
-- **Clip events (decided, not yet built).** A glTF animation's `extras.events` lists `{ name, time }`, seconds from the clip's start, with room for an `end`. Events belong to the clip, never the descriptor, so every character on a library shares them, and an overriding embedded clip replaces them with its own. `mixamo_to_gltf.py --event` writes them; `--trim` keeps those inside its range, shifted by the cut's start. Malformed events warn and the clip loads without them. Host-only: clips stay outside the compatibility digest (`networking.md`). Consumer: `entity_model.md` §7c, Clip-timed attacks.
+- **Clip events.** A glTF animation's `extras.events` lists `{ name, time }`, seconds from the clip's start, with room for an `end`. Names start with a letter or underscore and hold letters, digits and underscores. They are case-sensitive and unique within a clip. Descriptor `action.at` checks the same rule. Events belong to the clip, never the descriptor, so every character on a library shares them, and an overriding embedded clip replaces them with its own. `mixamo_to_gltf.py --event` writes them before trims run. Each trim keeps the events inside its half-open span, `[start, end)`, shifted by its start key. So an event on a cut's key belongs to the trim starting there, at time 0, never to the windup ending there. A malformed list warns, and the clip loads with no events. Host-only: clips stay outside the compatibility digest (`networking.md`). Consumer: `entity_model.md` §7c, Clip-timed attacks.
 - **Raw data.** A model's joints and rest stay raw on load. Only two rewrites touch tracks: binding composes library tracks, and root-motion neutralization rewrites a model's own root tracks.
 - **Mechanism vs policy.** The engine names no rig. Joint names are a content contract between a library and its meshes; Mixamo policy lives in the conversion tool.
 - **Clip use.** Shipped characters play each clip as what it shows: walk for walking, run for running. Use the clips a character has, and never stand one in for another when the right one exists.

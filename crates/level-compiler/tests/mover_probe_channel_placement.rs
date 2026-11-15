@@ -129,6 +129,7 @@ fn assert_off_load_holds_the_resident_payload(resident: &Path, streamed: &Path) 
 // keeps id 57's cells and records, and reads back the resident build's payload
 // from id 50 while SH streams and whole under `off`.
 #[test]
+#[ignore = "bakes mover-setpiece cold twice and loads both (about 4 minutes); run `cargo test -p postretro-level-compiler --test mover_probe_channel_placement -- --ignored`"]
 fn a_block_over_its_bar_streams_with_id_50_and_one_at_or_under_it_stays_resident() {
     let resident_build = setpiece(&[]);
     let resident = channel(&resident_build.prl).expect("the setpiece packs id 57");

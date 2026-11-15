@@ -1,22 +1,23 @@
 // Assembling id 57 from the channel's bakes: one term record per (cell,
 // light) with its probe mask and, where ids 41 and 45 as emitted hold no
 // per-probe entry, its own tile once; each gating mover's visibility under
-// it; the bake-only roster; and the per-mover ramp records.
+// it; the bake-only roster; and the per-mover records of ramp and knots.
 // See: context/lib/build_pipeline.md §PRL section IDs, §Compiler pipeline step 12
 
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::mover_probe_channel::{
-    DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-    MoverChannelBlock, MoverDirectRecord, MoverLightNamespace, MoverLightRampRecord,
-    MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection,
+    DirectRecordParts, MOVER_IRRADIANCE_TILE_F16_COUNT, MoverChannelBlock, MoverDirectRecord,
+    MoverLightNamespace, MoverPayloadPlacement, MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverRecord,
 };
 use postretro_level_format::sh_reconstruct::Level;
 
 use super::blocks::BounceBlocks;
 use super::direct::{DirectEntry, MoverDirectBake, ProbeCells};
 use crate::map_data::MapKinematicMover;
+use crate::mover_light_gate::MoverPoses;
 
 /// The resident byte bar each payload block is held against: level-format's
 /// bars by default, or one lowered bar for both (the
@@ -70,30 +71,45 @@ impl MoverPayloadBars {
     }
 }
 
-/// Every mover's author ramp, ascending by id.
-pub(crate) struct MoverRamps(Vec<MoverLightRampRecord>);
+/// Every mover's id-57 record, ascending by id: its author ramp, and the
+/// knots of the poses the channel stores. An analysed mover's knots are its
+/// poses' path fractions t, not ramped: the renderer maps them through the
+/// ramp. A mover the channel does not analyse has no mid poses and keeps its
+/// two termini; no block names it, so assembly writes no record for it.
+pub(crate) struct MoverRecords(Vec<MoverRecord>);
 
-impl MoverRamps {
-    pub(crate) fn new(movers: &[MapKinematicMover]) -> Self {
-        let mut ramps: Vec<MoverLightRampRecord> = movers
+impl MoverRecords {
+    pub(crate) fn new(movers: &[MapKinematicMover], poses: &MoverPoses) -> Self {
+        let mut records: Vec<MoverRecord> = movers
             .iter()
-            .map(|mover| MoverLightRampRecord {
-                mover_id: mover.mover_id,
-                start: mover.light_ramp_start,
-                end: mover.light_ramp_end,
+            .map(|mover| {
+                let mut record = MoverRecord::termini(
+                    mover.mover_id,
+                    mover.light_ramp_start,
+                    mover.light_ramp_end,
+                );
+                if let Some(analysed) = poses.mover(mover.mover_id) {
+                    record.knots.clone_from(&analysed.knots);
+                }
+                record
             })
             .collect();
-        ramps.sort_by_key(|ramp| ramp.mover_id);
-        Self(ramps)
+        records.sort_by_key(|record| record.mover_id);
+        Self(records)
     }
 
-    fn of(&self, mover_id: u32) -> anyhow::Result<MoverLightRampRecord> {
+    /// Mover `mover_id`'s record, when the map has the mover.
+    pub(crate) fn get(&self, mover_id: u32) -> Option<&MoverRecord> {
         self.0
-            .binary_search_by_key(&mover_id, |ramp| ramp.mover_id)
-            .map(|at| self.0[at])
-            .map_err(|_| {
-                anyhow::anyhow!("mover probe channel names mover {mover_id}, which the map lacks")
-            })
+            .binary_search_by_key(&mover_id, |record| record.mover_id)
+            .ok()
+            .map(|at| &self.0[at])
+    }
+
+    fn of(&self, mover_id: u32) -> anyhow::Result<MoverRecord> {
+        self.get(mover_id).cloned().ok_or_else(|| {
+            anyhow::anyhow!("mover probe channel names mover {mover_id}, which the map lacks")
+        })
     }
 }
 
@@ -167,7 +183,7 @@ impl EmittedDirectEntries<'_> {
 /// Id 57 holding `direct`'s entries and `bounce`'s blocks, or `None` when
 /// there are none: the section is never written empty. Each light's entries
 /// at one cell become one term record, masked to the probes where some
-/// mover's `q₀` or `q₁` is below 255. `own_tile(cell, namespace, light)`
+/// mover's `q` is below 255 at some pose. `own_tile(cell, namespace, light)`
 /// says whether the record carries its light's tile at those probes; a
 /// namespace that requires one always does. `gated(namespace)` says whether
 /// that namespace's records gate anything once loaded; a light in one that
@@ -180,7 +196,7 @@ pub(crate) fn channel_section(
     direct: &MoverDirectBake,
     bounce: &BounceBlocks,
     cells: &ProbeCells,
-    ramps: &MoverRamps,
+    mover_records: &MoverRecords,
     bars: &MoverPayloadBars,
     own_tile: impl Fn(usize, MoverLightNamespace, u32) -> bool,
     gated: impl Fn(MoverLightNamespace) -> bool,
@@ -217,7 +233,7 @@ pub(crate) fn channel_section(
             depth: bounce.depth.clone(),
         },
         |cell| cells.valid_masks[cell as usize],
-        |mover_id| ramps.of(mover_id),
+        |mover_id| mover_records.of(mover_id),
     )?;
     if let Some(section) = &mut section {
         bars.place(section);
@@ -227,20 +243,18 @@ pub(crate) fn channel_section(
 
 /// One light's term record at one cell from its movers' entries there, each
 /// holding every valid probe. The mask keeps the probes where some mover's
-/// `q` is below 255 at either terminus; every other probe composes exactly
-/// as with no section, so it stores nothing. The tile is the light's, the
-/// same in every mover's entry, so it is stored once. `None` when no mover
-/// changes the term at any probe.
+/// `q` is below 255 at some pose, mid poses included; every other probe
+/// composes exactly as with no section, so it stores nothing. Each kept
+/// mover stores its N `q` per masked probe, probe-major. The tile is the
+/// light's, the same in every mover's entry, so it is stored once. `None`
+/// when no mover changes the term at any probe.
 fn term_record(
     run: &[DirectEntry],
     valid_mask: u64,
     mut record: MoverDirectRecord,
 ) -> Option<DirectRecordParts> {
-    fn pair(entry: &DirectEntry, slot: usize) -> &[u8] {
-        &entry.visibility[slot * MOVER_VISIBILITY_BYTES_PER_PROBE..]
-            [..MOVER_VISIBILITY_BYTES_PER_PROBE]
-    }
-    let gates = |entry: &DirectEntry, slot: usize| pair(entry, slot).iter().any(|&q| q < u8::MAX);
+    let gates =
+        |entry: &DirectEntry, slot: usize| entry.poses_at(slot).iter().any(|&q| q < u8::MAX);
     let mut kept_slots = Vec::new();
     let mut bits = valid_mask;
     let mut slot = 0;
@@ -266,7 +280,7 @@ fn term_record(
         .map(|entry| {
             let visibility = kept_slots
                 .iter()
-                .flat_map(|&slot| pair(entry, slot).iter().copied())
+                .flat_map(|&slot| entry.poses_at(slot).iter().copied())
                 .collect();
             (entry.mover_id, visibility)
         })

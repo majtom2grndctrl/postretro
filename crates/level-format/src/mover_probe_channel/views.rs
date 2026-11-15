@@ -1,14 +1,15 @@
 // MoverProbeChannel (id 57) read views: the direct block walked cell → term
-// record → mover visibility, bounce entries with their payload, a listed
-// cell's payload whichever placement holds it, and the counts a renderer
-// sizes its buffers by.
+// record → mover visibility per pose, bounce entries and depth records with
+// their payload, a listed cell's payload whichever placement holds it, and
+// the counts a renderer sizes its buffers by.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE, MoverBounceEntry,
-    MoverCellSlices, MoverChannelBlock, MoverDirectRecord, MoverProbeChannelError,
-    MoverProbeChannelSection, MoverStreamedRow, bounce_entry_f16_count, entry_positions,
+    MOVER_IRRADIANCE_TILE_F16_COUNT, MoverBounceEntry, MoverCellSlices, MoverChannelBlock,
+    MoverDepthRecord, MoverDirectRecord, MoverProbeChannelError, MoverProbeChannelSection,
+    MoverStreamedRow, bounce_entry_f16_count, entry_positions,
 };
+use crate::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
 /// A run of f16 halves, as the section holds them or as id 50 carries them
 /// (little-endian bytes). Equal runs compare equal whichever form holds them.
@@ -89,12 +90,13 @@ impl PartialEq<Vec<u16>> for MoverHalves<'_> {
 /// `*_at` views below, so it never asks where the payload lives.
 #[derive(Debug, Clone, Copy)]
 pub struct MoverCellPayload<'a> {
-    /// `q₀, q₁` per masked probe, record after record, mover after mover.
+    /// Record after record, mover after mover: per masked probe, the
+    /// mover's `q` at each of its poses.
     pub visibility: &'a [u8],
     /// One tile per masked probe, flagged record after flagged record.
     pub own_tiles: MoverHalves<'a>,
-    /// Per affected probe, its stored `S^b₀` then its stored `S^b₁`, entry
-    /// after entry.
+    /// Entry after entry: pose after pose, each stored probe's tile by
+    /// `stored` rank.
     pub bounce_tiles: MoverHalves<'a>,
 }
 
@@ -129,6 +131,8 @@ impl<'a> DirectCellView<'a> {
             let (visibility_len, tile_len) = record_payload_len(section, index);
             let record = &section.direct_records[index];
             let view = DirectRecordView {
+                section,
+                index,
                 cell,
                 valid_probe_mask,
                 record,
@@ -149,33 +153,61 @@ impl<'a> DirectCellView<'a> {
 }
 
 /// One term record with its payload.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct DirectRecordView<'a> {
+    /// Where each gating mover's pose count is read.
+    section: &'a MoverProbeChannelSection,
+    /// The record's index in the section.
+    index: usize,
     /// Dense affinity cell index.
     pub cell: u32,
     pub valid_probe_mask: u64,
     pub record: &'a MoverDirectRecord,
     /// Gating movers, ascending by id.
     pub mover_ids: &'a [u32],
-    /// Every mover's `q₀, q₁` per masked probe, mover after mover.
+    /// Mover after mover: per masked probe, the mover's `q` at each pose.
     pub visibility: &'a [u8],
     /// One tile per masked probe, x-fastest; `None` unless the record
     /// carries its own (else id 41 or id 45 holds the term per probe).
     pub own_tiles: Option<MoverHalves<'a>>,
 }
 
+impl std::fmt::Debug for DirectRecordView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectRecordView")
+            .field("cell", &self.cell)
+            .field("valid_probe_mask", &self.valid_probe_mask)
+            .field("record", self.record)
+            .field("mover_ids", &self.mover_ids)
+            .field("visibility", &self.visibility)
+            .field("own_tiles", &self.own_tiles)
+            .finish()
+    }
+}
+
 impl<'a> DirectRecordView<'a> {
-    /// Each gating mover with its `q` pairs, ascending by mover id.
+    /// `q` bytes the record's movers hold: per masked probe, one per pose of
+    /// each mover, as its mover records give them.
+    pub fn visibility_len(&self) -> usize {
+        self.record.masked_probe_count() * self.section.record_pose_total(self.index)
+    }
+
+    /// Each gating mover with its `q` per pose, ascending by mover id.
     pub fn movers(&self) -> impl Iterator<Item = MoverVisibilityView<'a>> + 'a {
-        let per_mover = self.record.masked_probe_count() * MOVER_VISIBILITY_BYTES_PER_PROBE;
-        let visibility = self.visibility;
-        self.mover_ids
-            .iter()
-            .enumerate()
-            .map(move |(at, &mover_id)| MoverVisibilityView {
+        let probes = self.record.masked_probe_count();
+        let (section, visibility) = (self.section, self.visibility);
+        let mut at = 0usize;
+        self.mover_ids.iter().map(move |&mover_id| {
+            let pose_count = section.pose_count_of(mover_id);
+            let len = probes * pose_count;
+            let view = MoverVisibilityView {
                 mover_id,
-                visibility: &visibility[at * per_mover..(at + 1) * per_mover],
-            })
+                pose_count,
+                visibility: &visibility[at..at + len],
+            };
+            at += len;
+            view
+        })
     }
 
     /// The own tile at masked slot `slot` (x-fastest rank among the mask's
@@ -191,15 +223,22 @@ impl<'a> DirectRecordView<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MoverVisibilityView<'a> {
     pub mover_id: u32,
-    /// `q₀, q₁` per masked probe, x-fastest; `q = byte / 255`.
+    /// The mover's poses, from its mover record.
+    pub pose_count: usize,
+    /// Per masked probe, x-fastest, the `q` byte at each pose: masked slot
+    /// `slot`'s pose `k` is byte `slot · pose_count + k`; `q = byte / 255`.
     pub visibility: &'a [u8],
 }
 
-impl MoverVisibilityView<'_> {
-    /// `[q₀, q₁]` bytes at masked slot `slot`.
-    pub fn q(&self, slot: usize) -> [u8; 2] {
-        let at = slot * MOVER_VISIBILITY_BYTES_PER_PROBE;
-        [self.visibility[at], self.visibility[at + 1]]
+impl<'a> MoverVisibilityView<'a> {
+    /// The `q` bytes at masked slot `slot`, one per pose in pose order.
+    pub fn probe_q(&self, slot: usize) -> &'a [u8] {
+        &self.visibility[slot * self.pose_count..(slot + 1) * self.pose_count]
+    }
+
+    /// The `q` byte at masked slot `slot` and pose `pose`.
+    pub fn q(&self, slot: usize, pose: usize) -> u8 {
+        self.probe_q(slot)[pose]
     }
 }
 
@@ -209,28 +248,37 @@ pub struct BounceEntryView<'a> {
     /// Dense affinity cell index.
     pub cell: u32,
     pub entry: &'a MoverBounceEntry,
-    /// Per affected probe, x-fastest: its stored `S^b₀` then its stored
-    /// `S^b₁`. `None` when the payload streams with id 50 and is not held.
+    /// Pose after pose, each stored probe's tile by `stored` rank. `None`
+    /// when the payload streams with id 50 and is not held.
     pub tiles: Option<MoverHalves<'a>>,
 }
 
 impl<'a> BounceEntryView<'a> {
-    /// Local probe `local`'s `[S^b₀, S^b₁]`: each stored tile, `None` at a
-    /// terminus that stores none (the probe composes id 34 there). `None`
-    /// overall when the probe is not affected or the payload is not held.
-    pub fn probe_tiles(&self, local: u32) -> Option<[Option<MoverHalves<'a>>; 2]> {
-        let tiles = self.tiles?;
-        let slots = self.entry.probe_tiles(local)?;
-        Some(slots.map(|slot| {
-            slot.map(|tile| {
-                tiles
-                    .slice(
-                        tile * MOVER_IRRADIANCE_TILE_F16_COUNT
-                            ..(tile + 1) * MOVER_IRRADIANCE_TILE_F16_COUNT,
-                    )
-                    .expect("an entry's payload covers its stored tiles")
-            })
-        }))
+    /// Local probe `local`'s stored `S^b_k` at pose `pose`: `None` where the
+    /// pose stores no state for it (see [`MoverBounceEntry::mark`] for what
+    /// it reads instead) or the payload is not held.
+    pub fn pose_tile(&self, pose: usize, local: u32) -> Option<MoverHalves<'a>> {
+        let tile = self.entry.tile_index(pose, local)?;
+        let slice = self.tiles?.slice(
+            tile * MOVER_IRRADIANCE_TILE_F16_COUNT..(tile + 1) * MOVER_IRRADIANCE_TILE_F16_COUNT,
+        );
+        Some(slice.expect("an entry's payload covers its stored tiles"))
+    }
+}
+
+/// A depth record with its stored tiles.
+#[derive(Debug, Clone, Copy)]
+pub struct DepthRecordView<'a> {
+    pub record: &'a MoverDepthRecord,
+    /// The record's stored `D_k` in pose order, each id 59's bordered tile.
+    pub tiles: &'a [[u16; 2]],
+}
+
+impl<'a> DepthRecordView<'a> {
+    /// Pose `pose`'s stored tile: `None` where the pose stores none.
+    pub fn pose_tile(&self, pose: usize) -> Option<&'a [[u16; 2]]> {
+        let tile = self.record.tile_index(pose)?;
+        Some(&self.tiles[tile * PROBE_DEPTH_TILE_TEXELS..(tile + 1) * PROBE_DEPTH_TILE_TEXELS])
     }
 }
 
@@ -246,8 +294,9 @@ pub struct MoverDirectCounts {
     pub masked_probes: usize,
     /// Σ masked probes over flagged records: one own tile each.
     pub own_tile_probes: usize,
-    /// Σ masked probes over mover entries: one `[q₀, q₁]` pair each.
-    pub visibility_pairs: usize,
+    /// Σ masked probes × the mover's pose count over mover entries: one `q`
+    /// byte per (masked probe, pose).
+    pub visibility_bytes: usize,
 }
 
 /// [`MoverProbeChannelSection::to_bytes`]'s bytes, part by part, and the
@@ -258,6 +307,8 @@ pub struct MoverChannelBytes {
     pub header: usize,
     /// Listed cell count and the listed cell records (index and valid mask).
     pub cell_index: usize,
+    /// Mover record count and each mover's ramp, pose count and knots.
+    pub mover_records: usize,
     /// Direct offsets per listed cell and mover offsets per record.
     pub direct_index: usize,
     /// Term records and mover ids.
@@ -266,13 +317,12 @@ pub struct MoverChannelBytes {
     pub visibility: usize,
     /// Resident own tiles; 0 when the direct payload streams.
     pub own_tiles: usize,
-    /// Bounce offsets per listed cell and bounce entries.
+    /// Bounce offsets per listed cell, entry byte offsets and bounce entries.
     pub bounce_index: usize,
     /// Resident bounce tiles; 0 when the bounce payload streams.
     pub bounce_payload: usize,
     /// Depth count, records and tiles.
     pub depth: usize,
-    pub ramps: usize,
     /// The direct payload placed with id 50's cells, outside [`Self::total`].
     pub streamed_direct: usize,
     /// The bounce payload placed with id 50's cells, outside [`Self::total`].
@@ -284,6 +334,7 @@ impl MoverChannelBytes {
     pub fn total(&self) -> usize {
         self.header
             + self.cell_index
+            + self.mover_records
             + self.direct_index
             + self.direct_records
             + self.visibility
@@ -291,7 +342,6 @@ impl MoverChannelBytes {
             + self.bounce_index
             + self.bounce_payload
             + self.depth
-            + self.ramps
     }
 
     /// The direct block's own bytes in the section: its index, records and
@@ -486,9 +536,20 @@ impl MoverProbeChannelSection {
             if record.carries_own_tile {
                 counts.own_tile_probes += probes;
             }
-            counts.visibility_pairs += probes * self.record_movers(index).len();
+            counts.visibility_bytes += probes * self.record_pose_total(index);
         }
         counts
+    }
+}
+
+impl MoverProbeChannelSection {
+    /// Σ pose counts over record `index`'s movers: its `q` bytes per masked
+    /// probe.
+    fn record_pose_total(&self, index: usize) -> usize {
+        self.record_movers(index)
+            .iter()
+            .map(|&mover| self.pose_count_of(mover))
+            .sum()
     }
 }
 
@@ -499,7 +560,7 @@ pub(super) fn record_payload_len(
 ) -> (usize, usize) {
     let record = &section.direct_records[index];
     let probes = record.masked_probe_count();
-    let visibility = probes * MOVER_VISIBILITY_BYTES_PER_PROBE * section.record_movers(index).len();
+    let visibility = probes * section.record_pose_total(index);
     let tiles = if record.carries_own_tile {
         probes * MOVER_IRRADIANCE_TILE_F16_COUNT
     } else {

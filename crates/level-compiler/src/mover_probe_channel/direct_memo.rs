@@ -2,9 +2,7 @@
 // alone, and its payload of one light's entries.
 // See: context/lib/build_pipeline.md §Build Cache
 
-use postretro_level_format::mover_probe_channel::{
-    MOVER_IRRADIANCE_TILE_F16_COUNT, MOVER_VISIBILITY_BYTES_PER_PROBE,
-};
+use postretro_level_format::mover_probe_channel::MOVER_IRRADIANCE_TILE_F16_COUNT;
 use postretro_level_format::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, DEFAULT_IRRADIANCE_TILE_DIMENSION,
 };
@@ -14,7 +12,7 @@ use crate::bake_content_keys::{fold_occluding_geometry, fold_probe_grid_layout};
 use crate::cache::{CacheKey, StageCache};
 use crate::direct_sh_bake::DIRECT_SH_STAGE_VERSION;
 use crate::lightmap_bake::{DEFAULT_AREA_SAMPLE_COUNT, fold_soft_visibility_constants};
-use crate::mover_light_gate::{Terminus, gate_key_hasher};
+use crate::mover_light_gate::gate_key_hasher;
 
 /// The memo's cache stage. Bump the version when the q bake, its own-tile
 /// assembly or the payload changes; the gate epoch, tracer epoch, soft-
@@ -26,7 +24,13 @@ const STAGE_ID: &str = "mover_probe_direct";
 /// mover-absent term.
 /// 5: enclosure takes the gather's lift as an inset: a probe on a face or
 /// less than the lift inside it keeps the per-ray rule.
-const STAGE_VERSION: u32 = 5;
+/// 6: q at every pose along the path, mid poses included; the payload
+/// names each entry's pose count.
+/// 7: a mid pose that encloses the probe keeps q = 255, never read: the
+/// section marks it across.
+/// 8: a mid pose that encloses the probe stores its traced q, like any
+/// other pose; only a terminus keeps 255.
+const STAGE_VERSION: u32 = 8;
 
 /// What every light's key shares: the occluding world, the probe grid and
 /// the reach decomposition's inputs. Only occlusion enters: vertex
@@ -76,11 +80,11 @@ impl<'c> DirectMemo<'c> {
 
     /// The prefix, then the light as its section bakes it (namespace, seed
     /// axis, early-out, reach policy, the whole light) and each mover it may
-    /// meet: its id and, per terminus, whether the light's reach touches the
-    /// pose and its posed solid where it does. A mover the light cannot
-    /// meet is absent, so moving one mover re-bakes only the lights reaching
-    /// its old or new pose. The light index is not folded: the payload never
-    /// names it.
+    /// meet: its id, its pose count and, per pose, whether the light's reach
+    /// touches the pose and its posed solid where it does. A mover the light
+    /// cannot meet is absent, so moving one mover re-bakes only the lights
+    /// reaching some old or new pose of it. The light index is not folded:
+    /// the payload never names it.
     pub(crate) fn key(&self, light: &ChannelLight<'_>, movers: &[LightMover]) -> CacheKey {
         let mut hasher = self.prefix.0.clone();
         hasher.update(&[light.namespace as u8]);
@@ -96,8 +100,9 @@ impl<'c> DirectMemo<'c> {
         hasher.update(&(movers.len() as u32).to_le_bytes());
         for mover in movers {
             hasher.update(&mover.mover_id.to_le_bytes());
-            for terminus in Terminus::BOTH {
-                let Some(occluder) = &mover.poses[terminus.index()] else {
+            hasher.update(&(mover.poses.len() as u32).to_le_bytes());
+            for pose in &mover.poses {
+                let Some(occluder) = pose else {
                     hasher.update(&[0]);
                     continue;
                 };
@@ -110,8 +115,9 @@ impl<'c> DirectMemo<'c> {
 
     /// The entries stored under `key`, or `None` on a miss. A payload that
     /// names a cell past the grid, a mover outside `movers`, entries out of
-    /// order, or a probe count unlike the cell's is corrupt: a miss that
-    /// re-bakes. Runs outside any governor permit.
+    /// order, a probe count unlike the cell's or a pose count unlike the
+    /// mover's is corrupt: a miss that re-bakes. Runs outside any governor
+    /// permit.
     pub(crate) fn get(
         &self,
         key: &CacheKey,
@@ -150,15 +156,17 @@ impl<'c> DirectMemo<'c> {
 }
 
 /// `u32` entry count, then per entry `u32` cell, `u32` mover id, `u32`
-/// probe count n, `2n` visibility bytes and `108n` little-endian halves.
+/// probe count n, `u32` pose count N, `nN` visibility bytes and `108n`
+/// little-endian halves.
 pub(crate) fn encode(entries: &[DirectEntry]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for entry in entries {
-        let probes = entry.visibility.len() / MOVER_VISIBILITY_BYTES_PER_PROBE;
+        let probes = entry.visibility.len() / entry.pose_count;
         out.extend_from_slice(&entry.cell.to_le_bytes());
         out.extend_from_slice(&entry.mover_id.to_le_bytes());
         out.extend_from_slice(&(probes as u32).to_le_bytes());
+        out.extend_from_slice(&(entry.pose_count as u32).to_le_bytes());
         out.extend_from_slice(&entry.visibility);
         for half in &entry.tiles {
             out.extend_from_slice(&half.to_le_bytes());
@@ -168,8 +176,8 @@ pub(crate) fn encode(entries: &[DirectEntry]) -> Vec<u8> {
 }
 
 /// The entries of a well-formed payload: each cell inside the grid with its
-/// valid-probe count, each mover one of `movers`, strictly ascending by
-/// (cell, mover), and no trailing bytes.
+/// valid-probe count, each mover one of `movers` with its pose count,
+/// strictly ascending by (cell, mover), and no trailing bytes.
 pub(crate) fn decode(
     bytes: &[u8],
     cells: &ProbeCells,
@@ -182,19 +190,20 @@ pub(crate) fn decode(
         let cell = reader.u32()?;
         let mover_id = reader.u32()?;
         let probes = reader.u32()? as usize;
+        let pose_count = reader.u32()? as usize;
         let mask = *cells.valid_masks.get(cell as usize)?;
         let ordered = entries
             .last()
             .is_none_or(|last| (last.cell, last.mover_id) < (cell, mover_id));
         if !ordered
             || probes != mask.count_ones() as usize
-            || !movers.iter().any(|mover| mover.mover_id == mover_id)
+            || !movers
+                .iter()
+                .any(|mover| mover.mover_id == mover_id && mover.poses.len() == pose_count)
         {
             return None;
         }
-        let visibility = reader
-            .take(probes * MOVER_VISIBILITY_BYTES_PER_PROBE)?
-            .to_vec();
+        let visibility = reader.take(probes.checked_mul(pose_count)?)?.to_vec();
         let tiles = reader
             .take(probes * MOVER_IRRADIANCE_TILE_F16_COUNT * 2)?
             .as_chunks::<2>()
@@ -205,6 +214,7 @@ pub(crate) fn decode(
         entries.push(DirectEntry {
             cell,
             mover_id,
+            pose_count,
             visibility,
             tiles,
         });

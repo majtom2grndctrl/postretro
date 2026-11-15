@@ -19,10 +19,11 @@ use crate::delta_sections::PostBakeDeltaSections;
 use crate::governor::Governor;
 use crate::light_namespaces::{AlphaLightsNs, AnimatedBakedLights};
 use crate::map_data::MapKinematicMover;
+use crate::mover_light_gate::{MidPoseOnlyLights, MoverPoses};
 use crate::mover_probe_channel::{
     BounceBlocks, ChannelLightSources, DirectScene, EmittedDirectEntries, MoverDirectBake,
-    MoverPayloadBars, MoverRamps, PosedMovers, ProbeCells, bake_direct, channel_lights,
-    channel_section,
+    MoverPayloadBars, MoverRecords, PosedMovers, ProbeCells, bake_direct, channel_lights,
+    channel_section, mid_pose_only_lights,
 };
 use crate::portals::Portal;
 use crate::reporter::StageProgress;
@@ -31,9 +32,12 @@ use crate::texel_footprint::EmbeddedEmitters;
 
 /// What the direct half reads from the pipeline.
 pub(super) struct DirectHalfInputs<'a> {
-    /// Every analysed mover posed at both termini, as the bounce half
+    /// Every analysed mover posed at each of its poses, as the bounce half
     /// posed them.
     pub(super) posed: &'a PosedMovers,
+    /// The poses `posed` holds, whose knots each mover's id-57 record
+    /// carries.
+    pub(super) poses: &'a MoverPoses,
     pub(super) movers: &'a [MapKinematicMover],
     pub(super) sh_ctx: &'a ShBakeCtx<'a>,
     pub(super) sh_config: &'a ShConfig,
@@ -59,8 +63,11 @@ pub(super) struct DirectHalf {
     bake: MoverDirectBake,
     bounce: BounceBlocks,
     cells: ProbeCells,
-    ramps: MoverRamps,
+    mover_records: MoverRecords,
     payload_bars: MoverPayloadBars,
+    /// Per mover, the lights the bake gates only at a mid pose, which the
+    /// mover light gate's report counts.
+    mid_pose_only: MidPoseOnlyLights,
 }
 
 /// Bake the direct half: per gated light, the entries of every analysed
@@ -130,11 +137,13 @@ pub(super) fn bake_direct_half(inputs: DirectHalfInputs<'_>) -> anyhow::Result<O
             .count(),
         started.elapsed().as_secs_f64() * 1000.0,
     );
+    let mid_pose_only = mid_pose_only_lights(&bake, &lights);
     Ok(Some(DirectHalf {
+        mid_pose_only,
         bake,
         bounce: inputs.bounce,
         cells,
-        ramps: MoverRamps::new(inputs.movers),
+        mover_records: MoverRecords::new(inputs.movers, inputs.poses),
         payload_bars: inputs.payload_bars,
     }))
 }
@@ -153,7 +162,7 @@ impl DirectHalf {
             &self.bake,
             &self.bounce,
             &self.cells,
-            &self.ramps,
+            &self.mover_records,
             &self.payload_bars,
             |_, _, _| false,
             |_| true,
@@ -181,7 +190,7 @@ impl DirectHalf {
             &self.bake,
             &self.bounce,
             &self.cells,
-            &self.ramps,
+            &self.mover_records,
             &self.payload_bars,
             |cell, ns, light| !emitted.holds_per_probe(cell, ns, light),
             |ns| emitted.composes_gated(ns),
@@ -204,13 +213,13 @@ impl DirectHalf {
                  carrying their own tile, {bake_only} naming {} bake-only light(s); {} mover \
                  entr(y/ies) over {} mover(s); {} masked probe(s); direct block {} B: {} B of \
                  cell index, {} B of direct index, {} B of records and mover ids, {} B of \
-                 visibility, {} B of own tiles; bounce block {} B: {} B of index, {} B of \
-                 payload; depth block {} B; section {} B",
+                 visibility, {} B of own tiles; bounce block {} B: {} B of index, {} B of payload; depth block {} B; \
+                 mover records {} B; section {} B",
                 counts.records,
                 counts.cells,
                 section.bake_only_light_count(),
                 counts.mover_entries,
-                section.ramps.len(),
+                section.mover_records.len(),
                 counts.masked_probes,
                 bytes.cell_index + bytes.direct_block(),
                 bytes.cell_index,
@@ -222,6 +231,7 @@ impl DirectHalf {
                 bytes.bounce_index,
                 bytes.bounce_payload,
                 bytes.depth,
+                bytes.mover_records,
                 bytes.total(),
             );
             log::info!(
@@ -231,6 +241,11 @@ impl DirectHalf {
         }
         sections.mover_channel = section;
         Ok(())
+    }
+
+    /// Per mover, the lights the bake gates only at a mid pose.
+    pub(super) fn mid_pose_only(&self) -> &MidPoseOnlyLights {
+        &self.mid_pose_only
     }
 
     /// The Build Summary line for id 57's payload placement, once final.

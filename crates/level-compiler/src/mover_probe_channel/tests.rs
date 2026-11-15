@@ -26,7 +26,7 @@ fn occluder(brushes: Vec<BrushVolume>) -> PosedOccluder {
 }
 
 /// [`occluder`]'s mover posed at its first waypoint, as a solid.
-fn solid(brushes: Vec<BrushVolume>) -> PosedSolid {
+pub(super) fn solid(brushes: Vec<BrushVolume>) -> PosedSolid {
     let mover = MapKinematicMover {
         mover_id: 0,
         name: "mover".to_string(),
@@ -59,6 +59,7 @@ fn solid(brushes: Vec<BrushVolume>) -> PosedSolid {
         light_ramp_start: 0.0,
         light_ramp_end: 1.0,
         light_bounces: None,
+        light_poses: None,
     };
     let waypoints = [
         ("first", "last", DVec3::ZERO),
@@ -440,7 +441,7 @@ fn a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_in_every_posed_trace
     use postretro_level_format::probe_depth_tiles::bordered_tile;
 
     use super::bounce::PosedRadiance;
-    use super::gather::{PosedGather, trace_posed_depth};
+    use super::gather::{PosedGather, trace_posed_depth, valid_probes};
     use super::posed_scene::PosedScene;
     use crate::bake_control::BakeControl;
     use crate::sh_bake::{ProbeGridLayout, TileRayTable, probe_gather_directions};
@@ -448,7 +449,7 @@ fn a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_in_every_posed_trace
 
     const FAR: f32 = 100.0;
     let solid = Arc::new(solid(vec![box_brush(DVec3::ZERO, DVec3::ONE)]));
-    let scene = PosedScene::new(Arc::clone(&solid), Terminus::First).expect("posed patches");
+    let scene = PosedScene::new(Arc::clone(&solid), 0).expect("posed patches");
     let occluder = PosedOccluder::new(Arc::clone(&solid));
     // A static floor far below, so the static tracer has a world to miss.
     let geometry = geometry_of(&[[
@@ -504,7 +505,13 @@ fn a_probe_a_hair_off_a_posed_face_reads_one_inside_verdict_in_every_posed_trace
             validity: vec![1],
         };
         assert_eq!(
-            trace_posed_depth(&ctx, &layout, &scene, &BakeControl::unrestricted()),
+            trace_posed_depth(
+                &ctx,
+                &layout,
+                &scene,
+                &valid_probes(&layout),
+                &BakeControl::unrestricted(),
+            ),
             vec![(0, bordered_tile(&rays.interior(&distances)))],
             "x = 1 {offset:+}: the depth-only trace reads the gather's verdicts"
         );
@@ -528,7 +535,7 @@ fn a_probe_within_the_lift_of_a_face_keeps_the_per_ray_rule_and_one_past_it_is_e
     use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
     use super::bounce::PosedRadiance;
-    use super::gather::{PosedGather, gather_posed_probes, trace_posed_depth};
+    use super::gather::{PosedGather, gather_posed_probes, trace_posed_depth, valid_probes};
     use super::posed_scene::PosedScene;
     use crate::bake_control::BakeControl;
     use crate::light_namespaces::{AnimatedBakedLights, StaticBakedLights};
@@ -538,7 +545,7 @@ fn a_probe_within_the_lift_of_a_face_keeps_the_per_ray_rule_and_one_past_it_is_e
 
     const FAR: f32 = 100.0;
     let solid = Arc::new(solid(vec![box_brush(DVec3::ZERO, DVec3::ONE)]));
-    let scene = PosedScene::new(Arc::clone(&solid), Terminus::First).expect("posed patches");
+    let scene = PosedScene::new(Arc::clone(&solid), 0).expect("posed patches");
     let occluder = PosedOccluder::new(Arc::clone(&solid));
     let geometry = geometry_of(&[[
         [-50.0, -20.0, -50.0],
@@ -638,7 +645,13 @@ fn a_probe_within_the_lift_of_a_face_keeps_the_per_ray_rule_and_one_past_it_is_e
             probe_positions: vec![probe.as_dvec3()],
             validity: vec![1],
         };
-        let traced = trace_posed_depth(&ctx, &layout, &scene, &BakeControl::unrestricted());
+        let traced = trace_posed_depth(
+            &ctx,
+            &layout,
+            &scene,
+            &valid_probes(&layout),
+            &BakeControl::unrestricted(),
+        );
         assert_eq!(traced.len(), 1, "{depth_m} m: the pose meets the probe");
         assert_eq!(
             traced[0].1 == dark,
@@ -669,78 +682,6 @@ fn a_probe_within_the_lift_of_a_face_keeps_the_per_ray_rule_and_one_past_it_is_e
             posed.depth.as_ref(),
             Some(&traced[0].1),
             "{depth_m} m: the gather bins the depth-only trace's tile"
-        );
-    }
-}
-
-// Id 34's kept later bounces join a pose's running sum one by one, in bounce
-// order, as id 34 adds them. With every `light_bounces` that keeps a tail,
-// 1 (every later bounce is id 34's: the tail alone) through 4 (only id 34's
-// last layer), a patch the pose never meets (here every static patch: the
-// pose sits far outside the closet) sums id 34's later bounces bit for bit.
-// Pre-summing the kept layers reassociates the float sum and misses.
-#[test]
-fn a_patch_the_pose_never_meets_sums_id_34s_later_bounces_bit_for_bit() {
-    use super::bounce::{PosedLaterBounces, PosedRadiance, add_posed_later_bounces};
-    use super::posed_scene::PosedScene;
-    use crate::bake_control::BakeControl;
-    use crate::surface_radiance::{
-        LATER_BOUNCE_COUNT, PatchRadiance, PatchSet, Side, add_later_bounces_keeping,
-    };
-
-    let fixture = crate::fixture_pipeline::load_fixture("mover-closet");
-    let ctx = RaytracingCtx {
-        bounce_materials: None,
-        bvh: &fixture.bvh,
-        primitives: &fixture.primitives,
-        geometry: &fixture.geometry,
-    };
-    let patches = PatchSet::try_build(&fixture.geometry).expect("static patches");
-    // Every side lit differently, so the later bounces carry values whose
-    // float sum depends on its order.
-    let mut bounce_one = PatchRadiance::zeroed(patches.len());
-    for patch in 0..patches.len() as u32 {
-        for side in Side::BOTH {
-            let seed = patch as f32 * 0.618_034 + side as usize as f32 * 0.414_213;
-            bounce_one.add_side(
-                patch,
-                side,
-                Vec3::new(seed.fract(), (seed * 1.7).fract(), (seed * 2.3).fract()) * 3.0,
-            );
-        }
-    }
-    let far = solid(vec![box_brush(DVec3::splat(500.0), DVec3::splat(501.0))]);
-    let scene = PosedScene::new(Arc::new(far), Terminus::First).expect("posed patches");
-    let control = BakeControl::unrestricted();
-    let fill = 0.7;
-    for bounces in 1..=LATER_BOUNCE_COUNT {
-        let from = bounces - 1;
-        let mut id34 = bounce_one.clone();
-        let kept = add_later_bounces_keeping(&ctx, &patches, &mut id34, fill, Some(from), &control);
-        assert_eq!(
-            kept.len() as u32,
-            LATER_BOUNCE_COUNT - from,
-            "light_bounces {bounces} keeps id 34's later bounces from {from} on"
-        );
-        let mut posed = PosedRadiance {
-            world: bounce_one.clone(),
-            mover: PatchRadiance::zeroed(scene.patches.len()),
-        };
-        add_posed_later_bounces(
-            &ctx,
-            &patches,
-            &scene,
-            &mut posed,
-            fill,
-            PosedLaterBounces {
-                posed: from,
-                static_tail: &kept,
-            },
-            &control,
-        );
-        assert!(
-            posed.world == id34,
-            "light_bounces {bounces}: an untouched patch sums id 34's later bounces bit for bit"
         );
     }
 }

@@ -451,6 +451,7 @@ mod tests {
             light_ramp_start: 0.0,
             light_ramp_end: 1.0,
             light_bounces: None,
+            light_poses: None,
         }
     }
 

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::OnceLock;
 
-use prl_build_support::{REACH_VERIFY_ENV, prl_build};
+use prl_build_support::{REACH_VERIFY_ENV, copy_dir, fixture_dir, prl_build};
 
 const TEXTURE: &str = "50-free-textures/concrete_stone_021";
 
@@ -246,38 +246,20 @@ fn report(logs: &str) -> Vec<String> {
 
 /// The base map's cold build with a cache: the cache every warm edit starts
 /// from (copied, so edits never see each other's entries) and its log.
-fn base() -> &'static (tempfile::TempDir, String) {
-    static BASE: OnceLock<(tempfile::TempDir, String)> = OnceLock::new();
+fn base() -> &'static (PathBuf, String) {
+    static BASE: OnceLock<(PathBuf, String)> = OnceLock::new();
     BASE.get_or_init(|| {
-        let cache = tempfile::tempdir().expect("create base cache");
-        let logs = build(
-            &map(&Scene::default()),
-            CacheMode::Fill(cache.path()),
-            JOBS,
-            &[],
-        );
+        let cache = fixture_dir("base-cache");
+        let logs = build(&map(&Scene::default()), CacheMode::Fill(&cache), JOBS, &[]);
         (cache, logs)
     })
-}
-
-fn copy_dir(from: &Path, to: &Path) {
-    std::fs::create_dir_all(to).expect("create cache copy");
-    for entry in std::fs::read_dir(from).expect("list cache") {
-        let entry = entry.expect("cache entry");
-        let target = to.join(entry.file_name());
-        if entry.file_type().expect("cache entry type").is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).expect("copy cache entry");
-        }
-    }
 }
 
 /// Warm-build `scene` with `flags` over a copy of the base cache, then cold-
 /// build it; assert the reports match. The warm log.
 fn warm_equals_cold(scene: &Scene, flags: &[&str]) -> String {
     let cache = tempfile::tempdir().expect("create warm cache");
-    copy_dir(base().0.path(), cache.path());
+    copy_dir(&base().0, cache.path());
     let text = map(scene);
     let warm = build(&text, CacheMode::Warm(cache.path()), JOBS, flags);
     let cold = build(&text, CacheMode::Cold, JOBS, flags);

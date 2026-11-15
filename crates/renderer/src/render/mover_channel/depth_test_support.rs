@@ -4,8 +4,8 @@
 
 use postretro_level_format::lightmap::f32_to_f16_bits;
 use postretro_level_format::mover_probe_channel::{
-    DepthRecordParts, MoverDepthRecord, MoverLightRampRecord, MoverProbeChannelParts,
-    MoverProbeChannelSection,
+    DepthRecordParts, MoverDepthRecord, MoverProbeChannelParts, MoverProbeChannelSection,
+    MoverRecord, PoseMark,
 };
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 
@@ -57,21 +57,87 @@ pub(in crate::render) fn stored_depth_section(
             depth: records
                 .into_iter()
                 .map(|(mover_id, probe_index, tiles)| DepthRecordParts {
-                    record: MoverDepthRecord {
+                    record: MoverDepthRecord::termini(
                         mover_id,
                         probe_index,
-                        stored_termini: tiles.each_ref().map(Option::is_some),
-                    },
+                        tiles.each_ref().map(Option::is_some),
+                    ),
                     tiles: tiles.into_iter().flatten().flatten().collect(),
                 })
                 .collect(),
         },
         |_| u64::MAX,
+        |mover_id| Ok::<_, ()>(MoverRecord::termini(mover_id, 0.0, 1.0)),
+    )
+    .unwrap()
+    .expect("depth records make a section")
+}
+
+/// What one pose of a posed depth record holds for its probe.
+#[derive(Clone)]
+pub(in crate::render) enum PosedDepth {
+    Tile(Vec<[u16; 2]>),
+    /// A mid pose marked base (or an unstored terminus): the probe's base.
+    Base,
+    /// An unmarked mid pose: blended across.
+    Across,
+}
+
+/// A mover's pose table for a posed fixture: id, ramp `(s, e)`, knots.
+pub(in crate::render) type PosedMover = (u32, (f32, f32), Vec<f32>);
+
+/// An id-57 section carrying only depth over movers with any number of
+/// poses: each record is `(mover, probe, one PosedDepth per pose)`.
+pub(in crate::render) fn posed_depth_section(
+    movers: &[PosedMover],
+    records: Vec<(u32, u32, Vec<PosedDepth>)>,
+) -> MoverProbeChannelSection {
+    MoverProbeChannelSection::assemble(
+        MoverProbeChannelParts {
+            affinity_dims: [1, 1, 1],
+            direct: Vec::new(),
+            bounce: Vec::new(),
+            depth: records
+                .into_iter()
+                .map(|(mover_id, probe_index, poses)| {
+                    let last = poses.len() - 1;
+                    DepthRecordParts {
+                        record: MoverDepthRecord {
+                            mover_id,
+                            probe_index,
+                            marks: poses
+                                .iter()
+                                .enumerate()
+                                .map(|(pose, state)| match state {
+                                    PosedDepth::Tile(_) => PoseMark::Stored,
+                                    PosedDepth::Base if pose != 0 && pose != last => PoseMark::Base,
+                                    _ => PoseMark::Unmarked,
+                                })
+                                .collect(),
+                        },
+                        tiles: poses
+                            .into_iter()
+                            .filter_map(|state| match state {
+                                PosedDepth::Tile(tile) => Some(tile),
+                                _ => None,
+                            })
+                            .flatten()
+                            .collect(),
+                    }
+                })
+                .collect(),
+        },
+        |_| u64::MAX,
         |mover_id| {
-            Ok::<_, ()>(MoverLightRampRecord {
+            let &(_, (ramp_start, ramp_end), ref knots) = movers
+                .iter()
+                .find(|mover| mover.0 == mover_id)
+                .expect("every record's mover is listed");
+            Ok::<_, ()>(MoverRecord {
                 mover_id,
-                start: 0.0,
-                end: 1.0,
+                ramp_start,
+                ramp_end,
+                knots: knots.clone(),
             })
         },
     )
@@ -79,9 +145,9 @@ pub(in crate::render) fn stored_depth_section(
     .expect("depth records make a section")
 }
 
-/// One moment of a mover's live-tile blend, exactly: `D₀` toward the probe's
-/// base over t′ ∈ [0, 0.5], the base toward `D₁` over [0.5, 1] (owner,
-/// 2026-11-09).
+/// One moment of a two-pose (termini-only) mover's live-tile blend, exactly,
+/// not a mid-pose interval: `D₀` toward the probe's base over t′ ∈ [0, 0.5],
+/// the base toward `D₁` over [0.5, 1] (owner, 2026-11-09).
 pub(in crate::render) fn through_base(d0: f32, base: f32, d1: f32, t: f32) -> f32 {
     if t <= 0.5 {
         d0 + 2.0 * t * (base - d0)

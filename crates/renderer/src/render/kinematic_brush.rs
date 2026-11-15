@@ -1083,6 +1083,10 @@ fn mover_reaches_mirror(
 }
 
 #[cfg(test)]
+#[path = "kinematic_brush_backface_tests.rs"]
+mod backface_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use postretro_level_format::geometry::{FaceMeta, Vertex};
@@ -1395,10 +1399,12 @@ mod tests {
         assert!(no_cube_total <= 16);
     }
 
-    // Mover fragments weigh probes behind them with the smooth, floored
-    // backface form ((dot + 1) / 2)⁸ + floor on both SH reads, and that form
-    // never weighs a probe 0 (ip-372 lever 5; owner rulings,
-    // mover-light-flow--probe-channel).
+    // Mover fragments weigh probes with the smooth, floored backface form on
+    // both SH reads: a ramp of the probe's signed distance from the surface
+    // point, 0.4 cell wide, with the lookup lifted 0.4 cell, and that form
+    // never weighs a probe 0 (ip-372 levers 3 and 5; owner Ruling A,
+    // mover-light-flow--mid-travel-poses Amendment 2). The form's values are
+    // proven on the GPU in `backface_tests`.
     #[test]
     fn mover_sh_reads_take_the_smooth_floored_backface_weight() {
         let source = composed_shader_source();
@@ -1417,16 +1423,20 @@ mod tests {
         assert!(floor > 0.0, "the smooth form's floor stays non-zero");
         assert_eq!(floor, 0.03, "the floor is the depth weight's 0.03");
         for line in [
-            "let wrap = (cosine + 1.0) * 0.5;",
-            "let wrap_2 = wrap * wrap;",
-            "let wrap_4 = wrap_2 * wrap_2;",
-            "return wrap_4 * wrap_4 + SH_BACKFACE_SMOOTH_FLOOR;",
+            "const SH_MOVER_LOOKUP_OFFSET_CELLS: f32 = 0.4;",
+            "const SH_MOVER_BACKFACE_RAMP_CELLS: f32 = SH_MOVER_LOOKUP_OFFSET_CELLS;",
+            "    const SH_NORMAL_OFFSET_M: f32 = SH_MOVER_LOOKUP_OFFSET_CELLS;",
+            "return r * r * (3.0 - 2.0 * r) + SH_BACKFACE_SMOOTH_FLOOR;",
         ] {
-            assert!(
-                source.contains(line),
-                "the smooth form's eighth power: {line}"
-            );
+            assert!(source.contains(line), "the ruled smooth form: {line}");
         }
+        assert_eq!(
+            source
+                .matches("sh_receiver_lookup_lift = dot(offset_world - world_pos, geo_normal);")
+                .count(),
+            2,
+            "both SH reads record their lookup's lift before reading"
+        );
     }
 
     #[test]

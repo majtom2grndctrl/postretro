@@ -1,6 +1,7 @@
 // Bake-only surface radiance cache: patches on static faces that the SH probe gather reads.
 // See: context/lib/build_pipeline.md §Compiler pipeline
 
+mod bake_time;
 mod bounce;
 mod gather;
 mod layer;
@@ -32,7 +33,6 @@ pub(crate) use patches::{Patch, PatchCountExceeded, PatchSet, Side};
 pub(crate) use reach::PatchReachIndex;
 #[cfg(test)]
 pub(crate) use reach::REACH_INDEX_BYTES_PER_PATCH;
-#[cfg(test)]
 pub(crate) use stage::MoverBounceOutcome;
 #[cfg(test)]
 pub(crate) use stage::bake_sh_base;

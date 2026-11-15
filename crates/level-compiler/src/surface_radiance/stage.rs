@@ -3,6 +3,7 @@
 
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 
+use super::bake_time::BakeTimeRecord;
 use super::bounce::{add_later_bounces_keeping, later_bounce_layers, later_bounce_progress_units};
 use super::gather::{PatchGather, PatchLookup};
 use super::layer::LayerKeys;
@@ -17,12 +18,13 @@ use crate::light_namespaces::StaticBakedLights;
 #[cfg(test)]
 use crate::mover_probe_channel::PosedBounce;
 use crate::mover_probe_channel::{
-    BounceMemo, MoverBounceBake, MoverBounceJob, MoverBounceRequest, MoverBounceStates, MoverSlot,
-    StaticBounce, StaticTail, bake_mover_bounce,
+    AbsentBounceMemo, AbsentLaterBounces, HitReduction, MoverAbsentDepth, MoverBounceBake,
+    MoverBounceJob, MoverBounceRequest, MoverBounceStates, MoverPoseBounces, PoseLookup, PoseMemo,
+    StaticBounce, bake_mover_bounce, poses_progress_units,
 };
 use crate::sh_bake::{
-    GatheredVolume, ProbeDepthTiles, ProbeGridLayout, RadianceSource, ShBakeCtx, ShConfig,
-    animation_tables, bake_sh_volume_over, probe_grid_layout, static_light_refs,
+    GatheredVolume, ProbeDepthTiles, RadianceSource, ShBakeCtx, ShConfig, animation_tables,
+    bake_sh_volume_over, probe_grid_layout, static_light_refs,
 };
 use crate::texel_footprint::EmbeddedEmitters;
 
@@ -61,6 +63,12 @@ pub(crate) struct MoverBounceOutcome {
     /// The bake stopped past the tile range before every job ran: the jobs
     /// from there on hold no states, so the depth they carry is unknown.
     pub(crate) stopped: bool,
+    /// One per production job, in request order: the posed bounces each
+    /// pose holds, served or baked.
+    pub(crate) pose_bounces: Vec<MoverPoseBounces>,
+    /// Id 34's bake time: this build's own when it baked id 34, else the
+    /// time recorded under its volume key, else `None`.
+    pub(crate) sh_base_bake_time: Option<std::time::Duration>,
     /// Each pose's re-bake, when the request keeps them: the full re-bake.
     #[cfg(test)]
     pub(crate) poses: Vec<PosedBounce>,
@@ -93,144 +101,30 @@ pub(crate) fn bake_sh_base(
     base
 }
 
-/// The jobs the memo holds, by job, and the jobs left to bake.
-struct MemoLookup<'r, 'c> {
-    memo: Option<BounceMemo<'c>>,
-    found: Vec<Option<MoverBounceStates>>,
-    keys: Vec<Option<crate::cache::CacheKey>>,
-    pending: Vec<&'r MoverBounceJob>,
-}
-
-impl<'r, 'c> MemoLookup<'r, 'c> {
-    /// Read every job's memo under id 34's volume key, when a cache is open
-    /// and the request is production's. Logs one `[cache]` line and one line
-    /// per mover. The tile range rides that key, so no hit was stored under
-    /// another range; one written before past-range movers stopped being
-    /// memoized keeps one depth record past it, as the bake would, and fails
-    /// the build by name.
-    fn new(
-        movers: &'r MoverBounceRequest,
-        volume: Option<&VolumeCache<'c>>,
-        ctx: &ShBakeCtx<'_>,
-        layout: &ProbeGridLayout,
-    ) -> Self {
-        let memo = volume
-            .filter(|_| !movers.keep_poses)
-            .map(|volume| BounceMemo::new(volume.cache, &volume.key, movers.uncompressed));
-        let mut lookup = Self {
-            memo,
-            found: Vec::with_capacity(movers.jobs.len()),
-            keys: Vec::with_capacity(movers.jobs.len()),
-            pending: Vec::new(),
-        };
-        for job in &movers.jobs {
-            let key = lookup
-                .memo
-                .as_ref()
-                .map(|memo| memo.key(job.bounces, &job.scenes, ctx.bounce_materials));
-            let found = lookup
-                .memo
-                .as_ref()
-                .zip(key.as_ref())
-                .and_then(|(memo, key)| memo.get(key, job.mover_id, layout))
-                .map(|mut states| {
-                    states.stop_depth_past_range(movers.depth_cap);
-                    states
-                });
-            if lookup.memo.is_some() {
-                log::info!(
-                    "[MoverLight] probe channel bounce memo: mover `{}` (#{}) {}",
-                    job.label,
-                    job.mover_id,
-                    if found.is_some() { "hit" } else { "miss" },
-                );
-            }
-            if found.is_none() {
-                lookup.pending.push(job);
-            }
-            lookup.found.push(found);
-            lookup.keys.push(key);
-        }
-        if lookup.memo.is_some() {
-            BounceMemo::log_outcome(movers.jobs.len(), movers.jobs.len() - lookup.pending.len());
-        }
-        lookup
-    }
-
-    /// Whether a pending job re-bakes radiance, which needs the patches'
-    /// bounce one; a job at `light_bounces` 0 traces depth alone.
-    fn needs_radiance(&self) -> bool {
-        self.pending.iter().any(|job| job.bounces > 0)
-    }
-
-    /// Every job in request order: held from the memo, or baked.
-    fn slots<'s>(&'s self, movers: &'s MoverBounceRequest) -> Vec<MoverSlot<'s>> {
-        movers
-            .jobs
-            .iter()
-            .zip(&self.found)
-            .map(|(job, found)| match found {
-                Some(states) => MoverSlot::Held(states),
-                None => MoverSlot::Bake(job),
-            })
-            .collect()
-    }
-
-    /// The jobs the memo held, whose bake never runs.
-    fn hits<'j>(&self, movers: &'j MoverBounceRequest) -> impl Iterator<Item = &'j MoverBounceJob> {
-        movers
-            .jobs
-            .iter()
-            .zip(&self.found)
-            .filter(|(_, found)| found.is_some())
-            .map(|(job, _)| job)
-    }
-
-    /// Store each baked job's states and merge them with the memo's, by
-    /// mover id, short of the jobs from the slot the bake stopped at. A
-    /// mover whose depth alone passes the tile range is not stored: the bake
-    /// stopped it one record past the range and the build fails by name.
-    fn finish(mut self, movers: &MoverBounceRequest, baked: MoverBounceBake) -> MoverBounceOutcome {
-        if let Some(stopped_at) = baked.stopped_at {
-            self.found[stopped_at..].fill(None);
-        }
-        for states in baked.movers {
-            let Some(at) = movers
-                .jobs
-                .iter()
-                .position(|job| job.mover_id == states.mover_id)
-            else {
-                continue;
-            };
-            if let (Some(memo), Some(key)) = (self.memo.as_ref(), self.keys[at].as_ref())
-                && !states.depth_past_range(movers.depth_cap)
-            {
-                memo.put(key, &states);
-            }
-            self.found[at] = Some(states);
-        }
-        let mut states: Vec<MoverBounceStates> = self.found.into_iter().flatten().collect();
-        states.sort_by_key(|states| states.mover_id);
-        MoverBounceOutcome {
-            movers: states,
-            stopped: baked.stopped_at.is_some(),
-            #[cfg(test)]
-            poses: baked.poses,
-        }
+/// The bake's states and the lookup's, merged, as the stage hands them on.
+fn outcome(
+    lookup: PoseLookup<'_, '_>,
+    movers: &MoverBounceRequest,
+    baked: MoverBounceBake,
+    sh_base_bake_time: Option<std::time::Duration>,
+) -> MoverBounceOutcome {
+    let stopped = baked.stopped_at.is_some();
+    let pose_bounces = lookup.pose_bounces(movers);
+    let (states, _baked) = lookup.finish(movers, baked);
+    MoverBounceOutcome {
+        movers: states,
+        stopped,
+        pose_bounces,
+        sh_base_bake_time,
+        #[cfg(test)]
+        poses: _baked.poses,
     }
 }
 
-/// Id 34's later bounces the pending jobs keep past their posed ones, from
-/// the first any job keeps, held apart from `kept`.
-fn static_tail(
-    jobs: &[&MoverBounceJob],
-    fill: f32,
-    kept: Vec<Vec<[f32; 3]>>,
-) -> Option<StaticTail> {
-    MoverBounceRequest::static_tail_from(jobs.iter().copied(), fill).map(|first| StaticTail {
-        first,
-        layers: kept,
-    })
+/// Hold id 34's later bounces in the test ledger while they live.
+#[cfg(test)]
+fn hold_absent(absent: Option<&AbsentLaterBounces>) -> Option<crate::live_bytes::Held> {
+    absent.map(|absent| crate::live_bytes::hold("mover absent later bounces", absent.heap_bytes()))
 }
 
 /// Bake id 34 through the surface radiance cache. Each distinct static
@@ -253,8 +147,10 @@ fn static_tail(
 /// of each layer's reach, then one per patch chunk of each later bounce,
 /// then one per probe, then each mover job's own units
 /// ([`MoverBounceJob::progress_units`]). A volume hit advances id 34's units
-/// at once, less the layers and later bounces the movers re-run; a memo hit
-/// advances its job's.
+/// at once, less the layers and later bounces the movers re-run, and
+/// re-publishes the total with each pose at the count its memo lookup
+/// resolves; a mover whose every pose hits advances at once, and a held pose
+/// of a mover with a miss as it reads back.
 ///
 /// The gather's hits also bin into each valid probe's depth tile, kept when
 /// it changes the probe's visibility, at most `tile_cap` per level
@@ -262,16 +158,26 @@ fn static_tail(
 /// entry; the caller logs their kept and dropped counts once, after mover
 /// depth reserves its share of the range.
 ///
-/// Then the mover probe channel's bounce and depth bake runs for every
-/// mover `movers` names whose memo, keyed on this volume's key, misses:
-/// over the same patches while they live, before the patch cache drops, so
-/// a cold build drops it once, after the mover bake. On a volume miss it
+/// Then the mover probe channel's bounce and depth bake runs for every pose
+/// of the movers `movers` names whose memo, keyed on this volume's key,
+/// misses ([`PoseLookup`]): over the same patches while they live, before
+/// the patch cache drops, so a cold build drops it once, after the mover
+/// bake. Only a volume hit reads pose memos: every pose key folds the
+/// volume's, so on a volume miss every pose bakes and is written. Each
+/// mover reduces once all its poses resolve. On a volume miss it
 /// reads the bounce one this bake summed, kept before the later bounces add
-/// to it, and the later bounces its movers keep past their posed ones; on a
-/// hit no patch cache exists, so it sums the cached layers over the gate's
-/// patch set and gathers those later bounces afresh. A mover at
-/// `light_bounces` 0 needs neither. An empty request keeps nothing extra
-/// and bakes today's bytes.
+/// to it, and, when a mover reads them ([`AbsentLaterBounces::needed_by`]),
+/// every later bounce this bake gathered, kept apart and memoized under the
+/// volume's key ([`AbsentBounceMemo`]). On a hit no patch cache exists, so
+/// it sums the cached layers over the gate's patch set and reads those
+/// later bounces from their memo, gathering them afresh only on its miss. A
+/// mover at `light_bounces` 0 needs neither. An empty request keeps nothing
+/// extra and bakes today's bytes.
+///
+/// A build that bakes id 34 times it, layers to gather without the movers,
+/// and records that time under the volume's key ([`BakeTimeRecord`]); a
+/// volume hit reads the recorded time. Either is handed on for the Build
+/// Summary's `--release` projection.
 // `bake_sh_base`'s inputs plus the request.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bake_sh_base_with_movers(
@@ -305,9 +211,10 @@ pub(crate) fn bake_sh_base_with_movers(
     let bounce_units = later_bounce_progress_units(patches.len(), bounce_fill);
     let volume_units = shading_units + bounce_units + layout.total_probes();
     let valid_probes = layout.validity.iter().filter(|&&valid| valid != 0).count();
-    let patch_count = patches.len();
-    let job_units =
-        |job: &MoverBounceJob| job.progress_units(valid_probes, patch_count, bounce_fill);
+    let job_units = |job: &MoverBounceJob| job.progress_units(valid_probes, &patches, bounce_fill);
+    let slot_units = |job: &MoverBounceJob, poses: &[_]| {
+        poses_progress_units(job, poses, valid_probes, &patches, bounce_fill, |_| true)
+    };
     control.publish_total(volume_units + movers.jobs.iter().map(job_units).sum::<usize>());
 
     // An empty grid gathers nothing, so it caches nothing either.
@@ -347,18 +254,50 @@ pub(crate) fn bake_sh_base_with_movers(
         ];
         #[cfg(test)]
         crate::live_bytes::phase("volume load");
-        let lookup = MemoLookup::new(movers, Some(volume), ctx, &layout);
+        let lookup = PoseLookup::new(
+            movers,
+            Some(PoseMemo::new(
+                volume.cache,
+                &volume.key,
+                movers.uncompressed,
+            )),
+            ctx.bounce_materials,
+            &layout,
+            &patches,
+            Some(&HitReduction {
+                absent: MoverAbsentDepth::new(&section, &depth_tiles),
+                depth_cap: movers.depth_cap,
+            }),
+        );
+        // The mover-absent later bounces are read only when a pending job
+        // re-bakes radiance and needs them. Where some job reads them but
+        // none is pending, their memo is still marked used, so eviction
+        // spares it for the next mover edit.
+        let absent_memo = AbsentLaterBounces::needed_by(&movers.jobs, bounce_fill)
+            .then(|| AbsentBounceMemo::new(volume.cache, &volume.key));
+        let reads_absent = lookup.needs_radiance()
+            && AbsentLaterBounces::needed_by(lookup.pending.iter().copied(), bounce_fill);
+        if let Some(memo) = absent_memo.as_ref().filter(|_| !reads_absent) {
+            memo.mark_used();
+        }
+        let absent_memo = absent_memo.filter(|_| reads_absent);
         // The movers re-run the layers for bounce one, and id 34's later
-        // bounces for the ones they keep, and those advance as they run.
-        let tail_from =
-            MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)
-                .filter(|_| lookup.needs_radiance());
+        // bounces when they read them, and those advance as they run; a
+        // memo hit on the later bounces advances theirs at once.
         let rerun = if lookup.needs_radiance() {
-            shading_units + if tail_from.is_some() { bounce_units } else { 0 }
+            shading_units
+                + if absent_memo.is_some() {
+                    bounce_units
+                } else {
+                    0
+                }
         } else {
             0
         };
-        control.advance(volume_units - rerun + lookup.hits(movers).map(job_units).sum::<usize>());
+        // A pose a `high` entry serves holds more bounces than the build
+        // bakes: the total counts each pose at the count it resolves at.
+        control.publish_total(volume_units + lookup.total_units(movers, slot_units));
+        control.advance(volume_units - rerun + lookup.held_units(movers, slot_units));
         let baked = {
             let bounce_one = lookup.needs_radiance().then(|| {
                 let layer_cache = caches.as_ref().map(|(layers, _)| layers);
@@ -373,24 +312,36 @@ pub(crate) fn bake_sh_base_with_movers(
                 PatchRadiance::sum(patches.len(), &plan, &resolved)
             });
             let bounce_one = bounce_one.unwrap_or_else(|| PatchRadiance::zeroed(0));
-            let tail = tail_from.map(|from| {
-                later_bounce_layers(
-                    &ctx.ray_ctx(),
-                    &patches,
-                    &bounce_one,
-                    bounce_fill,
-                    from,
-                    control,
-                )
+            let absent = absent_memo.as_ref().map(|memo| {
+                let cached = memo.get(patches.len());
+                if cached.is_some() {
+                    control.advance(bounce_units);
+                }
+                cached.unwrap_or_else(|| {
+                    let started = std::time::Instant::now();
+                    let absent = AbsentLaterBounces {
+                        layers: later_bounce_layers(
+                            &ctx.ray_ctx(),
+                            &patches,
+                            &bounce_one,
+                            bounce_fill,
+                            0,
+                            control,
+                        ),
+                    };
+                    log::info!(
+                        "[MoverLight] probe channel: id 34's {} later bounce(s) over {} static \
+                         patch(es) re-traced for the movers, {:.1} s",
+                        absent.layers.len(),
+                        patches.len(),
+                        started.elapsed().as_secs_f64()
+                    );
+                    memo.put(&absent, patches.len());
+                    absent
+                })
             });
-            let tail = tail.and_then(|kept| static_tail(&lookup.pending, bounce_fill, kept));
             #[cfg(test)]
-            let _tail = tail.as_ref().map(|tail| {
-                tail.layers
-                    .iter()
-                    .map(|layer| crate::live_bytes::hold_vec("mover static later bounces", layer))
-                    .collect::<Vec<_>>()
-            });
+            let _absent = hold_absent(absent.as_ref());
             bake_mover_bounce(
                 ctx,
                 &StaticBounce {
@@ -402,10 +353,11 @@ pub(crate) fn bake_sh_base_with_movers(
                     layout: &layout,
                     base: &section,
                     depth_tiles: &depth_tiles,
-                    static_tail: tail.as_ref(),
+                    absent: absent.as_ref(),
                 },
                 &lookup.slots(movers),
                 movers,
+                lookup.memo(),
                 control,
             )
         };
@@ -413,7 +365,8 @@ pub(crate) fn bake_sh_base_with_movers(
         if !movers.is_empty() {
             stage_events::record(stage_events::MOVER_BOUNCE_DONE);
         }
-        let outcome = lookup.finish(movers, baked);
+        let recorded = BakeTimeRecord::new(volume.cache, &volume.key).get();
+        let outcome = outcome(lookup, movers, baked, recorded);
         return (
             ShBase {
                 section,
@@ -423,6 +376,9 @@ pub(crate) fn bake_sh_base_with_movers(
         );
     }
 
+    // Id 34's own bake, from its layers to its gather, without the movers':
+    // the time a mover's `--release` bounce bake is projected from.
+    let id34_started = std::time::Instant::now();
     let layers = resolve_layers(
         &ctx.ray_ctx(),
         &patches,
@@ -437,33 +393,42 @@ pub(crate) fn bake_sh_base_with_movers(
     #[cfg(test)]
     crate::live_bytes::phase("sum");
     drop(layers);
-    let lookup = MemoLookup::new(
+    // The pose lookup and the movers' copy of bounce one are mover work:
+    // id 34's recorded time leaves them out.
+    let id34_before_movers = id34_started.elapsed();
+    let lookup = PoseLookup::new(
         movers,
-        caches.as_ref().map(|(_, volume)| volume),
-        ctx,
+        caches
+            .as_ref()
+            .map(|(_, volume)| PoseMemo::new(volume.cache, &volume.key, movers.uncompressed)),
+        ctx.bounce_materials,
         &layout,
+        &patches,
+        None,
     );
-    control.advance(lookup.hits(movers).map(job_units).sum());
     let bounce_one = lookup.needs_radiance().then(|| radiance.clone());
-    let keep_from =
-        MoverBounceRequest::static_tail_from(lookup.pending.iter().copied(), bounce_fill)
-            .filter(|_| lookup.needs_radiance());
+    let keeps_absent = lookup.needs_radiance()
+        && AbsentLaterBounces::needed_by(lookup.pending.iter().copied(), bounce_fill);
+    let id34_resumed = std::time::Instant::now();
     let kept = add_later_bounces_keeping(
         &ctx.ray_ctx(),
         &patches,
         &mut radiance,
         bounce_fill,
-        keep_from,
+        keeps_absent.then_some(0),
         control,
     );
-    let tail = keep_from.and_then(|_| static_tail(&lookup.pending, bounce_fill, kept));
+    let absent = keeps_absent.then_some(AbsentLaterBounces { layers: kept });
+    if let Some(absent) = &absent {
+        log::info!(
+            "[MoverLight] probe channel: id 34's {} later bounce(s) over {} static patch(es) kept \
+             for the movers from its own bake",
+            absent.layers.len(),
+            patches.len()
+        );
+    }
     #[cfg(test)]
-    let _tail = tail.as_ref().map(|tail| {
-        tail.layers
-            .iter()
-            .map(|layer| crate::live_bytes::hold_vec("mover static later bounces", layer))
-            .collect::<Vec<_>>()
-    });
+    let _absent = hold_absent(absent.as_ref());
     #[cfg(test)]
     crate::live_bytes::phase("later bounces");
     let patch_cache = PatchCache { patches, radiance };
@@ -492,6 +457,13 @@ pub(crate) fn bake_sh_base_with_movers(
         ),
         crate::live_bytes::hold("probe depth tiles", depth_tiles.heap_bytes()),
     ];
+    let id34_time = id34_before_movers + id34_resumed.elapsed();
+    if let Some((_, volume)) = &caches {
+        BakeTimeRecord::new(volume.cache, &volume.key).put(id34_time);
+        if let Some(absent) = &absent {
+            AbsentBounceMemo::new(volume.cache, &volume.key).put(absent, patch_cache.patches.len());
+        }
+    }
     #[cfg(test)]
     crate::live_bytes::phase("probe gather");
     let baked = {
@@ -507,10 +479,11 @@ pub(crate) fn bake_sh_base_with_movers(
                 layout: &layout,
                 base: &section,
                 depth_tiles: &depth_tiles,
-                static_tail: tail.as_ref(),
+                absent: absent.as_ref(),
             },
             &lookup.slots(movers),
             movers,
+            lookup.memo(),
             control,
         )
     };
@@ -519,14 +492,14 @@ pub(crate) fn bake_sh_base_with_movers(
         stage_events::record(stage_events::MOVER_BOUNCE_DONE);
     }
     #[cfg(test)]
-    drop(_tail);
-    drop(tail);
+    drop(_absent);
+    drop(absent);
     drop(bounce_one);
     drop(patch_cache);
     if let Some((_, volume)) = &caches {
         volume.store(&mut section, &depth_tiles);
     }
-    let outcome = lookup.finish(movers, baked);
+    let outcome = outcome(lookup, movers, baked, Some(id34_time));
     #[cfg(test)]
     crate::live_bytes::phase("volume store");
     (

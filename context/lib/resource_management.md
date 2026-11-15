@@ -237,7 +237,7 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   (`postretro-render-data::material::Material::surface_depth`).
   Surface Depth adds no author-facing material file: authoring is still "drop
   a correctly-named PNG". `materials.toml` (§4.5, decided, not yet built)
-  carries glow strength only. The four values ride in the per-material
+  carries glow strength, not depth. The four values ride in the per-material
   uniform's second 16-byte row. A material whose loaded specular slot is not
   `Rg8Unorm` gets an all-zero row and skips the march entirely.
   `tools/texture-tool` derives its default height terrace count from the same

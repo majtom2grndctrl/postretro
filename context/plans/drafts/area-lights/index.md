@@ -18,12 +18,13 @@ light.
 
 ## Decisions
 - **A polygon area light, not template lights.** A new light type whose emitter
-  is the set of convex polygons formed by its entity's emitting faces. This
-  diverges from the roadmap "surface lights" entry (copies of a light templated
-  across every face of a named texture). It also diverges from the gi-rtx-lite
-  ruling "Emissive bounce: opt-in per material", because opt-in moves from the
-  material to the placement. Both records are updated with this brief. Precedent:
-  id q3map 1999, Source 2 `light_rect`, Godot 4.7 (`research.md` §5).
+  is the set of convex polygons formed by its entity's emitting faces.
+  Precedent: id q3map 1999, Source 2 `light_rect`, Godot 4.7 (`research.md` §5).
+  `light_area` is the light type's first front end. The roadmap "surface lights"
+  entry (template copies of a light across a named texture) is reworded at
+  promotion: it becomes a texture-keyed front end on this light type, for screens,
+  signs and lava. It also takes over the texture-level bounce multiplier, and must
+  reconcile it with "Albedo is physical" (`build_pipeline.md` §Compiler pipeline).
 - **Authoring: a brush entity, `light_area`.** Its brushes compile as static
   world brushwork, like `switch` and `func_group`.
   - Emitting faces are the exposed brush sides whose texture has an `_e` map,
@@ -34,8 +35,7 @@ light.
   brush gives proportionally more light, as in every area-scaled tool
   (`research.md` §5).
   - The entity carries its own `_color` and `light`.
-  - It never reads `Material::emissive_strength` or a texture prefix, since
-    `neon_` is being retired separately.
+  - Its light never reads `Material::emissive_strength` or a texture prefix.
 - **Reach is derived, with an override.** Reach is the distance from the
   polygon at which the bound E ≤ L·A/d² falls below a fixed cutoff. Nothing
   beyond it is lit. `_falloff_range`, measured from the panel, overrides it.
@@ -61,6 +61,9 @@ light.
   - The bounce comes from the light's own surface-radiance patch layer, as for
     every light. Its glow is never also added to the radiance cache, which keeps
     the no-double-count invariant (`context/lib/index.md` §2).
+  - The gi-rtx-lite ruling "Emissive bounce: opt-in per material" stays open.
+    The record gains one line: `light_area` faces are excluded from any
+    emissive bounce, since their light already bounces.
 - **Culls stay sphere-shaped in this brief.** Every reach, shaft and influence
   cull receives a sphere that contains the polygons plus their reach. That keeps
   every exact-skip proof true, so no output byte depends on a cull
@@ -75,6 +78,11 @@ light.
     colour multipliers, on the same frame as its lighting.
   - `_glow` is an authored number, independent of `light`, so a game can pair
     a dim glow with strong cast light, or the reverse.
+  - On a `light_area` face, `_glow` replaces the texture prefix's emissive
+    strength, so a `neon_` texture there does not glow twice.
+  - This is the first per-surface glow scalar. It overrides "no per-surface
+    runtime scalar in v1" (`resource_management.md` §Emissive) for area-light
+    faces only. Prefix glow on every other face is unchanged.
     - Default 4.0, today's `neon_` look, above the bloom threshold.
     - Any value ≥ 0 is accepted, with no upper clamp; 0 is a light with
       unlit faces.
@@ -101,8 +109,10 @@ light.
 - **Non-goals.**
   - Runtime specular, promotion, SDF shadows, two-sided emitters, tight cull
     hulls.
-  - Template `_surface` lights: this brief replaces that roadmap entry.
-  - Retiring `neon_`, which is separate work.
+  - Texture-keyed emission (screens, signs, lava) and the texture-level bounce
+    multiplier. The reworded roadmap entry owns them, on this brief's light type.
+  - Emissive bounce from ordinary emissive faces, and any change to prefix glow
+    outside `light_area` faces.
   - Texture-coloured emission: the light's colour is the entity's `_color`,
     not the `_e` texels.
 
@@ -174,6 +184,8 @@ Placement, identity and refusals:
   prefix, at `_e` × `_glow`. With `_glow` at 0, 0.5 and 8, the face's emissive
   term scales by that factor, and the room's light does not change. A negative
   `_glow` fails the build. A `_start_inactive` light's faces start dark.
+- [ ] A `neon_` texture on a `light_area` face glows at `_e` × `_glow`. The same
+  texture on a worldspawn face keeps its prefix glow.
 
 ### Manual
 - [ ] Hallway map, recorded in `plan.md`: cold and warm bake time for one 4 × 4 m

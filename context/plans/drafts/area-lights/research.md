@@ -76,6 +76,15 @@ The cloud session's facts hold at `17c2f1e`. This session found five more:
 - Fully lit and fully shadowed texels stay exact 1 and 0, so the nine-probe early-out keeps its meaning.
 - Lattice choice: Ureña sampling for rectangles, which the skylight and light-table cases are, with an Arvo fan for other convex polygons. Store w = cosθ_r per sample, since solid-angle sampling already accounts for distance and the emitter cosine.
 - **Lattice dependence.** The polygon lattice depends on the light and on the receiver (solid angle is per point). So the per-thread point/spot snap in `SoftProbes::new`, keyed by sample count alone, must not serve polygon lights. The receiver-floor sector pairing assumes a sphere offset projected onto the receiver; for a polygon, pair by the sample's projected offset in the same way.
+- **Measured (scratch Monte Carlo, unstratified, 1,500 trials):** a 4 × 4 m panel at 1 m with its x < 0.3 m strip occluded. RMS error of the stored visibility at 32 rays:
+
+  | Receiver | Ratio estimator, solid-angle samples | Projected-solid-angle samples, plain count | Unweighted fraction: bias |
+  |---|---|---|---|
+  | Floor under the centre | 0.085 | 0.086 | +0.024 |
+  | Floor 1.5 m off-centre | 0.046 | 0.058 | −0.073 |
+  | Wall facing the panel, 0.5 m below it | 0.070 | 0.062 | +0.042 |
+
+  The two weighted options match within sampling noise, and neither shows a bias above 0.013 even at 4 rays. The unweighted fraction is systematically wrong by up to 8% in the penumbra, which no ray count fixes. Probes have no receiver normal, so they need solid-angle samples whichever option the texels use. The ratio estimator therefore lets one closed-form sampler serve texels and probes; projected-solid-angle sampling would add a second, iterative one.
 - No published per-texel count exists for large area lights. Weighting spends each ray where the light is, and stratified penumbra noise falls as about N^-0.75, so the global escalated count (32) is the starting point. The hallway noise row confirms it; a shortfall is answered by better sample placement, not a per-type count.
 
 ## 3. SH projection for probe bakes

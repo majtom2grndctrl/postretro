@@ -85,14 +85,9 @@ Read against `ip-questions.md` §Design. Elements are quoted from the claim.
   - Its weights are each sample's share of the unshadowed integrand (option a), or there are none (option b), never smoothness-driven pattern weights.
   - It bakes offline, per texel.
   - It takes any convex polygon, not only rectangles.
-- Option (b) sits furthest from the family.
 - The examiner cited Ureña 2013, LTC 2016, Kok 1992, Crassin's voxel cone tracing, Assarsson 2003 and Disney US20130328875A1. The claims are drawn around that art through cones and voxels.
 
-**Choices that would move the design toward these claims, and stay out of it:**
-- a voxel scene representation;
-- a sample or cone count derived from the light's angular size;
-- a two-axis sample grid whose zero-weight samples split as the light grows;
-- describing samples as cones.
+**Claim elements the design does not use:** a voxel scene representation; a sample or cone count derived from the light's angular size; a two-axis sample grid whose zero-weight samples split as the light grows; cones. The design's choices rest on image quality and bake cost (`research.md` §2); this list records distance, not a constraint.
 
 ## Readings by piece
 

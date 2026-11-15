@@ -50,7 +50,25 @@ For scale: the PRL is 1,128,432,757 B (1,076 MiB). Id 22 is 490 MiB, id 42
 figure is the body total; the 20 MiB of metadata is not removable while
 streaming reads it.
 
-After: see the build's after-bake table (to be filled)
+### After the flag
+
+Same map and command with the `--whole-load-sh` build (warm cache from the
+before bake). Ids 27 and 45 are absent on this map.
+
+| Id | Before | Default (bodies omitted) | `--whole-load-sh` |
+| --- | ---: | ---: | ---: |
+| 34 | 35,751,680 | 20,728,308 | 35,751,684 |
+| 35 | 15,023,452 | 80 | 15,023,456 |
+| 41 | 6,264,722 | 553,899 | 6,264,723 |
+| File | 1,128,432,757 (1,076.16 MiB) | **1,092,675,190 (1,042.06 MiB)** | 1,128,432,766 |
+
+- The default bake is 35,757,567 B (34.10 MiB, 3.2%) smaller. The only other
+  growth is the 9 bytes of body-presence fields.
+- The default and `--whole-load-sh` outputs differ only in ids 34, 35 and 41.
+  Id 50 keeps its size; its bytes change only because it records the bumped
+  source versions.
+- Warm rebake times: default 315 s (SH base re-gathered once after the format
+  bump), then `--whole-load-sh` 105 s; packing 34 s and 33 s.
 
 ## Decision
 

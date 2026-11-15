@@ -107,6 +107,9 @@ impl TriggerFireReport {
 #[derive(Debug, Default)]
 pub struct TriggerSystem {
     occupants: crate::trigger_occupants::TriggerOccupants,
+    /// Counted occupants per volume after the last trigger stage, for the
+    /// dev-tools Triggers tab.
+    effective_counts: BTreeMap<EntityId, usize>,
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
     warned_duplicate_players: HashSet<PlayerId>,
     direct_commands: crate::trigger_direct_commands::DirectCommandHandles,
@@ -137,6 +140,7 @@ impl TriggerSystem {
 
     pub fn clear(&mut self) {
         self.occupants.clear();
+        self.effective_counts.clear();
         self.paired_enters.clear();
         self.warned_duplicate_players.clear();
     }
@@ -156,11 +160,23 @@ impl TriggerSystem {
     /// After this tick's trigger stage: each volume the capture's counted
     /// players occupy, with their pawns.
     pub fn counted_volumes(
-        &self,
+        &mut self,
         capabilities: &crate::sim::player_life::TriggerStageCapabilities,
     ) -> Vec<(EntityId, Vec<EntityId>)> {
-        self.occupants
-            .counted_volumes(&capabilities.occupants, &capabilities.pawns)
+        let volumes = self
+            .occupants
+            .counted_volumes(&capabilities.occupants, &capabilities.pawns);
+        self.effective_counts.clear();
+        self.effective_counts
+            .extend(volumes.iter().map(|(volume, inside)| (*volume, inside.len())));
+        volumes
+    }
+
+    /// Counted occupants of `trigger` after the last trigger stage: raw
+    /// occupancy filtered by the effective rule, as `occupancy.tag` counts them.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub fn counted_occupancy(&self, trigger: EntityId) -> usize {
+        self.effective_counts.get(&trigger).copied().unwrap_or(0)
     }
 
     pub fn paired_enters(&self) -> &BTreeSet<(EntityId, PlayerId)> {

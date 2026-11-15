@@ -129,6 +129,8 @@ pub struct TriggerDiagnosticsRow {
     pub latched: bool,
     pub rearm_remaining_ms: f32,
     pub occupancy: usize,
+    /// Occupants the effective rule counts: what `occupancy.tag` sees.
+    pub effective_occupancy: usize,
     pub on_fire: String,
     pub on_fire_resolved: bool,
     pub on_exit: String,
@@ -1022,7 +1024,7 @@ fn draw_triggers_tab(ui: &mut egui::Ui, trigger_rows: &[TriggerDiagnosticsRow]) 
 
             egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                 egui::Grid::new("trigger_diagnostics_grid")
-                    .num_columns(11)
+                    .num_columns(12)
                     .striped(true)
                     .show(ui, |ui| {
                         ui.strong("Name");
@@ -1033,6 +1035,7 @@ fn draw_triggers_tab(ui: &mut egui::Ui, trigger_rows: &[TriggerDiagnosticsRow]) 
                         ui.strong("Latched");
                         ui.strong("Rearm");
                         ui.strong("Occupancy");
+                        ui.strong("Effective");
                         ui.strong("On fire");
                         ui.strong("On exit");
                         ui.strong("State");
@@ -1047,6 +1050,7 @@ fn draw_triggers_tab(ui: &mut egui::Ui, trigger_rows: &[TriggerDiagnosticsRow]) 
                             ui.label(row.latched.to_string());
                             ui.label(format!("{:.1} ms", row.rearm_remaining_ms));
                             ui.label(row.occupancy.to_string());
+                            ui.label(row.effective_occupancy.to_string());
                             ui.label(trigger_event_status_label(
                                 &row.on_fire,
                                 row.on_fire_resolved,

@@ -3692,6 +3692,158 @@ export function setupLevel(): LevelManifest {
 }
 ```
 
+### Session players
+
+`getGameState().session` tells every machine who is in the session. The host
+works each player out once per tick; clients receive the host's values.
+
+Each player has one status:
+
+| Status | Meaning |
+|---|---|
+| `loading` | Connected, with no live pawn: still loading the level, or waiting to come back in after a level change. |
+| `inPlay` | Pawn spawned and counted: a pawn whose life state declares `occupancy`, or an undeclared pawn whose health is above zero. |
+| `down` | Pawn spawned but not counted: dead, or in a life state without `occupancy`. |
+| `reconnecting` | Disconnected, with the seat held for their return. |
+
+`session.playerCounts` holds readonly Numbers: `loading`, `inPlay`, `down`,
+`reconnecting`, and `connected` (`loading + inPlay + down`). Gameplay conditions
+read these. They read 0 on a machine with no session level, which includes the
+frontend menu and its backdrop.
+
+`session.players` is a list for display, not for gameplay. It holds one row per
+player in seat order, up to the session's capacity, and every machine holds the
+same rows. Each row has:
+
+| Field | Type | Notes |
+|---|---|---|
+| `present` | Boolean | `false` for a row with no player. |
+| `name` | String | The player's name; `Player N` when it has none, N being the seat number plus 1. |
+| `status` | `"loading" \| "inPlay" \| "down" \| "reconnecting"` | As above. |
+| `isLocal` | Boolean | `true` on this machine's own row. |
+
+All of these are engine state: a script `setState` on any of them warns and
+changes nothing.
+
+#### Showing the list: `forEach`
+
+`forEach(list, (row, i) => widget)` from `postretro/ui` builds the widget once
+per row, up to the list's capacity, and returns the rows as an array for a
+container's `children`. In Luau `i` counts from 1, as `ipairs` does.
+
+- A row shows only while its `present` flag is true and any `visibleWhen` it
+  declares holds too.
+- Every `id` inside a row gets the suffix `.<row>`. A `labelledBy` or
+  `focusNeighbors` that names an id in the same row follows it; one that names
+  an id outside the row is left alone.
+- The tree is built once: players joining and leaving only show and hide rows.
+- `forEach` takes engine lists only, such as `session.players`.
+
+```typescript
+import { getGameState } from "postretro";
+import { HStack, Text, VStack, bindState, forEach, stateEquals } from "postretro/ui";
+
+const { session } = getGameState();
+const roster = VStack({ gap: 4 }, forEach(session.players, (p) =>
+  HStack({ gap: 8 }, [
+    Text({ content: "", bind: bindState(p.name) }),
+    Text({ content: "loading", visibleWhen: stateEquals(p.status, "loading") }),
+    Text({ content: "down", visibleWhen: stateEquals(p.status, "down") }),
+  ])));
+```
+
+```lua
+local UI = require("postretro/ui")
+local session = getGameState().session
+local roster = UI.VStack({ gap = 4 }, UI.forEach(session.players, function(p)
+  return UI.HStack({ gap = 8 }, {
+    UI.Text({ content = "", bind = UI.bindState(p.name) }),
+    UI.Text({ content = "loading", visibleWhen = UI.stateEquals(p.status, "loading") }),
+    UI.Text({ content = "down", visibleWhen = UI.stateEquals(p.status, "down") }),
+  })
+end))
+```
+
+### Occupancy by tag
+
+`getGameState().occupancy.tag(tag)` (`game.occupancy:tag(tag)` in Luau) reads
+two readonly Numbers about the trigger volumes carrying `tag`. A `switch` is a
+trigger volume, so it counts too.
+
+- `occupiedCount`: how many of those volumes have at least one counted player
+  inside.
+- `occupants`: how many distinct counted players stand inside any of them.
+
+A counted player is one in play, so a downed player on a plate holds nothing.
+Arming and latching play no part. Two players on one plate read 1 and 2; one
+player on each of two plates sharing the tag reads 2 and 2.
+
+The engine watches the tags your scripts actually reference: the mod's, plus
+the current level's `setupLevel`. A tag built at run time counts, because the
+engine reads what the scripts evaluated to, not their source text.
+
+- A tag no trigger volume in the level carries reads 0. When a level's
+  `setupLevel` references one, it warns once at install. A mod reference to it
+  stays silent, so a mod-wide counter works on levels that lack its volumes.
+- A tag containing `.` or `:` cannot name a state slot. It warns once and reads
+  nothing.
+- `occupancy` is reserved: a store named `occupancy`, or `occupancy.<anything>`,
+  is rejected at load. A name such as `occupancyBoard` is fine.
+
+Counts and occupancy update once per host tick, before stored values update and
+before crossings run. A set that completes on a tick fires its crossing in that
+frame. Peers must run the same mod files: every machine works out which tags to
+watch from the scripts it runs.
+
+Two plates that must be held together:
+
+```typescript
+const { occupancy } = getGameState();
+onStateCrossing(occupancy.tag("vault-plates").occupiedCount, { above: 1 }, [solve]);
+```
+
+A King-of-the-Hill score that drains while anyone holds the hill (a mod store):
+
+```typescript
+export const hill = defineStore("hill", {
+  control: {
+    type: "number", default: 100, range: [0, 100], network: "shared",
+    accumulate: (t) => runtime.mul(t.dt, runtime.mul(runtime.read(occupancy.tag("hill").occupants), -1)),
+  },
+});
+```
+
+#### Everyone is in
+
+`occupants` never exceeds `inPlay`. A gate that waits for every player in play
+to stand inside, and for nobody to still be loading:
+
+```typescript
+const counts = getGameState().session.playerCounts;
+const room = runtime.read(occupancy.tag("airlock").occupants);
+const inPlay = runtime.read(counts.inPlay);
+onStateCrossing(
+  runtime.and(runtime.eq(runtime.read(counts.loading), 0),
+    runtime.and(runtime.gt(inPlay, 0), runtime.ge(room, inPlay))),
+  [allIn],
+);
+```
+
+```lua
+local counts = getGameState().session.playerCounts
+local room = runtime.read(occupancy:tag("airlock").occupants)
+local inPlay = runtime.read(counts.inPlay)
+UI.onStateCrossing(
+  runtime["and"](runtime.eq(runtime.read(counts.loading), 0),
+    runtime["and"](runtime.gt(inPlay, 0), runtime.ge(room, inPlay))),
+  { allIn })
+```
+
+A downed player outside does not hold the gate shut. A player who joins after
+it opens turns it false until they come in too. After a level change it stays
+closed until the last client has loaded and stands inside. With nobody in play
+it never opens.
+
 ---
 
 ## Constraints and errors

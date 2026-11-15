@@ -938,3 +938,72 @@ fn dev_map_declares_families_and_matches_across_runtimes() {
     }
     assert_eq!(lowered[0], lowered[1], "TypeScript and Luau lower the same crossings");
 }
+
+fn workspace_file(path: &str) -> String {
+    std::fs::read_to_string(super::teleporters_surface_tests::workspace().join(path))
+        .unwrap_or_else(|error| panic!("{path}: {error}"))
+}
+
+// U2: the modder reference documents the counts, the player list, `forEach`,
+// the `occupancy` family and the all-players pattern.
+#[test]
+fn scripting_reference_documents_session_players_and_occupancy() {
+    let docs = workspace_file("docs/scripting-reference.md");
+    for needle in [
+        "### Session players",
+        "session.playerCounts",
+        "session.players",
+        "forEach(list, (row, i) => widget)",
+        "### Occupancy by tag",
+        "occupancy.tag(tag)",
+        "occupiedCount",
+        "#### Everyone is in",
+        "runtime.ge(room, inPlay)",
+    ] {
+        assert!(docs.contains(needle), "docs/scripting-reference.md lacks `{needle}`");
+    }
+}
+
+// U3: the Triggers tab's effective-occupancy column is dev-tools only: the
+// field and its header live in the dev-tools diagnostics module and the
+// dev-tools debug panel, which their crates compile only with the feature.
+#[test]
+fn effective_occupancy_column_is_dev_tools_only() {
+    let root = super::teleporters_surface_tests::workspace();
+    let mut namers = Vec::new();
+    let mut stack = vec![root.join("crates")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name != "target") {
+                    stack.push(path);
+                }
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && !path.ends_with("startup/coop_activation_tests.rs")
+            {
+                let source = std::fs::read_to_string(&path).unwrap();
+                if source.contains(".effective_occupancy") || source.contains("effective_occupancy:")
+                {
+                    namers.push(path.strip_prefix(&root).unwrap().to_path_buf());
+                }
+            }
+        }
+    }
+    namers.sort();
+    assert_eq!(
+        namers,
+        vec![
+            std::path::PathBuf::from("crates/postretro/src/trigger_diagnostics.rs"),
+            std::path::PathBuf::from("crates/renderer/src/render/debug_ui/mod.rs"),
+        ]
+    );
+    assert!(
+        workspace_file("crates/postretro/src/main.rs")
+            .contains("#[cfg(feature = \"dev-tools\")]\nmod trigger_diagnostics;")
+    );
+    assert!(
+        workspace_file("crates/renderer/src/render/mod.rs")
+            .contains("#[cfg(feature = \"dev-tools\")]\nmod debug_ui;")
+    );
+}

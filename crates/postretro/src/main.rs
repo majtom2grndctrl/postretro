@@ -12670,9 +12670,20 @@ mod tests {
             snapshot.get("session.playerCounts.inPlay"),
             Some(&SlotValue::Number(0.0))
         );
+        // Every player-list row field has a default, so each row slot appears.
+        let list_slots: usize = postretro_entities::engine_state_catalog::engine_state_catalog()
+            .unwrap()
+            .lists()
+            .iter()
+            .map(|list| list.capacity * list.fields.len())
+            .sum();
+        assert_eq!(
+            snapshot.get("session.players.0.status"),
+            Some(&SlotValue::Enum("loading".to_string()))
+        );
         assert_eq!(
             snapshot.len(),
-            72,
+            72 + list_slots,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

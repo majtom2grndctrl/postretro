@@ -5,9 +5,10 @@
 //! the current `MOVER_PROBE_CHANNEL_EPOCH` (safe for a two-pose section only,
 //! which the test asserts; why: `mover_probe_channel_prl_parity`'s module
 //! doc), and its SH sections are upgraded to the body-presence format with
-//! bodies present (`sh_body::pre_flag`). Each build loads under `off` and under `sync-proof` with every
-//! cluster resident, hands every mover no state, then t′ = 0 and t′ = 1, and
-//! reads back every probe either build's channel touches.
+//! bodies present (`sh_body::pre_flag`). Each build loads under `off` and
+//! under `sync-proof` with every cluster resident, hands every mover no state,
+//! then t′ = 0 and t′ = 1, and reads back every probe either build's channel
+//! touches.
 //!
 //! The channel's contribution is compared build against build with the base
 //! taken out as C10 takes it out ([`super::mover_channel_modes`]): the
@@ -74,7 +75,7 @@ fn at_this_epoch(path: &str) -> std::path::PathBuf {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("baseline");
-    let out = std::env::temp_dir().join(format!("{stem}-at-current-epoch.prl"));
+    let out = std::env::temp_dir().join(format!("{stem}-current-format.prl"));
     std::fs::write(&out, prl).expect("write the relabelled baseline");
     out
 }

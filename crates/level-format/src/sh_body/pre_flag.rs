@@ -1,8 +1,7 @@
-// Test support: convert a PRL between the pre-flag SH section format and the
-// current one. Baseline compilers from before the body-presence field still
-// bake the reference PRLs some parity tests compare against.
-// See: context/lib/build_pipeline.md §PRL section IDs
+// Test support: converts a PRL between the pre-flag SH section format and the current one.
+// See: context/lib/testing_guide.md §3 (Slow / cold-bake suites)
 
+use std::collections::HashSet;
 use std::io::Cursor;
 
 use super::{FlagLayout, ShBodyPresence, flag_layout, invalid_data, read_field};
@@ -16,8 +15,10 @@ use crate::{SectionBlob, SectionId, read_container, section_data_from_bytes, wri
 /// a present flag (1) is inserted where its old fixed header ended. Id 50's
 /// source records for those sections take the bumped versions. Every other
 /// section, the table order and every table version are kept, and the
-/// container is rewritten with [`write_prl`]. Fails unless each of the five
-/// sections (and each id-50 source naming one) is at its pre-flag version.
+/// container is rewritten with [`write_prl`]. Fails when one of the five
+/// sections (or an id-50 source naming one) is not at its pre-flag version,
+/// when the table lists a section id twice, or when id 50 lists id 57 as a
+/// source (see [`downgrade_to_pre_flag_prl`]).
 pub fn upgrade_pre_flag_prl(prl: &[u8]) -> crate::Result<Vec<u8>> {
     rewrite(prl, Direction::Upgrade)
 }
@@ -25,6 +26,10 @@ pub fn upgrade_pre_flag_prl(prl: &[u8]) -> crate::Result<Vec<u8>> {
 /// The inverse of [`upgrade_pre_flag_prl`]: a current PRL whose five SH
 /// sections all carry their bodies, rewritten in the pre-flag format. Fails
 /// on an omitted body, which the pre-flag format cannot express.
+///
+/// Both directions refuse a PRL whose id 50 lists id 57 as a source. Callers
+/// comparing against an older compiler relabel id 57's epoch, and id 50's
+/// record of that epoch would not follow. The dev maps keep id 57 resident.
 pub fn downgrade_to_pre_flag_prl(prl: &[u8]) -> crate::Result<Vec<u8>> {
     rewrite(prl, Direction::Downgrade)
 }
@@ -49,7 +54,16 @@ impl Direction {
 fn rewrite(prl: &[u8], direction: Direction) -> crate::Result<Vec<u8>> {
     let meta = read_container(&mut Cursor::new(prl))?;
     let mut blobs = Vec::with_capacity(meta.sections.len());
+    let mut seen = HashSet::with_capacity(meta.sections.len());
     for entry in &meta.sections {
+        // Sections resolve by id (first match), so a repeated id would copy
+        // the first one's bytes into both entries.
+        if !seen.insert(entry.section_id) {
+            return Err(invalid_data(format!(
+                "section {} is listed twice in the section table",
+                entry.section_id
+            )));
+        }
         let data = section_data_from_bytes(prl, &meta, entry.section_id)?
             .expect("a table entry resolves to its own section");
         let section = SectionId::from_u32(entry.section_id);
@@ -143,6 +157,22 @@ fn rewrite_cluster_sources(data: &[u8], direction: Direction) -> crate::Result<V
     let mut section =
         ClusterShPayloadsSection::from_metadata_bytes(&data[..metadata_len], data.len() as u64)
             .map_err(id50_error)?;
+    // Callers relabel id 57's epoch when comparing across compilers; id 50's
+    // record of that epoch would keep the old one.
+    let mover_channel = SectionId::MoverProbeChannel as u32;
+    if section
+        .sources
+        .iter()
+        .any(|s| s.section_id == mover_channel)
+    {
+        let subject = match direction {
+            Direction::Upgrade => "baseline",
+            Direction::Downgrade => "PRL",
+        };
+        return Err(invalid_data(format!(
+            "{subject} streams id 57 through id 50; the epoch relabel cannot follow it"
+        )));
+    }
     for source in &mut section.sources {
         let Some(layout) = SectionId::from_u32(source.section_id).and_then(flag_layout) else {
             continue;
@@ -306,6 +336,52 @@ mod tests {
         let current = prl(&[(section as u32, 1, flagged(section, ShBodyPresence::Omitted))]);
         let err = downgrade_to_pre_flag_prl(&current).unwrap_err();
         assert!(err.to_string().contains("bodies only"), "{err}");
+    }
+
+    #[test]
+    fn both_directions_refuse_a_section_id_listed_twice() {
+        let section = SectionId::DirectShDeltaVolumes;
+        let current = flagged(section, ShBodyPresence::Present);
+        let twice = prl(&[
+            (section as u32, 1, current.clone()),
+            (section as u32, 1, current),
+        ]);
+        let err = downgrade_to_pre_flag_prl(&twice).unwrap_err();
+        assert!(err.to_string().contains("listed twice"), "{err}");
+        let pre_flag = prl(&[(1, 3, vec![1, 2, 3]), (1, 3, vec![4, 5, 6])]);
+        let err = upgrade_pre_flag_prl(&pre_flag).unwrap_err();
+        assert!(err.to_string().contains("listed twice"), "{err}");
+    }
+
+    #[test]
+    fn both_directions_refuse_id_57_streamed_through_id_50() {
+        let mut ids: Vec<u32> = SH_BODY_SECTIONS.iter().map(|&id| id as u32).collect();
+        ids.sort_unstable();
+        let mut bytes = id50(&ids);
+        let mut section =
+            ClusterShPayloadsSection::from_metadata_bytes(&bytes, bytes.len() as u64).unwrap();
+        section.sources.push(ClusterShPayloadsSourceRecord {
+            section_id: SectionId::MoverProbeChannel as u32,
+            internal_version: u32::from(crate::mover_probe_channel::MOVER_PROBE_CHANNEL_EPOCH),
+            kind: ClusterShPayloadsSourceKind::MoverChannel,
+        });
+        section.header.source_count += 1;
+        bytes = section.metadata_bytes().unwrap();
+        let current = prl(&[(SectionId::ClusterShPayloads as u32, 1, bytes)]);
+        let err = downgrade_to_pre_flag_prl(&current).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("streams id 57 through id 50; the epoch relabel cannot follow it"),
+            "{err}"
+        );
+        // An upgrade refuses before it reads the five sources' versions.
+        let err = upgrade_pre_flag_prl(&current).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "baseline streams id 57 through id 50; the epoch relabel cannot follow it"
+            ),
+            "{err}"
+        );
     }
 
     #[test]

@@ -34,8 +34,9 @@ fn bake(fixture: &Fixture, compiler: &Path, label: &str) -> Bake {
     bake_with(fixture, compiler, label, &[])
 }
 
-/// The current compiler with id 34's body kept, for a test that decodes it
-/// whole. The pre-colour compiler predates the flag.
+/// The current compiler with the SH bodies kept (`--whole-load-sh`): a test
+/// decoding id 34 whole needs them, and so does the pre-colour comparison,
+/// whose saved compiler predates the body-presence field and always writes them.
 fn bake_current_whole(fixture: &Fixture) -> Bake {
     bake_with(
         fixture,
@@ -99,12 +100,15 @@ fn assert_current_shape(current: &Bake) {
     assert_key_sidecar_correspondence(current);
 }
 
+/// `current` must be a `--whole-load-sh` bake. Its sections compare in the
+/// pre-flag SH format the grey compiler writes.
 fn assert_precolour_equal(grey: &Bake, current: &Bake) {
+    let current_sections = current.pre_flag_sections();
     // Missing optional sections compare as absence, never as a fabricated payload.
     for id in PRE_COLOUR_IDS {
         assert_eq!(
             grey.sections.get(&id),
-            current.sections.get(&id),
+            current_sections.get(&id),
             "pre-colour id {id}"
         );
     }
@@ -132,7 +136,7 @@ fn compare_with_pre_colour(test: &str, map_text: &str) {
     };
     let fixture = empty_pin(map_text, true);
     let grey = bake(&fixture, &grey_binary, "grey");
-    let current = bake(&fixture, &current_compiler(), "current");
+    let current = bake_current_whole(&fixture);
     assert_precolour_equal(&grey, &current);
     assert_current_shape(&current);
 }

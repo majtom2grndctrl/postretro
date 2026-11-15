@@ -308,16 +308,7 @@ pub(crate) enum BoundedDeltaSectionData<'a> {
     Data(Cow<'a, [u8]>),
 }
 
-/// Read an optional delta section after validating its container bounds, then
-/// reject raw payloads that cannot fit a single runtime storage-buffer binding.
-/// The floor is checked on the table length before the body is borrowed or
-/// read, so no decoder table is allocated before either structural validation
-/// or the binding-floor check.
-///
-/// Only the whole-load SH path calls this, after its gate has refused any
-/// omitted body, so the table length is metadata plus the full body the
-/// metadata implies. Streaming binds no whole delta section and never applies
-/// the floor, with or without bodies.
+/// [`read_bounded_delta_section_data_with_limit`] at the runtime binding floor.
 #[cfg(test)]
 pub(crate) fn read_bounded_delta_section_data<'a>(
     container: &'a PrlContainer,
@@ -332,6 +323,16 @@ pub(crate) fn read_bounded_delta_section_data<'a>(
     )
 }
 
+/// Read an optional delta section after validating its container bounds, then
+/// reject raw payloads that cannot fit a single runtime storage-buffer binding.
+/// The floor is checked on the table length before the body is borrowed or
+/// read, so no decoder table is allocated before either structural validation
+/// or the binding-floor check.
+///
+/// Only the whole-load SH path calls this, after its gate has refused any
+/// omitted body, so the table length is metadata plus the full body the
+/// metadata implies. Streaming binds no whole delta section and never applies
+/// the floor, with or without bodies.
 pub(crate) fn read_bounded_delta_section_data_with_limit<'a>(
     container: &'a PrlContainer,
     section_id: SectionId,

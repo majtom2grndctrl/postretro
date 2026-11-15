@@ -44,9 +44,10 @@ pub(crate) const INSIDE_KNOT_MARGIN_M: f64 = 0.01;
 /// probe channel's edge copy (`mover_probe_channel::edge_copy`) gives an
 /// enclosure run's first and last enclosing poses the adjoining clear pose's
 /// value state and keeps the poses between them dark, so a deeper margin
-/// added here (a bounding pose about 1 u inside, should the owner's whole-
-/// trip measurement call for one) is a dark interior pose with no change
-/// there.
+/// added here would be a dark interior pose only if its window stays apart
+/// from this one's: windows within [`KNOT_MERGE_TOLERANCE_M`] of each other
+/// share a point and merge into one knot, which edge copy then makes lit.
+/// A bounding pose needs about 0.06 m of travel past the edge knot.
 const INSIDE_KNOT_MARGINS_M: [f64; 1] = [INSIDE_KNOT_MARGIN_M];
 
 /// How far, in metres of travel, a knot may move to merge with another, so

@@ -272,7 +272,7 @@ Numbering follows the brief's Acceptance order: automated rows 1–33 (Rest 1–
 • East peak-to-trough tracks truth; residual east +3.7 at t′ 0.16 and −2.0 at 0.98 from long-interval direct, shared with pre-amendment.
 • **M7 re-run, interleaved with 83df:** per mover minus docked, HEAD/83df: room +1.722/+1.641, wall +2.570/+2.535, both +1.443/+1.534 ms. Wall compose 2.456–2.477 against 83df 2.509–2.608; room within 83df's range. Pass: no measurable cost; the wall's +0.13 ms is gone with the bracket.
 • Bakes (pre-`df00bd54e` layout): setpiece 44.3 s, 12.03 MB (wall 71, room 45 poses); on the current layout see task 25's big-room re-capture; enemy-movers 14.5 s, 4.52 MB (sweeper 31).
-• **Outstanding: owner, in-engine.** |
+• **Owner in-engine (Windows, 2026-11-15):** two sightings, classified in `captures/amendment2/results.md` §M9 sightings: the sweeper corner not reproduced (one short-run floor glow, +3.5 for about 4 frames, routed to the "Short runs and long intervals" follow-up); the big room's door side real light. Owner: route to a follow-up and land. |
 
 ## Tasks
 
@@ -570,8 +570,7 @@ The verdict was "request changes". Wire bytes agree across every layer, and the 
 
 **Heavy setpiece tests (owner, 2026-11-13): behind `#[ignore]`.** After `df00bd54e` a cold setpiece bake takes minutes, so per the testing guide's small-fixture rule four tests that bake it cold run on demand, each naming its command: the setpiece SH-gate pricing test (`mover_bounce_stage_tests.rs`; the closet's gate test stays routine), `raised_room_bounce_is_nearer_the_static_room_reference_than_today` and `a_budget_under_the_mover_priced_peak_refuses_before_any_bounce_ray` (`tests/mover_probe_channel_bounce.rs`), and `a_block_over_its_bar_streams_with_id_50_and_one_at_or_under_it_stays_resident` (`tests/mover_probe_channel_placement.rs`). Routine runs: `--bin prl-build mover` 784 s → 91 s (214 passed, 10 ignored); bounce target 589 s → 18 s; placement 254 s → 0 s. `mover_light_gate_setpiece` and `mover_probe_channel_setpiece` (about 1.5 min each) stay routine as the only routine light-gate coverage on real content. Run all four under `--ignored` before landing.
 
-**Waiting on the owner:**
-- **Short enclosure runs.** A run of one or two poses is all edge copy, so it gets no dark pose; that is the ruled rule, word for word. The owner is reviewing it in-engine.
+**Short enclosure runs (owner, 2026-11-15): routed to a follow-up.** The owner's two M9 sightings were classified against same-rule dense truths (`captures/amendment2/results.md` §M9 sightings, `b5a4fde7c`). The sweeper's upper-left corner was not reproduced: it tracks the 113-pose truth within a level from the owner's view and three others. The big room's door-side movement is real light, the same in the truth. The only short-run defect found is the sweeper floor at the east face's foot, +3.5 levels for about 4 frames, from a 2-knot run. A 1 u bounding pose would merge into the edge knot and do nothing, so the knot-margin comment now says so. The fix and the long-interval misses are filed together on the roadmap ("Short runs and long intervals").
 
 **Left:**
 - The `SH_NORMAL_OFFSET_M` rename: the name is shared across four shaders and three tests, all already in cell units.

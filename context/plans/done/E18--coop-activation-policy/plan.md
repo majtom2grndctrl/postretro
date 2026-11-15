@@ -149,4 +149,5 @@ Left as they are:
 - `crate-graph --check`: pass.
 - `cargo test --workspace`: every suite passes except four `postretro-level-compiler` `prl-build` data-script tests, which cannot find the `scripts-build` sidecar. This container runs cargo 1.100, whose default build-dir puts test binaries under `target/<profile>/build/<crate>/<hash>/out/`. `find_scripts_build` looks only beside the executable and in the `deps/` layout. It predates this branch and is untouched by it, so it is a follow-up for that lookup. The sidecar itself builds, and both new dev maps compile through `prl-build`. The app suite passed in full (2656) on the final commit.
 - Not run here: GPU-adapter tests skip without an adapter, as everywhere in this container.
+- Post-merge preflight, after merging `main` at `830e1f87` (a clean merge with no overlapping files; `main` was still at `WIRE_VERSION` 39): fmt, both clippy forms, `cargo check --release` and `crate-graph --check` pass. `cargo test --workspace` passes 16034 tests; the same four `prl-build` data-script tests fail on the sidecar lookup and pass with `target/debug` on `PATH`, which the lookup's fallback searches.
 

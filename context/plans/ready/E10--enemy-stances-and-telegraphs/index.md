@@ -26,13 +26,13 @@ When this is done:
   - One handle may serve several archetypes. Two handles of one name in one archetype load only if their declarations are equal, since a Luau re-`require` makes copies; unequal declarations reject load.
   - A misspelled name must be observable to agents. In Luau a misspelled global reads `nil`, so a nil where a handle is expected rejects with a pathed error, and a nil table field, which reads as absent (a handle, or a guard now that `when` is optional), is caught by a check agents run over every misspelled global.
 - **The attacks list.** Absent, a behavior's attacks are those its rows, actions and marks reference. Present, `attacks: [...]` is exhaustive: only listed attacks exist, and any non-row reference to an unlisted attack rejects load. Lowering then drops, logging each, every row to an unlisted attack, then the authored rows of any rest no longer reached, repeating until nothing more drops; only then does it reject a reached rest left with no way out. A dropped row's guard is never checked; a kept row whose guard reads an unlisted attack rejects load. So a variant reuses its parent's graph with a shorter list. Gating attacks on equipped weapons is a follow-up (roadmap, Epic 10).
-- **A stance lowers to a pose.** `defineStance(options)` declares a pose: its animation state, its sound, its hold range and its `breakOn`. It is named by its binding like `defineAttack`. Lowering turns it into plain activities carrying a runtime `pose` field, and rows to its attacks carry a runtime `queue` field. Both fields are lowering-only: an authored `pose` or `queue` rejects load with a pathed error. This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
+- **A stance lowers to a pose.** `defineStance(options)` declares a pose: its animation state, its sound, its hold range and its `breakOn`. It is named by its binding like `defineAttack`. Lowering turns it into plain activities carrying a runtime `pose` field, and rows to its attacks carry a runtime `queue` field. These fields, and the release's moment gate, are lowering-only: an authored `pose`, `queue` or `afterMoment` rejects load with a pathed error. This spends the `stance` word reserved by `plans/done/E10--hierarchical-behavior-statecharts`.
 - **An attack begins and ends in a stance.** An attack's optional `beginningStance` names the pose it starts from, and the attack owns its strike: `release` and `recover`. `release` is required exactly when `beginningStance` is set; either alone rejects load. `endingStance` names the pose it rests in once its recovery ends, and defaults to `beginningStance`, so a slam can land coiled, ready for a lunge. Several attacks may share a beginning stance, so the pose names the threat and the strike stays a mix-up.
 - **Rows target stances and attacks directly.** A row's `to` takes a `Stance` or an `Attack` as well as an activity name, and a level's `initial` may be a `Stance`. `{ to: overhead }` takes the pose; `{ to: slam }` strikes. Lowering expands each targeted stance, and the attacks struck from it, into activities in that level. Authors key a rest's rows by the stance's name and never name the rest's holds, releases or recovers; a string `to` or `initial` naming one rejects load.
 - **A row's `when` is optional.** Omitted, the row is always enabled, on every row, not just rows to stances and attacks.
 - **A stance is a rest.** A stance's rest is an unmarked activity holding the pose; it holds no turn. An enemy waits in line in its rest, so the release stays only partly predictable. A rest with no way out (no row of its own, and no `"*"` or ancestor row) rejects load; its `breakOn` row does not count, since an enemy nobody shoots would hold the pose forever.
 - **Strikes come only from rests.** A row to an attack is legal only out of the rest of its `beginningStance`; anywhere else it rejects load.
-- **A row to an attack waits in line.** Lowering marks a row to an attack with its `queue`. While its `when` passes and the target is within the attack's `maxRange` (when it declares one), the resting enemy requests the attack's turn and keeps the pose; the row passes once the turn reads held. Requesting from the rest keeps the budget's wait order and reservations, so a costly attack is never starved by cheaper ones sharing its tokens.
+- **A row to an attack waits in line.** Lowering marks a row to an attack with its `queue`. While its `when` passes, the target is within the attack's `maxRange` (when it declares one) and the attack's cooldown has elapsed, the resting enemy requests the attack's turn and keeps the pose; the row passes once the turn reads held. Requesting from the rest keeps the budget's wait order and reservations, so a costly attack is never starved by cheaper ones sharing its tokens.
   - One request per enemy: the first such row, in order. A marked activity's request outranks a rest's, and a rest's outranks a pending unmarked attack.
   - A rest's grant lives as a mark's does: it survives into the next evaluation, where its row passes and the hold's mark keeps it. If that evaluation takes another row, the turn ends and its refresh starts.
   - The enemy keeps its place in line as it does today: across a change of requested attack, and across leaving and re-entering a rest on the same target.
@@ -54,7 +54,7 @@ When this is done:
 - **Per-activity speed is an engine field.** Any activity takes an optional `speed`, a positive multiplier on the archetype's `moveSpeed` while it is the innermost activity that sets one. Omitted everywhere, it is 1. Lowering writes `release.speed` onto the release only.
   - **Witting divergence.** `done/E10--hierarchical-behavior-statecharts` and `done/E10--enemy-behavior-descriptor-syntax/sample.ts` placed an absolute per-activity `speed` that graph-wide `moveSpeed` would migrate into. A multiplier lets one attack's release serve archetypes of different speeds, so the owner chose it (2026-11-11) and gave up that endpoint.
 - **A strike takes an attack turn.** Lowering marks an attack's hold, release and recover `attackTurn` with that attack (`done/E10--enemy-combat-movement`), so one turn spans the strike and holds its draws.
-  - The turn is the whole promise: cooldown, range, sight and facing still gate the strike, and `docs/` says a release can whiff.
+  - The turn is the whole promise. The queue waits out the attack's cooldown, so a tell never ends in a whiff the player did nothing to earn (owner, 2026-11-15). Range, sight and facing still gate the strike, which the player can change by dodging or breaking sight, and `docs/` says a release can whiff.
   - **A strike works wherever it sits.** While an activity marked `attackTurn` is on the path, the enemy keeps its target and committed aim as it does under an engaging ancestor, so a strike outside `engage` still releases (`index.md` §2, Designers over structure).
   - **Chains land in a rest.** Every attack ends in its `endingStance`'s rest, which holds no turn, so none is held across a chain or a repeat.
 - **Per-entry roll: `@brain.activityRoll`, uniform in [0, 1).**
@@ -68,7 +68,7 @@ When this is done:
 - **Per-activity damage fact: `@brain.damageInActivity`.** It is scope-relative: damage drained from layers and health since that level's activity, or pose, was entered, for every producer, `applyDamage` included.
 - **Stagger is authored on that fact.** It suits a short activity or a pose; on a long chase the sum grows without limit (non-goal below).
   - A stance's optional `breakOn` adds a row leaving its pose for a sibling activity, counting damage across the whole pose. The same guard works on any short activity, such as an aim.
-  - Release is committed: it has no break row. Only its own timer, the level's `"*"` rows and ancestor levels' rows leave it; the latter two outrank the generated rows, as they do every activity's, so a `"*"` row to a stance abandons a strike in progress.
+  - Release is committed: it has no break row. Only its own exit (its timer, or with `at` its moment), the level's `"*"` rows and ancestor levels' rows leave it; the latter two outrank the generated rows, as they do every activity's, so a `"*"` row to a stance abandons a strike in progress.
   - This supersedes the deleted `E10--enemy-stagger` draft.
 - **Telegraph sounds reach every peer.**
   - An activity's `sound` field and a contact attack's `sound` reach each participating client as a positioned `PlaySound` presentation command at the enemy's host-captured origin: the route an `onEnter` `playSound` already takes. The host plays its own once, as today.
@@ -76,7 +76,8 @@ When this is done:
   - This takes the enemy slice of roadmap E12 step 4, on the payload that step extends.
   - `onEnter` reactions are unchanged.
 - **A release strikes at its clip's moment.** `release` takes an optional `at` naming a clip event, and the release's attack fires there (`entity_model.md` §7c, Clip-timed attacks). Omitted, the attack fires on the release's entry, as a charge's contact does. Each brute release plays its attack's `*_strike` clip, the rest of the attack from its hold's cut (owner, 2026-11-13), and fires `at: "hit"` (owner, 2026-11-15).
-  - **`release.ms` stays required.** A release that leaves before its moment never strikes. When clips bind, a planted release that would leave on or before the tick its `at` event is reached warns once per entity class and attack, naming the attack, its state and the event. A moving release is not checked, since its clip rate follows its speed (owner, 2026-11-15).
+  - **A release lasts until its moment.** With `at`, the release never leaves on its own rows before its moment has resolved: fired, whiffed on a gate, or cancelled. `ms` becomes optional and only holds the release longer; the release leaves once both have passed. A novice never measures a clip, and no `ms` can make a strike silently miss, on a looping clip at any phase or on a moving release at any rate (owner, 2026-11-15, after "Designers over structure"). Without `at`, `ms` stays required. The level's `"*"` and ancestor rows still leave a release before its moment.
+  - **A release on its stance's own state warns.** Its clip time continues the pose's, so whether it strikes rests on the hidden hold draw. Lowering warns once naming the attack, since a clip whose moment lies past every hold still works (owner, 2026-11-15).
   - **An impact flinch still cancels the hit.** Release has no break row of its own, but an impact effect that switches the enemy's animation before the moment cancels the hit, as it does any clip-timed attack. Shipped content gives the brute no impact flinch, so what follows a cancelled strike stays latent (owner, 2026-11-15).
 - **Clients match the host on clips.** The host restarts nothing when the next activity names the clip already playing, and neither does a client. No re-entry signal is replicated.
 - **Shipped content adopts the vocabulary in this brief.**
@@ -99,7 +100,7 @@ When this is done:
 ```ts
 // Proposed design. Illustrative: a brute-like offense; the shipped brute's graph is the executor's.
 // Each `animation` names a state the archetype declares, here each playing its namesake clip.
-// Release times are illustrative: each `ms` outlasts its strike clip's `hit`, wherever the build cuts it.
+// A release with `at` lasts until its moment; `ms` would only hold it longer.
 import { brain, defineAttack, defineStance } from "postretro";
 import { heavy, melee } from "./attack-tokens";
 
@@ -118,17 +119,17 @@ const slam = defineAttack({
   draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800,
   beginningStance: overhead,
   endingStance: coil,                    // lands coiled, ready to lunge
-  release: { animation: "smash_strike", at: "hit", ms: 1350 }, // strikes at the clip's `hit`;
+  release: { animation: "smash_strike", at: "hit" }, // strikes at the clip's `hit`, then recovers;
 });                                      // the default recover runs the clip out
 const sweep = defineAttack({
   draws: [melee], damage: 8, maxRange: 3.5, cooldownMs: 1200,
   beginningStance: overhead,             // ends back in `overhead`
-  release: { animation: "swipe_strike", at: "hit", ms: 500 },
+  release: { animation: "swipe_strike", at: "hit" },
 });
 const lunge = defineAttack({
   draws: [melee], damage: 10, maxRange: 3.5, cooldownMs: 1500,
   beginningStance: coil,
-  release: { animation: "swipe_strike", at: "hit", ms: 500 },
+  release: { animation: "swipe_strike", at: "hit" },
 });
 const charge = defineAttack({
   draws: [heavy], damage: 18, maxRange: 12, cooldownMs: 4000,
@@ -177,7 +178,7 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - [ ] Without an `attacks` list, a behavior that references `jab` and `slam` by row, `action` or `attackTurn` has exactly those attacks. With `attacks: [jab]`, a row to `slam` is dropped with one log naming it, and an `action` or `attackTurn` naming `slam` rejects load. A rest reached only through a dropped attack's `endingStance` is not generated, and its authored rows are dropped with a log; a reached rest whose only row was dropped rejects load naming it (pin P37). Drops repeat to a fixed point (pin P40), and only kept rows' guards are checked (pin P41).
 - [ ] A string where an attack handle is expected (the behavior's `attacks` list or a name-keyed `attacks` map, `action.attack`, `attackTurn`, a row's `to` meant as an attack, an attack's `beginningStance` or `endingStance`) fails type-checking in TypeScript and, in both runtimes, rejects load with a pathed error, through `defineEntity` and through a bare entity in `defineMod`, by the one `scripting-core` lowering. Two handles sharing a name load when their declarations are equal and reject otherwise.
 - [ ] `attackTurnFree` and `attackTurnHeld` given a string or `nil` throw at the call with a pathed message, in both runtimes; a misspelled Luau global in a table field, whether a handle or a `when` guard, is reported by the check agents run.
-- [ ] An authored `pose` or `queue` field rejects load with a pathed error.
+- [ ] An authored `pose`, `queue` or `afterMoment` field rejects load with a pathed error.
 - [ ] One handle used by two archetypes loads in both, and each resolves it by name.
 - [ ] Every shipped enemy, `sdk/behaviors/reference` and `docs/` use handles; grep gate: no shipped script, `docs/` page or generated typedef comment passes or shows an attack as a string.
 
@@ -195,15 +196,16 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - [ ] A stance given only `animation`, and an attack given only its engine fields, `beginningStance` and `release`, load silently. The hold gets the default range, above the floor, and the recover holds the release's state.
 - [ ] An omitted `recover` on a non-looping release state leaves on the first evaluation its clip reads played through, its clip time continuing from the release's entry, not restarting. On a looping release state it leaves once the default duration passes.
 - [ ] A release with `at: "hit"` fires when its clip reaches `hit`, not on entry; one without `at` fires on entry. Lowering writes the release's `action: { attack, at }`, and the implied mark agrees with the lowered `attackTurn` and loads.
-- [ ] When clips bind, a planted release whose `ms` ends before its `at` event warns once per entity class and attack, naming the attack, its state and the event, and fires nothing on an entry that leaves first. An `ms` that ends on the event's tick warns too; one leaving a tick later binds silently and fires, and so does a moving release whatever its `ms` (pin P42). A `"*"` row passing on the moment's tick wins, and nothing fires (pin P47).
+- [ ] A release with `at` and no `ms` leaves on the first evaluation after its moment resolves, fired or whiffed; with an `ms` shorter than the moment it still waits for the moment and fires; with an `ms` longer than the moment it leaves once `ms` has passed (pin P42). On a looping release state it fires at its next pass and then leaves, at every instance phase (pin P43). A moment cancelled by an impact switch resolves it, and the release leaves on the next evaluation. A `"*"` row passing on the moment's tick wins, and nothing fires (pin P47).
+- [ ] A release whose `animation` names its `beginningStance`'s state loads with one warning naming the attack; a release on its own state loads silently.
 - [ ] An impact effect switching the enemy's animation during a release, before its moment, cancels the hit: nothing fires that entry, and the same release unflinched fires at its moment. A switch landing before the AI pass on the tick the release is entered does not cancel it (pin P46).
-- [ ] A release with `at` whose cooldown still runs at its moment whiffs and does not fire later that entry; without `at` it fires once the cooldown lapses (pin P44).
+- [ ] A resting enemy whose attack is still cooling down requests nothing for it and keeps the pose; once the cooldown elapses it requests, and the strike it releases fires at its moment. A row to an attack never passes while that attack cools down (pin P44).
 - [ ] These reject load with a pathed error:
   - a `breakOn.to` naming no sibling activity, or a string `to` or `initial` naming an activity lowering generates;
   - a row to an attack from anywhere but its `beginningStance`'s rest, or to an attack with no `beginningStance`;
   - `holdMs` with min > max, or a negative bound;
   - a `breakOn.damage` of zero or below;
-  - a `release` without `ms`, `at` set or not;
+  - a `release` with neither `ms` nor `at`;
   - a negative `release.ms` or `recover.ms`;
   - a `release.at` that breaks the clip event name rule (`resource_management.md` §7);
   - an activity or `release` `speed` of zero or below;
@@ -213,7 +215,7 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
   - any non-finite value.
 
 **Waiting in line**
-- [ ] A row to an attack passes only once its turn reads held, the target is within its `maxRange` (when declared), and its `when` passes. While `when` and range pass, the resting enemy requests the turn: with the target one metre out of range it requests nothing; with `when` false it requests nothing. An attack with no `maxRange` adds no range gate.
+- [ ] A row to an attack passes only once its turn reads held, the target is within its `maxRange` (when declared), the attack is off cooldown, and its `when` passes. While `when`, range and cooldown pass, the resting enemy requests the turn: with the target one metre out of range it requests nothing; with `when` false it requests nothing; with the attack cooling down it requests nothing. An attack with no `maxRange` adds no range gate.
 - [ ] A rest's grant on tick N survives into N+1, where its row passes and the hold's mark keeps the turn; if N+1 takes another row instead, the turn ends and its refresh starts (pin P26).
 - [ ] Between the grant and the hold, a co-op re-rank inside the target-switch margin does not switch the enemy's target, so the grant is not wasted (pin P27). A player nearer by more than the margin takes the target from a resting or holding enemy (pin P39).
 - [ ] Starvation: limit 3 on `melee`; two sweepers keep two `melee` turns held; a third brute rests in `overhead` with its slam row first and a later wait slot. The slam reserves its tokens as head of line and is granted once room frees, never starved; under the old turn-free gate it would wait forever (pin P28).
@@ -234,7 +236,7 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - [ ] A strike at the root level beside a chase, outside any engaging ancestor, keeps its target and committed aim through a co-op target re-rank inside the target-switch margin and one tick out of sight, and releases (pin P23).
 - [ ] When the break threshold and the missing turn pass on one evaluation, the hold leaves for `breakOn.to` (pin P22).
 - [ ] When the pose's timer and a missing turn pass on one evaluation, the hold leaves for its rest and the release is never entered (pin P16).
-- [ ] `release.ms: 0` and `recover.ms: 0` load, and each leaves on its first evaluation after entry. A zero release without `at` fires at most once, on its entry tick; one with `at` whose event lies past 0 fires nothing and warns at clip bind (pins P20, P45).
+- [ ] `release.ms: 0` and `recover.ms: 0` load, and each leaves on its first evaluation after entry. A zero release without `at` fires at most once, on its entry tick; one with `at` waits for its moment, fires there, and leaves on the next evaluation (pins P20, P45).
 
 **Floor**
 - [ ] A test fails if the co-op floor falls below the remote interpolation buffer ceiling, and passes when the floor is above it.
@@ -281,8 +283,8 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - [ ] Entering an activity whose clip is already playing restarts nothing on host or client.
 
 **Clips**
-- [ ] The reference brute's slam, lunge and jab releases fire at their `*_strike` clip's `hit`, and `punch_strike` carries `hit`, with no missing-event or short-release warning once its clips bind. `reference_enemy_strikes_start_on_their_windup_pose` passes on the recut library.
-- [ ] The limitator's lowered `shoot` release fires its first shot at `firing_rifle`'s `kick` from its drawn phase and leaves after its burst at every phase, with no missing-event or short-release warning once its clips bind.
+- [ ] The reference brute's slam, lunge and jab releases fire at their `*_strike` clip's `hit`, and `punch_strike` carries `hit`, with no missing-event warning once its clips bind. `reference_enemy_strikes_start_on_their_windup_pose` passes on the recut library.
+- [ ] The limitator's lowered `shoot` release fires its first shot at `firing_rifle`'s `kick` from its drawn phase and leaves after its burst at every phase, with no missing-event warning once its clips bind.
 
 ### Manual
 - [ ] Re-exporting `mixamo_brute` with the commands in its `license.txt` reproduces the committed library. Each cut or event moved from the 9580828 library is listed for the owner's playtest.
@@ -292,12 +294,12 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - [ ] Co-op loopback: the client hears each stance sound and sees the stance before the hit lands.
 
 ### Docs
-- [ ] `docs/` explains typed attacks, stances shared by attacks, the co-op floor's number, that a release can whiff on cooldown, range, sight or facing, and that a client sees a stance about half a round trip plus one snapshot late. `sdk/behaviors/reference` carries typed attacks and a shared stance that load.
+- [ ] `docs/` explains typed attacks, stances shared by attacks, the co-op floor's number, that a release can whiff on range, sight or facing but never on its own cooldown, and that a client sees a stance about half a round trip plus one snapshot late. `sdk/behaviors/reference` carries typed attacks and a shared stance that load.
 
 ## Path
 - **Body stance.** A crouching stance needs the cover brief's `crouchHeight` and `crouch_` states on the archetype, which load enforces. Under innermost-wins resolution lowering emits `stance: "stand"` on the recover when the option is set, so an outer crouch never leaks into it.
 - **Assets.** Today the brute's jab plays `punch` (`attack_jab`), fires `at: "hit"` and leaves on `brain.animationDone`; `reference-enemy.ts` nests it in a `jabs` subgraph under `hunt`/`press`. The slam's windup, commit and recover share `attack_slam` (`smash`), each `motion: "hold"` and marked `attackTurn: "slam"`; the commit fires `at: "hit"` and the recover leaves on `animationDone`. The brute uses its authored hitbox: its model carries no hit zones (the converter zones only head and legs, which would leave the torso unhittable). Its library carries `smash` (a jump attack pinned in place), `swipe`, `punch`, `roar`, `hit_reaction`, the holds `smash_windup` (400 ms, the crouch before the leap), `swipe_windup` (900 ms, the lean back before the lunge) and `punch_windup` (467 ms, which is the arm in follow-through after contact, so it is recut), and the strikes `smash_strike`, `swipe_strike` and `punch_strike`: the rest of each attack from its hold's cut, starting on the hold's last pose (`reference_enemy_strikes_start_on_their_windup_pose`, `crates/model`). Holds and strikes are cut by `mixamo_to_gltf.py --trim`, and a non-looping clip clamps on its last frame (`resolve_time`, `crates/model/src/anim/types.rs`), so the pose holds with no engine change. Events: `hit` on `punch` (267 ms), `smash` (1,633 ms) and `swipe` (1,300 ms). Trims carry an event into the cut holding it, so `smash_strike` (1.233 s) and `swipe_strike` (0.4 s) carry `hit`; `punch_windup` holds `punch`'s and `punch_strike` has none until the recut. The re-export command, events and each clip's Mixamo source are in the library's `license.txt`. The limitator's rifle library carries `idle_aiming`, and its `hit_reaction` is bound but unwired. Stance sounds have no assets yet; the dev fixture sounds stand in. The limitator's `shoot` fires `at: "kick"` on the looping `firing_rifle`, and `burst` lasts `BURST_MS` (600), a full pass plus the burst; the aim stance's release needs the same. Clip ranges are converter cuts, not a state start offset (owner, 2026-11-13): the loader removes each clip's net ground drift, so a range starts its hips where the hold left them. The re-export runs where Blender (5.2.3 made the last one) and the source FBXs are, which is the owner's Windows machine.
-- **Clip-timed seams.** `ActionVerb::Attack` is `{ name, at }`, with a hand-written `{ attack, at? }` serde shape; lowering writes the release's `action: { attack, at }` in it. A moment gets one chance per entry and is read after transitions, so a release leaving on the moment's tick fires nothing. Descriptor normalization turns an activity's `action.at` into its `attackTurn` before `validate_attack_turn_marks`, so the release's lowered mark must name the same attack. The missing-event warning fires once an entity's clips bind (`BrainPrograms::warn_unclipped_moments` → `clip_clock::warn_unclipped_moments`); the short-release warning belongs beside it, where the resolved clip and its events are in reach (`ModelHitZones::state_clip`). Clip time lives on the brain (`crates/ai/src/clip_clock.rs`) and is shared by activities on one state, so a pose's rest and holds share the hold clip, and a recover on its release's state continues the release's clip. Tests pinning today's brute and limitator timing: `crates/ai/src/clip_timed_shipped_tests.rs` and the reference oracle in `ai_tests.rs`. A recut that moves an event also moves the jab's cooldown, which stays below its rest plus `hit` so a re-entered jab's moment never meets it.
+- **Clip-timed seams.** `ActionVerb::Attack` is `{ name, at }`, with a hand-written `{ attack, at? }` serde shape; lowering writes the release's `action: { attack, at }` in it. A moment gets one chance per entry and is read after transitions, so the release's own rows must stay closed through the moment's tick and open on the next evaluation. Its resolution (fired, whiffed or cancelled) is the clip clock's per-entry latch (`clip_clock.rs`), which a missing event or unresolved clip closes on entry. The queue's cooldown gate reads `BrainComponent::attack_cooldown_remaining_ms`, as `cooling_down` in `attack_turns/lifecycle.rs` already does. Descriptor normalization turns an activity's `action.at` into its `attackTurn` before `validate_attack_turn_marks`, so the release's lowered mark must name the same attack. The missing-event warning fires once an entity's clips bind (`BrainPrograms::warn_unclipped_moments` → `clip_clock::warn_unclipped_moments`). Clip time lives on the brain (`crates/ai/src/clip_clock.rs`) and is shared by activities on one state, so a pose's rest and holds share the hold clip, and a recover on its release's state continues the release's clip. Tests pinning today's brute and limitator timing: `crates/ai/src/clip_timed_shipped_tests.rs` and the reference oracle in `ai_tests.rs`. A recut that moves an event also moves the jab's cooldown, which stays below its rest plus `hit` so a re-entered jab's moment never meets it.
 - **Seams.**
   - **Brain facts.** `ScopeRelativeValues` / `SCOPE_RELATIVE_SLOTS` (`crates/ai/src/brain_scope.rs`): one field and one registration per fact. `repoint_scope_relative` re-points them per depth in `select_transition_path` and in both selectors, each building the struct literally. `BrainScope::refresh` and the typedef templates spell `BRAIN_INPUTS` out positionally too.
   - **Brain arrays.** The per-depth arrays on `BrainComponent` zero on re-entry. `BRAIN_INPUTS` is append-only.
@@ -319,18 +321,20 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - Seed salt, a per-instance replay-stable identity — **delegated**: meet both seed requirements in Decisions and report the choice.
 - The default hold range and recovery (its cap included), and the floor's reaction budget — **delegated**: tune on `movement-feel` under the lag profile and report.
 - The brute's new lunge and charge attacks (damage, draws), which stance two of its attacks share, the charge speed, its walk and run `speed`s, and how its offense graph nests the stances — **delegated**: tune on `movement-feel` and report.
+- Whether a release's `at` defaults to `hit` when its clip carries that event, so a novice's release fires on contact unasked (precedent: player locomotion states selected by name) — **owner**, open.
 - The brute's cuts and event times — **delegated**: recut `punch_windup`/`punch_strike` and `smash_windup` as Decisions say, re-measure as tells are tuned, record every flag in `license.txt`, and report each moved cut or event for the owner's playtest. The 2026-11-13 cut at 467 ms is superseded: `punch`'s `hit` moved to 267 ms (owner playtest, 2026-11-14), so that cut is follow-through.
 - How a misspelled Luau handle in a table field reaches agents (strict globals in data scripts, `luau-analyze` in the scripts check, or a language server) — **delegated**: pick the one an agent's normal loop runs, and report.
-- Clip-timed attacks — **resolved**: landed (`done/E10--clip-timed-attacks`, d808e47). Releases adopt `at`, and the roadmap's open "does `release.ms` default from the clip" is answered: `ms` stays required, a short one warns, and the default recover runs the clip out (owner, 2026-11-15).
+- Clip-timed attacks — **resolved**: landed (`done/E10--clip-timed-attacks`, d808e47). Releases adopt `at`, and the roadmap's open "does `release.ms` default from the clip" is answered: a release with `at` lasts until its moment and `ms` only extends it, and the default recover runs the clip out (owner, 2026-11-15).
 
 ## Boundary inventory
 
 | Name | Rust | Wire / serde | JS / TS | Luau | FGD KVP |
 |---|---|---|---|---|---|
 | attack declaration | binding-name sugar list (`crates/script-compiler`); Luau export list (`luau_prelude.rs`); `scripting-core` lowering builds `BehaviorGraphDescriptor::attacks` by name | crosses as `{ "kind": "attack", "name", ...params }`; runtime `"attacks": { "<name>": { ... } }` unchanged | `defineAttack(params): Attack`, binding-named; `defineAttack(name, params)` | `defineAttack(name, params)` | n/a |
-| attack fields (authoring) | `scripting-core` lowering expands and strips them | not in the runtime descriptor | `beginningStance: Stance`, `endingStance?: Stance` (defaults to `beginningStance`), `release { animation, ms, at, motion, speed }` (`at`: a clip event name; motion: `hold` \| `chaseTarget` \| `strafe` \| `reposition`), `recover { animation, ms }` | same | n/a |
+| attack fields (authoring) | `scripting-core` lowering expands and strips them | not in the runtime descriptor | `beginningStance: Stance`, `endingStance?: Stance` (defaults to `beginningStance`), `release { animation, ms, at, motion, speed }` (`at`: a clip event name; `ms` optional with `at`, required without; motion: `hold` \| `chaseTarget` \| `strafe` \| `reposition`), `recover { animation, ms }` | same | n/a |
 | row targets | `scripting-core` lowering expands them to activity names | the generated activity's name | `to: string \| Stance \| Attack`; `initial: string \| Stance`; `when?` (omitted: always) | same | n/a |
 | queued row | `GuardedRow::queue: Option<String>`, written only by lowering | `"queue": "<attack>"` | none (lowering only) | none | n/a |
+| moment gate | a lowering-only flag on the release's own rows, closing them until the entry's moment resolves | `"afterMoment": true` | none (lowering only; authored, it rejects load) | none | n/a |
 | pose | `BehaviorActivityDescriptor::pose: Option<String>`, written only by lowering | `"pose": "<stance>"` | none (lowering only) | none | n/a |
 | attacks list | `scripting-core` lowering | the name-keyed map | `attacks?: Attack[]`: inferred when omitted, exhaustive when present | same | n/a |
 | attack references | SDK type registry (`crates/sim`) and typedef templates (`crates/scripting-core`) take handle types; `scripting-core` lowering resolves them | the attack's name | `action: { attack: Attack }`; `attackTurn: Attack`; `attackTurnFree(a)`, `attackTurnHeld(a)` take a handle | same | n/a |

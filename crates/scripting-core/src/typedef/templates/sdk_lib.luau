@@ -1856,6 +1856,8 @@ export type LocalStateHandle<T> = {
 declare function createLocalState(init: { [string]: any }): { scope: any, cells: any }
 --- `Switch(cell, map)` (M13 G2) — expand a string-valued cell's `map` of `value -> subtree` into an array, injecting `visibleWhen = cell:is(key)` onto each subtree in LEXICOGRAPHICALLY-SORTED key order (byte-identical TS/Luau). Splice the result into a container's `children`.
 declare function Switch(cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }): {WidgetDescriptor}
+--- `forEach(list, function(row, i) ... end)` — unroll a widget once per row of an engine list up to its capacity; a row shows only while its `present` flag and any `visibleWhen` it declares hold; authored ids get the suffix `.<slot row>` and same-row references follow. `i` counts from 1.
+declare function forEach<Row>(list: StateList<Row>, build: (row: Row, i: number) -> WidgetDescriptor): {WidgetDescriptor}
 --- State-helper namespace (state helpers are namespaced; reactions stay bare).
 declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } }
 

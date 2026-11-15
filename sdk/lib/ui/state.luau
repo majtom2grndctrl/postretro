@@ -183,6 +183,108 @@ function UiStateSdk.Switch(cell: any, map: { [string]: any }): { any }
   return out
 end
 
+local function isWidgetNode(value: any): boolean
+  return type(value) == "table" and type(value.kind) == "string"
+end
+
+local function isSequence(value: any): boolean
+  return type(value) == "table" and not isWidgetNode(value) and (#value > 0 or next(value) == nil)
+end
+
+local function collectRowIds(node: { [string]: any }, ids: { [string]: boolean })
+  if type(node.id) == "string" then
+    ids[node.id] = true
+  end
+  for _, value in node do
+    if isWidgetNode(value) then
+      collectRowIds(value, ids)
+    elseif isSequence(value) then
+      for _, item in ipairs(value) do
+        if isWidgetNode(item) then
+          collectRowIds(item, ids)
+        end
+      end
+    end
+  end
+end
+
+local function suffixRow(node: { [string]: any }, ids: { [string]: boolean }, suffix: string): { [string]: any }
+  local function follow(target: any): any
+    if type(target) == "string" and ids[target] then
+      return target .. suffix
+    end
+    return target
+  end
+  local out: { [string]: any } = {}
+  for key, value in node do
+    if isWidgetNode(value) then
+      out[key] = suffixRow(value, ids, suffix)
+    elseif isSequence(value) and key ~= "focusNeighbors" then
+      local items = {}
+      for i, item in ipairs(value) do
+        items[i] = if isWidgetNode(item) then suffixRow(item, ids, suffix) else item
+      end
+      out[key] = items
+    else
+      out[key] = value
+    end
+  end
+  if type(node.id) == "string" then
+    out.id = node.id .. suffix
+  end
+  if node.labelledBy ~= nil then
+    out.labelledBy = follow(node.labelledBy)
+  end
+  if type(node.focusNeighbors) == "table" then
+    local neighbors = {}
+    for direction, target in node.focusNeighbors do
+      neighbors[direction] = follow(target)
+    end
+    out.focusNeighbors = neighbors
+  end
+  return out
+end
+
+--- `forEach(list, function(row, i) ... end)` — unroll a widget once per row of
+--- an engine catalog list (`getGameState().session.players`), up to the list's
+--- capacity, and return the rows as an array to splice into a container's
+--- `children`. `i` counts rows from 1, as `ipairs` does; row `i` reads slot row
+--- `i - 1`.
+---
+--- A row shows only while its `present` flag holds and any `visibleWhen` it
+--- declares holds too. Every authored id in a row gets the suffix `.<slot row>`
+--- (the same ids TypeScript emits), and a `labelledBy` or `focusNeighbors`
+--- naming an id inside the same row follows it. The tree stays static: rows
+--- appearing or leaving never rebuild it.
+function UiStateSdk.forEach(list: any, build: (any, number) -> any): { any }
+  if type(list) ~= "table" or type(list.__list) ~= "string" then
+    error("forEach: `list` must be an engine state list such as `getGameState().session.players`")
+  end
+  if type(build) ~= "function" then
+    error("forEach: `build` must be a function `(row, i) -> widget`")
+  end
+  local out: { any } = {}
+  for i, row in ipairs(list) do
+    local widget = build(row, i)
+    if not isWidgetNode(widget) then
+      error(`forEach: row {i} must build a widget descriptor (a \`kind\`-tagged table)`)
+    end
+    local ids: { [string]: boolean } = {}
+    collectRowIds(widget, ids)
+    local suffixed = suffixRow(widget, ids, "." .. tostring(i - 1))
+    local present = { slot = stateSlot(row.present, "forEach"), equals = true }
+    if suffixed.visibleWhen == nil then
+      suffixed.visibleWhen = present
+      out[i] = suffixed
+    else
+      -- One predicate per node: the row keeps its own, and a zero-spacing
+      -- stack around it shows only while the row is present.
+      out[i] = { kind = "vstack", gap = 0, padding = 0, align = "start", visibleWhen = present, children = { suffixed } }
+    end
+  end
+  return out
+end
+
 --- The `ui` namespace object: state-helper SDK functions are namespaced
 --- (reactions stay bare exports, state helpers are namespaced).
 --- `ui.createLocalState` is the entry point.

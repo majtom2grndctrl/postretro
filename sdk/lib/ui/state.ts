@@ -238,6 +238,100 @@ export function Switch(
   });
 }
 
+// --- forEach(list, build) --------------------------------------------------
+
+/** A widget descriptor node: any factory's `kind`-tagged output. */
+type ForEachNode = { kind: string; [field: string]: unknown };
+
+/** An engine catalog list (`getGameState().session.players`): frozen rows of refs. */
+type ForEachList<Row> = ReadonlyArray<Row> & { readonly __list?: unknown };
+
+function isWidgetNode(value: unknown): value is ForEachNode {
+  return value !== null && typeof value === "object" && typeof (value as { kind?: unknown }).kind === "string";
+}
+
+/** Every authored `id` in a row's widget subtree. */
+function collectRowIds(node: ForEachNode, ids: Set<string>): void {
+  if (typeof node.id === "string") ids.add(node.id);
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) {
+      for (const item of value) if (isWidgetNode(item)) collectRowIds(item, ids);
+    } else if (isWidgetNode(value)) {
+      collectRowIds(value, ids);
+    }
+  }
+}
+
+/**
+ * Clone a row's widget nodes, suffixing every id in `ids` with `.<row>` and
+ * every same-row `labelledBy` / `focusNeighbors` target with it. Non-widget
+ * values (refs, reactions, predicates) are shared, not cloned.
+ */
+function suffixRow(node: ForEachNode, ids: Set<string>, suffix: string): ForEachNode {
+  const out: ForEachNode = { ...node };
+  const follow = (target: unknown) =>
+    typeof target === "string" && ids.has(target) ? `${target}${suffix}` : target;
+  if (typeof node.id === "string") out.id = `${node.id}${suffix}`;
+  if (node.labelledBy !== undefined) out.labelledBy = follow(node.labelledBy);
+  if (node.focusNeighbors !== null && typeof node.focusNeighbors === "object") {
+    const neighbors: Record<string, unknown> = {};
+    for (const [direction, target] of Object.entries(node.focusNeighbors as Record<string, unknown>)) {
+      neighbors[direction] = follow(target);
+    }
+    out.focusNeighbors = neighbors;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (Array.isArray(value)) {
+      out[key] = value.map((item) => (isWidgetNode(item) ? suffixRow(item, ids, suffix) : item));
+    } else if (isWidgetNode(value)) {
+      out[key] = suffixRow(value, ids, suffix);
+    }
+  }
+  return out;
+}
+
+/**
+ * `forEach(list, (row, i) => widget)` — unroll a widget once per row of an
+ * engine catalog list (`getGameState().session.players`), up to the list's
+ * capacity, and return the rows as an array to splice into a container's
+ * `children`. `i` is the row index from 0.
+ *
+ * A row shows only while its `present` flag holds and any `visibleWhen` it
+ * declares holds too. Every authored id in a row gets the suffix `.<row>`, and a
+ * `labelledBy` or `focusNeighbors` naming an id inside the same row follows it.
+ * The tree stays static: rows appearing or leaving never rebuild it.
+ */
+export function forEach<Row extends { present: { slot: string } }>(
+  list: ForEachList<Row>,
+  build: (row: Row, i: number) => ForEachNode,
+): ForEachNode[] {
+  if (!Array.isArray(list) || typeof (list as ForEachList<Row>).__list !== "string") {
+    throw new Error("forEach: `list` must be an engine state list such as `getGameState().session.players`");
+  }
+  if (typeof build !== "function") {
+    throw new Error("forEach: `build` must be a function `(row, i) => widget`");
+  }
+  return list.map((row, i) => {
+    const widget = build(row, i);
+    if (!isWidgetNode(widget)) {
+      throw new Error(`forEach: row ${i} must build a widget descriptor (a \`kind\`-tagged object)`);
+    }
+    const ids = new Set<string>();
+    collectRowIds(widget, ids);
+    const suffixed = suffixRow(widget, ids, `.${i}`);
+    const present: Predicate = {
+      slot: stateSlot(row.present as unknown as ComputedRef<unknown>, "forEach"),
+      equals: true,
+    };
+    if (suffixed.visibleWhen === undefined) {
+      return { ...suffixed, visibleWhen: present };
+    }
+    // One predicate per node: the row keeps its own, and a zero-spacing stack
+    // around it shows only while the row is present.
+    return { kind: "vstack", gap: 0, padding: 0, align: "start", visibleWhen: present, children: [suffixed] };
+  });
+}
+
 /**
  * The `ui` namespace object: state-helper SDK functions are namespaced
  * (reactions stay bare exports, state helpers are namespaced).

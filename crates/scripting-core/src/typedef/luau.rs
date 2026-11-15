@@ -297,6 +297,7 @@ pub fn luau_public_sdk_lib_block() -> String {
     remove_doc_and_decl_line(&mut block, "declare function stateCompare");
     remove_doc_and_decl_line(&mut block, "declare function createLocalState");
     remove_doc_and_decl_line(&mut block, "declare function Switch");
+    remove_doc_and_decl_line(&mut block, "declare function forEach");
     remove_decl_line(&mut block, "declare ui:");
     block.push('\n');
     block.push_str(LUAU_VIRTUAL_MODULE_TYPES);

@@ -843,6 +843,7 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "createLocalState",
             "ui",
             "Switch",
+            "forEach",
         ],
     )?;
     copy_lua_fields(

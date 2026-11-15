@@ -55,6 +55,7 @@ Every Decision premise holds at `01d5db4f`. The sequencing prerequisite, the fir
 
 ## Clarifications
 - `session.players` is a frozen array of row refs in QuickJS and a frozen sequence in Luau (rows 1..capacity, row `i` holding slot row `i - 1`); both carry a non-enumerable `__list` marker so `forEach` accepts only engine lists. Typed `StateList<Row>`.
+- Luau `forEach` passes `i` from 1, as `ipairs` does; row ids carry the slot row (`i - 1`), so both runtimes emit identical descriptors. A row with its own `visibleWhen` is wrapped in a zero-spacing `vstack` gated on `present`.
 - `occupancy` family members insert as engine slots under no namespace record; `RESERVED_ENGINE_NAMESPACES` rejects `occupancy` and overlaps on both mod declaration paths with `EngineReservedNamespace`.
 
 ## AC-to-proof
@@ -88,7 +89,7 @@ Test names are proposals; final names land with each task. `two-endpoint` means 
 | L3 single player one local row Player 1; leaver all rows absent, with and without backdrop (P14) | `single_player_counts_follow_install_tick_death_and_unload`, `client_counts_read_zero_once_its_level_unloads`, `frontend_backdrop_is_not_a_session_level` | achievable as stated; passing (task 4) |
 | L4 flapping status rate-limited; final and other-seat changes within one interval (P19) | `status_only_roster_updates_respect_rate_limit` | achievable as stated; passing (task 4) |
 | L5 rows by status equal counts on host each tick and clients within one interval, incl. undeclared death and respawn and joiner bind (P24) | `rows_by_status_match_counts_on_host_and_clients` (two-endpoint) | achievable as stated |
-| L6 `forEach` rows, present-only, id suffix, same-row `labelledBy` / `focusNeighbors`, no rebuild | `for_each_unrolls_rows_with_suffixed_ids_and_never_rebuilds` (TS and Luau) | achievable as stated |
+| L6 `forEach` rows, present-only, id suffix, same-row `labelledBy` / `focusNeighbors`, no rebuild | `for_each_unrolls_rows_with_suffixed_ids_and_matches_across_runtimes` (TS and Luau) | achievable as stated; passing (task 5) |
 | C1 script `setState` on counts, rows, family warns, unchanged | `engine_session_and_occupancy_slots_reject_script_writes` (log capture) | achievable as stated; passing (task 3) |
 | C2 `occupancy` / overlapping store rejected with and without level; `occupancyBoard` loads; engine insert succeeds (P5) | `occupancy_namespace_is_reserved_for_the_engine` | achievable as stated; passing (task 3) |
 | C3 tag with `.` or `:` warns once, no family; others get theirs | `unformable_tag_warns_once_and_gets_no_family` | achievable as stated |
@@ -118,7 +119,7 @@ Each task ends green and committed with this file. Hot path: the per-tick write 
 | 2 | Split occupant tracking out of `trigger_system.rs`, behavior-preserving, own commit | integrating executor | — | done: `sim::trigger_occupants::TriggerOccupants`; sim lib (1990), netcode and app trigger filters green |
 | 3 | Catalog `Family` and `List` nodes: both runtime installers, build-time twin, typedef emit, drift guards; value-preserving family slot replace; `occupancy` reservation; readonly proof (C1, C2, C12 typedef part) | integrating executor | 1 | done: C1, C2 pass; family/list installers, mirror and typedef drift guards green; full suites of postretro, netcode, sim, entities, script-compiler, scripting-core, foundation green |
 | 4 | Roster names and statuses: `RosterEntry` fields, `WIRE_VERSION` 40, status dirty marking and 250 ms gate, client `entries` accessor; `session.players` rows on host, single player and clients; `Player N`; privacy tests and doc comments rewritten (L1–L5) | integrating executor | 1, 3 | in progress: written; L2, L3, L4 and the row half of L1 pass focused; full net, netcode and app suites running |
-| 5 | `forEach` in TS and Luau, `present` gating, id and reference suffixing, export inventories; HUD reference list (L6) | delegable worker (SDK files only) | 3 | |
+| 5 | `forEach` in TS and Luau, `present` gating, id and reference suffixing, export inventories; HUD reference list (L6) | integrating executor (no worktree build budget on this disk) | 3 | in progress: `forEach` and inventories written; L6 parity test passes; typedef regeneration and HUD reference pending |
 | 6 | Referenced-tag collection over lowered descriptors; mod-scope families at first init and staged commit; level families at install, removed at unload unless mod-shared; absent and unformable tag warnings (C3–C11) | integrating executor | 3 | |
 | 7 | Sim aggregates per-tag `occupiedCount` / `occupants` from the capture onto `TickEvents`; the frame write publishes them with counts (O1–O5, S6) | integrating executor | 2, 6 | |
 | 8 | Shared headless harness (production sim tick, write, accumulators, crossings) and the puzzle rows P1–P9 | integrating executor | 7 | |

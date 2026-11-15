@@ -1141,6 +1141,8 @@
   export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
   /** `Switch(cell, map)` (M13 G2) — expand a string-valued cell's `map` of `value → subtree` into an array, injecting `visibleWhen: cell.is(key)` onto each subtree in LEXICOGRAPHICALLY-SORTED key order (byte-identical TS/Luau). Splice the result into a container's `children`. */
   export function Switch(cell: LocalStateHandle<string>, map: Record<string, WidgetDescriptor>): WidgetDescriptor[];
+  /** `forEach(list, (row, i) => widget)` — unroll a widget once per row of an engine list up to its capacity; a row shows only while its `present` flag and any `visibleWhen` it declares hold; authored ids get the suffix `.<row>` and same-row references follow. */
+  export function forEach<Row extends { readonly present: ComputedRef<boolean> }>(list: StateList<Row>, build: (row: Row, i: number) => WidgetDescriptor): WidgetDescriptor[];
   /** State-helper namespace (state helpers are namespaced; reactions stay bare). */
   export const ui: { createLocalState: typeof createLocalState };
 

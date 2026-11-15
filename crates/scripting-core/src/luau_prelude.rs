@@ -319,6 +319,7 @@ const UI_STATE_MODULE_FIELDS: &[&str] = &[
     "createLocalState",
     "ui",
     "Switch",
+    "forEach",
 ];
 
 /// UI theme-helper SDK fields exported through `require("postretro/ui")`.
@@ -375,6 +376,7 @@ pub const POSTRETRO_UI_MODULE_EXPORTS: &[&str] = &[
     "createLocalState",
     "ui",
     "Switch",
+    "forEach",
     "defineTheme",
     "getDesignTokens",
     "onStateCrossing",

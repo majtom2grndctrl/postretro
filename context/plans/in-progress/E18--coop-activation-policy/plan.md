@@ -1,7 +1,7 @@
 # E18--coop-activation-policy — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 01d5db4f
 
 ## Corrections

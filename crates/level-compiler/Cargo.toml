@@ -49,5 +49,8 @@ postretro-physics.workspace = true
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
 postretro-render-cpu = { workspace = true, features = ["test-support"] }
+# `sh_body::pre_flag`: upgrades a baseline compiler's pre-flag PRL so the
+# parity suite can compare it with this compiler's.
+postretro-level-format = { workspace = true, features = ["serde", "gltf-resolve", "test-support"] }
 postretro-foundation.workspace = true
 proptest = { workspace = true }

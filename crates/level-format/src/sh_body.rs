@@ -13,6 +13,9 @@ use crate::direct_sh_delta_volumes::{
 use crate::direct_sh_volume::{DIRECT_SH_VOLUME_VERSION, DirectShVolumeSection};
 use crate::sh_volume::{OctahedralShVolumeSection, SH_VOLUME_VERSION};
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod pre_flag;
+
 /// Whether a whole-load SH section carries its body (atlas or delta tiles).
 ///
 /// Only the whole-load path (`POSTRETRO_SH_STREAMING=off`, or a PRL without id 50)

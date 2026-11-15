@@ -16,6 +16,7 @@ use image::RgbaImage;
 use postretro_level_format::mover_probe_channel::{
     MOVER_PROBE_CHANNEL_EPOCH, MoverProbeChannelSection,
 };
+use postretro_level_format::sh_body::pre_flag::upgrade_pre_flag_prl;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
 // Shared by every capture target; the mover rows compile through
@@ -49,7 +50,10 @@ fn compile_release_whole_load_sh(workspace: &Path, map_name: &str) -> tempfile::
 /// `mover_probe_channel_prl_parity` takes. Its bake matches that build's;
 /// it writes id 57 at epoch 5, which the engine refuses, so each baseline
 /// PRL has that one byte relabelled to the current epoch, which the parity
-/// test's module doc shows is safe for a two-pose section only.
+/// test's module doc shows is safe for a two-pose section only. It also
+/// predates the SH body-presence field, whose old section versions the
+/// engine refuses too, so each baseline PRL is then upgraded to the current
+/// SH format with its bodies present, which both modes load.
 const BASELINE_ENV: &str = "POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN";
 
 /// The baseline compiler, or a failure naming the variable.
@@ -76,8 +80,9 @@ fn baseline_compiler() -> PathBuf {
 const BASELINE_EPOCH: u8 = 5;
 
 /// [`compile_release`] through the baseline compiler, id 57's epoch byte
-/// relabelled from [`BASELINE_EPOCH`] to the current epoch. Fails unless
-/// every mover record stores two poses, the one case the relabel preserves
+/// relabelled from [`BASELINE_EPOCH`] to the current epoch, then its SH
+/// sections upgraded ([`upgrade_pre_flag_prl`]). Fails unless every mover
+/// record stores two poses, the one case the relabel preserves
 /// (`mover_probe_channel_prl_parity`'s `at_this_epoch`).
 fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> tempfile::TempPath {
     let prl = compile_dev_map_using(compiler, workspace, map_name, &["--release"]);
@@ -107,6 +112,9 @@ fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> t
             );
         }
     }
+    let bytes = upgrade_pre_flag_prl(&bytes).unwrap_or_else(|error| {
+        panic!("{map_name}: upgrade the baseline's pre-flag SH sections: {error}")
+    });
     std::fs::write(&prl, bytes).expect("write the baseline PRL");
     prl
 }

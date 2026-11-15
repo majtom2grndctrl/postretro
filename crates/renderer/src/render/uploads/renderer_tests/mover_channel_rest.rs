@@ -1,10 +1,11 @@
 //! Compiled maps: at rest, mid poses change no probe's channel contribution.
 //! Each pair names a map built `--release` with two poses per mover by the
-//! parity baseline compiler, its id-57 epoch byte rewritten in code from 5 to
+//! parity baseline compiler, and by this one `--release --whole-load-sh`, with
+//! mid poses. In code the baseline's id-57 epoch byte is rewritten from 5 to
 //! the current `MOVER_PROBE_CHANNEL_EPOCH` (safe for a two-pose section only,
-//! which the test asserts; why:
-//! `mover_probe_channel_prl_parity`'s module doc), and by this one, with mid
-//! poses. Each build loads under `off` and under `sync-proof` with every
+//! which the test asserts; why: `mover_probe_channel_prl_parity`'s module
+//! doc), and its SH sections are upgraded to the body-presence format with
+//! bodies present (`sh_body::pre_flag`). Each build loads under `off` and under `sync-proof` with every
 //! cluster resident, hands every mover no state, then t′ = 0 and t′ = 1, and
 //! reads back every probe either build's channel touches.
 //!
@@ -50,9 +51,11 @@ struct Channel {
 const PARENT_EPOCH: u8 = 5;
 
 /// A copy of the baseline PRL at `path` with id 57's epoch byte rewritten to the
-/// current epoch, and its path. Fails unless the baseline wrote [`PARENT_EPOCH`].
+/// current epoch and its pre-flag SH sections upgraded, and its path. Fails
+/// unless the baseline wrote [`PARENT_EPOCH`].
 fn at_this_epoch(path: &str) -> std::path::PathBuf {
     use postretro_level_format::mover_probe_channel::MOVER_PROBE_CHANNEL_EPOCH;
+    use postretro_level_format::sh_body::pre_flag::upgrade_pre_flag_prl;
     use postretro_level_format::{SectionId, read_container};
     let mut prl = std::fs::read(path).unwrap_or_else(|error| panic!("read {path}: {error}"));
     let meta =
@@ -65,6 +68,8 @@ fn at_this_epoch(path: &str) -> std::path::PathBuf {
         );
         prl[at] = MOVER_PROBE_CHANNEL_EPOCH;
     }
+    let prl = upgrade_pre_flag_prl(&prl)
+        .unwrap_or_else(|error| panic!("{path}: upgrade the pre-flag SH sections: {error}"));
     let stem = std::path::Path::new(path)
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -165,7 +170,8 @@ fn output(atlas: usize, with: f32, none: f32, c: f32) -> f32 {
 #[test]
 #[ignore = "requires MOVER_REST_PAIRS: `:`-separated `old.prl=new.prl` pairs, each a map built \
             `--release` by the parity baseline compiler (its id-57 epoch byte, 5, is \
-            relabelled to the current epoch in code) and by this one (mover-closet, mover-setpiece, enemy-movers)"]
+            relabelled to the current epoch and its SH sections upgraded in code) and by this one \
+            `--release --whole-load-sh` (mover-closet, mover-setpiece, enemy-movers)"]
 fn rest_channel_output_equals_the_pre_change_build() {
     let pairs = std::env::var("MOVER_REST_PAIRS").expect("set MOVER_REST_PAIRS");
     let mut misses = Vec::new();

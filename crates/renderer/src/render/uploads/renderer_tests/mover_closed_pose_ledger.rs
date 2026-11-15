@@ -11,14 +11,15 @@ use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use postretro_level_loader::ShStreamingMode;
 use std::collections::BTreeSet;
 
-/// Each map named by `MOVER_LEDGER_PRLS` (`:`-separated compiled PRLs with
-/// id 50 and id 57, some mover storing a mid pose's depth tile), under
+/// Each map named by `MOVER_LEDGER_PRLS` (`:`-separated PRLs compiled with
+/// `--whole-load-sh`, which `off` needs, holding id 50 and id 57, some mover
+/// storing a mid pose's depth tile), under
 /// `off` and `sync-proof`: the host row `mover_closed_pose_depth_tiles` is
 /// the decoded f32 pairs of every pose tile the depth records store, plus a
 /// base tile per distinct probe, and the report is gone after unload.
 #[test]
-#[ignore = "requires MOVER_LEDGER_PRLS: `:`-separated compiled PRLs with id 50 and id 57 \
-            (mover-setpiece)"]
+#[ignore = "requires MOVER_LEDGER_PRLS: `:`-separated PRLs compiled with `--whole-load-sh`, \
+            holding id 50 and id 57 (mover-setpiece)"]
 fn every_stored_poses_closed_pose_tile_is_ledgered_on_a_compiled_map_and_leaves_with_it() {
     let paths = std::env::var("MOVER_LEDGER_PRLS").expect("set MOVER_LEDGER_PRLS");
     for path in paths.split(':').filter(|path| !path.is_empty()) {

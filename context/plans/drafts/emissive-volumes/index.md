@@ -11,47 +11,39 @@ Owner request: mappers set how strongly a surface glows, per placement, and scri
 
 ## Decisions
 
-- **Retire the `neon` prefix and `Material::Neon`.** Neon carries nothing else: shininess and surface depth match Default, and ricochet has no reader.
-  - Glow strength becomes 1.0 wherever a material's `_e` slot is loaded, 0 otherwise. Runtime and bake read the one predicate, so the forward pass still skips the emissive sample when no `_e` exists.
-  - `tools/gen_emissive.py` takes its brightness cutoff as a flag, not from the prefix.
+- **Retire the `neon` prefix and `Material::Neon`.** Neon's shininess matches Default and its ricochet flag has no reader. Its flat surface depth goes too: a former `neon_` texture with an `_h` map carves as Default does.
+  - Glow strength becomes 1.0 wherever a material's `_e` slot is loaded, 0 otherwise. Runtime and bake read the one predicate.
+  - `tools/gen_emissive.py` uses one default cutoff whatever the prefix; `--cutoff` stays the lever.
   - Diverges from `resource_management.md` §4.5 "prefix-derived strength"; that section is rewritten at promotion.
-- **`_e` stays an RGB colour map in linear light; black is zero glow.** Strength multiplies the texel: `glow = _e × strength`. The diffuse map is the unlit surface and `_e` is the lit one, so fading glow to 0 shows a real off state. This matches glTF `emissiveTexture` × `KHR_materials_emissive_strength` (`research.md`).
+- **`_e` stays an RGB colour map in linear light; black is zero glow.** `glow = _e × strength`. The diffuse map is the unlit surface and `_e` the lit one, so fading glow to 0 shows a real off state. Matches glTF `emissiveTexture` × `KHR_materials_emissive_strength` (`research.md`).
 - **`emissive_volume` brush entity.** Keys:
-  - `emissive_min` (default 0) and `emissive_max` (default 1). Both are finite and ≥ 0; a max below min swaps, with a warning.
-  - A scripted **level** in [0, 1] sets strength = min + level × (max − min). With no script the level is 1, so the volume sits at max.
-  - `_tags`.
-  
-  Its brushes never render, collide or bake (peeled at parse like `fog_volume`).
-- **The map owns the range; scripts own only the level.** This diverges on purpose from lights and fog, whose `pulse`/`fade`/`flicker` take absolute values. A script cannot push a surface past the mapper's maximum, so look stays with the map (`index.md` §2, "Defaults for novices"). The same methods therefore mean level units on an emissive member, and the docs say so beside the member table.
+  - `emissive_min` (default 0), `emissive_max` (default 1), `_tags`.
+  - A negative or non-finite value fails the compile, naming the key. A max below min swaps, with a warning.
+  - A scripted **level** in [0, 1] sets strength = min + level × (max − min). With no script the level is 1.
+  - Its brushes never render, collide or bake.
+- **The map owns the range; scripts own only the level.** Lights and fog take absolute values through the same `pulse`/`fade`/`flicker`; here those methods take level units, so a script cannot push a surface past the mapper's maximum (`index.md` §2, "Defaults for novices").
+- **Level writes and animations.** A level write clears any running animation on its targets, as `setSpinRate` does, not as fog's static setters do. Clearing an animation leaves the level at its last presented sample.
 - **Membership is compile-time and per static world face.**
   - A face belongs to a volume when its centroid lies inside one of the volume's brush hulls.
-  - Overlapping volumes resolve last-in-map-order wins, as `lightmap_scale_region` does, and the compiler warns once per overlapping pair. Rival: smallest containing volume wins (`reflection_volume`, environment volumes), so nesting needs no warning. Last-wins was kept because the two selectors share a rule: both override a surface property, not a region's physics.
-  - A volume containing no face with an `_e` map warns. A face with no `_e` inside a volume still glows nothing.
+  - Overlaps resolve last-in-map-order wins, as `lightmap_scale_region` does.
+  - Warnings:
+    - once per pair of volumes that both contain a face centroid (volumes that only touch, or overlap in empty space, stay silent)
+    - per volume left with no `_e` face, including one emptied by a later volume
   - At most 256 volumes per level; past that the compile fails, naming the count.
 - **Static world faces only.**
-  - Kinematic movers and fluids keep strength 1.0 with no lever. Movers leave any static volume, and the per-instance mover record is the door when content asks.
-  - Accepted regression: a `neon_` face on a mover or fluid drops from 4.0 to 1.0 and cannot bloom from glow alone. No dev map has one.
-  - Lava's `_e` therefore starts glowing at 1.0; that is content, not engine policy.
-  - Imported models stay on `Material::Default` (unchanged).
-- **Runtime owns the level; the bake reads max.**
-  - Per frame, the renderer packs each volume's current strength into one table that world faces index.
-  - Reflection-probe capture bakes each member face at its volume's max, the no-script level. Captures shade a reference state: an animated light enters at the cycle mean of its authored KVP curve (`resource_management.md` §5), and script curves are never baked (`scripting.md` §2). A volume has no authored curve, so its reference state is its no-script level. A scripted pulse does not move a reflection.
-  - Bounce means exclude glow texels on any texture with an `_e` map.
-- **Photosensitivity.** The level is a CPU-packed source, so it passes through the `flash_clamp` per-value clamp (`ValueClamp`), one clamp per volume, while `accessibility.flashLimiter` is on. This is the first emissive source the `E23--photosensitivity-source-floor` draft names; that draft keeps the shared budget across sources.
-- **Co-op: presentation state, not gameplay.**
-  - A host-only level write replicates bound by emissive record index with the 1 cm origin check, exactly as fog volumes do (`networking.md` §Presentation state).
-  - A machine-local write stays local.
-- **Migration.** `tools/migrate_neon_prefix.py` renames `neon_*` textures and every sibling slot, and rewrites `.map` texture references.
-  - Dry-run by default; refuses on a name collision.
-  - It lists the maps it touched, because only a mapper can decide which faces need a volume to keep their HDR glow.
-  - It names separately any former `neon_` texture on a mover or fluid face, which no volume reaches.
-  - It ships with `tools/` in the SDK.
-- **Dev content keeps its look.** Every dev map face that used a `neon_` texture sits in an `emissive_volume` with max 4.0. The combat-demo bloom A/B (bright blooms, dim stays under threshold) holds.
-- **Retire `drafts/per-surface-bloom-opt-in`.** The owner considers per-surface bloom solved by per-face `_e` assignment. Its prefix-based approach is gone with the prefix.
+  - Kinematic movers and fluids keep strength 1.0 with no lever. Accepted regression: a `neon_` face on a mover or fluid drops from 4.0 to 1.0. No dev map has one.
+  - Model glow stays 0: models load only their diffuse slot.
+- **Runtime owns the level; the bake reads max.** Reflection-probe capture bakes each member face at its volume's max, its reference state (`research.md` §Capture reference state). A scripted pulse does not move a reflection. Bounce means exclude glow texels on any texture with an `_e` map.
+- **Photosensitivity.** While `accessibility.flashLimiter` is on, each volume's presented strength passes the `flash_clamp` per-value rules, judged relative to the bloom threshold so HDR range counts. The red-flash rule and any shared budget across sources stay with `E23--photosensitivity-source-floor`, which lists emissive animation as a clamp site.
+- **Co-op: presentation state, not gameplay.** A host-only level write replicates bound by emissive record index with the 1 cm origin check, exactly as fog volumes do (`networking.md` §Presentation state). A machine-local write stays local.
+- **Migration.** `tools/migrate_neon_prefix.py` renames `neon_x` to `x` for every slot sibling and rewrites `.map` texture references. It ships with `tools/` in the SDK.
+  - Dry-run by default. Refuses on a name collision, or when `x` starts with a known material prefix (the rename would change the material).
+  - Lists the maps it touched: only a mapper can decide which faces need a volume to keep HDR glow.
+  - Names separately any former `neon_` texture on a mover or fluid face, which no volume reaches.
+- **Dev content keeps its look.** Every dev map face that used a `neon_` texture sits in an `emissive_volume` with max 4.0, so the combat-demo bloom A/B holds.
 - **Non-goals.**
   - Glow colour scripting (a tint channel): add only when content asks.
   - Area lights from glowing faces: a separate brief, not yet drafted, which should read this volume's level for its brightness.
-  - Glow floors above black: owner ruling, 0 is the only floor.
 
 ### Scripting surface
 
@@ -65,8 +57,9 @@ for (const sign of signs) {
 reactions.push(defineReaction("powerCut", { primitive: "setEmissiveLevel", tag: "bar_sign", args: { level: 0 } }));
 // Members also carry pulse({ min, max, periodMs }) and fade({ from, to, periodMs }).
 // Every value is a level in [0, 1]; out-of-range samples clamp.
-// The animation primitive is setEmissiveAnimation { periodMs, playCount?, level: number[] | null }:
-// null clears it, and a finite playCount settles on its last sample, as setFogAnimation does.
+// The animation primitive is setEmissiveAnimation, args { periodMs, playCount?, level: number[] }
+// with a non-empty curve, or args null to clear it, as setFogAnimation does.
+// A finite playCount settles on its last sample. setEmissiveLevel clears any running animation.
 ```
 
 TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
@@ -74,36 +67,38 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 ## Acceptance
 
 ### Automated
-- [ ] A texture with an `_e` map and no prefix glows at strength 1.0. One without `_e` packs 0 and skips the sample. A former `neon_` name is an unknown prefix, warned once.
+- [ ] A texture with an `_e` map and no prefix glows at strength 1.0. One without `_e` packs 0 and skips the sample. A former `neon_` name is an unknown prefix, warned once (grep gate: no `neon` in the prefix tables). A former `neon_` texture with an `_h` map carves as Default.
 - [ ] Bake and runtime agree on the `_e`-loaded predicate for one texture: bounce-mean glow exclusion, reflection-capture term and material uniform. That texture's bounce mean excludes its glow texels.
 - [ ] A skinned model with an `_e` sibling still packs strength 0.
 - [ ] `gen_emissive.py` without `--cutoff` uses one default whatever the file's prefix: a `neon_` file and any other give the same `_e`.
-- [ ] Strength = min + level × (max − min) at level 0, 0.5 and 1. No script means max. A level outside [0, 1] clamps on both sides. Max < min swaps and warns.
+- [ ] Strength = min + level × (max − min) at level 0, 0.5 and 1. No script means max. A level outside [0, 1] clamps on both sides. Max < min swaps and warns. A negative or non-finite `emissive_min` or `emissive_max` fails the compile, naming the key; 0 compiles.
 - [ ] Membership:
   - A face whose centroid is inside a hull joins; one just outside does not.
   - A face lying in the plane of a volume brush's side (the volume drawn flush on a wall) joins (pin P27).
   - A member face the atlas cuts into sub-faces glows as one: every sub-face carries its membership, and the section indexes the shipped Geometry faces (pin P29).
   - A volume enclosing a mover brush and a fluid lists neither in its faces. Both glow at 1.0 with an `_e` map, at any level.
-  - Two overlapping volumes: the later wins and one warning names the pair.
-  - A volume with no `_e` face warns.
+  - Two volumes that both contain a face centroid: the later wins and one warning names the pair. Volumes that only touch, or overlap where no centroid lies, stay silent.
+  - A volume with no `_e` face warns, including one whose every face a later volume takes (pin P28).
   - Volume 256 compiles; volume 257 fails, naming the count.
 - [ ] Adding a default volume (min 0, max 1) around `_e` faces changes only the emissive-volumes section: every other section is byte-identical to the same map without the volume.
 - [ ] The loader refuses a version other than 1, a count over 256, a face index out of range or descending, and a face owned twice.
 - [ ] At runtime a member face presents its volume's strength and a non-member face sharing a vertex with it presents 1.0, at level 0 and at level 1.
 - [ ] A level written by a reaction drained in frame N presents in frame N (pin P12).
 - [ ] Reflection capture shades a member face at its volume's max whatever its scripts do. Changing a volume's `emissive_max`, or a face's membership, misses the reflection-capture cache.
-- [ ] PRL round-trip of the emissive-volumes section. A level with no volumes emits no section, and its other sections are byte-identical to the same map compiled without the section.
+- [ ] PRL round-trip of the emissive-volumes section. A level with no volumes emits no section.
 - [ ] The Scripting surface example runs as a `content/dev` script. In the resulting level ramps:
   - `flicker` moves the level within [0.3, 1].
   - `setEmissiveLevel` to 0, fired by a dev-map trigger's `on_fire "powerCut"`, holds 0.
   - A finite `fade` settles on its last sample.
-  - `setEmissiveAnimation` with `null` clears the curve.
+  - `setEmissiveAnimation` with args `null` clears the curve, and the level holds its last presented sample (pin P5).
+  - A level write clears a running animation and holds (pin P1). In one body, animation then level: the level wins; level then animation: the animation wins (pins P2, P3). A level written mid-`fade` holds, and the fade's settle never lands (pin P4).
   - A non-finite level reads 0, and every animation sample clamps as a set level does. `periodMs` 0, `flicker` rate 0 and an empty curve are refused with a warning, leaving the prior animation; `playCount` 0 plays once (pins P7–P10).
   - A tag matching no volume is a no-op; a non-emissive target warns and is skipped (pin P11). A paused script clock holds the level (pin P13).
   
   TS and Luau emit identical wire.
 - [ ] With the flash limiter on, a level step from 0 to 1 is rate-limited by the shared clamp rules. With it off, the step lands in one frame.
   - With it on, the Scripting surface `flicker` (rate 6) presents at most 3 flashes in any 1 s; scripts and the wire still see the unclamped level (pin P14).
+  - The clamp judges strength, not level: a level step of 0.05 on a volume with max 20 (a strength step of 1.0) is limited as a strength step of 1.0 is.
   - Clamp history: a volume is limited every frame, in view or not. A frame whose surface acquire fails leaves every clamp where it began. A level change starts every volume fresh. Turning the limiter on presents that frame unchanged (pins P15–P18).
 - [ ] Co-op:
   - A host-only level write reaches a client. A late joiner receives the current level.
@@ -116,7 +111,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 - [ ] The migration script:
   - Dry run lists renames and touched maps, writing nothing.
   - A real run renames every slot sibling and rewrites references.
-  - A collision refuses with no partial write.
+  - A collision refuses with no partial write. So does `neon_metal_x`, whose result would start with a known prefix; `neon_panel` renames.
   - A former `neon_` texture on a mover or fluid face is named separately.
 - [ ] combat-demo and reflection-probes-test compile with every former `neon_` face in a volume of max 4.0. At that max the bright panel's peak passes the bloom threshold and the dim panel's stays under it, restating the bloom pin.
 
@@ -133,14 +128,12 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - Chosen: the compiler writes per-volume face-index lists into the new section. At load the renderer builds a per-vertex volume id stream beside the world vertex buffer, as `spec_owner_buffer` rides slot 1, and the fragment indexes the strength table.
   - Rival: a per-vertex field in Geometry (id 17), like `animated_block`. It needs unshared vertices (`animated_block_ids.rs` guard) and changes the Geometry ABI.
   - First slice: one volume around one face, one vertex shared with a non-member face, checking whether the shared vertex breaks the per-vertex id.
-- Ownership rival: glow keys on the brush entity that owns the faces (`func_group` already carries `_reflection_capture` for its own faces; `switch` compiles as world). Membership would be exact, with no centroid, overlap or split-face rule. Not chosen:
-  - TrenchBroom groups and layers drop custom keys on save.
-  - Ownership forces moving existing worldspawn brushes into an entity.
-  - A volume retrofits glow over worldspawn and groups untouched, as `lightmap_scale_region` and `reflection_volume` already select faces.
-- Volume parse and peel: brush entities `continue` before the world set in `parse.rs`. `fog_volume` (non-axis-aligned) and `lightmap_scale_region` each fail the compile on more than one brush, and lightmap selection never reads the region's kept planes (`lightmap_bake/charts.rs` tests the chart's first vertex against the AABB). Several hulls per entity follow the environment volumes, which keep one convex leaf per brush.
-- Scripting and replication: copy `sdk/lib/entities/fog_volumes.{ts,luau}`, the `setFog*` reaction primitives and the fog presentation binding. Reuse `AnimatableScalar<"level">`. Fog's 17-sample pulse with a wrap sample fits a CPU linear sampler; this level is sampled on the CPU too.
+- Ownership rival: glow keys on the brush entity that owns the faces. Not chosen; argued in `research.md` §Ownership rival.
+- Strength reaches the forward pass through a per-frame table packed CPU-side, one entry per volume; the forward pass keeps skipping the emissive sample when no `_e` exists. Movers' per-instance record is the door for mover glow.
+- Volume parse and peel follow `fog_volume`. Brush entities `continue` before the world set in `parse.rs`. `fog_volume` (non-axis-aligned) and `lightmap_scale_region` each fail the compile on more than one brush, and lightmap selection never reads the region's kept planes (`lightmap_bake/charts.rs` tests the chart's first vertex against the AABB). Several hulls per entity follow the environment volumes, which keep one convex leaf per brush.
+- Scripting and replication: copy `sdk/lib/entities/fog_volumes.{ts,luau}`, the `setFog*` reaction primitives and the fog presentation binding. Reuse `AnimatableScalar<"level">`; the level is sampled on the CPU, as fog's is. Level writes clear the animation as `setSpinRate` does, not as `setFogDensity` does.
 - Flash clamp: `ValueClamp` is public and per value. Its keyed container is private (`flash_clamp` `mod keyed`; `KeyClamp for ValueClamp` exists only in tests), and the ghost look clamp keys `LookValueClamp`. Exposing a keyed `ValueClamp` is the executor's call.
-- Docs: FGD entry; `docs/level_design.md` material table and an Emissive volumes section; `docs/scripting-reference.md` member table and primitives.
+- Docs: FGD entry; `docs/level_design.md` material table and an Emissive volumes section; `docs/scripting-reference.md` member table and primitives, saying beside the member table that emissive methods take level units.
 
 ## Open questions
 

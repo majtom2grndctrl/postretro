@@ -71,10 +71,13 @@ Sources:
 
 ## Ordering pins
 
-P1–P5 (a level write against a running animation; the level after a cleared curve) wait on owner answers.
-
 | id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
+| P1 | Looping `flicker` installed at `levelLoad`; trigger fires `setEmissiveLevel` 0 | animation installed, then level set, later tick | Level write clears the animation; 0 holds on every machine. |
+| P2 | One body: `setEmissiveAnimation` then `setEmissiveLevel` | same drain, body order | Level wins and clears the curve. |
+| P3 | One body: `setEmissiveLevel` then `setEmissiveAnimation` | same drain, body order | Curve wins from the first bridge tick that sees it. |
+| P4 | Finite `fade` running; `setEmissiveLevel` 0.5 lands mid-fade | level during animation; fade would then end | 0.5 holds; the fade is gone and its settle never writes. |
+| P5 | `setEmissiveAnimation` args `null` mid-flicker | clear, then render | Level holds the last presented sample; the host's sample replicates. |
 | P6 | Identical animation re-installed while it runs | install, install again | Start time kept (component equality); a running `fade` does not restart. After a finite one settles, re-install restarts it. |
 | P7 | `periodMs` 0, `flicker` `rate` 0 (period ∞), empty `level` curve | install | Rejected with a warning; any prior animation and level untouched. |
 | P8 | `playCount` 0 | install | Coerced to 1 with a warning; settles once. |
@@ -99,3 +102,16 @@ P1–P5 (a level write against a running animation; the level after a cleared cu
 | P27 | Face lies in the plane of a volume brush's side (volume flush on a wall) | compile membership | Joins; containment is inclusive (`dot ≤ d`), within compile tolerance. |
 | P28 | Earlier volume whose every face a later volume takes | compile | Later wins each face; earlier keeps its record and index (co-op binding), lists 0 faces; warnings per F6. |
 | P29 | Face cut into sub-faces by the atlas | compile | Every sub-face carries the parent's membership; section indexes final Geometry faces. |
+
+## Capture reference state
+
+Captures shade a reference state. An animated light enters at the cycle mean of its authored KVP curve (`resource_management.md` §5). Script curves are never baked (`scripting.md` §2). A volume has no authored curve, so its reference state is its no-script level, max.
+
+## Ownership rival
+
+Glow keys could sit on the brush entity that owns the faces: `func_group` already carries `_reflection_capture` for its own faces, and `switch` compiles as world. Membership would be exact, with no centroid, overlap or split-face rule. Not chosen:
+- TrenchBroom groups and layers drop custom keys on save.
+- Ownership forces moving existing worldspawn brushes into an entity.
+- A volume retrofits glow over worldspawn and groups untouched, as `lightmap_scale_region` and `reflection_volume` already select faces.
+
+Overlap rule rival: smallest containing volume wins (`reflection_volume`, environment volumes), so nesting needs no warning. Last-wins kept: both emissive volumes and `lightmap_scale_region` override a surface property, not a region's physics.

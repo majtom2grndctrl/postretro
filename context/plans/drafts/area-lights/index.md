@@ -34,10 +34,10 @@ light.
   its own `_color` and `light`, and its light never reads a material's emissive
   strength or a texture prefix.
 - **Reach is derived, with an override, and light fades to it.** Reach R is the
-  distance from the polygons at which the bound E ≤ L·A/d² falls to 1/256.
-  `_falloff_range`, measured the same way, overrides it. The term is scaled by
-  the window (1 − (d/R)⁴)², squared and clamped at 0, of the distance d to the
-  nearest polygon (Karis 2013), so light reaches zero at R with no visible edge
+  distance from the polygons at which the bound E ≤ L·A/d² falls to 1/256 of
+  what a `light 300` point light gives at 1 m. `_falloff_range`, measured the
+  same way, overrides it. The term is scaled by the window max(0, 1 − (d/R)⁴)²,
+  with d the distance to the nearest polygon (Karis 2013), so light reaches zero at R with no visible edge
   and nothing beyond R is lit. A hard cut is either visible or reaches hundreds of
   metres (`research.md` §4).
 - **Unshadowed term: exact, then windowed.** Lambert's polygon irradiance, clipped to the

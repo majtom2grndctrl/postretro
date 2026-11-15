@@ -106,6 +106,13 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 - [ ] At promotion, E23's draft names `emissive_volume` as a built clamp source (grep gate on the class name). No shader reads `_e` alpha (grep gate: every emissive texture sample in the renderer's shaders ends `.rgb`).
 - [ ] combat-demo and reflection-probes-test compile after migration with no `emissive_volume`. The bright panel's peak passes the bloom threshold and the dim panel's stays under it.
 
+### Measured (report, not gate)
+Each run pins the fixture, Mac target machine class, cache mode, baseline (the same map before this change) and metric. A worse-than-expected result is the owner's cue to weigh another implementation, not a failed build.
+- [ ] Forward-pass GPU time (`POSTRETRO_GPU_TIMING=1`, 120-readback window) on a fixture view filled with glowing faces: 0 volumes, 1, 256, and 256 with 16 animating, against the pre-change baseline. Repeat on a view with no `_e` faces, isolating the per-vertex stream's cost.
+- [ ] CPU per-frame cost of the volume update (curve sampling, clamp, packing) at 256 volumes with 16 animating, limiter on and off.
+- [ ] Bytes uploaded per frame: zero on a frame where no volume changed; one entry per changed volume otherwise.
+- [ ] prl-build stage time for membership and `materials.toml` on the hallway map, warm and cold, against the pre-change baseline.
+
 ### Manual
 - [ ] combat-demo: the bright panel blooms and the dim one does not, as before. A volume pulsing the bright panel visibly breathes; at brightness 0 it shows its unlit diffuse. A grey-`_e` status lamp switches red and green.
 - [ ] reflection-probes-test matches its pre-change look, reflections of the panels included.
@@ -120,6 +127,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - Rival: a per-vertex field in Geometry (id 17), like `animated_block`. It needs unshared vertices (`animated_block_ids.rs` guard) and changes the Geometry ABI.
   - First slice: one volume around one face, one vertex shared with a non-member face.
 - Ownership rival: glow keys on the brush entity that owns the faces. Not chosen; argued in `research.md` §Ownership rival.
+- Upload the volume table only when a value changed; a static frame uploads nothing. Before adding a vertex stream, check whether the 36-byte world vertex has padding that can carry the volume id, which would leave untouched faces with no extra vertex fetch.
 - Volume parse and peel follow `fog_volume`; several hulls per entity follow the environment volumes (`research.md` §Precedents).
 - Scripting and replication: copy `sdk/lib/entities/fog_volumes.{ts,luau}`, the `setFog*` reaction primitives and the fog presentation binding. Reuse `AnimatableScalar<"brightness">`; colour follows fog's `tint`. Fog's presentation cases share test functions with lights, emitters and spin (`presentation_state.rs`, `presentation_conditioned_tests.rs`); parameterise only the cases the parity row cites.
 - Flash clamp: no change to `flash_clamp`; each volume feeds min(peak strength, 1) to a public `ValueClamp` (`research.md` §Precedents for the keyed container).

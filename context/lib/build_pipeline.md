@@ -455,7 +455,15 @@ cluster-major companion for ids 27/34/35/41/45, and for id 57's payload blocks o
 pass their resident bars (id-57 paragraph below). It is emitted after id 49 only when id 34
 is present. Ids 47/48 remain whole-resident and do not appear in id 50. Id 50 duplicates
 the streamable payload deliberately: global BC6H atlas blocks cannot be gathered into
-independent cluster cells from legacy compressed bytes. Its source inventory, source
+independent cluster cells from legacy compressed bytes. The duplication runs both ways and
+stays. Every mode reads the sources' metadata (id-34 header and probe records, id-35
+header, sparse headers and CSR tables). Only `off` reads their bodies. The bodies are not
+rebuilt from id 50 because the legacy atlas packs tiles at a 6-texel pitch, so its BC6H
+blocks straddle tiles, while id 50 isolates each tile in an 8×8 cell: rebuilding means a
+load-time BC6H decode and re-encode, and `off` would then read the same bytes as
+streaming, losing it as an independent reference for the streamed path. When `off`
+retires, the sources become metadata-only (measured on a large map:
+`measurements/sh-probe-streaming/legacy-sh-bodies.md`). Its source inventory, source
 versions, index, and chunk hashes must match id 49 and the emitted legacy sections before
 any runtime-mode decision. Invalid id 50 rejects even when streaming is disabled. Sparse
 row records carry no role word. `requested_resident_bytes` covers every node and row the

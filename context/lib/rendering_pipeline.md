@@ -151,7 +151,9 @@ Compiler tests pin the seams that keep direct and indirect disjoint: tier routin
 through renderer-owned pools, and id 57's payload blocks placed with id 50 through per-cell
 channel pools (`resource_management.md` §8.2). The loader validates that pair before selecting a runtime
 mode; `off` is therefore a compatibility whole-load path only for valid data, while valid
-pairs default to bounded asynchronous residency. Ids 47/48 billboard direct scatter stay
+pairs default to bounded asynchronous residency. Streaming reads only the metadata of ids
+27/34/35/41/45; `off` alone reads their bodies, and is the reference the streamed path is
+tested against (`build_pipeline.md` §PRL section IDs, id 50). Ids 47/48 billboard direct scatter stay
 whole-resident. The fragment sampler keeps its existing depth-moment indirection, fixed
 eight-corner stencil, bindings, and taps; it performs no residency lookup.
 

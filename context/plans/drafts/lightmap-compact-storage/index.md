@@ -95,9 +95,7 @@ When done:
 - [ ] Tracy GPU frame time on the showcase is reported against 17c2f1e.
 
 ## Path
-- **Spike patches** apply to 17c2f1e. Copy their measured paths; don't apply them whole.
-  - `spike/decode-pool.patch`: zstd for ids 22/42/50/51, the decode pool, and walk instrumentation.
-  - `spike/mask-layout.patch`: the transposed packer, the pre-pack owner estimate (no longer needed), the separate-mask simulator, and the WGSL prototype.
+- **Spike code was not kept.** `research.md` carries its measurements; the seams below are where the spike changed code.
 - **Seams:**
   - section lengths: `build_finalized_section_plan`, then `write_and_validate_sections_with_cluster_directory_validation`;
   - id-50 spool: `build_cluster_payload_spool`;

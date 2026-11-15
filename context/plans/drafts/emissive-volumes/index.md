@@ -69,6 +69,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 ### Automated
 - [ ] A texture with an `_e` map and no prefix glows at strength 1.0. One without `_e` packs 0 and skips the sample. A former `neon_` name is an unknown prefix, warned once (grep gate: no `neon` in the prefix tables). A former `neon_` texture with an `_h` map carves as Default.
 - [ ] Bake and runtime agree on the `_e`-loaded predicate for one texture: bounce-mean glow exclusion, reflection-capture term and material uniform. That texture's bounce mean excludes its glow texels.
+- [ ] A texture with a known prefix (`metal_`) and an `_e` map glows at 1.0 too: the predicate ignores the material.
 - [ ] A skinned model with an `_e` sibling still packs strength 0.
 - [ ] `gen_emissive.py` without `--cutoff` uses one default whatever the file's prefix: a `neon_` file and any other give the same `_e`.
 - [ ] Strength = min + level × (max − min) at level 0, 0.5 and 1. No script means max. A level outside [0, 1] clamps on both sides. Max < min swaps and warns. A negative or non-finite `emissive_min` or `emissive_max` fails the compile, naming the key; 0 compiles.
@@ -82,7 +83,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - Volume 256 compiles; volume 257 fails, naming the count.
 - [ ] Adding a default volume (min 0, max 1) around `_e` faces changes only the emissive-volumes section: every other section is byte-identical to the same map without the volume.
 - [ ] The loader refuses a version other than 1, a count over 256, a face index out of range or descending, and a face owned twice.
-- [ ] At runtime a member face presents its volume's strength and a non-member face sharing a vertex with it presents 1.0, at level 0 and at level 1.
+- [ ] At runtime a member face presents its volume's strength and a non-member face sharing a vertex with it presents 1.0, at level 0 and at level 1. In a 256-volume level, a face in the last volume presents that volume's strength and a non-member presents 1.0 (pin P36).
 - [ ] A level written by a reaction drained in frame N presents in frame N (pin P12).
 - [ ] Reflection capture shades a member face at its volume's max whatever its scripts do. Changing a volume's `emissive_max`, or a face's membership, misses the reflection-capture cache.
 - [ ] PRL round-trip of the emissive-volumes section. A level with no volumes emits no section.
@@ -92,17 +93,21 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - A finite `fade` settles on its last sample.
   - `setEmissiveAnimation` with args `null` clears the curve, and the level holds its last presented sample (pin P5).
   - A level write clears a running animation and holds (pin P1). In one body, animation then level: the level wins; level then animation: the animation wins (pins P2, P3). A level written mid-`fade` holds, and the fade's settle never lands (pin P4).
-  - A non-finite level reads 0, and every animation sample clamps as a set level does. `periodMs` 0, `flicker` rate 0 and an empty curve are refused with a warning, leaving the prior animation; `playCount` 0 plays once (pins P7–P10).
+  - A non-finite level reads 0, and every animation sample clamps as a set level does. `periodMs` 0, `flicker` rate 0 and an empty curve are refused with a warning, leaving the prior animation; `playCount` 0 plays once; a `fade` whose `from` equals `to` settles on that value and counts no flash (pins P7–P10).
+  - In one body, a level write then the same running animation again restarts it from its first sample, on host and client (pin P30).
   - A tag matching no volume is a no-op; a non-emissive target warns and is skipped (pin P11). A paused script clock holds the level (pin P13).
   
   TS and Luau emit identical wire.
 - [ ] With the flash limiter on, a level step from 0 to 1 is rate-limited by the shared clamp rules. With it off, the step lands in one frame.
   - With it on, the Scripting surface `flicker` (rate 6) presents at most 3 flashes in any 1 s; scripts and the wire still see the unclamped level (pin P14).
   - The clamp judges strength, not level: a level step of 0.05 on a volume with max 20 (a strength step of 1.0) is limited as a strength step of 1.0 is.
-  - Clamp history: a volume is limited every frame, in view or not. A frame whose surface acquire fails leaves every clamp where it began. A level change starts every volume fresh. Turning the limiter on presents that frame unchanged (pins P15–P18).
+  - A reaction writing level 0 and 1 alternately six times a second, with no animation, also presents at most 3 flashes in any 1 s (pin P34).
+  - Clamp history: a volume is limited every frame, in view or not. A frame whose surface acquire fails leaves every clamp where it began. Loading another map starts every volume fresh; a level write does not reset the clamp. Turning the limiter on presents that frame unchanged (pins P15–P18).
 - [ ] Co-op:
   - A host-only level write reaches a client. A late joiner receives the current level.
-  - A client-local write stays local.
+  - A client-local write stays local. A client-local write in the frame a host record arrives holds until the host's record changes (pin P35).
+  - A host level write while a client runs a flicker reaches the client as that level with no animation: the client's curve stops and the level holds (pin P31).
+  - A joiner arriving after the host's `powerCut` holds 0, although its own `levelLoad` installs the example's flicker (pin P32).
   - A client whose volume index or origin mismatches drops the update and warns once. A fog record never binds an emissive volume at the same index (pin P23).
   - A joiner arriving mid-`fade` sees it settle when the host's does; one arriving after it ended presents the last sample from its first frame (pins P21, P22).
   - A `levelLoad` wait-tail write lands on the host and replicates (pin P20). Demotion keeps the client's last level; re-promotion brings the host's (pin P24).
@@ -113,7 +118,8 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
   - A real run renames every slot sibling and rewrites references.
   - A collision refuses with no partial write. So does `neon_metal_x`, whose result would start with a known prefix; `neon_panel` renames.
   - A former `neon_` texture on a mover or fluid face is named separately.
-- [ ] combat-demo and reflection-probes-test compile with every former `neon_` face in a volume of max 4.0. At that max the bright panel's peak passes the bloom threshold and the dim panel's stays under it, restating the bloom pin.
+- [ ] combat-demo and reflection-probes-test compile with every former `neon_` face in a volume of max 4.0. At that max the bright panel's peak passes the bloom threshold and the dim panel's stays under it, restating the bloom pin. This replaces `neon_emissive_strength_clears_the_bloom_threshold`, which reads `Material::Neon`.
+- [ ] Only `setEmissiveLevel` and `setEmissiveAnimation` write an emissive volume, and neither carries min or max; the replicated record carries level and animation only (grep gate: the emissive primitive list and payload fields).
 
 ### Manual
 - [ ] combat-demo: the bright panel blooms and the dim one does not, as before. A script pulsing the bright panel's volume visibly breathes; at level 0 the panel shows its unlit diffuse.

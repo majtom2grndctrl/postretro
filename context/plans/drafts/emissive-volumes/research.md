@@ -27,7 +27,7 @@ Every reader of the `neon` prefix or `emissive_strength()`:
   - `tools/gen_emissive.py` `DEFAULT_CUTOFFS` (neon 0.35, default 0.75)
   - `docs/level_design.md` material tables
   - `resource_management.md` §4.5
-- **Models:** skinned models bind `Material::Default`, so model `_e` never glows (`renderer_models.rs`). Unchanged here.
+- **Models:** skinned models load only their diffuse slot (`ModelDiffuseOnly` in `loaded_texture.rs`), so model `_e` never glows. Unchanged here.
 
 ## Per-face strength path
 
@@ -90,18 +90,24 @@ Sources:
 | P15 | Limiter turned on mid-flicker; turned off mid-hold | toggle frame | On: that frame presents unchanged, history starts fresh. Off: scripted level presents the same frame, no history kept. |
 | P16 | Volume out of view for 2 s, then in view | limit every frame | Clamp limits every volume every frame, culled or not; turning to face it counts no appearance. |
 | P17 | Surface acquire fails on one frame | begin → acquire fail → next frame | Every volume's clamp returns to where the frame began; its time merges into the next frame. |
-| P18 | Level A volume 0 flickering; change to level B, volume 0 static | unload → install | Clamp history, levels, animations cleared at teardown; B's volume 0 starts fresh at level 1. |
+| P18 | Map A volume 0 flickering; change to map B, volume 0 static | unload → install | Clamp history, levels, animations cleared at teardown; B's volume 0 starts fresh at level 1. |
 | P19 | Host `restartLevel` after a host-only `setEmissiveLevel` 0 | unload → reinstall → `levelLoad` | Host and client both present max after reinstall; the old life's override never binds (epoch, level life). |
 | P20 | `levelLoad` sequence `wait 2000` then `setEmissiveLevel` 0 | host-timeline tail | Host lands it and records an override; client never lands it, receives it as replicated state. |
 | P21 | Late joiner; host's 2 s `fade` began 1 s before the join | join mid-animation | Client rebases on host `script_time`; fade settles when the host's does. |
 | P22 | Late joiner; host's `fade` ended before the join | join after settle | Client presents the last sample from its first world frame; no replay. |
 | P23 | Override for fog record 0 vs emissive volume 0 | client binding | Kind is part of the key; a fog record never binds an emissive volume, and vice versa. |
-| P24 | Client demoted, then re-promoted, host level changed between | demote → host write → promote | Demotion unbinds and keeps the client's last applied level; re-promotion baseline brings the host's current level. |
+| P24 | Client demoted, then re-promoted, host level changed between | demote → host write → promote | Demotion unbinds and keeps the client's last applied record, animation included; re-promotion baseline brings the host's current level. |
 | P25 | Host-only write to all 256 volumes; late joiner | join baseline | Records ride the 16 KiB baseline budget across snapshots; all 256 arrive; bound presentation records go last. |
 | P26 | Host-only `setEmissiveAnimation` with 65 samples | capture | Host presents it; record cannot encode (64-key wire cap), host warns once, client keeps the last valid override. |
 | P27 | Face lies in the plane of a volume brush's side (volume flush on a wall) | compile membership | Joins; containment is inclusive (`dot ≤ d`), within compile tolerance. |
-| P28 | Earlier volume whose every face a later volume takes | compile | Later wins each face; earlier keeps its record and index (co-op binding), lists 0 faces; warnings per F6. |
+| P28 | Earlier volume whose every face a later volume takes | compile | Later wins each face; earlier keeps its record and index (co-op binding), lists 0 faces, warns as a volume with no `_e` face (Decisions §Membership), and the pair warns. |
 | P29 | Face cut into sub-faces by the atlas | compile | Every sub-face carries the parent's membership; section indexes final Geometry faces. |
+| P30 | Running `flicker`; one body: `setEmissiveLevel` 0, then the same `flicker` again | clear and identical re-install in one drain; bridge never sees the gap | The level write cleared the curve, so the re-install is a new animation: it starts from its first sample on host and client. The bridge's cached start time and the capture's `anim_start` do not survive the clear. |
+| P31 | Client runs a flicker (its own `levelLoad` copy or a host override); host `powerCut` sets level 0 | host write → capture → client SnapshotApply → client bridge tick | The record carries level 0 and no animation; the client drops its curve and holds 0 from that frame. |
+| P32 | Late joiner after the host's `powerCut`; the example's `levelLoad` `flicker` runs on the joiner too | joiner install runs `levelLoad` pre-wait steps → first accepted baseline applies | Baseline clears the joiner's local flicker; the joiner holds 0. Joiner presents what the host presents. |
+| P34 | Limiter on; a reaction writes level 0 and 1 alternately six times a second, no animation | static writes, each in its own drain | Presented strength shows ≤ 3 flashes in any 1 s, as the rate-6 `flicker` does (P14). Scripts and the wire see the written levels. |
+| P35 | Client: a host record and a client-local write on one volume in one frame | SnapshotApply → ScriptDrain → RenderPrep | Local write lands after the record and holds; the client re-applies only when the host's record changes (last-applied memo). |
+| P36 | Level with 256 volumes; a face in volume index 255 and a non-member face | load → per-vertex id stream → strength table | Volume 255's face presents volume 255's strength; the non-member presents 1.0. No volume index aliases "no volume". |
 
 ## Capture reference state
 

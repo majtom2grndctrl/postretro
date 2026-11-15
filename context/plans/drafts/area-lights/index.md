@@ -168,6 +168,13 @@ Shadows and probes:
 - [ ] 4 × 4 m panel, probe 1 m below: the side-facing reconstruction is within 5%
   of 0.781, and the down-facing one within 0.05 of 0. The single-direction
   projection gives 0.230 and 0.154.
+- [ ] For a light wrapping all four sides of a pillar and for a flush ceiling
+  panel, a texel facing an emitting face with nothing between stores visibility
+  exactly 1, and behind a post that blocks every ring probe's sample but not the
+  whole face it stores above 0 (research.md O19).
+- [ ] A texel north of a light wrapping all four sides of a pillar, with nothing
+  between, stores visibility exactly 1 and matches the unoccluded polygon term
+  within 1% (research.md O20).
 - [ ] Billboard scatter and the mover probe channel each project a 4 × 4 m panel
   over the polygon: at a probe 1 m below, the side-facing value is within 5% of
   0.781.
@@ -180,6 +187,13 @@ Placement, culls and keys:
   panel, is unlit, and one just inside is lit. Without the key, doubling `light`
   lengthens reach by √2. Along the axis the lit value falls continuously to 0 at
   reach, and at half reach it is 0.879 of the unwindowed term.
+- [ ] On the axis of a 1 m² `light 300` panel at half its reach, the lightmap
+  texel, the animated weight map at curve 1, the surface-radiance patch, the
+  direct-SH probe's L0, billboard scatter and the mover probe channel each read
+  0.879 of their unwindowed term within 1e-3, and each reads 0 at reach.
+- [ ] A wall within reach of a panel's corner, but beyond reach of its centroid,
+  is lit at the windowed polygon term within 1e-5 relative in the lightmap, its
+  nearest direct-SH probe and its surface-radiance patch (research.md O21).
 - [ ] An area light on all four sides of a pillar, with its centroid inside the
   pillar, is neither dropped as buried nor flagged embedded. A point light
   buried in solid is still dropped.
@@ -222,12 +236,15 @@ Placement, culls and keys:
   SH entry from the cache.
 - [ ] Promotion selects no area light on either path, though the animated area
   light is in section 45's direct-delta set and an animated spot beside it is
-  selected. The placeholder `SpecLight` is never an id-42 owner. World faces
+  selected. The placeholder `SpecLight` is never an id-42 owner, even on a face it
+  alone lights. World faces
   beside the panel take no specular from it, nor do billboards with billboard
   scatter withheld.
 - [ ] An animated area light's weight map at curve 1 equals its static bake.
 - [ ] AlphaLights v5 round-trips area and non-area records. A v4 file and an
   unknown type value are rejected.
+- [ ] On a map with no area light, every bake section is byte-identical to the
+  build before this change.
 - [ ] A sub-second area-light fixture joins `GATE_FIXTURES`, profiled first, and
   its two lightmap bakes match byte for byte.
 

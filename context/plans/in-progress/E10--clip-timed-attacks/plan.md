@@ -99,7 +99,7 @@ read at: eb444995a
 - Round 2 (tracer + adversarial on the fixes): 1 🟡 (save around a drop) and nits, fixed in e05ae5cbe — switch counts serialize, the drop marks the replaced mesh and requests a redraw.
 - Round 3 (tracer on the drop path): 3 🟡 fixed in 8c0ff8e92 — a flinch drops a pending redraw, the clock holds until the redraw lands, drop tests use production index timing.
 - Stopped after round 3: its findings were confined to the drop path and are pinned by tests that fail with the fixes reverted.
-- Final gate: `cargo test --workspace --features postretro/dev-tools` — 91 targets, 15,936 passed, 0 failed. `/preflight` is owner-invoked and has not run.
+- Final gate: `cargo test --workspace --features postretro/dev-tools` — 91 targets, 15,936 passed, 0 failed. `/preflight` at 264d5e12f: `cargo fmt --check` pass; `cargo clippy -- -D warnings` pass; `cargo test` 91 targets, 15,828 passed, 0 failed, 122 ignored; `cargo check --release` pass; `crate-graph --check` up to date.
 
 ## Owner calls and follow-ups
 - Owner call: a swing entered while a launch is still under way (a knockback slide, or the airborne stretch after drag spent it) is cancelled. Kept.

@@ -27,6 +27,32 @@ fn counts(app: &App) -> [f32; 5] {
     })
 }
 
+/// Row `index` as `(present, name, status, isLocal)`.
+fn player_row(app: &App, index: usize) -> (bool, String, String, bool) {
+    let ctx = script_ctx(app);
+    let table = ctx.slot_table.borrow();
+    let get = |field: &str| {
+        table
+            .get(&format!("session.players.{index}.{field}"))
+            .unwrap()
+            .value
+            .clone()
+    };
+    match (get("present"), get("name"), get("status"), get("isLocal")) {
+        (
+            Some(SlotValue::Boolean(present)),
+            Some(SlotValue::String(name)),
+            Some(SlotValue::Enum(status)),
+            Some(SlotValue::Boolean(is_local)),
+        ) => (present, name, status, is_local),
+        other => panic!("row {index} reads {other:?}"),
+    }
+}
+
+fn no_rows_present(app: &App) -> bool {
+    (0..postretro_foundation::seat::SESSION_PLAYER_CAPACITY).all(|index| !player_row(app, index).0)
+}
+
 fn single_player(app: &mut App) {
     app.session.as_mut().unwrap().seat_table = Some(crate::netcode::SeatTable::local_only());
 }
@@ -49,7 +75,7 @@ fn tick(app: &mut App, captured: &[postretro_entities::EntityId], counted: &[pos
     let ctx = script_ctx(app);
     let session = app.session.as_mut().unwrap();
     session.session_players.publish_tick(
-        session.seat_table.as_ref(),
+        session.seat_table.as_mut(),
         &ctx.registry.borrow(),
         CapturedPawns { captured, counted },
         &mut ctx.slot_table.borrow_mut(),
@@ -72,12 +98,20 @@ fn single_player_counts_follow_install_tick_death_and_unload() {
     let pawn = spawn_host_pawn(&mut app);
     tick(&mut app, &[pawn], &[pawn]);
     assert_eq!(counts(&app), [1.0, 0.0, 1.0, 0.0, 0.0]);
+    // L3: one present row, local, named Player 1, with its status.
+    assert_eq!(
+        player_row(&app, 0),
+        (true, "Player 1".to_string(), "inPlay".to_string(), true)
+    );
+    assert!(!player_row(&app, 1).0);
 
     tick(&mut app, &[pawn], &[]);
     assert_eq!(counts(&app), [1.0, 0.0, 0.0, 1.0, 0.0], "dead: down, not in play");
+    assert_eq!(player_row(&app, 0).2, "down");
 
     app.unload_level();
     assert_eq!(counts(&app), [0.0; 5]);
+    assert!(no_rows_present(&app));
     assert!(!app.session.as_ref().unwrap().session_players.session_level());
     tick(&mut app, &[], &[]);
     assert_eq!(counts(&app), [0.0; 5], "no tick writes counts without a session level");
@@ -113,6 +147,7 @@ fn frontend_backdrop_is_not_a_session_level() {
     let pawn = spawn_host_pawn(&mut app);
     tick(&mut app, &[pawn], &[pawn]);
     assert_eq!(counts(&app), [0.0; 5]);
+    assert!(no_rows_present(&app));
     assert!(
         app.session
             .as_ref()
@@ -142,6 +177,61 @@ fn client_counts_read_zero_once_its_level_unloads() {
     }
     assert_eq!(counts(&app), [3.0, 1.0, 2.0, 0.0, 0.0]);
 
+    // Its session level shows the roster's rows.
+    {
+        let session = app.session.as_mut().unwrap();
+        let Some(crate::netcode::NetEndpoint::Client { session_status, .. }) =
+            session.net_endpoint.as_mut()
+        else {
+            panic!("connected as a client");
+        };
+        crate::netcode::apply_client_session_roster(
+            session_status,
+            &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+            postretro_net::wire::SessionRosterMessage {
+                session_id: postretro_net::wire::SessionId([9; 16]),
+                your_seat: Some(1),
+                open_seats: 7,
+                entries: vec![
+                    postretro_net::wire::RosterEntry {
+                        seat: 0,
+                        connected: true,
+                        name: String::new(),
+                        status: postretro_net::wire::roster_status::IN_PLAY,
+                    },
+                    postretro_net::wire::RosterEntry {
+                        seat: 1,
+                        connected: true,
+                        name: "Wren".to_string(),
+                        status: postretro_net::wire::roster_status::LOADING,
+                    },
+                ],
+            },
+        );
+        let script_ctx = session.scripting.script_ctx.clone();
+        let Some(crate::netcode::NetEndpoint::Client { session_status, .. }) =
+            session.net_endpoint.as_ref()
+        else {
+            unreachable!()
+        };
+        session.session_players.begin_level(
+            true,
+            None,
+            Some(session_status),
+            &script_ctx.registry.borrow(),
+            &mut script_ctx.slot_table.borrow_mut(),
+        );
+    }
+    assert_eq!(
+        player_row(&app, 1),
+        (true, "Wren".to_string(), "loading".to_string(), true)
+    );
+    assert_eq!(
+        player_row(&app, 0),
+        (true, "Player 1".to_string(), "inPlay".to_string(), false)
+    );
+
     app.unload_level();
     assert_eq!(counts(&app), [0.0; 5]);
+    assert!(no_rows_present(&app), "a client that leaves shows no rows");
 }

@@ -1,6 +1,7 @@
 // Per-seat player status and the session player counts derived from it.
 // See: context/lib/scripting.md §5 (Session players)
 
+use postretro_entities::engine_state_collections::{LIST_PRESENT_FIELD, SESSION_PLAYERS_LIST};
 use postretro_entities::slot_table::{SlotTable, SlotValue};
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::Seat;
@@ -29,6 +30,31 @@ impl SeatStatus {
             Self::InPlay => "inPlay",
             Self::Down => "down",
             Self::Reconnecting => "reconnecting",
+        }
+    }
+
+    /// The roster's `status` byte.
+    #[must_use]
+    pub const fn roster_code(self) -> u8 {
+        use postretro_net::wire::roster_status as code;
+        match self {
+            Self::Loading => code::LOADING,
+            Self::InPlay => code::IN_PLAY,
+            Self::Down => code::DOWN,
+            Self::Reconnecting => code::RECONNECTING,
+        }
+    }
+
+    /// The status a roster byte names; `None` for a byte no status uses.
+    #[must_use]
+    pub const fn from_roster_code(code: u8) -> Option<Self> {
+        use postretro_net::wire::roster_status as status;
+        match code {
+            status::LOADING => Some(Self::Loading),
+            status::IN_PLAY => Some(Self::InPlay),
+            status::DOWN => Some(Self::Down),
+            status::RECONNECTING => Some(Self::Reconnecting),
+            _ => None,
         }
     }
 }
@@ -153,6 +179,155 @@ pub fn write_player_counts(slot_table: &mut SlotTable, counts: PlayerCounts) {
             slot.write_value(Some(value));
         }
     }
+}
+
+/// One seat's row in `session.players`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerRow<'a> {
+    pub seat: Seat,
+    /// The display name; empty reads `Player N`.
+    pub name: &'a str,
+    pub status: SeatStatus,
+    /// The row holding this machine's own seat.
+    pub is_local: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WrittenRow {
+    seat: Seat,
+    name: String,
+    status: SeatStatus,
+    is_local: bool,
+}
+
+/// Writes `session.players` rows, touching only rows whose content changed.
+/// Rows fill densely in the order given, up to the list's capacity; rows past
+/// the last seat read `present` false.
+#[derive(Debug, Default)]
+pub struct PlayerRowsWriter {
+    /// What each row index last showed; `None` for an absent row.
+    written: Vec<Option<WrittenRow>>,
+}
+
+impl PlayerRowsWriter {
+    pub fn write<'a>(
+        &mut self,
+        slot_table: &mut SlotTable,
+        rows: impl IntoIterator<Item = PlayerRow<'a>>,
+    ) {
+        let list = &SESSION_PLAYERS_LIST;
+        self.written.resize(list.capacity, None);
+        let mut rows = rows.into_iter();
+        for index in 0..list.capacity {
+            let row = rows.next();
+            let unchanged = match (&self.written[index], &row) {
+                (None, None) => true,
+                (Some(written), Some(row)) => {
+                    written.seat == row.seat
+                        && written.name == row.name
+                        && written.status == row.status
+                        && written.is_local == row.is_local
+                }
+                _ => false,
+            };
+            if unchanged {
+                continue;
+            }
+            match row {
+                Some(row) => {
+                    let shown = if row.name.is_empty() {
+                        // Seat numbers are stable for the session, so a row
+                        // keeps its fallback when an earlier seat leaves.
+                        format!("Player {}", u32::from(row.seat.0) + 1)
+                    } else {
+                        row.name.to_string()
+                    };
+                    write_row(
+                        slot_table,
+                        index,
+                        true,
+                        SlotValue::String(shown),
+                        row.status.name(),
+                        row.is_local,
+                    );
+                    self.written[index] = Some(WrittenRow {
+                        seat: row.seat,
+                        name: row.name.to_string(),
+                        status: row.status,
+                        is_local: row.is_local,
+                    });
+                }
+                None => {
+                    write_row(
+                        slot_table,
+                        index,
+                        false,
+                        SlotValue::String(String::new()),
+                        SeatStatus::Loading.name(),
+                        false,
+                    );
+                    self.written[index] = None;
+                }
+            }
+        }
+    }
+
+    /// Every row reads absent.
+    pub fn clear(&mut self, slot_table: &mut SlotTable) {
+        self.write(slot_table, std::iter::empty());
+    }
+}
+
+fn write_row(
+    slot_table: &mut SlotTable,
+    index: usize,
+    present: bool,
+    name: SlotValue,
+    status: &str,
+    is_local: bool,
+) {
+    let list = &SESSION_PLAYERS_LIST;
+    for (field, value) in [
+        (LIST_PRESENT_FIELD, SlotValue::Boolean(present)),
+        ("name", name),
+        ("status", SlotValue::Enum(status.to_string())),
+        ("isLocal", SlotValue::Boolean(is_local)),
+    ] {
+        if let Some(slot) = slot_table.get_mut(&list.slot_name(index, field))
+            && slot.value.as_ref() != Some(&value)
+        {
+            slot.write_value(Some(value));
+        }
+    }
+}
+
+/// The client's rows, from the host's roster: every entry in seat order,
+/// `isLocal` on the entry holding `local_seat`. An entry with an unknown status
+/// byte reads loading.
+pub fn roster_rows(
+    entries: &[postretro_net::wire::RosterEntry],
+    local_seat: Option<Seat>,
+) -> impl Iterator<Item = PlayerRow<'_>> {
+    entries.iter().map(move |entry| PlayerRow {
+        seat: Seat(entry.seat),
+        name: &entry.name,
+        status: SeatStatus::from_roster_code(entry.status).unwrap_or(SeatStatus::Loading),
+        is_local: local_seat == Some(Seat(entry.seat)),
+    })
+}
+
+/// The host's and single player's rows, from its derived statuses and its
+/// seats' claims. The host's own seat is seat 0.
+pub fn seat_rows<'a>(
+    seats: &'a SeatTable,
+    statuses: &'a [(Seat, SeatStatus)],
+) -> impl Iterator<Item = PlayerRow<'a>> {
+    statuses.iter().map(move |&(seat, status)| PlayerRow {
+        seat,
+        name: seats.display_name(seat),
+        status,
+        is_local: seat == Seat(0),
+    })
 }
 
 #[cfg(test)]

@@ -137,3 +137,100 @@ fn player_counts_write_shared_engine_slots_only_on_change() {
         "an unchanged count is not rewritten"
     );
 }
+
+fn row(table: &SlotTable, index: usize) -> (SlotValue, SlotValue, SlotValue, SlotValue) {
+    let get = |field: &str| {
+        table
+            .get(&format!("session.players.{index}.{field}"))
+            .unwrap()
+            .value
+            .clone()
+            .unwrap()
+    };
+    (get("present"), get("name"), get("status"), get("isLocal"))
+}
+
+fn shown(present: bool, name: &str, status: &str, is_local: bool) -> (SlotValue, SlotValue, SlotValue, SlotValue) {
+    (
+        SlotValue::Boolean(present),
+        SlotValue::String(name.to_string()),
+        SlotValue::Enum(status.to_string()),
+        SlotValue::Boolean(is_local),
+    )
+}
+
+// L2 and P25: rows fill densely in seat order; an empty name reads `Player N`
+// from the seat, unchanged when an earlier seat leaves and later rows shift up;
+// a sent name reads as sent; `isLocal` follows the local seat to its new row.
+#[test]
+fn player_rows_follow_seats_names_and_local_seat() {
+    use postretro_net::wire::{RosterEntry, roster_status};
+    let mut table = SlotTable::default();
+    let mut writer = PlayerRowsWriter::default();
+    let entry = |seat: u16, name: &str, status: u8| RosterEntry {
+        seat,
+        connected: true,
+        name: name.to_string(),
+        status,
+    };
+    let three = vec![
+        entry(0, "", roster_status::IN_PLAY),
+        entry(1, "Ash", roster_status::DOWN),
+        entry(2, "", roster_status::LOADING),
+    ];
+    writer.write(&mut table, roster_rows(&three, Some(Seat(2))));
+    assert_eq!(row(&table, 0), shown(true, "Player 1", "inPlay", false));
+    assert_eq!(row(&table, 1), shown(true, "Ash", "down", false));
+    assert_eq!(row(&table, 2), shown(true, "Player 3", "loading", true));
+    assert_eq!(row(&table, 3), shown(false, "", "loading", false));
+
+    let generation = |table: &SlotTable| {
+        table
+            .get("session.players.0.name")
+            .unwrap()
+            .write_generation()
+    };
+    let before = generation(&table);
+    writer.write(&mut table, roster_rows(&three, Some(Seat(2))));
+    assert_eq!(generation(&table), before, "an unchanged row is not rewritten");
+
+    // Seat 1's hold expires: seat 2 moves up to row 1 and keeps its name.
+    let two = vec![three[0].clone(), three[2].clone()];
+    writer.write(&mut table, roster_rows(&two, Some(Seat(2))));
+    assert_eq!(row(&table, 1), shown(true, "Player 3", "loading", true));
+    assert_eq!(row(&table, 2), shown(false, "", "loading", false));
+
+    // A client returning after its hold mints seat 3.
+    let rejoined = vec![three[0].clone(), three[2].clone(), entry(3, "", roster_status::RECONNECTING)];
+    writer.write(&mut table, roster_rows(&rejoined, Some(Seat(3))));
+    assert_eq!(row(&table, 1), shown(true, "Player 3", "loading", false));
+    assert_eq!(row(&table, 2), shown(true, "Player 4", "reconnecting", true));
+
+    writer.clear(&mut table);
+    for index in 0..postretro_foundation::seat::SESSION_PLAYER_CAPACITY {
+        assert_eq!(row(&table, index).0, SlotValue::Boolean(false));
+    }
+}
+
+// The host's rows come from its statuses and its seats' claims; its own seat
+// is the local row.
+#[test]
+fn host_rows_read_statuses_and_claim_names() {
+    let mut seats = SeatTable::local_only();
+    let client = seats
+        .admit_or_reclaim(
+            FIRST,
+            Some(postretro_net::wire::ConnectClaim {
+                player_id: postretro_net::wire::PlayerClaimId([7; 16]),
+                display_name: "Wren".to_string(),
+            }),
+            false,
+        )
+        .unwrap()
+        .seat;
+    let statuses = [(Seat(0), SeatStatus::InPlay), (client, SeatStatus::Loading)];
+    let mut table = SlotTable::default();
+    PlayerRowsWriter::default().write(&mut table, seat_rows(&seats, &statuses));
+    assert_eq!(row(&table, 0), shown(true, "Player 1", "inPlay", true));
+    assert_eq!(row(&table, 1), shown(true, "Wren", "loading", false));
+}

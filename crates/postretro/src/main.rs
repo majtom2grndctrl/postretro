@@ -375,6 +375,10 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                         roster,
                     );
                     let local_seat = session_status.local_seat();
+                    session.session_players.apply_roster(
+                        session_status,
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                    );
                     let newly_assigned_seat = (previous_seat != local_seat)
                         .then_some(local_seat)
                         .flatten();

@@ -205,8 +205,8 @@ pub use command_queue::{
 #[cfg(feature = "dev-tools")]
 pub use endpoint::LagProfile;
 pub use endpoint::{
-    ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, NetEndpoint, WorldLessPoll,
-    apply_client_session_roster,
+    ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientSessionStatus, ClientTimeSync,
+    NetEndpoint, WorldLessPoll, apply_client_session_roster,
 };
 pub use host::{
     DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, end_host_session,

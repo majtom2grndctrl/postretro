@@ -206,9 +206,16 @@ impl App {
         let session_level = !self.frontend_menu_is_present();
         if let Some(session) = self.session.as_mut() {
             let script_ctx = &session.scripting.script_ctx;
+            let client = match session.net_endpoint.as_ref() {
+                Some(crate::netcode::NetEndpoint::Client { session_status, .. }) => {
+                    Some(session_status)
+                }
+                _ => None,
+            };
             session.session_players.begin_level(
                 session_level,
-                session.seat_table.as_ref(),
+                session.seat_table.as_mut(),
+                client,
                 &script_ctx.registry.borrow(),
                 &mut script_ctx.slot_table.borrow_mut(),
             );

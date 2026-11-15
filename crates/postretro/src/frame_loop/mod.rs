@@ -1079,7 +1079,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // after the trigger stage settles and before accumulators and the
             // frame's crossing detection read them.
             session.session_players.publish_tick(
-                session.seat_table.as_ref(),
+                session.seat_table.as_mut(),
                 &script_ctx.registry.borrow(),
                 crate::netcode::session_players::CapturedPawns {
                     captured: &tick_events.trigger_stage_pawns.captured,

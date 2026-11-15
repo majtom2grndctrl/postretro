@@ -1487,6 +1487,8 @@ mod tests {
             vec![postretro_net::wire::RosterEntry {
                 seat: 0,
                 connected: true,
+                name: String::new(),
+                status: 0,
             }],
             "single-player carry still owns local seat zero"
         );

@@ -191,6 +191,26 @@ Sources: rows 1–4 come from primary source code on GitHub. Rows 5–6 come fro
 - **Reach is measured from the polygon**, and depends on flux, not area (new, for the brightness convention).
 - **Prior art** shows both polygon-native area lights and templated points in shipped tools (§5). This informs owner question 1. It is not a legal reading.
 
+## Pin table
+
+Orderings and edges the brief's Acceptance rows cite. Review round 1, 2026-11-15.
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| O1 | A script fade (finite play_count) on an animated area light runs to its end | The bridge settles on the first frame past the end. The final brightness folds into the light's intensity, the curve clears, and the compose descriptor carries the settled radiance with no curve. Glow reads that same descriptor on that frame | Faces hold the faded level, final brightness × _e × _glow, on the settle frame and after. The glow never returns to full while the room stays faded |
+| O2 | One area light compiled at light L and again at 2L, _glow unchanged | The compose descriptor carries _color × intensity. The glow divides out the authored intensity before it applies _glow and the live multiplier | The room's light doubles. The faces' emissive term is identical |
+| O3 | An _animated area light with _start_inactive 1, compiled once with no levelLoad pulse and once with one targeting it | Translation records the authored start. Script membership overrides it, and then the glow table and descriptors are written. The first frame reads the post-manifest state | Without the pulse, the faces are dark and the room is unlit until a script activates the light. With the pulse, the faces and the room are lit from the first frame |
+| O4 | Lights in entity order: an animated point light, animated area light A, _bake_only animated area light B, animated area light C | The glow table is written after the namespaces are fixed. Each face entry names its own light's compose descriptor slot (AnimatedBakedLights order), never an authored, AlphaLights or forward-loop index | Pulsing A moves only A's faces. B's faces follow B's compose slot although B has no AlphaLights record. C's faces follow C |
+| O5 | A map with no area light; a map whose emitting faces exceed the glow-table cap | The compiler checks the cap before it writes the table. The loader rejects an over-cap table | With none, there are no glow entries and every face draws its prefix glow. Over the cap, the build fails, naming the count and the cap |
+| O6 | One 4 × 4 m panel brush, against four 2 × 2 m brushes tiling the same panel in one entity | Polygon terms sum. Reach uses the light's total L·A and the distance to its nearest polygon | Every receiver matches within 1e-5 relative, and the resolved reach is identical |
+| O7 | Two overlapping coplanar _e brushes in one entity; an _e face half sunk into a worldspawn wall | Exposure subtracts world solids and sibling brushes, with one coplanar sibling winning, before the light's polygons are fixed | The summed emitting area equals the visible glass area. The buried half emits nothing, and the overlap counts once |
+| O8 | Exposure leaves a sliver or zero-area piece; a texel whose every sample carries weight 0 | Pieces under an area floor are dropped before the light's polygons are fixed. Σw = 0 stores visibility 0 without dividing | No NaN or Inf in any bake output. An entity whose only pieces are slivers fails as having no _e face |
+| O9 | One worker thread builds an area light's probe set and then a point light's at the same count, and the reverse | The polygon lattice never reads or writes the count-keyed point/spot memo | The point light's probe set is identical in both orders |
+| O10 | A wall within reach of a panel's corner, but farther than reach from its centroid, moves between two builds | The layer key's geometry slice uses the same containing sphere as the culls | The light's layer key changes, and the warm rebuild matches a cold build byte for byte |
+| O11 | Lights in entity order: point light, area light, point light | The area light's polygons wait for exposure against every brush. The light still enters at its entity position, with its start-state entry, before script membership runs | The area light holds index 1 in getMapEntities, the light table, the start-state table and every namespace |
+| O12 | One _e side the BSP splits into several render faces; an emitting face sharing an edge with a non-emitting frame face | The polygon list takes the unsplit side once. The glow id is stamped on every render face derived from that side, on unshared vertices | The light holds that side once. Every piece glows. The frame face draws no glow, and the glass glows to its edge |
+| O13 | A script write in tick N; that frame's compose and forward passes | The bridge upload precedes compose and forward. The glow reads the light's compose descriptor and the frame's time uniform in the shader, never a CPU-evaluated copy | Glow and room light use one curve value per frame |
+
 ---
 
 ## Handoff

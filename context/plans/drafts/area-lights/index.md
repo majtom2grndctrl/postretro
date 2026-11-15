@@ -147,7 +147,8 @@ Polygon term (oracle values in `research.md` §1):
 - [ ] f32 corners about 1 km from the origin agree with f64 corners.
 
 Shadows and probes:
-- [ ] Unoccluded and fully occluded texels store exactly 1 and 0.
+- [ ] Unoccluded and fully occluded texels under a flush `light_area` panel
+  store exactly 1 and 0.
 - [ ] An occluder over the near half of a large emitter and one over the far
   half store different visibility, ordered by integrand weight. An unweighted
   fraction ties them.
@@ -156,6 +157,9 @@ Shadows and probes:
 - [ ] 4 × 4 m panel, probe 1 m below: the side-facing reconstruction is within 5%
   of 0.781, and the down-facing one within 0.05 of 0. The single-direction
   projection gives 0.230 and 0.154.
+- [ ] Billboard scatter (ids 47, 48) and the mover probe channel each project a
+  4 × 4 m panel over the polygon: at a probe 1 m below, the side-facing value is
+  within 5% of 0.781.
 
 Placement, identity and refusals:
 - [ ] In one entity holding a frame brush and an `_e` glass brush, only the
@@ -163,29 +167,86 @@ Placement, identity and refusals:
   shadows like worldspawn.
 - [ ] With `_falloff_range` set, a receiver just past it, measured from the
   panel, is unlit, and one just inside is lit. Without the key, reach follows
-  brightness: doubling `light` lengthens it.
-- [ ] An area light on a ceiling is neither dropped as buried nor flagged
-  embedded. A point light buried in solid is still dropped.
-- [ ] A wall texel at the emitter's edge is lit, not black.
+  brightness: doubling `light` lengthens it by √2.
+- [ ] An area light on all four sides of a pillar, with its centroid inside the
+  pillar, is neither dropped as buried nor flagged embedded. A point light
+  buried in solid is still dropped.
+- [ ] A wall texel at a flush emitter's edge stores visibility 1 and matches the
+  unoccluded polygon term within 1%.
 - [ ] Every bake output is byte-identical with exact skips on and off on an
   area-light map.
 - [ ] Moving one polygon vertex re-keys the lightmap layer, the surface-radiance
   layer and the direct-SH memos. An unrelated light's cache entries do not move.
 - [ ] Each of these fails the build, naming the light: an entity with no `_e`
   face, `_shadow_type sdf`, `direction_curve`, and a script `sweep`.
-- [ ] Promotion selects no area light on either path. The placeholder
-  `SpecLight` is never an id-42 owner.
+- [ ] Promotion selects no area light on either path, though the animated area
+  light is in section 45's direct-delta set and an animated spot beside it is
+  selected. The placeholder `SpecLight` is never an id-42 owner.
 - [ ] An animated area light's weight map at curve 1 equals its static bake.
+- [ ] A 4 × 4 m panel built from four 2 × 2 m brushes lights every receiver
+  within 1e-5 relative of the same panel as one brush, and resolves the same
+  reach (research.md O6).
+- [ ] Two overlapping coplanar `_e` brushes emit their union once, and an `_e`
+  face half buried in a worldspawn wall emits from its exposed half only: the
+  light's polygon area equals the visible glass area (research.md O7).
+- [ ] A sliver emitting piece is dropped, a texel whose samples all lie on its
+  horizon stores 0, and no bake output holds a NaN. An entity left with only
+  sliver pieces fails as having no `_e` face (research.md O8).
+- [ ] Moving a wall that lies within reach of a panel's corner, but beyond reach
+  of its centroid, re-keys that light's lightmap layer, and the warm rebuild
+  matches a cold one byte for byte (research.md O10).
+- [ ] An area light authored between two point lights keeps its entity-order
+  position in `getMapEntities("light")` and in every light namespace
+  (research.md O11).
+- [ ] An `_e` side the BSP splits glows on every piece and enters the light's
+  polygon list once. A frame face sharing an edge with the glass carries no glow
+  id (research.md O12).
+- [ ] On one thread, a point light's probe set is the same whether or not an
+  area light's probe set was built first at the same count (research.md O9).
+- [ ] `_light_size`, `style` and each spot key on a `light_area` fail the build,
+  naming the light and the key.
+- [ ] The AlphaLights v5 loader rejects a polygon entry on a non-area record, an
+  area record without one, and a polygon with fewer than 3 vertices. An empty
+  list reads as a zero area count.
+- [ ] A sub-second area-light fixture joins `GATE_FIXTURES`, profiled first, and
+  its two lightmap bakes match byte for byte.
 - [ ] AlphaLights v5 round-trips area and non-area records. A v4 file is
   rejected by version.
-- [ ] The Scripting surface example runs as a `content/dev` script: the pulse
-  reaches the light and its glow.
+- [ ] The Scripting surface example runs as a `content/dev` script on panels
+  with no `_animated` key. Each tagged panel gains an animated-bake reservation,
+  its faces' glow entries name that reserved slot, and `p.position` is the
+  area-weighted centroid.
 - [ ] A static area light's `_e` faces glow on a texture without the `neon_`
   prefix, at `_e` × `_glow`. With `_glow` at 0, 0.5 and 8, the face's emissive
-  term scales by that factor, and the room's light does not change. A negative
-  `_glow` fails the build. A `_start_inactive` light's faces start dark.
+  term scales by that factor, and every bake section stays byte-identical. A
+  negative `_glow` fails the build. A `_start_inactive` light's faces start
+  dark.
 - [ ] A `neon_` texture on a `light_area` face glows at `_e` × `_glow`. The same
   texture on a worldspawn face keeps its prefix glow.
+
+Glow and light identity (orderings in `research.md` §Pin table):
+- [ ] Doubling an area light's `light` doubles its lightmap and probe output and
+  leaves its faces' emissive term unchanged (research.md O2).
+- [ ] Two otherwise equal area lights with the same diffuse map, one on a
+  `neon_` texture with a white `_e` map and one on a plain texture with a red
+  `_e` map, produce
+  byte-identical lightmap, SH and scatter sections.
+- [ ] A plain-prefix texture with an `_e` map glows on a `light_area` face and
+  stays dark on a worldspawn face in the same draw.
+- [ ] Changing only `_glow` re-keys no bake cache entry: a warm rebuild reads
+  every lightmap, surface-radiance and SH entry from the cache.
+- [ ] A script fade from 1 to 0.25 on an animated area light settles with its
+  faces' emissive multiplier at 0.25, equal to the room's settled scale, on the
+  settle frame and after (research.md O1).
+- [ ] An `_animated` area light with `_start_inactive 1` starts with dark faces
+  and an unlit room. The same light under a `levelLoad` pulse starts lit, faces
+  and room together (research.md O3).
+- [ ] On a map with an animated point light ahead of three animated area lights,
+  one of them `_bake_only`, each area light's faces resolve to that light's own
+  compose descriptor slot (research.md O4).
+- [ ] A map with no area light carries no glow entries and draws prefix glow
+  unchanged. Emitting faces past the glow-table cap fail the build, naming the
+  count and the cap, and the loader rejects an over-cap table (research.md O5).
 
 ### Manual
 - [ ] Hallway map, recorded in `plan.md`: cold and warm bake time for one 4 × 4 m
@@ -196,7 +257,7 @@ Placement, identity and refusals:
 - [ ] Owner A/B: skylight room against the template grid. No hot spots or wall
   ripple, and no visible edge at the reach cutoff.
 - [ ] A scripted flicker: the glow and the room light move together frame for
-  frame.
+  frame (research.md O13).
 - [ ] Entities walking under the skylight are lit like the walls beside them.
 
 ## Path

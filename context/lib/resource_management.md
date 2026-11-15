@@ -166,9 +166,9 @@ and `_color`, never the emissive map or prefix (decided, not yet built;
   the sampled color. `neon_` is 4.0 so an authored bright texel exceeds the
   renderer bloom threshold; other current material prefixes are zero until
   content establishes a use for them. A `light_area` face (decided, not yet
-  built) instead takes its light's `_glow` × the light's live colour and
-  brightness, so its glow follows its light frame for frame. Every other face
-  has no per-surface runtime scalar.
+  built) takes its texture strength × its light's `_glow` × the light's live
+  colour and brightness, so its glow follows its light frame for frame. Every
+  other face has no per-surface runtime scalar.
 - **Strength and volumes (decided, not yet built):** brief
   `plans/ready/emissive-volumes`.
   - The `neon` prefix retires. Glow strength is content:
@@ -177,7 +177,8 @@ and `_color`, never the emissive map or prefix (decided, not yet built;
     prl-build reads the file; runtime reads only the baked value, so bake and
     runtime see one number. The file is the home for content-owned material
     properties.
-  - An `emissive_volume` brush scales and tints its static world faces: glow =
+  - An `emissive_volume` brush scales and tints its static world faces, never a
+    `light_area` face: glow =
     texture strength × (min + brightness × (max − min)) × color. The map owns
     min, max and default color; scripts own brightness ([0, 1], 1 with no
     script) and color, never the range. Movers and fluids take texture strength

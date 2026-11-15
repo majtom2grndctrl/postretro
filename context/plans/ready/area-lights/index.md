@@ -83,18 +83,21 @@ light.
   light's origin, which can sit inside a pillar or on the glass, and none is
   blocked by the face it targets. Another emitting face of the same light may
   shade it, as a hanging panel shades a ceiling panel above it.
-- **Glow follows the light.** Each emitting face draws `_e` × `_glow` × the
-  light's live colour × its live brightness multiplier, on the same frame as its
-  lighting. At rest, the live colour is `_color`, so a red light's white pane
-  glows red. Glow is drawn for static lights too.
-  - `_glow` is an authored number, independent of `light`, so a game can pair a
-    dim glow with strong cast light, or the reverse (`context/lib/index.md` §2,
-    Defaults for novices, controls for experts). Values ≥ 0 are accepted with no
-    upper clamp; a negative value fails the build.
-  - On a `light_area` face, `_glow` replaces the texture prefix's emissive
-    strength, so a `neon_` texture there does not glow twice. This is the first
-    per-surface glow scalar: it overrides "no per-surface runtime scalar in v1"
-    (`resource_management.md` §Emissive) for area-light faces only.
+- **Glow follows the light.** Each emitting face draws `_e` × its texture
+  strength × `_glow` × the light's live colour × its live brightness multiplier,
+  on the same frame as its lighting. At rest, the live colour is `_color`, so a
+  red light's white pane glows red. Glow is drawn for static lights too.
+  - Builds on `plans/ready/emissive-volumes`, which retires the `neon_` prefix:
+    texture strength is the author's per-texture value from `materials.toml`
+    (1.0 by default), and `_glow` scales it per light. This brief builds after
+    that one.
+  - `_glow` is an authored multiplier, default 1.0, independent of `light`, so a
+    game can pair a dim glow with strong cast light, or the reverse
+    (`context/lib/index.md` §2, Defaults for novices, controls for experts).
+    Values ≥ 0 are accepted with no upper clamp; a negative value fails the
+    build.
+  - The light is its faces' one glow controller: an `emissive_volume` skips
+    `light_area` faces. Both briefs share one per-face glow table.
 - **`_start_inactive` reserves the animated bake.** On an area light, the key
   means the light starts dark, faces and room together, and a script or mod
   reaction can light it. It takes the same animated reservation `_animated 1`
@@ -131,8 +134,8 @@ light.
   - Two-sided emitters: none of the motivating content needs one.
   - Texture-keyed emission and the texture-level bounce multiplier: the reworded
     roadmap entry owns them.
-  - Emissive bounce from ordinary emissive faces, and any change to prefix glow
-    outside `light_area` faces.
+  - Emissive bounce from ordinary emissive faces, and glow outside `light_area`
+    faces: `plans/ready/emissive-volumes` owns it.
   - Texture-coloured emission. The cast light's colour is `_color`, so one
     texture can serve lights of different colours.
 
@@ -304,10 +307,12 @@ Script surface:
   `position` the centroid (research.md O18).
 
 Glow and light identity (orderings in `research.md` §Pin table):
-- [ ] A static area light's `_e` faces glow at `_e` × `_glow` × `_color` on a
-  plain or `neon_` texture, so a white pane on a red light glows red. The same
-  textures on a worldspawn face keep their prefix glow, and a plain one stays
-  dark, in the same draw. With `_glow` at 0, 0.5 and 8 the emissive term scales
+- [ ] A static area light's `_e` faces glow at `_e` × texture strength ×
+  `_glow` × `_color`, so a white pane on a red light glows red, and a texture
+  whose `materials.toml` strength is 4 glows four times as bright under the
+  same light. The same textures on a worldspawn face glow at their texture
+  strength alone, in the same draw. An `emissive_volume` enclosing the light's
+  faces leaves them out of its membership. With `_glow` at 0, 0.5 and 8 the emissive term scales
   by that factor and every bake section stays byte-identical. A negative `_glow`
   fails the build.
 - [ ] A `colorShift` moves the glow's colour and the room's colour together.
@@ -315,7 +320,8 @@ Glow and light identity (orderings in `research.md` §Pin table):
   lightmap and probe output and leaves its faces' emissive term unchanged
   (research.md O2).
 - [ ] Two otherwise equal area lights with the same diffuse map and
-  all-glowing `_e` maps, one on a `neon_` texture with a white `_e` map and one
+  all-glowing `_e` maps, one on a texture with `materials.toml` strength 4 and a
+  white `_e` map and one
   on a plain texture with a red `_e` map, produce byte-identical lightmap, SH and
   scatter sections.
 - [ ] Changing only `_glow` re-keys no bake cache entry: a warm rebuild reads
@@ -339,10 +345,10 @@ Glow and light identity (orderings in `research.md` §Pin table):
   one of them `_bake_only`, each area light's faces resolve to that light's own
   compose descriptor slot (research.md O4).
 - [ ] A static area light authored ahead of an animated one keeps a steady glow
-  at `_e` × `_glow` × `_color` while the animated light pulses (research.md
+  at `_e` × texture strength × `_glow` × `_color` while the animated light pulses (research.md
   O16).
-- [ ] A map with no area light carries no glow entries and draws prefix glow
-  unchanged. Emitting faces past the glow-table cap fail the build, naming the
+- [ ] A map with no area light carries no area-light glow entries and draws
+  texture-strength glow unchanged. Emitting faces past the glow-table cap fail the build, naming the
   count and the cap, and the loader rejects an over-cap table (research.md O5).
 
 ### Manual
@@ -408,9 +414,12 @@ Glow and light identity (orderings in `research.md` §Pin table):
 - **Promotion.** Animated promotion
   (`animated_baked_shadow_candidates_with_direct_delta`) needs an explicit type
   refusal. `is_promotable_base_light` already has one.
-- **Glow table.** Follow the `animated_block` id → uniform-table precedent; the
-  forward pass has no texture binding to spare (`research.md` §6). The glow
-  reads the compose descriptor and the frame's time uniform in-shader (O13).
+- **Glow table.** Share the per-face glow id and table that
+  `plans/ready/emissive-volumes` builds, rather than a second mechanism; the
+  forward pass has no texture binding to spare (`research.md` §6). An area
+  light's entry still evaluates its compose descriptor and the frame's time
+  uniform in-shader, so glow and room stay on one frame (O13); volume entries
+  are packed on the CPU. The entry layout is the executor's call.
 - **Strongest rival:** texture-keyed polygon lights, which use the roadmap's
   mark-a-texture-once authoring with this brief's maths. They win for many small
   emitters (screens, signs). The entity wins for the Problem's set pieces: one
@@ -435,7 +444,7 @@ Glow and light identity (orderings in `research.md` §Pin table):
 | Falloff reported | n/a | `falloff_model` 2 | `falloffModel` `"InverseSquared"` | n/a | same |
 | Brightness, colour, override reach | `MapLight` intensity, color, falloff_range | existing record fields | existing | `light`, `_color`, `_falloff_range` | same |
 | Animation keys | existing | existing | existing | `brightness_curve`, `color_curve`, `period_ms`, `_curve_phase`, `_animated`, `_start_inactive`, `_bake_only`, `_tags` | same |
-| Glow strength | per-entity f32 | glow table (not AlphaLights) | n/a | `_glow(float)`, default 4.0 | same |
+| Glow strength | per-entity f32 | glow table (not AlphaLights) | n/a | `_glow(float)`, default 1.0 | same |
 
 ## Wire format
 AlphaLights (id 18) v5, little-endian throughout, mirroring v4:

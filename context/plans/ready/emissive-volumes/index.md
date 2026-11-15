@@ -31,6 +31,7 @@ Owner request: mappers set how strongly and in what colour a surface glows, per 
 - **Membership is compile-time and per static world face.**
   - A face belongs to a volume when its centroid lies inside one of the volume's brush hulls.
   - Overlaps resolve smallest containing volume wins (summed brush volume, as `reflection_volume` and the environment volumes resolve), a tie going to the later in map order. Nesting works in any order, silently.
+  - `light_area` faces are never members: their light owns their glow (`plans/ready/area-lights`).
   - A volume left with no `_e` face warns, including one a smaller volume empties.
   - At most 256 volumes per map; past that the compile fails, naming the count.
 - **Movers and fluids take texture strength only.** They bind the per-texture material, so `materials.toml` reaches them; no volume does. Scripted glow on a mover waits for content that asks. Model glow stays 0: models load only their diffuse slot.
@@ -43,7 +44,7 @@ Owner request: mappers set how strongly and in what colour a surface glows, per 
 - **Non-goals.**
   - Colour animation (cross-fades between colours): add when content asks; status lights set a colour.
   - Per-texel animation (phase-map sweeps, world-surface flipbooks): material authoring, a separate brief.
-  - Area lights from glowing faces: a separate brief (`research.md` §Strength source).
+  - Area lights from glowing faces: `plans/ready/area-lights`, which builds after this brief, multiplies texture strength by its `_glow`, and adds its entries to this brief's glow table.
 
 ### Scripting surface
 
@@ -79,7 +80,7 @@ TypeScript and Luau twins both ship, wire byte-identical as the fog twins are.
 - [ ] Bad keys compile, each with one warning naming the key: max < min swaps, a negative value reads 0, a non-finite one its default, one past the ceiling the ceiling. Each key is fixed before the pair swaps (pin P38). Valid keys, 0 included, compile silently. A texture at the ceiling inside a volume whose max is at the ceiling presents finite glow and finite bloom (pin P50).
 - [ ] Membership:
   - A face whose centroid is inside a hull joins; one just outside does not. A face in the plane of a volume brush's side joins (pin P27).
-  - A member face the atlas cuts into sub-faces glows as one (pin P29). A volume enclosing a mover brush and a fluid lists neither.
+  - A member face the atlas cuts into sub-faces glows as one (pin P29). A volume enclosing a mover brush, a fluid and a `light_area` face lists none of them.
   - Two volumes that both contain a face centroid: the smaller wins, a tie going to the later, silently. A volume nested inside another keeps its faces whichever comes first in the map (pin P57). A volume with no `_e` face warns, including one a smaller volume empties (pin P28).
   - An emptied volume feeds the limiter 0 (pin P56).
   - Volume 256 compiles; volume 257 fails, naming the count.
@@ -125,6 +126,7 @@ Each run pins the fixture, Mac target machine class, cache mode, baseline (the s
 - Per-face index to the shader:
   - Chosen: the compiler writes per-volume face-index lists into the emissive section. At load the renderer builds a per-vertex volume id stream beside the world vertex buffer, as `spec_owner_buffer` rides slot 1, and the fragment indexes a per-frame table of volume factor × colour packed CPU-side. Texture strength stays in the per-material uniform.
   - Rival: a per-vertex field in Geometry (id 17), like `animated_block`. It needs unshared vertices (`animated_block_ids.rs` guard) and changes the Geometry ABI.
+  - Build the id stream and table general: `plans/ready/area-lights` adds one entry per area light, evaluated in-shader from its compose descriptor, beside the CPU-packed volume entries.
   - First slice: one volume around one face, one vertex shared with a non-member face.
 - Ownership rival: glow keys on the brush entity that owns the faces. Not chosen; argued in `research.md` §Ownership rival.
 - Upload the volume table only when a value changed; a static frame uploads nothing. Before adding a vertex stream, check whether the 36-byte world vertex has padding that can carry the volume id, which would leave untouched faces with no extra vertex fetch.

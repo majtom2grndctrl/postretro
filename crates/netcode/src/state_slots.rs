@@ -25,6 +25,8 @@ use postretro_scripting_core::player_slots::{
 mod defense_slots_test;
 mod owner_source;
 #[cfg(test)]
+mod coop_activation_replication_test;
+#[cfg(test)]
 mod player_counts_test;
 #[cfg(test)]
 mod player_slot_lookup_test;

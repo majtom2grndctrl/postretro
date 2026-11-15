@@ -296,6 +296,57 @@ impl Host {
         self.spawn(client, at)
     }
 
+    /// A level change or same-map restart: every client is demoted (its pawn
+    /// despawns, its seat stays bound), the level reinstalls with the same
+    /// references and crossings, and the host's pawn spawns at `host_at` after
+    /// install. Clients re-promote later through `respawn`.
+    pub(super) fn relevel(&mut self, host_at: Vec3) {
+        {
+            let mut registry = self.ctx.registry.borrow_mut();
+            for (_, pawn) in self.clients.drain(..) {
+                registry.despawn(pawn).unwrap();
+            }
+            registry.despawn(self.host).unwrap();
+        }
+        // The same level installs again: its references are the families it
+        // holds now.
+        let level_tags: BTreeSet<String> = self
+            .ctx
+            .slot_table
+            .borrow()
+            .family_members(&postretro_entities::engine_state_collections::OCCUPANCY_FAMILY);
+        self.triggers = TriggerSystem::default();
+        self.players.end_level(Some(&mut self.seats), &mut self.ctx.slot_table.borrow_mut());
+        self.families.unload_level(&mut self.ctx.slot_table.borrow_mut());
+        let crossings = self.ctx.data_registry.borrow().crossings.clone();
+        let mut refs = FamilyReferences::default();
+        for tag in &level_tags {
+            refs.note_slot(&format!("occupancy.{tag}.occupants"));
+        }
+        let volume_tags = level_tags.clone();
+        self.families
+            .install_level(&refs, &volume_tags, &mut self.ctx.slot_table.borrow_mut());
+        self.players.begin_level(
+            true,
+            Some(&mut self.seats),
+            None,
+            &self.ctx.registry.borrow(),
+            &mut self.ctx.slot_table.borrow_mut(),
+        );
+        {
+            let mut registry = self.ctx.data_registry.borrow_mut();
+            registry.clear();
+            registry.populate_level(Vec::new(), crossings, &[]);
+        }
+        self.detector = CrossingDetector::new();
+        self.detector
+            .initialize(&self.ctx.data_registry.borrow(), &self.ctx.slot_table.borrow(), &self.ctx);
+        let mut registry = self.ctx.registry.borrow_mut();
+        self.host = Self::spawn_pawn(&mut registry, host_at);
+        registry.mark_local_player_pawn(self.host).unwrap();
+        self.seats.bind_pawn(&mut registry, Seat(0), self.host);
+    }
+
     pub(super) fn place(&self, pawn: EntityId, at: Vec3) {
         let mut registry = self.ctx.registry.borrow_mut();
         let mut transform = *registry.get_component::<Transform>(pawn).unwrap();
@@ -686,6 +737,32 @@ fn death_inside_leaves_counts_together_and_gate_holds() {
     assert_eq!(families[0].2, 0.0, "occupants drop on the same tick");
     for _ in 0..3 {
         assert!(host.frame().is_empty(), "the gate never crosses");
+    }
+}
+
+// P5 (P13): after a level change and after a same-map restart, a gate the
+// party spawns inside stays closed while any client still loads and opens in
+// the frame the last one counts inside.
+#[test]
+fn party_gate_waits_for_every_client_after_level_change_and_restart() {
+    let mut host = room_gate(ROOM);
+    let clients = [host.admit(), host.admit()];
+    for client in clients {
+        host.spawn(client, ROOM);
+    }
+    assert!(fired(&host.frame(), "airlock.allIn"));
+    for _restart in 0..2 {
+        host.relevel(ROOM);
+        assert_eq!(host.count("loading"), 3.0, "install counts every seat loading");
+        assert!(host.frame().is_empty(), "both clients still load");
+        assert_eq!(host.count("loading"), 2.0);
+        host.spawn(clients[0], ROOM);
+        assert!(host.frame().is_empty(), "one client still loads");
+        host.spawn(clients[1], ROOM);
+        assert!(
+            fired(&host.frame(), "airlock.allIn"),
+            "opens in the frame the last client counts inside"
+        );
     }
 }
 

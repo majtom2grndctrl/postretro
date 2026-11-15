@@ -583,7 +583,7 @@ impl SeatTable {
         self.roster_entries()
     }
 
-    fn roster_message_for(&self, client_id: u64) -> SessionRosterMessage {
+    pub(crate) fn roster_message_for(&self, client_id: u64) -> SessionRosterMessage {
         SessionRosterMessage {
             session_id: self.session_id(),
             your_seat: self.seat_for_client(client_id).map(|seat| seat.0),

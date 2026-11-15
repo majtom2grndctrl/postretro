@@ -200,6 +200,7 @@ The Luau twin passes names explicitly (`local overhead = defineStance("overhead"
 - [ ] A release whose `animation` names its `beginningStance`'s state loads with one warning naming the attack; a release on its own state loads silently.
 - [ ] An impact effect switching the enemy's animation during a release, before its moment, cancels the hit: nothing fires that entry, and the same release unflinched fires at its moment. A switch landing before the AI pass on the tick the release is entered does not cancel it (pin P46).
 - [ ] A resting enemy whose attack is still cooling down requests nothing for it and keeps the pose; once the cooldown elapses it requests, and the strike it releases fires at its moment. A row to an attack never passes while that attack cools down (pin P44).
+- [ ] With a rest's first attack cooling down and its second ready, the rest requests the second; with the first's token refreshing instead, it keeps requesting the first (pin P49). A cooldown that elapses during tick N's evaluation lets the rest request and be granted on N, and its row passes on N+1 (pin P50).
 - [ ] These reject load with a pathed error:
   - a `breakOn.to` naming no sibling activity, or a string `to` or `initial` naming an activity lowering generates;
   - a row to an attack from anywhere but its `beginningStance`'s rest, or to an attack with no `beginningStance`;

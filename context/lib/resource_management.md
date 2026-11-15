@@ -171,11 +171,11 @@ runtime. To light a scene, an author places a separate light entity.
     and runtime see one number. The file is the home for content-owned material
     properties.
   - An `emissive_volume` brush scales and tints its static world faces: glow =
-    texture strength × (min + brightness × (max − min)) × colour. The map owns
-    min, max and default colour; scripts own brightness ([0, 1], 1 with no
-    script) and colour, never the range. Movers and fluids take texture
+    texture strength × (min + brightness × (max − min)) × color. The map owns
+    min, max and default color; scripts own brightness ([0, 1], 1 with no
+    script) and color, never the range. Movers and fluids take texture
     strength only.
-  - `_e` stays an RGB colour map; black is zero glow. Alpha is reserved for a
+  - `_e` stays an RGB color map; black is zero glow. Alpha is reserved for a
     future per-texel channel: author it opaque.
 - **Composite and fallback:** forward rendering writes `lit + emissive` into the
   renderer-owned HDR scene target. An absent `_e` uses a shared 1×1 black sRGB

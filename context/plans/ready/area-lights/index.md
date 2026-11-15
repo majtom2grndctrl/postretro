@@ -469,7 +469,9 @@ Glow and light identity (orderings in `research.md` §Pin table):
   its faces, and the warning a volume they empty gives; `_bake_only` with
   `_start_inactive` warns; an animated `light 0` fails, pointing at
   `emissive_volume`; its glow and room light are not flash-limited until
-  E23 lands; every light's curve samples read into [0, C].
+  E23 lands; every light's curve samples read into [0, C]. The custom-curve
+  examples use the compiler's `[t_ms, …]` syntax, with colour channels as
+  linear multipliers inside [0, C], not 0–255.
   `docs/scripting-reference.md` lists `"Area"` among light kinds, `sweep`'s
   refusal on it and the curve range (grep gate on `light_area` and `"Area"`).
 - [ ] Measured, not gated: forward-pass GPU time (`POSTRETRO_GPU_TIMING=1`) on a

@@ -2496,7 +2496,7 @@ mod tests {
         let pawn = spawn_player(&mut registry, Vec3::new(0.0, 2.0, 0.0));
         let mut items = Vec::new();
         let mut inventory = Inventory::default();
-        for slot in 0..3 {
+        for (slot, wieldable) in inventory.wieldables[..3].iter_mut().enumerate() {
             let item = spawn_item(
                 &mut registry,
                 "ion",
@@ -2513,7 +2513,7 @@ mod tests {
             component.lower_ms = 100;
             component.raise_ms = 50;
             registry.set_component(item, component).unwrap();
-            inventory.wieldables[slot] = Some(item);
+            *wieldable = Some(item);
             items.push(item);
         }
         registry.set_component(pawn, inventory).unwrap();

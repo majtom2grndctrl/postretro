@@ -1242,8 +1242,8 @@ mod tests {
         assert!((repeated_record.accumulated_damage - 5.0).abs() <= f32::EPSILON);
         assert!(repeated_record.time_since_damage_ms.abs() <= f32::EPSILON);
 
-        for index in 0..RECENT_ATTACKER_LEDGER_CAPACITY {
-            brain.recent_attackers[index] = Some(RecentAttacker {
+        for (index, entry) in brain.recent_attackers.iter_mut().enumerate() {
+            *entry = Some(RecentAttacker {
                 attacker: EntityId::from_raw((index + 10) as u32),
                 accumulated_damage: 10.0,
                 time_since_damage_ms: 50.0,
@@ -1281,8 +1281,8 @@ mod tests {
                 <= f32::EPSILON
         );
 
-        for index in 0..RECENT_ATTACKER_LEDGER_CAPACITY {
-            brain.recent_attackers[index] = Some(RecentAttacker {
+        for (index, entry) in brain.recent_attackers.iter_mut().enumerate() {
+            *entry = Some(RecentAttacker {
                 attacker: EntityId::from_raw((index + 20) as u32),
                 accumulated_damage: 1.0,
                 time_since_damage_ms: 100.0,

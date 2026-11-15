@@ -295,11 +295,9 @@ fn oversized_head_of_line_waiter_is_granted_within_bounded_wait() {
         granted_at, 4,
         "granted the tick the last cost-1 holder ends"
     );
-    for cost_one in 1..oversized {
+    for grants in &line.grants[1..oversized] {
         assert!(
-            !line.grants[cost_one]
-                .iter()
-                .any(|&tick| (1..granted_at).contains(&tick)),
+            !grants.iter().any(|&tick| (1..granted_at).contains(&tick)),
             "no cost-1 enemy is granted past the waiting cost-3 draw"
         );
     }
@@ -368,9 +366,9 @@ fn heavy_draws_from_two_archetypes_never_overlap() {
         line.tick(&table, tick);
         assert!(line.held_cost(HEAVY) <= 1, "two heavy turns at tick {tick}");
     }
-    for index in 0..4 {
+    for grants in &line.grants[..4] {
         assert!(
-            line.grants[index].len() >= 2,
+            grants.len() >= 2,
             "every heavy attacker keeps getting turns"
         );
     }

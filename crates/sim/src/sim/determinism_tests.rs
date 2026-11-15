@@ -4684,11 +4684,11 @@ fn clip_timed_fire_ticks(ticks_per_frame: usize, time_scale: f64, ticks: usize) 
 fn clip_timed_attacks_fire_on_the_same_ticks_at_any_frame_split_and_animation_time_scale() {
     const TICKS: usize = 240;
     let baseline = clip_timed_fire_ticks(1, 1.0, TICKS);
-    // `punch` reaches its `hit` (0.767 s) 47 ticks after the jab's entry on
+    // `punch` reaches its `hit` (0.267 s) 17 ticks after the jab's entry on
     // tick 0; the jab leaves at its end (tick 67) and rests 200 ms.
     assert_eq!(
         baseline.first().copied(),
-        Some(47),
+        Some(17),
         "the AI stage times the jab on the clip's `hit`: {baseline:?}"
     );
     assert!(baseline.len() >= 2, "the jab repeats: {baseline:?}");

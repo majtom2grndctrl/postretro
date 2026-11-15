@@ -21,7 +21,8 @@ local SLAM_RANGE = 3.5
 local CLOSE_STANDOFF = 1.5
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
--- `punch` (1,100 ms) connects at its `hit`, 767 ms in.
+-- `punch` (1,100 ms) connects at its `hit`, 267 ms in; the rest is
+-- follow-through.
 -- `smash` (3,700 ms) crouches by 400 ms and both hands reach the floor at its
 -- `hit`, 1,667 ms in. The slam's phases share one smash; the commit holds
 -- 100 ms past `hit`.
@@ -30,10 +31,10 @@ local SMASH_HIT_MS = 1667
 local SLAM_WINDUP_MS = SMASH_CROUCHED_MS
 local SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100
 -- A jab re-entered the tick after its fire rests, then plays a fresh punch to
--- `hit`: 57 ticks (950 ms) at the soonest. The cooldown sits below rest plus
--- `hit` (917 ms), so no jab's moment meets it.
+-- `hit`: 27 ticks (450 ms) at the soonest. The cooldown sits below rest plus
+-- `hit` (417 ms), so no jab's moment meets it.
 local JAB_REST_MS = 150
-local JAB_COOLDOWN_MS = 900
+local JAB_COOLDOWN_MS = 400
 -- Longer than `heavy`'s 4 s refresh, so a second brute takes the next slam.
 -- An outer row: passing during a jab's punch, it cuts that jab before `hit`.
 local PRESS_MS = 5000

@@ -9145,7 +9145,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const SLAM_WINDUP_MS: f32 = SMASH_CROUCHED_MS;
     const SLAM_COMMIT_MS: f32 = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100.0;
     const JAB_REST_MS: f32 = 150.0;
-    const JAB_COOLDOWN_MS: f32 = 900.0;
+    const JAB_COOLDOWN_MS: f32 = 400.0;
     const PRESS_MS: f32 = 5000.0;
 
     let activity = |animation: Option<&str>,

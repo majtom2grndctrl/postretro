@@ -7428,7 +7428,7 @@
 				"events": [
 					{
 						"name": "hit",
-						"time": 0.767
+						"time": 0.267
 					}
 				]
 			}
@@ -18159,7 +18159,15 @@
 					"output": 1451,
 					"interpolation": "STEP"
 				}
-			]
+			],
+			"extras": {
+				"events": [
+					{
+						"name": "hit",
+						"time": 0.267
+					}
+				]
+			}
 		},
 		{
 			"name": "smash_strike",
@@ -22192,15 +22200,7 @@
 					"output": 1790,
 					"interpolation": "STEP"
 				}
-			],
-			"extras": {
-				"events": [
-					{
-						"name": "hit",
-						"time": 0.300333
-					}
-				]
-			}
+			]
 		}
 	],
 	"accessors": [

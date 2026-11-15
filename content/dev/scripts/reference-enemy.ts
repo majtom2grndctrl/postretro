@@ -33,8 +33,9 @@ const CLOSE_STANDOFF = 1.5;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// `punch`, on the `mixamo_brute` library, runs 1,100 ms and connects at its
-// `hit` event, 767 ms in. The jab fires at `hit`.
+// `punch`, on the `mixamo_brute` library, runs 1,100 ms. Its swipe connects at
+// its `hit` event, 267 ms in; the rest is follow-through and the return to
+// rest. The jab fires at `hit`.
 // `smash`, the jump attack, runs 3,700 ms. It crouches by 400 ms, where
 // `smash_windup` cuts it, and both hands reach the floor at its `hit`, 1,667 ms
 // in. The slam's three phases share `attack_slam`, so its smash runs on from
@@ -50,11 +51,11 @@ const SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100;
 // then rests JAB_REST_MS before it may jab again. A target stepping out of
 // reach can end a jab on the tick after its fire; it then rests and plays a
 // fresh punch to `hit`, so the soonest a re-entered jab's moment follows a
-// fire is 1 + 9 + 47 = 57 ticks (950 ms) on whole 60 Hz ticks. The cooldown
-// sits below JAB_REST_MS plus the punch's `hit` (917 ms), so no jab's moment
+// fire is 1 + 9 + 17 = 27 ticks (450 ms) on whole 60 Hz ticks. The cooldown
+// sits below JAB_REST_MS plus the punch's `hit` (417 ms), so no jab's moment
 // meets it.
 const JAB_REST_MS = 150;
-const JAB_COOLDOWN_MS = 900;
+const JAB_COOLDOWN_MS = 400;
 // After its own slam the brute only jabs, longer than `heavy`'s 4 s refresh,
 // so a second brute on the same target takes the next slam, and far longer
 // than the slam's 1,800 ms cooldown, so a slam is always ready when its turn

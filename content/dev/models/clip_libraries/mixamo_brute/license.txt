@@ -20,7 +20,7 @@ Packaging notes (PostRetro):
       --trim punch_windup=punch:467 \
       --trim smash_strike=smash:400- --trim swipe_strike=swipe:900- \
       --trim punch_strike=punch:467- \
-      --event punch:hit=267 --event smash:hit=1667 --event swipe:hit=1300
+      --event punch:hit=267 --event smash:hit=1633 --event swipe:hit=1300
 * --yaw 180 turns the rig to face +Z, the front AI facing aims, matching
   the bound Mutant model; root motion then runs the way the model faces.
 * smash and hit_reaction are pinned in place: the jump attack lands 1.6 m
@@ -38,12 +38,15 @@ Packaging notes (PostRetro):
   front of the hips at its farthest forward point in the clip, near its peak
   speed of 12 m/s. A first measurement took 767 ms, the slower return sweep
   that brings the hand back past the front at a third of that speed; a
-  playtest read the hit as late (2026-11-14). smash hit at 1667 ms (both
-  hands reach the floor, frame 50) and swipe hit at 1300 ms (the left claw
-  sweeping across, frame 39) are each the first frame the striking hand is
+  playtest read the hit as late (2026-11-14). smash hit at 1633 ms (frame
+  49): the hands, slamming down at 8-12 m/s, pass about 0.6-0.7 m above the
+  floor, near a player's camera height; they reach the floor at 1667 ms
+  (frame 50) and stop by 1700 ms. A playtest chose the earlier frame so the
+  hit meets the camera, not the floor (2026-11-14). swipe hit at 1300 ms
+  (the left claw sweeping across, frame 39) is the first frame the claw is
   within about 5% of its full reach.
 * smash_strike and swipe_strike start at their windup cuts, so their hits
-  fall at 1267 and 400 ms; smash_windup and swipe_windup end before their
+  fall at 1233 and 400 ms; smash_windup and swipe_windup end before their
   hits and carry none. punch_windup, cut at 467 ms, ends after the swipe, so
   it carries the punch's hit at 267 ms and punch_strike carries none: its
   467 ms pose is the arm raised in follow-through, and the swipe's real

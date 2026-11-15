@@ -9141,7 +9141,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
     const SMASH_CROUCHED_MS: f32 = 400.0;
-    const SMASH_HIT_MS: f32 = 1667.0;
+    const SMASH_HIT_MS: f32 = 1633.0;
     const SLAM_WINDUP_MS: f32 = SMASH_CROUCHED_MS;
     const SLAM_COMMIT_MS: f32 = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100.0;
     const JAB_REST_MS: f32 = 150.0;

@@ -3360,7 +3360,7 @@ mod tests {
                 .unwrap()
                 .event_time("hit")
         };
-        for (attack, hit) in [("smash", 1.667), ("swipe", 1.3)] {
+        for (attack, hit) in [("smash", 1.633), ("swipe", 1.3)] {
             let windup = duration(&format!("{attack}_windup"));
             let strike = event(&format!("{attack}_strike")).expect("the strike carries `hit`");
             assert!((event(attack).expect("the attack carries `hit`") - hit).abs() < 1e-4);

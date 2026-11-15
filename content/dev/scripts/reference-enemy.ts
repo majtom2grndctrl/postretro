@@ -37,14 +37,14 @@ const RETURN_ARRIVAL_EPSILON = 1;
 // its `hit` event, 267 ms in; the rest is follow-through and the return to
 // rest. The jab fires at `hit`.
 // `smash`, the jump attack, runs 3,700 ms. It crouches by 400 ms, where
-// `smash_windup` cuts it, and both hands reach the floor at its `hit`, 1,667 ms
-// in. The slam's three phases share `attack_slam`, so its smash runs on from
-// the windup's entry: the windup crouches, the commit fires at `hit` and holds
-// 100 ms past it, and the recovery leaves once the smash has played through.
-// The commit must still be active when the smash reaches `hit`, or the slam
-// never fires.
+// `smash_windup` cuts it. Its `hit`, 1,633 ms in, is the hands slamming down
+// past camera height, a frame before they reach the floor. The slam's three
+// phases share `attack_slam`, so its smash runs on from the windup's entry:
+// the windup crouches, the commit fires at `hit` and holds 100 ms past it, and
+// the recovery leaves once the smash has played through. The commit must still
+// be active when the smash reaches `hit`, or the slam never fires.
 const SMASH_CROUCHED_MS = 400;
-const SMASH_HIT_MS = 1667;
+const SMASH_HIT_MS = 1633;
 const SLAM_WINDUP_MS = SMASH_CROUCHED_MS;
 const SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100;
 // A jab fires at the punch's `hit`, leaves once the punch has played through,
@@ -145,8 +145,8 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
           crossfadeMs: 80,
           interrupt: "snap",
         },
-        // The smash's hands reach the floor at its `hit`, 1,667 ms in, during
-        // the slam's commit. Stances split it into `smash_windup` and
+        // The smash's hands pass camera height at its `hit`, 1,633 ms in,
+        // during the slam's commit. Stances split it into `smash_windup` and
         // `smash_strike`.
         attack_slam: {
           clip: "smash",

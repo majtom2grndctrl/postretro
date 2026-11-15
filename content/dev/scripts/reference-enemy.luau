@@ -23,11 +23,11 @@ local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
 -- `punch` (1,100 ms) connects at its `hit`, 267 ms in; the rest is
 -- follow-through.
--- `smash` (3,700 ms) crouches by 400 ms and both hands reach the floor at its
--- `hit`, 1,667 ms in. The slam's phases share one smash; the commit holds
--- 100 ms past `hit`.
+-- `smash` (3,700 ms) crouches by 400 ms; its `hit`, 1,633 ms in, is the hands
+-- slamming down past camera height, a frame before they reach the floor. The
+-- slam's phases share one smash; the commit holds 100 ms past `hit`.
 local SMASH_CROUCHED_MS = 400
-local SMASH_HIT_MS = 1667
+local SMASH_HIT_MS = 1633
 local SLAM_WINDUP_MS = SMASH_CROUCHED_MS
 local SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100
 -- A jab re-entered the tick after its fire rests, then plays a fresh punch to
@@ -116,8 +116,8 @@ M.referenceEnemyEntity = defineEntity({
           crossfadeMs = 80,
           interrupt = "snap",
         },
-        -- The smash's hands reach the floor at its `hit`, 1,667 ms in, during
-        -- the slam's commit. Stances split it into `smash_windup` and
+        -- The smash's hands pass camera height at its `hit`, 1,633 ms in,
+        -- during the slam's commit. Stances split it into `smash_windup` and
         -- `smash_strike`.
         attack_slam = {
           clip = "smash",

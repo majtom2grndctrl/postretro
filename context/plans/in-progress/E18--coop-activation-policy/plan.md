@@ -147,6 +147,6 @@ Left as they are:
 - `cargo clippy --workspace --all-targets --features postretro/dev-tools -- -D warnings` and plain `cargo clippy -- -D warnings`: pass.
 - `cargo check --release`: pass. Its only warnings are two unused dependencies that predate the branch: `combat-model` → `net`, and `scripting-core` → `notify-debouncer-full`.
 - `crate-graph --check`: pass.
-- `cargo test --workspace`: running.
+- `cargo test --workspace`: every suite passes except four `postretro-level-compiler` `prl-build` data-script tests, which cannot find the `scripts-build` sidecar. This container runs cargo 1.100, whose default build-dir puts test binaries under `target/<profile>/build/<crate>/<hash>/out/`. `find_scripts_build` looks only beside the executable and in the `deps/` layout. It predates this branch and is untouched by it, so it is a follow-up for that lookup. The sidecar itself builds, and both new dev maps compile through `prl-build`. The app suite passed in full (2656) on the final commit.
 - Not run here: GPU-adapter tests skip without an adapter, as everywhere in this container.
 

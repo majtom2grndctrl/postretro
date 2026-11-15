@@ -840,3 +840,101 @@ fn scripted_runs_produce_identical_count_timelines() {
     assert_eq!(first, run());
     assert!(first.1.iter().flatten().any(|fire| fire == "vault.solve"));
 }
+
+/// Install `map` under the real dev mod the way a session does: mod init, the
+/// mod's `occupancy` commit, then the production world install with its data
+/// script. Returns the app and the warnings logged on the way.
+fn install_dev_map(map: &'static str, out: &std::path::Path) -> (crate::App, Vec<String>) {
+    use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let mut app = crate::startup::lifecycle::tests::test_app();
+    let ctx = crate::startup::lifecycle::tests::script_ctx(&app);
+    let mut primitives = PrimitiveRegistry::new();
+    crate::scripting::primitives::register_all(&mut primitives, ctx.clone());
+    let manifest = crate::coop_fixture_tests::initialize_dev_mod(&mut app, &primitives);
+    {
+        let references = crate::session::occupancy_families::mod_scope_references(
+            &ctx,
+            manifest.ui_trees.iter().map(|registered| &registered.tree),
+        );
+        app.session
+            .as_mut()
+            .unwrap()
+            .occupancy_families
+            .commit_mod(&references, &mut ctx.slot_table.borrow_mut());
+    }
+    let world = super::teleporters_surface_tests::compile(map, out);
+    crate::startup::lifecycle::tests::install_capture_world(&mut app, &world);
+    let warnings = capture
+        .records()
+        .into_iter()
+        .filter(|record| record.level <= log::Level::Warn)
+        .map(|record| record.message)
+        .collect();
+    (app, warnings)
+}
+
+// U1, C5, C6, C4 and P23 on the dev map, in TypeScript and Luau alike: the
+// mod's hill store references `hill`; the level's script references the vault
+// plates and an airlock tag it reads off the map at run time; its HUD strip
+// binds that family without an unknown-slot warning; nothing warns about an
+// absent tag; the hill accumulator binds and drains; and both runtimes lower
+// the same crossings.
+#[test]
+fn dev_map_declares_families_and_matches_across_runtimes() {
+    let out = tempfile::tempdir().unwrap();
+    let mut lowered = Vec::new();
+    for map in ["coop-activation-test", "coop-activation-test-luau"] {
+        let (mut app, warnings) = install_dev_map(map, out.path());
+        let ctx = crate::startup::lifecycle::tests::script_ctx(&app);
+        assert_eq!(
+            ctx.slot_table
+                .borrow()
+                .family_members(&postretro_entities::engine_state_collections::OCCUPANCY_FAMILY),
+            ["airlock", "hill", "vault-plates"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            "{map}"
+        );
+        let relevant: Vec<&String> = warnings
+            .iter()
+            .filter(|message| {
+                message.contains("occupancy") || message.contains("unknown slot") || message.contains("data script")
+            })
+            .collect();
+        assert!(relevant.is_empty(), "{map}: {relevant:#?}");
+
+        // The hill accumulator, a mod-scope reference, binds on this level.
+        ctx.slot_table
+            .borrow_mut()
+            .get_mut("occupancy.hill.occupants")
+            .unwrap()
+            .write_value(Some(SlotValue::Number(2.0)));
+        let before = match ctx.slot_table.borrow().get("kingHill.control").unwrap().value {
+            Some(SlotValue::Number(value)) => value,
+            ref other => panic!("{other:?}"),
+        };
+        evaluate_slot_accumulators(
+            &mut app.session.as_mut().unwrap().scripting.slot_accumulator_bindings,
+            DT,
+        );
+        let after = match ctx.slot_table.borrow().get("kingHill.control").unwrap().value {
+            Some(SlotValue::Number(value)) => value,
+            ref other => panic!("{other:?}"),
+        };
+        assert!((before - after - 2.0 * DT).abs() < 1e-4, "{map}: {before} -> {after}");
+
+        let registry = ctx.data_registry.borrow();
+        let mut crossings: Vec<String> = registry
+            .crossings
+            .iter()
+            .filter(|crossing| crossing.fire.iter().any(|fire| fire.starts_with("vault") || fire.starts_with("airlock")))
+            .map(|crossing| format!("{crossing:?}"))
+            .collect();
+        crossings.sort();
+        assert_eq!(crossings.len(), 2, "{map}: {crossings:#?}");
+        lowered.push(crossings);
+    }
+    assert_eq!(lowered[0], lowered[1], "TypeScript and Luau lower the same crossings");
+}

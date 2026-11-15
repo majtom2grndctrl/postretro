@@ -1,0 +1,225 @@
+// Game: Postretro
+// Format: Standard
+// E18 co-op activation dev map (Luau twin): two vault plates open a door, the airlock opens
+// once every player in play stands in it, and the hill drains while anyone holds it.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/<this map>.map -o content/dev/maps/<this map>.prl
+{
+"classname" "worldspawn"
+"wad" ""
+"data_script" "../scripts/coop-activation-test.luau"
+"_tb_mod" "dev"
+{
+( -640 -384 -16 ) ( -640 -383 -16 ) ( -640 -384 -15 ) debug_ceiling_grey 0 0 0 1 1
+( 640 -384 -16 ) ( 640 -384 -15 ) ( 640 -383 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -384 -16 ) ( -640 -384 -15 ) ( -639 -384 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 384 -16 ) ( -639 384 -16 ) ( -640 384 -15 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -384 -16 ) ( -639 -384 -16 ) ( -640 -383 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -384 0 ) ( -640 -383 0 ) ( -639 -384 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( -656 -400 384 ) ( -656 -399 384 ) ( -656 -400 385 ) debug_ceiling_grey 0 0 0 1 1
+( 656 -400 384 ) ( 656 -400 385 ) ( 656 -399 384 ) debug_ceiling_grey 0 0 0 1 1
+( -656 -400 384 ) ( -656 -400 385 ) ( -655 -400 384 ) debug_ceiling_grey 0 0 0 1 1
+( -656 400 384 ) ( -655 400 384 ) ( -656 400 385 ) debug_ceiling_grey 0 0 0 1 1
+( -656 -400 384 ) ( -655 -400 384 ) ( -656 -399 384 ) debug_ceiling_grey 0 0 0 1 1
+( -656 -400 400 ) ( -656 -399 400 ) ( -655 -400 400 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( -656 -400 -16 ) ( -656 -399 -16 ) ( -656 -400 -15 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -400 -16 ) ( -640 -400 -15 ) ( -640 -399 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -656 -400 -16 ) ( -656 -400 -15 ) ( -655 -400 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -656 400 -16 ) ( -655 400 -16 ) ( -656 400 -15 ) debug_ceiling_grey 0 0 0 1 1
+( -656 -400 -16 ) ( -655 -400 -16 ) ( -656 -399 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -656 -400 384 ) ( -656 -399 384 ) ( -655 -400 384 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( 640 -400 -16 ) ( 640 -399 -16 ) ( 640 -400 -15 ) debug_ceiling_grey 0 0 0 1 1
+( 656 -400 -16 ) ( 656 -400 -15 ) ( 656 -399 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 640 -400 -16 ) ( 640 -400 -15 ) ( 641 -400 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 640 400 -16 ) ( 641 400 -16 ) ( 640 400 -15 ) debug_ceiling_grey 0 0 0 1 1
+( 640 -400 -16 ) ( 641 -400 -16 ) ( 640 -399 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 640 -400 384 ) ( 640 -399 384 ) ( 641 -400 384 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( -640 -400 -16 ) ( -640 -399 -16 ) ( -640 -400 -15 ) debug_ceiling_grey 0 0 0 1 1
+( 640 -400 -16 ) ( 640 -400 -15 ) ( 640 -399 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -400 -16 ) ( -640 -400 -15 ) ( -639 -400 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -384 -16 ) ( -639 -384 -16 ) ( -640 -384 -15 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -400 -16 ) ( -639 -400 -16 ) ( -640 -399 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 -400 384 ) ( -640 -399 384 ) ( -639 -400 384 ) debug_ceiling_grey 0 0 0 1 1
+}
+{
+( -640 384 -16 ) ( -640 385 -16 ) ( -640 384 -15 ) debug_ceiling_grey 0 0 0 1 1
+( 640 384 -16 ) ( 640 384 -15 ) ( 640 385 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 384 -16 ) ( -640 384 -15 ) ( -639 384 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 400 -16 ) ( -639 400 -16 ) ( -640 400 -15 ) debug_ceiling_grey 0 0 0 1 1
+( -640 384 -16 ) ( -639 384 -16 ) ( -640 385 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -640 384 384 ) ( -640 385 384 ) ( -639 384 384 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "player_spawn"
+"origin" "-560 -64 24"
+"angles" "0 0 0"
+}
+{
+"classname" "player_spawn"
+"origin" "-560 0 24"
+"angles" "0 0 0"
+}
+{
+"classname" "player_spawn"
+"origin" "-560 64 24"
+"angles" "0 0 0"
+}
+{
+"classname" "trigger_volume"
+"name" "vault_plate_north"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "vault-plates"
+{
+( -416 160 0 ) ( -416 161 0 ) ( -416 160 1 ) debug_ceiling_grey 0 0 0 1 1
+( -352 160 0 ) ( -352 160 1 ) ( -352 161 0 ) debug_ceiling_grey 0 0 0 1 1
+( -416 160 0 ) ( -416 160 1 ) ( -415 160 0 ) debug_ceiling_grey 0 0 0 1 1
+( -416 224 0 ) ( -415 224 0 ) ( -416 224 1 ) debug_ceiling_grey 0 0 0 1 1
+( -416 160 0 ) ( -415 160 0 ) ( -416 161 0 ) debug_ceiling_grey 0 0 0 1 1
+( -416 160 32 ) ( -416 161 32 ) ( -415 160 32 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_volume"
+"name" "vault_plate_south"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "vault-plates"
+{
+( -416 -224 0 ) ( -416 -223 0 ) ( -416 -224 1 ) debug_ceiling_grey 0 0 0 1 1
+( -352 -224 0 ) ( -352 -224 1 ) ( -352 -223 0 ) debug_ceiling_grey 0 0 0 1 1
+( -416 -224 0 ) ( -416 -224 1 ) ( -415 -224 0 ) debug_ceiling_grey 0 0 0 1 1
+( -416 -160 0 ) ( -415 -160 0 ) ( -416 -160 1 ) debug_ceiling_grey 0 0 0 1 1
+( -416 -224 0 ) ( -415 -224 0 ) ( -416 -223 0 ) debug_ceiling_grey 0 0 0 1 1
+( -416 -224 32 ) ( -416 -223 32 ) ( -415 -224 32 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_mover"
+"name" "vault_door"
+"path" "vault_door_closed"
+"speed" "2"
+"_tags" "vault-door"
+{
+( -272 -64 0 ) ( -272 -63 0 ) ( -272 -64 1 ) debug_ceiling_grey 0 0 0 1 1
+( -256 -64 0 ) ( -256 -64 1 ) ( -256 -63 0 ) debug_ceiling_grey 0 0 0 1 1
+( -272 -64 0 ) ( -272 -64 1 ) ( -271 -64 0 ) debug_ceiling_grey 0 0 0 1 1
+( -272 64 0 ) ( -271 64 0 ) ( -272 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( -272 -64 0 ) ( -271 -64 0 ) ( -272 -63 0 ) debug_ceiling_grey 0 0 0 1 1
+( -272 -64 128 ) ( -272 -63 128 ) ( -271 -64 128 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"name" "vault_door_closed"
+"next" "vault_door_open"
+"origin" "-264 0 64"
+}
+{
+"classname" "kinematic_waypoint"
+"name" "vault_door_open"
+"next" ""
+"origin" "-264 0 208"
+}
+{
+"classname" "trigger_volume"
+"name" "airlock"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "airlock"
+{
+( -128 -128 0 ) ( -128 -127 0 ) ( -128 -128 1 ) debug_ceiling_grey 0 0 0 1 1
+( 128 -128 0 ) ( 128 -128 1 ) ( 128 -127 0 ) debug_ceiling_grey 0 0 0 1 1
+( -128 -128 0 ) ( -128 -128 1 ) ( -127 -128 0 ) debug_ceiling_grey 0 0 0 1 1
+( -128 128 0 ) ( -127 128 0 ) ( -128 128 1 ) debug_ceiling_grey 0 0 0 1 1
+( -128 -128 0 ) ( -127 -128 0 ) ( -128 -127 0 ) debug_ceiling_grey 0 0 0 1 1
+( -128 -128 128 ) ( -128 -127 128 ) ( -127 -128 128 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_mover"
+"name" "airlock_door"
+"path" "airlock_door_closed"
+"speed" "2"
+"_tags" "airlock-door"
+{
+( 160 -64 0 ) ( 160 -63 0 ) ( 160 -64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 176 -64 0 ) ( 176 -64 1 ) ( 176 -63 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 -64 0 ) ( 160 -64 1 ) ( 161 -64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 64 0 ) ( 161 64 0 ) ( 160 64 1 ) debug_ceiling_grey 0 0 0 1 1
+( 160 -64 0 ) ( 161 -64 0 ) ( 160 -63 0 ) debug_ceiling_grey 0 0 0 1 1
+( 160 -64 128 ) ( 160 -63 128 ) ( 161 -64 128 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "kinematic_waypoint"
+"name" "airlock_door_closed"
+"next" "airlock_door_open"
+"origin" "168 0 64"
+}
+{
+"classname" "kinematic_waypoint"
+"name" "airlock_door_open"
+"next" ""
+"origin" "168 0 208"
+}
+{
+"classname" "trigger_volume"
+"name" "hill"
+"activation" "touch"
+"target_tag" "unused"
+"command" "start"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "hill"
+{
+( 352 -96 0 ) ( 352 -95 0 ) ( 352 -96 1 ) debug_ceiling_grey 0 0 0 1 1
+( 544 -96 0 ) ( 544 -96 1 ) ( 544 -95 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 -96 0 ) ( 352 -96 1 ) ( 353 -96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 96 0 ) ( 353 96 0 ) ( 352 96 1 ) debug_ceiling_grey 0 0 0 1 1
+( 352 -96 0 ) ( 353 -96 0 ) ( 352 -95 0 ) debug_ceiling_grey 0 0 0 1 1
+( 352 -96 96 ) ( 352 -95 96 ) ( 353 -96 96 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+{
+"classname" "light"
+"origin" "-400 0 256"
+"light" "400"
+"_color" "255 255 255"
+"_falloff_range" "1024"
+}
+{
+"classname" "light"
+"origin" "0 0 256"
+"light" "400"
+"_color" "255 255 255"
+"_falloff_range" "1024"
+}
+{
+"classname" "light"
+"origin" "448 0 256"
+"light" "400"
+"_color" "255 255 255"
+"_falloff_range" "1024"
+}

@@ -1,14 +1,17 @@
 # E10--enemy-stances-and-telegraphs — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: f5bb5d5
 feature branch: `claude/enemy-stances-telegraphs-837003`
+
+## Approval
+Owner approved the plan as proposed (2026-11-15). The proposals stand: stances build now with C1's client half and M5 outstanding until `E10--coop-enemy-telegraph-sounds` lands; the working names `releaseAfter` and `staggerTo` are accepted; the source-FBX location is still open and is asked at Task 8.
 
 ## Corrections
 Source verified at f5bb5d5. No commit since the brief's 9580828 touches `crates/`, `content/`, `sdk/` or `docs/` beyond unrelated mover work. Every Decision premise holds; these are Path and inventory corrections.
 
-- **Missing lowering-only fields.** The hidden release draw and the stagger route both need runtime data that the Boundary inventory does not list. A hold needs its draw range, and a release or recover needs the rest it enters after a flinch. Neither is derivable from authored fields. Lowering will write two more lowering-only fields: the hold's release range (working name `releaseAfter: [min, max]`, on the hold) and the flinch destination (working name `staggerTo: "<rest>"`, on the release and recover). An authored copy of either rejects load like `pose`, `queue`, `afterMoment` and `atDefault`. The AC row "An authored `pose`, `queue`, `afterMoment` or `atDefault` field rejects load" is proved as stated and extended to the two new names. **Owner to confirm the names.**
+- **Missing lowering-only fields.** The hidden release draw and the stagger route both need runtime data that the Boundary inventory does not list. A hold needs its draw range, and a release or recover needs the rest it enters after a flinch. Neither is derivable from authored fields. Lowering will write two more lowering-only fields: the hold's release range (working name `releaseAfter: [min, max]`, on the hold) and the flinch destination (working name `staggerTo: "<rest>"`, on the release and recover). An authored copy of either rejects load like `pose`, `queue`, `afterMoment` and `atDefault`. The AC row "An authored `pose`, `queue`, `afterMoment` or `atDefault` field rejects load" is proved as stated and extended to the two new names. Names accepted with the plan.
 - **Prerequisite not built.** `E10--coop-enemy-telegraph-sounds` ("builds first") is still in `drafts/`. Stance sounds lower to the rest's activity `sound` either way, and the host already plays it. Only AC C1's client half depends on the route. Task 10 waits on it. **Owner to choose:** promote and build the sounds brief first, or build stances now and land with C1 outstanding.
 - `GuardedRow` is `{ when: IrNode, to: String }` with `deny_unknown_fields` (`crates/foundation/src/data_descriptors/types/behavior/recursive.rs:31`). `BehaviorGraphDescriptor` deserializes through a hand-written `RawBehaviorGraphDescriptor`. New fields land in both.
 - The JSON-before-serde step is `crates/scripting-core/src/data_descriptors/{js,lua}/entity.rs`, not `crates/scripting-core/{js,lua}/`. Both readers see every `defineMod` entity, wrapped or bare. `defineEntity` lowers loadout, assistable and defense-layer references only; nothing touches `components.behavior`. Lowering goes in after `js_to_json` / `normalize_behavior_selectors` and before `serde_json::from_value`.

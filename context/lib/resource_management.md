@@ -162,9 +162,11 @@ runtime. To light a scene, an author places a separate light entity.
   renderer bloom threshold; other current material prefixes are zero until
   content establishes a use for them. There is no per-surface runtime scalar in
   v1.
-- **Strength and volumes (decided, not yet built):** brief `plans/ready/emissive-volumes`.
-  - The `neon` prefix retires. Glow strength is content: `<mod root>/materials.toml`
-    sets `emissive` per texture; a texture with an `_e` map and no entry is 1.0.
+- **Strength and volumes (decided, not yet built):** brief
+  `plans/ready/emissive-volumes`.
+  - The `neon` prefix retires. Glow strength is content:
+    `<mod root>/materials.toml` sets `emissive` per normalized texture name, so
+    aliases share one; a texture with an `_e` map and no entry is 1.0.
     Only prl-build reads the file; runtime reads only the baked value, so bake
     and runtime see one number. The file is the home for content-owned material
     properties.
@@ -231,12 +233,12 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   integration, and the hard renderer constraints it honors.
 - **Per-material tuning:** depth (texels or meters, applied **in each
   direction**), terrace count per direction, march step cap, and fade distance
-  are derived from the material name **prefix**, exactly like `shininess` and
-  `emissive_strength` (`postretro-render-data::material::Material::surface_depth`).
+  are derived from the material name **prefix**, exactly like `shininess`
+  (`postretro-render-data::material::Material::surface_depth`).
   Surface Depth adds no author-facing material file: authoring is still "drop
-  a correctly-named PNG". `materials.toml` (§4.5, decided, not yet built) is
-  the home for content-owned material properties, glow strength first. The four values ride in the per-material uniform's
-  second 16-byte row. A material whose loaded specular slot is not `Rg8Unorm`
+  a correctly-named PNG"; `materials.toml` (§4.5, decided, not yet built)
+  carries glow strength only. The four values ride in the per-material
+  uniform's second 16-byte row. A material whose loaded specular slot is not `Rg8Unorm`
   gets an all-zero row and skips the march entirely. `tools/texture-tool`
   derives its default height terrace count from the same prefixes (twice the
   engine's count per direction, so its terraces land on engine plateaus); a

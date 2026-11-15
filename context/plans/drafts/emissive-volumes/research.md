@@ -148,3 +148,7 @@ Per-texture strength needs one value that bake and runtime both read: reflection
 
 - Two lamps on separate faces: one volume each, scripts set brightness. One lamp changing colour: grey `_e` plus the volume's colour. Two lamps painted in one texture on one face: per-texel channels, not this brief; build them as separate faces.
 - Quake-style animated buttons: a uniform pulse is the volume's `pulse`. A spatial sweep needs a per-texel phase (`glow = _e × wave(t + phase)`), and Quake-faithful frames need world-material texture arrays; the forward pass is at 16/16 sampled textures. Both are per-texel material animation, a separate brief. `_e` alpha is reserved for whichever lands first: an HDR multiplier (RGBM-style) or a phase map.
+
+## Material-variant rival
+
+Named variants in `materials.toml` (`["bar_sign_lobby"] = { base = "bar_sign", emissive = 2, tags = [...] }`), with scripts writing that variant's per-material uniform. Gains: no per-vertex stream or per-fragment lookup, no centroid, overlap or split-face rules, no 256 cap, no coupling to Geometry face indices, and movers and fluids covered through the material they already bind. Not chosen: TrenchBroom shows a variant only as a duplicated image file, placements share one mod-wide namespace, and the range moves from the map to the mod. The volume keeps the mapper's workflow: draw around what should glow.

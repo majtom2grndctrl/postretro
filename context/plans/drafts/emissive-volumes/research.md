@@ -100,7 +100,7 @@ Sources:
 | P25 | Host-only write to all 256 volumes; late joiner | join baseline | Records ride the 16 KiB baseline budget across snapshots; all 256 arrive; bound presentation records go last. |
 | P26 | Host-only `setEmissiveAnimation` with 65 samples | capture | Host presents it; record cannot encode (64-key wire cap), host warns once, client keeps the last valid override. |
 | P27 | Face lies in the plane of a volume brush's side (volume flush on a wall) | compile membership | Joins; containment is inclusive (`dot ≤ d`), within compile tolerance. |
-| P28 | Earlier volume whose every face a later volume takes | compile | Later wins each face; earlier keeps its record and index (co-op binding), lists 0 faces, and warns as a volume with no `_e` face. No pair warning. |
+| P28 | A volume whose every face a smaller volume takes | compile | The smaller wins each face; the larger keeps its record and index (co-op binding), lists 0 faces, and warns as a volume with no `_e` face. |
 | P29 | Face cut into sub-faces by the atlas | compile | Every sub-face carries the parent's membership; section indexes final Geometry faces. |
 | P30 | Running `flicker`; one body: `setEmissiveBrightness` 0, then the same `flicker` again | clear and identical re-install in one drain; bridge never sees the gap | The brightness write cleared the curve, so the re-install is a new animation: it starts from its first sample on host and client. The bridge's cached start time and the capture's `anim_start` do not survive the clear. |
 | P31 | Client runs a flicker (its own `levelLoad` copy or a host override); host `powerCut` sets brightness 0 | host write → capture → client SnapshotApply → client bridge tick | The record carries brightness 0 and no animation; the client drops its curve and holds 0 from that frame. |
@@ -109,7 +109,7 @@ Sources:
 | P34 | Limiter on; a reaction writes brightness 0 and 1 alternately six times a second, no animation | static writes, each in its own drain | Presented strength shows ≤ 3 flashes in any 1 s, as the rate-6 `flicker` does (P14). Scripts and the wire see the written values. |
 | P35 | Client: a host record and a client-local write on one volume in one frame | SnapshotApply → ScriptDrain → RenderPrep | Local write lands after the record and holds; the client re-applies only when the host's record changes (last-applied memo). |
 | P36 | Map with 256 volumes; a face in volume index 255 and a non-member face | load → per-vertex id stream → strength table | Volume 255's face presents volume 255's strength; the non-member presents 1.0. No volume index aliases "no volume". |
-| P37 | Limiter on; volume max 20 flickering between brightness 0.2 and 1 (strength 4 to 20) | each presented frame | Both states enter the clamp as 1: no flash, nothing limited. The halo such a strobe drives is E23's. |
+| P37 | Limiter on; white `_e` texels, strength 1, volume max 20 flickering between brightness 0.2 and 1 (shown glow 4 to 20) | each presented frame | Both states enter the clamp as 1: no flash, nothing limited. The halo such a strobe drives is E23's. |
 | P38 | `emissive_min` 2 with `emissive_max` NaN; `emissive_min` +inf with `emissive_max` 0.5 | per-key read (negative → 0, non-finite → default) vs max < min swap | Each key is read first, then the pair swaps. (2, NaN) stores min 1, max 2, with a non-finite warning and a swap warning. (+inf, 0.5) stores min 0, max 0.5. The stored min never exceeds max. Swapping first would store (2, 1): NaN < 2 is false. |
 | P39 | Withdrawn with the s ÷ (s + 1) clamp input (`§Clamp input`, rejected) | n/a | No case. The id stays unused so later citations keep their meaning. |
 | P40 | Limiter on; volume max 20; a reaction writes brightness 0.025 and 0.05 alternately six times a second | each presented frame | Strength 0.5 ↔ 1 enters as 0.5 ↔ 1: dark state below 0.8, swing over 0.1, so the strobe is limited. A clamp fed brightness would see a 0.025 step and pass it. |
@@ -126,8 +126,12 @@ Sources:
 | P51 | `materials.toml` sets `metal/plate emissive = 4`; `metal/plate` has no `_e` map | material stage → material uniform | Warns and packs 0; the forward pass samples no emissive texture for it. |
 | P52 | Limiter on; max 1, strength 1, brightness 1; the P42 red ↔ green strobe has spent the window, so the red onset is held. A script reads `component.color`, then writes blue [0.02, 0.05, 1] | over-budget red onset → read → colour write → next presented frame | The red frame presents the written red desaturated toward its own luminance, with luminance unchanged and redness at the held level. The colour does not lag or ease. The read and the wire return the written red. The blue write presents blue on its own frame, because a move away from saturated red is a return and returns pass. A client with the limiter off presents red, then blue. |
 | P53 | A good build with `signs/bar emissive = 4`, then a syntax error introduced in `materials.toml`, then a rebuild on the warm cache | build → edit → build | The rebuild warns, naming file and line. Every texture reads its default (`signs/bar` 1.0) in the emissive section and the material uniform. The reflection-capture cache misses and re-shades at 1.0. No strength from the earlier build survives. Lightmap, probe and `.prm` caches stay warm. |
+| P54 | `materials.toml` has `["signs/bar"] emissive = 4` and later `["Signs/Bar"] emissive = 2`; also `["textures/signs/bar"]` beside `["signs/bar"]` | material stage key normalization | One warning names both lines; the later entry wins. Byte-identical headers are a TOML syntax error (whole file at defaults, P53). The migration script's collision check normalises keys the same way. |
 | P55 | A client's map build differs from the host's: emissive volume 0's origin is 2 cm from the host's | host write → capture → client binding | The client warns once and drops the update. It never writes another volume. An earlier volume emptied by a later one (P28) keeps its brush AABB origin, so its binding still matches. |
 | P56 | Limiter on; an earlier volume that a later volume empties (P28), so it has 0 member faces; a script flickers it | each presented frame | The largest member strength over an empty set is 0, so the clamp input is 0 and no NaN or −inf reaches the clamp. Writes still land, replicate and read back; nothing presents. |
+| P57 | Volume B lies wholly inside volume A. (a) B is later in map order; (b) B is earlier | compile membership | Smallest wins: B takes its faces and A keeps the rest in both orders, silently. |
+| P58 | Limiter on; migrated panel: strength 4, mean glow luminance 0.43, white volume max 1; `flicker` 0.3 to 1 | each presented frame | Input min(factor × 4 × 0.43, 1) swings 0.52 ↔ 1: dark state below 0.8, so the strobe is limited. A clamp assuming white texels sees 1 ↔ 1 and passes it. |
+| P59 | Limiter on; red `_e` sign (mean glow colour saturated red), white volume; brightness strobes 0 ↔ 1 past the flash budget | each presented frame | The clamp's colour is the red glow colour, so the red-flash rule desaturates the held onset. A clamp given only the white volume colour treats it as neutral. |
 
 ## Capture reference state
 
@@ -140,13 +144,14 @@ Glow keys could sit on the brush entity that owns the faces: `func_group` alread
 - Ownership forces moving existing worldspawn brushes into an entity.
 - A volume retrofits glow over worldspawn and groups untouched, as `lightmap_scale_region` and `reflection_volume` already select faces.
 
-Overlap rule rival: smallest containing volume wins (`reflection_volume`, environment volumes). Last-wins kept: both emissive volumes and `lightmap_scale_region` override a surface property, not a region's physics.
+Overlap rule: smallest containing volume wins (`reflection_volume`, environment volumes), a tie to the later in map order. Rejected: last-in-map-order (`lightmap_scale_region`), under which a nested volume placed earlier in the map is emptied by its outer volume.
 
 ## Clamp input
 
-`ValueClamp::limit` takes [0, 1], counts a flash only when the darker state is below 0.8 and the swing is at least 0.1, and `BLOOM_THRESHOLD` is 1.0. The resolve's soft-knee tonemap is near-identity below 0.98. So min(strength, 1) is the luminance a member face shows, and the clamp's own flash definition then decides. A strobe wholly at or above 1 is white to white on the surface: not a flash.
-
-Rejected: s ÷ (s + 1) (review round 3). Its states above strength 4 sit at or above 0.8, so the darker-state rule ignored the strobe it was meant to catch, and its inverse is inexact in f32 and infinite near 1.7e7.
+`ValueClamp::limit` takes strength in [0, 1] and a colour, counts a flash only when the darker state is below 0.8 and the swing is at least 0.1, and applies a red-flash rule to the colour. The resolve's soft-knee tonemap is near-identity below 0.98, so a texel t presents min(t × strength, 1).
+- Each texture's baked mean glow colour (linear mean of its non-black `_e` texels) stands in for its texels. The brightest member texture (strength × glow luminance) sets the input: min(factor × strength × glow luminance, 1), with colour glow colour × volume colour. A strobe whose shown glow stays at or above 1 is white to white: not a flash.
+- Rejected: min(factor × strength, 1) alone, which assumed white texels (review: `neon_glow_panel_e` has a median linear texel of 0.43, so its flicker shows 0.52 ↔ 0.99 while that input reads 1 ↔ 1). Rejected earlier: s ÷ (s + 1), whose states above strength 4 sit at or above 0.8 and whose inverse is inexact in f32.
+- Left to E23: colour-only strobes (white ↔ blue at high strength), per-texel variation inside one texture, the bloom halo, shared budgets across sources.
 
 ## Compile-time key handling
 

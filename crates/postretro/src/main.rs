@@ -12665,9 +12665,14 @@ mod tests {
             snapshot.get("player.assistReceivedProgress"),
             Some(&SlotValue::Number(0.0))
         );
+        // The session player counts default to 0 and are value-bearing.
+        assert_eq!(
+            snapshot.get("session.playerCounts.inPlay"),
+            Some(&SlotValue::Number(0.0))
+        );
         assert_eq!(
             snapshot.len(),
-            67,
+            72,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

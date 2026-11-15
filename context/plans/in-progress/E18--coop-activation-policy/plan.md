@@ -49,7 +49,7 @@ Every Decision premise holds at `01d5db4f`. The sequencing prerequisite, the fir
 - **Empty `occupancy` namespace for a mod with no reference:** no. Families register no namespace record, and the reservation is an explicit name check, so nothing needs a placeholder. Peers with the same scripts derive the same (possibly empty) family set either way.
 
 ## Session notes
-- Build environment: the workspace needs rustc ≥ 1.99 (`rustup update stable`) and `libasound2-dev libudev-dev` for `cargo check`.
+- Build environment: the workspace needs rustc ≥ 1.99 (`rustup update stable`) and `libasound2-dev libudev-dev` for `cargo check`. The session disk allowance is tight: build with `CARGO_INCREMENTAL=0`.
 - Committed typedefs regenerate with `cargo run -p postretro-sim --bin gen-script-types`; copy both outputs to `crates/sim/src/scripting/typedef/tests/fixtures/expected.d.{ts,luau}`, which the full-registry snapshot tests compare.
 - Netcode replication fixtures that observe only their own records call `localize_engine_shared_slots`, since the counts are the first shared engine slots.
 
@@ -110,7 +110,7 @@ Each task ends green and committed with this file. Hot path: the per-tick write 
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Thin slice through the riskiest seams:** `MAX_CLIENTS` to `foundation`; static `SharedGlobal` readonly `session.playerCounts.*` catalog entries with typedefs and mirror; sim returns the tick's counted-player set on `TickEvents`; one host function derives seat status from `SeatTable`, registry live pawns and that set; the write in `frame_loop` before accumulators; session-level flag, zeroing at unload and leave. Proves S1–S5, S7 and the client half of S1 over two endpoints. | integrating executor | — | done: S3, S5, S7 pass; S1 and S4 partial as noted; netcode lib green, remaining full suites running |
+| 1 | **Thin slice through the riskiest seams:** `MAX_CLIENTS` to `foundation`; static `SharedGlobal` readonly `session.playerCounts.*` catalog entries with typedefs and mirror; sim returns the tick's counted-player set on `TickEvents`; one host function derives seat status from `SeatTable`, registry live pawns and that set; the write in `frame_loop` before accumulators; session-level flag, zeroing at unload and leave. Proves S1–S5, S7 and the client half of S1 over two endpoints. | integrating executor | — | done: S3, S5, S7 pass; S1 and S4 partial as noted; full suites of postretro, netcode, sim, entities, script-compiler, foundation and scripting-core green |
 | 2 | Split occupant tracking out of `trigger_system.rs`, behavior-preserving, own commit | integrating executor | — | |
 | 3 | Catalog `Family` and `List` nodes: both runtime installers, build-time twin, typedef emit, drift guards; value-preserving family slot replace; `occupancy` reservation; readonly proof (C1, C2, C12 typedef part) | integrating executor | 1 | |
 | 4 | Roster names and statuses: `RosterEntry` fields, `WIRE_VERSION` 40, status dirty marking and 250 ms gate, client `entries` accessor; `session.players` rows on host, single player and clients; `Player N`; privacy tests and doc comments rewritten (L1–L5) | integrating executor | 1, 3 | |

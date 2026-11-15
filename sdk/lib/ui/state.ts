@@ -264,8 +264,9 @@ function collectRowIds(node: ForEachNode, ids: Set<string>): void {
 
 /**
  * Clone a row's widget nodes, suffixing every id in `ids` with `.<row>` and
- * every same-row `labelledBy` / `focusNeighbors` target with it. Non-widget
- * values (refs, reactions, predicates) are shared, not cloned.
+ * every same-row `labelledBy` / `focusNeighbors` target with it. Any object
+ * with a string `kind` is treated as a node and copied (bind refs included,
+ * which lose only their SDK-only `kind`); other values are shared.
  */
 function suffixRow(node: ForEachNode, ids: Set<string>, suffix: string): ForEachNode {
   const out: ForEachNode = { ...node };
@@ -328,7 +329,7 @@ export function forEach<Row extends { present: { slot: string } }>(
     }
     // One predicate per node: the row keeps its own, and a zero-spacing stack
     // around it shows only while the row is present.
-    return { kind: "vstack", gap: 0, padding: 0, align: "start", visibleWhen: present, children: [suffixed] };
+    return { kind: "vstack", gap: 0, padding: 0, align: "stretch", visibleWhen: present, children: [suffixed] };
   });
 }
 

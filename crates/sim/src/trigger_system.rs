@@ -108,7 +108,8 @@ impl TriggerFireReport {
 pub struct TriggerSystem {
     occupants: crate::trigger_occupants::TriggerOccupants,
     /// Counted occupants per volume after the last trigger stage, for the
-    /// dev-tools Triggers tab.
+    /// dev-tools Triggers tab; filled only in dev-tools builds.
+    #[cfg(feature = "dev-tools")]
     effective_counts: BTreeMap<EntityId, usize>,
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
     warned_duplicate_players: HashSet<PlayerId>,
@@ -140,6 +141,7 @@ impl TriggerSystem {
 
     pub fn clear(&mut self) {
         self.occupants.clear();
+        #[cfg(feature = "dev-tools")]
         self.effective_counts.clear();
         self.paired_enters.clear();
         self.warned_duplicate_players.clear();
@@ -152,11 +154,6 @@ impl TriggerSystem {
         self.occupants.count(trigger)
     }
 
-    /// The set of `(trigger, player)` pairs whose Enter gate has fired and whose
-    /// paired Exit obligation is still standing. E18 Task 5's enrollment check
-    /// borrows this from the frame-end drain: an interruptible wait may park only
-    /// while its origin's paired enter is live, otherwise a player who entered and
-    /// left within one frame would park an uncancellable instance (O52, O60).
     /// After this tick's trigger stage: each volume the capture's counted
     /// players occupy, with their pawns.
     pub fn counted_volumes(
@@ -166,22 +163,30 @@ impl TriggerSystem {
         let volumes = self
             .occupants
             .counted_volumes(&capabilities.occupants, &capabilities.pawns);
-        self.effective_counts.clear();
-        self.effective_counts.extend(
-            volumes
-                .iter()
-                .map(|(volume, inside)| (*volume, inside.len())),
-        );
+        #[cfg(feature = "dev-tools")]
+        {
+            self.effective_counts.clear();
+            self.effective_counts.extend(
+                volumes
+                    .iter()
+                    .map(|(volume, inside)| (*volume, inside.len())),
+            );
+        }
         volumes
     }
 
     /// Counted occupants of `trigger` after the last trigger stage: raw
     /// occupancy filtered by the effective rule, as `occupancy.tag` counts them.
-    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    #[cfg(feature = "dev-tools")]
     pub fn counted_occupancy(&self, trigger: EntityId) -> usize {
         self.effective_counts.get(&trigger).copied().unwrap_or(0)
     }
 
+    /// The set of `(trigger, player)` pairs whose Enter gate has fired and whose
+    /// paired Exit obligation is still standing. E18 Task 5's enrollment check
+    /// borrows this from the frame-end drain: an interruptible wait may park only
+    /// while its origin's paired enter is live, otherwise a player who entered and
+    /// left within one frame would park an uncancellable instance (O52, O60).
     pub fn paired_enters(&self) -> &BTreeSet<(EntityId, PlayerId)> {
         &self.paired_enters
     }

@@ -1564,8 +1564,6 @@ mod tests {
         )
     }
 
-    /// A table with two replicated mod slots under one namespace plus the default
-    /// owner-private engine player slots.
     /// The catalog's host-computed shared engine slots, the session player counts.
     fn engine_shared_slot_names() -> Vec<&'static str> {
         postretro_entities::engine_state_catalog::engine_state_catalog()
@@ -1585,6 +1583,8 @@ mod tests {
         }
     }
 
+    /// A table with two replicated mod slots under one namespace plus the default
+    /// owner-private engine player slots.
     fn table_with_replicated() -> SlotTable {
         let mut table = SlotTable::new();
         table

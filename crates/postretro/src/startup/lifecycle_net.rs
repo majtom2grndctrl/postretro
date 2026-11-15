@@ -154,10 +154,11 @@ impl App {
     /// |---|---|
     /// | `self.level` (LevelWorld) | renderer device/queue, window |
     /// | per-level GPU resources (textures, geometry) | `script_ctx`, `ScriptRuntime` |
-    /// | light bridge, fog bridge, trigger-volume bridge, trigger system, trigger bindings, collision world | slot table (no clear method — engine-global) |
+    /// | light bridge, fog bridge, trigger-volume bridge, trigger system, trigger bindings, collision world | slot table (engine-global; unload only zeroes the session counts and rows and drops level-only `occupancy` families) |
     /// | level sounds (world-anchored voices fade out), sprite collections, `emitter_bridge`, `mesh_render`, `mesh_clip_tables`, `hit_zone_store`, seat pawn bindings | entity-type registry (`data_registry.entities`), mod map catalog (`data_registry.maps`), carried per-seat health and inventory |
     /// | `data_registry` reactions + crossings, accumulator bindings, presentation cells | persisted-state save path |
     /// | level-scope UI trees (`modal_stack` `ScopeTier::Level`) | |
+    /// | session player counts and rows (read 0 / absent), the host's recorded seat statuses, the level's `occupancy` references (every remaining family reads 0) | the mod's `occupancy` references |
     /// | progress tracker, death-event carryover, world presentation intake/pool/fact tracking, active wieldable, client weapon prediction state, camera pose | |
     /// | streaming sessions (SH and lightmap), the level's read issuer and workers | |
     /// | level parity, published level identity, this peer's reveal | |

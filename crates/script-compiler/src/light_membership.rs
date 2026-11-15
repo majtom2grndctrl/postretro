@@ -1169,13 +1169,13 @@ const LUAU_INSTALL_BY_PLAYER_TEMPLATE: &str = r#"return function(leaf)
   setmetatable(leaf, table.freeze({ __index = table.freeze({ byPlayer = byPlayer }) }))
 end"#;
 
+/// `(field, kind)` for each field a family member or list row carries.
+type MirroredFields = &'static [(&'static str, &'static str)];
+
 /// The engine catalog's families, mirrored: SDK path of the accessor node,
 /// accessor name, and each member's `(field, kind)`. The drift guard in
 /// `postretro-sim` compares them with the catalog.
 #[doc(hidden)]
-/// `(field, kind)` for each field a family member or list row carries.
-type MirroredFields = &'static [(&'static str, &'static str)];
-
 pub const MIRRORED_GAME_STATE_FAMILIES: &[(&str, &str, MirroredFields)] = &[(
     "occupancy",
     "tag",
@@ -1234,7 +1234,7 @@ pub const JS_BUILD_LIST: &str = r#"(prefix, capacity, fields) => {
 pub const LUAU_INSTALL_FAMILY: &str = r#"return function(node, accessor, prefix, fields)
   local function access(_self, key)
     if type(key) ~= "string" then
-      error(prefix .. "." .. accessor .. "(key) takes a string key", 2)
+      error(prefix .. ":" .. accessor .. "(key) takes a string key", 2)
     end
     local member = {}
     for _, field in fields do

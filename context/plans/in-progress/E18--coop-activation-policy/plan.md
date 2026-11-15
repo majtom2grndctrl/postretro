@@ -111,7 +111,7 @@ Test names are proposals; final names land with each task. `two-endpoint` means 
 | M1 two-player session on the dev map | owner, in-engine | manual |
 
 ## Tasks
-Each task ends green and committed with this file. Hot path: the per-tick write reuses its per-seat and per-tag buffers across ticks; the only per-tick allocation is the two small sorted pawn lists `TickEvents` carries, like its sibling event vectors. Writes are change-driven where a value is unchanged, and slot names are interned at declaration, never formatted per tick.
+Each task ends green and committed with this file. Hot path: the per-tick write reuses its per-seat and per-tag buffers across ticks; the per-tick allocations are the small lists `TickEvents` carries (the sorted captured and counted pawns, and each occupied volume's counted pawns), like its sibling event vectors. Writes are change-driven where a value is unchanged, and slot names are interned at declaration, never formatted per tick.
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|

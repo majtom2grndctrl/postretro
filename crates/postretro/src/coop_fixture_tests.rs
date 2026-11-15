@@ -293,6 +293,17 @@ pub(crate) fn initialize_dev_mod(
         .impact_policy_runtime
         .replace_global_events(manifest.events.clone());
     postretro_sim::sim::defense_parameters::DefenseParameters::install(&ctx);
+    // As first mod init does: the mod's `occupancy` references declare their
+    // families before any level binds crossings or accumulators against them.
+    let references = crate::session::occupancy_families::mod_scope_references(
+        &ctx,
+        manifest.ui_trees.iter().map(|registered| &registered.tree),
+    );
+    app.session
+        .as_mut()
+        .unwrap()
+        .occupancy_families
+        .commit_mod(&references, &mut ctx.slot_table.borrow_mut());
     app.session.as_mut().unwrap().scripting.script_runtime = runtime;
     registries(app, &ctx);
     manifest

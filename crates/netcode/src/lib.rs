@@ -391,9 +391,8 @@ pub fn synchronize_weapon_attachment_for_pawn(
 /// Default listen port for `--host` when no port is supplied.
 pub const DEFAULT_HOST_PORT: u16 = 27015;
 
-/// Max clients a listen server accepts. A small ceiling keeps the netcode
-/// transport allocation modest; it lives in foundation because the per-seat
-/// player list sizes from it.
+// Max clients a listen server accepts. It lives in foundation because the
+// per-seat player list sizes from it.
 use postretro_foundation::seat::MAX_CLIENTS;
 
 /// Network role selected at startup from CLI args.

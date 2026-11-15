@@ -56,12 +56,16 @@ impl EngineStateFamily<'_> {
 
     /// Split a member slot name into its key and field. `None` when the name is
     /// not under this family or names no declared field. A key may itself hold
-    /// dots, so callers that require a slot-safe key check it separately.
+    /// dots, or be empty, so callers that require a slot-safe key check it
+    /// separately.
     pub fn split_slot_name<'n>(&self, slot: &'n str) -> Option<(&'n str, &'n str)> {
         let prefix = self.wire_prefix();
         let rest = slot.strip_prefix(prefix.as_str())?.strip_prefix('.')?;
         let (key, field) = rest.rsplit_once('.')?;
-        (!key.is_empty() && self.fields.iter().any(|f| f.name == field)).then_some((key, field))
+        self.fields
+            .iter()
+            .any(|f| f.name == field)
+            .then_some((key, field))
     }
 
     /// Whether `key` can form member slot names: non-empty, with no `.` (which
@@ -196,6 +200,11 @@ mod tests {
             OCCUPANCY_FAMILY.split_slot_name("occupancy.a.b.occupants"),
             Some(("a.b", "occupants")),
             "a dotted key splits off its field; the caller rejects it"
+        );
+        assert_eq!(
+            OCCUPANCY_FAMILY.split_slot_name("occupancy..occupants"),
+            Some(("", "occupants")),
+            "an empty key splits off its field; the caller rejects it"
         );
         assert_eq!(
             OCCUPANCY_FAMILY.split_slot_name("occupancy.hill.held"),

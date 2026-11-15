@@ -221,7 +221,10 @@ local function suffixRow(node: { [string]: any }, ids: { [string]: boolean }, su
       out[key] = suffixRow(value, ids, suffix)
     elseif isSequence(value) and key ~= "focusNeighbors" then
       local items = {}
-      for i, item in ipairs(value) do
+      -- Index to the border, as children validation does, so a `nil` hole
+      -- does not cut the rows short.
+      for i = 1, #value do
+        local item = value[i]
         items[i] = if isWidgetNode(item) then suffixRow(item, ids, suffix) else item
       end
       out[key] = items
@@ -279,7 +282,7 @@ function UiStateSdk.forEach(list: any, build: (any, number) -> any): { any }
     else
       -- One predicate per node: the row keeps its own, and a zero-spacing
       -- stack around it shows only while the row is present.
-      out[i] = { kind = "vstack", gap = 0, padding = 0, align = "start", visibleWhen = present, children = { suffixed } }
+      out[i] = { kind = "vstack", gap = 0, padding = 0, align = "stretch", visibleWhen = present, children = { suffixed } }
     end
   end
   return out

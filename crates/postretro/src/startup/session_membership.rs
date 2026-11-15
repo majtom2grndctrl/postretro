@@ -78,6 +78,15 @@ impl App {
             &RoleBoundState::derive(SessionRole::SinglePlayer, None),
         );
         debug_assert!(released.is_empty(), "a client holds no seat ledger");
+        // The host's counts, rows and families leave with the session, before
+        // the queued unload: the frontend shows none of them meanwhile.
+        session.session_players.end_level(
+            session.seat_table.as_mut(),
+            &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+        );
+        session
+            .occupancy_families
+            .unload_level(&mut session.scripting.script_ctx.slot_table.borrow_mut());
         self.restore_store_after_leave(session_seat);
         self.forget_host_steering();
         if self.level_is_installed_state() {

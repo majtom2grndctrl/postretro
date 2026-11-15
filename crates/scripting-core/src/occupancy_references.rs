@@ -91,7 +91,7 @@ impl FamilyReferences {
     pub fn warn_unformable(&self, scope: &str) {
         for tag in &self.unformable {
             log::warn!(
-                "[Scripting] {scope} references occupancy tag `{tag}`, which cannot form a state slot name (it contains `.` or `:`); it gets no occupancy family"
+                "[Scripting] {scope} references occupancy tag `{tag}`, which cannot form a state slot name (it is empty or contains `.` or `:`); it gets no occupancy family"
             );
         }
     }
@@ -138,6 +138,7 @@ mod tests {
         };
         refs.note_reaction(&reaction.descriptor);
         refs.note_slot("occupancy.bad:tag.occupants");
+        refs.note_slot("occupancy..occupants");
         refs.note_slot("occupancyBoard.x.occupants");
         refs.note_slot("occupancy.hill.held");
         assert_eq!(
@@ -149,7 +150,10 @@ mod tests {
         );
         assert_eq!(
             refs.unformable,
-            ["a.b", "bad:tag"].into_iter().map(str::to_string).collect()
+            ["", "a.b", "bad:tag"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
         );
     }
 }

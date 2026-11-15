@@ -144,8 +144,9 @@ pub struct SeatTable {
 }
 
 /// Status-only roster changes publish at most this often. Every publication
-/// carries every seat's current status, so the last change lands within one
-/// interval.
+/// carries every seat's current status, so the last change goes out within one
+/// interval of it, plus up to one frame: the host poll that publishes runs
+/// before the frame's ticks record statuses.
 pub const STATUS_ROSTER_INTERVAL: Duration = Duration::from_millis(250);
 
 impl SeatTable {
@@ -525,17 +526,19 @@ impl SeatTable {
         }
     }
 
-    /// A seat's status: the recorded one, else loading while connected and
-    /// reconnecting while held.
+    /// A seat's status. The connection decides first, so a hold or reclaim
+    /// publishes a status that agrees with it at once: a held seat reads
+    /// reconnecting, and a connected seat reads its recorded status, else
+    /// loading (a reclaimed seat until a tick records it).
     #[must_use]
     pub fn seat_status(&self, seat: Seat) -> SeatStatus {
-        self.statuses.get(&seat).copied().unwrap_or_else(|| {
-            if seat == Seat(0) || self.client_bindings.contains_key(&seat) {
-                SeatStatus::Loading
-            } else {
-                SeatStatus::Reconnecting
-            }
-        })
+        if seat != Seat(0) && !self.client_bindings.contains_key(&seat) {
+            return SeatStatus::Reconnecting;
+        }
+        match self.statuses.get(&seat) {
+            Some(SeatStatus::Reconnecting) | None => SeatStatus::Loading,
+            Some(&status) => status,
+        }
     }
 
     /// The display name a seat's claim asserted; empty for the host's seat and

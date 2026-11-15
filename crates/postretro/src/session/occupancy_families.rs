@@ -129,9 +129,22 @@ impl OccupancyFamilies {
                     let carries = registry
                         .get_tags(*volume)
                         .is_ok_and(|tags| tags.contains(&member.tag));
-                    if carries {
+                    if !carries {
+                        continue;
+                    }
+                    // Only a seat's pawn occupies: the capture counts that same
+                    // pawn into its seat's `inPlay`, so `occupants` never
+                    // exceeds it. An unseated pawn (a fixture, an unmarked
+                    // fallback pawn) holds nothing.
+                    let before = self.pawns.len();
+                    self.pawns.extend(
+                        inside
+                            .iter()
+                            .copied()
+                            .filter(|&pawn| registry.seat_for_pawn(pawn).is_some()),
+                    );
+                    if self.pawns.len() > before {
                         volumes += 1;
-                        self.pawns.extend_from_slice(inside);
                     }
                 }
             }
@@ -306,8 +319,13 @@ mod tests {
         let other_plate = volume(&["plates"]);
         let overlap = volume(&["room", "plates"]);
         let doubled = volume(&["hill", "hill"]);
-        let mut pawn = || registry.spawn(Transform::default());
-        let (a, b) = (pawn(), pawn());
+        let (a, b) = (
+            registry.spawn(Transform::default()),
+            registry.spawn(Transform::default()),
+        );
+        registry.bind_pawn_seat(a, postretro_foundation::Seat(1));
+        registry.bind_pawn_seat(b, postretro_foundation::Seat(2));
+        let unseated = registry.spawn(Transform::default());
 
         let mut table = SlotTable::new();
         let mut families = OccupancyFamilies::default();
@@ -337,6 +355,9 @@ mod tests {
         families.publish_tick(true, &registry, &[(doubled, vec![a])], &mut table);
         assert_eq!(counts(&table, "hill"), (n(1.0), n(1.0)));
         assert_eq!(counts(&table, "plates"), (n(0.0), n(0.0)));
+        // An unseated pawn occupies nothing (S6).
+        families.publish_tick(true, &registry, &[(doubled, vec![unseated])], &mut table);
+        assert_eq!(counts(&table, "hill"), (n(0.0), n(0.0)));
         // No session level: every family reads 0.
         families.publish_tick(false, &registry, &[(doubled, vec![a])], &mut table);
         assert_eq!(counts(&table, "hill"), (n(0.0), n(0.0)));

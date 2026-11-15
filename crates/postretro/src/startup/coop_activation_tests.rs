@@ -899,18 +899,8 @@ fn install_dev_map(map: &'static str, out: &std::path::Path) -> (crate::App, Vec
     let ctx = crate::startup::lifecycle::tests::script_ctx(&app);
     let mut primitives = PrimitiveRegistry::new();
     crate::scripting::primitives::register_all(&mut primitives, ctx.clone());
-    let manifest = crate::coop_fixture_tests::initialize_dev_mod(&mut app, &primitives);
-    {
-        let references = crate::session::occupancy_families::mod_scope_references(
-            &ctx,
-            manifest.ui_trees.iter().map(|registered| &registered.tree),
-        );
-        app.session
-            .as_mut()
-            .unwrap()
-            .occupancy_families
-            .commit_mod(&references, &mut ctx.slot_table.borrow_mut());
-    }
+    // The fixture runs the mod's `occupancy` commit as first init does.
+    crate::coop_fixture_tests::initialize_dev_mod(&mut app, &primitives);
     let world = super::teleporters_surface_tests::compile(map, out);
     crate::startup::lifecycle::tests::install_capture_world(&mut app, &world);
     let warnings = capture

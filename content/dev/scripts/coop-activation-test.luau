@@ -29,14 +29,15 @@ function setupLevel()
   local allIn = Postretro.defineReaction("airlock.allIn", { sequence = starts(airlockDoor) })
 
   -- The room's tag comes from the map, not a literal.
-  local roomTag = "airlock"
+  local roomTag = nil
   for _, volume in Postretro.getMapEntities("trigger") do
     for _, tag in volume.tags do
-      if string.sub(tag, 1, 3) == "air" then
+      if roomTag == nil and string.sub(tag, 1, 3) == "air" then
         roomTag = tag
       end
     end
   end
+  roomTag = roomTag or "airlock"
   local room = runtime.read(occupancy:tag(roomTag).occupants)
   local inPlay = runtime.read(counts.inPlay)
 

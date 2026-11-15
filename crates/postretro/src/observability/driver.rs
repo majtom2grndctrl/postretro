@@ -134,6 +134,22 @@ fn run_headless_inner(
     //    empty. Every session-owned bridge/store the sweep touches is a fresh
     //    local instance here.
     let script_ctx = session.scripting.script_ctx.clone();
+    // As first mod init does: the mod's `occupancy` references declare their
+    // families before the level binds crossings and accumulators against them.
+    let mut occupancy_families = crate::session::occupancy_families::OccupancyFamilies::default();
+    {
+        let references = crate::session::occupancy_families::mod_scope_references(
+            &script_ctx,
+            session
+                .scripting
+                .script_runtime
+                .mod_manifest()
+                .into_iter()
+                .flat_map(|manifest| manifest.ui_trees.iter())
+                .map(|registered| &registered.tree),
+        );
+        occupancy_families.commit_mod(&references, &mut script_ctx.slot_table.borrow_mut());
+    }
     let nav_graph = install_world_gravity_and_nav(&world, &script_ctx);
 
     let mut collision_world =
@@ -161,7 +177,6 @@ fn run_headless_inner(
     let mut crossing_detector = CrossingDetector::new();
     let mut mesh_clip_tables = MeshClipTables::new();
     let mut hit_zone_store = HitZoneStore::new();
-    let mut occupancy_families = crate::session::occupancy_families::OccupancyFamilies::default();
     // Runspecs address raw map paths, not catalog ids. Preserve the raw-path
     // contract: direct `.prl` loads never inherit catalog classification tags.
     let active_level_tags = active_level_tags_for_headless_install();

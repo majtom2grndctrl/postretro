@@ -69,7 +69,8 @@ use sh_residency::ShStreamingSession;
 /// `Session::build` is the sole session construction site — there is no transient
 /// pre-window construction bundle. `App` holds only boot-lifetime fields plus
 /// `session: Option<Session>`. Also owns host-local seat/session-roster state;
-/// connected clients receive its status-only projection from the endpoint.
+/// connected clients receive its roster projection (seat, connection, name,
+/// status) from the endpoint.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded

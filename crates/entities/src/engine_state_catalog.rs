@@ -915,7 +915,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         sdk_path: &["session", "openSeats"],
         value_type: EngineStateValueType::Number,
         // Absence keeps the presentation hidden until an admitted client receives
-        // its first status-only roster publication.
+        // its first roster publication.
         default: EngineStateDefault::None,
         range: Some(NumericRange {
             min: 0.0,
@@ -968,7 +968,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         wire_name: "session.playerCounts.loading",
         sdk_path: &["session", "playerCounts", "loading"],
         value_type: EngineStateValueType::Number,
-        // Connected seats with no live pawn.
+        // Connected seats with no live pawn a trigger stage has captured.
         // Host-computed each authoritative tick; 0 with no session level.
         default: EngineStateDefault::Number(0.0),
         range: Some(PLAYER_COUNT_RANGE),

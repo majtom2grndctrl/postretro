@@ -122,7 +122,7 @@ pub const QUICKJS_BUILD_LIST: &str = r#"(prefix, capacity, fields) => {
 pub const LUAU_INSTALL_FAMILY: &str = r#"return function(node, accessor, prefix, fields)
   local function access(_self, key)
     if type(key) ~= "string" then
-      error(prefix .. "." .. accessor .. "(key) takes a string key", 2)
+      error(prefix .. ":" .. accessor .. "(key) takes a string key", 2)
     end
     local member = {}
     for _, field in fields do

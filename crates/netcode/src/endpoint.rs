@@ -203,7 +203,7 @@ impl ClientSessionStatus {
     }
 
     #[must_use]
-    pub(crate) fn open_seats(&self) -> Option<u32> {
+    pub fn open_seats(&self) -> Option<u32> {
         self.roster.as_ref().map(|roster| roster.open_seats)
     }
 

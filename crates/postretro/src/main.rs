@@ -369,7 +369,8 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                         continue;
                     };
                     let previous_seat = session_status.local_seat();
-                    let (changed, open_seats) = netcode::apply_client_session_roster(
+                    let previous_open_seats = session_status.open_seats();
+                    let (_, open_seats) = netcode::apply_client_session_roster(
                         session_status,
                         &mut session.scripting.script_ctx.slot_table.borrow_mut(),
                         roster,
@@ -382,6 +383,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     let newly_assigned_seat = (previous_seat != local_seat)
                         .then_some(local_seat)
                         .flatten();
+                    // Status and name changes republish the roster; only a
+                    // changed seat count is worth a log line.
+                    let changed = previous_open_seats != Some(open_seats);
                     (changed, open_seats, newly_assigned_seat)
                 };
                 if let (Some(local_seat), Some(persisted)) =

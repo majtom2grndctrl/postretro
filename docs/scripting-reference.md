@@ -3701,8 +3701,8 @@ Each player has one status:
 
 | Status | Meaning |
 |---|---|
-| `loading` | Connected, with no live pawn: still loading the level, or waiting to come back in after a level change. |
-| `inPlay` | Pawn spawned and counted: a pawn whose life state declares `occupancy`, or an undeclared pawn whose health is above zero. |
+| `loading` | Connected, with no live pawn the last tick saw: still loading the level, waiting to come back in after a level change, or spawned since that tick. |
+| `inPlay` | Pawn spawned and counted: a pawn whose life state declares `occupancy`, or an undeclared pawn whose health is above zero or that has no health at all. |
 | `down` | Pawn spawned but not counted: dead, or in a life state without `occupancy`. |
 | `reconnecting` | Disconnected, with the seat held for their return. |
 
@@ -3733,9 +3733,11 @@ container's `children`. In Luau `i` counts from 1, as `ipairs` does.
 
 - A row shows only while its `present` flag is true and any `visibleWhen` it
   declares holds too.
-- Every `id` inside a row gets the suffix `.<row>`. A `labelledBy` or
+- Every `id` inside a row gets the suffix `.<row>`, the row's index counted
+  from 0 in both runtimes (in Luau, `i - 1`). A `labelledBy` or
   `focusNeighbors` that names an id in the same row follows it; one that names
   an id outside the row is left alone.
+- A `localState` scope declared inside a row is one scope shared by every row.
 - The tree is built once: players joining and leaving only show and hide rows.
 - `forEach` takes engine lists only, such as `session.players`.
 
@@ -3785,14 +3787,16 @@ engine reads what the scripts evaluated to, not their source text.
 - A tag no trigger volume in the level carries reads 0. When a level's
   `setupLevel` references one, it warns once at install. A mod reference to it
   stays silent, so a mod-wide counter works on levels that lack its volumes.
-- A tag containing `.` or `:` cannot name a state slot. It warns once and reads
-  nothing.
+- A tag that is empty or contains `.` or `:` cannot name a state slot. It warns
+  once and reads nothing.
 - `occupancy` is reserved: a store named `occupancy`, or `occupancy.<anything>`,
   is rejected at load. A name such as `occupancyBoard` is fine.
 
 Counts and occupancy update once per host tick, before stored values update and
 before crossings run. A set that completes on a tick fires its crossing in that
-frame. Peers must run the same mod files: every machine works out which tags to
+frame. Trigger and teleporter reactions run inside the tick, before the update,
+so a condition there reads the previous tick's values: watch these facts with
+`onStateCrossing` instead. Peers must run the same mod files: every machine works out which tags to
 watch from the scripts it runs.
 
 Two plates that must be held together:

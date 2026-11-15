@@ -33,9 +33,9 @@ Owner request: mappers set how strongly and in what colour a surface glows, per 
   - Overlaps resolve smallest containing volume wins (summed brush volume, as `reflection_volume` and the environment volumes resolve), a tie going to the later in map order. Nesting works in any order, silently.
   - `light_area` faces are never members: their light owns their glow (`plans/ready/area-lights`).
   - A volume left with no `_e` face warns, including one a smaller volume empties.
-  - At most 256 volumes per map; past that the compile fails, naming the count.
+  - At most 256 glow-table entries per map, shared with area lights (`plans/ready/area-lights`); past that the compile fails, naming the count.
 - **Movers and fluids take texture strength only.** They bind the per-texture material, so `materials.toml` reaches them; no volume does. Scripted glow on a mover waits for content that asks. Model glow stays 0: models load only their diffuse slot.
-- **Runtime owns brightness and colour; the bake reads the no-script state.** Reflection capture bakes each member face at texture strength × max × colour, its reference state (`research.md` §Capture reference state). Bounce means exclude glow texels on any texture with an `_e` map.
+- **Runtime owns brightness and colour; the bake reads the no-script state.** Reflection capture bakes each member face at texture strength × max × colour, and a `light_area` face at texture strength × its light's `_glow` × `_color`, its reference state (`research.md` §Capture reference state). Bounce means exclude glow texels on any texture with an `_e` map.
 - **Photosensitivity: the existing clamp, fed what the surface shows.** While `accessibility.flashLimiter` is on, each volume passes the `flash_clamp` per-value rules. Its brightest member texture (strength × the luminance of its baked glow colour) sets the input: strength min(factor × that texture's strength × glow luminance, 1), colour that glow colour × the volume's colour, so the existing red-flash rule sees a red sign (`research.md` §Clamp input). Scripts and the wire carry the scripted values. E23 owns colour-only brightness strobes (white ↔ blue at high strength), the bloom halo and any budget shared across sources; at promotion its draft records emissive volumes as a clamp source already built.
 - **Co-op: fog volumes' presentation-state behaviour** (`networking.md` §Presentation state), bound by emissive record index. It differs only where the Decisions above do: brightness writes clear animations, and values are brightness.
 - **Migration.** `tools/migrate_neon_prefix.py` renames `neon_x` to `x` for every slot sibling, rewrites `.map` texture references, and writes `emissive = 4.0` for each renamed texture into the mod's `materials.toml`, so every look survives with no volume.
@@ -168,4 +168,5 @@ New PRL section `Emissive`, id 60 (next free after `ProbeDepthTiles` 59). Little
   - `u32 face_count`, then `face_count × u32` Geometry face indices, ascending, each in range and owned by exactly one volume
   - `u32 tag_count`, then each tag as `u32 length` + UTF-8 bytes
 - Every map emits the section; a PRL without it fails load as stale.
+- `plans/ready/area-lights` extends this layout to version 2 with an area-light list after the volume records.
 - Co-op presentation state gains the emissive kind (brightness, animation, colour) and bumps `WIRE_VERSION` and `SNAPSHOT_VERSION` per `networking.md` §Version gates.

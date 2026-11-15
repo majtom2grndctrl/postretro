@@ -40,7 +40,9 @@ pub(super) struct RealLevel {
 
 impl RealLevel {
     /// Loads `path` under `mode` and installs it; `None` without an adapter.
-    /// A streamed load holds no cluster until [`Self::install_all`].
+    /// A streamed load holds no cluster until [`Self::install_all`]. Under
+    /// [`ShStreamingMode::Off`] the PRL must be baked with
+    /// `prl-build --whole-load-sh`, or the load fails for want of SH bodies.
     pub(super) fn load(path: &str, mode: ShStreamingMode) -> Option<Self> {
         let mut renderer = renderer()?;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");

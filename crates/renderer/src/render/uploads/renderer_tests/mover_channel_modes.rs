@@ -347,7 +347,8 @@ fn compare(off: &ModeTiles, sync: &ModeTiles, bounce: &BTreeMap<u32, Vec<[bool; 
 const ROUNDING_STEPS: f32 = 1.0;
 
 /// Each map named by `MOVER_C10_PRLS` (`:`-separated compiled PRLs,
-/// each with id 50 and id 57). The channel's output at every probe it
+/// each with id 50 and id 57, baked with `prl-build --whole-load-sh` so the
+/// `off` load has the SH bodies). The channel's output at every probe it
 /// touches equals across `off` and `sync-proof`, base taken out as the
 /// module docs derive: indirect bit for bit where one mover carries bounce
 /// and unmoved where none does; within [`ROUNDING_STEPS`] where two do, and
@@ -356,8 +357,9 @@ const ROUNDING_STEPS: f32 = 1.0;
 /// uncompressed build), every comparison is bit for bit. The depth-tile
 /// texture is bit-identical between the modes at every t′.
 #[test]
-#[ignore = "requires MOVER_C10_PRLS: `:`-separated compiled PRLs (mover-closet, mover-setpiece, \
-            mover-setpiece built with --mover-payload-resident-bar 0)"]
+#[ignore = "requires MOVER_C10_PRLS: `:`-separated PRLs compiled with `prl-build --whole-load-sh` \
+            (mover-closet, mover-setpiece, mover-setpiece built with \
+            --mover-payload-resident-bar 0)"]
 fn c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe() {
     let paths = std::env::var("MOVER_C10_PRLS").expect("set MOVER_C10_PRLS");
     let mut misses = Vec::new();

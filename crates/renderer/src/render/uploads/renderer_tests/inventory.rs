@@ -55,11 +55,13 @@ fn frontend_surface_depth_uploads_flush_before_the_next_manifest_commit() {
 }
 
 /// Generated PRL is deliberately ignored: run after compiling campaign-test with
+/// `prl-build --whole-load-sh`, under
 /// POSTRETRO_SH_STREAMING=off POSTRETRO_LIGHTMAP_STREAMING=all-resident.
 /// This covers the legacy real-map paths; streamed compose inventory requires
 /// the separate residency integration fixtures.
 #[test]
-#[ignore = "requires compiled campaign-test.prl and all-resident loader modes"]
+#[ignore = "requires campaign-test.prl compiled with `prl-build --whole-load-sh` and \
+            all-resident loader modes"]
 fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
     use postretro_render_cpu::mesh_instances::{MeshInstanceInput, MeshPaletteCacheKey};
     use postretro_ui::descriptor::{
@@ -74,7 +76,8 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
     let map = root.join("maps/campaign-test.prl");
     assert!(
         map.is_file(),
-        "build campaign-test.prl before running this ignored proof"
+        "build campaign-test.prl with `prl-build --whole-load-sh` before running this \
+         ignored proof"
     );
     let mut world = postretro_level_loader::load_prl(map.to_str().unwrap()).unwrap();
     add_sdf_inventory_fixture(&mut world);

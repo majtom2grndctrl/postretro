@@ -25,6 +25,18 @@ pub(super) fn workspace_root() -> PathBuf {
 /// the wrong tree and silently replaces materials with placeholders — a
 /// specular slot, for one, turns black.
 pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::TempPath {
+    compile_dev_map_with(workspace, map_name, false)
+}
+
+/// [`compile_dev_map`], with `whole_load_sh` passing `--whole-load-sh` so
+/// the five whole-load SH sections keep their bodies. A map needs it when a
+/// capture loads it with `POSTRETRO_SH_STREAMING=off`, or when the test
+/// decodes one of those sections whole.
+pub(super) fn compile_dev_map_with(
+    workspace: &Path,
+    map_name: &str,
+    whole_load_sh: bool,
+) -> tempfile::TempPath {
     let source_map = workspace.join(format!("content/dev/maps/{map_name}.map"));
     assert!(
         source_map.is_file(),
@@ -37,7 +49,8 @@ pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::Tem
         .tempfile_in(workspace.join("content/dev/maps"))
         .expect("reserve capture PRL path in content/dev/maps")
         .into_temp_path();
-    let compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+    let mut compile = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    compile
         .args([
             "run",
             "--quiet",
@@ -50,7 +63,11 @@ pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::Tem
         .arg(&source_map)
         .arg("-o")
         .arg(&map)
-        .arg("--no-tui")
+        .arg("--no-tui");
+    if whole_load_sh {
+        compile.arg("--whole-load-sh");
+    }
+    let compile = compile
         // The lightmap reach cull's verify mode, on in every test bake. Keep
         // this literal in sync with `REACH_VERIFY_ENV` in level-compiler's
         // `tests/prl_build_support/mod.rs` and with `reach_verify.rs`; a

@@ -31,7 +31,8 @@ impl Closet {
         let mut world = postretro_level_loader::load_prl(path).unwrap();
         assert!(
             world.sh_stream_manifest().is_none(),
-            "run with POSTRETRO_SH_STREAMING=off: this row reads the whole-load atlas"
+            "run with POSTRETRO_SH_STREAMING=off on a PRL baked with `prl-build \
+             --whole-load-sh`: this row reads the whole-load atlas"
         );
         let channel = world.mover_probe_channel().expect("the closet ships id 57");
         assert!(
@@ -150,8 +151,8 @@ fn check_mix(
 }
 
 #[test]
-#[ignore = "requires MOVER_CLOSET_PRL (content/dev/maps/mover-closet.map compiled) and \
-            POSTRETRO_SH_STREAMING=off"]
+#[ignore = "requires MOVER_CLOSET_PRL (content/dev/maps/mover-closet.map compiled with \
+            `prl-build --whole-load-sh`) and POSTRETRO_SH_STREAMING=off"]
 fn c9_the_closet_composes_and_writes_the_mix_at_every_handed_t() {
     let path = std::env::var("MOVER_CLOSET_PRL").expect("set MOVER_CLOSET_PRL");
     let Some(mut closet) = Closet::load(&path) else {

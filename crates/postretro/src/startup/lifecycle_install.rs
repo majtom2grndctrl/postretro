@@ -200,6 +200,19 @@ impl App {
         if self.active_level_host_named {
             self.clear_frontend_menu_for_host_level();
         }
+        // A backdrop installs under the frontend menu; a level a session plays
+        // (`loadLevel`, `restartLevel`, a host-named or launch level) installs
+        // with the menu cleared. Counts are written before crossings initialize.
+        let session_level = !self.frontend_menu_is_present();
+        if let Some(session) = self.session.as_mut() {
+            let script_ctx = &session.scripting.script_ctx;
+            session.session_players.begin_level(
+                session_level,
+                session.seat_table.as_ref(),
+                &script_ctx.registry.borrow(),
+                &mut script_ctx.slot_table.borrow_mut(),
+            );
+        }
         let join_seed = {
             let session = self
                 .session

@@ -1075,6 +1075,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             session
                 .light_bridge
                 .absorb_dynamic_lights(&script_ctx.registry.borrow());
+            // Session player counts from this tick's trigger-stage capture,
+            // after the trigger stage settles and before accumulators and the
+            // frame's crossing detection read them.
+            session.session_players.publish_tick(
+                session.seat_table.as_ref(),
+                &script_ctx.registry.borrow(),
+                crate::netcode::session_players::CapturedPawns {
+                    captured: &tick_events.trigger_stage_pawns.captured,
+                    counted: &tick_events.trigger_stage_pawns.counted,
+                },
+                &mut script_ctx.slot_table.borrow_mut(),
+            );
             scripting_systems::slot_accumulators::evaluate_slot_accumulators(
                 &mut session.scripting.slot_accumulator_bindings,
                 tick_dt,

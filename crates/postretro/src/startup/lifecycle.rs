@@ -84,6 +84,9 @@ pub(crate) mod session_membership;
 #[path = "session_membership_tests.rs"]
 mod session_membership_tests;
 #[cfg(test)]
+#[path = "session_players_tests.rs"]
+mod session_players_tests;
+#[cfg(test)]
 #[path = "spawn_pose_handoff_fixtures.rs"]
 mod spawn_pose_handoff_fixtures;
 #[cfg(test)]

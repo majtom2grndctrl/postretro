@@ -252,6 +252,10 @@ impl App {
             session.progress_tracker.clear();
             session.pending_death_events.clear();
             session.crossing_detector.clear();
+            // Every role: no player counts survive their level.
+            session
+                .session_players
+                .end_level(&mut session.scripting.script_ctx.slot_table.borrow_mut());
             session
                 .scripting
                 .script_ctx

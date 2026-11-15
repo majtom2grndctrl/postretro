@@ -80,6 +80,7 @@ mod reconcile;
 mod remote_materialize;
 mod replication;
 mod seat;
+pub mod session_players;
 mod snapshot_apply;
 #[cfg(test)]
 mod teleport_tests;
@@ -390,9 +391,10 @@ pub fn synchronize_weapon_attachment_for_pawn(
 /// Default listen port for `--host` when no port is supplied.
 pub const DEFAULT_HOST_PORT: u16 = 27015;
 
-/// Max clients a listen server accepts. Phase 1 co-op bar is "ugly-but-connected"
-/// loopback; a small ceiling keeps the netcode transport allocation modest.
-const MAX_CLIENTS: usize = 8;
+/// Max clients a listen server accepts. A small ceiling keeps the netcode
+/// transport allocation modest; it lives in foundation because the per-seat
+/// player list sizes from it.
+use postretro_foundation::seat::MAX_CLIENTS;
 
 /// Network role selected at startup from CLI args.
 ///

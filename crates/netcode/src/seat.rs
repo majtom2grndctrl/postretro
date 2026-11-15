@@ -345,6 +345,22 @@ impl SeatTable {
         })
     }
 
+    /// Visit every seat in ascending order without allocating. Seats are few
+    /// (the join cap plus held seats), so a scan per step beats a sort buffer.
+    pub fn for_each_seat(&self, mut visit: impl FnMut(Seat)) {
+        let mut floor = 0u32;
+        while let Some(seat) = self
+            .carried
+            .keys()
+            .copied()
+            .filter(|seat| u32::from(seat.0) >= floor)
+            .min_by_key(|seat| seat.0)
+        {
+            visit(seat);
+            floor = u32::from(seat.0) + 1;
+        }
+    }
+
     /// The live client bound to `seat`. The host's own seat and a held seat
     /// have none.
     #[must_use]

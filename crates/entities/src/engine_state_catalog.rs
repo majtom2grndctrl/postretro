@@ -369,6 +369,13 @@ const REFLECTION_QUALITY_VALUES: &[&str] = &["off", "low", "medium", "high", "ve
 /// names as the `settings.toml` values. See `context/lib/player_options.md` §4.
 const RENDER_RESOLUTION_VALUES: &[&str] = &["auto", "native", "half", "third", "quarter"];
 
+/// Seat counts span the monotonic `u16` seat namespace, not the join cap: held
+/// seats can outnumber it.
+const PLAYER_COUNT_RANGE: NumericRange = NumericRange {
+    min: 0.0,
+    max: u16::MAX as f32 + 1.0,
+};
+
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     // Accessibility preferences: engine-owned, readonly, always-live resolved
     // values, plus one `…FollowsSystem` source flag per OS-seedable field.
@@ -840,6 +847,66 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         persist: false,
         capability: EngineStateCapability::Readonly,
         network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.connected",
+        sdk_path: &["session", "playerCounts", "connected"],
+        value_type: EngineStateValueType::Number,
+        // Seats loading, in play or down: every connected seat.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.loading",
+        sdk_path: &["session", "playerCounts", "loading"],
+        value_type: EngineStateValueType::Number,
+        // Connected seats with no live pawn.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.inPlay",
+        sdk_path: &["session", "playerCounts", "inPlay"],
+        value_type: EngineStateValueType::Number,
+        // Seats whose live pawn the effective occupancy rule counts.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.down",
+        sdk_path: &["session", "playerCounts", "down"],
+        value_type: EngineStateValueType::Number,
+        // Seats whose live pawn the effective occupancy rule does not count.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.reconnecting",
+        sdk_path: &["session", "playerCounts", "reconnecting"],
+        value_type: EngineStateValueType::Number,
+        // Remote seats held after a disconnect.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.flash",
@@ -1502,6 +1569,11 @@ mod tests {
                 "session.hostAddress",
                 "session.hosting",
                 "session.openSeats",
+                "session.playerCounts.connected",
+                "session.playerCounts.down",
+                "session.playerCounts.inPlay",
+                "session.playerCounts.loading",
+                "session.playerCounts.reconnecting",
                 "ui.textEntry",
                 "window.displayModeBitDepth",
                 "window.displayModeCanApply",
@@ -1687,6 +1759,22 @@ mod tests {
         assert_eq!(session_hosting.capability, EngineStateCapability::Readonly);
         assert_eq!(session_hosting.network, ReplicationScope::None);
         assert!(!session_hosting.persist);
+
+        // The player counts are the catalog's host-computed shared entries:
+        // every machine reads the host's values, 0 with no session level.
+        for name in ["connected", "loading", "inPlay", "down", "reconnecting"] {
+            let wire_name = format!("session.playerCounts.{name}");
+            let count = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(count.sdk_path, &["session", "playerCounts", name]);
+            assert_eq!(count.value_type, EngineStateValueType::Number);
+            assert_eq!(count.default, EngineStateDefault::Number(0.0));
+            assert_eq!(count.capability, EngineStateCapability::Readonly);
+            assert_eq!(count.network, ReplicationScope::SharedGlobal);
+            assert!(!count.persist);
+        }
 
         let reload_active = entries
             .iter()

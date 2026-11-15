@@ -164,6 +164,7 @@ pub(crate) fn test_app() -> App {
             net_endpoint: None,
             closing_host_transport: None,
             seat_table: None,
+            session_players: Default::default(),
             audio: None,
             #[cfg(feature = "dev-tools")]
             debug_ui: None,

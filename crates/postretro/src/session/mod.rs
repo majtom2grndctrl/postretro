@@ -52,6 +52,7 @@ use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_scripting_core::state_crossings::CrossingDetector;
 
 pub(crate) mod level_streaming;
+pub(crate) mod players;
 pub(crate) mod lightmap_residency;
 mod lightmap_streaming_diagnostics;
 pub(crate) mod role_state;
@@ -297,6 +298,9 @@ pub(crate) struct Session {
     /// Durable local/listen-host player seats. Connected clients intentionally
     /// own no table: the host is the authority that mints session identities.
     pub(crate) seat_table: Option<netcode::SeatTable>,
+
+    /// Session player status and counts; see `players`.
+    pub(crate) session_players: players::SessionPlayers,
 
     /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
     /// init fails — the game then runs silent, never a crash.
@@ -795,6 +799,7 @@ impl Session {
             net_endpoint,
             closing_host_transport: None,
             seat_table,
+            session_players: Default::default(),
             audio,
             // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
             // available, reset on suspend. See the field doc.

@@ -13669,6 +13669,87 @@ fn contact_attack_deals_its_damage_type() {
     );
 }
 
+// D1 (melee): a contact attack lands through the AI host's damage chokepoint,
+// so the struck enemy's `damageInActivity` counts the points it dealt across
+// armor and health. The struck brain is a cross-faction enemy, since only a
+// brained target carries the sum.
+#[test]
+fn contact_attack_counts_toward_the_struck_enemys_damage_in_activity() {
+    use postretro_entities::components::defense_layers::{DefenseLayer, DefenseLayersComponent};
+
+    let factions = crossfire_factions();
+    let mut registry = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let mut attacker_graph = tuning();
+    attacker_graph.candidate_filter = None;
+    let attacker = spawn_enemy(
+        &mut registry,
+        Vec3::ZERO,
+        brain_with(attacker_graph, TEST_IDLE_STATE),
+        50.0,
+    );
+    // The victim holds still: no rows, so its activity never changes and its
+    // sum is the whole engagement's.
+    let mut victim_graph = tuning();
+    victim_graph.envelope.transitions.clear();
+    victim_graph.candidate_filter = None;
+    let victim = spawn_enemy(
+        &mut registry,
+        Vec3::new(1.0, 0.0, 0.0),
+        brain_with(victim_graph, TEST_IDLE_STATE),
+        50.0,
+    );
+    set_crossfire_faction(&mut registry, attacker, CROSSFIRE_RAIDER_FACTION);
+    set_crossfire_faction(&mut registry, victim, CROSSFIRE_SENTINEL_FACTION);
+    // Less armor than one blow, so the hit crosses armor into health.
+    registry
+        .set_component(
+            victim,
+            DefenseLayersComponent {
+                descriptor: None,
+                layers: vec![DefenseLayer {
+                    name: "armor".to_string(),
+                    value: 5.0,
+                    capacity: 5.0,
+                    recharge_delay_ms: 3_000.0,
+                    recharge_rate: 0.0,
+                    resist: Vec::new(),
+                    refill: Default::default(),
+                }],
+                health_resist: Vec::new(),
+                last_hit_tick: None,
+            },
+        )
+        .expect("the victim is live");
+
+    run_crossfire_tick(&mut registry, &mut runtime, &factions, 0.1);
+
+    let armor = registry
+        .get_component::<DefenseLayersComponent>(victim)
+        .expect("the victim keeps its layers")
+        .layers[0]
+        .value;
+    let health = registry
+        .get_component::<HealthComponent>(victim)
+        .expect("the victim keeps its health")
+        .current;
+    assert_eq!(armor, 0.0, "the blow empties the armor");
+    assert_eq!(
+        health,
+        50.0 - (TEST_ATTACK_DAMAGE - 5.0),
+        "and spills into health"
+    );
+    let brain = registry
+        .get_component::<BrainComponent>(victim)
+        .expect("the victim keeps its brain");
+    assert_eq!(brain.active_path_names(), [TEST_IDLE_STATE]);
+    assert_eq!(
+        brain.damage_in_activity(0),
+        Some(TEST_ATTACK_DAMAGE),
+        "absorbed plus health loss"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Knockback launch: facing and stride read steering velocity alone; a launch
 // holds its impact yaw and plays `jump_loop` after the player's fall delay.

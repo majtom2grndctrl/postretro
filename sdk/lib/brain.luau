@@ -57,7 +57,11 @@ local BrainSdk = {}
 --- looping state, true for a non-looping state whose clip did not resolve; entity-wide,
 --- not scope-relative), and `activityRoll` (number; uniform in [0, 1), drawn
 --- when the currently-evaluated activity was entered and fixed until it is
---- left; scope-relative like `timeInActivityMs`).
+--- left; scope-relative like `timeInActivityMs`), and `damageInActivity`
+--- (number; points drained from defense layers and health since the
+--- currently-evaluated activity was entered, by every damage producer,
+--- `applyDamage` included; scope-relative like `timeInActivityMs`, resetting
+--- to 0 when that level is entered).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -82,6 +86,7 @@ BrainSdk.brain = table.freeze({
   hasAttackTurn = input("@brain.hasAttackTurn"),
   animationDone = input("@brain.animationDone"),
   activityRoll = input("@brain.activityRoll"),
+  damageInActivity = input("@brain.damageInActivity"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

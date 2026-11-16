@@ -8,6 +8,8 @@ mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
 #[cfg(test)]
+mod damage_in_activity_tests;
+#[cfg(test)]
 mod damage_type_tests;
 pub mod defense_layers;
 #[cfg(test)]

@@ -345,6 +345,13 @@ pub struct BrainComponent {
     /// level is next entered.
     #[serde(default = "default_activity_rolls")]
     pub activity_roll: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// Scope-relative `@brain.damageInActivity` for the matching active
+    /// activity: the points every hit dealt (layer-absorbed plus health loss)
+    /// since that level's activity was entered. Fed once per landed hit at the
+    /// damage chokepoint, so every producer counts. Host-only: clients never
+    /// evaluate guards. Old brains read `0.0`.
+    #[serde(default = "default_activity_damage")]
+    pub damage_in_activity: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
     /// The per-instance seed and per-stream counters every host-only behavior
     /// draw comes from. Serialized so a restore keeps drawing the same values.
     #[serde(default)]
@@ -401,6 +408,7 @@ impl BrainComponent {
             time_in_activity_ms: default_activity_timers(),
             attacks_fired_in_activity: default_activity_attack_counts(),
             activity_roll: default_activity_rolls(),
+            damage_in_activity: default_activity_damage(),
             behavior_draws: BehaviorDraws::default(),
             entry_pending: false,
             entry_pending_start_depth: 0,
@@ -482,6 +490,33 @@ impl BrainComponent {
             Some(self.activity_roll[depth])
         } else {
             None
+        }
+    }
+
+    /// Points dealt to this enemy since the activity active at `depth` was
+    /// entered.
+    pub fn damage_in_activity(&self, depth: usize) -> Option<f32> {
+        if depth < self.active_depth() {
+            Some(self.damage_in_activity[depth])
+        } else {
+            None
+        }
+    }
+
+    /// Add one landed hit's points dealt to every active level's sum. The
+    /// damage chokepoint calls this once per hit on a live target, so two hits
+    /// on one tick both count. A hit landing before the AI pass counts toward
+    /// the activity held then; one landing after it counts toward the activity
+    /// that pass entered. Non-finite or non-positive points add nothing, and
+    /// each sum saturates at `f32::MAX`.
+    pub fn record_damage_in_activity(&mut self, points: f32) {
+        if points.is_nan() || points <= 0.0 {
+            return;
+        }
+        let points = points.min(f32::MAX);
+        let active_depth = self.active_depth();
+        for sum in self.damage_in_activity[..active_depth].iter_mut() {
+            *sum = (*sum + points).min(f32::MAX);
         }
     }
 
@@ -672,9 +707,9 @@ impl BrainComponent {
     }
 
     /// Enter `target_index` in the envelope at `depth`, discard all inactive
-    /// descendants, zero their timers and attack counters, then atomically
-    /// descend nested initials. Every level entered draws its own roll, in
-    /// root-to-leaf order.
+    /// descendants, zero their scope-relative facts, then atomically descend
+    /// nested initials. Every level entered starts its timer, attack count and
+    /// damage sum at zero and draws its own roll, in root-to-leaf order.
     /// A parser-validated graph cannot fail this; `false` is the safe answer for
     /// malformed hand-built/restored data.
     pub fn enter_activity_at(&mut self, depth: usize, target_index: usize) -> bool {
@@ -698,15 +733,9 @@ impl BrainComponent {
         self.entry_pending = false;
         self.entry_event_pending = false;
         self.active_activity_path_len = depth;
-        for timer in self.time_in_activity_ms[depth..].iter_mut() {
-            *timer = 0.0;
-        }
-        for count in self.attacks_fired_in_activity[depth..].iter_mut() {
-            *count = 0;
-        }
-        for roll in self.activity_roll[depth..].iter_mut() {
-            *roll = 0.0;
-        }
+        // Inactive descendants hold no scope-relative facts; each level the
+        // loop enters starts its own below.
+        self.clear_scope_relative_facts_from(depth + 1);
 
         loop {
             let Some(envelope) = self.envelope_at_depth_for_prefix(depth) else {
@@ -724,11 +753,7 @@ impl BrainComponent {
                     .position(|name| name == &child.initial)
             });
             self.active_activity_path[depth] = target_index;
-            self.time_in_activity_ms[depth] = 0.0;
-            self.attacks_fired_in_activity[depth] = 0;
-            self.activity_roll[depth] = self
-                .behavior_draws
-                .next_unit(BehaviorDrawStream::ActivityRoll);
+            self.start_scope_relative_facts(depth);
             self.active_activity_path_len = depth + 1;
 
             let Some(initial) = child_initial else {
@@ -745,6 +770,33 @@ impl BrainComponent {
         self.entry_pending_start_depth = entry_start_depth;
         self.entry_event_pending = emit_event;
         true
+    }
+
+    /// Start the scope-relative facts of the level entered at `depth` fresh:
+    /// timer, attack count and damage sum at zero, and a new roll. Every
+    /// level an entry seats runs this, root to leaf, so rolls draw in that
+    /// order.
+    ///
+    /// Not yet built: a stance pose (`entity_model.md` §7c, Pose) carries the
+    /// timer, roll and damage sum between its members, so a move within one
+    /// pose will skip this for the level it enters.
+    fn start_scope_relative_facts(&mut self, depth: usize) {
+        self.time_in_activity_ms[depth] = 0.0;
+        self.attacks_fired_in_activity[depth] = 0;
+        self.damage_in_activity[depth] = 0.0;
+        self.activity_roll[depth] = self
+            .behavior_draws
+            .next_unit(BehaviorDrawStream::ActivityRoll);
+    }
+
+    /// Zero every scope-relative fact from `depth` down, for levels that are
+    /// no longer active.
+    fn clear_scope_relative_facts_from(&mut self, depth: usize) {
+        let depth = depth.min(MAX_BEHAVIOR_NESTING_DEPTH);
+        self.time_in_activity_ms[depth..].fill(0.0);
+        self.attacks_fired_in_activity[depth..].fill(0);
+        self.damage_in_activity[depth..].fill(0.0);
+        self.activity_roll[depth..].fill(0.0);
     }
 
     /// Consume the atomic-entry latch after the tick captures entry-dependent
@@ -843,6 +895,10 @@ const fn default_activity_attack_counts() -> [u32; MAX_BEHAVIOR_NESTING_DEPTH] {
 }
 
 const fn default_activity_rolls() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
+    [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
+}
+
+const fn default_activity_damage() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
     [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
 }
 
@@ -1285,6 +1341,43 @@ mod tests {
 
         brain.record_successful_attack_fire();
         assert_eq!(brain.activity_attack_count(0), Some(1));
+    }
+
+    // Every hit adds its points to each active level's sum; entry zeroes the
+    // entered level. Non-finite and non-positive points add nothing, and the
+    // sum saturates rather than overflowing.
+    #[test]
+    fn damage_sums_follow_active_scopes_reset_on_entry_and_stay_finite() {
+        let graph = authored_graph();
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert_eq!(brain.damage_in_activity(0), Some(0.0));
+
+        brain.record_damage_in_activity(7.5);
+        brain.record_damage_in_activity(2.5);
+        assert_eq!(
+            brain.damage_in_activity(0),
+            Some(10.0),
+            "two hits both count"
+        );
+        for ignored in [0.0, -3.0, f32::NAN] {
+            brain.record_damage_in_activity(ignored);
+        }
+        assert_eq!(brain.damage_in_activity(0), Some(10.0));
+        assert_eq!(brain.damage_in_activity(1), None, "inactive depth");
+
+        assert!(brain.enter_activity_at(
+            0,
+            graph_activity_index(&graph, "charge").expect("charge is declared"),
+        ));
+        assert_eq!(brain.damage_in_activity(0), Some(0.0), "entry zeroes");
+
+        brain.record_damage_in_activity(f32::INFINITY);
+        brain.record_damage_in_activity(f32::MAX);
+        assert_eq!(
+            brain.damage_in_activity(0),
+            Some(f32::MAX),
+            "saturates finite"
+        );
     }
 
     #[test]
@@ -2085,8 +2178,9 @@ mod tests {
         assert_eq!(graph_activity_index(&brain.graph, "sprint"), None);
     }
 
-    // Sp7 (roll half): a brain saved before rolls existed restores, and its
-    // next entry draws a roll in [0, 1).
+    // Sp7: a brain saved before rolls and damage sums existed restores. Its
+    // sums read 0 and count the next hit; its next entry draws a roll in
+    // [0, 1).
     #[test]
     fn brain_serialized_before_activity_rolls_restores_and_draws_on_next_entry() {
         let graph = authored_graph();
@@ -2095,10 +2189,18 @@ mod tests {
         let fields = legacy.as_object_mut().expect("brain is an object");
         fields.remove("activity_roll");
         fields.remove("behavior_draws");
+        fields.remove("damage_in_activity");
         let mut restored: BrainComponent =
             serde_json::from_value(legacy).expect("pre-roll brain deserializes");
         assert_eq!(restored.activity_roll(0), Some(0.0));
         assert_eq!(restored.behavior_draws, BehaviorDraws::default());
+        assert_eq!(restored.damage_in_activity(0), Some(0.0));
+        assert_eq!(
+            restored.damage_in_activity,
+            [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
+        );
+        restored.record_damage_in_activity(6.5);
+        assert_eq!(restored.damage_in_activity(0), Some(6.5));
 
         let charge = graph_activity_index(&graph, "charge").expect("charge is declared");
         let draws = (0..8)

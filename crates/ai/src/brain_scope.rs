@@ -108,6 +108,7 @@ pub(crate) struct ScopeRelativeValues {
     pub(crate) time_in_activity_ms: f32,
     pub(crate) attacks_fired_in_activity: u32,
     pub(crate) activity_roll: f32,
+    pub(crate) damage_in_activity: f32,
 }
 
 #[derive(Clone, Copy)]
@@ -128,10 +129,14 @@ const fn activity_roll(values: ScopeRelativeValues) -> IrValue {
     IrValue::Number(values.activity_roll)
 }
 
+const fn damage_in_activity(values: ScopeRelativeValues) -> IrValue {
+    IrValue::Number(values.damage_in_activity)
+}
+
 // The evaluator only iterates registered fixed slots, so adding a
 // scope-relative fact leaves its ordering algorithm unchanged and re-pointing
 // stays allocation-free.
-const SCOPE_RELATIVE_SLOTS: [ScopeRelativeSlot; 3] = [
+const SCOPE_RELATIVE_SLOTS: [ScopeRelativeSlot; 4] = [
     ScopeRelativeSlot {
         fixed_index: 2,
         project: activity_timer,
@@ -143,6 +148,10 @@ const SCOPE_RELATIVE_SLOTS: [ScopeRelativeSlot; 3] = [
     ScopeRelativeSlot {
         fixed_index: 22,
         project: activity_roll,
+    },
+    ScopeRelativeSlot {
+        fixed_index: 23,
+        project: damage_in_activity,
     },
 ];
 
@@ -247,6 +256,8 @@ impl BrainScope {
             IrValue::Bool(facts.damage_source_known),
             IrValue::Bool(facts.has_attack_turn),
             IrValue::Bool(facts.animation_done),
+            // Scope-relative, like the activity timer: re-pointed per level.
+            IrValue::Number(0.0),
             // Scope-relative, like the activity timer: re-pointed per level.
             IrValue::Number(0.0),
         ];
@@ -387,15 +398,15 @@ mod tests {
     use postretro_foundation::{
         BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_ANIMATION_DONE_INPUT,
         BRAIN_ATTACK_COOLDOWN_MS_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
-        BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_SOURCE_KNOWN_INPUT,
-        BRAIN_DISTANCE_FROM_ANCHOR_INPUT, BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT,
-        BRAIN_HAS_ATTACK_TURN_INPUT, BRAIN_HAS_TARGET_INPUT, BRAIN_HEALTH_INPUT,
-        BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT, BRAIN_TARGET_DISTANCE_INPUT,
-        BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT, BRAIN_TARGET_MAX_HEALTH_INPUT,
-        BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TARGET_VISIBLE_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
-        BRAIN_TIME_SINCE_DAMAGE_MS_INPUT, BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr,
-        BindError, BoundProgram, BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind,
-        bind_brain_guard, eval_value,
+        BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
+        BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
+        BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_ATTACK_TURN_INPUT, BRAIN_HAS_TARGET_INPUT,
+        BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT,
+        BRAIN_TARGET_DISTANCE_INPUT, BRAIN_TARGET_HEALTH_INPUT, BRAIN_TARGET_HOSTILE_INPUT,
+        BRAIN_TARGET_MAX_HEALTH_INPUT, BRAIN_TARGET_REACHABLE_INPUT, BRAIN_TARGET_VISIBLE_INPUT,
+        BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BRAIN_TIME_SINCE_DAMAGE_MS_INPUT,
+        BRAIN_TIME_SINCE_TARGET_VISIBLE_INPUT, BakedIr, BindError, BoundProgram,
+        BrainValidationScope, CURRENT_IR_VERSION, IrNode, bind, bind_brain_guard, eval_value,
     };
 
     const EPSILON: f32 = 1e-6;
@@ -552,21 +563,24 @@ mod tests {
     }
 
     #[test]
-    fn repoint_scope_relative_projects_timer_attack_count_and_roll_together() {
+    fn repoint_scope_relative_projects_timer_attack_count_roll_and_damage_together() {
         let mut scope = BrainScope::for_validation();
         let timer = bind_read(BRAIN_TIME_IN_ACTIVITY_MS_INPUT, &scope);
         let attacks = bind_read(BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT, &scope);
         let roll = bind_read(BRAIN_ACTIVITY_ROLL_INPUT, &scope);
+        let damage = bind_read(BRAIN_DAMAGE_IN_ACTIVITY_INPUT, &scope);
 
         scope.repoint_scope_relative(ScopeRelativeValues {
             time_in_activity_ms: 125.0,
             attacks_fired_in_activity: 3,
             activity_roll: 0.625,
+            damage_in_activity: 42.5,
         });
 
         assert_number(eval_value(&timer, &scope), 125.0);
         assert_number(eval_value(&attacks, &scope), 3.0);
         assert_number(eval_value(&roll, &scope), 0.625);
+        assert_number(eval_value(&damage, &scope), 42.5);
     }
 
     /// The value `refresh` must project for a given fixed input name, computed
@@ -614,6 +628,7 @@ mod tests {
             BRAIN_HAS_ATTACK_TURN_INPUT => IrValue::Bool(facts.has_attack_turn),
             BRAIN_ANIMATION_DONE_INPUT => IrValue::Bool(facts.animation_done),
             BRAIN_ACTIVITY_ROLL_INPUT => IrValue::Number(0.0),
+            BRAIN_DAMAGE_IN_ACTIVITY_INPUT => IrValue::Number(0.0),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"

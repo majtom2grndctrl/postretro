@@ -50,6 +50,7 @@ pub(super) fn select_transition_path(
             time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
             attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
             activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
+            damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
         });
 
         let wildcard = envelope
@@ -263,6 +264,7 @@ fn selector_motion(
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
         activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
+        damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });
     for (entry, program) in entries.iter().zip(programs) {
         match entry {
@@ -292,6 +294,7 @@ fn selector_action<'a>(
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
         activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
+        damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });
     entries
         .iter()
@@ -392,9 +395,9 @@ mod statechart_tests {
 
     use postretro_entities::components::brain::BrainComponent;
     use postretro_foundation::{
-        ActionVerb, AttackParams, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
-        BehaviorDrawSalt, BehaviorGraphEnvelope, BehaviorSelectorRow, GuardedRow, IrNode, IrValue,
-        behavior_draw_seed,
+        ActionVerb, AttackParams, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
+        BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BehaviorDrawSalt, BehaviorGraphEnvelope,
+        BehaviorSelectorRow, GuardedRow, IrNode, IrValue, behavior_draw_seed,
     };
 
     use super::*;
@@ -1085,5 +1088,68 @@ mod statechart_tests {
             discriminating > 0,
             "some seed must put the two levels' rolls on opposite sides of 0.5"
         );
+    }
+    fn damage_at_least(points: f32) -> IrNode {
+        IrNode::Ge {
+            a: Box::new(IrNode::Input {
+                name: BRAIN_DAMAGE_IN_ACTIVITY_INPUT.to_string(),
+                owner: None,
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(points),
+            }),
+        }
+    }
+
+    // Scope-relative damage: a nested entry zeroes only the entered level's
+    // sum, and the outer level keeps counting across it.
+    #[test]
+    fn a_nested_entry_zeroes_only_its_levels_damage_sum_and_the_outer_level_keeps_counting() {
+        let graph = nested_fixture(false);
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert_eq!(brain.active_path_names(), ["engage", "windup"]);
+
+        brain.record_damage_in_activity(12.0);
+        assert_eq!(brain.damage_in_activity(0), Some(12.0));
+        assert_eq!(brain.damage_in_activity(1), Some(12.0));
+
+        brain.tick_activity_timers(20.0);
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["engage", "commit"]);
+        assert_eq!(
+            brain.damage_in_activity(0),
+            Some(12.0),
+            "engage keeps its sum"
+        );
+        assert_eq!(brain.damage_in_activity(1), Some(0.0), "commit starts at 0");
+
+        brain.record_damage_in_activity(5.0);
+        assert_eq!(brain.damage_in_activity(0), Some(17.0));
+        assert_eq!(brain.damage_in_activity(1), Some(5.0));
+    }
+
+    // A row reads its own level's sum: chip damage below the threshold holds,
+    // and the hit that reaches it passes the row on the next evaluation.
+    #[test]
+    fn a_damage_row_passes_at_its_threshold_and_never_below_it() {
+        let graph = flat_graph(
+            &["hold", "flinch"],
+            BTreeMap::from([(
+                "hold".to_string(),
+                vec![row("flinch", damage_at_least(25.0))],
+            )]),
+        );
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = BrainComponent::from_graph(&graph);
+
+        brain.record_damage_in_activity(20.0);
+        assert!(!select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["hold"]);
+
+        brain.record_damage_in_activity(5.0);
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["flinch"]);
+        assert_eq!(brain.damage_in_activity(0), Some(0.0));
     }
 }

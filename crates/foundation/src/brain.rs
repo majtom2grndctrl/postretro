@@ -135,6 +135,15 @@ pub const BRAIN_ANIMATION_DONE_INPUT: &str = "@brain.animationDone";
 /// draw is host-only and never crosses the wire (`networking.md`, engine
 /// randomness).
 pub const BRAIN_ACTIVITY_ROLL_INPUT: &str = "@brain.activityRoll";
+/// Points drained from this enemy's defense layers and health since the
+/// currently-evaluated activity was entered: every producer's hits, absorbed
+/// plus health loss (`DrainOutcome::points_dealt`), across layers and health.
+///
+/// Scope-relative like [`BRAIN_TIME_IN_ACTIVITY_MS_INPUT`]: each level reads
+/// its own sum, which starts at `0.0` when that level's activity is entered. A
+/// hit landing before the AI pass counts toward the activity the brain holds
+/// then; a hit landing after it counts toward the activity the pass entered.
+pub const BRAIN_DAMAGE_IN_ACTIVITY_INPUT: &str = "@brain.damageInActivity";
 
 /// Prefix of the named Bool read `attackTurnHeld(attack)`: a turn is held for
 /// that attack, as of the previous tick.
@@ -174,7 +183,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 23] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 24] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -198,6 +207,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 23] = [
     (BRAIN_HAS_ATTACK_TURN_INPUT, IrType::Bool),
     (BRAIN_ANIMATION_DONE_INPUT, IrType::Bool),
     (BRAIN_ACTIVITY_ROLL_INPUT, IrType::Number),
+    (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -461,6 +471,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[22],
             (BRAIN_ACTIVITY_ROLL_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn damage_in_activity_appends_at_fixed_slot_twenty_three() {
+        assert_eq!(
+            BRAIN_INPUTS[23],
+            (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

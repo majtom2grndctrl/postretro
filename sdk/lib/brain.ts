@@ -109,6 +109,12 @@ export interface BrainInputs {
    * `timeInActivityMs`: each level, and its selectors, read their own roll,
    * and every row at one level reads the same value (number). */
   readonly activityRoll: RuntimeGuardNode;
+  /** Points drained from this enemy's defense layers and health since the
+   * currently-evaluated activity was entered, counting every damage producer,
+   * `applyDamage` included. Scope-relative like `timeInActivityMs`: each
+   * level, and its selectors, read their own sum, which resets to 0 when that
+   * level is entered (number). */
+  readonly damageInActivity: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -161,6 +167,7 @@ export const brain: BrainInputs = Object.freeze({
   hasAttackTurn: input("@brain.hasAttackTurn"),
   animationDone: input("@brain.animationDone"),
   activityRoll: input("@brain.activityRoll"),
+  damageInActivity: input("@brain.damageInActivity"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

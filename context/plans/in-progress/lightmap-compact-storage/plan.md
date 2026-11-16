@@ -1,11 +1,11 @@
 # lightmap-compact-storage — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: f5bb5d5c8
 branch: lightmap-compact-storage
 
-The brief was claimed on `main` as `2f1e71af3`. Decisions and Acceptance remain the brief's contract. AC numbers below are planning labels in the brief's order, not rewritten acceptance.
+The brief was claimed on `main` as `2f1e71af3`. Decisions and Acceptance remain the brief's contract. Owner approved this plan in chat on 2026-11-16. AC numbers below are planning labels in the brief's order, not rewritten acceptance.
 
 ## Corrections
 - **Baseline commit.** The brief compares against `17c2f1e`; main has moved 177 commits since. `git diff 17c2f1e..f5bb5d5c8` changes nothing under `lightmap_bake/`, `lightmap_layer/`, `shadowmask_bake/`, `cell_residency_bake.rs`, the animated-atlas stages, `bc6h.rs`, ray traversal, `crates/visibility`, the level-format lightmap, shadowmask, residency and pool files, `lightmap_streaming/`, `session/`, `sh_streaming/`, `streaming/`, `render-cpu`, `lightmap_sample.wgsl`, `forward.wgsl`, or the toolchain. For ids 22, 42, 51 and 58, the animated weight maps and lightmap late blocks, `f5bb5d5c8` is therefore a byte-equivalent baseline, and the build measures against it, so baseline and feature share one toolchain and machine. Id 50 is **not** equivalent on maps with movers: it now carries per-pose mover rows (id 57 is at epoch 6). Every id-50 size, SH late-chunk and SH-on row is baselined against `f5bb5d5c8`. The owner chose current main as the Tracy baseline (AC M3).
@@ -92,6 +92,8 @@ Commits: one per completed task, each carrying its `plan.md` row update. Sequent
 - **Forward/vertex shader:** one extra varying and one extra table word read per vertex; per-fragment clamp per plane. Measured by M3; any GPU regression past baseline + 25% stops for the owner.
 - **Bake:** pack time reported (M1); zstd-7 adds about 0.9 s on showcase per research.
 
-## Owner questions
-1. **Pinned cores (AC 22, M1).** Accept thread-count emulation on the Mac, or run true affinity-pinned walks on the Windows PC?
-2. **Baseline.** Use `f5bb5d5c8` (byte-equivalent for every lightmap section; see Corrections) in place of `17c2f1e` everywhere?
+## Owner rulings (2026-11-16)
+- **Pinned cores:** thread-count emulation on the Mac is accepted (AC 22, M1); each run reports that it was emulated.
+- **Baseline:** `f5bb5d5c8` stands in for `17c2f1e`, as in Corrections.
+- **Showcase density:** the map's worldspawn `_lightmap_density` is `0.1`, below the owner's quality bar. A/B bakes set it to **0.0125 m** in the frozen scratchpad copy (`.map` sha256 `8f40118e…`). The owner is also trying 0.05 m and finds it tentatively better than expected; a 0.05 m bake is a secondary report point, not a gate.
+- **Baseline GPU batch (2026-11-15/16, at the map's 0.1 m):** Metal System Trace, since this Mac's AMD 5300M has no timestamp queries and Tracy carries CPU zones only. Showcase GPU busy 30.6–31.8 ms, forward 27.8–29.4 ms at 4K; VRAM paging 1.8–6.6 ms. Data and rerun script in the session scratchpad `baseline/`. The 0.0125 m batch is re-recorded in Task 1.

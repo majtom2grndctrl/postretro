@@ -73,6 +73,7 @@ mod tests {
         BehaviorActivityDescriptor {
             pose: None,
             stagger_to: None,
+            passes: None,
             sound: None,
             animation: Some("idle".to_string()),
             motion: None,

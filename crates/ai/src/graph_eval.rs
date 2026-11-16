@@ -256,10 +256,12 @@ impl TurnGate<'_> {
             .attack_cooldown_remaining_ms
             .get(attack)
             .is_some_and(|remaining| *remaining > 0.0);
-        let out_of_range = params.max_range.is_some_and(|max_range| {
+        // How far out the row waits in line (`queueRange`, else `maxRange`);
+        // the strike itself still hits only within `maxRange`.
+        let out_of_range = params.queue_distance().is_some_and(|queue_range| {
             scope
                 .target_distance()
-                .is_none_or(|distance| distance > max_range)
+                .is_none_or(|distance| distance > queue_range)
         });
         if cooling || out_of_range {
             QueueState::Closed
@@ -690,6 +692,7 @@ mod statechart_tests {
         BehaviorActivityDescriptor {
             pose: None,
             stagger_to: None,
+            passes: None,
             sound: None,
             animation: Some(animation.to_string()),
             motion,
@@ -833,6 +836,7 @@ mod statechart_tests {
                     cooldown_ms: Some(100.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },

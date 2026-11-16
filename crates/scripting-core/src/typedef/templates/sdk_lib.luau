@@ -1523,13 +1523,19 @@ export type StanceOptions = {
 export type Stance = { kind: "stance", name: string } & StanceOptions
 --- An attack's strike: its own animation state, an optional `ms` that only
 --- holds it longer, the clip event `at` it fires at (`false` fires on entry),
---- and an optional `motion` and `speed` multiplier replacing the planted hold.
+--- an optional `motion` and `speed` multiplier replacing the planted hold, and
+--- `["repeat"]` (a Luau keyword, so the key is quoted): how many passes of its
+--- clip it plays back to back, striking at `at` on each, a whole number from
+--- 1 to 8 (default 1). A repeating release plays a looping state, never fires
+--- on entry, and needs a `recover` with its own animation; one turn and one
+--- cooldown cover every pass.
 export type AttackRelease = {
   animation: string,
   ms: number?,
   at: (string | false)?,
   motion: ("hold" | "chaseTarget" | "strafe" | "reposition")?,
   speed: number?,
+  ["repeat"]: number?,
 }
 --- An attack's recovery after its strike: an animation state and an optional duration.
 export type AttackRecover = { animation: string, ms: number? }

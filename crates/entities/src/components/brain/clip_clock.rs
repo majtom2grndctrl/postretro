@@ -72,10 +72,15 @@ pub struct ClipClock {
     #[serde(default)]
     pub release_elapsed: f64,
     /// The entered release's moment resolved (fired, whiffed or cancelled),
-    /// or with no moment its clip played one pass: its `afterMoment` rows
+    /// or with no moment its clip played one pass; a repeating release's
+    /// moments all resolved and its passes played: its `afterMoment` rows
     /// open on the next evaluation. Cleared by every entry.
     #[serde(default)]
     pub release_resolved: bool,
+    /// The entered release's moments resolved so far (fired or whiffed), one
+    /// per pass of a release that repeats (`passes`). Cleared by every entry.
+    #[serde(default)]
+    pub release_moments: u32,
     /// An impact flinch during an activity with a flinch route (`staggerTo`):
     /// its reaction plays out before the enemy takes the route. Cleared by
     /// every entry.
@@ -105,6 +110,9 @@ pub struct ClipFacts {
     pub duration: f32,
     /// The animation state loops its clip.
     pub looping: bool,
+    /// A loop that starts at clip time 0, not the drawn phase: a repeating
+    /// release's state (`MeshAnimation::loop_phase`).
+    pub zero_phase: bool,
 }
 
 impl ClipClock {
@@ -134,6 +142,7 @@ impl PartialEq for ClipClock {
             && self.redraw == other.redraw
             && self.release_elapsed == other.release_elapsed
             && self.release_resolved == other.release_resolved
+            && self.release_moments == other.release_moments
             && self.stagger == other.stagger
     }
 }
@@ -175,6 +184,7 @@ mod tests {
             redraw: true,
             release_elapsed: 0.5,
             release_resolved: true,
+            release_moments: 2,
             stagger: Some(Stagger {
                 elapsed: 0.1,
                 until: 0.4,
@@ -182,6 +192,7 @@ mod tests {
             clip: Some(ClipFacts {
                 duration: 2.0,
                 looping: true,
+                zero_phase: false,
             }),
         };
         let json = serde_json::to_value(&clock).expect("clip clock serializes");
@@ -199,7 +210,7 @@ mod tests {
         assert_eq!(old.mesh_switches, None, "and binds to the mesh's count");
         assert!(!old.redraw && !old.late_restart);
         assert!(
-            !old.release_resolved && old.stagger.is_none(),
+            !old.release_resolved && old.release_moments == 0 && old.stagger.is_none(),
             "a clock saved before the release exit holds no gate and no flinch"
         );
     }

@@ -1339,6 +1339,7 @@ fn hold_enemy_graph() -> BehaviorGraphDescriptor {
     let leaf = |pose: Option<&str>| BehaviorActivityDescriptor {
         pose: pose.map(str::to_string),
         stagger_to: None,
+        passes: None,
         sound: None,
         animation: Some("idle".to_string()),
         motion: Some(MotionVerb::Hold),
@@ -1427,6 +1428,7 @@ fn roll_enemy_graph() -> BehaviorGraphDescriptor {
         BehaviorActivityDescriptor {
             pose: None,
             stagger_to: None,
+            passes: None,
             sound: None,
             animation: Some("idle".to_string()),
             motion: None,
@@ -1878,6 +1880,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -1895,6 +1898,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some(locomotion_animation.to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
@@ -1912,6 +1916,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
@@ -1933,6 +1938,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("death".to_string()),
                         motion: Some(MotionVerb::Freeze),
@@ -1961,6 +1967,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -2745,6 +2752,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
             BehaviorActivityDescriptor {
                 pose: None,
                 stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some("walk".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
@@ -4917,6 +4925,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
     let activity = |animation: &str, action| BehaviorActivityDescriptor {
         pose: None,
         stagger_to: None,
+        passes: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(MotionVerb::Hold),

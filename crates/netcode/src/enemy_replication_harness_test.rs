@@ -152,6 +152,7 @@ fn brain() -> BrainComponent {
                 BehaviorActivityDescriptor {
                     pose: None,
                     stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: Some(MotionVerb::Hold),
@@ -377,6 +378,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -394,6 +396,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
@@ -443,6 +446,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },

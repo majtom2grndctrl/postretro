@@ -2444,6 +2444,7 @@ mod tests {
             locomotion_direction: Default::default(),
             locomotion_jump: Default::default(),
             switches: Default::default(),
+            zero_phase_states: Default::default(),
         };
         let live = MeshComponent {
             model: "decraniated".into(),

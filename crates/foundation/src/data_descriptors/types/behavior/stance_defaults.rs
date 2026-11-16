@@ -41,3 +41,7 @@ pub const STANCE_HOLD_FLOOR_MS: f32 = REMOTE_INTERPOLATION_CEILING_MS + STANCE_R
 /// The hold range an omitted `holdMs` takes: `[min, max]` milliseconds from
 /// the floor, wide enough that a player cannot learn the release.
 pub const DEFAULT_HOLD_MS: [f32; 2] = [STANCE_HOLD_FLOOR_MS, STANCE_HOLD_FLOOR_MS + 600.0];
+
+/// The most passes a release's `repeat` may play: one strike per pass, under
+/// one attack turn.
+pub const MAX_RELEASE_REPEAT: u32 = 8;

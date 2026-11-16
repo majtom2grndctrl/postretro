@@ -12,13 +12,15 @@ use super::common::*;
 
 /// One authoring of a brute that takes `overhead` and strikes `slam` from it.
 /// Each fragment is spliced in verbatim: `stance` and `slam` extend the two
-/// handles, `initial` is the root's `initial` expression, and `transitions`
-/// adds row lists after the authored ones.
+/// handles, `initial` is the root's `initial` expression, `transitions` adds
+/// row lists after the authored ones, and `mesh` is a `mesh` component entry
+/// (with its trailing separator) before the behavior.
 struct Brute<'a> {
     stance: &'a str,
     slam: &'a str,
     initial: &'a str,
     transitions: &'a str,
+    mesh: &'a str,
 }
 
 const JS_BRUTE: Brute<'static> = Brute {
@@ -26,6 +28,7 @@ const JS_BRUTE: Brute<'static> = Brute {
     slam: r#", release: { animation: "smash_strike" }"#,
     initial: r#""approach""#,
     transitions: "",
+    mesh: "",
 };
 
 const LUA_BRUTE: Brute<'static> = Brute {
@@ -33,6 +36,7 @@ const LUA_BRUTE: Brute<'static> = Brute {
     slam: r#", release = { animation = "smash_strike" }"#,
     initial: r#""approach""#,
     transitions: "",
+    mesh: "",
 };
 
 fn js_source(brute: &Brute) -> String {
@@ -40,7 +44,7 @@ fn js_source(brute: &Brute) -> String {
         r#"(() => {{
             const overhead = {{ kind: "stance", name: "overhead", animation: "smash_windup"{stance} }};
             const slam = {{ kind: "attack", name: "slam", damage: 10, maxRange: 3, cooldownMs: 1000, beginningStance: overhead{slam} }};
-            return {{ canonicalName: "brute", components: {{ behavior: {{
+            return {{ canonicalName: "brute", components: {{ {mesh}behavior: {{
                 initial: {initial}, moveSpeed: 3,
                 activities: {{ approach: {{ animation: "walk", motion: "chaseTarget" }} }},
                 transitions: {{
@@ -56,6 +60,7 @@ fn js_source(brute: &Brute) -> String {
         slam = brute.slam,
         initial = brute.initial,
         transitions = brute.transitions,
+        mesh = brute.mesh,
     )
 }
 
@@ -63,7 +68,7 @@ fn lua_source(brute: &Brute) -> String {
     format!(
         r#"local overhead = {{ kind = "stance", name = "overhead", animation = "smash_windup"{stance} }}
         local slam = {{ kind = "attack", name = "slam", damage = 10, maxRange = 3, cooldownMs = 1000, beginningStance = overhead{slam} }}
-        return {{ canonicalName = "brute", components = {{ behavior = {{
+        return {{ canonicalName = "brute", components = {{ {mesh}behavior = {{
             initial = {initial}, moveSpeed = 3,
             activities = {{ approach = {{ animation = "walk", motion = "chaseTarget" }} }},
             transitions = {{
@@ -78,6 +83,7 @@ fn lua_source(brute: &Brute) -> String {
         slam = brute.slam,
         initial = brute.initial,
         transitions = brute.transitions,
+        mesh = brute.mesh,
     )
 }
 
@@ -313,4 +319,165 @@ fn a_self_referencing_luau_behavior_table_rejects_load_promptly() {
         error.contains("maximum conversion depth"),
         "the JSON bridge names the cycle's depth: {error}"
     );
+}
+
+/// A brute mesh declaring `jab_quick`, looping or not, beside the stance's
+/// and the recover's states.
+fn jab_mesh_js(looping: bool) -> String {
+    format!(
+        r#"mesh: {{ model: "brute", defaultState: "walk", animations: {{
+            walk: {{ clip: "walk", loop: true }},
+            smash_windup: {{ clip: "smash_windup", loop: true }},
+            jab_quick: {{ clip: "jab_quick", loop: {looping} }},
+            idle: {{ clip: "idle", loop: true }}
+        }} }}, "#
+    )
+}
+
+fn jab_mesh_lua(looping: bool) -> String {
+    format!(
+        r#"mesh = {{ model = "brute", defaultState = "walk", animations = {{
+            walk = {{ clip = "walk", loop = true }},
+            smash_windup = {{ clip = "smash_windup", loop = true }},
+            jab_quick = {{ clip = "jab_quick", loop = {looping} }},
+            idle = {{ clip = "idle", loop = true }}
+        }} }}, "#
+    )
+}
+
+const JS_COMBO: &str = r#", queueRange: 6, release: { animation: "jab_quick", repeat: 3 }, recover: { animation: "idle" }"#;
+// `repeat` is a Luau keyword, so a Luau table spells the key `["repeat"]`.
+const LUA_COMBO: &str = r#", queueRange = 6, release = { animation = "jab_quick", ["repeat"] = 3 }, recover = { animation = "idle" }"#;
+
+// Task 12: a release's `repeat` and an attack's `queueRange` load alike in
+// both runtimes: the release carries its pass count, the attack its queue
+// distance, and `maxRange` stays the hit distance.
+#[test]
+fn a_repeating_release_and_a_queue_range_load_in_both_runtimes() {
+    let js_mesh = jab_mesh_js(true);
+    let lua_mesh = jab_mesh_lua(true);
+    let js = js_loaded(&Brute {
+        slam: JS_COMBO,
+        mesh: &js_mesh,
+        ..JS_BRUTE
+    })
+    .behavior
+    .expect("behavior");
+    let lua = lua_loaded(&Brute {
+        slam: LUA_COMBO,
+        mesh: &lua_mesh,
+        ..LUA_BRUTE
+    })
+    .behavior
+    .expect("behavior");
+    assert_eq!(js, lua);
+    assert_eq!(js.envelope.activities["slam_release"].passes, Some(3));
+    assert_eq!(js.envelope.activities["slam_recover"].passes, None);
+    let slam = &js.attacks["slam"];
+    assert_eq!((slam.queue_range, slam.max_range), (Some(6.0), Some(3.0)));
+
+    // `repeat: 1` is the default, and lowers to no pass count.
+    let single = js_loaded(&Brute {
+        slam: r#", release: { animation: "smash_strike", repeat: 1 }"#,
+        ..JS_BRUTE
+    })
+    .behavior
+    .expect("behavior");
+    assert_eq!(single, js_loaded(&JS_BRUTE).behavior.expect("behavior"));
+}
+
+#[test]
+fn a_malformed_repeat_or_queue_range_rejects_load_in_both_runtimes() {
+    let release = "`components.behavior.transitions.overhead[0].to.release.repeat`";
+    for (js_value, lua_value) in [("0", "0"), ("9", "9"), ("2.5", "2.5"), (r#""3""#, r#""3""#)] {
+        assert_rejects_in_both(
+            &format!("repeat {js_value}"),
+            &Brute {
+                slam: &format!(
+                    r#", release: {{ animation: "jab_quick", repeat: {js_value} }}, recover: {{ animation: "idle" }}"#
+                ),
+                ..JS_BRUTE
+            },
+            &Brute {
+                slam: &format!(
+                    r#", release = {{ animation = "jab_quick", ["repeat"] = {lua_value} }}, recover = {{ animation = "idle" }}"#
+                ),
+                ..LUA_BRUTE
+            },
+            &[release],
+        );
+    }
+    assert_rejects_in_both(
+        "repeat on entry",
+        &Brute {
+            slam: r#", release: { animation: "jab_quick", at: false, repeat: 3 }, recover: { animation: "idle" }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", release = { animation = "jab_quick", at = false, ["repeat"] = 3 }, recover = { animation = "idle" }"#,
+            ..LUA_BRUTE
+        },
+        &[release, "fires on entry (`at: false`)"],
+    );
+    assert_rejects_in_both(
+        "repeat without a recover animation",
+        &Brute {
+            slam: r#", release: { animation: "jab_quick", repeat: 3 }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", release = { animation = "jab_quick", ["repeat"] = 3 }"#,
+            ..LUA_BRUTE
+        },
+        &[
+            "`components.behavior.transitions.overhead[0].to.recover.animation` is missing",
+            "repeats 3 passes on a looping state",
+        ],
+    );
+    assert_rejects_in_both(
+        "queue range under the reach",
+        &Brute {
+            slam: r#", queueRange: 2, release: { animation: "smash_strike" }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", queueRange = 2, release = { animation = "smash_strike" }"#,
+            ..LUA_BRUTE
+        },
+        &[
+            "`components.behavior.attacks.slam.queueRange` must be a finite value >= `components.behavior.attacks.slam.maxRange` (3)",
+        ],
+    );
+}
+
+// Task 12: a repeating release must play a looping state, checked where the
+// mesh and the lowered behavior meet: the entity readers.
+#[test]
+fn a_repeating_release_on_a_one_shot_state_rejects_load_in_both_runtimes() {
+    let js_mesh = jab_mesh_js(false);
+    let lua_mesh = jab_mesh_lua(false);
+    assert_rejects_in_both(
+        "one-shot release state",
+        &Brute {
+            slam: JS_COMBO,
+            mesh: &js_mesh,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: LUA_COMBO,
+            mesh: &lua_mesh,
+            ..LUA_BRUTE
+        },
+        &[
+            r#"attack "slam"'s release repeats 3 passes on animation state "jab_quick", which does not loop"#,
+            "`components.mesh.animations.jab_quick`",
+        ],
+    );
+    // A single pass may play a one-shot.
+    let js_mesh = jab_mesh_js(false);
+    js_loaded(&Brute {
+        slam: r#", release: { animation: "jab_quick" }"#,
+        mesh: &js_mesh,
+        ..JS_BRUTE
+    });
 }

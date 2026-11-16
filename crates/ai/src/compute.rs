@@ -563,12 +563,23 @@ pub(super) fn evaluate(
             entry_depth,
             tick_heading.travel_variant,
         );
+        // A repeating release strikes once per pass at its moment, under one
+        // turn: a later pass ignores the cooldown its first hit started, and
+        // each hit restarts it, so it runs from the release's last hit.
+        let strike_limit = clip_clock::strike_limit(&brain, moment);
+        let leaf_strikes = brain
+            .active_depth()
+            .checked_sub(1)
+            .and_then(|depth| brain.activity_attack_count(depth));
+        let later_pass = strike_limit > 1 && leaf_strikes.is_some_and(|strikes| strikes > 0);
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && moment.allows_proposal()
             && brain.clip_clock.stagger.is_none()
             && let (Some(target), Some(distance)) = (target, selected_distance)
-            && brain.activity_attack_count(firing_leaf_depth) == Some(0)
+            && brain
+                .activity_attack_count(firing_leaf_depth)
+                .is_some_and(|strikes| strikes < strike_limit)
             && selected_target_alive(registry, target.entity)
             && perception::fire_gate(target_perception)
             && tick_heading.within_attack_tolerance
@@ -578,12 +589,13 @@ pub(super) fn evaluate(
                     let ActionVerb::Attack { name, .. } = action;
                     let attack = brain.graph.attacks.get(name)?;
 
-                    if brain
-                        .attack_cooldown_remaining_ms
-                        .get(name)
-                        .copied()
-                        .unwrap_or(0.0)
-                        > 0.0
+                    if !later_pass
+                        && brain
+                            .attack_cooldown_remaining_ms
+                            .get(name)
+                            .copied()
+                            .unwrap_or(0.0)
+                            > 0.0
                     {
                         return None;
                     }

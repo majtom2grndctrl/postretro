@@ -234,6 +234,7 @@ pub fn entity_descriptor_from_lua(
         health,
         behavior,
     };
+    descriptor.validate_across_components()?;
     Ok(descriptor)
 }
 

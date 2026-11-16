@@ -1792,6 +1792,11 @@ const slam = defineAttack({ damage: 8, damageType: ballistic, maxRange: 2, coold
 `damageType` is an optional damage-type handle beside `damage`; omitted, the
 hit takes the mod's `defaultDamageType`.
 
+A contact attack struck from a stance may add `queueRange`, a finite distance
+of at least its `maxRange`: how far out its tell waits in line and asks for
+its turn. `maxRange` stays how far it hits. Omitted, it is `maxRange`. See
+[Stances](#stances).
+
 Either form may list `draws`, the attack tokens a turn for it takes; omitted,
 it draws `defaultToken`. See [Attack tokens and budgets](#attack-tokens-and-budgets).
 
@@ -1804,7 +1809,7 @@ entry:
 const shoot = defineAttack({ weapon: "enemy_rifle", standoffDistance: 6 });
 ```
 
-Do not mix `weapon` with `damage`, `maxRange`, or `cooldownMs`; the forms are
+Do not mix `weapon` with `damage`, `maxRange`, `queueRange`, or `cooldownMs`; the forms are
 mutually exclusive and descriptor validation rejects the combination. A named
 weapon is resolved when the behavior program is built. It must resolve to a
 projectile `WeaponDescriptor` at runtime; an unknown or non-projectile weapon
@@ -2232,7 +2237,7 @@ An attack that begins in a stance adds these to its engine fields:
 |-------|------|---------|---------|
 | `beginningStance` | `Stance` | none | The pose the strike starts from. Requires `release`. |
 | `endingStance` | `Stance` | `beginningStance` | The pose it rests in once its recovery ends. A slam can land coiled, ready for a lunge. |
-| `release` | `{ animation, at?, ms?, motion?, speed? }` | required with `beginningStance` | The strike. |
+| `release` | `{ animation, at?, ms?, motion?, speed?, repeat? }` | required with `beginningStance` | The strike. |
 | `recover` | `{ animation, ms? }` | holds the release's state | The recovery after it. |
 
 - **`release.animation`** plays the strike's own state. It cannot be the
@@ -2246,15 +2251,34 @@ An attack that begins in a stance adds these to its engine fields:
   has fired or whiffed. With no moment it lasts until its clip plays through
   once, one pass of a loop. `release.ms` only holds it longer; no `ms` makes a
   strike miss.
+- **`release.repeat`** plays the clip that many passes back to back, a whole
+  number from 1 to 8 (default 1), and strikes once per pass at its moment.
+  The release then lasts until its last pass has played, not just until its
+  last moment. One turn and one cooldown cover every pass: a later pass never
+  waits on the cooldown an earlier hit started, each hit restarts it, and so
+  it runs from the last. A flinch cancels the passes left. A repeating
+  release plays a looping state (`loop: true`), since a client replays each
+  pass from the state alone; it cannot use `at: false`, which has no moment
+  to strike at each pass, and it needs a `recover` with its own `animation`,
+  or the recover would keep looping the strike. A clip with no moment to
+  time, such as a defaulted `hit` the clip lacks, strikes once. Its loop
+  starts at the clip's beginning on entry, on the host and every client,
+  rather than at the enemy's own offset into the loop, so the first pass
+  follows on from the held tell and strikes on that pass. `repeat` is a Luau
+  keyword: write the key as `["repeat"] = 3`.
 - **`release.motion`** is `hold` (the default), `chaseTarget`, `strafe` or
   `reposition`, and `release.speed` multiplies `moveSpeed`. A moving release
   needs a `recover` with its own `animation`, since a recover without one
   holds the release's state and its stride would play in place. Its stride follows its speed against the
   state's `travelSpeed`. `release.at: false` with a fast `chaseTarget` makes a
-  charge that hits on reach. A contact attack's `maxRange` is both how far
-  out it waits in line and how far it hits, so a charge cannot start farther
-  out than it hits: the example's charge hits a target already within 12 m on
-  its first tick.
+  charge that hits on reach: the example's charge hits a target already
+  within 12 m on its first tick.
+- **`queueRange`** lets a moving strike start farther out than it hits. A
+  row to the attack waits in line while the target is within `queueRange`,
+  and the strike lands only within `maxRange`, checked at its moment: a leap
+  that has not closed the gap by then whiffs, and its release still ends.
+  Its combat slot (`engagementRadius`, `standoffDistance`) still defaults
+  from `maxRange`, so a leaper settles at hitting distance.
 - **`recover`** omitted holds the release's state until its clip plays
   through or 600 ms pass, whichever comes first, so a looping release still
   recovers. An authored `recover` lasts its `ms`; without one it leaves the
@@ -2262,6 +2286,59 @@ An attack that begins in a stance adds these to its engine fields:
 
 Every activity a stance generates stands still (`motion: "hold"`), whatever
 its level's motion, except a release given a `motion`.
+
+#### Combos and leaps
+
+A combo holds one tell, then throws several quick strikes under one turn. Give
+the release a looping state at a fixed `playbackRate` and a `repeat`:
+
+```typescript
+const cock = defineStance({ animation: "punch_windup", holdMs: 666 });
+const combo = defineAttack({
+  draws: [melee],
+  damage: 5, // per hit
+  maxRange: 2.5,
+  cooldownMs: 2500, // runs from the last jab
+  beginningStance: cock,
+  release: { animation: "jab_combo", repeat: 3 }, // three jabs, each at the clip's `hit`
+  recover: { animation: "idle" }, // a looping release needs its own recover state
+});
+
+// In the archetype's mesh:
+animations: {
+  jab_combo: { clip: "jab_quick", loop: true, playbackRate: 2.5 }, // an 800 ms clip, 320 ms a jab
+},
+```
+
+In Luau the release is `{ animation = "jab_combo", ["repeat"] = 3 }`.
+
+A leap starts from farther out than it hits. `queueRange` lets the tell wait
+in line from there; a steering release closes the gap while the strike plays,
+and the hit lands at its moment only within `maxRange`. Play the airborne clip
+on a state that does not rate-scale, so its hit keeps its time however fast
+the leap moves:
+
+```typescript
+const crouch = defineStance({ animation: "smash_windup", holdMs: 666 });
+const leap = defineAttack({
+  draws: [heavy],
+  damage: 20,
+  maxRange: 3, // the hit
+  queueRange: 15, // the tell waits in line from 15 m
+  cooldownMs: 6000,
+  beginningStance: crouch,
+  release: { animation: "leap_strike", motion: "chaseTarget", speed: 3 }, // slams at `hit`
+  recover: { animation: "smash_recover" },
+});
+
+// In the archetype's mesh:
+animations: {
+  leap_strike: { clip: "jump_attack", scaleWithSpeed: false }, // 1x however fast it moves
+},
+```
+
+Key the approach row by distance, so the leap is the long-range choice:
+`{ to: crouch, when: brain.targetDistance.le(15) }`.
 
 #### Rows to stances and attacks
 
@@ -2275,7 +2352,8 @@ its level's motion, except a release given a `motion`.
 - **`{ to: slam }` strikes.** It is legal only in the rows of the rest of
   `slam`'s `beginningStance`.
 - **A row to an attack waits in line.** It passes once the attack's turn is
-  held, the target is within the attack's `maxRange` (when it declares one),
+  held, the target is within the attack's `queueRange` (or its `maxRange`,
+  when it declares one),
   the attack is off cooldown, and its `when` passes. While its `when`, range
   and cooldown pass, the resting enemy asks for the turn and keeps the pose.
   It asks for one attack at a time, the first such row in order, and keeps its
@@ -2358,9 +2436,10 @@ The queue makes a tell a promise: a strike never starts without its turn and
 never meets its own cooldown. The player can still make it miss. A release
 whiffs, firing nothing that entry, when at its moment:
 
-- **the target is out of range,** having stepped back past `maxRange`. A tell
-  that follows a new target checks no range, so it can carry on against a far
-  one and whiff;
+- **the target is out of range,** having stepped back past `maxRange`, or
+  never come within it: a strike queued from its `queueRange` that has not
+  closed the gap by its moment. A tell that follows a new target checks no
+  range, so it can carry on against a far one and whiff;
 - **the target is out of sight,** or the enemy is not facing it;
 - **a moving release changed direction before its moment.** A moving enemy
   plays its directional state (`run_left`, `run_backward`) and restarts its
@@ -2402,6 +2481,10 @@ Each of these fails load and names the key path:
   letters, digits and underscores) and not `false`;
 - `release.motion` other than `hold`, `chaseTarget`, `strafe` or
   `reposition`; a `speed` of zero or below; a negative `ms`;
+- `release.repeat` that is not a whole number from 1 to 8; a `repeat` above 1
+  with `at: false`, without a `recover.animation`, or on an animation state
+  that does not loop (naming the attack and the state);
+- `queueRange` below `maxRange`, non-finite, or beside `weapon`;
 - `holdMs` with a negative bound or a minimum above its maximum;
   `breakOn.damage` of zero or below; `breakOn.to` naming no activity at the
   stance's level, or one load generates; any non-finite value; an unknown key
@@ -2413,7 +2496,7 @@ Each of these fails load and names the key path:
 - an activity, a string `to` or an `initial` that names an activity load
   generates, or two stances and attacks whose generated names collide;
 - the engine-only fields `pose`, `queue`, `afterMoment`, `atDefault`,
-  `releaseAfter` and `staggerTo`;
+  `releaseAfter`, `staggerTo` and `passes`;
 - the stance option `stance`, which is reserved for crouching enemies and
   rejects until they are supported.
 
@@ -2634,7 +2717,7 @@ See [Movers](level_design.md#movers) for how doors and lifts affect enemies.
 
 ### `maxRange`, `engagementRadius`, and `standoffDistance`
 
-Three separate knobs that are easy to conflate:
+Three separate knobs that are easy to conflate, and a fourth for stances:
 
 - **A contact attack's `maxRange` gates its direct damage.** It is the distance
   within which a state selecting that entry actually lands a hit, checked every
@@ -2650,6 +2733,10 @@ Three separate knobs that are easy to conflate:
   and scoring the engine uses to place engaged agents around their target. It
   must be finite and greater than zero. When omitted, it uses that action's
   resolved `engagementRadius`, including an attack-specific override.
+- **`queueRange` sets how far out a stance's tell waits in line** for a
+  contact attack, at least its `maxRange` (default `maxRange`). It moves no
+  combat slot and lands no hit: `engagementRadius` and `standoffDistance`
+  still default from `maxRange`.
 
 For a non-attack state, `engagementRadius` resolves as the graph-wide authored
 field, else the engine default of **2 m**. A pure-pursuit graph (`chaseTarget`,

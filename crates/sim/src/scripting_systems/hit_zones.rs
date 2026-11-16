@@ -1521,7 +1521,7 @@ fn current_state_phase(anim: &MeshAnimation, clips: &[AnimationClip], seed: u32)
         .and_then(|i| clips.get(i))
         .map(|clip| clip.duration)
         .unwrap_or(0.0);
-    instance_phase(seed, duration)
+    anim.loop_phase(&anim.current_state, instance_phase(seed, duration))
 }
 
 /// Pose the model's skeleton at `anim_time` per a resolved [`MeshSampleParams`]:
@@ -3998,5 +3998,47 @@ mod tests {
         // tag is unknown.
         let unknown = unknown_zone_multiplier_tags(["head", "leg"], &[]);
         assert_eq!(unknown, vec!["head".to_string(), "leg".to_string()]);
+    }
+
+    // Task 12: hit zones read the same loop phase as the renderer and the clip
+    // clock: 0 for a repeating release's state, the drawn phase otherwise.
+    #[test]
+    fn a_repeating_release_state_poses_at_phase_zero_and_other_loops_keep_theirs() {
+        use postretro_entities::components::mesh::{
+            AnimationState, InterruptPolicy, MeshAnimation, ZeroPhaseStates,
+        };
+        let state = AnimationState {
+            clip: "swing".into(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
+            clip_index: Some(0),
+        };
+        let states = HashMap::from([
+            ("jab_quick".to_string(), state.clone()),
+            ("walk".to_string(), state),
+        ]);
+        let clips = vec![AnimationClip {
+            name: "swing".into(),
+            duration: 2.0,
+            joints: Vec::new(),
+            travel_speed: None,
+            events: Vec::new(),
+        }];
+        let seed = (1..64)
+            .find(|&seed| instance_phase(seed, 2.0) > 0.1)
+            .expect("some seed draws a non-zero phase");
+        let mut anim = MeshAnimation::new(states, "jab_quick".into())
+            .with_zero_phase_states(ZeroPhaseStates::of(["jab_quick"]));
+        assert_eq!(current_state_phase(&anim, &clips, seed), 0.0);
+        anim.current_state = "walk".into();
+        assert_eq!(
+            current_state_phase(&anim, &clips, seed),
+            instance_phase(seed, 2.0)
+        );
     }
 }

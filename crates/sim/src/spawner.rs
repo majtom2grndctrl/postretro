@@ -751,6 +751,7 @@ mod tests {
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -766,6 +767,7 @@ mod tests {
             BehaviorActivityDescriptor {
                 pose: None,
                 stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some("attack".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),

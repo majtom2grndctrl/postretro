@@ -502,6 +502,7 @@ mod tests {
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: None,
                         motion: None,

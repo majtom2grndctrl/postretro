@@ -98,6 +98,8 @@ struct Strike {
     release_state: &'static str,
     release_facing: Option<FacingPolicy>,
     release_speed: Option<f32>,
+    /// The release's lowered pass count (`repeat`).
+    release_passes: Option<u32>,
     recover_state: &'static str,
     recover_action: bool,
     recover_rows: Vec<GuardedRow>,
@@ -116,6 +118,7 @@ impl Default for Strike {
             release_state: STRIKE,
             release_facing: None,
             release_speed: None,
+            release_passes: None,
             recover_state: STRIKE,
             recover_action: false,
             recover_rows: default_recover_rows(),
@@ -144,6 +147,7 @@ impl Strike {
         release.stagger_to = Some(COIL.to_string());
         release.facing = self.release_facing;
         release.speed = self.release_speed;
+        release.passes = self.release_passes;
         let mut recover = authored_state(
             self.recover_state,
             MotionVerb::Hold,
@@ -1466,3 +1470,6 @@ fn a_release_entered_again_waits_for_its_own_moment_after_a_flinch() {
             .all(|tick| tick.state == RELEASE)
     );
 }
+
+#[path = "release_repeat_tests.rs"]
+mod repeat;

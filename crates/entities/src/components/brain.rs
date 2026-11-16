@@ -798,6 +798,7 @@ impl BrainComponent {
         // to: the entered one starts its own.
         self.clip_clock.release_elapsed = 0.0;
         self.clip_clock.release_resolved = false;
+        self.clip_clock.release_moments = 0;
         self.clip_clock.stagger = None;
         self.entry_pending = false;
         self.entry_event_pending = false;
@@ -1272,6 +1273,7 @@ mod tests {
                         BehaviorActivityDescriptor {
                             pose: None,
                             stagger_to: None,
+                            passes: None,
                             sound: None,
                             animation: Some("idle".to_string()),
                             motion: Some(MotionVerb::Hold),
@@ -1289,6 +1291,7 @@ mod tests {
                         BehaviorActivityDescriptor {
                             pose: None,
                             stagger_to: None,
+                            passes: None,
                             sound: None,
                             animation: Some("walk".to_string()),
                             motion: Some(MotionVerb::ChaseTarget),
@@ -1334,6 +1337,7 @@ mod tests {
                     cooldown_ms: Some(900.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },

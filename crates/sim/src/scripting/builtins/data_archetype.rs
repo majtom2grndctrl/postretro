@@ -30,7 +30,7 @@ use postretro_entities::components::immersion::ImmersionComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
-    MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
+    MeshAnimation, MeshComponent, ZeroPhaseStates, capsule_center_to_feet_origin_offset,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::touchable::TouchableComponent;
@@ -685,7 +685,13 @@ pub(crate) fn descriptor_mesh_component(
         Some(default_state) => MeshComponent::animated(
             mesh_desc.model.clone(),
             MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone())
-                .with_speed_scale(mesh_desc.speed_scale()),
+                .with_speed_scale(mesh_desc.speed_scale())
+                .with_zero_phase_states(ZeroPhaseStates::of(
+                    descriptor
+                        .behavior
+                        .iter()
+                        .flat_map(postretro_foundation::repeating_release_states),
+                )),
         ),
         None => MeshComponent::stateless(mesh_desc.model.clone()),
     };
@@ -1083,7 +1089,7 @@ mod tests {
     // the netcode agreement test can reuse them without a private-helper reach
     // or a duplicate copy. See testing_guide.md §4.
     use super::super::data_archetype_test_fixtures::{
-        behavior_enemy_descriptor, mesh_descriptor, placement,
+        behavior_enemy_descriptor, mesh_descriptor, placement, repeating_release_graph,
     };
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
@@ -3529,5 +3535,25 @@ mod tests {
             (transform.position + hitbox.offset - authored_hitbox_center).length() < 1.0e-5,
             "spawn-time transform normalization must preserve the authored world hitbox"
         );
+    }
+
+    // Task 12: the mesh seam host spawns and remote clients share starts a
+    // repeating release's loop, and its travel variants, at clip time 0, and
+    // leaves every other loop on the drawn phase. Without a behavior, nothing.
+    #[test]
+    fn descriptor_mesh_starts_a_repeating_releases_loop_at_phase_zero() {
+        let mut descriptor = mesh_descriptor("brute", true);
+        descriptor.behavior = Some(repeating_release_graph("attack"));
+        let mesh = descriptor_mesh_component(&descriptor, None).expect("the mesh materializes");
+        let animation = mesh.animation.expect("animated");
+        for state in ["attack", "attack_left", "attack_backward"] {
+            assert_eq!(animation.loop_phase(state, 0.3), 0.0, "{state}");
+        }
+        assert_eq!(animation.loop_phase("idle", 0.3), 0.3);
+
+        let plain = descriptor_mesh_component(&mesh_descriptor("brute", true), None)
+            .and_then(|mesh| mesh.animation)
+            .expect("animated");
+        assert_eq!(plain.loop_phase("attack", 0.3), 0.3);
     }
 }

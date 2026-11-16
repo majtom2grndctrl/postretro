@@ -126,6 +126,7 @@ fn contact(damage: f32, cooldown_ms: f32) -> AttackParams {
         cooldown_ms: Some(cooldown_ms),
         engagement_radius: None,
         standoff_distance: None,
+        queue_range: None,
         damage_type: None,
         draws: None,
     }
@@ -140,6 +141,7 @@ fn weapon(name: &str) -> AttackParams {
         cooldown_ms: None,
         engagement_radius: None,
         standoff_distance: None,
+        queue_range: None,
         damage_type: None,
         draws: None,
     }

@@ -14,6 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::activity_motion::validate_reposition;
 use super::attack_turn_marks::validate_attack_turn_marks;
 use super::clip_timed_actions::{imply_attack_turn, reject_row_at, validate_at_name};
+use super::stance_defaults::MAX_RELEASE_REPEAT;
 use super::{
     ActionVerb, AttackParams, FacingPolicy, MotionVerb, PatrolDescriptor, RepositionParams,
 };
@@ -48,8 +49,9 @@ pub struct GuardedRow {
     pub release_after: Option<[f32; 2]>,
     /// A row to an attack, written only by lowering: the attack, by name, a
     /// stance's rest strikes through this row. The row passes only once that
-    /// attack's turn reads held, the target is within its `maxRange` when it
-    /// declares one, its own cooldown has elapsed, and its `when` passes;
+    /// attack's turn reads held, the target is within its queue distance
+    /// (`queueRange`, else `maxRange`) when it declares one, its own
+    /// cooldown has elapsed, and its `when` passes;
     /// while all but the turn pass, the resting enemy requests the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<String>,
@@ -132,6 +134,13 @@ pub struct BehaviorActivityDescriptor {
     /// and attacks, Release exit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stagger_to: Option<String>,
+    /// A stance release's pass count (its `repeat`), written only by
+    /// lowering: its clip plays this many passes back to back, its attack
+    /// strikes once per pass at its moment, and its own rows stay closed until
+    /// the last pass has played (`entity_model.md` §7c, Stances and attacks,
+    /// Release exit). Absent, one pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passes: Option<u32>,
     #[serde(default)]
     pub layers: BTreeMap<String, BehaviorLayerDescriptor>,
 }
@@ -503,6 +512,11 @@ fn validate_envelope(
             envelope,
             &format!("{path}.activities.{name}"),
         )?;
+        validate_passes(
+            activity,
+            envelope.transitions.get(name).map(Vec::as_slice),
+            &format!("{path}.activities.{name}"),
+        )?;
     }
 
     envelope
@@ -616,6 +630,43 @@ fn validate_stagger_to(
         return Err(DescriptorError::InvalidShape {
             reason: format!(
                 "`{field}` (\"{target}\") must name another activity declared at this level"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A release's pass count (`passes`) is 1 to [`MAX_RELEASE_REPEAT`], on a
+/// leaf whose own action fires at a clip event (each pass strikes at its
+/// moment) and whose own rows wait on it (`afterMoment`): a stance release.
+fn validate_passes(
+    activity: &BehaviorActivityDescriptor,
+    rows: Option<&[GuardedRow]>,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(passes) = activity.passes else {
+        return Ok(());
+    };
+    let field = format!("{path}.passes");
+    if !(1..=MAX_RELEASE_REPEAT).contains(&passes) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be 1 to {MAX_RELEASE_REPEAT}, got {passes}"),
+        });
+    }
+    if !matches!(
+        activity.action,
+        Some(ActionVerb::Attack { at: Some(_), .. })
+    ) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` belongs to a leaf whose own action fires `at` a clip event: each pass strikes at its moment"
+            ),
+        });
+    }
+    if !rows.is_some_and(|rows| rows.iter().any(|row| row.after_moment)) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` belongs to a stance release, whose own rows wait on its moment (`afterMoment`)"
             ),
         });
     }
@@ -1051,6 +1102,7 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
         let inline_stats = [
             ("damage", attack.damage),
             ("maxRange", attack.max_range),
+            ("queueRange", attack.queue_range),
             ("cooldownMs", attack.cooldown_ms),
         ];
         if attack.weapon.is_some() {
@@ -1094,6 +1146,15 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
             }
             validate_positive(&format!("attacks.{name}.maxRange"), max_range)?;
             validate_positive(&format!("attacks.{name}.cooldownMs"), cooldown_ms)?;
+            if let Some(queue_range) = attack.queue_range
+                && (!queue_range.is_finite() || queue_range < max_range)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.attacks.{name}.queueRange` must be a finite value >= `components.behavior.attacks.{name}.maxRange` ({max_range}), got {queue_range}; it is how far out the attack waits in line, and `maxRange` how far it hits"
+                    ),
+                });
+            }
 
             if let Some(radius) = attack.engagement_radius {
                 validate_positive(&format!("attacks.{name}.engagementRadius"), radius)?;
@@ -1243,6 +1304,7 @@ mod tests {
                     cooldown_ms: Some(1.0),
                     engagement_radius: Some(3.0),
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1323,6 +1385,7 @@ mod tests {
                 cooldown_ms: Some(1.0),
                 engagement_radius: None,
                 standoff_distance: Some(0.0),
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -1389,6 +1452,7 @@ mod tests {
                     cooldown_ms: None,
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1403,6 +1467,7 @@ mod tests {
                     cooldown_ms: None,
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1417,6 +1482,7 @@ mod tests {
                     cooldown_ms: Some(250.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -2061,6 +2127,142 @@ mod tests {
                 });
             },
             "components.behavior.activities.shell.staggerTo",
+        );
+    }
+
+    // Task 12: a release's lowered pass count loads on a stance release,
+    // round-trips, and rejects out of its range or off a timed release.
+    #[test]
+    fn release_passes_load_on_a_timed_release_and_reject_elsewhere_with_their_path() {
+        let mut json = lowered_release();
+        json["activities"]["slam_release"]["passes"] = serde_json::json!(3);
+        let graph = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+            .unwrap()
+            .validate()
+            .expect("three passes on a timed release load");
+        assert_eq!(graph.envelope.activities["slam_release"].passes, Some(3));
+        let round_trip = serde_json::to_value(&graph).unwrap();
+        assert_eq!(round_trip["activities"]["slam_release"]["passes"], 3);
+        assert!(round_trip["activities"]["coil"].get("passes").is_none());
+
+        let reject = |edit: &dyn Fn(&mut serde_json::Value), needle: &str| {
+            let mut json = lowered_release();
+            edit(&mut json);
+            let error = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+                .unwrap()
+                .validate()
+                .expect_err("the malformed pass count rejects")
+                .to_string();
+            assert!(
+                error.contains("components.behavior.activities.") && error.contains(needle),
+                "{needle}: {error}"
+            );
+        };
+        for passes in [0, 9] {
+            reject(
+                &|json| json["activities"]["slam_release"]["passes"] = serde_json::json!(passes),
+                "slam_release.passes` must be 1 to 8",
+            );
+        }
+        reject(
+            &|json| {
+                json["activities"]["slam_release"]["passes"] = serde_json::json!(2);
+                json["activities"]["slam_release"]["action"] =
+                    serde_json::json!({ "attack": "slam" });
+            },
+            "slam_release.passes` belongs to a leaf whose own action fires `at`",
+        );
+        reject(
+            &|json| json["activities"]["slam_recover"]["passes"] = serde_json::json!(2),
+            "slam_recover.passes` belongs to a leaf whose own action fires `at`",
+        );
+        reject(
+            &|json| {
+                json["activities"]["slam_release"]["passes"] = serde_json::json!(2);
+                json["transitions"]["slam_release"][0]["afterMoment"] = serde_json::json!(false);
+            },
+            "slam_release.passes` belongs to a stance release",
+        );
+    }
+
+    // Task 12: `queueRange` is a contact attack's, at least its `maxRange`,
+    // and a weapon attack rejects it as it rejects `maxRange`. Omitted, the
+    // queue distance is `maxRange`; combat slots still derive from `maxRange`.
+    #[test]
+    fn queue_range_is_a_contact_attacks_at_least_its_max_range() {
+        let attack = |fields: serde_json::Value| -> AttackParams {
+            serde_json::from_value(fields).expect("the attack parses")
+        };
+        let leap = attack(serde_json::json!({
+            "damage": 30.0, "maxRange": 3.0, "queueRange": 15.0, "cooldownMs": 4000.0
+        }));
+        validate_attacks(&BTreeMap::from([("leap".to_string(), leap.clone())]))
+            .expect("a queue range past the hit distance loads");
+        assert_eq!(leap.queue_distance(), Some(15.0));
+        assert_eq!(
+            serde_json::to_value(&leap).unwrap()["queueRange"],
+            serde_json::json!(15.0)
+        );
+        let graph = BehaviorGraphDescriptor {
+            attacks: BTreeMap::from([("leap".to_string(), leap)]),
+            ..serde_json::from_value(lowered_release()).unwrap()
+        };
+        let action = ActionVerb::Attack {
+            name: "leap".to_string(),
+            at: None,
+            at_default: false,
+        };
+        assert_eq!(graph.engagement_radius_for_action(Some(&action)), 3.0);
+        assert_eq!(graph.standoff_distance_for_action(Some(&action)), 3.0);
+
+        let jab =
+            attack(serde_json::json!({ "damage": 5.0, "maxRange": 2.0, "cooldownMs": 900.0 }));
+        assert_eq!(
+            jab.queue_distance(),
+            Some(2.0),
+            "omitted, it queues at its reach"
+        );
+        assert!(
+            serde_json::to_value(&jab)
+                .unwrap()
+                .get("queueRange")
+                .is_none()
+        );
+        let equal = attack(serde_json::json!({
+            "damage": 5.0, "maxRange": 2.0, "queueRange": 2.0, "cooldownMs": 900.0
+        }));
+        validate_attacks(&BTreeMap::from([("jab".to_string(), equal)]))
+            .expect("a queue range equal to the reach loads");
+
+        for (fields, needle) in [
+            (
+                serde_json::json!({ "damage": 5.0, "maxRange": 2.0, "queueRange": 1.5, "cooldownMs": 900.0 }),
+                "`components.behavior.attacks.jab.queueRange` must be a finite value >= `components.behavior.attacks.jab.maxRange` (2)",
+            ),
+            (
+                serde_json::json!({ "weapon": "rifle", "queueRange": 15.0 }),
+                "`components.behavior.attacks.jab.queueRange` must be omitted when `components.behavior.attacks.jab.weapon` is present",
+            ),
+        ] {
+            let error = validate_attacks(&BTreeMap::from([("jab".to_string(), attack(fields))]))
+                .expect_err("the queue range rejects")
+                .to_string();
+            assert!(error.contains(needle), "{error}");
+        }
+    }
+
+    // Task 12: the repeating-release states come from activities with
+    // `passes` above 1 only, each named once.
+    #[test]
+    fn repeating_release_states_name_only_a_repeating_releases_animation() {
+        let mut json = lowered_release();
+        let single = serde_json::from_value::<BehaviorGraphDescriptor>(json.clone()).unwrap();
+        assert!(super::super::repeating_release_states(&single).is_empty());
+        json["activities"]["slam_release"]["passes"] = serde_json::json!(3);
+        let combo = serde_json::from_value::<BehaviorGraphDescriptor>(json).unwrap();
+        assert_eq!(
+            super::super::repeating_release_states(&combo),
+            vec!["smash_strike"]
         );
     }
 }

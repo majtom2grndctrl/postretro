@@ -806,6 +806,7 @@ fn retaliation_graph() -> BehaviorGraphDescriptor {
                 BehaviorActivityDescriptor {
                     pose: None,
                     stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: None,
                     motion: Some(MotionVerb::ChaseTarget),

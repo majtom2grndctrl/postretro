@@ -42,6 +42,7 @@ fn leaf(animation: &str, motion: MotionVerb, speed: Option<f32>) -> BehaviorActi
     BehaviorActivityDescriptor {
         pose: None,
         stagger_to: None,
+        passes: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(motion),
@@ -410,6 +411,7 @@ fn an_inner_activity_speed_overrides_the_outer_one_and_an_unset_one_inherits_it(
     let engage = BehaviorActivityDescriptor {
         pose: None,
         stagger_to: None,
+        passes: None,
         sound: None,
         animation: None,
         motion: None,

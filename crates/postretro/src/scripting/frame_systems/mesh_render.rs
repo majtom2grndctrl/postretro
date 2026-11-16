@@ -640,7 +640,10 @@ fn current_state_phase(
         .and_then(|s| s.clip_index)
         .and_then(|i| table.duration(i))
         .unwrap_or(0.0);
-    postretro_model::sample_params::instance_phase(seed, duration)
+    anim.loop_phase(
+        &anim.current_state,
+        postretro_model::sample_params::instance_phase(seed, duration),
+    )
 }
 
 impl Default for MeshRenderCollector {

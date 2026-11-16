@@ -808,8 +808,8 @@ declare module "postretro" {
     at?: string;
   };
 
-  /** An enemy attack's engine fields, declared with `defineAttack`. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once. */
-  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] };
+  /** An enemy attack's engine fields, declared with `defineAttack`. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. A contact attack's optional `queueRange` (finite, at least `maxRange`, default `maxRange`) is how far out a row into it waits in line and requests its turn; `maxRange` stays how far it hits, and its combat slot (`engagementRadius`, `standoffDistance`) still defaults from `maxRange`. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once. */
+  export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; queueRange?: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; queueRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] };
 
   /** How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`. */
   export type PatrolMode =
@@ -2809,13 +2809,14 @@ declare module "postretro" {
   };
   /** A stance handle from `defineStance`. It crosses as `{ kind, name, ...options }`, nested in each attack that names it. */
   export type Stance = { readonly kind: "stance"; readonly name: string } & StanceOptions;
-  /** An attack's strike: its own animation state, an optional `ms` that only holds it longer, the clip event `at` it fires at (`false` fires on entry), and an optional `motion` and `speed` multiplier replacing the planted hold. */
+  /** An attack's strike: its own animation state, an optional `ms` that only holds it longer, the clip event `at` it fires at (`false` fires on entry), an optional `motion` and `speed` multiplier replacing the planted hold, and `repeat`: how many passes of its clip it plays back to back, striking at `at` on each, a whole number from 1 to 8 (default 1). A repeating release plays a looping state, never fires on entry, and needs a `recover` with its own animation; one turn and one cooldown cover every pass. */
   export type AttackRelease = {
     readonly animation: string;
     readonly ms?: number;
     readonly at?: string | false;
     readonly motion?: "hold" | "chaseTarget" | "strafe" | "reposition";
     readonly speed?: number;
+    readonly repeat?: number;
   };
   /** An attack's recovery after its strike: an animation state and an optional duration. */
   export type AttackRecover = { readonly animation: string; readonly ms?: number };

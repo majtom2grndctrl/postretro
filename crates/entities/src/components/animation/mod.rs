@@ -137,6 +137,46 @@ pub struct MeshAnimation {
     /// only the state name.
     #[serde(default)]
     pub switches: SwitchCount,
+    /// Looping states that start at clip time 0 rather than the entity's
+    /// drawn phase: a repeating stance release's (`foundation`'s
+    /// `repeating_release_states`), with their travel variants. Derived from
+    /// the descriptor graph when the mesh is materialized, on host and client
+    /// alike, so it is runtime-only and never replicated.
+    #[serde(skip, default)]
+    pub zero_phase_states: ZeroPhaseStates,
+}
+
+/// The looping states of one mesh that start at clip time 0 on entry. Derived
+/// data, excluded from equality like [`SwitchCount`]: it is a pure function of
+/// the descriptor the component was built from.
+#[derive(Debug, Clone, Default)]
+pub struct ZeroPhaseStates(Option<std::sync::Arc<[Box<str>]>>);
+
+impl ZeroPhaseStates {
+    /// The `bases` and every travel variant of each (`_left`, `_right`,
+    /// `_backward`), which a release under target facing may draw.
+    pub fn of<'a>(bases: impl IntoIterator<Item = &'a str>) -> Self {
+        let states: Vec<Box<str>> = bases
+            .into_iter()
+            .flat_map(|base| {
+                crate::components::brain::TravelVariant::ALL
+                    .map(|variant| format!("{base}{}", variant.suffix()).into_boxed_str())
+            })
+            .collect();
+        Self((!states.is_empty()).then(|| states.into()))
+    }
+
+    pub fn contains(&self, state: &str) -> bool {
+        self.0
+            .as_deref()
+            .is_some_and(|states| states.iter().any(|known| &**known == state))
+    }
+}
+
+impl PartialEq for ZeroPhaseStates {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// A switch counter that never takes part in component equality: it is
@@ -218,6 +258,7 @@ impl MeshAnimation {
             locomotion_direction: LocomotionDirection::Forward,
             locomotion_jump: LocomotionJumpPhase::Grounded,
             switches: SwitchCount::default(),
+            zero_phase_states: ZeroPhaseStates::default(),
         }
     }
 
@@ -228,6 +269,23 @@ impl MeshAnimation {
     pub fn with_speed_scale(mut self, speed_scale: bool) -> Self {
         self.speed_scale = speed_scale;
         self
+    }
+
+    /// Set the looping states that start at clip time 0 ([`ZeroPhaseStates`]).
+    pub fn with_zero_phase_states(mut self, states: ZeroPhaseStates) -> Self {
+        self.zero_phase_states = states;
+        self
+    }
+
+    /// The loop phase `state` starts at: the entity's drawn `phase`, or 0 for a
+    /// repeating release's state. The renderer, hit zones and the enemy clip
+    /// clock all read it, so the three agree.
+    pub fn loop_phase(&self, state: &str, phase: f32) -> f32 {
+        if self.zero_phase_states.contains(state) {
+            0.0
+        } else {
+            phase
+        }
     }
 }
 

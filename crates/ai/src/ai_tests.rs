@@ -204,6 +204,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -4614,6 +4615,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -7137,6 +7139,7 @@ fn authored_state(
     BehaviorActivityDescriptor {
         pose: None,
         stagger_to: None,
+        passes: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(motion),
@@ -7662,6 +7665,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -8113,6 +8117,7 @@ fn target_died_latch_becomes_visible_after_a_same_ai_tick_kill_and_sweep() {
             cooldown_ms: Some(1000.0),
             engagement_radius: None,
             standoff_distance: None,
+            queue_range: None,
             damage_type: None,
             draws: None,
         },
@@ -8313,6 +8318,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 BehaviorActivityDescriptor {
                     pose: None,
                     stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
@@ -8330,6 +8336,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 BehaviorActivityDescriptor {
                     pose: None,
                     stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
@@ -8370,6 +8377,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             BehaviorActivityDescriptor {
                 pose: None,
                 stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some("idle".to_string()),
                 motion: None,
@@ -8399,6 +8407,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -9102,6 +9111,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -9116,6 +9126,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(SLAM_RANGE),
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -9213,6 +9224,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     let activity = |animation: &str, motion: Option<MotionVerb>| BehaviorActivityDescriptor {
         pose: None,
         stagger_to: None,
+        passes: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion,
@@ -9243,11 +9255,13 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         }),
         attack_turn: Some(attack.to_string()),
         stagger_to: Some(ending.to_string()),
+        passes: None,
         ..activity(animation, Some(MotionVerb::Hold))
     };
     let recover = |animation: &str, attack: &str, ending: &str| BehaviorActivityDescriptor {
         attack_turn: Some(attack.to_string()),
         stagger_to: Some(ending.to_string()),
+        passes: None,
         ..activity(animation, Some(MotionVerb::Hold))
     };
 
@@ -9483,6 +9497,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             cooldown_ms: Some(cooldown_ms),
             engagement_radius: None,
             standoff_distance: None,
+            queue_range: None,
             damage_type: None,
             draws: Some(draws),
         };
@@ -9714,6 +9729,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 AttackParams {
                     // The charge runs for a slot inside its contact reach.
                     standoff_distance: Some(CLOSE_STANDOFF),
+                    queue_range: None,
                     ..contact(16.0, CHARGE_REACH, 5000.0, vec![TokenDraw(token("heavy"))])
                 },
             ),
@@ -9727,6 +9743,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     cooldown_ms: Some(800.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: Some(postretro_foundation::AuthoredHandle(serde_json::json!({
                         "kind": "damageType",
                         "name": "corrosive",
@@ -10732,6 +10749,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     cooldown_ms: Some(1200.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -10746,6 +10764,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                     cooldown_ms: Some(1800.0),
                     engagement_radius: Some(3.5),
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -11202,6 +11221,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -11223,6 +11243,7 @@ fn standing_projectile_attack_graph(weapon_name: &str) -> BehaviorGraphDescripto
             cooldown_ms: None,
             engagement_radius: None,
             standoff_distance: None,
+            queue_range: None,
             damage_type: None,
             draws: None,
         },
@@ -11371,6 +11392,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
             BehaviorActivityDescriptor {
                 pose: None,
                 stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some("idle_aiming".to_string()),
                 motion: None,
@@ -11412,6 +11434,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(0.0),
                 engagement_radius: Some(5.0),
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -12645,6 +12668,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -13114,6 +13138,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -13229,6 +13254,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -13271,6 +13297,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
             BehaviorActivityDescriptor {
                 pose: None,
                 stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some("locomotion".to_string()),
                 motion: None,
@@ -13314,6 +13341,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                 cooldown_ms: Some(TEST_ATTACK_COOLDOWN_MS),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },

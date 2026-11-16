@@ -192,6 +192,7 @@ pub fn entity_descriptor_from_js<'js>(
         health,
         behavior,
     };
+    descriptor.validate_across_components()?;
     Ok(descriptor)
 }
 

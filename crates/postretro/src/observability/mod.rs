@@ -356,6 +356,7 @@ mod tests {
                             BehaviorActivityDescriptor {
                                 pose: None,
                                 stagger_to: None,
+                                passes: None,
                                 sound: None,
                                 animation: Some("idle".to_string()),
                                 motion: Some(MotionVerb::Hold),
@@ -387,6 +388,7 @@ mod tests {
                             cooldown_ms: Some(500.0),
                             engagement_radius: None,
                             standoff_distance: None,
+                            queue_range: None,
                             damage_type: None,
                             draws: None,
                         },

@@ -117,6 +117,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -134,6 +135,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                     BehaviorActivityDescriptor {
                         pose: None,
                         stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
@@ -183,6 +185,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1200.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -198,4 +201,32 @@ pub fn behavior_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
     let mut descriptor = mesh_descriptor(classname, true);
     descriptor.behavior = Some(sample_behavior_graph());
     descriptor
+}
+
+/// A lowered stance strike whose release repeats three passes on `state`,
+/// its recover on `idle`: the graph a combo's mesh derives its zero-phase
+/// loop from.
+pub fn repeating_release_graph(state: &str) -> BehaviorGraphDescriptor {
+    serde_json::from_value(serde_json::json!({
+        "initial": "coil",
+        "moveSpeed": 3.0,
+        "attacks": { "combo": { "damage": 5.0, "maxRange": 2.5, "cooldownMs": 2500.0 } },
+        "activities": {
+            "coil": { "animation": "idle", "motion": "hold", "pose": "coil" },
+            "combo_release": {
+                "animation": state, "motion": "hold", "attackTurn": "combo",
+                "action": { "attack": "combo", "at": "hit", "atDefault": true },
+                "staggerTo": "coil", "passes": 3
+            },
+            "combo_recover": {
+                "animation": "idle", "motion": "hold", "attackTurn": "combo",
+                "staggerTo": "coil"
+            }
+        },
+        "transitions": {
+            "combo_release": [{ "to": "combo_recover", "afterMoment": true }],
+            "combo_recover": [{ "to": "coil" }]
+        }
+    }))
+    .expect("the lowered combo deserializes")
 }

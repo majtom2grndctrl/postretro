@@ -42,6 +42,7 @@ fn paced_graph(state: &str, speed: f32, attacks: bool) -> BehaviorGraphDescripto
             BehaviorActivityDescriptor {
                 pose: None,
                 stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some(state.to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
@@ -608,6 +609,7 @@ fn pose_graph(state: &str) -> BehaviorGraphDescriptor {
     let posed = || BehaviorActivityDescriptor {
         pose: Some("overhead".to_string()),
         stagger_to: None,
+        passes: None,
         sound: None,
         animation: Some(state.to_string()),
         motion: Some(MotionVerb::Hold),
@@ -795,6 +797,7 @@ fn a_held_state_plays_its_fixed_playback_rate_on_host_and_loopback_client() {
         BehaviorActivityDescriptor {
             pose: None,
             stagger_to: None,
+            passes: None,
             sound: None,
             animation: Some("jab".to_string()),
             motion: Some(MotionVerb::Hold),

@@ -208,6 +208,7 @@ pub(super) fn contact_attack(cooldown_ms: f32) -> AttackParams {
         cooldown_ms: Some(cooldown_ms),
         engagement_radius: None,
         standoff_distance: None,
+        queue_range: None,
         damage_type: None,
         draws: None,
     }

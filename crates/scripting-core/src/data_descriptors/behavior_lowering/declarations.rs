@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use postretro_foundation::is_clip_event_name;
-use postretro_foundation::stance_defaults::DEFAULT_HOLD_MS;
+use postretro_foundation::stance_defaults::{DEFAULT_HOLD_MS, MAX_RELEASE_REPEAT};
 use serde_json::{Map, Value};
 
 use super::{Declared, DescriptorError, kind_of, shape};
@@ -23,7 +23,7 @@ const STANCE_OPTIONS: &[&str] = &[
     "breakOn",
 ];
 const BREAK_ON_FIELDS: &[&str] = &["damage", "to"];
-const RELEASE_FIELDS: &[&str] = &["animation", "ms", "at", "motion", "speed"];
+const RELEASE_FIELDS: &[&str] = &["animation", "ms", "at", "motion", "speed", "repeat"];
 const RECOVER_FIELDS: &[&str] = &["animation", "ms"];
 
 /// Every stance and attack a behavior's handles declare, by name.
@@ -65,6 +65,9 @@ pub(super) struct Release {
     pub(super) at: At,
     pub(super) motion: Option<String>,
     pub(super) speed: Option<f64>,
+    /// Passes of the release's clip, each striking at its moment: 1 to
+    /// [`MAX_RELEASE_REPEAT`], default 1.
+    pub(super) repeat: u32,
 }
 
 /// When a release fires.
@@ -260,6 +263,18 @@ fn parse_strike(
             Some(_) => {}
         }
     }
+    // A repeating release plays a looping state, which never plays through: a
+    // recover holding it would keep looping the strike without striking.
+    if release.repeat > 1
+        && recover
+            .as_ref()
+            .is_none_or(|recover| recover.animation.is_none())
+    {
+        return Err(shape(format!(
+            "`{path}.recover.animation` is missing: attack \"{name}\"'s release repeats {} passes on a looping state, and a recover without its own animation holds that state, so it would keep looping the strike; give the recover its own animation",
+            release.repeat
+        )));
+    }
     if catalog
         .stances
         .get(&beginning)
@@ -286,7 +301,7 @@ fn parse_release(value: &Value, path: &str, attack: &str) -> Result<Release, Des
         )));
     };
     reject_unknown(fields, RELEASE_FIELDS, path, || {
-        "`release` takes `animation`, `ms`, `at`, `motion` and `speed`".to_string()
+        "`release` takes `animation`, `ms`, `at`, `motion`, `speed` and `repeat`".to_string()
     })?;
     let animation = required_string(fields, "animation", path, || {
         format!("attack \"{attack}\"'s `release`")
@@ -333,13 +348,35 @@ fn parse_release(value: &Value, path: &str, attack: &str) -> Result<Release, Des
             Some(speed)
         }
     };
+    let repeat = match present(fields, "repeat") {
+        None => 1,
+        Some(value) => release_repeat(value, &format!("{path}.repeat"), attack)?,
+    };
+    if repeat > 1 && matches!(at, At::OnEntry) {
+        return Err(shape(format!(
+            "`{path}.repeat`: attack \"{attack}\"'s release repeats {repeat} passes but fires on entry (`at: false`), which has no moment to strike at on each pass; name a clip event, or leave `at` out for `hit`"
+        )));
+    }
     Ok(Release {
         animation,
         ms,
         at,
         motion,
         speed,
+        repeat,
     })
+}
+
+/// `repeat`: a whole number of passes, 1 to [`MAX_RELEASE_REPEAT`].
+fn release_repeat(value: &Value, path: &str, attack: &str) -> Result<u32, DescriptorError> {
+    let passes = number(value, path)?;
+    if passes.fract() != 0.0 || !(1.0..=f64::from(MAX_RELEASE_REPEAT)).contains(&passes) {
+        return Err(shape(format!(
+            "`{path}`: attack \"{attack}\"'s `repeat` must be a whole number of passes from 1 to {MAX_RELEASE_REPEAT}, got {}",
+            passes as f32
+        )));
+    }
+    Ok(passes as u32)
 }
 
 fn parse_recover(value: &Value, path: &str, attack: &str) -> Result<Recover, DescriptorError> {

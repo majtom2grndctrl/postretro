@@ -394,6 +394,9 @@ fn release_activity(strike: &StrikeDecl, attack: &str) -> Value {
     if let Some(speed) = release.speed {
         activity["speed"] = json!(speed);
     }
+    if release.repeat > 1 {
+        activity["passes"] = json!(release.repeat);
+    }
     activity
 }
 
@@ -412,7 +415,8 @@ fn recover_activity(strike: &StrikeDecl, attack: &str) -> Value {
 }
 
 /// The release's one row: closed until its moment resolves, or with no
-/// moment until its clip plays a pass; an `ms` only holds it longer.
+/// moment until its clip plays a pass; with `repeat`, until every pass's
+/// moment resolves and its passes have played. An `ms` only holds it longer.
 fn release_row(recover: &str, ms: Option<f64>) -> Value {
     let mut row = json!({ "to": recover, "afterMoment": true });
     if let Some(ms) = ms {

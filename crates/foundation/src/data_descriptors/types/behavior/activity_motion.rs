@@ -127,6 +127,7 @@ mod tests {
         BehaviorActivityDescriptor {
             pose: None,
             stagger_to: None,
+            passes: None,
             animation: Some("run".to_string()),
             motion: Some(motion),
             action: None,

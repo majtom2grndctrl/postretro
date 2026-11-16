@@ -32,6 +32,7 @@ fn hold(name: &str) -> (String, BehaviorActivityDescriptor) {
         BehaviorActivityDescriptor {
             pose: None,
             stagger_to: None,
+            passes: None,
             sound: None,
             animation: None,
             motion: Some(MotionVerb::Hold),

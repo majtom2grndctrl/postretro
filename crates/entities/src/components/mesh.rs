@@ -9,7 +9,8 @@ pub use super::animation::{
     AnimStamp, AnimationState, DEFAULT_CROSSFADE_MS, FadeSourceKind, InterruptPolicy,
     InterruptedOutgoing, LocomotionDirection, LocomotionJumpPhase, MeshAnimation,
     PlaybackRateTarget, RATE_CHANGE_EPSILON, RATE_MAX, RATE_MIN, RestartResult, SwitchCount,
-    SwitchResult, resolve_pending_animation_stamps, restart_animation_clip, switch_animation_state,
+    SwitchResult, ZeroPhaseStates, resolve_pending_animation_stamps, restart_animation_clip,
+    switch_animation_state,
 };
 
 /// Load-resolved location of a descriptor-authored attachment socket on this

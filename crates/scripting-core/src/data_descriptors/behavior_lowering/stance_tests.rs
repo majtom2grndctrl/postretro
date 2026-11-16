@@ -1211,3 +1211,41 @@ fn an_authored_lowering_only_field_in_a_body_or_handle_rejects_load() {
         );
     }
 }
+
+// Task 12: `repeat` lowers to the release's pass count beside its defaulted
+// `hit` and its one moment-gated row, and nothing else changes; an authored
+// pass count is a lowering-only field.
+#[test]
+fn a_repeating_release_lowers_to_its_pass_count() {
+    let mut behavior = offense();
+    behavior["transitions"]["overhead"][0]["to"]["release"] =
+        json!({ "animation": "jab_quick", "repeat": 3 });
+    behavior["transitions"]["overhead"][0]["to"]["recover"] = json!({ "animation": "idle" });
+    let lowered = loaded(behavior);
+    let release = &lowered["activities"]["slam_release"];
+    assert_eq!(release["passes"], json!(3));
+    assert_eq!(
+        release["action"],
+        json!({ "attack": "slam", "at": "hit", "atDefault": true })
+    );
+    assert_eq!(
+        lowered["transitions"]["slam_release"],
+        json!([{ "to": "slam_recover", "afterMoment": true }])
+    );
+    for name in ["slam_recover", "sweep_release", "overhead"] {
+        assert!(
+            lowered["activities"][name].get("passes").is_none(),
+            "{name}"
+        );
+    }
+
+    let mut authored = offense();
+    authored["activities"]["approach"]["passes"] = json!(2);
+    let error = rejection(authored);
+    assert!(
+        error.contains(
+            "`components.behavior.activities.approach.passes` is written only by load-time lowering"
+        ),
+        "{error}"
+    );
+}

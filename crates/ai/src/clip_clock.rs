@@ -143,7 +143,7 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
             // the drawn phase once, so its moments sit where the renderer and
             // hit zones draw them.
             clock.unphased = false;
-            if facts.looping {
+            if facts.looping && !facts.zero_phase {
                 let phase = f64::from(instance_phase(source.id.to_raw(), facts.duration));
                 clock.time += phase;
                 clock.previous_time += phase;
@@ -242,11 +242,12 @@ pub(super) fn settle(
     }
     sync_drawn_state(brain, source, travel_variant);
     let gate = release_gate(brain);
+    let passes = gate.map_or(1, |depth| release_passes(brain, depth));
 
     let Some(owner) = owner else {
-        // No moment: the release lasts one pass of its clip.
+        // No moment: the release lasts its passes of its clip.
         if gate.is_some() {
-            resolve_on_pass(&mut brain.clip_clock);
+            resolve_on_passes(&mut brain.clip_clock, passes);
         }
         return Moment::Untimed;
     };
@@ -262,12 +263,10 @@ pub(super) fn settle(
             // A release's moment an earlier clip of this entry timed (or one
             // resolved on its entry tick) stays pending on a later clip that
             // cannot time it, such as a travel variant's lacking the event:
-            // it never fires mid-swing as without `at`. Unreached within one
-            // summed pass of its clip, it whiffs.
-            if clock.moment_open && played_one_pass(clock) {
-                clock.moment_open = false;
-            }
-            clock.release_resolved = !clock.moment_open;
+            // it never fires mid-swing as without `at`. Unreached within its
+            // summed pass of the clip, it whiffs.
+            whiff_unreached_passes(clock, passes);
+            resolve_release(clock, passes);
             return Moment::Pending;
         }
         // A clip that cannot time the moment fires as without `at`, unless
@@ -279,16 +278,17 @@ pub(super) fn settle(
         };
         if gated && defaulted {
             // A defaulted `hit` the clip lacks is no moment at all: the
-            // attack fires on its first passing tick while the release
-            // lasts its clip.
-            resolve_on_pass(clock);
+            // attack fires on its first passing tick, once, while the
+            // release lasts its passes of the clip.
+            resolve_on_passes(clock, passes);
         } else if gated {
             // A named moment its clip cannot time resolves on this, the
-            // release's entry tick: the attack fires now if its gates pass,
-            // and nothing fires later in the entry.
+            // release's entry tick, for every pass: the attack fires now if
+            // its gates pass, and nothing fires later in the entry.
             clock.moment_timed = true;
             clock.moment_open = false;
-            clock.release_resolved = true;
+            clock.release_moments = passes;
+            resolve_release(clock, passes);
         }
         return moment;
     };
@@ -306,14 +306,54 @@ pub(super) fn settle(
             Moment::Pending
         };
     if gated {
-        // Every moment resolves: one unreached within a pass of its clip
-        // since entry is a whiff, as a montage ending without its hit frame.
-        if clock.moment_open && played_one_pass(clock) {
-            clock.moment_open = false;
+        // A repeating release reopens its latch for the next pass's moment.
+        if moment == Moment::Reached {
+            clock.release_moments += 1;
+            clock.moment_open = clock.release_moments < passes;
         }
-        clock.release_resolved = !clock.moment_open;
+        whiff_unreached_passes(clock, passes);
+        resolve_release(clock, passes);
     }
     moment
+}
+
+/// How many strikes the active leaf's attack may have landed and still fire
+/// this tick: on its moment's tick a repeating release strikes once per pass,
+/// up to its pass count; anything else strikes once per entry.
+pub(super) fn strike_limit(brain: &BrainComponent, moment: Moment) -> u32 {
+    if moment != Moment::Reached {
+        return 1;
+    }
+    release_gate(brain).map_or(1, |depth| release_passes(brain, depth))
+}
+
+/// The pass count (`passes`) of the release at `depth`: 1 unless it repeats.
+fn release_passes(brain: &BrainComponent, depth: usize) -> u32 {
+    brain
+        .activity_at_depth(depth)
+        .and_then(|(_, activity)| activity.passes)
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// Every moment resolves: the next pass's moment, still unreached once that
+/// many passes of the clip have played since entry, is a whiff, as a montage
+/// ending without its hit frame. A repeating release then waits on the pass
+/// after it.
+fn whiff_unreached_passes(clock: &mut ClipClock, passes: u32) {
+    while clock.moment_open && played_passes(clock, clock.release_moments + 1) {
+        clock.release_moments += 1;
+        clock.moment_open = clock.release_moments < passes;
+    }
+}
+
+/// The release's rows open once its moment is spent: a single pass at its
+/// moment, a repeating one once every pass's moment resolved and its passes
+/// have played. A latch closed with passes still owed (a knockback launch,
+/// a foreign switch) cancels them, and resolves at once.
+fn resolve_release(clock: &mut ClipClock, passes: u32) {
+    clock.release_resolved = !clock.moment_open
+        && (passes <= 1 || clock.release_moments < passes || played_passes(clock, passes));
 }
 
 /// The depth of the path's leaf when its own rows wait on its moment
@@ -331,20 +371,21 @@ fn release_gate(brain: &BrainComponent) -> Option<usize> {
         .then_some(depth)
 }
 
-/// Resolve a release with no moment once its clip has played one pass since
-/// entry, in clip time summed across variant restarts. A clip that did not
-/// resolve, or no drawn state, counts as played through, as
+/// Resolve a release with no moment once its clip has played its passes
+/// since entry, in clip time summed across variant restarts. A clip that did
+/// not resolve, or no drawn state, counts as played through, as
 /// `animationDone` reads it.
-fn resolve_on_pass(clock: &mut ClipClock) {
-    if played_one_pass(clock) {
+fn resolve_on_passes(clock: &mut ClipClock, passes: u32) {
+    if played_passes(clock, passes) {
         clock.release_resolved = true;
     }
 }
 
-fn played_one_pass(clock: &ClipClock) -> bool {
-    clock
-        .clip
-        .is_none_or(|facts| clock.release_elapsed + CLIP_TIME_SLACK >= f64::from(facts.duration))
+/// The clip has played `passes` passes since entry, summed across restarts.
+fn played_passes(clock: &ClipClock, passes: u32) -> bool {
+    clock.clip.is_none_or(|facts| {
+        clock.release_elapsed + CLIP_TIME_SLACK >= f64::from(facts.duration) * f64::from(passes)
+    })
 }
 
 /// Start or extend a flinch: a switch the brain did not make, while an
@@ -456,8 +497,9 @@ fn sync_drawn_state(brain: &mut BrainComponent, source: &ClipSource<'_>, wanted:
     restart(clock, source.id, facts);
 }
 
-/// Start the tracked state's clip over: at 0 for a one-shot, at the enemy's
-/// drawn phase on a loop (the seed its renderer and hit zones use), the window
+/// Start the tracked state's clip over: at 0 for a one-shot or a repeating
+/// release's loop, at the enemy's drawn phase on any other loop (the seed its
+/// renderer and hit zones use), the window
 /// opening just below the start so a moment exactly there is reached on the
 /// restart tick. A clip not yet resolved starts at 0 and owes its phase.
 fn restart(clock: &mut ClipClock, id: EntityId, facts: Option<ClipFacts>) {
@@ -465,6 +507,7 @@ fn restart(clock: &mut ClipClock, id: EntityId, facts: Option<ClipFacts>) {
         Some(ClipFacts {
             duration,
             looping: true,
+            zero_phase: false,
         }) => f64::from(instance_phase(id.to_raw(), duration)),
         _ => 0.0,
     };
@@ -502,6 +545,8 @@ fn state_name(clock: &ClipClock) -> &str {
 struct ClipRead {
     /// The mesh state loops its clip.
     looping: bool,
+    /// The loop starts at clip time 0 (a repeating release's state).
+    zero_phase: bool,
     /// The clip's length, when it resolves.
     duration: Option<f32>,
     /// The asked-for event's time, when the resolved clip carries it.
@@ -513,6 +558,7 @@ impl ClipRead {
         self.duration.map(|duration| ClipFacts {
             duration,
             looping: self.looping,
+            zero_phase: self.zero_phase,
         })
     }
 }
@@ -525,13 +571,15 @@ fn read_clip(source: &ClipSource<'_>, state: &str, event: Option<&str>) -> Optio
         .registry
         .get_component::<MeshComponent>(source.id)
         .ok()?;
-    let declared = mesh.animation.as_ref()?.states.get(state)?;
+    let animation = mesh.animation.as_ref()?;
+    let declared = animation.states.get(state)?;
     let clip = source
         .clips
         .and_then(|store| store.get_by_name(&mesh.model))
         .and_then(|model| model.state_clip(declared.clip_index, &declared.clip));
     Some(ClipRead {
         looping: declared.looping,
+        zero_phase: animation.zero_phase_states.contains(state),
         duration: clip.map(|clip| clip.duration),
         event: clip
             .zip(event)
@@ -662,6 +710,7 @@ mod tests {
         let facts = ClipFacts {
             duration: 0.8,
             looping: true,
+            zero_phase: false,
         };
         let ticks = 600; // 10 s of game time: 25 s of clip time.
         let mut time = 0.0f64;

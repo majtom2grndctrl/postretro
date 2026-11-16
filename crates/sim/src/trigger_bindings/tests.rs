@@ -67,6 +67,7 @@ fn spawn_brain(registry: &mut EntityRegistry, tag: &str) -> EntityId {
                 postretro_foundation::BehaviorActivityDescriptor {
                     pose: None,
                     stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: Some(postretro_foundation::MotionVerb::Hold),

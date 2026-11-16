@@ -14,6 +14,7 @@ const LOWERING_ONLY_FIELDS: &[&str] = &[
     "atDefault",
     "releaseAfter",
     "staggerTo",
+    "passes",
 ];
 
 /// Reject an authored lowering-only field in any field position: the root and

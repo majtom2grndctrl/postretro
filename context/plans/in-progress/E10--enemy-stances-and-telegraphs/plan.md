@@ -1,7 +1,7 @@
 # E10--enemy-stances-and-telegraphs — plan of record
 
 mode: resumable
-status: review complete
+status: owner additions in progress
 read at: f5bb5d5
 feature branch: `claude/enemy-stances-telegraphs-837003`
 
@@ -166,6 +166,26 @@ Builds are disk-bound (46 GB free) and serialized, so no concurrent worktree bui
 | 8b | Limitator roll branch, aim stance with `shoot` release at `kick`, `breakOn` into `hit_reaction`; rifle squads inherit. K2, D5. | integrating executor | 8a | done: K2 `shipped_limitator_aimed_shoot_fires_at_the_kick_and_lands_its_burst_at_every_phase` (24 phases; all 3 shots land through an authored 300 ms recover on `shoot`), D5 `shipped_limitator_heavy_fire_during_its_aim_flinches_it_and_it_resumes_on_its_timer` and `shipped_limitator_reposition_roll_picks_strafe_and_fire_or_stop_and_aim`. Graph: `close`→`wait`→`burst`→`move` opens every engagement; `move` rolls the next cycle (0.5 → strafe and fire, else the `aim` stance on `idle_aiming`, `holdMs` [500, 900], `breakOn` 25 → `hit_reaction` flinch, 500 ms → `move`); `shoot` ends in a `settle` stance. Rifle squads lower the same behavior. ai 490, scripting-core 1088, sim 2000 passed; `postretro` checks. |
 | 9 | `docs/` and `sdk/behaviors/reference` stance coverage; grep gates (T8, R9, C3, P4). Doc1. | worker (sequential) | 8 | done: Doc1 (`docs/scripting-reference.md` new Stances section, attacks, facts, tables, stagger example; `sdk/behaviors/reference` `stance_reference_enemy` with a shared stance, `shipped_stance_reference_enemy_lowers_identically_in_both_authorings`), T8/R9/P4 gates in `crates/xtask/src/stance_gates.rs`, C3 `server_message_vocabulary_is_pinned_with_its_version_constants` (`crates/net`); each gate fails on a planted violation. All run in the normal loop. xtask 40, net 330, scripting-core 1089 passed; `postretro` checks. |
 | 10 | Co-op sound proof once `E10--coop-enemy-telegraph-sounds` lands: loopback test. C1. | integrating executor | 7, sounds brief | blocked on prerequisite |
+
+## Owner additions (2026-11-16)
+
+After the review loop the owner ruled on the charge stride and added two brute attacks, to build on this branch before landing.
+
+**Charge stride: an exception, with a per-state cap.** The engine default stays 1.5x, the cap production content should keep. Test content may widen it: an animation state gains an optional `maxPlaybackRate` (default 1.5), and the brute's `run` sets it high enough for the charge (about 2.7x at 6 m/s on a 2.2 m/s stride). Sp3 records the exception. The owner may widen the default later.
+
+**Combo punch.** A new tell holds the jab's windup for 666 ms, then the brute throws three rapid jabs. Engine: a release gains `repeat` (an integer, default 1). Its animation plays that many passes back to back and strikes once per pass at its moment, and the release ends after the last pass. One attack turn and one cooldown cover the whole release. Content: a short `jab_quick` clip cut from the Mutant Punch, played on a looping state so a client replays every pass from the replicated state alone.
+
+**Leaping slam.** From within 15 m, a new tell crouches for 666 ms (the smash windup), then the brute leaps at its target, steering, while the Mutant Jump Attack's strike plays, and slams at the clip's `hit`. A target out of reach at that moment is a whiff. Engine:
+- an attack gains `queueRange` (contact attacks only, at least `maxRange`, default `maxRange`): how far out its tell waits in line and requests its turn. `maxRange` stays the hit distance. This is the narrow half of the roadmap's "mobile stances and per-enemy reach"; mobile stances and reach re-checks stay there.
+- an animation state gains `scaleWithSpeed` (default true). `false` plays it at 1x however its activity moves, so a leap's airborne clip keeps its hit time. The leap plays the jump on its own state, so the planted slam is unchanged.
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 11 | Animation-state `maxPlaybackRate` and `scaleWithSpeed`: descriptor, both raw readers, validation, typedefs and SDK types, host and client rate paths, tests, docs. | worker (sequential) | — | |
+| 12 | Release `repeat` and attack `queueRange`: lowering, descriptor validation, clip clock and proposal per pass, turn gate, typedefs, tests, docs. | worker (sequential) | 11 | |
+| 13 | Brute library: `jab_quick` cut from the Mutant Punch, with `hit`; every other clip byte-identical. | worker (Blender, concurrent with 11) | — | |
+| 14 | Brute content: `run` cap, combo tell and attack, crouch tell and leap, approach selection, shipped tests, docs. | worker (sequential) | 11, 12, 13 | |
+| 15 | Gate and review loop on tasks 11–14. | integrating executor | 14 | |
 
 ## Review loop
 

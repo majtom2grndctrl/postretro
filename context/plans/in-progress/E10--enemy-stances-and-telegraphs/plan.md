@@ -1,7 +1,7 @@
 # E10--enemy-stances-and-telegraphs — plan of record
 
 mode: resumable
-status: approved
+status: review complete
 read at: f5bb5d5
 feature branch: `claude/enemy-stances-telegraphs-837003`
 
@@ -56,97 +56,97 @@ Source verified at f5bb5d5. No commit since the brief's 9580828 touches `crates/
 
 Proposed test names are working names. Every row names its crate and module; the builder records the final name in Status.
 
-| AC | Proof | Status |
-|---|---|---|
-| T1 binding-name sugar for `defineAttack`/`defineStance`, hold keys, diagnostic, Luau parity | `script-compiler` sugar tests; `scripting-core` TS/Luau descriptor parity test | achievable as stated |
-| T2 handle crosses with declaration; lowering builds name-keyed `attacks`; once per load and staged reload | `scripting-core` lowering unit test; staged-reload counter test | achievable as stated |
-| T3 inferred vs exhaustive `attacks`; drops, logs, P37/P40/P41 | `scripting-core` lowering tests per pin, with log capture | achievable as stated |
-| T4 string where a handle is expected: TS type error and pathed load rejection in both runtimes, both routes; equal/unequal same-name handles | `sdk/type-tests/e10-typed-attacks.ts` `@ts-expect-error` cases; `scripting-core` rejection tests ×2 runtimes ×2 routes | runtime half proved; TS half written, unchecked (no `tsc` on this machine) |
-| T5 `attackTurnFree`/`attackTurnHeld` throw on string/nil; misspelled Luau global reported | SDK runtime tests both runtimes; strict-globals load test | achievable as stated |
-| T6 authored lowering-only field rejects | `scripting-core` rejection test over `pose`, `queue`, `afterMoment`, `atDefault` (+ `releaseAfter`, `staggerTo`) | achievable as stated |
-| T7 one handle in two archetypes | `scripting-core` two-archetype load test | achievable as stated |
-| T8 grep gate: no string attack in shipped scripts, docs, typedef comments | surface gate test (xtask `surface_gates` or Rust test) | achievable as stated |
-| S1 identical descriptors TS/Luau; Scripting surface example runs as `content/dev` | parity test; `content/dev` example script load + tick test | achievable as stated |
-| S2 lowering matches checked-in hand-written fixture | `scripting-core` fixture test (`fixtures/stance_overhead_slam.json`) | achievable as stated |
-| S3 only reached rests/strikes generated; name collision rejects | lowering tests | achievable as stated |
-| S4 `{ to: overhead }` enters rest, no turn, sound once; `initial: overhead` | `ai` tick test with AI cue capture | achievable as stated |
-| S5 `when` optional on every row | foundation serde + `ai` eval test | achievable as stated |
-| S6 two attacks sharing a stance: separate holds, shared fields, own `attackTurn` | lowering test | achievable as stated |
-| S7 `stance: "crouch"` after `E10--enemy-cover`; rejects before | rejection test now; crouch wiring falls to whichever brief lands second | achievable as stated (crouch half deferred by the Decision) |
-| S8 rest with no way out rejects, with or without `breakOn` | lowering test | achievable as stated |
-| S9 `endingStance` rest, turn ends, refresh lapses, re-strike | `ai` attack-turn tick test | achievable as stated |
-| S10 `motion: "hold"` everywhere; `release.motion`/`speed` replace on release only | lowering test + `ai` steering test | achievable as stated |
-| S11 minimal stance/attack load silently; defaults | lowering test with log capture | achievable as stated |
-| S12 omitted `recover`: clip played through or default cap; continues release clip | `ai` clip-clock tick tests (looping and not) | achievable as stated |
-| S13 authored `recover` without/with `ms` | `ai` tick tests | achievable as stated |
-| S14 `at: "hit"` fires at moment; lowered `action`/mark agree | `ai` tick test; foundation validate test | achievable as stated |
-| S15 release with `at` vs `ms`; looping at every phase; `"*"` on moment tick (P42, P43, P47) | `ai` tick tests per pin | achievable as stated |
-| S16 default `hit`; clip without `hit`; `at: false`; no moment no `ms` (P53) | `ai` tick tests + bind-warning log capture | achievable as stated |
-| S17 unreached moment whiffs; untimed named moment (P48, P51, P57) | `ai` tick tests | achievable as stated |
-| S18 summed clip time across rate and variant restarts (P54) | `ai` tick test | achievable as stated |
-| S19 `at: false`/defaulted-missing fires on first passing tick (P57) | `ai` tick test | achievable as stated |
-| S20 release on its stance's state rejects | lowering test | achievable as stated |
-| S21 impact switch cancels before moment; entry-tick switch does not (P46); reaction plays, enters ending rest, skips recover (P52) | `ai` tick tests with an impact switch fixture | achievable as stated |
-| S22 second switch never extends cap; `"*"` leaves at once (P55) | `ai` tick test | achievable as stated |
-| S23 switch after moment / `at: false` / in recover; `ms: 2000` case; moving release stops steering (P52) | `ai` tick tests | achievable as stated |
-| S24 cooldown at the queue (P44) | `ai` attack-turn tick test | achievable as stated |
-| S25 first attack cooling vs refreshing; cooldown elapses mid-tick (P49, P50) | `ai` attack-turn tick tests | achievable as stated |
-| S26 rejection list (11 cases) | `scripting-core` lowering rejection table test | achievable as stated |
-| W1 queued row gates and request conditions | `ai` attack-turn tick test | achievable as stated |
-| W2 rest grant survives into N+1 (P26) | `ai` tick test | achievable as stated |
-| W3 re-rank inside margin keeps target; past margin switches (P27, P39) | `ai` co-op target tick test | achievable as stated |
-| W4 starvation (P28) | `ai` arbitration test | achievable as stated |
-| W5 one request per enemy; place kept (P29) | `ai` tick test | achievable as stated |
-| W6 first row refreshing keeps requesting it (P31) | `ai` tick test | achievable as stated |
-| W7 request precedence mark > rest > pending unmarked | `ai` `next_request` test | achievable as stated |
-| W8 resting enemy keeps target and aim | `ai` tick test | achievable as stated |
-| W9 two enemies in one shared stance (P24) | `ai` tick test with cue capture | achievable as stated |
-| W10 grant then no row ends turn (P36) | `ai` tick test | achievable as stated |
-| W11 break beats granted strike (P35) | `ai` tick test | achievable as stated |
-| P1 pose carry: no restart, no second sound, facts carried, 20+20 trips 25 (P30) | `ai` tick test | achievable as stated |
-| P2 target switch mid-tell (P33) | `ai` tick test | achievable as stated |
-| P3 fresh entry into a pose (P34) | `ai` tick test | achievable as stated |
-| P4 release times span range independent of roll; no exposure (P32) | `ai` statistical tick test; grep gate test | achievable as stated |
-| P5 `"*"`/ancestor row into current pose skipped; release/recover abandoned | `ai` graph_eval test | achievable as stated |
-| P6 root-level strike beside a chase keeps target and aim (P23) | `ai` tick test | achievable as stated |
-| P7 break vs missing turn (P22) | `ai` tick test | achievable as stated |
-| P8 timer vs missing turn (P16) | `ai` tick test | achievable as stated |
-| P9 zero `ms` release/recover (P45, P56, P57) | `ai` tick tests | achievable as stated |
-| F1 floor ≥ interpolation ceiling test | `netcode` test beside `spawn_windup_covers_interpolation_ceiling_without_equality_pin` | achievable as stated |
-| F2 default above floor; one warning per mod load below it | lowering test with log capture | achievable as stated |
-| R1 hold threshold varies in [min, max]; fixed never varies | `ai` statistical test | achievable as stated |
-| R2 `holdMs: 0` and `[x, x]` (P12) | `ai` tick test | achievable as stated |
-| R3 roll fixed per entry; redraw on re-entry; reseat-and-leave (P3) | `ai` tick test | achievable as stated |
-| R4 independent rolls per level; nested redraw (P4) | `ai` tick test | achievable as stated |
-| R5 selector guards read own level (P5) | `ai` graph_eval test | achievable as stated |
-| R6 both branches of `approach` read same roll | `ai` tick test | achievable as stated |
-| R7 determinism gate: two enemies by role, reversed order | `sim` `determinism_tests` extension | achievable as stated |
-| R8 same-tick spawns differ (P13) | `sim` spawn test | achievable as stated |
-| R9 grep gate: no wire record carries roll, draw or seed | surface gate test | achievable as stated |
-| R10 release draws compared by role; same-tick holds differ (P38) | `sim` determinism extension | achievable as stated |
-| D1 `damageInActivity` sums all producers, two hits one tick | `sim` damage-producer test per source | achievable as stated |
-| D2 hit before/after AI pass on entry tick (P2) | `sim` stage-order test | achievable as stated |
-| D3 `breakOn` at threshold; break beats timer (P1) | `ai` tick test | achievable as stated |
-| D4 release does not break; `"*"` leaves release/recover; flinch damage not carried | `ai` tick test | achievable as stated |
-| D5 limitator aim breaks into `hit_reaction`; both roll branches in one engagement | `ai` shipped-content test | achievable as stated |
-| Sp1 `speed: 2` on two archetypes; inner overrides outer | `sim` steering test | achievable as stated |
-| Sp2 speed from entry tick to tick before leave (P17) | `sim` steering test | achievable as stated |
-| Sp3 charge `run` rate vs `travelSpeed`, host and loopback client | `sim` playback test + `netcode` loopback test | achievable as stated |
-| Sp4 knockback unaffected by `speed` | `sim` steering test | achievable as stated |
-| Sp5 locomotion clip rate equal host/client, calibrated or not | `netcode` loopback test | achievable as stated |
-| Sp6 charge release reach edges (P18) | `ai`/`sim` tick test | achievable as stated |
-| Sp7 old brain deserializes; sums 0, next entry draws | `entities` serde test | achievable as stated |
-| C1 stance sound once per pose entry, host and loopback client | `netcode` loopback test | achievable once `E10--coop-enemy-telegraph-sounds` lands (host half now) |
-| C2 entering an activity whose clip is playing restarts nothing, host and client | `ai` apply test + `netcode` loopback test | achievable as stated |
-| C3 grep gate: no server message, version constants unchanged | surface gate test | achievable as stated |
-| K1 brute slam/lunge/jab fire at `*_strike` `hit`; `punch_strike` carries `hit`; windup-pose test on recut library | `ai` `clip_timed_shipped_tests`; `model` `reference_enemy_strikes_start_on_their_windup_pose` | achievable as stated (needs the recut, Task 8) |
-| K2 limitator `shoot` release fires at `kick` from drawn phase, leaves at every phase | `ai` `clip_timed_shipped_tests` | achievable as stated |
-| M1 re-export reproduces library; moved cuts listed | owner, Windows + Blender | manual |
-| M2 jab and slam tells read and land on `movement-feel` | owner, in-engine | manual |
-| M3 brute stances read, mix-up unpredictable, heavy fire breaks, bellow reads as charge | owner, in-engine | manual |
-| M4 limitator branches and aim flinch | owner, in-engine | manual |
-| M5 co-op loopback hears stance sounds, sees stance before hit | owner, in-engine | manual (after the sounds brief) |
-| Doc1 `docs/` and `sdk/behaviors/reference` | review + `sdk/behaviors/reference` load test | achievable as stated |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| T1 binding-name sugar for `defineAttack`/`defineStance`, hold keys, diagnostic, Luau parity | `script-compiler` sugar tests; `scripting-core` TS/Luau descriptor parity test | achievable as stated | pass |
+| T2 handle crosses with declaration; lowering builds name-keyed `attacks`; once per load and staged reload | `scripting-core` lowering unit test; staged-reload counter test | achievable as stated | pass |
+| T3 inferred vs exhaustive `attacks`; drops, logs, P37/P40/P41 | `scripting-core` lowering tests per pin, with log capture | achievable as stated | pass |
+| T4 string where a handle is expected: TS type error and pathed load rejection in both runtimes, both routes; equal/unequal same-name handles | `sdk/type-tests/e10-typed-attacks.ts` `@ts-expect-error` cases; `scripting-core` rejection tests ×2 runtimes ×2 routes | runtime half proved; TS half written, unchecked (no `tsc` on this machine) | pass (runtime, both runtimes and routes); TS type half written in `sdk/type-tests/e10-typed-attacks.ts`, unchecked: no `tsc` on this machine |
+| T5 `attackTurnFree`/`attackTurnHeld` throw on string/nil; misspelled Luau global reported | SDK runtime tests both runtimes; strict-globals load test | achievable as stated | pass; strict globals catch misspelled globals only, a misspelled table field still reads nil (documented) |
+| T6 authored lowering-only field rejects | `scripting-core` rejection test over `pose`, `queue`, `afterMoment`, `atDefault` (+ `releaseAfter`, `staggerTo`) | achievable as stated | pass |
+| T7 one handle in two archetypes | `scripting-core` two-archetype load test | achievable as stated | pass |
+| T8 grep gate: no string attack in shipped scripts, docs, typedef comments | surface gate test (xtask `surface_gates` or Rust test) | achievable as stated | pass |
+| S1 identical descriptors TS/Luau; Scripting surface example runs as `content/dev` | parity test; `content/dev` example script load + tick test | achievable as stated | pass |
+| S2 lowering matches checked-in hand-written fixture | `scripting-core` fixture test (`fixtures/stance_overhead_slam.json`) | achievable as stated | pass |
+| S3 only reached rests/strikes generated; name collision rejects | lowering tests | achievable as stated | pass |
+| S4 `{ to: overhead }` enters rest, no turn, sound once; `initial: overhead` | `ai` tick test with AI cue capture | achievable as stated | pass |
+| S5 `when` optional on every row | foundation serde + `ai` eval test | achievable as stated | pass |
+| S6 two attacks sharing a stance: separate holds, shared fields, own `attackTurn` | lowering test | achievable as stated | pass |
+| S7 `stance: "crouch"` after `E10--enemy-cover`; rejects before | rejection test now; crouch wiring falls to whichever brief lands second | achievable as stated (crouch half deferred by the Decision) | pass (rejects until `E10--enemy-cover`); crouch wiring falls to whichever brief lands second |
+| S8 rest with no way out rejects, with or without `breakOn` | lowering test | achievable as stated | pass |
+| S9 `endingStance` rest, turn ends, refresh lapses, re-strike | `ai` attack-turn tick test | achievable as stated | pass |
+| S10 `motion: "hold"` everywhere; `release.motion`/`speed` replace on release only | lowering test + `ai` steering test | achievable as stated | pass |
+| S11 minimal stance/attack load silently; defaults | lowering test with log capture | achievable as stated | pass |
+| S12 omitted `recover`: clip played through or default cap; continues release clip | `ai` clip-clock tick tests (looping and not) | achievable as stated | pass |
+| S13 authored `recover` without/with `ms` | `ai` tick tests | achievable as stated | pass |
+| S14 `at: "hit"` fires at moment; lowered `action`/mark agree | `ai` tick test; foundation validate test | achievable as stated | pass |
+| S15 release with `at` vs `ms`; looping at every phase; `"*"` on moment tick (P42, P43, P47) | `ai` tick tests per pin | achievable as stated | pass |
+| S16 default `hit`; clip without `hit`; `at: false`; no moment no `ms` (P53) | `ai` tick tests + bind-warning log capture | achievable as stated | pass |
+| S17 unreached moment whiffs; untimed named moment (P48, P51, P57) | `ai` tick tests | achievable as stated | pass |
+| S18 summed clip time across rate and variant restarts (P54) | `ai` tick test | achievable as stated | pass |
+| S19 `at: false`/defaulted-missing fires on first passing tick (P57) | `ai` tick test | achievable as stated | pass |
+| S20 release on its stance's state rejects | lowering test | achievable as stated | pass |
+| S21 impact switch cancels before moment; entry-tick switch does not (P46); reaction plays, enters ending rest, skips recover (P52) | `ai` tick tests with an impact switch fixture | achievable as stated | pass |
+| S22 second switch never extends cap; `"*"` leaves at once (P55) | `ai` tick test | achievable as stated | pass |
+| S23 switch after moment / `at: false` / in recover; `ms: 2000` case; moving release stops steering (P52) | `ai` tick tests | achievable as stated | pass |
+| S24 cooldown at the queue (P44) | `ai` attack-turn tick test | achievable as stated | pass |
+| S25 first attack cooling vs refreshing; cooldown elapses mid-tick (P49, P50) | `ai` attack-turn tick tests | achievable as stated | pass |
+| S26 rejection list (11 cases) | `scripting-core` lowering rejection table test | achievable as stated | pass |
+| W1 queued row gates and request conditions | `ai` attack-turn tick test | achievable as stated | pass |
+| W2 rest grant survives into N+1 (P26) | `ai` tick test | achievable as stated | pass |
+| W3 re-rank inside margin keeps target; past margin switches (P27, P39) | `ai` co-op target tick test | achievable as stated | pass |
+| W4 starvation (P28) | `ai` arbitration test | achievable as stated | pass |
+| W5 one request per enemy; place kept (P29) | `ai` tick test | achievable as stated | pass |
+| W6 first row refreshing keeps requesting it (P31) | `ai` tick test | achievable as stated | pass |
+| W7 request precedence mark > rest > pending unmarked | `ai` `next_request` test | achievable as stated | pass |
+| W8 resting enemy keeps target and aim | `ai` tick test | achievable as stated | pass |
+| W9 two enemies in one shared stance (P24) | `ai` tick test with cue capture | achievable as stated | pass |
+| W10 grant then no row ends turn (P36) | `ai` tick test | achievable as stated | pass |
+| W11 break beats granted strike (P35) | `ai` tick test | achievable as stated | pass |
+| P1 pose carry: no restart, no second sound, facts carried, 20+20 trips 25 (P30) | `ai` tick test | achievable as stated | pass |
+| P2 target switch mid-tell (P33) | `ai` tick test | achievable as stated | pass |
+| P3 fresh entry into a pose (P34) | `ai` tick test | achievable as stated | pass |
+| P4 release times span range independent of roll; no exposure (P32) | `ai` statistical tick test; grep gate test | achievable as stated | pass |
+| P5 `"*"`/ancestor row into current pose skipped; release/recover abandoned | `ai` graph_eval test | achievable as stated | pass |
+| P6 root-level strike beside a chase keeps target and aim (P23) | `ai` tick test | achievable as stated | pass |
+| P7 break vs missing turn (P22) | `ai` tick test | achievable as stated | pass |
+| P8 timer vs missing turn (P16) | `ai` tick test | achievable as stated | pass |
+| P9 zero `ms` release/recover (P45, P56, P57) | `ai` tick tests | achievable as stated | pass |
+| F1 floor ≥ interpolation ceiling test | `netcode` test beside `spawn_windup_covers_interpolation_ceiling_without_equality_pin` | achievable as stated | pass |
+| F2 default above floor; one warning per mod load below it | lowering test with log capture | achievable as stated | pass |
+| R1 hold threshold varies in [min, max]; fixed never varies | `ai` statistical test | achievable as stated | pass |
+| R2 `holdMs: 0` and `[x, x]` (P12) | `ai` tick test | achievable as stated | pass |
+| R3 roll fixed per entry; redraw on re-entry; reseat-and-leave (P3) | `ai` tick test | achievable as stated | pass |
+| R4 independent rolls per level; nested redraw (P4) | `ai` tick test | achievable as stated | pass |
+| R5 selector guards read own level (P5) | `ai` graph_eval test | achievable as stated | pass |
+| R6 both branches of `approach` read same roll | `ai` tick test | achievable as stated | pass |
+| R7 determinism gate: two enemies by role, reversed order | `sim` `determinism_tests` extension | achievable as stated | pass |
+| R8 same-tick spawns differ (P13) | `sim` spawn test | achievable as stated | pass |
+| R9 grep gate: no wire record carries roll, draw or seed | surface gate test | achievable as stated | pass |
+| R10 release draws compared by role; same-tick holds differ (P38) | `sim` determinism extension | achievable as stated | pass |
+| D1 `damageInActivity` sums all producers, two hits one tick | `sim` damage-producer test per source | achievable as stated | pass |
+| D2 hit before/after AI pass on entry tick (P2) | `sim` stage-order test | achievable as stated | pass |
+| D3 `breakOn` at threshold; break beats timer (P1) | `ai` tick test | achievable as stated | pass |
+| D4 release does not break; `"*"` leaves release/recover; flinch damage not carried | `ai` tick test | achievable as stated | pass |
+| D5 limitator aim breaks into `hit_reaction`; both roll branches in one engagement | `ai` shipped-content test | achievable as stated | pass |
+| Sp1 `speed: 2` on two archetypes; inner overrides outer | `sim` steering test | achievable as stated | pass |
+| Sp2 speed from entry tick to tick before leave (P17) | `sim` steering test | achievable as stated | pass |
+| Sp3 charge `run` rate vs `travelSpeed`, host and loopback client | `sim` playback test + `netcode` loopback test | achievable as stated | pass on the engine fixture (host and loopback agree); the shipped brute charge (6 m/s on a 2.2 m/s stride) clamps at the 1.5x playback limit: owner decision pending |
+| Sp4 knockback unaffected by `speed` | `sim` steering test | achievable as stated | pass |
+| Sp5 locomotion clip rate equal host/client, calibrated or not | `netcode` loopback test | achievable as stated | pass |
+| Sp6 charge release reach edges (P18) | `ai`/`sim` tick test | achievable as stated | pass |
+| Sp7 old brain deserializes; sums 0, next entry draws | `entities` serde test | achievable as stated | pass |
+| C1 stance sound once per pose entry, host and loopback client | `netcode` loopback test | achievable once `E10--coop-enemy-telegraph-sounds` lands (host half now) | host half pass; client half outstanding until `E10--coop-enemy-telegraph-sounds` lands |
+| C2 entering an activity whose clip is playing restarts nothing, host and client | `ai` apply test + `netcode` loopback test | achievable as stated | pass |
+| C3 grep gate: no server message, version constants unchanged | surface gate test | achievable as stated | pass |
+| K1 brute slam/lunge/jab fire at `*_strike` `hit`; `punch_strike` carries `hit`; windup-pose test on recut library | `ai` `clip_timed_shipped_tests`; `model` `reference_enemy_strikes_start_on_their_windup_pose` | achievable as stated (needs the recut, Task 8) | pass |
+| K2 limitator `shoot` release fires at `kick` from drawn phase, leaves at every phase | `ai` `clip_timed_shipped_tests` | achievable as stated | pass |
+| M1 re-export reproduces library; moved cuts listed | owner, Windows + Blender | manual | build-verified: old and new commands re-export byte-identical libraries (Blender 5.2.3); owner playtest of moved cuts outstanding |
+| M2 jab and slam tells read and land on `movement-feel` | owner, in-engine | manual | outstanding (owner, in-engine) |
+| M3 brute stances read, mix-up unpredictable, heavy fire breaks, bellow reads as charge | owner, in-engine | manual | outstanding (owner, in-engine) |
+| M4 limitator branches and aim flinch | owner, in-engine | manual | outstanding (owner, in-engine) |
+| M5 co-op loopback hears stance sounds, sees stance before hit | owner, in-engine | manual (after the sounds brief) | outstanding until the sounds brief lands |
+| Doc1 `docs/` and `sdk/behaviors/reference` | review + `sdk/behaviors/reference` load test | achievable as stated | pass |
 
 ## Tasks
 
@@ -186,4 +186,16 @@ Builds are disk-bound (46 GB free) and serialized, so no concurrent worktree bui
 - A misspelled or mistyped `activities` was blamed on `transitions`: lowering names `activities` itself.
 - Nits: non-object rows reject with a path, a non-string handle name says so, `-0` folds in the floor dedupe, epsilon float asserts, Luau walk renames, the strict-globals doc, a duplicate docs sentence, an unused `is_empty`, the `stride_reference` rename.
 - Gate: foundation 216, ai 497, scripting-core 1106, netcode 1030 passed.
+
+**Round 3** (1 reviewer on the round-2 fix diff): no must-fix. Fixed a misleading message when a level that opens on a stance misspells `activities`, a clippy complex-type lint, a missing-vs-empty handle name message, single-precision values printed in messages, and a doc comment. The loop stops here: round 3 found only message-level issues.
+
+**Final gate** (on 40fb77d, plus round 3's scripting-core message fixes): fmt clean; clippy `--workspace --all-targets --features postretro/dev-tools -D warnings` clean (scripting-core re-run after round 3); workspace tests 16,279 passed, 0 failed (`--no-fail-fast --features postretro/dev-tools`); scripting-core 1,106 passed after round 3; `cargo check --workspace --release` clean; `crate-graph --check` up to date.
+
+## Trial notes
+- mode: resumable
+- sessions used: 1
+- delegated implementation slices: 11 (Tasks 1–4, 5a, 5b, 6, 7, 8a, 8b, 9), plus 8 fix agents and 1 gate agent
+- review-panel findings: round 1 14 should-fix plus drift and nits (all acted on but 4 left with reasons); round 2 3 should-fix (all acted on); round 3 1 should-fix (acted on)
+- Decision premises found false: 0
+- Path claims corrected: 14 (Corrections), plus 9 owner-visible clarifications
 

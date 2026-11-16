@@ -159,12 +159,14 @@ fn hold_range(value: &Value, path: &str, stance: &str) -> Result<[f64; 2], Descr
     };
     if min < 0.0 || max < 0.0 {
         return Err(shape(format!(
-            "`{path}`: stance \"{stance}\"'s `holdMs` bounds must be >= 0, got [{min}, {max}]"
+            "`{path}`: stance \"{stance}\"'s `holdMs` bounds must be >= 0, got [{}, {}]",
+            min as f32, max as f32
         )));
     }
     if min > max {
         return Err(shape(format!(
-            "`{path}`: stance \"{stance}\"'s `holdMs` minimum {min} exceeds its maximum {max}"
+            "`{path}`: stance \"{stance}\"'s `holdMs` minimum {} exceeds its maximum {}",
+            min as f32, max as f32
         )));
     }
     Ok([min, max])

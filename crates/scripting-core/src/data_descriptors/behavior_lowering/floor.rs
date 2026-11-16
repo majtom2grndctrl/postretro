@@ -57,7 +57,8 @@ pub(super) fn warn_below_floor(stance: &str, min_ms: f64) {
     });
     if first {
         log::warn!(
-            "[Scripting] stance \"{stance}\" can release {min_ms} ms into its hold, below the co-op floor of {STANCE_HOLD_FLOOR_MS} ms (the remote interpolation ceiling plus a reaction budget); a remote player may see the strike before the tell"
+            "[Scripting] stance \"{stance}\" can release {} ms into its hold, below the co-op floor of {STANCE_HOLD_FLOOR_MS} ms (the remote interpolation ceiling plus a reaction budget); a remote player may see the strike before the tell",
+            min_ms as f32
         );
     }
 }

@@ -1056,6 +1056,21 @@ fn a_misspelled_or_mistyped_activities_is_named_not_the_rows_keyed_by_it() {
         behavior["activities"] = json!([]);
         behavior
     };
+    // A level that opens on a stance may leave `activities` out, so its
+    // misspelling surfaces at the first row keyed by an authored activity.
+    let misspelled_under_a_stance = {
+        let mut behavior = offense();
+        behavior["initial"] = overhead();
+        let object = behavior.as_object_mut().unwrap();
+        let activities = object.remove("activities").unwrap();
+        object.insert("activites".to_string(), activities);
+        behavior
+    };
+    let error = rejection(misspelled_under_a_stance);
+    assert!(
+        error.contains("this level declares no `activities`; check that key's spelling"),
+        "{error}"
+    );
     for (behavior, expected) in [
         (misspelled, "`components.behavior.activities` is missing"),
         (

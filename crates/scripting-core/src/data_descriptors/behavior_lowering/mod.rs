@@ -356,10 +356,12 @@ fn runtime_attack_params(declaration: &Map<String, Value>) -> Value {
 /// Every transition row of one envelope with its path. A row that is not an
 /// object rejects here, with its path: serde would name none, and expansion
 /// would count it as a rest's way out.
+type PathedRows<'a> = Vec<(String, &'a mut Map<String, Value>)>;
+
 fn rows_mut<'a>(
     envelope: &'a mut Map<String, Value>,
     path: &str,
-) -> Result<Vec<(String, &'a mut Map<String, Value>)>, DescriptorError> {
+) -> Result<PathedRows<'a>, DescriptorError> {
     let mut rows_out = Vec::new();
     if let Some(transitions) = envelope
         .get_mut("transitions")
@@ -496,7 +498,10 @@ fn expect_handle<'a>(
     {
         return match object.get("name") {
             Some(Value::String(name)) if !name.is_empty() => Ok(object),
-            None | Some(Value::Null) | Some(Value::String(_)) => Err(shape(format!(
+            None | Some(Value::Null) => Err(shape(format!(
+                "`{path}`: the {kind} handle has no name; give `{definer}` a non-empty name"
+            ))),
+            Some(Value::String(_)) => Err(shape(format!(
                 "`{path}`: the {kind} handle has an empty name; give `{definer}` a non-empty name"
             ))),
             Some(other) => Err(shape(format!(

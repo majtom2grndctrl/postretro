@@ -288,9 +288,8 @@ fn reject_names_of_generated(
 /// stance handle may leave it out, and lowering writes it. Without this, a
 /// misspelled or mistyped `activities` reads as a level with no authored
 /// activities, and the checks after it blame the rows keyed by them
-/// (`transitions.idle` naming no activity, a stance's rows never reached). Nor
-/// can serde name it: at the root the envelope is flattened, so a misspelled
-/// key is skipped, and the rows' unlowered handles fail first with no path.
+/// (`transitions.idle` naming no activity, a stance's rows never reached)
+/// before serde's unknown-field check ever runs.
 fn reject_unreadable_activities(
     envelope: &Map<String, Value>,
     path: &str,
@@ -320,8 +319,15 @@ fn reject_unknown_sources(
     let transitions = envelope.get("transitions").and_then(Value::as_object);
     for source in transitions.into_iter().flat_map(Map::keys) {
         if source != "*" && !authored.contains(source) && !is_rest_key(source, authored, catalog) {
+            // A level that opens on a stance may leave `activities` out, so a
+            // misspelled `activities` lands here: say so rather than blame the row.
+            let hint = if envelope.contains_key("activities") {
+                ""
+            } else {
+                " (this level declares no `activities`; check that key's spelling)"
+            };
             return Err(shape(format!(
-                "`{path}.transitions.{source}` does not name a declared activity or stance at this level; key rows by an activity, a stance's name or `\"*\"`"
+                "`{path}.transitions.{source}` does not name a declared activity or stance at this level; key rows by an activity, a stance's name or `\"*\"`{hint}"
             )));
         }
     }

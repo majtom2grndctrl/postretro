@@ -796,13 +796,13 @@ declare module "postretro" {
 
   /** What a behavior activity does besides moving. Omit the key for an activity with no action. */
   export type ActionVerb = {
-    /** Name of the root graph attack this activity fires. */
-    attack: string;
+    /** The attack handle, from `defineAttack`, that this activity fires. The behavior has every attack its actions, marks and rows reference, unless its `attacks` list says otherwise. */
+    attack: Attack;
     /** Names a clip event, matching `[A-Za-z_][A-Za-z0-9_]*`. The attack fires on the tick the activity's clip reaches it, once per entry, instead of on entry. Only an activity's own action may carry it; a selector row's rejects at load. It implies the attack's turn mark, as `attackTurn` would. */
     at?: string;
   };
 
-  /** One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once. */
+  /** An enemy attack's engine fields, declared with `defineAttack`. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once. */
   export type AttackParams = { weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] };
 
   /** How a patrol route continues when it reaches an endpoint. Valid values: `loop`, `pingPong`. */
@@ -824,8 +824,8 @@ declare module "postretro" {
   export type GuardedRow = {
     /** Destination activity name. Must name an activity declared in the same envelope. */
     to: string;
-    /** Guard expression, built with the `runtime` builders over `brain.*` inputs and `state("name")` leaves. Must produce a boolean; validated at parse. */
-    when: RuntimeValue;
+    /** Guard expression, built with the `runtime` builders over `brain.*` inputs and `state("name")` leaves. Must produce a boolean; validated at parse. Omitted, the row is always enabled. */
+    when?: RuntimeValue;
   };
 
   /** One selector row. In a `move` layer it supplies `when` and `motion`; in an `offense` layer it supplies `when` and `action`. */
@@ -856,7 +856,7 @@ declare module "postretro" {
     animation?: string;
     /** Leaf sugar for a single-entry `move` layer. */
     motion?: MotionVerb;
-    /** Leaf sugar for a single-entry `offense` layer; the attack name resolves against the root `attacks` map. */
+    /** Leaf sugar for a single-entry `offense` layer firing an attack handle. */
     action?: ActionVerb;
     /** Optional named event fired when a leaf activity is entered. */
     onEnter?: string;
@@ -866,8 +866,8 @@ declare module "postretro" {
     facing?: FacingPolicy;
     /** Bounds for this activity's own `reposition` motion. Valid only when `motion` is `"reposition"`; a `move` selector's `reposition` uses the defaults. */
     reposition?: RepositionParams;
-    /** Marks this activity for one of the root `attacks`: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: the name must be declared, and a mark nested inside a mark for another attack, or an action under a mark that fires another attack, rejects. */
-    attackTurn?: string;
+    /** Marks this activity for one of the behavior's attacks, by its handle: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: a mark for an attack an explicit `attacks` list leaves out, a mark nested inside a mark for another attack, or an action under a mark that fires another attack rejects. */
+    attackTurn?: Attack;
     /** Multiplier on the archetype's `moveSpeed` while this is the innermost active activity that sets one: an inner activity's `speed` overrides an outer one's, and one without inherits its nearest ancestor's. Omitted everywhere, it is 1. Scales the enemy's own steered travel only; knockback is unaffected. Must be finite and > 0. */
     speed?: number;
     /** Composite-only orthogonal layers. */
@@ -908,8 +908,8 @@ declare module "postretro" {
     retaliation?: RetaliationDescriptor;
     /** Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `"patrol"` motion. */
     patrol?: PatrolDescriptor;
-    /** Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: "name" }` must name one of these entries. Omit for an attackless graph. */
-    attacks?: { readonly [attack: string]: AttackParams };
+    /** Optional list of attack handles from `defineAttack`. Omitted, the behavior has the attacks its actions, marks and rows reference; present, the list is exhaustive: a row to an unlisted attack is dropped with a log, and an action or mark naming one rejects load. */
+    attacks?: ReadonlyArray<Attack>;
     /** Optional enemy impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1. */
     knockback?: KnockbackResponse;
     /** Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0. */
@@ -2793,6 +2793,42 @@ declare module "postretro" {
   export function defineAttackToken(budget?: AttackTokenBudget): AttackToken;
   export function defineAttackToken(name: string, budget?: AttackTokenBudget): AttackToken;
 
+  /** A stance's options: the pose an enemy rests in before the attacks that begin in it. `animation` names one of the archetype's animation states; `sound` is a sound key played once per pose entry; `stance` sets the body stance; `holdMs` bounds how long the pose holds before a strike releases, one value or `[min, max]`; `breakOn` leaves the pose for the sibling activity `to` once `damage` has landed in it. */
+  export type StanceOptions = {
+    readonly animation: string;
+    readonly sound?: string;
+    readonly stance?: "stand" | "crouch";
+    readonly holdMs?: number | readonly [number, number];
+    readonly breakOn?: { readonly damage: number; readonly to: string };
+  };
+  /** A stance handle from `defineStance`. It crosses as `{ kind, name, ...options }`, nested in each attack that names it. */
+  export type Stance = { readonly kind: "stance"; readonly name: string } & StanceOptions;
+  /** An attack's strike: its own animation state, an optional `ms` that only holds it longer, the clip event `at` it fires at (`false` fires on entry), and an optional `motion` and `speed` multiplier replacing the planted hold. */
+  export type AttackRelease = {
+    readonly animation: string;
+    readonly ms?: number;
+    readonly at?: string | false;
+    readonly motion?: "hold" | "chaseTarget" | "strafe" | "reposition";
+    readonly speed?: number;
+  };
+  /** An attack's recovery after its strike: an animation state and an optional duration. */
+  export type AttackRecover = { readonly animation: string; readonly ms?: number };
+  /** What `defineAttack` declares: the engine's attack fields plus the stance it begins in (`beginningStance`), the stance it rests in afterwards (`endingStance`, defaulting to the beginning), and its `release` and `recover`. */
+  export type AttackDeclaration = AttackParams & {
+    readonly beginningStance?: Stance;
+    readonly endingStance?: Stance;
+    readonly release?: AttackRelease;
+    readonly recover?: AttackRecover;
+  };
+  /** An attack handle from `defineAttack`. It crosses as `{ kind, name, ...declaration }`; load-time lowering resolves it to the attack's name. Pass it wherever an attack is meant: `action: { attack }`, `attackTurn`, a behavior's `attacks` list, `attackTurnFree`, `attackTurnHeld`. */
+  export type Attack = { readonly kind: "attack"; readonly name: string } & AttackDeclaration;
+  /** Declare an attack. Omit `name` only in a TypeScript direct top-level binding declaration whose argument is an object literal; scripts-build names it by its binding. A behavior that references the handle has the attack; no separate registration. */
+  export function defineAttack(declaration: AttackDeclaration): Attack;
+  export function defineAttack(name: string, declaration: AttackDeclaration): Attack;
+  /** Declare a stance. Omit `name` only in a TypeScript direct top-level binding declaration whose argument is an object literal; scripts-build names it by its binding. */
+  export function defineStance(options: StanceOptions): Stance;
+  export function defineStance(name: string, options: StanceOptions): Stance;
+
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
   export function read(ref: StateRef<boolean>): BoolRef;
@@ -3138,11 +3174,11 @@ declare module "postretro" {
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
 
-  /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load. */
-  export function attackTurnHeld(attack: string): RuntimeGuardNode;
+  /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
+  export function attackTurnHeld(attack: Attack): RuntimeGuardNode;
 
-  /** `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load. */
-  export function attackTurnFree(attack: string): RuntimeGuardNode;
+  /** `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
+  export function attackTurnFree(attack: Attack): RuntimeGuardNode;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

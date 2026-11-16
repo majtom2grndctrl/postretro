@@ -920,13 +920,14 @@ fn end4_a_parent_and_its_leaf_read_one_animation_done_on_a_tick() {
 // to the graph the runtime fires and leaves on.
 #[test]
 fn surf1_the_surface_example_jab_fires_at_hit_and_leaves_on_animation_done() {
-    const SOURCE: &str = r#"({ components: { behavior: {
+    // The jab is a handle as `defineAttack` builds it; this raw VM has no SDK.
+    const SOURCE: &str = r#"const jab = { kind: "attack", name: "jab", damage: 8, maxRange: 2, cooldownMs: 1200 };
+    ({ components: { behavior: {
         initial: "stalk",
         moveSpeed: 3,
-        attacks: { jab: { damage: 8, maxRange: 2, cooldownMs: 1200 } },
         activities: {
             stalk: { animation: "walk" },
-            jab: { animation: "attack_jab", action: { attack: "jab", at: "hit" } }
+            jab: { animation: "attack_jab", action: { attack: jab, at: "hit" } }
         },
         transitions: {
             stalk: [{ to: "jab", when: { op: "and",

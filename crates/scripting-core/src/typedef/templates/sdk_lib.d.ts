@@ -866,6 +866,42 @@
   export function defineAttackToken(budget?: AttackTokenBudget): AttackToken;
   export function defineAttackToken(name: string, budget?: AttackTokenBudget): AttackToken;
 
+  /** A stance's options: the pose an enemy rests in before the attacks that begin in it. `animation` names one of the archetype's animation states; `sound` is a sound key played once per pose entry; `stance` sets the body stance; `holdMs` bounds how long the pose holds before a strike releases, one value or `[min, max]`; `breakOn` leaves the pose for the sibling activity `to` once `damage` has landed in it. */
+  export type StanceOptions = {
+    readonly animation: string;
+    readonly sound?: string;
+    readonly stance?: "stand" | "crouch";
+    readonly holdMs?: number | readonly [number, number];
+    readonly breakOn?: { readonly damage: number; readonly to: string };
+  };
+  /** A stance handle from `defineStance`. It crosses as `{ kind, name, ...options }`, nested in each attack that names it. */
+  export type Stance = { readonly kind: "stance"; readonly name: string } & StanceOptions;
+  /** An attack's strike: its own animation state, an optional `ms` that only holds it longer, the clip event `at` it fires at (`false` fires on entry), and an optional `motion` and `speed` multiplier replacing the planted hold. */
+  export type AttackRelease = {
+    readonly animation: string;
+    readonly ms?: number;
+    readonly at?: string | false;
+    readonly motion?: "hold" | "chaseTarget" | "strafe" | "reposition";
+    readonly speed?: number;
+  };
+  /** An attack's recovery after its strike: an animation state and an optional duration. */
+  export type AttackRecover = { readonly animation: string; readonly ms?: number };
+  /** What `defineAttack` declares: the engine's attack fields plus the stance it begins in (`beginningStance`), the stance it rests in afterwards (`endingStance`, defaulting to the beginning), and its `release` and `recover`. */
+  export type AttackDeclaration = AttackParams & {
+    readonly beginningStance?: Stance;
+    readonly endingStance?: Stance;
+    readonly release?: AttackRelease;
+    readonly recover?: AttackRecover;
+  };
+  /** An attack handle from `defineAttack`. It crosses as `{ kind, name, ...declaration }`; load-time lowering resolves it to the attack's name. Pass it wherever an attack is meant: `action: { attack }`, `attackTurn`, a behavior's `attacks` list, `attackTurnFree`, `attackTurnHeld`. */
+  export type Attack = { readonly kind: "attack"; readonly name: string } & AttackDeclaration;
+  /** Declare an attack. Omit `name` only in a TypeScript direct top-level binding declaration whose argument is an object literal; scripts-build names it by its binding. A behavior that references the handle has the attack; no separate registration. */
+  export function defineAttack(declaration: AttackDeclaration): Attack;
+  export function defineAttack(name: string, declaration: AttackDeclaration): Attack;
+  /** Declare a stance. Omit `name` only in a TypeScript direct top-level binding declaration whose argument is an object literal; scripts-build names it by its binding. */
+  export function defineStance(options: StanceOptions): Stance;
+  export function defineStance(name: string, options: StanceOptions): Stance;
+
   /** Lift a number or boolean state ref into the fluent impact-expression algebra. */
   export function read(ref: StateRef<number>): NumberRef;
   export function read(ref: StateRef<boolean>): BoolRef;
@@ -1400,11 +1436,11 @@
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
 
-  /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load. */
-  export function attackTurnHeld(attack: string): RuntimeGuardNode;
+  /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
+  export function attackTurnHeld(attack: Attack): RuntimeGuardNode;
 
-  /** `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load. */
-  export function attackTurnFree(attack: string): RuntimeGuardNode;
+  /** `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
+  export function attackTurnFree(attack: Attack): RuntimeGuardNode;
 
   // -------------------------------------------------------------------------
   // UI navigation intents — the closed gamepad-first nav vocabulary the input

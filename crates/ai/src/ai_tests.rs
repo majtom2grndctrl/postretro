@@ -9562,15 +9562,16 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
 ///
 /// The module is evaluated verbatim against the same SDK helper modules the
 /// engine's Luau prelude installs (`sdk/lib/runtime.luau` for the IR builders,
-/// `sdk/lib/brain.luau` for the `@brain.*` leaves), with `defineEntity` stubbed
-/// to the identity it is for a plain descriptor. Reading the guards out of the
-/// real source is the whole point: a second hand-written copy would prove only
-/// that someone edited both.
+/// `sdk/lib/brain.luau` for the `@brain.*` leaves,
+/// `sdk/lib/data_script/attacks.luau` for `defineAttack`), with `defineEntity`
+/// stubbed to the identity it is for a plain descriptor, and read through the
+/// engine's Luau entity reader, so its attack handles lower as they do at mod
+/// load. Reading the guards out of the real source is the whole point: a
+/// second hand-written copy would prove only that someone edited both.
 fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
-    use mlua::LuaSerdeExt as _;
-
     const RUNTIME_LUAU_SRC: &str = include_str!("../../../sdk/lib/runtime.luau");
     const BRAIN_LUAU_SRC: &str = include_str!("../../../sdk/lib/brain.luau");
+    const ATTACKS_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script/attacks.luau");
     const ENTITIES_LUAU_SRC: &str =
         include_str!("../../../content/dev/scripts/reference-enemy.luau");
 
@@ -9607,6 +9608,18 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
         globals.set(read, function).unwrap();
     }
     globals.set("defineEntity", define_entity).unwrap();
+    let attacks_sdk: mlua::Table = lua
+        .load(ATTACKS_LUAU_SRC)
+        .set_name("sdk/lib/data_script/attacks.luau")
+        .eval()
+        .expect("attacks.luau evaluates");
+    let attack_builders: mlua::Table = attacks_sdk
+        .get("builders")
+        .expect("attacks.luau exports its builders");
+    let define_attack: mlua::Function = attack_builders
+        .get("defineAttack")
+        .expect("attacks.luau exports `defineAttack`");
+    globals.set("defineAttack", define_attack).unwrap();
     // A token handle's `with` lives on its metatable, off the wire, as the
     // SDK's does.
     let token_methods: mlua::Table = lua
@@ -9661,17 +9674,13 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
         .set_name("content/dev/scripts/reference-enemy.luau")
         .eval()
         .expect("the shipped reference entities module evaluates");
-    let entity: mlua::Table = module
+    let entity: mlua::Value = module
         .get("referenceEnemyEntity")
         .expect("the module exports `referenceEnemyEntity`");
-    let components: mlua::Table = entity
-        .get("components")
-        .expect("the archetype has components");
-    let behavior: mlua::Value = components
-        .get("behavior")
-        .expect("the reference enemy is authored as a behavior graph");
-    lua.from_value(behavior)
-        .expect("the shipped behavior block deserializes into the engine descriptor")
+    postretro_scripting_core::data_descriptors::entity_descriptor_from_lua(entity)
+        .expect("the shipped reference enemy reads through the engine's Luau reader")
+        .behavior
+        .expect("the reference enemy is authored as a behavior graph")
 }
 
 /// The oracle below is a Rust hand-transcription of a graph that ships as

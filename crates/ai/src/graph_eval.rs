@@ -569,10 +569,12 @@ mod statechart_tests {
     /// the one focused ordering branch below; this parsed fixture carries the
     /// complete windup → commit → recover path used by the end-to-end checks.
     fn parsed_nested_fixture() -> BehaviorGraphDescriptor {
-        const SOURCE: &str = r#"({ components: { behavior: {
+        // The attack is a handle as `defineAttack` builds it; this raw VM has
+        // no SDK.
+        const SOURCE: &str = r#"const slam = { kind: "attack", name: "slam", damage: 8, maxRange: 2, cooldownMs: 100 };
+        ({ components: { behavior: {
             initial: "engage",
             moveSpeed: 3.5,
-            attacks: { slam: { damage: 8, maxRange: 2, cooldownMs: 100 } },
             activities: {
                 engage: {
                     animation: "locomotion",
@@ -585,7 +587,7 @@ mod statechart_tests {
                             initial: "windup",
                             activities: {
                                 windup: { animation: "windup" },
-                                commit: { animation: "commit", action: { attack: "slam" } },
+                                commit: { animation: "commit", action: { attack: slam } },
                                 recover: { animation: "recover" }
                             },
                             transitions: {
@@ -935,6 +937,44 @@ mod statechart_tests {
         );
         assert!(entry_rolls.iter().any(|roll| *roll < 0.5));
         assert!(entry_rolls.iter().any(|roll| *roll >= 0.5));
+    }
+
+    // S5: a row authored without `when` is always enabled: it passes on the
+    // first evaluation, and an earlier guarded row still outranks it.
+    #[test]
+    fn a_row_without_when_is_always_enabled() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.5,
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "early": { "animation": "early", "motion": "hold" },
+                "walk": { "animation": "walk", "motion": "hold" }
+            },
+            "transitions": {
+                "idle": [
+                    { "to": "early", "when": { "op": "ge", "a": { "op": "input", "name": "@brain.timeInActivityMs" }, "b": { "op": "const", "value": 1000 } } },
+                    { "to": "walk" }
+                ],
+                "walk": [{ "to": "idle" }]
+            }
+        }))
+        .expect("rows without `when` deserialize");
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = seeded(&graph, 0);
+
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["walk"], "the unguarded row passes");
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["idle"]);
+
+        brain.tick_activity_timers(1000.0);
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(
+            brain.active_path_names(),
+            ["early"],
+            "an earlier guarded row that passes still wins"
+        );
     }
 
     // R3 (P3): a graph reseat seats `decide` and its own row leaves it in the

@@ -699,11 +699,9 @@ An attack's `draws` lists the tokens it takes. A token alone draws one;
 `token.with({ cost })` draws `cost` (an integer of at least 1).
 
 ```typescript
-attacks: {
-  jab:  { draws: [melee], damage: 8, maxRange: 2, cooldownMs: 1200 },
-  slam: { draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800 },
-  chip: { draws: [], damage: 2, maxRange: 2, cooldownMs: 400 },
-}
+const jab  = defineAttack({ draws: [melee], damage: 8, maxRange: 2, cooldownMs: 1200 });
+const slam = defineAttack({ draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800 });
+const chip = defineAttack({ draws: [], damage: 2, maxRange: 2, cooldownMs: 400 });
 ```
 
 The slam counts two against `melee` and one against `heavy`, while jabs keep
@@ -1616,7 +1614,11 @@ stand-down, commonly through `brain.targetDistance`. The engine supplies no
 default acquisition or disengagement range.
 
 ```typescript
-import { brain, candidate, defineEntity, runtime } from "postretro";
+import { brain, candidate, defineAttack, defineEntity, runtime } from "postretro";
+
+// An attack is a handle named by its binding; the behavior has every attack
+// its activities reference.
+const swing = defineAttack({ damage: 8, maxRange: 2, cooldownMs: 1200 });
 
 defineEntity({
   canonicalName: "grunt",
@@ -1634,9 +1636,6 @@ defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attacks: {
-        swing: { damage: 8, maxRange: 2, cooldownMs: 1200 },
-      },
       engagementRadius: 2,
       // Eligibility is checked only for candidates the engine offers. This
       // graph will not newly acquire corpses or candidates beyond 50 metres.
@@ -1658,7 +1657,7 @@ defineEntity({
               initial: "windup",
               activities: {
                 windup: { animation: "swing" },
-                commit: { animation: "swing", action: { attack: "swing" } },
+                commit: { animation: "swing", action: { attack: swing } },
                 recover: { animation: "swing" },
               },
               transitions: {
@@ -1694,7 +1693,7 @@ defineEntity({
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `retaliation` | `{ windowMs?, damageWeight?, recencyWeight? }` (optional) | Scalar tuning for the engine-owned retaliation preference, not authored ranking logic. `windowMs` defaults to `1500` ms, `damageWeight` to `1`, and `recencyWeight` to `0.001`; all are finite and non-negative. A zero or sub-tick `windowMs` disables retaliation accrual. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
-| `attacks` | `{ [name]: AttackParams }` (optional) | Named attack vocabulary. An activity action must name an entry here. Each `AttackParams` entry is either inline contact stats or a weapon reference. |
+| `attacks` | `Attack[]` (optional) | Attack handles from `defineAttack`. Omitted, the behavior has the attacks its actions, marks and rows reference; present, the list is exhaustive: a row to an unlisted attack is dropped with a log, and an action or mark naming one fails load. Each attack's declaration is either inline contact stats or a weapon reference. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
 
@@ -1720,25 +1719,25 @@ An activity is either a leaf or a composite:
 |-------|------|-------------|
 | `animation` | `string` | Required on a leaf; optional locomotion animation on a composite. Names `components.mesh.animations`. |
 | `motion` | `MotionVerb` (leaf sugar) | A one-entry `move` selector. |
-| `action` | `{ attack: string, at?: string }` (leaf sugar) | A one-entry `offense` selector (with `at` there is no selector equivalent; selector rows reject `at`). In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. With `at`, it fires at a clip event instead; see [Firing at a clip event](#firing-at-a-clip-event). |
+| `action` | `{ attack: Attack, at?: string }` (leaf sugar) | A one-entry `offense` selector (with `at` there is no selector equivalent; selector rows reject `at`). In a nested graph, it fires at most once on the first tick in its active firing leaf for which the applicable gates are open. With `at`, it fires at a clip event instead; see [Firing at a clip event](#firing-at-a-clip-event). |
 | `layers` | `{ move?, offense?, ... }` | Composite-only layers. A selector row has `when` plus `motion` or `action`; a nested layer is another envelope. A `move` selector must end with a bare motion fallback. |
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
 | `facing` | `"target"` \| `"travel"` (optional) | Which way the enemy faces while this activity is active, including the motion its own `move` layer picks. Omitted, the motion's default applies. |
 | `reposition` | `{ arc?, minTravel? }` (optional) | Bounds for this activity's own `"reposition"` motion; see below. Only valid when `motion` is `"reposition"`. |
-| `attackTurn` | `string` (optional) | Marks the activity for one of `attacks`. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a windup → commit → recover chain holds a single turn. An `action` with `at` marks its activity for its attack without this field. Checked at load: the name must be declared, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
+| `attackTurn` | `Attack` (optional) | Marks the activity for one of the behavior's attacks. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a windup → commit → recover chain holds a single turn. An `action` with `at` marks its activity for its attack without this field. Checked at load: a mark for an attack an explicit `attacks` list leaves out, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
 
-A `Transition` is `{ to: string, when: RuntimeValue }`. It can target only an
+A `Transition` is `{ to: string, when?: RuntimeValue }`; a row without `when` is always enabled. It can target only an
 activity in its own envelope. Unknown sources or destinations, cross-boundary
 targets, empty activities, retired flat fields, a missing move fallback, and a
 composite with two nested graph layers are load errors.
 
 ### Attack entries
 
-An entry in `attacks` has one of two mutually exclusive forms. Use the contact
-form for an immediate direct-impact attack:
+`defineAttack` declares an attack in one of two mutually exclusive forms. Use
+the contact form for an immediate direct-impact attack:
 
 ```typescript
-slam: { damage: 8, damageType: ballistic, maxRange: 2, cooldownMs: 1200 }
+const slam = defineAttack({ damage: 8, damageType: ballistic, maxRange: 2, cooldownMs: 1200 });
 ```
 
 `damageType` is an optional damage-type handle beside `damage`; omitted, the
@@ -1753,7 +1752,7 @@ only AI positioning (`engagementRadius` and/or `standoffDistance`) on the attack
 entry:
 
 ```typescript
-shoot: { weapon: "enemy_rifle", standoffDistance: 6 }
+const shoot = defineAttack({ weapon: "enemy_rifle", standoffDistance: 6 });
 ```
 
 Do not mix `weapon` with `damage`, `maxRange`, or `cooldownMs`; the forms are
@@ -1817,7 +1816,7 @@ leaves a position-goal state on arrival, its distance threshold must be **at
 least** that engine epsilon. A smaller threshold wedges: steering has already
 cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
 
-`{ attack: "name" }` is the only action today. During its active firing leaf,
+`{ attack }`, naming an attack handle, is the only action today. During its active firing leaf,
 it fires at most once on the first tick for which that attack's cooldown is
 ready, the target is in range, and the other applicable gates are open. Its
 firing latch stays armed until it fires, so temporarily closed gates can open
@@ -1854,27 +1853,29 @@ named events, such as the `hit` where a fist connects; see
 action names one with `at`:
 
 ```typescript
-import { attackTurnFree, brain } from "postretro";
+import { attackTurnFree, brain, defineAttack } from "postretro";
+
+const jab = defineAttack({ damage: 8, maxRange: 2, cooldownMs: 1200 });
 
 const behavior = {
   initial: "stalk",
   moveSpeed: 3,
-  attacks: { jab: { damage: 8, maxRange: 2, cooldownMs: 1200 } },
   activities: {
     stalk: { animation: "walk" },
     jab: {
       animation: "attack_jab",                   // a state playing clip "punch"
-      action: { attack: "jab", at: "hit" },      // fires when punch reaches `hit`;
+      action: { attack: jab, at: "hit" },        // fires when punch reaches `hit`;
     },                                           // holds the jab's turn from entry
   },
   transitions: {
-    stalk: [{ to: "jab", when: brain.targetDistance.le(2).and(attackTurnFree("jab")) }],
+    stalk: [{ to: "jab", when: brain.targetDistance.le(2).and(attackTurnFree(jab)) }],
     jab: [{ to: "stalk", when: brain.animationDone }], // the punch has played through
   },
 };
 ```
 
-In Luau the action is `action = { attack = "jab", at = "hit" }`, and the exit
+In Luau the attack is `local jab = defineAttack("jab", { ... })`, the action
+is `action = { attack = jab, at = "hit" }`, and the exit
 reads `brain.animationDone`.
 
 - **One chance per entry.** The attack fires on the tick the activity's clip
@@ -1981,18 +1982,21 @@ tick.
 shares a token with a turn the enemy already holds. It is also `false` for an
 attack that draws tokens while the enemy already holds its maximum of 4 drawn
 turns. It predicts a grant; it does not take one. `brain.hasAttackTurn` is a
-property of `brain`. `attackTurnHeld` and `attackTurnFree` are functions:
-TypeScript imports them from `"postretro"`, and Luau data scripts call them as
-globals. Naming an attack the archetype does not declare fails load (see
+property of `brain`. `attackTurnHeld` and `attackTurnFree` are functions
+taking an attack handle: TypeScript imports them from `"postretro"`, and Luau
+data scripts call them as globals. Anything but an attack handle throws at the
+call. Naming an attack the archetype does not declare fails load (see
 [Load errors](#load-errors)).
 
 ```typescript
-import { attackTurnFree, brain } from "postretro";
+import { attackTurnFree, brain, defineAttack } from "postretro";
 
-// A waiting activity leaves for the firing one once a "shoot" turn is free.
+const shoot = defineAttack({ weapon: "enemy_rifle", standoffDistance: 6 });
+
+// A waiting activity leaves for the firing one once a `shoot` turn is free.
 const waiting = { animation: "idle", motion: "hold" };
 const transitions = {
-  wait: [{ to: "fire", when: attackTurnFree("shoot").and(brain.targetVisible) }],
+  wait: [{ to: "fire", when: attackTurnFree(shoot).and(brain.targetVisible) }],
 };
 ```
 
@@ -2321,11 +2325,13 @@ Bare `number` and `boolean` literals auto-wrap, exactly as elsewhere in
 ### Worked example — a stagger interrupt with a commitment window
 
 ```typescript
-import { brain, defineEntity, runtime, state } from "postretro";
+import { brain, defineAttack, defineEntity, runtime, state } from "postretro";
 
 const DETECTION = 16;
 const REACH = 2;
 const LEASH = 50;
+
+const slam = defineAttack({ damage: 14, maxRange: REACH, cooldownMs: 1400 });
 
 defineEntity({
   canonicalName: "brute",
@@ -2344,9 +2350,6 @@ defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attacks: {
-        slam: { damage: 14, maxRange: REACH, cooldownMs: 1400 },
-      },
       engagementRadius: REACH,
       activities: {
         idle: { animation: "idle", motion: "hold" },
@@ -2361,7 +2364,7 @@ defineEntity({
               initial: "windup",
               activities: {
                 windup: { animation: "swing" },
-                commit: { animation: "swing", action: { attack: "slam" } },
+                commit: { animation: "swing", action: { attack: slam } },
                 recover: { animation: "swing" },
               },
               transitions: {

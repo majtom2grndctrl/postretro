@@ -661,12 +661,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("ActionVerb")
         .doc("What a behavior activity does besides moving. Omit the key for an activity with no action.")
-        .field("attack", "String", "Name of the root graph attack this activity fires.")
+        .field("attack", "Attack", "The attack handle, from `defineAttack`, that this activity fires. The behavior has every attack its actions, marks and rows reference, unless its `attacks` list says otherwise.")
         .field("at?", "String", "Names a clip event, matching `[A-Za-z_][A-Za-z0-9_]*`. The attack fires on the tick the activity's clip reaches it, once per entry, instead of on entry. Only an activity's own action may carry it; a selector row's rejects at load. It implies the attack's turn mark, as `attackTurn` would.")
         .finish();
     registry
         .register_type("AttackParams")
-        .doc("One named enemy attack. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once.")
+        .doc("An enemy attack's engine fields, declared with `defineAttack`. A contact attack supplies all three inline combat stats and may name a `damageType` handle. A weapon attack names a weapon descriptor and must omit those stats; its effective combat stats resolve later from that descriptor. Positioning fields are valid on either shape. Optional `sound` is a sound key played at the enemy when the attack fires; a weapon attack also plays the weapon's own sounds. Optional `draws` lists the attack tokens the attack draws, each a token handle (cost 1) or the token's `with({ cost })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); omitted, it draws `defaultToken`, and `[]` opts out of the attack budget. At most 8 tokens, each drawn once.")
         .alias(
             "{ weapon?: never; damage: number; damageType?: DamageType; maxRange: number; cooldownMs: number; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] } | { weapon: string; damage?: never; damageType?: never; maxRange?: never; cooldownMs?: never; engagementRadius?: number; standoffDistance?: number; sound?: string; draws?: (AttackToken | AttackTokenRef)[] }",
             "{ weapon: never?, damage: number, damageType: DamageType?, maxRange: number, cooldownMs: number, engagementRadius: number?, standoffDistance: number?, sound: string?, draws: {AttackToken | AttackTokenRef}? } | { weapon: string, damage: never?, damageType: never?, maxRange: never?, cooldownMs: never?, engagementRadius: number?, standoffDistance: number?, sound: string?, draws: {AttackToken | AttackTokenRef}? }",
@@ -691,7 +691,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .register_type("GuardedRow")
         .doc("One source-keyed adjacency row: a destination activity plus the guard that selects it. Rows are evaluated in declaration order; the first true row wins.")
         .field("to", "String", "Destination activity name. Must name an activity declared in the same envelope.")
-        .field("when", "IrNode", "Guard expression, built with the `runtime` builders over `brain.*` inputs and `state(\"name\")` leaves. Must produce a boolean; validated at parse.")
+        .field("when?", "IrNode", "Guard expression, built with the `runtime` builders over `brain.*` inputs and `state(\"name\")` leaves. Must produce a boolean; validated at parse. Omitted, the row is always enabled.")
         .finish();
     registry
         .register_type("BehaviorSelectorRow")
@@ -737,12 +737,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("A behavior activity. A leaf supplies a required animation plus optional `motion`/`action` sugar; a composite supplies `layers` and may carry a locomotion animation.")
         .field("animation?", "String", "Leaf animation (required when no layers) or optional composite locomotion animation. Mesh names resolve at spawn.")
         .field("motion?", "MotionVerb", "Leaf sugar for a single-entry `move` layer.")
-        .field("action?", "ActionVerb", "Leaf sugar for a single-entry `offense` layer; the attack name resolves against the root `attacks` map.")
+        .field("action?", "ActionVerb", "Leaf sugar for a single-entry `offense` layer firing an attack handle.")
         .field("onEnter?", "String", "Optional named event fired when a leaf activity is entered.")
         .field("sound?", "String", "Optional sound key played at the enemy when a leaf activity is entered, whether or not it authors `onEnter`.")
         .field("facing?", "FacingPolicy", "Which heading the enemy faces while this activity is active, covering the motion its own `move` layer supplies. Omitted, the motion's default applies: `strafe` and `reposition` face the target, and other verbs keep their usual rule.")
         .field("reposition?", "RepositionParams", "Bounds for this activity's own `reposition` motion. Valid only when `motion` is `\"reposition\"`; a `move` selector's `reposition` uses the defaults.")
-        .field("attackTurn?", "String", "Marks this activity for one of the root `attacks`: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: the name must be declared, and a mark nested inside a mark for another attack, or an action under a mark that fires another attack, rejects.")
+        .field("attackTurn?", "Attack", "Marks this activity for one of the behavior's attacks, by its handle: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: a mark for an attack an explicit `attacks` list leaves out, a mark nested inside a mark for another attack, or an action under a mark that fires another attack rejects.")
         .field("speed?", "f32", "Multiplier on the archetype's `moveSpeed` while this is the innermost active activity that sets one: an inner activity's `speed` overrides an outer one's, and one without inherits its nearest ancestor's. Omitted everywhere, it is 1. Scales the enemy's own steered travel only; knockback is unaffected. Must be finite and > 0.")
         .field("layers?", "BehaviorLayers", "Composite-only orthogonal layers.")
         .finish();
@@ -769,7 +769,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")
         .field("retaliation?", "RetaliationDescriptor", "Optional scalar tuning for the engine-owned retaliation preference. The block cannot author ranking logic; omitted values use compatibility defaults and the default tolerance keeps the term inert.")
         .field("patrol?", "PatrolDescriptor", "Optional anchor-relative patrol route. Required with at least one point when any root or nested layer selects `\"patrol\"` motion.")
-        .field("attacks?", "BehaviorAttacks", "Named attack vocabulary. An entry either supplies contact stats or names a weapon descriptor; any leaf or offense-layer action `{ attack: \"name\" }` must name one of these entries. Omit for an attackless graph.")
+        .field("attacks?", "BehaviorAttacks", "Optional list of attack handles from `defineAttack`. Omitted, the behavior has the attacks its actions, marks and rows reference; present, the list is exhaustive: a row to an unlisted attack is dropped with a log, and an action or mark naming one rejects load.")
         .field("knockback?", "KnockbackResponse", "Optional enemy impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.")

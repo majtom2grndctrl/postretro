@@ -2117,12 +2117,6 @@ pub(crate) mod teleport_tick_tests;
 #[cfg(test)]
 mod trap_tick_tests;
 
-/// Single-player / single-pawn movement stage. Resolves the local movement pawn via
-/// the registry marker, then drives it through the shared host multi-pawn seam
-/// (`host_movement::run_host_movement_tick`) with a one-element input list. The host
-/// netcode path bypasses this entirely and calls the seam directly with EVERY
-/// authoritative pawn — `local_movement_pawn` is the single-player resolver
-/// only, never the authoritative-host resolver.
 struct LocalMovementTickEvents {
     stepped_pawn: Option<EntityId>,
     teleport: Option<(EntityId, crate::movement::TeleportEvent)>,
@@ -2130,6 +2124,10 @@ struct LocalMovementTickEvents {
     state_edges: Vec<crate::movement::MovementStateEdge>,
 }
 
+/// Local-pawn movement stage. Resolves the local movement pawn from the registry
+/// marker and advances it through `host_movement::run_host_movement_tick` as a
+/// one-pawn list. Single-player and the listen host both move their own pawn here;
+/// the host moves remote pawns in a separate, earlier call.
 fn run_movement_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
     collision: &impl crate::movement::MovementCollisionSource,

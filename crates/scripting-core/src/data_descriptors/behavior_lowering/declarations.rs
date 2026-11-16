@@ -433,12 +433,15 @@ fn optional_duration(
     Ok(Some(ms))
 }
 
-/// A number finite at the runtime's `f32`. The JSON bridge already rejects
-/// non-finite numbers with their path; this names a non-number, and one too
-/// large for `f32`, which would otherwise lower to an infinite constant.
+/// A number as the runtime will hold it: rounded to `f32`, so every check
+/// downstream reads the runtime's value (a positive value that underflows to
+/// `0` fails a `> 0` check here, at its authored path). The JSON bridge
+/// already rejects non-finite numbers with their path; this names a
+/// non-number, and one too large for `f32`, which would otherwise lower to an
+/// infinite constant.
 fn number(value: &Value, path: &str) -> Result<f64, DescriptorError> {
     match value.as_f64() {
-        Some(number) if (number as f32).is_finite() => Ok(number),
+        Some(number) if (number as f32).is_finite() => Ok(f64::from(number as f32)),
         Some(number) => Err(shape(format!(
             "`{path}` must be a finite number, found {number}, which overflows single precision"
         ))),

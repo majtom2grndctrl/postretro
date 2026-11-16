@@ -371,10 +371,6 @@ impl RateScaledStates {
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|state| &**state)
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
 }
 
 /// A brain's [`RateScaledStates`], derived from its graph on first read and

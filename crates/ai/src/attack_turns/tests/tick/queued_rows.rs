@@ -116,6 +116,17 @@ fn queue_graph(
     attacks: Vec<(&str, AttackParams)>,
     release_after: [f32; 2],
 ) -> BehaviorGraphDescriptor {
+    unvalidated_queue_graph(rest_rows, attacks, release_after)
+        .validate()
+        .expect("the lowered shape validates")
+}
+
+/// [`queue_graph`] before validation, for a test that rebuilds around it.
+fn unvalidated_queue_graph(
+    rest_rows: Vec<GuardedRow>,
+    attacks: Vec<(&str, AttackParams)>,
+    release_after: [f32; 2],
+) -> BehaviorGraphDescriptor {
     let break_row = || edge(FLINCH, ge(BRAIN_DAMAGE_IN_ACTIVITY_INPUT, BREAK_DAMAGE));
     let mut activity_map = BTreeMap::from([
         (
@@ -173,7 +184,7 @@ fn queue_graph(
         );
         transition_map.insert(recover(attack), vec![edge(REST, after_ms(48.0))]);
     }
-    let graph = test_behavior_graph!({
+    test_behavior_graph!({
         initial: APPROACH.to_string(),
         activities: activity_map,
         transitions: transition_map,
@@ -186,8 +197,7 @@ fn queue_graph(
             .collect(),
         engagement_radius: None,
         move_speed: TEST_MOVE_SPEED,
-    });
-    graph.validate().expect("the lowered shape validates")
+    })
 }
 
 /// An enemy that holds `attack`'s turn, drawing `draws`, until it is moved
@@ -1177,4 +1187,103 @@ fn a_burst_outlasting_its_recover_ends_its_turn_in_the_rest_and_a_waiter_is_gran
         Some(SLAM),
         "still in line"
     );
+}
+
+/// The activity active at the deepest level of `enemy`'s path.
+fn leaf(reg: &EntityRegistry, enemy: EntityId) -> String {
+    let brain = brain(reg, enemy);
+    brain
+        .activity_at_depth(brain.active_depth() - 1)
+        .map(|(name, _)| name.to_string())
+        .expect("the brain path names declared activities")
+}
+
+/// [`queue_graph`]'s `slam` stance nested under `engage`, a composite marked
+/// for `slam` itself. The stance opens on an unposed `settle` that takes the
+/// rest after `settle_ms`.
+fn stance_under_a_slam_mark(settle_ms: f32) -> BehaviorGraphDescriptor {
+    let flat = unvalidated_queue_graph(
+        vec![queued(SLAM, always())],
+        vec![(SLAM, strike(2.0, 1.0, vec![token("melee")]))],
+        [0.0, 0.0],
+    );
+    let mut stance = flat.envelope;
+    stance.activities.insert(APPROACH.to_string(), idle());
+    stance
+        .transitions
+        .insert(APPROACH.to_string(), vec![edge(REST, after_ms(settle_ms))]);
+    let layer = BehaviorLayerDescriptor::Graph(stance);
+    let engage = BehaviorActivityDescriptor {
+        animation: None,
+        motion: None,
+        layers: BTreeMap::from([("stance".to_string(), layer)]),
+        ..marked(idle(), SLAM)
+    };
+    let graph = test_behavior_graph!({
+        initial: "engage".to_string(),
+        activities: BTreeMap::from([("engage".to_string(), engage)]),
+        transitions: BTreeMap::new(),
+        candidate_filter: None,
+        retaliation: None,
+        patrol: None,
+        attacks: flat.attacks,
+        engagement_radius: None,
+        move_speed: TEST_MOVE_SPEED,
+    });
+    graph
+        .validate()
+        .expect("a mark may enclose a stance striking its own attack")
+}
+
+// Regression: a stance nested under an ancestor marked for the attack it
+// strikes. The ancestor's mark holds the turn across the whole stance (no turn
+// time limit), so no new grant comes while it holds; the rest's queued row
+// opens on that turn at any age. Before the fix the row opened only on the
+// evaluation after a grant: a rest first reached two or more ticks after the
+// ancestor's grant never struck, and one reached at once struck only once.
+#[test]
+fn a_stance_under_a_mark_for_its_own_attack_strikes_again_and_again() {
+    for settle_ms in [0.0, 96.0] {
+        let graph = stance_under_a_slam_mark(settle_ms);
+        let mut reg = EntityRegistry::new();
+        budgets(&mut reg, (3, 1000.0), (1, 0.0));
+        let mut runtime = AiRuntime::new();
+        let pawn = spawn_player(&mut reg, player_spot());
+        let enemy = spawn_at(&mut reg, 0, &graph, "engage");
+
+        let mut granted_at = None;
+        let mut rested_at = None;
+        for tick_index in 0..80 {
+            tick(&mut reg, &mut runtime);
+            if granted_at.is_none() && !held(&reg, enemy).is_empty() {
+                granted_at = Some(tick_index);
+            }
+            if rested_at.is_none() && leaf(&reg, enemy) == REST {
+                rested_at = Some(tick_index);
+            }
+        }
+        let granted_at = granted_at.expect("the ancestor's mark is granted");
+        let rested_at = rested_at.expect("the stance reaches its rest");
+        if settle_ms > 0.0 {
+            assert!(
+                rested_at >= granted_at + 2,
+                "fixture: the rest comes 2+ ticks after the grant ({granted_at}, {rested_at})"
+            );
+        }
+        assert!(
+            player_hp(&reg, pawn) <= 97.0,
+            "settle {settle_ms}: the stance strikes again and again, hp {}",
+            player_hp(&reg, pawn)
+        );
+        assert_eq!(
+            held_on(&reg, enemy, SLAM),
+            vec![pawn],
+            "settle {settle_ms}: the ancestor's mark keeps the one turn"
+        );
+        assert_eq!(
+            melee_refreshing(&runtime, pawn),
+            0,
+            "settle {settle_ms}: the turn never ended"
+        );
+    }
 }

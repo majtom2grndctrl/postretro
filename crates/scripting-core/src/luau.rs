@@ -259,8 +259,9 @@ end
 "#;
 
 /// Make a read of an undeclared global raise in a data-script VM, so a
-/// misspelled handle, guard or table field fails load naming the global
-/// instead of reading `nil` as an absent field. Writes are unaffected: a
+/// misspelled handle or guard-builder global fails load naming the global
+/// instead of reading `nil` as an absent field. Only global reads raise: a
+/// misspelled table field still reads `nil`. Writes are unaffected: a
 /// script's own globals (`setupLevel`, top-level functions) still define.
 fn install_strict_globals(lua: &Lua) -> Result<(), ScriptError> {
     let err = |e: mlua::Error| ScriptError::InvalidArgument {

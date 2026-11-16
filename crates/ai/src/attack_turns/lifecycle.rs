@@ -115,9 +115,12 @@ pub(crate) fn arbitrate_attack_turns(
             // mark names it, or another row (or none) leaves the rest and the
             // turn ends with its refresh. A queued turn neither waits out a
             // cooldown nor executes before its release. A burst can still
-            // outlast its recover and carry its turn into the rest; that turn
-            // opens no queued row, which passes only on the evaluation after
-            // a grant, so it ends here with its refresh once the burst does.
+            // outlast its recover and carry its turn into the rest; with no
+            // mark on the rest's path naming it, that turn opens no queued
+            // row, which passes only on the evaluation after a grant, so it
+            // ends here with its refresh once the burst does. An ancestor
+            // marked for the stance's attack keeps its turn across the rest,
+            // and the row opens on it.
             draws_unchanged
                 && ((target.is_some() && mark == Some(turn.attack))
                     || executing_attack == Some(turn.attack)

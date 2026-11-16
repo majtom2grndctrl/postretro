@@ -12,7 +12,7 @@ use serde_json::{Map, Value, json};
 
 use super::declarations::{At, Catalog, StanceDecl, StrikeDecl};
 use super::floor::warn_below_floor;
-use super::{DescriptorError, handle_kind, shape};
+use super::{DescriptorError, handle_kind, kind_of, shape};
 
 /// The stances one level rests in and the attacks struck from each rest.
 #[derive(Default)]
@@ -119,6 +119,7 @@ pub(super) fn expand_level(
     catalog: &Catalog,
     ancestor_exit: bool,
 ) -> Result<BTreeSet<String>, DescriptorError> {
+    reject_unreadable_activities(envelope, path)?;
     let reach = reach(envelope, path, catalog);
     let authored = authored_activities(envelope);
     let generated = generated_names(&reach, &authored, path)?;
@@ -281,6 +282,30 @@ fn reject_names_of_generated(
         }
     }
     Ok(())
+}
+
+/// A level's `activities` must be an object; only a level that opens on a
+/// stance handle may leave it out, and lowering writes it. Without this, a
+/// misspelled or mistyped `activities` reads as a level with no authored
+/// activities, and the checks after it blame the rows keyed by them
+/// (`transitions.idle` naming no activity, a stance's rows never reached). Nor
+/// can serde name it: at the root the envelope is flattened, so a misspelled
+/// key is skipped, and the rows' unlowered handles fail first with no path.
+fn reject_unreadable_activities(
+    envelope: &Map<String, Value>,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    match envelope.get("activities") {
+        Some(Value::Object(_)) => Ok(()),
+        Some(other) => Err(shape(format!(
+            "`{path}.activities` must be an object of activities keyed by name, found {}",
+            kind_of(other)
+        ))),
+        None if stance_target(envelope.get("initial")).is_some() => Ok(()),
+        None => Err(shape(format!(
+            "`{path}.activities` is missing; a level declares its activities there (check the key's spelling), and only one whose `initial` is a stance handle may leave it out"
+        ))),
+    }
 }
 
 /// Rows key an authored activity, a stance's rest or `"*"`. Any other key

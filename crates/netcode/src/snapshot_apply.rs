@@ -97,11 +97,11 @@ pub(super) fn materialize_remote_entities(
                 agent_params,
             )
         } else {
-            // Remote AI has no local AgentComponent, so derive its walk rate from
-            // exactly the motion this client presents.
-            let walk_reference = descriptor
+            // Remote AI has no local AgentComponent, so derive its stride rate
+            // from exactly the motion this client presents.
+            let stride_reference = descriptor
                 .and_then(|descriptor| remote_enemy_stride_reference(descriptor, hit_zone_store));
-            replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
+            replication.cache_remote_enemy_walk_playback(remote.network_id, stride_reference);
             remote_materialize::materialize_armed_remote_enemy(
                 remote,
                 descriptors,
@@ -435,7 +435,11 @@ mod tests {
 
         let reference = remote_enemy_stride_reference(&descriptor, &HitZoneStore::new())
             .expect("the mesh declares scaled states");
-        assert_eq!(reference.move_speed, 3.0);
+        assert!(
+            (reference.move_speed - 3.0).abs() < 1e-6,
+            "{}",
+            reference.move_speed
+        );
         let mut kept: Vec<&str> = reference
             .scaled_states
             .iter()

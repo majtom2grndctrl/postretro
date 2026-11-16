@@ -202,7 +202,7 @@ impl Lowering {
             }
             self.declare_stance(stance_handle(initial, &initial_path)?, &initial_path)?;
         }
-        for (row_path, row) in rows_mut(envelope, path) {
+        for (row_path, row) in rows_mut(envelope, path)? {
             let target_path = format!("{row_path}.to");
             let Some(target) = row.get("to") else {
                 return Err(shape(format!(
@@ -353,11 +353,13 @@ fn runtime_attack_params(declaration: &Map<String, Value>) -> Value {
     Value::Object(params)
 }
 
-/// Every transition row of one envelope with its path.
+/// Every transition row of one envelope with its path. A row that is not an
+/// object rejects here, with its path: serde would name none, and expansion
+/// would count it as a rest's way out.
 fn rows_mut<'a>(
     envelope: &'a mut Map<String, Value>,
     path: &str,
-) -> Vec<(String, &'a mut Map<String, Value>)> {
+) -> Result<Vec<(String, &'a mut Map<String, Value>)>, DescriptorError> {
     let mut rows_out = Vec::new();
     if let Some(transitions) = envelope
         .get_mut("transitions")
@@ -366,14 +368,26 @@ fn rows_mut<'a>(
         for (source, rows) in transitions.iter_mut() {
             if let Some(rows) = rows.as_array_mut() {
                 for (index, row) in rows.iter_mut().enumerate() {
-                    if let Some(row) = row.as_object_mut() {
-                        rows_out.push((format!("{path}.transitions.{source}[{index}]"), row));
+                    let row_path = format!("{path}.transitions.{source}[{index}]");
+                    match row {
+                        Value::Object(row) => rows_out.push((row_path, row)),
+                        Value::Null => {
+                            return Err(shape(format!(
+                                "`{row_path}` is nil or undefined (a Luau function, or a JS `undefined`, bridges so); a row is an object `{{ to, when }}`"
+                            )));
+                        }
+                        other => {
+                            return Err(shape(format!(
+                                "`{row_path}` is {}; a row is an object `{{ to, when }}`",
+                                kind_of(other)
+                            )));
+                        }
                     }
                 }
             }
         }
     }
-    rows_out
+    Ok(rows_out)
 }
 
 /// Visit each graph layer nested directly under this envelope's activities.
@@ -480,16 +494,16 @@ fn expect_handle<'a>(
     if let Value::Object(object) = value
         && object.get("kind").and_then(Value::as_str) == Some(kind)
     {
-        if object
-            .get("name")
-            .and_then(Value::as_str)
-            .is_some_and(|name| !name.is_empty())
-        {
-            return Ok(object);
-        }
-        return Err(shape(format!(
-            "`{path}`: the {kind} handle has an empty name; give `{definer}` a non-empty name"
-        )));
+        return match object.get("name") {
+            Some(Value::String(name)) if !name.is_empty() => Ok(object),
+            None | Some(Value::Null) | Some(Value::String(_)) => Err(shape(format!(
+                "`{path}`: the {kind} handle has an empty name; give `{definer}` a non-empty name"
+            ))),
+            Some(other) => Err(shape(format!(
+                "`{path}`: the {kind} handle's name is {}, not a string; give `{definer}` a non-empty string name",
+                kind_of(other)
+            ))),
+        };
     }
     Err(shape(format!(
         "`{path}`: {}; pass the {kind} handle `{definer}` returned",

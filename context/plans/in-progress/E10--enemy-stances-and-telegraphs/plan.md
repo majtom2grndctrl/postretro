@@ -180,3 +180,10 @@ Builds are disk-bound (46 GB free) and serialized, so no concurrent worktree bui
 - **Owner decision pending:** the shipped charge strides at 6 m/s on a 2.2 m/s `run` stride and clamps at the 1.5× playback limit, so its feet slide; Sp3 is proved on a fixture under the clamp.
 - Gate after fixes: fmt, clippy (all targets, `dev-tools`), workspace tests 16,274 passed, 0 failed.
 
+**Round 2** (4 reviewers on the round-1 fix diff). Fixed:
+- A stance under an ancestor marked for the same attack never re-struck: a queued row also opens while the path's own mark holds the turn (a turn held only by a running burst still opens nothing).
+- A number that underflows f32 passed the `> 0` checks: lowering now validates the single-precision value.
+- A misspelled or mistyped `activities` was blamed on `transitions`: lowering names `activities` itself.
+- Nits: non-object rows reject with a path, a non-string handle name says so, `-0` folds in the floor dedupe, epsilon float asserts, Luau walk renames, the strict-globals doc, a duplicate docs sentence, an unused `is_empty`, the `stride_reference` rename.
+- Gate: foundation 216, ai 497, scripting-core 1106, netcode 1030 passed.
+

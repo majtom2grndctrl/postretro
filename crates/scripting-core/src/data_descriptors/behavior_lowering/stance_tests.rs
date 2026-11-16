@@ -1012,6 +1012,94 @@ fn a_number_too_large_for_single_precision_rejects_load_with_its_path() {
     }
 }
 
+// Regression: a positive number that underflows to 0 at f32 passed the `> 0`
+// checks on its f64 value: `breakOn.damage` lowered to a 0 constant, so the
+// pose broke with no damage, and `release.speed` failed later at a generated
+// path. Both reject at their authored paths.
+#[test]
+fn a_positive_number_that_underflows_single_precision_rejects_load_with_its_path() {
+    let approach_row = "components.behavior.transitions.approach[0].to";
+    let sweep_row = "components.behavior.transitions.overhead[1].to";
+    let cases = [
+        (
+            with_sweep(|a| a["release"]["speed"] = json!(1e-46)),
+            format!("`{sweep_row}.release.speed` must be a multiplier > 0"),
+        ),
+        (
+            with_overhead(|s| s["breakOn"]["damage"] = json!(1e-46)),
+            format!("`{approach_row}.breakOn.damage`"),
+        ),
+    ];
+    for (behavior, path) in cases {
+        let error = rejection(behavior);
+        assert!(
+            error.contains(&path) && error.contains("must be") && error.contains("> 0"),
+            "{path}: {error}"
+        );
+    }
+}
+
+// Regression: a misspelled or mistyped `activities` read as a level with no
+// authored activities, so the error blamed the rows keyed by them
+// (`transitions.approach` naming no declared activity). It names `activities`.
+#[test]
+fn a_misspelled_or_mistyped_activities_is_named_not_the_rows_keyed_by_it() {
+    let misspelled = {
+        let mut behavior = offense();
+        let object = behavior.as_object_mut().unwrap();
+        let activities = object.remove("activities").unwrap();
+        object.insert("activites".to_string(), activities);
+        behavior
+    };
+    let mistyped = {
+        let mut behavior = offense();
+        behavior["activities"] = json!([]);
+        behavior
+    };
+    for (behavior, expected) in [
+        (misspelled, "`components.behavior.activities` is missing"),
+        (
+            mistyped,
+            "`components.behavior.activities` must be an object",
+        ),
+    ] {
+        let error = rejection(behavior);
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("transitions."), "{error}");
+    }
+}
+
+// Regression: a row that is not an object (a Luau function or a JS
+// `undefined` bridged to null) was skipped by lowering: it reached serde with
+// no path, and counted as a rest's way out. It rejects with its path.
+#[test]
+fn a_row_that_is_not_an_object_rejects_load_with_its_path() {
+    let only_null_out = {
+        let mut behavior = offense();
+        behavior["transitions"]["coil"] = json!([{ "to": lunge() }, null]);
+        behavior
+    };
+    let numbered = {
+        let mut behavior = offense();
+        behavior["transitions"]["flinch"] = json!([7]);
+        behavior
+    };
+    for (behavior, expected) in [
+        (
+            only_null_out,
+            "`components.behavior.transitions.coil[1]` is nil or undefined",
+        ),
+        (
+            numbered,
+            "`components.behavior.transitions.flinch[0]` is a number",
+        ),
+    ] {
+        let error = rejection(behavior);
+        assert!(error.contains(expected), "{error}");
+        assert!(error.contains("a row is an object"), "{error}");
+    }
+}
+
 // Regression: the floor warning deduped by stance name alone, so a second
 // stance of that name in another archetype of the mod never warned.
 #[test]

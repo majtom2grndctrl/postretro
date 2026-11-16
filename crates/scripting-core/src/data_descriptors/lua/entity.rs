@@ -171,7 +171,7 @@ pub fn entity_descriptor_from_lua(
                 let raw: LuaValue = components_table.get("behavior").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
                     if let LuaValue::Table(behavior_table) = &raw {
-                        validate_optional_behavior_sound_keys_lua(behavior_table)?;
+                        validate_behavior_raw_fields_lua(behavior_table)?;
                     }
                     let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
                     normalize_behavior_selectors(&mut json)?;
@@ -330,7 +330,7 @@ type VisitedTables = HashSet<*const std::ffi::c_void>;
 /// mark, a row, `initial`, another handle), and
 /// `BehaviorActivityDescriptor.sound` (every envelope, root and nested
 /// layers). Walks the raw tables directly, before that bridge runs.
-fn validate_optional_behavior_sound_keys_lua(behavior: &Table) -> Result<(), DescriptorError> {
+fn validate_behavior_raw_fields_lua(behavior: &Table) -> Result<(), DescriptorError> {
     validate_handle_fields_lua(
         behavior,
         "components.behavior",
@@ -342,7 +342,7 @@ fn validate_optional_behavior_sound_keys_lua(behavior: &Table) -> Result<(), Des
 
 /// Bounds the walk's recursion on deep nesting; the visited set stops cycles.
 /// Anything deeper fails the JSON bridge's own depth limit.
-const MAX_ATTACK_HANDLE_SEARCH_DEPTH: usize = 64;
+const MAX_HANDLE_SEARCH_DEPTH: usize = 64;
 
 /// Check the declaration of every stance and attack handle reachable from
 /// `table`, naming the handle's path (sequence entries as `[index]`, from 0).
@@ -352,7 +352,7 @@ fn validate_handle_fields_lua(
     depth: usize,
     visited: &mut VisitedTables,
 ) -> Result<(), DescriptorError> {
-    if depth > MAX_ATTACK_HANDLE_SEARCH_DEPTH || !visited.insert(table.to_pointer()) {
+    if depth > MAX_HANDLE_SEARCH_DEPTH || !visited.insert(table.to_pointer()) {
         return Ok(());
     }
     match table.raw_get::<LuaValue>("kind").map_err(lua_err)? {

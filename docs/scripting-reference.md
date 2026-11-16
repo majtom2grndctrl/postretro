@@ -1763,8 +1763,6 @@ path.
   `const slam = defineAttack({ ... })` declares `slam`
   (see [Names from `const` bindings](#mod-entry-point)). Elsewhere, and always
   in Luau, pass the name first: `local slam = defineAttack("slam", { ... })`.
-  A misspelled Luau global fails load, naming the global and the line, since
-  it would otherwise read `nil`.
 - **Undeclared globals raise.** In a mod's Luau scripts, reading a global
   nothing declared raises at load, naming the global and the line: a
   misspelled handle or guard builder is reported there. The idiom

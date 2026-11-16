@@ -264,7 +264,8 @@ mod tests {
     #[test]
     fn a_release_draw_spans_its_range() {
         assert_eq!(release_draw([500.0, 1200.0], 0.0), 500.0);
-        assert_eq!(release_draw([500.0, 1200.0], 0.5), 850.0);
+        let mid = release_draw([500.0, 1200.0], 0.5);
+        assert!((mid - 850.0).abs() < 1e-3, "{mid}");
         assert!(release_draw([500.0, 1200.0], 0.999_999) < 1200.0);
         assert_eq!(release_draw([400.0, 400.0], 0.7), 400.0);
         assert_eq!(release_draw([900.0, 400.0], 0.7), 900.0);

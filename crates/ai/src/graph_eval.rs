@@ -231,11 +231,13 @@ enum QueueState {
     /// Out of range or cooling down: the row neither passes nor requests.
     Closed,
     /// Open, no turn granted to its request: on its `when` the row requests
-    /// that turn. A turn a burst carried in from the strike reads so too: no
-    /// request is made while it holds, and it ends with the burst.
+    /// that turn. A turn a burst carried in from the strike, under no mark on
+    /// the path naming it, reads so too: no request is made while it holds,
+    /// and it ends with the burst.
     Waiting(u16),
-    /// Open with its turn granted on the previous tick, or no queue at all:
-    /// the row passes on its `when`.
+    /// Open with its turn granted on the previous tick, held under the path's
+    /// own mark for that attack, or no queue at all: the row passes on its
+    /// `when`.
     Open,
 }
 
@@ -261,24 +263,35 @@ impl TurnGate<'_> {
         });
         if cooling || out_of_range {
             QueueState::Closed
-        } else if self.granted_last_tick(index) {
+        } else if self.granted_last_tick(index) || self.held_under_mark(index) {
             QueueState::Open
         } else {
             QueueState::Waiting(index)
         }
     }
 
-    /// A rest's grant lives one evaluation, as a mark's would: its row passes
-    /// on a turn granted on the previous tick, whatever its target (after a
-    /// switch the hold is still entered, and its mark re-requests). An older
-    /// turn was carried in by a burst outlasting the strike's recover. Were
-    /// it to open the row, the hold's mark would keep it across the repeat:
-    /// it would never end and refresh, and waiters would starve.
+    /// A rest's own grant lives one evaluation, as a mark's would: its row
+    /// passes on a turn granted on the previous tick, whatever its target
+    /// (after a switch the hold is still entered, and its mark re-requests).
+    /// An older turn opens the row only under the path's own mark for its
+    /// attack ([`Self::held_under_mark`]). Without that mark it was carried in
+    /// by a burst outlasting the strike's recover; were it to open the row,
+    /// the hold's mark would keep it across the repeat: it would never end and
+    /// refresh, and waiters would starve.
     fn granted_last_tick(&self, attack: u16) -> bool {
         let turns = &self.brain.attack_turns;
         turns.held().any(|turn| {
             turn.attack == attack && turn.granted_tick.wrapping_add(1) == turns.seen_tick
         })
+    }
+
+    /// The turn of `attack` is held and the active path's own mark names it:
+    /// an ancestor marked for the attack the stance strikes keeps that turn
+    /// across the whole stance by design (no turn time limit), and no new
+    /// grant comes while it holds, so its rest's row opens on it at any age.
+    fn held_under_mark(&self, attack: u16) -> bool {
+        crate::attack_turns::path_mark(self.brain) == Some(attack)
+            && self.brain.attack_turns.holds_attack(attack)
     }
 
     /// Whether the enemy holds the turn of the attack marked on `release`

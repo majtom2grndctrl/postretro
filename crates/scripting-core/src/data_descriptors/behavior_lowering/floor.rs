@@ -48,6 +48,9 @@ impl Drop for FloorWarningScope {
 /// below the co-op floor. One stance used by many archetypes warns once;
 /// keying by name alone would let one stance hide another of its name.
 pub(super) fn warn_below_floor(stance: &str, min_ms: f64) {
+    // `-0.0` and `0.0` are one hold time: adding `0.0` folds the sign, so
+    // they key alike and print alike.
+    let min_ms = min_ms + 0.0;
     let first = WARNED.with(|warned| match warned.borrow_mut().as_mut() {
         Some(set) => set.insert((stance.to_string(), min_ms.to_bits())),
         None => true,

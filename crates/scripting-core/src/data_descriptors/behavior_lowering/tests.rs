@@ -270,6 +270,22 @@ fn a_handle_with_an_empty_name_rejects_load_saying_so() {
     );
 }
 
+// Regression: a handle whose `name` is present but not a string (Luau
+// `{ kind = "stance", name = 5 }`) was reported as having an empty name.
+#[test]
+fn a_handle_whose_name_is_not_a_string_rejects_load_saying_so() {
+    let mut source = behavior(None);
+    source["activities"]["engage"]["action"]["attack"]["name"] = json!(5);
+    let error = rejection(source);
+    assert!(
+        error.contains(
+            "`components.behavior.activities.engage.action.attack`: the attack handle's name is a number, not a string"
+        ),
+        "{error}"
+    );
+    assert!(!error.contains("empty name"), "{error}");
+}
+
 // T4: two handles of one name load when their declarations are equal and
 // reject, naming both, when they differ.
 #[test]

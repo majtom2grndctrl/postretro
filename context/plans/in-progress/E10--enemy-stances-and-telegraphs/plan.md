@@ -173,7 +173,7 @@ After the review loop the owner ruled on the charge stride and added two brute a
 
 **Charge stride: an exception, with a per-state cap.** The engine default stays 1.5x, the cap production content should keep. Test content may widen it: an animation state gains an optional `maxPlaybackRate` (default 1.5), and the brute's `run` sets it high enough for the charge (about 2.7x at 6 m/s on a 2.2 m/s stride). Sp3 records the exception. The owner may widen the default later.
 
-**Combo punch.** A new tell holds the jab's windup for 666 ms, then the brute throws three rapid jabs. Engine: a release gains `repeat` (an integer, default 1). Its animation plays that many passes back to back and strikes once per pass at its moment, and the release ends after the last pass. One attack turn and one cooldown cover the whole release. Content: a short `jab_quick` clip cut from the Mutant Punch, played on a looping state so a client replays every pass from the replicated state alone.
+**Combo punch.** A new tell holds the jab's windup for 666 ms, then the brute throws three rapid jabs. Engine: a release gains `repeat` (an integer, default 1). Its animation plays that many passes back to back and strikes once per pass at its moment, and the release ends after the last pass. One attack turn and one cooldown cover the whole release. Content: a short `jab_quick` clip cut from the Mutant Punch, played on a looping state so a client replays every pass from the replicated state alone. The clip is 800 ms a pass, so an animation state also gains `playbackRate` (default 1): a fixed speed for a state the stride rule does not scale, and the combo plays at about 2.5x.
 
 **Leaping slam.** From within 15 m, a new tell crouches for 666 ms (the smash windup), then the brute leaps at its target, steering, while the Mutant Jump Attack's strike plays, and slams at the clip's `hit`. A target out of reach at that moment is a whiff. Engine:
 - an attack gains `queueRange` (contact attacks only, at least `maxRange`, default `maxRange`): how far out its tell waits in line and requests its turn. `maxRange` stays the hit distance. This is the narrow half of the roadmap's "mobile stances and per-enemy reach"; mobile stances and reach re-checks stay there.
@@ -181,9 +181,9 @@ After the review loop the owner ruled on the charge stride and added two brute a
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 11 | Animation-state `maxPlaybackRate` and `scaleWithSpeed`: descriptor, both raw readers, validation, typedefs and SDK types, host and client rate paths, tests, docs. | worker (sequential) | — | |
+| 11 | Animation-state `maxPlaybackRate`, `scaleWithSpeed` and `playbackRate`: descriptor, both raw readers, validation, typedefs and SDK types, host and client rate paths, tests, docs. | worker (sequential) | — | |
 | 12 | Release `repeat` and attack `queueRange`: lowering, descriptor validation, clip clock and proposal per pass, turn gate, typedefs, tests, docs. | worker (sequential) | 11 | |
-| 13 | Brute library: `jab_quick` cut from the Mutant Punch, with `hit`; every other clip byte-identical. | worker (Blender, concurrent with 11) | — | |
+| 13 | Brute library: `jab_quick` cut from the Mutant Punch, with `hit`; every other clip byte-identical. | worker (Blender, concurrent with 11) | — | done: `--trim jab_quick=punch:167-967` (800 ms, `hit` at 100.3 ms carried from `punch:hit=267`), starting on `punch_windup`'s last pose. The Mutant Punch never returns to its draw-back, so the loop wrap pops about 0.3 m and 40° at the right hand (frame 29 was closest on every measure). The 16 old clips are byte-identical at unchanged offsets (`jab_quick` is appended), and a second export reproduced both files. |
 | 14 | Brute content: `run` cap, combo tell and attack, crouch tell and leap, approach selection, shipped tests, docs. | worker (sequential) | 11, 12, 13 | |
 | 15 | Gate and review loop on tasks 11–14. | integrating executor | 14 | |
 

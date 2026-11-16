@@ -141,7 +141,8 @@ impl LightmapStreamState {
         // extents with this same alignment (`block_alignment()` is at least 4,
         // so the model's `max(1)` changes nothing) and refused the level
         // otherwise. `with_layer_limit` fails only when that placement does,
-        // and a plane's extent is its block's.
+        // or a mask plane misses a layer, which its all-resident pack of each
+        // plane at its own extent refused first.
         let model = LightmapPoolModel::with_layer_limit(
             plan.demand.clone(),
             LIGHTMAP_POOL_LAYER_EDGE,
@@ -369,7 +370,7 @@ impl LightmapStreamState {
                 Some(prepared) => payload_mismatch(
                     &self.header,
                     (upload.width, upload.height),
-                    self.model.planes(upload.block),
+                    self.model.masks(upload.block),
                     &prepared.payload,
                 ),
                 None => Some("no payload arrived".to_string()),

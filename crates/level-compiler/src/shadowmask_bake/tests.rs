@@ -1142,13 +1142,18 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
     );
     assert_eq!(raw_fill_live_bytes(), 0, "and before it is returned");
     let peak = encode::take_peak_encode_residency().expect("the miss encodes");
-    assert_eq!(peak.raw_fill, raw_layer);
+    let mask_block = CHART as usize * CHART as usize * 4;
+    assert_eq!(
+        peak.raw_fill, mask_block,
+        "the encoder sees one owned chart's mask block, never the whole layer"
+    );
+    assert!(peak.raw_fill < raw_layer);
     assert_eq!(
         peak.output_capacity,
-        raw_layer / 4,
+        mask_block / 4,
         "one compressed plane: the light fills group A, group B has no blob"
     );
-    assert!(peak.scratch <= 3 * raw_layer, "scratch {}", peak.scratch);
+    assert!(peak.scratch <= 3 * mask_block, "scratch {}", peak.scratch);
 
     reset_shadowmask_output_allocation_count();
     let plan = prepare_fused_shadowmask(
@@ -1435,6 +1440,79 @@ fn estimate_parameters_carry_stride_mode_and_cut_map() {
     moved.own[0][0] = 0..5;
     assert_ne!(params, estimate::estimate_params(&[moved]));
 }
+
+/// Every owned chart's mask texels, read through its face's stamped offset in
+/// its block's mask image, equal the chart's lightmap-layout raw fill texels:
+/// the copy is a pure translation of the padded rect (AC 8, P8). Every chart
+/// whose face owns channel 2 or 3 lies inside plane B (P1); an unowned face
+/// takes no mask place and keeps a zero offset. Reads this thread's last raw
+/// fill and mask layouts.
+pub(super) fn assert_masks_are_translations(
+    shared: &SharedAtlas<'_>,
+    section: &postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
+) {
+    let raw = peek_last_raw_fill();
+    let snapshots = take_last_mask_layouts();
+    assert_eq!(
+        snapshots.len(),
+        shared.layout.blocks.len(),
+        "every block lays out once"
+    );
+    let plane = shared.atlas_width as usize * shared.atlas_height as usize;
+    let mut placed = vec![false; shared.charts.len()];
+    for snapshot in &snapshots {
+        let block = &shared.layout.blocks[snapshot.block as usize];
+        let layout = &snapshot.layout;
+        assert_eq!(section.extents[snapshot.block as usize], layout.extents());
+        for &(face, (mask_x, mask_y)) in &layout.charts {
+            let face = face as usize;
+            placed[face] = true;
+            let placement = &shared.placements[face];
+            let chart = &shared.charts[face];
+            assert_ne!(section.owners[face], NO_FACE_OWNERS, "face {face}");
+            let [dx, dy] = section.mask_offsets[face];
+            assert_eq!(
+                (
+                    i64::from(placement.x - block.x) + i64::from(dx),
+                    i64::from(placement.y - block.y) + i64::from(dy)
+                ),
+                (i64::from(mask_x), i64::from(mask_y)),
+                "face {face}: the offset reaches the mask chart"
+            );
+            if mask_layout::owns_plane_b(&section.owners[face]) {
+                assert!(
+                    mask_x + chart.width_texels <= layout.plane_b.0
+                        && mask_y + chart.height_texels <= layout.plane_b.1,
+                    "face {face} owns channel 2 or 3 outside plane B"
+                );
+            }
+            let row_bytes = chart.width_texels as usize * 4;
+            for row in 0..chart.height_texels as usize {
+                let source = (placement.layer as usize * plane
+                    + (placement.y as usize + row) * shared.atlas_width as usize
+                    + placement.x as usize)
+                    * 4;
+                let mask =
+                    ((mask_y as usize + row) * layout.extent.0 as usize + mask_x as usize) * 4;
+                assert_eq!(
+                    &snapshot.image[mask..mask + row_bytes],
+                    &raw[source..source + row_bytes],
+                    "face {face} row {row}: the mask chart is a byte copy"
+                );
+            }
+        }
+    }
+    for (face, owners) in section.owners.iter().enumerate() {
+        if *owners == NO_FACE_OWNERS {
+            assert!(!placed[face], "unowned face {face} took a mask place");
+            assert_eq!(section.mask_offsets[face], [0, 0], "unowned face {face}");
+        } else {
+            assert!(placed[face], "owned face {face} has no mask place");
+        }
+    }
+}
+
+mod mask_layout_tests;
 
 mod layer_budget_regression;
 

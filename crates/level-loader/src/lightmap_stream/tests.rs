@@ -72,9 +72,9 @@ fn lightmap_section(extents: &[(u16, u16)]) -> LightmapSection {
 /// Groups at these extents, with an empty owner table for the fixtures'
 /// face-free Geometry.
 fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
-    ShadowmaskAtlasSection {
-        owners: Vec::new(),
-        blocks: extents
+    ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
+        extents
             .iter()
             .enumerate()
             .map(|(block, &(width, height))| {
@@ -82,7 +82,8 @@ fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
                 [vec![block as u8 + 10; len], vec![block as u8 + 110; len]]
             })
             .collect(),
-    }
+        extents.iter().copied(),
+    )
 }
 
 /// Every cell mandatory from every camera cell of the two-cell fixtures.

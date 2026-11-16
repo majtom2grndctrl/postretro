@@ -22,12 +22,13 @@ fn sections() -> (LightmapSection, ShadowmaskAtlasSection) {
             })
             .collect(),
     };
-    let shadowmask = ShadowmaskAtlasSection {
-        owners: vec![NO_FACE_OWNERS; 3],
-        blocks: (0..3)
+    let shadowmask = ShadowmaskAtlasSection::whole_block(
+        vec![NO_FACE_OWNERS; 3],
+        (0..3)
             .map(|seed| [vec![seed; 4096], vec![seed + 1; 4096]])
             .collect(),
-    };
+        lightmap.blocks.iter().map(|b| (b.width, b.height)),
+    );
     (lightmap, shadowmask)
 }
 

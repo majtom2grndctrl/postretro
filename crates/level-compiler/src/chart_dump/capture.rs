@@ -2,7 +2,7 @@
 //! about to consume, in chart-local row-major order. Read-only on the bake.
 
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
-use postretro_level_format::shadowmask_atlas::{FaceOwners, NO_FACE_OWNERS};
+use postretro_level_format::shadowmask_atlas::{FaceOwners, MaskOffset, NO_FACE_OWNERS};
 
 use super::ChartDumpConfig;
 use super::format::{ChartKey, ChartMeta, DumpKind, Placement, PlaneKind, SharedDumpWriter};
@@ -51,16 +51,14 @@ fn placement_of(layout: &BlockLayout, face: usize, placement: &ChartPlacement) -
 }
 
 /// A chart's padded rect copied out of a row-major buffer `buffer_width`
-/// texels wide whose texel `(0, 0)` sits at bake-layer `origin`.
-fn copy_chart_rect(
+/// texels wide, its top-left at buffer texel `(x, y)`.
+fn copy_rect_at(
     buffer: &[u8],
     buffer_width: u32,
     texel_bytes: usize,
-    origin: [u32; 2],
-    placement: &ChartPlacement,
+    (x, y): (u32, u32),
     chart: &Chart,
 ) -> Vec<u8> {
-    let (x, y) = (placement.x - origin[0], placement.y - origin[1]);
     let row_bytes = chart.width_texels as usize * texel_bytes;
     let mut out = Vec::with_capacity(row_bytes * chart.height_texels as usize);
     for row in 0..chart.height_texels {
@@ -159,49 +157,54 @@ impl<'a> LightmapCapture<'a> {
 }
 
 /// `OwnershipFill::close_layer`'s capture: each mask-owning chart of a block
-/// at the moment the block goes to `encode_blocks_bc5`, after owner ranking,
-/// padding and dilation. A block carried past its layer close is captured
-/// from its carry when it is finally encoded, so every chart is recorded
-/// once, from its final values.
+/// at the moment its mask block goes to BC5, after owner ranking, padding,
+/// dilation and the copy into the mask layout. Each chart is read back
+/// through its face's stamped mask offset, the way the runtime finds it, so a
+/// dump compares against the lightmap-layout mask of an older bake. A block
+/// carried past its layer close is captured when it is finally encoded, so
+/// every chart is recorded once, from its final values.
 pub(crate) struct MaskCapture {
     writer: SharedDumpWriter,
-    /// Faces of each cell block, ascending.
-    faces_by_block: Vec<Vec<u32>>,
 }
 
 impl MaskCapture {
-    pub(crate) fn new(writer: SharedDumpWriter, shared: &SharedAtlas<'_>) -> Self {
-        let mut faces_by_block = vec![Vec::new(); shared.layout.blocks.len()];
-        for (face, &block) in shared.layout.chart_blocks.iter().enumerate() {
-            faces_by_block[block as usize].push(face as u32);
-        }
-        Self {
-            writer,
-            faces_by_block,
-        }
+    pub(crate) fn new(writer: SharedDumpWriter) -> Self {
+        Self { writer }
     }
 
-    /// `buffer` holds 4 mask bytes per texel, `buffer_width` texels per row,
-    /// its texel `(0, 0)` at bake-layer `origin`: the working layer at
-    /// `[0, 0]`, or a carried block at the block's origin. Faces no light
-    /// owns store no mask and are not recorded.
-    pub(crate) fn capture_block(
+    /// `image` is the block's mask image, `image_width` texels per row, and
+    /// `block_origin` the lightmap block's bake-layer origin. Each owned face
+    /// of `faces` sits at its block-local lightmap texel plus its
+    /// `mask_offsets` entry. Faces no light owns store no mask and are not
+    /// recorded.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_mask_block(
         &self,
-        block: u32,
-        buffer: &[u8],
-        buffer_width: u32,
-        origin: [u32; 2],
+        faces: &[u32],
+        image: &[u8],
+        image_width: u32,
+        block_origin: [u32; 2],
+        mask_offsets: &[MaskOffset],
         owners: &[FaceOwners],
         shared: &SharedAtlas<'_>,
     ) {
-        for &face in &self.faces_by_block[block as usize] {
+        for &face in faces {
             let face = face as usize;
             if owners[face] == NO_FACE_OWNERS {
                 continue;
             }
             let chart = &shared.charts[face];
             let placement = &shared.placements[face];
-            let texels = copy_chart_rect(buffer, buffer_width, 4, origin, placement, chart);
+            let at = |placed: u32, origin: u32, offset: i16| {
+                u32::try_from(i64::from(placed - origin) + i64::from(offset))
+                    .expect("a mask chart lies inside its mask block")
+            };
+            let [dx, dy] = mask_offsets[face];
+            let rect = (
+                at(placement.x, block_origin[0], dx),
+                at(placement.y, block_origin[1], dy),
+            );
+            let texels = copy_rect_at(image, image_width, 4, rect, chart);
             let meta = ChartMeta {
                 key: ChartKey {
                     face: face as u32,

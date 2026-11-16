@@ -157,11 +157,13 @@ impl LightmapBlockSource for TestBlockSource {
     }
 
     fn block_summary(&self, block: u32) -> Option<BlockSummary> {
+        // Each test block's mask block is its lightmap block.
         self.blocks.get(block as usize).map(|spec| BlockSummary {
             cell_id: spec.cell,
             width: spec.width,
             height: spec.height,
             planes: spec.planes,
+            plane_extents: [(spec.width, spec.height); 2],
         })
     }
 

@@ -168,9 +168,9 @@ fn mask_fixture(planes: &[usize]) -> (LightmapSection, ShadowmaskAtlasSection) {
             })
             .collect(),
     };
-    let shadowmask = ShadowmaskAtlasSection {
-        owners: Vec::new(),
-        blocks: planes
+    let shadowmask = ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
+        planes
             .iter()
             .map(|&stored| {
                 [
@@ -179,7 +179,8 @@ fn mask_fixture(planes: &[usize]) -> (LightmapSection, ShadowmaskAtlasSection) {
                 ]
             })
             .collect(),
-    };
+        lightmap.blocks.iter().map(|b| (b.width, b.height)),
+    );
     (lightmap, shadowmask)
 }
 

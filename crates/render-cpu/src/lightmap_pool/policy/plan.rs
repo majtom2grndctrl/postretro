@@ -55,8 +55,9 @@ pub enum RepackKind {
     Compaction(CopyOrderStats),
 }
 
-/// A ready pair to upload at its true extent: its lightmap half at `placement`,
-/// and each present plane at its own place in the mask pool.
+/// A ready pair to upload at its true extents: its lightmap half at
+/// `placement`, and each present plane at its own place in the mask pool, at
+/// its own extent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockUpload {
     pub block: u32,
@@ -64,6 +65,8 @@ pub struct BlockUpload {
     pub planes: [Option<BlockPlacement>; 2],
     pub width: u32,
     pub height: u32,
+    /// Plane A's extent, then plane B's.
+    pub plane_extents: [(u32, u32); 2],
 }
 
 /// Vertex block-table entry `index` (block id + 1) becomes `entry`.

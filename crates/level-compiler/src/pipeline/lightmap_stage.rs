@@ -436,7 +436,7 @@ pub(crate) fn bake_fused_with_movers(
         })
         .transpose()?;
     if let Some((_, mask)) = &chart_dump {
-        shadowmask.attach_chart_dump(mask.clone(), &shared);
+        shadowmask.attach_chart_dump(mask.clone());
     }
     let log_report = |report: &shadowmask_bake::OwnerReport,
                       estimate: &shadowmask_bake::EstimateStats| {

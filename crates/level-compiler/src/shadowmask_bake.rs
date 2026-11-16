@@ -21,6 +21,7 @@ mod eligibility;
 mod encode;
 mod estimate;
 mod fill;
+mod mask_layout;
 mod memo;
 mod metadata;
 mod ownership;
@@ -66,7 +67,10 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 /// v8: each owned channel's chart padding repeats its owner's dilated edge.
 ///
 /// v9: `SMB8`, an all-zero plane has no blob.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 9;
+///
+/// v10: `SMB9`, each block's mask block holds only its owned charts, with
+/// plane B a sub-rect and each owned face's mask offset in its owner entry.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 10;
 
 /// The widest texture the two mask groups may span side by side: the pinned
 /// device texture dimension. The residency dry run prices its rival layouts
@@ -156,13 +160,9 @@ impl FusedShadowmaskPlan<'_> {
     /// `--dump-chart-texels`: record each owned chart's mask texels as its
     /// block is encoded. A memo hit or a level with nothing to own records
     /// nothing.
-    pub(crate) fn attach_chart_dump(
-        &mut self,
-        writer: crate::chart_dump::SharedDumpWriter,
-        shared: &SharedAtlas<'_>,
-    ) {
+    pub(crate) fn attach_chart_dump(&mut self, writer: crate::chart_dump::SharedDumpWriter) {
         if let Some(fill) = self.fill.as_mut() {
-            fill.chart_dump = Some(crate::chart_dump::capture::MaskCapture::new(writer, shared));
+            fill.chart_dump = Some(crate::chart_dump::capture::MaskCapture::new(writer));
         }
     }
 
@@ -367,6 +367,34 @@ thread_local! {
         std::cell::Cell::new(0)
     };
     static ESTIMATE_TRACE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static LAST_MASK_LAYOUTS: std::cell::RefCell<Option<Vec<MaskBlockSnapshot>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// One block's mask as it went to BC5: its id, layout and raw RGBA image.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct MaskBlockSnapshot {
+    pub(crate) block: u32,
+    pub(crate) layout: mask_layout::MaskBlockLayout,
+    pub(crate) image: Vec<u8>,
+}
+
+#[cfg(test)]
+fn record_mask_layouts(snapshots: Vec<MaskBlockSnapshot>) {
+    LAST_MASK_LAYOUTS.with(|last| *last.borrow_mut() = Some(snapshots));
+}
+
+/// Every block's mask layout and image from the last fill finished on this
+/// thread, in block order.
+#[cfg(test)]
+pub(crate) fn take_last_mask_layouts() -> Vec<MaskBlockSnapshot> {
+    let mut snapshots = LAST_MASK_LAYOUTS
+        .with(|last| last.borrow_mut().take())
+        .expect("a shadowmask fill must have finished on this thread");
+    snapshots.sort_by_key(|snapshot| snapshot.block);
+    snapshots
 }
 
 /// Adds the visibility evaluations one cut-face estimate traced. Called on the
@@ -408,6 +436,15 @@ pub(crate) fn take_last_raw_fill_if_any() -> Vec<u8> {
     LAST_RAW_FILL
         .with(|last| last.borrow_mut().take())
         .unwrap_or_default()
+}
+
+/// The last raw fill finished on this thread, left in place for a later
+/// `take`.
+#[cfg(test)]
+pub(crate) fn peek_last_raw_fill() -> Vec<u8> {
+    LAST_RAW_FILL
+        .with(|last| last.borrow().clone())
+        .expect("a shadowmask fill must have finished on this thread")
 }
 
 #[cfg(test)]

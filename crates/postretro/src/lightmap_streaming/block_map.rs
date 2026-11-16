@@ -15,7 +15,7 @@ use crate::streaming::request::ReadRanges;
 pub(crate) struct BlockFacts {
     /// What placing the block takes from each pool's band headroom: one slot,
     /// its extent rounded up to the slot alignment, in the lightmap pool, and
-    /// one more per present plane in the mask pool.
+    /// one per present plane, at that plane's own extent, in the mask pool.
     pub(crate) texels: PerPool<u64>,
     /// Upload bytes of the id-22 half (irradiance plus direction).
     pub(crate) lightmap_bytes: u64,
@@ -112,13 +112,15 @@ impl LevelBlockMap {
                 pinned_blocks.push(block);
             }
             blocks.push(BlockFacts {
-                texels: {
-                    let slot = slot_edge(summary.width) * slot_edge(summary.height);
-                    let planes = summary.planes.iter().filter(|&&stored| stored).count();
-                    PerPool {
-                        lightmap: slot,
-                        mask: slot * planes as u64,
-                    }
+                texels: PerPool {
+                    lightmap: slot_edge(summary.width) * slot_edge(summary.height),
+                    mask: summary
+                        .planes
+                        .iter()
+                        .zip(summary.plane_extents)
+                        .filter(|(stored, _)| **stored)
+                        .map(|(_, (width, height))| slot_edge(width) * slot_edge(height))
+                        .sum(),
                 },
                 lightmap_bytes,
                 shadowmask_bytes,

@@ -49,18 +49,19 @@ pub(crate) fn cast_world_vertices_to_bytes(
     bytes
 }
 
-/// The forward pass's owner vertex stream as bytes: one `Uint16x4` per
-/// vertex, at least one entry so the buffer is never empty. An `owners` slice
+/// The forward pass's owner vertex stream as bytes: per vertex one `Uint16x4`
+/// of owners, then one `Uint32` holding the mask offset (i16 x low, i16 y
+/// high), at least one entry so the buffer is never empty. An `owners` slice
 /// that does not match `vertex_count` packs all-empty, so a vertex never reads
 /// another vertex's owners. An empty slice is the normal no-owner case
 /// (hand-built geometry only: the loader always delivers a full-length stream,
 /// all-empty for a level without id 42); a non-empty mismatch means the
 /// loader's stream disagrees with the geometry, so it warns.
 pub(crate) fn cast_spec_owners_to_bytes(
-    owners: &[postretro_level_format::shadowmask_atlas::FaceOwners],
+    owners: &[postretro_level_format::shadowmask_atlas::SpecOwnerVertex],
     vertex_count: usize,
 ) -> Vec<u8> {
-    use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
+    use postretro_level_format::shadowmask_atlas::SpecOwnerVertex;
     let count = vertex_count.max(1);
     let owners = if owners.len() == vertex_count {
         owners
@@ -76,15 +77,24 @@ pub(crate) fn cast_spec_owners_to_bytes(
     };
     let mut bytes = Vec::with_capacity(count * SPEC_OWNER_STRIDE);
     for index in 0..count {
-        for owner in owners.get(index).unwrap_or(&NO_FACE_OWNERS) {
+        let vertex = owners.get(index).unwrap_or(&SpecOwnerVertex::EMPTY);
+        for owner in vertex.owners {
             bytes.extend_from_slice(&owner.to_ne_bytes());
         }
+        let [x, y] = vertex.mask_offset;
+        let packed = u32::from(x as u16) | (u32::from(y as u16) << 16);
+        bytes.extend_from_slice(&packed.to_ne_bytes());
     }
     bytes
 }
 
-/// Bytes per owner-stream vertex: one face's four u16 owners.
-pub(crate) const SPEC_OWNER_STRIDE: usize =
+/// Bytes per owner-stream vertex: one face's four u16 owners, then its packed
+/// mask offset.
+pub(crate) const SPEC_OWNER_STRIDE: usize = SPEC_OWNER_MASK_OFFSET_AT + 4;
+
+/// Where the packed mask offset sits in an owner-stream vertex: past the four
+/// u16 owners.
+pub(crate) const SPEC_OWNER_MASK_OFFSET_AT: usize =
     std::mem::size_of::<postretro_level_format::shadowmask_atlas::FaceOwners>();
 
 // Each triangle [a, b, c] → three line pairs [a,b, b,c, c,a].
@@ -198,35 +208,53 @@ mod tests {
     }
 
     #[test]
-    fn spec_owner_stream_packs_one_uint16x4_per_vertex_and_never_short() {
-        use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
-        let owners = [[1, 2, 0xFFFF, 0xFFFF], [7, 0xFFFF, 0xFFFF, 0xFFFF]];
+    fn spec_owner_stream_packs_owners_then_the_mask_offset_per_vertex_and_never_short() {
+        use postretro_level_format::shadowmask_atlas::{NO_FACE_OWNERS, SpecOwnerVertex};
+        let owners = [
+            SpecOwnerVertex {
+                owners: [1, 2, 0xFFFF, 0xFFFF],
+                mask_offset: [-3, 260],
+            },
+            SpecOwnerVertex {
+                owners: [7, 0xFFFF, 0xFFFF, 0xFFFF],
+                mask_offset: [0, -1],
+            },
+        ];
         let bytes = cast_spec_owners_to_bytes(&owners, 2);
+        assert_eq!(SPEC_OWNER_STRIDE, 12);
         assert_eq!(bytes.len(), 2 * SPEC_OWNER_STRIDE);
         let read = |at: usize| u16::from_ne_bytes([bytes[at], bytes[at + 1]]);
-        assert_eq!([read(0), read(2), read(4), read(6)], owners[0]);
-        assert_eq!([read(8), read(10), read(12), read(14)], owners[1]);
+        let word = |at: usize| u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!([read(0), read(2), read(4), read(6)], owners[0].owners);
+        assert_eq!(word(8), 0xFFFD | (260 << 16), "i16 x low, i16 y high");
+        assert_eq!([read(12), read(14), read(16), read(18)], owners[1].owners);
+        assert_eq!(word(20), 0xFFFF_0000);
 
         // A stream that does not match the vertices installs all-empty at
-        // the vertex count, never short.
+        // the vertex count, never short: no owners and a zero offset.
         for (stream, vertices) in [(&owners[..1], 3), (&[][..], 2), (&owners[..], 0)] {
             let bytes = cast_spec_owners_to_bytes(stream, vertices);
             assert_eq!(bytes.len(), vertices.max(1) * SPEC_OWNER_STRIDE);
-            assert!(
-                bytes
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .all(|owner| u16::from_ne_bytes(*owner) == NO_FACE_OWNERS[0]),
-                "{vertices} vertices"
-            );
+            for vertex in bytes.as_chunks::<SPEC_OWNER_STRIDE>().0 {
+                let (owners, offset) = vertex.split_at(SPEC_OWNER_MASK_OFFSET_AT);
+                assert!(
+                    owners
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .all(|owner| u16::from_ne_bytes(*owner) == NO_FACE_OWNERS[0]),
+                    "{vertices} vertices"
+                );
+                assert_eq!(offset, [0; 4], "{vertices} vertices");
+            }
         }
     }
 
     #[test]
     fn spec_owner_stream_warns_once_only_on_a_non_empty_length_mismatch() {
         // The capture sees only this thread; the cast runs inline on it.
-        let owners = [[1, 2, 0xFFFF, 0xFFFF], [7, 0xFFFF, 0xFFFF, 0xFFFF]];
+        use postretro_level_format::shadowmask_atlas::SpecOwnerVertex;
+        let owners = [SpecOwnerVertex::EMPTY; 2];
         let capture = postretro_test_log_capture::LogCapture::start();
 
         cast_spec_owners_to_bytes(&owners[..1], 3);

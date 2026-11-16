@@ -365,9 +365,21 @@ impl MaxRects {
             w,
             h,
         };
+        self.carve(placed);
+        Some((placed.x, placed.y))
+    }
 
-        // Split every free rect that overlaps the placed rect into the maximal
-        // sub-rects that don't, then prune any free rect contained in another.
+    /// Take the `w × h` rectangle at `(x, y)` out of the free space, as if a
+    /// chart already sat there: later inserts never overlap it.
+    pub(crate) fn occupy(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        if w > 0 && h > 0 {
+            self.carve(Rect { x, y, w, h });
+        }
+    }
+
+    /// Split every free rect that overlaps `placed` into the maximal sub-rects
+    /// that don't, then prune any free rect contained in another.
+    fn carve(&mut self, placed: Rect) {
         let mut i = 0;
         while i < self.free.len() {
             if let Some(splits) = split_free(&self.free[i], &placed) {
@@ -378,8 +390,6 @@ impl MaxRects {
             }
         }
         self.prune();
-
-        Some((placed.x, placed.y))
     }
 
     /// Drop any free rect fully contained in another — the maximality invariant

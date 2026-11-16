@@ -340,13 +340,18 @@ struct LightSpaceMatrices {
 // `render::strip_point_shadow_cube`.
 @group(5) @binding(5) var point_shadow_cube: texture_depth_cube_array; // CUBE_SHADOW_BINDING
 
-// Group 6 — lightmap block table, VERTEX only. One vec4<u32> per
+// Group 6 — lightmap block table, VERTEX only. One entry per
 // `WorldVertex::lightmap_block` (block id + 1, 0 = no lightmap): the lightmap
-// address, the plane A and plane B addresses, then extent and flags. Layout:
+// word (lightmap, plane A and plane B addresses, then extent and flags) and
+// the mask word (plane A's and plane B's own extents). Layout:
 // `postretro_render_cpu::lightmap_pool::BlockTableEntry`. The vertex stage
 // reads one entry per vertex and hands the fragment stage flat varyings, so no
 // fragment binding is spent.
-@group(6) @binding(0) var<storage, read> lightmap_block_table: array<vec4<u32>>;
+struct LightmapBlockEntry {
+    lightmap: vec4<u32>,
+    mask: vec4<u32>,
+};
+@group(6) @binding(0) var<storage, read> lightmap_block_table: array<LightmapBlockEntry>;
 
 
 struct VertexInput {
@@ -362,6 +367,9 @@ struct VertexInput {
     // The vertex's face owners from the second, forward-only vertex buffer
     // (one Uint16x4): compact static spec-light indices, 0xFFFF = empty.
     @location(6) spec_owners: vec4<u32>,
+    // The face's lightmap-to-mask texel offset from the same buffer: i16 x
+    // (low half) and i16 y (high half) in one Uint32; 0 on an unowned face.
+    @location(7) mask_offset: u32,
 };
 
 struct VertexOutput {
@@ -385,9 +393,11 @@ struct VertexOutput {
     // Face owners, whole per face: every vertex of a face carries the same
     // entry, so flat interpolation never blends two faces' owners.
     @location(9) @interpolate(flat) spec_owners: vec4<u32>,
-    // Plane A and plane B pool addresses, packed: only the mask path decodes
-    // them.
-    @location(10) @interpolate(flat) lightmap_plane_addresses: vec2<u32>,
+    // The mask path's words, packed: plane A and plane B pool addresses, then
+    // each plane's own extent. Only the mask path decodes them.
+    @location(10) @interpolate(flat) lightmap_mask: vec4<u32>,
+    // The face's lightmap-to-mask texel offset, packed as on the owner stream.
+    @location(11) @interpolate(flat) mask_offset: u32,
 };
 
 fn oct_decode(enc: vec2<u32>) -> vec3<f32> {
@@ -430,9 +440,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.lightmap_texel = block.texel;
     out.lightmap_layer_flags = block.layer_flags;
     out.lightmap_rect = block.rect;
-    out.lightmap_plane_addresses = block.plane_addresses;
+    out.lightmap_mask = block.mask;
     out.animated_block = in.lightmap_block_ids.y;
     out.spec_owners = in.spec_owners;
+    out.mask_offset = in.mask_offset;
 
     return out;
 }
@@ -961,8 +972,8 @@ fn shadowmask_union_subtraction(
     world_pos: vec3<f32>,
     lightmap_texel: vec2<f32>,
     lightmap_layer_flags: u32,
-    lightmap_rect: vec4<u32>,
-    lightmap_plane_addresses: vec2<u32>,
+    lightmap_mask: vec4<u32>,
+    mask_offset: u32,
     mesh_n: vec3<f32>,
     bump_n: vec3<f32>,
     owners: vec4<u32>,
@@ -991,8 +1002,8 @@ fn shadowmask_union_subtraction(
     let mask = sample_shadowmask_atlas(
         lightmap_texel,
         lightmap_layer_flags,
-        lightmap_rect,
-        lightmap_plane_addresses,
+        lightmap_mask,
+        mask_offset,
     );
     let promoted_count = uniforms.total_light_count - promoted_start;
     let influence_len = arrayLength(&light_influence);
@@ -1303,8 +1314,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             in.world_position,
             in.lightmap_texel,
             in.lightmap_layer_flags,
-            in.lightmap_rect,
-            in.lightmap_plane_addresses,
+            in.lightmap_mask,
+            in.mask_offset,
             mesh_n,
             N_shade,
             in.spec_owners,
@@ -1339,8 +1350,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             specular_shadowmask = sample_shadowmask_atlas(
                 in.lightmap_texel,
                 in.lightmap_layer_flags,
-                in.lightmap_rect,
-                in.lightmap_plane_addresses,
+                in.lightmap_mask,
+                in.mask_offset,
             );
         }
         specular_sum = world_static_specular(

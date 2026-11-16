@@ -4,7 +4,7 @@
 
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use postretro_level_format::lightmap_pool::{
-    MASK_POOL_LAYER_BYTES, PackScratch, PerPool, PoolDemand, all_resident_pool_bytes,
+    BlockMasks, MASK_POOL_LAYER_BYTES, PackScratch, PerPool, PoolDemand, all_resident_pool_bytes,
     lightmap_pool_layer_bytes, streamed_pool_bytes,
 };
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
@@ -52,12 +52,16 @@ pub(crate) fn pool_demand(
     let block_count = lightmap.blocks.len();
     if let Some(section) = shadowmask {
         anyhow::ensure!(
-            section.blocks.len() == block_count,
-            "Lightmap pool bound: id 42 has {} blocks, id 22 has {block_count}",
+            section.blocks.len() == block_count && section.extents.len() == block_count,
+            "Lightmap pool bound: id 42 has {} blocks and {} mask extents, id 22 has \
+             {block_count} blocks",
             section.blocks.len(),
+            section.extents.len(),
         );
     }
-    Ok(PoolDemand::new(
+    // Each present plane at its own mask extent, as `PoolDemand::of_indices`
+    // reads them back from the written section.
+    Ok(PoolDemand::with_masks(
         lightmap.header().block_alignment(),
         lightmap
             .blocks
@@ -68,7 +72,11 @@ pub(crate) fn pool_demand(
             section
                 .blocks
                 .iter()
-                .map(|planes| planes.each_ref().map(|plane| !plane.is_empty()))
+                .zip(&section.extents)
+                .map(|(planes, extents)| BlockMasks {
+                    planes: planes.each_ref().map(|plane| !plane.is_empty()),
+                    extents: [extents.plane(0), extents.plane(1)],
+                })
                 .collect()
         }),
     ))

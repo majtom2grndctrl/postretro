@@ -1217,12 +1217,12 @@ mod tests {
     /// entry per face of [`sample_geo_result`], the geometry every shadowmask
     /// pack fixture writes beside it.
     fn shadowmask_for(lightmap: &LightmapSection) -> ShadowmaskAtlasSection {
-        ShadowmaskAtlasSection {
-            owners: vec![
+        ShadowmaskAtlasSection::whole_block(
+            vec![
                 postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
                 sample_geo_result().geometry.faces.len()
             ],
-            blocks: lightmap
+            lightmap
                 .blocks
                 .iter()
                 .map(|block| {
@@ -1234,7 +1234,8 @@ mod tests {
                     [vec![255; len], vec![255; len]]
                 })
                 .collect(),
-        }
+            lightmap.blocks.iter().map(|b| (b.width, b.height)),
+        )
     }
 
     fn minimal_shadowmask_atlas() -> ShadowmaskAtlasSection {

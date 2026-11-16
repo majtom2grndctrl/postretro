@@ -20,7 +20,7 @@ use postretro_level_loader::{
     LevelWorld, LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest,
 };
 use postretro_render_cpu::lightmap_pool::{
-    LightmapPoolModel, PerPool, PoolDemand, PoolKind, PoolPlan, RepackKind, StaticPool,
+    BlockMasks, LightmapPoolModel, PerPool, PoolDemand, PoolKind, PoolPlan, RepackKind, StaticPool,
     StreamedPoolSizing, payload_mismatch, plan_streaming_pool,
 };
 
@@ -267,8 +267,16 @@ impl PoolMirror {
             .map(|summary| (u32::from(summary.width), u32::from(summary.height)))
             .collect();
         let block_texels = texel_areas(&extents);
-        let planes = summaries.iter().map(|summary| summary.planes).collect();
-        let demand = PoolDemand::new(source.block_alignment(), extents, Some(planes));
+        let masks = summaries
+            .iter()
+            .map(|summary| BlockMasks {
+                planes: summary.planes,
+                extents: summary
+                    .plane_extents
+                    .map(|(width, height)| (u32::from(width), u32::from(height))),
+            })
+            .collect();
+        let demand = PoolDemand::with_masks(source.block_alignment(), extents, Some(masks));
         let model = LightmapPoolModel::new(demand, edge, first_generation)
             .expect("test blocks fit a layer");
         Self::with_model(
@@ -507,8 +515,8 @@ impl PoolMirror {
         let Some(layout) = &self.layout else {
             return true;
         };
-        let (extent, planes) = (self.model.extent(block), self.model.planes(block));
-        payload_mismatch(&layout.header, extent, planes, payload).is_none()
+        let (extent, masks) = (self.model.extent(block), self.model.masks(block));
+        payload_mismatch(&layout.header, extent, masks, payload).is_none()
     }
 
     /// As `LightmapStreamState::outcome`.

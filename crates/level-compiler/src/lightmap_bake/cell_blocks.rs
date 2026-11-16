@@ -176,6 +176,24 @@ pub(crate) fn pack_cell_block_within(
     if charts.is_empty() {
         return None;
     }
+    pack_cell_block_reserving(charts, None, align, pool_edge)
+}
+
+/// [`pack_cell_block_within`] around a `reserved` `(width, height)` rect held
+/// at the block's origin: no chart lands in it, and the block is at least as
+/// large. `None` for no reservation packs exactly as
+/// [`pack_cell_block_within`]. The shadowmask's mask layout packs its
+/// channel-0/1 charts around its plane-B sub-rect this way. `None` when there
+/// is nothing to pack: no chart and no reservation.
+pub(crate) fn pack_cell_block_reserving(
+    charts: &[(u32, u32)],
+    reserved: Option<(u32, u32)>,
+    align: u32,
+    pool_edge: u32,
+) -> Option<PackedBlock> {
+    if charts.is_empty() && reserved.is_none() {
+        return None;
+    }
     assert!(
         align > 0 && pool_edge.is_multiple_of(align),
         "block alignment {align} does not divide the pool layer edge {pool_edge}"
@@ -188,9 +206,20 @@ pub(crate) fn pack_cell_block_within(
             .cmp(&area_of(&charts[a]))
             .then(a.cmp(&b))
     });
-    let area: u64 = charts.iter().map(area_of).sum();
-    let max_width = charts.iter().map(|c| c.0).max().unwrap_or(0);
-    let max_height = charts.iter().map(|c| c.1).max().unwrap_or(0);
+    let reserved_rect = reserved.unwrap_or((0, 0));
+    let area: u64 = charts.iter().map(area_of).sum::<u64>() + area_of(&reserved_rect);
+    let max_width = charts
+        .iter()
+        .map(|c| c.0)
+        .max()
+        .unwrap_or(0)
+        .max(reserved_rect.0);
+    let max_height = charts
+        .iter()
+        .map(|c| c.1)
+        .max()
+        .unwrap_or(0)
+        .max(reserved_rect.1);
     let side = (area as f64).sqrt();
 
     let mut widths: Vec<u32> = WIDTH_FACTORS
@@ -207,7 +236,7 @@ pub(crate) fn pack_cell_block_within(
     let mut best: Option<PackedBlock> = None;
     for width in widths {
         let floor = align_up(max_height.max(area.div_ceil(u64::from(width)) as u32));
-        let block = shortest_block(charts, &order, width, floor, align);
+        let block = shortest_block(charts, reserved, &order, width, floor, align);
         // A block that fits a pool layer beats any that does not; then the
         // smaller area, then the squarer shape.
         let key = |b: &PackedBlock| (!b.fits(pool_edge), b.area(), b.width.max(b.height));
@@ -222,6 +251,7 @@ pub(crate) fn pack_cell_block_within(
 /// searched upward geometrically from `floor` and then bisected.
 fn shortest_block(
     charts: &[(u32, u32)],
+    reserved: Option<(u32, u32)>,
     order: &[usize],
     width: u32,
     floor: u32,
@@ -231,7 +261,7 @@ fn shortest_block(
     let mut fail = None;
     let mut height = floor;
     let mut placed = loop {
-        match try_pack(charts, order, width, height) {
+        match try_pack(charts, reserved, order, width, height) {
             Some(placements) => break placements,
             None => {
                 fail = Some(height);
@@ -245,7 +275,7 @@ fn shortest_block(
         // this finds a short packing height, not provably the shortest.
         while height - low > align {
             let mid = align_up(low + (height - low) / 2);
-            match try_pack(charts, order, width, mid) {
+            match try_pack(charts, reserved, order, width, mid) {
                 Some(placements) => {
                     height = mid;
                     placed = placements;
@@ -263,11 +293,15 @@ fn shortest_block(
 
 fn try_pack(
     charts: &[(u32, u32)],
+    reserved: Option<(u32, u32)>,
     order: &[usize],
     width: u32,
     height: u32,
 ) -> Option<Vec<(u32, u32)>> {
     let mut bin = MaxRects::new(width, height);
+    if let Some((reserved_width, reserved_height)) = reserved {
+        bin.occupy(0, 0, reserved_width, reserved_height);
+    }
     let mut placements = vec![(0, 0); charts.len()];
     for &index in order {
         placements[index] = bin.insert(charts[index].0, charts[index].1)?;

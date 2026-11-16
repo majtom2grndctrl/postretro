@@ -66,7 +66,7 @@ use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
-use postretro_level_format::shadowmask_atlas::{FaceOwners, ShadowmaskBlockIndex};
+use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, SpecOwnerVertex};
 #[cfg(feature = "load-prl")]
 use postretro_level_format::teleporters::TeleportersSection;
 #[cfg(feature = "load-prl")]
@@ -750,12 +750,12 @@ pub struct LevelWorld {
     #[cfg(feature = "load-prl")]
     pub shadowmask_atlas: Option<ShadowmaskBlockIndex>,
     /// One owner entry per world vertex, stamped from its face's id-42 entry
-    /// through the BVH leaves' face index ranges: the forward pass's owner
-    /// vertex stream. Always `vertices.len()` long; all
-    /// `SHADOWMASK_OWNER_EMPTY` when id 42 is absent or the face ranges cannot
-    /// be recovered, so no face draws static non-SDF world specular.
+    /// (owners and mask offset) through the BVH leaves' face index ranges: the
+    /// forward pass's owner vertex stream. Always `vertices.len()` long; all
+    /// empty when id 42 is absent or the face ranges cannot be recovered, so
+    /// no face draws static non-SDF world specular.
     #[cfg(feature = "load-prl")]
-    pub vertex_spec_owners: Vec<FaceOwners>,
+    pub vertex_spec_owners: Vec<SpecOwnerVertex>,
     /// Id-22 and id-42 block payloads, held only until install moves them
     /// into the GPU upload. See [`LevelWorld::take_gpu_lighting_payloads`].
     #[cfg(feature = "load-prl")]
@@ -2656,7 +2656,7 @@ mod tests {
     /// one owner entry per face of the Geometry it loads beside.
     fn shadowmask_section(
         extents: &[(u16, u16)],
-        owners: Vec<FaceOwners>,
+        owners: Vec<postretro_level_format::shadowmask_atlas::FaceOwners>,
     ) -> postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection {
         use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, group_plane_len};
         let blocks = extents
@@ -2670,12 +2670,12 @@ mod tests {
                 ]
             })
             .collect();
-        ShadowmaskAtlasSection { owners, blocks }
+        ShadowmaskAtlasSection::whole_block(owners, blocks, extents.iter().copied())
     }
 
     /// [`sample_geometry`]'s two faces, owned by [`sample_alpha_lights`]'s two
     /// static lights (spec indices 0 and 1; the dynamic spot has none).
-    fn sample_face_owners() -> Vec<FaceOwners> {
+    fn sample_face_owners() -> Vec<postretro_level_format::shadowmask_atlas::FaceOwners> {
         use postretro_level_format::shadowmask_atlas::SHADOWMASK_OWNER_EMPTY as E;
         vec![[0, 1, E, E], [1, E, E, E]]
     }
@@ -7373,29 +7373,33 @@ mod tests {
     // face's entry on every vertex its triangles reference, recovered through
     // the BVH leaves because id 17 keeps no face index ranges.
     #[test]
-    fn load_prl_stamps_each_faces_owners_onto_its_vertices() {
+    fn load_prl_stamps_each_faces_owners_and_mask_offset_onto_its_vertices() {
+        use postretro_level_format::shadowmask_atlas::SpecOwnerVertex;
         let owners = sample_face_owners();
+        let mut section = shadowmask_section(&[(4, 4)], owners.clone());
+        section.mask_offsets = vec![[4, -8], [-12, 0]];
         let tmp = write_prl_fixture(
-            selected_light_sections_with(shadowmask_blob(shadowmask_section(
-                &[(4, 4)],
-                owners.clone(),
-            ))),
+            selected_light_sections_with(shadowmask_blob(section.clone())),
             "postretro_test_shadowmask_vertex_owners.prl",
         );
         let world = load_prl(tmp.to_str().unwrap()).expect("fixture loads");
         std::fs::remove_file(&tmp).ok();
 
         assert_eq!(world.vertex_spec_owners.len(), world.vertices.len());
+        let stamped = |face: usize| SpecOwnerVertex {
+            owners: owners[face],
+            mask_offset: section.mask_offsets[face],
+        };
         // `sample_geometry`: face 0 draws vertices 0..3, face 1 vertices 3..6.
-        assert_eq!(&world.vertex_spec_owners[..3], &[owners[0]; 3]);
-        assert_eq!(&world.vertex_spec_owners[3..], &[owners[1]; 3]);
+        assert_eq!(&world.vertex_spec_owners[..3], &[stamped(0); 3]);
+        assert_eq!(&world.vertex_spec_owners[3..], &[stamped(1); 3]);
     }
 
     // A missing id 42: every vertex carries the empty entry, at full vertex
     // count, so no face draws static non-SDF world specular.
     #[test]
     fn load_prl_without_shadowmask_gives_every_vertex_no_owners() {
-        use postretro_level_format::shadowmask_atlas::NO_FACE_OWNERS;
+        use postretro_level_format::shadowmask_atlas::SpecOwnerVertex;
         let sections: Vec<_> = selected_light_sections_with(default_fog_volumes_blob())
             .into_iter()
             .take(9)
@@ -7413,7 +7417,7 @@ mod tests {
         assert!(!world.vertices.is_empty());
         assert_eq!(
             world.vertex_spec_owners,
-            vec![NO_FACE_OWNERS; world.vertices.len()]
+            vec![SpecOwnerVertex::EMPTY; world.vertices.len()]
         );
     }
 
@@ -7617,7 +7621,10 @@ mod tests {
         );
         assert_eq!(
             world.vertex_spec_owners,
-            vec![NO_FACE_OWNERS; world.vertices.len()]
+            vec![
+                postretro_level_format::shadowmask_atlas::SpecOwnerVertex::EMPTY;
+                world.vertices.len()
+            ]
         );
     }
 
@@ -7699,8 +7706,9 @@ mod tests {
         assert_eq!(kept, &shadowmask.index(), "owners and records unchanged");
         assert_eq!(kept.owners, sample_face_owners());
         let owners = sample_face_owners();
-        assert_eq!(&world.vertex_spec_owners[..3], &[owners[0]; 3]);
-        assert_eq!(&world.vertex_spec_owners[3..], &[owners[1]; 3]);
+        let stamped: Vec<_> = world.vertex_spec_owners.iter().map(|v| v.owners).collect();
+        assert_eq!(&stamped[..3], &[owners[0]; 3]);
+        assert_eq!(&stamped[3..], &[owners[1]; 3]);
         assert_eq!(
             world.gpu_lighting_payloads.blocks[0].shadowmask,
             Some(shadowmask.blocks[0].clone())

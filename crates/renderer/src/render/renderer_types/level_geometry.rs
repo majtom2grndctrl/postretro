@@ -37,7 +37,7 @@ pub struct LevelGeometry<'a> {
     /// pass's second vertex buffer. Any length other than `vertices.len()`
     /// (a level without id 42 hands an all-empty stream; hand-built geometry
     /// may hand none) installs as all-empty: no static non-SDF specular.
-    pub vertex_spec_owners: &'a [postretro_level_format::shadowmask_atlas::FaceOwners],
+    pub vertex_spec_owners: &'a [postretro_level_format::shadowmask_atlas::SpecOwnerVertex],
     pub indices: &'a [u32],
     pub bvh: &'a BvhTree,
     pub lights: &'a [MapLight],

@@ -100,6 +100,52 @@ pub(super) fn encode_blocks_bc5(
     out
 }
 
+/// One mask block's two stored planes from its raw RGBA image: group A at the
+/// whole `width × height` extent, group B trimmed to the `plane_b` sub-rect
+/// at the origin. Plane B is whole BC blocks at the origin and every texel
+/// outside it holds zero in channels 2/3 (only plane-B charts own them), so
+/// the trim drops only all-zero BC blocks and keeps every other byte as the
+/// whole-block encode wrote it. An all-zero plane comes back empty. A block
+/// with no mask (`width` 0) stores neither plane.
+pub(super) fn encode_mask_block(
+    image: &[u8],
+    width: u32,
+    height: u32,
+    plane_b: (u32, u32),
+) -> [Vec<u8>; 2] {
+    if width == 0 || height == 0 {
+        return [Vec::new(), Vec::new()];
+    }
+    let whole = CellBlock {
+        cell_id: 0,
+        width,
+        height,
+        layer: 0,
+        x: 0,
+        y: 0,
+    };
+    let [group_a, group_b] = encode_blocks_bc5(image, width, height, 1, &[whole])
+        .pop()
+        .expect("one block in, one block out");
+    if group_b.is_empty() {
+        return [group_a, group_b];
+    }
+    let units = width / BC_EDGE;
+    let trimmed = copy_unit_rect(
+        &group_b,
+        units,
+        BC5_BLOCK_BYTES,
+        [0, 0, plane_b.0 / BC_EDGE, plane_b.1 / BC_EDGE],
+    );
+    let kept: usize = trimmed.iter().map(|&byte| usize::from(byte != 0)).sum();
+    let whole_kept: usize = group_b.iter().map(|&byte| usize::from(byte != 0)).sum();
+    assert_eq!(
+        kept, whole_kept,
+        "plane B {plane_b:?} of a {width}x{height} mask block drops nonzero BC bytes"
+    );
+    [group_a, stored_plane(trimmed)]
+}
+
 /// All-zero BC5 decodes to zero, so absence is exact even on an owned face: the
 /// sampler reads an absent plane as this one would have read. Any other bytes
 /// stay as encoded, whatever they decode to.
@@ -150,8 +196,9 @@ pub(super) fn take_peak_encode_residency() -> Option<EncodeResidency> {
 }
 
 /// Decode every block's groups back into a layer-major raw fill of the bake
-/// layers, per texel `[g0.r, g0.g, g1.r, g1.g]`. Texels outside every block
-/// read occluded, as the raw fill initializes them.
+/// layers, per texel `[g0.r, g0.g, g1.r, g1.g]`, for a section whose mask
+/// blocks are their lightmap blocks ([`ShadowmaskAtlasSection::whole_block`]).
+/// Texels outside every block read occluded, as the raw fill initializes them.
 #[cfg(test)]
 pub(super) fn decode_blocks_to_layers(
     section: &postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection,
@@ -275,10 +322,11 @@ mod tests {
             }
         }
 
-        let section = ShadowmaskAtlasSection {
-            owners: vec![],
-            blocks: groups,
-        };
+        let section = ShadowmaskAtlasSection::whole_block(
+            vec![],
+            groups,
+            blocks.iter().map(|b| (b.width as u16, b.height as u16)),
+        );
         assert_eq!(
             section.byte_len(),
             section.index().index_byte_len() + 4 * plane_len,
@@ -315,10 +363,11 @@ mod tests {
         let groups = encode_blocks_bc5(&raw, width, height, layer_count, &blocks);
         assert_eq!(groups[0][0].len(), 16);
         assert_eq!(groups[1][1].len(), 32);
-        let section = ShadowmaskAtlasSection {
-            owners: vec![],
-            blocks: groups,
-        };
+        let section = ShadowmaskAtlasSection::whole_block(
+            vec![],
+            groups,
+            blocks.iter().map(|b| (b.width as u16, b.height as u16)),
+        );
         assert_eq!(
             decode_blocks_to_layers(&section, &blocks, width, height, layer_count),
             raw

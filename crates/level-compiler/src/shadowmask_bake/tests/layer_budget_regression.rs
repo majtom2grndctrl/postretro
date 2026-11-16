@@ -2,27 +2,30 @@
 use super::*;
 
 // Frozen before production edits at 7e7614d36. The id 42 digests were recaptured
-// for `SMB8`, after these same rows passed with the old tag and every plane stored.
+// for `SMB8`, after these same rows passed with the old tag and every plane stored,
+// and again for `SMB9`, after `assert_masks_are_translations` showed every owned
+// chart's mask texels byte-equal to its lightmap-layout fill; owners and drop
+// reports kept their digests.
 fn expected_pin(label: &str) -> (&'static str, &'static str) {
     match label {
         "one-layer" => (
-            "8b48369075929a996ba34b5e0f1e533c4832b93338d097e43678a21038197fc8",
+            "51e264dcd633b3cea1d9970025eba6dcce2744a55642de3b2513c7120fb1f574",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "three-layers" => (
-            "182a8eff47af770061df6bda93be75a02a65a86dbb152c8bc7967fc8a560bef2",
+            "20e35c8a5e46472ebccc67aa7db54be032a08232ae160c6bb07cb0310e1fbbd5",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "dark-middle-layer" => (
-            "578ffdb55b973979735fa30d7064cb4ee3d8c2c3b32102b3a517f3f7cd1dc31a",
+            "5f8f8b8ebbea7ff5690f186cbab7b6c13ca32f4d4c189ae380a3d4c67b0dd251",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "cut-same-layer" => (
-            "56b715df9134d63649a862424b4d66e7896ec84c10055d1cfe1244cbe79dcae6",
+            "fa2a5765e92b0865904f75459cc3b7f37c5fb08fea01163191ffafc823dd8fdc",
             "0f272f137ea21210d2692c8680b9eb0db62508e8e9573a3e41a339c730ded9cb",
         ),
         "cut-first-to-last" => (
-            "f37aadd2d059eefd33e38077874874cb5bc533635eab1a9121636e996130f0ed",
+            "2a20613d8a8a60a253964642d98401c48ab5067fc9b393c1182338ff2134438f",
             "0f272f137ea21210d2692c8680b9eb0db62508e8e9573a3e41a339c730ded9cb",
         ),
         "cut-owners-baked-nothing" => (
@@ -39,6 +42,13 @@ fn golden(label: &str, section: Option<ShadowmaskAtlasSection>, report: OwnerRep
         .map_or_else(Vec::new, ShadowmaskAtlasSection::to_bytes);
     let report_text = format!("{report:?}");
     let expected = expected_pin(label);
+    println!(
+        "PIN_BASELINE {label} id42={} owners={:?} report={} report_digest={}",
+        blake3::hash(&bytes).to_hex(),
+        section.as_ref().map(|section| &section.owners),
+        report_text,
+        blake3::hash(report_text.as_bytes()).to_hex()
+    );
     assert_eq!(
         blake3::hash(&bytes).to_hex().as_str(),
         expected.0,
@@ -48,13 +58,6 @@ fn golden(label: &str, section: Option<ShadowmaskAtlasSection>, report: OwnerRep
         blake3::hash(report_text.as_bytes()).to_hex().as_str(),
         expected.1,
         "{label}: owner drop report"
-    );
-    println!(
-        "PIN_BASELINE {label} id42={} owners={:?} report={} report_digest={}",
-        blake3::hash(&bytes).to_hex(),
-        section.as_ref().map(|section| &section.owners),
-        report_text,
-        blake3::hash(report_text.as_bytes()).to_hex()
     );
 }
 
@@ -95,6 +98,9 @@ fn no_cut(layers: u32, dark_middle: bool) -> (Option<ShadowmaskAtlasSection>, Ow
         });
     }
     let result = fill.finish(&shared);
+    if let Some(section) = &result.0 {
+        super::assert_masks_are_translations(&shared, section);
+    }
     assert_eq!(
         probe.peak(),
         (CHART * CHART * 4) as usize,
@@ -159,8 +165,7 @@ fn cut_dumped(
         vec![channels],
         None,
     );
-    fill.chart_dump =
-        dump.map(|writer| crate::chart_dump::capture::MaskCapture::new(writer, &shared));
+    fill.chart_dump = dump.map(crate::chart_dump::capture::MaskCapture::new);
     let probe = fill.probe.clone();
     for layer in 0..layers {
         for (arrival, light) in eligible.iter().enumerate() {
@@ -192,6 +197,10 @@ fn cut_dumped(
         }
     }
     let result = fill.finish(&shared);
+    if let Some(section) = &result.0 {
+        // P10: a carried block's layout is fixed after its last cut face.
+        super::assert_masks_are_translations(&shared, section);
+    }
     let layer_bytes = fixture.atlas.width as usize * CHART as usize * 4;
     let carry = if spans_layers { layer_bytes } else { 0 };
     assert!(

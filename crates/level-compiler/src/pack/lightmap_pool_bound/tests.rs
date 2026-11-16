@@ -76,13 +76,14 @@ fn lightmap(blocks: &[Block]) -> LightmapSection {
 
 /// A stored plane only has to be non-empty.
 fn shadowmask(blocks: &[Block]) -> ShadowmaskAtlasSection {
-    ShadowmaskAtlasSection {
-        owners: Vec::new(),
-        blocks: blocks
+    ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
+        blocks
             .iter()
             .map(|block| block.planes.map(|stored| vec![1; usize::from(stored)]))
             .collect(),
-    }
+        blocks.iter().map(|block| block.extent),
+    )
 }
 
 fn cell_records(flags: &[u32]) -> CellsSection {
@@ -810,4 +811,44 @@ fn a_cell_with_split_block_runs_fails_by_name() {
         .to_string();
     assert!(error.contains("Lightmap pool bound"), "{error}");
     assert!(error.contains("not contiguous"), "{error}");
+}
+
+// The compiler prices each mask plane at its own extent, exactly as the
+// runtime reads the written section back: a plane-B sub-rect counts at its
+// sub-rect, a block with no owned face not at all.
+#[test]
+fn pool_demand_from_the_section_equals_the_demand_of_its_parsed_indices() {
+    use postretro_level_format::shadowmask_atlas::{
+        MaskExtents, NO_FACE_OWNERS, ShadowmaskAtlasSection, ShadowmaskOwnerBounds,
+    };
+    let level = lightmap(&[block(0, (16, 8), [false; 2]), block(1, (8, 8), [false; 2])]);
+    let plane = |w: u32, h: u32, byte: u8| vec![byte; group_plane_len(w, h).unwrap() as usize];
+    let section = ShadowmaskAtlasSection {
+        owners: vec![NO_FACE_OWNERS; 2],
+        mask_offsets: vec![[0; 2]; 2],
+        blocks: vec![[plane(8, 8, 1), plane(4, 4, 2)], [Vec::new(), Vec::new()]],
+        extents: vec![
+            MaskExtents {
+                mask: (8, 8),
+                plane_b: (4, 4),
+            },
+            MaskExtents::NONE,
+        ],
+    };
+    let compiled = pool_demand(&level, Some(&section)).unwrap();
+    let parsed = ShadowmaskAtlasSection::from_bytes(
+        &section.to_bytes(),
+        &level.index(),
+        ShadowmaskOwnerBounds {
+            face_count: 2,
+            static_spec_light_count: 1,
+        },
+    )
+    .expect("the section parses");
+    assert_eq!(
+        compiled,
+        PoolDemand::of_indices(&level.index(), Some(&parsed.index()))
+    );
+    assert_eq!(compiled.item_extent(PoolKind::Mask, 1), (4, 4));
+    assert_eq!(compiled.items(PoolKind::Mask), vec![0, 1]);
 }

@@ -753,31 +753,38 @@ fn forward_shader_shadowmask_samples_each_plane_at_its_own_address_hoisted() {
         1,
         "all shadowmask samples must route through the plane sampler",
     );
-    // A plane's coordinate derives only from the block-local texel, the
-    // block's extent and the plane's own offset: the block's half-texel clamp
-    // in U and V, then that offset.
+    // A plane's coordinate derives only from the face's mask texel (its
+    // block-local texel plus its mask offset), the plane's own extent and the
+    // plane's own offset: the plane's half-texel clamp in U and V, then that
+    // offset. Plane A clamps to the mask block, plane B to its sub-rect.
     let pool_uv = wgsl_function(src, "lightmap_pool_uv");
     assert!(
         pool_uv.contains("clamp(texel, vec2<f32>(0.5), extent - vec2<f32>(0.5))")
             && pool_uv.contains("(vec2<f32>(rect.xy) + local) / LIGHTMAP_POOL_LAYER_EDGE"),
-        "the pool UV must clamp the texel to the block's half-texel rect on both axes",
+        "the pool UV must clamp the texel to the plane's half-texel rect on both axes",
     );
     assert!(
         plane.contains(
-            "lightmap_pool_uv(texel, vec4<u32>(lightmap_address_offset(address), rect.zw))"
+            "lightmap_pool_uv(\n            mask_texel,\n            \
+             vec4<u32>(lightmap_address_offset(address), lightmap_unpack_extent(extent)),"
         ),
-        "a plane's coordinate comes from the block-clamped pool UV at its own offset",
+        "a plane's coordinate comes from the pool UV clamped to its own extent at its own offset",
     );
-    // Each plane samples only behind its flag, from its own packed address.
+    assert!(
+        helper.contains("let mask_texel = texel + shadowmask_texel_offset(mask_offset);"),
+        "the mask texel is the lightmap texel plus the face's mask offset",
+    );
+    // Each plane samples only behind its flag, from its own packed address,
+    // clamped to its own extent.
     assert!(
         helper.contains(
             "if (flags & LIGHTMAP_BLOCK_PLANE_A) != 0u {\n        group_a = \
-             sample_shadowmask_plane(texel, rect, plane_addresses.x);"
+             sample_shadowmask_plane(mask_texel, mask.x, mask.z);"
         ) && helper.contains(
             "if (flags & LIGHTMAP_BLOCK_PLANE_B) != 0u {\n        group_b = \
-             sample_shadowmask_plane(texel, rect, plane_addresses.y);"
+             sample_shadowmask_plane(mask_texel, mask.y, mask.w);"
         ) && helper.contains("return vec4<f32>(group_a, group_b);"),
-        "an absent plane must skip its sample and read zero",
+        "an absent plane must skip its sample and read zero; plane B clamps to its sub-rect",
     );
 
     assert_eq!(
@@ -830,10 +837,11 @@ fn forward_shader_shadowmask_samples_each_plane_at_its_own_address_hoisted() {
 }
 
 // The block table stays VERTEX-only: only the vertex stage's resolve reads it,
-// and a block's plane addresses reach the fragment stage raw, through one flat
-// varying, inside the inter-stage budget. No fragment binding pays for them.
+// and a block's plane addresses and plane extents reach the fragment stage
+// raw, through one flat varying, beside the face's mask offset in another,
+// inside the inter-stage budget. No fragment binding pays for them.
 #[test]
-fn forward_plane_addresses_ride_one_flat_varying_past_the_vertex_only_table() {
+fn forward_mask_words_ride_one_flat_varying_past_the_vertex_only_table() {
     let src = concat!(
         include_str!("../../shaders/forward.wgsl"),
         "\n",
@@ -842,11 +850,15 @@ fn forward_plane_addresses_ride_one_flat_varying_past_the_vertex_only_table() {
     let code = strip_line_comments(src);
     let varyings = crate::render::gpu_test_harness::wgsl_item(&code, "struct VertexOutput {");
     assert!(
-        varyings.contains("@location(10) @interpolate(flat) lightmap_plane_addresses: vec2<u32>,"),
-        "the plane addresses ride location 10, flat and packed",
+        varyings.contains("@location(10) @interpolate(flat) lightmap_mask: vec4<u32>,"),
+        "the plane addresses and extents ride location 10, flat and packed",
+    );
+    assert!(
+        varyings.contains("@location(11) @interpolate(flat) mask_offset: u32,"),
+        "the face's mask offset rides location 11, flat",
     );
     let locations = varyings.matches("@location(").count();
-    assert_eq!(locations, 11, "locations 0 to 10");
+    assert_eq!(locations, 12, "locations 0 to 11");
     assert!(
         locations <= wgpu::Limits::default().max_inter_stage_shader_variables as usize,
         "{locations} inter-stage locations pass the device default",
@@ -872,8 +884,9 @@ fn forward_plane_addresses_ride_one_flat_varying_past_the_vertex_only_table() {
         "the fragment stage must not resolve a block",
     );
     assert!(
-        code.contains("out.lightmap_plane_addresses = block.plane_addresses;"),
-        "the vertex stage hands the addresses on as it fetched them",
+        code.contains("out.lightmap_mask = block.mask;")
+            && code.contains("out.mask_offset = in.mask_offset;"),
+        "the vertex stage hands the mask words and the offset on as it fetched them",
     );
 }
 

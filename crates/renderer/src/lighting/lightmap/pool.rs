@@ -210,14 +210,15 @@ fn region<'a>(
 
 /// The region writes that put one block's pair in the pools: irradiance at the
 /// block's extent and Rg8 direction at `extent / scale` at `placement`, and
-/// each stored BC5 plane at its own place in the mask pool. A plane with no
-/// place writes nothing. The caller has matched every blob's length to the
-/// block's extent.
+/// each stored BC5 plane at its own place in the mask pool, at its own extent
+/// (`plane_extents`: plane A, then plane B). A plane with no place writes
+/// nothing. The caller has matched every blob's length to its extent.
 pub(crate) fn block_region_writes<'a>(
     format: PoolFormat,
     placement: BlockPlacement,
     planes: [Option<BlockPlacement>; 2],
     (width, height): (u32, u32),
+    plane_extents: [(u32, u32); 2],
     payload: &'a LightmapBlockPayload,
 ) -> impl Iterator<Item = RegionWrite<'a>> {
     let scale = format.direction_scale;
@@ -240,13 +241,14 @@ pub(crate) fn block_region_writes<'a>(
     let masks = payload.shadowmask.iter().flat_map(move |groups| {
         planes
             .into_iter()
+            .zip(plane_extents)
             .zip(groups)
-            .filter_map(move |(plane, group)| {
+            .filter_map(move |((plane, extent), group)| {
                 plane.map(|at| {
                     region(
                         PoolPlane::Shadowmask,
                         (at.layer, at.x, at.y),
-                        (width, height),
+                        extent,
                         (BC_BLOCK_EDGE, BC_BLOCK_BYTES),
                         group,
                     )
@@ -325,11 +327,14 @@ pub(crate) fn upload_static_pool(
         .zip(payloads)
         .enumerate()
     {
-        let planes = plan
+        let (planes, plane_extents) = plan
             .masks
             .as_ref()
-            .map_or([None; 2], |masks| masks.planes[block]);
-        for write in block_region_writes(format, placement, planes, extent, payload) {
+            .map_or(([None; 2], [(0, 0); 2]), |masks| {
+                (masks.planes[block], masks.extents[block])
+            });
+        for write in block_region_writes(format, placement, planes, extent, plane_extents, payload)
+        {
             let texture = match write.plane {
                 PoolPlane::Irradiance => &textures.irradiance,
                 PoolPlane::Direction => &textures.direction,

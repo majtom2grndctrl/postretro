@@ -787,11 +787,8 @@ fn install_without_renderer_keeps_gpu_lighting_payloads_in_the_world() {
     };
     world.lightmap = Some(lightmap.index());
     world.shadowmask_atlas = Some(
-        ShadowmaskAtlasSection {
-            owners: Vec::new(),
-            blocks: vec![[vec![3; 16], vec![4; 16]]],
-        }
-        .index(),
+        ShadowmaskAtlasSection::whole_block(Vec::new(), vec![[vec![3; 16], vec![4; 16]]], [(4, 4)])
+            .index(),
     );
     let payloads = postretro_level_loader::GpuLightingPayloads {
         blocks: vec![LightmapBlockPayload {

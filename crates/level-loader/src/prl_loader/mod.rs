@@ -296,7 +296,7 @@ fn finalize_lighting(
         &spatial.bvh.leaves,
         shadowmask_atlas
             .as_ref()
-            .map(|index| index.owners.as_slice()),
+            .map(|index| (index.owners.as_slice(), index.mask_offsets.as_slice())),
     );
     Ok(FinalLighting {
         lights,

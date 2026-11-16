@@ -38,6 +38,7 @@ pub(crate) use atlas_pack::MaxRects;
 pub(crate) use atlas_pack::{pack_layers, pack_layers_with_layer_limit};
 
 pub use block_layout::{BlockLayout, BlockOrdering, CellBlock};
+pub(crate) use cell_blocks::pack_cell_block_reserving;
 #[cfg(test)]
 pub(crate) use cell_blocks::{
     CANDIDATE_WIDTHS, PackedBlock, pack_cell_block, pack_cell_sub_blocks,

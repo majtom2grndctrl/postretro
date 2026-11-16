@@ -8,8 +8,6 @@ use crate::lightmap::{
 
 /// What a block's plane records are checked against.
 pub(super) struct PlaneBounds {
-    /// Bytes of one plane at the block's extent.
-    pub expected_len: u64,
     pub index_len: u64,
     pub section_len: u64,
     /// Where the previous block's planes end, or the index when none has.
@@ -30,7 +28,7 @@ pub(super) fn plane_range(cursor: &mut u64, plane: &[u8]) -> SectionByteRange {
 }
 
 /// Refuses an absent plane that keeps an offset, a present plane whose length
-/// is not the block's or whose range leaves the section blobs, and present
+/// is not its extent's or whose range leaves the section blobs, and present
 /// planes that do not run on from the previous block's in record order.
 /// Returns where this block's planes end: `previous_end` for a block with none.
 pub(super) fn check_block_planes(
@@ -40,14 +38,14 @@ pub(super) fn check_block_planes(
 ) -> crate::Result<u64> {
     let group_a = ("group A", record.group_a);
     let group_b = ("group B", record.group_b);
-    for (what, range) in [group_a, group_b] {
+    for (plane, (what, range)) in [group_a, group_b].into_iter().enumerate() {
         if range.len != 0 {
             check_blob(
                 "shadowmask",
                 block,
                 what,
                 range,
-                bounds.expected_len,
+                record.extents.plane_len(plane),
                 bounds.index_len,
                 bounds.section_len,
             )?;

@@ -70,7 +70,7 @@ fn pre_change_shadowmask_union_subtraction(
     }
     // Hoisted because every promoted light shares this fragment's lightmap
     // block and texel. A missed block reads zero, so no light subtracts.
-    let mask = sample_shadowmask_atlas(lightmap_texel, lightmap_layer_flags, lightmap_rect, vec2<u32>(0u));
+    let mask = sample_shadowmask_atlas(lightmap_texel, lightmap_layer_flags, vec4<u32>(0u), 0u);
     let promoted_count = uniforms.total_light_count - promoted_start;
     let influence_len = arrayLength(&light_influence);
     let spec_len = arrayLength(&spec_lights);
@@ -207,8 +207,8 @@ fn sample_point_shadow(
 fn sample_shadowmask_atlas(
     texel: vec2<f32>,
     layer_flags: u32,
-    rect: vec4<u32>,
-    plane_addresses: vec2<u32>,
+    mask: vec4<u32>,
+    mask_offset: u32,
 ) -> vec4<f32> {
     return uniforms.mask;
 }
@@ -239,7 +239,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {{
 {surface}
     let current = shadowmask_union_subtraction(
-        world, vec2<f32>(0.0), 0u, vec4<u32>(0u), vec2<u32>(0u), mesh_n, bump_n, uniforms.owners,
+        world, vec2<f32>(0.0), 0u, vec4<u32>(0u), 0u, mesh_n, bump_n, uniforms.owners,
     );
     let pre_change = pre_change_shadowmask_union_subtraction(
         world, vec2<f32>(0.0), 0u, vec4<u32>(0u), mesh_n, bump_n,
@@ -260,14 +260,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {{
 {surface}
     let block = resolve_lightmap_block(uniforms.block, vec2<f32>(0.4, 0.6));
     let current = shadowmask_union_subtraction(
-        world, block.texel, block.layer_flags, block.rect, block.plane_addresses,
+        world, block.texel, block.layer_flags, block.mask, 0u,
         mesh_n, bump_n, uniforms.owners,
     );
     let owners_readable = static_spec_owners_readable(block.layer_flags);
     var specular_shadowmask = vec4<f32>(0.0);
     if owners_readable && uniforms.owners.x != SPEC_OWNER_EMPTY {{
         specular_shadowmask = sample_shadowmask_atlas(
-            block.texel, block.layer_flags, block.rect, block.plane_addresses,
+            block.texel, block.layer_flags, block.mask, 0u,
         );
     }}
     var no_sdf: SdfLightSelection;
@@ -331,7 +331,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {{
             let bindings = r#"
 @group(0) @binding(4) var shadowmask_atlas: texture_2d_array<f32>;
 @group(0) @binding(5) var lightmap_filtering_sampler: sampler;
-@group(0) @binding(6) var<storage, read> lightmap_block_table: array<vec4<u32>>;
+@group(0) @binding(6) var<storage, read> lightmap_block_table: array<LightmapBlockEntry>;
 "#;
             let decode = lightmap_block_decode_wgsl();
             let specular = [

@@ -35,6 +35,10 @@ impl StaticPoolPlan {
 
     /// The block table of the all-resident pools.
     pub fn table_bytes(&self) -> Vec<u8> {
+        let mask_extents: Vec<[(u32, u32); 2]> = match &self.masks {
+            Some(masks) => masks.extents.clone(),
+            None => vec![[(0, 0); 2]; self.extents.len()],
+        };
         let addresses: Vec<Option<BlockAddresses>> = self
             .pool
             .placements
@@ -50,7 +54,7 @@ impl StaticPoolPlan {
                 })
             })
             .collect();
-        block_table_bytes(&self.extents, &addresses)
+        block_table_bytes(&self.extents, &mask_extents, &addresses)
     }
 }
 
@@ -369,9 +373,11 @@ fn place_masks(
     max_texture_array_layers: u32,
 ) -> Result<AllResidentMasks, String> {
     let demand = PoolDemand::of_indices(index, Some(shadowmask));
-    for (block, (&(w, h), payload)) in demand.extents().iter().zip(payloads).enumerate() {
-        let planes = demand.planes(block as u32);
-        if let Some(reason) = planes_mismatch((w, h), planes, payload) {
+    for (block, payload) in payloads.iter().enumerate().take(demand.block_count()) {
+        let masks = demand
+            .block_masks(block as u32)
+            .expect("of_indices with id 42 has a mask pool");
+        if let Some(reason) = planes_mismatch(masks, payload) {
             return Err(format!("block {block} {reason}"));
         }
     }

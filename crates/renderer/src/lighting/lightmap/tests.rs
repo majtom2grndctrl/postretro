@@ -550,13 +550,14 @@ fn lightmap_sample_wgsl_address_constants_decode_the_block_table() {
         x: 1024,
         y: 512,
     };
-    let [x, y, z, w] = BlockTableEntry::Resident {
+    let [x, y, z, w, mask_a, mask_b, ..] = BlockTableEntry::Resident {
         addresses: BlockAddresses {
             lightmap,
             masks: MaskAddresses::Planes([Some(plane_a), Some(plane_b)]),
         },
         width: 2048,
         height: 1100,
+        mask_extents: [(1024, 2048), (8, 4)],
     }
     .to_words();
     assert_eq!(decode(x), lightmap);
@@ -568,6 +569,10 @@ fn lightmap_sample_wgsl_address_constants_decode_the_block_table() {
         w >> flags_shift,
         BLOCK_FLAG_RESIDENT | BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B
     );
+    // The mask word's extents unpack with the same field widths.
+    let extent = |word: u32| (word & extent_mask, (word >> extent_bits) & extent_mask);
+    assert_eq!(extent(mask_a), (1024, 2048), "plane A: the mask block");
+    assert_eq!(extent(mask_b), (8, 4), "plane B: its sub-rect");
 }
 
 // The group-4 BGL is a fixed contract with `forward.wgsl`'s `@binding`

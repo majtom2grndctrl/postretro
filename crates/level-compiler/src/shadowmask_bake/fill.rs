@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use postretro_level_format::shadowmask_atlas::{
-    FaceOwners, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS, ShadowmaskAtlasSection,
+    FaceOwners, MaskExtents, MaskOffset, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS,
+    ShadowmaskAtlasSection,
 };
 
 use crate::bake_control::BakeControl;
@@ -79,11 +80,12 @@ struct CutOwners {
 
 pub(super) struct OwnershipFill<'a> {
     width: u32,
-    height: u32,
     layer_count: u32,
     plane: usize,
     /// Cell blocks the encoder slices out of the bake layers, in block order.
     blocks: Vec<CellBlock>,
+    /// Faces of each cell block, ascending: what its mask layout packs.
+    block_faces: Vec<Vec<u32>>,
     /// Exactly one working layer, allocated only when its first item arrives.
     data: Option<RawFillBuffer>,
     layer: Option<u32>,
@@ -91,12 +93,22 @@ pub(super) struct OwnershipFill<'a> {
     carry: Vec<Option<RawFillBuffer>>,
     hold_until: Vec<u32>,
     encoded: Vec<[Vec<u8>; 2]>,
+    /// Each block's mask extents, set when its mask block encodes.
+    mask_extents: Vec<MaskExtents>,
     owners: Vec<FaceOwners>,
+    /// Each face's lightmap-to-mask texel offset, set when its block's mask
+    /// layout is fixed; zero for a face with no owner.
+    mask_offsets: Vec<MaskOffset>,
+    /// Blocks whose owned charts kept their lightmap layout.
+    pub(super) identity_mask_blocks: u32,
     any_owner: bool,
     peak_cut_demand: u32,
     pub(super) probe: RawFillProbe,
     #[cfg(test)]
     raw_snapshot: Vec<u8>,
+    /// Each block's mask image and layout as it went to BC5, in close order.
+    #[cfg(test)]
+    mask_snapshots: Vec<super::MaskBlockSnapshot>,
     /// One per chart: the id-17 face order. A cut face's sub-faces use
     /// `cuts` instead.
     faces: Vec<FaceChannels>,
@@ -146,15 +158,19 @@ impl<'a> OwnershipFill<'a> {
             })
             .collect();
         let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
+        let mut block_faces = vec![Vec::new(); shared.layout.blocks.len()];
+        for (face, &block) in shared.layout.chart_blocks.iter().enumerate() {
+            block_faces[block as usize].push(face as u32);
+        }
         let probe = RawFillProbe::default();
         #[cfg(test)]
         super::register_raw_fill_probe(&probe);
         Self {
             width: shared.atlas_width,
-            height: shared.atlas_height,
             layer_count,
             plane,
             blocks: shared.layout.blocks.clone(),
+            block_faces,
             data: None,
             layer: None,
             next_layer: 0,
@@ -165,12 +181,17 @@ impl<'a> OwnershipFill<'a> {
                 cut_parents,
             ),
             encoded: vec![[Vec::new(), Vec::new()]; shared.layout.blocks.len()],
+            mask_extents: vec![MaskExtents::NONE; shared.layout.blocks.len()],
             owners: vec![NO_FACE_OWNERS; shared.charts.len()],
+            mask_offsets: vec![[0; 2]; shared.charts.len()],
+            identity_mask_blocks: 0,
             any_owner: false,
             peak_cut_demand: 0,
             probe,
             #[cfg(test)]
             raw_snapshot: vec![0; plane * layer_count as usize * SHADOWMASK_OWNER_CHANNELS],
+            #[cfg(test)]
+            mask_snapshots: Vec::new(),
             faces: vec![FaceChannels::default(); shared.charts.len()],
             cuts,
             cut_of,
@@ -302,10 +323,22 @@ impl<'a> OwnershipFill<'a> {
         }
         #[cfg(test)]
         super::record_raw_fill(&self.raw_snapshot);
+        #[cfg(test)]
+        super::record_mask_layouts(std::mem::take(&mut self.mask_snapshots));
+        if self.identity_mask_blocks > 0 {
+            log::info!(
+                "[Shadowmask] {} of {} block(s) kept their lightmap layout as their mask \
+                 layout: their owned charts packed no smaller",
+                self.identity_mask_blocks,
+                self.blocks.len()
+            );
+        }
         (
             Some(ShadowmaskAtlasSection {
                 owners: self.owners,
+                mask_offsets: self.mask_offsets,
                 blocks: self.encoded,
+                extents: self.mask_extents,
             }),
             report,
         )

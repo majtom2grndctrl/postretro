@@ -117,6 +117,9 @@ impl CellBlocks {
             .map(|(d, &planes)| formats.cell_block_bytes(d.width, d.height, planes))
             .collect();
         let extents = dims.iter().map(|d| (d.width, d.height)).collect();
+        // The dry run repacks blocks without owners, so it prices each present
+        // plane at its whole block, as `SMB8` stored it: its mask figures
+        // overstate an `SMB9` level, whose mask blocks hold owned charts only.
         let demand = PoolDemand::new(
             alignment,
             extents,

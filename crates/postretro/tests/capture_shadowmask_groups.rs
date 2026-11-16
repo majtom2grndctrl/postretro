@@ -117,7 +117,19 @@ fn write_variant(
             "a block carries group A and group B"
         );
     }
-    let variant = ShadowmaskAtlasSection { owners, blocks };
+    // Each mask block is its whole lightmap block, so every offset is zero.
+    let lightmap = sections
+        .iter()
+        .find(|blob| blob.section_id == SectionId::Lightmap as u32)
+        .expect("fixture must ship a Lightmap section");
+    let extents: Vec<(u16, u16)> =
+        LightmapBlockIndex::from_prefix(&lightmap.data, lightmap.data.len() as u64)
+            .expect("fixture Lightmap index must parse")
+            .records
+            .iter()
+            .map(|record| (record.width, record.height))
+            .collect();
+    let variant = ShadowmaskAtlasSection::whole_block(owners, blocks, extents);
     let blobs: Vec<_> = sections
         .iter()
         .map(|blob| prl_format::SectionBlob {

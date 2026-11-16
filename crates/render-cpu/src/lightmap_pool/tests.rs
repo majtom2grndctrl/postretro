@@ -5,12 +5,14 @@ use postretro_level_format::lightmap::{
     IRRADIANCE_FORMAT_BC6H, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockRecord,
     LightmapHeader, LightmapMode, SectionByteRange,
 };
-use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskBlockRecord};
+use postretro_level_format::shadowmask_atlas::{
+    MaskExtents, ShadowmaskBlockIndex, ShadowmaskBlockRecord,
+};
 
 /// Decode entry `index` of a block table the way the vertex stage reads it.
 fn entry(table: &[u8], index: usize) -> BlockTableEntry {
     let at = index * BLOCK_TABLE_ENTRY_BYTES;
-    let words: [u32; 4] = std::array::from_fn(|w| {
+    let words: [u32; BLOCK_TABLE_ENTRY_WORDS] = std::array::from_fn(|w| {
         u32::from_ne_bytes(table[at + w * 4..at + w * 4 + 4].try_into().unwrap())
     });
     BlockTableEntry::from_words(words)
@@ -92,7 +94,7 @@ fn block_table_maps_each_block_local_texel_to_its_placement_plus_local() {
         .copied()
         .map(|placement| Some(BlockAddresses::without_masks(placement)))
         .collect();
-    let table = block_table_bytes(&extents, &placed);
+    let table = block_table_bytes(&extents, &vec![[(0, 0); 2]; extents.len()], &placed);
     assert_eq!(table.len(), (extents.len() + 1) * BLOCK_TABLE_ENTRY_BYTES);
     assert_eq!(entry(&table, 0), BlockTableEntry::None);
 
@@ -129,7 +131,7 @@ fn a_missing_block_keeps_its_extent_and_samples_no_pool_texel() {
         })),
         None,
     ];
-    let table = block_table_bytes(&extents, &placements);
+    let table = block_table_bytes(&extents, &[[(0, 0); 2]; 2], &placements);
     assert_eq!(
         entry(&table, 2),
         BlockTableEntry::Missing {
@@ -178,6 +180,7 @@ fn entries_pack_three_addresses_and_the_extent_as_laid_out() {
         },
         width: 2048,
         height: 2048,
+        mask_extents: [(2048, 1024), (4, 2048)],
     };
     let words = entry.to_words();
     assert_eq!(words[0], 511 | (1 << 9) | (16383 << 18));
@@ -185,7 +188,36 @@ fn entries_pack_three_addresses_and_the_extent_as_laid_out() {
     assert_eq!(words[2], 3 | (4 << 9) | (2 << 18));
     let flags = BLOCK_FLAG_RESIDENT | BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B;
     assert_eq!(words[3], 2048 | (2048 << 12) | (flags << 24));
+    // The mask word: each plane's own extent, then two zero words.
+    assert_eq!(words[4], 2048 | (1024 << 12));
+    assert_eq!(words[5], 4 | (2048 << 12));
+    assert_eq!(words[6..], [0, 0]);
     assert_eq!(BlockTableEntry::from_words(words), entry);
+}
+
+// Only a resident entry carries mask extents: every other entry's mask word
+// is zero, so a non-resident block can never clamp to a stale plane.
+#[test]
+fn only_a_resident_entry_writes_its_mask_word() {
+    let missing = BlockTableEntry::Missing {
+        width: 16,
+        height: 8,
+    };
+    for entry in [BlockTableEntry::None, BlockTableEntry::Placeholder, missing] {
+        assert_eq!(entry.to_words()[4..], [0; 4], "{entry:?}");
+        assert_eq!(BlockTableEntry::from_words(entry.to_words()), entry);
+    }
+    let table = block_table_bytes(
+        &[(16, 8), (16, 8)],
+        &[[(8, 8), (4, 4)], [(16, 8), (0, 0)]],
+        &[None, Some(BlockAddresses::without_masks(place(0, 0, 0)))],
+    );
+    assert_eq!(table.len(), 3 * BLOCK_TABLE_ENTRY_BYTES);
+    assert_eq!(entry(&table, 1), missing);
+    let BlockTableEntry::Resident { mask_extents, .. } = entry(&table, 2) else {
+        panic!("block 1 is resident");
+    };
+    assert_eq!(mask_extents, [(16, 8), (0, 0)]);
 }
 
 #[test]
@@ -195,6 +227,7 @@ fn an_entry_tells_every_mask_state_apart() {
         addresses: BlockAddresses { lightmap, masks },
         width: 16,
         height: 8,
+        mask_extents: [(8, 8), (4, 4)],
     };
     let at = Some(place(0, 0, 0));
     let flag_sets = [
@@ -246,15 +279,18 @@ fn block_index(extents: &[(u16, u16)]) -> LightmapBlockIndex {
     }
 }
 
-/// Id 42's records: each block's plane A, and plane B on the first `both`.
+/// Id 42's records for [`FULL_LAYER`] blocks, each mask block its whole
+/// lightmap block: each block's plane A, and plane B on the first `both`.
 fn mask_index(blocks: usize, both: usize) -> ShadowmaskBlockIndex {
     let plane = |len| SectionByteRange { offset: 0, len };
     ShadowmaskBlockIndex {
         owners: Vec::new(),
+        mask_offsets: Vec::new(),
         records: (0..blocks)
             .map(|block| ShadowmaskBlockRecord {
                 group_a: plane(1),
                 group_b: plane(u32::from(block < both)),
+                extents: MaskExtents::whole_block(FULL_LAYER.0, FULL_LAYER.1),
             })
             .collect(),
     }
@@ -332,10 +368,12 @@ fn a_mask_pool_with_nothing_to_hold_has_no_layers() {
     });
     let absent = ShadowmaskBlockIndex {
         owners: Vec::new(),
+        mask_offsets: Vec::new(),
         records: vec![
             ShadowmaskBlockRecord {
                 group_a: SectionByteRange { offset: 0, len: 0 },
                 group_b: SectionByteRange { offset: 0, len: 0 },
+                extents: MaskExtents::NONE,
             };
             3
         ],

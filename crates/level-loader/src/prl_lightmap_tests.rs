@@ -44,9 +44,9 @@ fn lightmap_section(extents: &[(u16, u16)]) -> LightmapSection {
 /// Id-42 groups pairing [`lightmap_section`] of the same extents, with an
 /// empty owner table for these fixtures' face-free Geometry.
 fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
-    ShadowmaskAtlasSection {
-        owners: Vec::new(),
-        blocks: extents
+    ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
+        extents
             .iter()
             .enumerate()
             .map(|(block, &(width, height))| {
@@ -54,7 +54,8 @@ fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
                 [vec![block as u8; len], vec![block as u8 + 100; len]]
             })
             .collect(),
-    }
+        extents.iter().copied(),
+    )
 }
 
 fn blob(section_id: SectionId, data: Vec<u8>) -> SectionBlob {
@@ -254,7 +255,7 @@ fn load_rejects_a_block_larger_than_a_pool_layer() {
 }
 
 #[test]
-fn load_rejects_a_nonzero_reserved_field() {
+fn load_rejects_a_nonzero_reserved_field_and_an_unknown_mask_codec() {
     let extents = [(4, 4)];
     let mut lightmap = lightmap_section(&extents).to_bytes();
     let at = lightmap_record_at(0, 32);
@@ -276,10 +277,10 @@ fn load_rejects_a_nonzero_reserved_field() {
             lightmap_blob(lightmap_section(&extents).to_bytes()),
             shadowmask_blob(shadowmask),
         ],
-        "postretro_test_lm_blocks_shadowmask_reserved.prl",
+        "postretro_test_lm_blocks_shadowmask_codec.prl",
     );
     assert!(
-        message.contains("shadowmask block 0 has nonzero reserved field"),
+        message.contains("shadowmask block 0 codec 1 is unknown"),
         "{message}"
     );
 }

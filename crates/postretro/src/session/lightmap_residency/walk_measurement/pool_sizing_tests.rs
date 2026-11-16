@@ -66,13 +66,16 @@ fn masks() -> ShadowmaskAtlasSection {
     let extent = u32::from(LAYER_FILLING_EXTENT);
     let plane = group_plane_len(extent, extent).unwrap() as usize;
     let stored = |present: bool| if present { vec![1; plane] } else { Vec::new() };
-    ShadowmaskAtlasSection {
-        owners: Vec::new(),
-        blocks: PLANES
+    ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
+        PLANES
             .iter()
             .map(|&[a, b]| [stored(a), stored(b)])
             .collect(),
-    }
+        PLANES
+            .iter()
+            .map(|_| (LAYER_FILLING_EXTENT, LAYER_FILLING_EXTENT)),
+    )
 }
 
 /// The streamed fixture with id 42 and blocks that each fill a layer, its id 58

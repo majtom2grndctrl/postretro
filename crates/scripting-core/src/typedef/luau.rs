@@ -159,15 +159,52 @@ pub fn state_ref_luau(
     format!("{ref_ty}<{}>", value_type.to_luau())
 }
 
+/// `{ field: ComputedRef<T>, ... }` for a family member or list row.
+fn emit_luau_collection_fields(
+    fields: &[postretro_entities::engine_state_collections::EngineStateField<'_>],
+    indent: &str,
+    out: &mut String,
+) {
+    out.push_str("{\n");
+    let field_indent = format!("{indent}  ");
+    for field in fields {
+        writeln!(
+            out,
+            "{field_indent}{}: {},",
+            field.name,
+            state_ref_luau(EngineStateCapability::Readonly, field.value_type, false)
+        )
+        .unwrap();
+    }
+    write!(out, "{indent}}}").unwrap();
+}
+
 fn emit_luau_game_state_node(
     node: &EngineStateTreeNode,
-    catalog: &[crate::engine_state_catalog::EngineStateCatalogEntry<'static>],
+    catalog: &crate::engine_state_catalog::EngineStateCatalog,
     indent: &str,
     out: &mut String,
 ) {
     match node {
+        EngineStateTreeNode::Family { family_index } => {
+            let family = &catalog.families()[*family_index];
+            let child_indent = format!("{indent}  ");
+            write!(
+                out,
+                "{{\n{child_indent}{}: (self: any, key: string) -> ",
+                family.accessor
+            )
+            .unwrap();
+            emit_luau_collection_fields(family.fields, &child_indent, out);
+            write!(out, ",\n{indent}}}").unwrap();
+        }
+        EngineStateTreeNode::List { list_index } => {
+            out.push_str("StateList<");
+            emit_luau_collection_fields(catalog.lists()[*list_index].fields, indent, out);
+            out.push('>');
+        }
         EngineStateTreeNode::Leaf { entry_index } => {
-            let entry = &catalog[*entry_index];
+            let entry = &catalog.entries()[*entry_index];
             out.push_str(&state_ref_luau(
                 entry.capability,
                 entry.value_type,
@@ -193,7 +230,7 @@ pub fn emit_luau_game_state_refs(out: &mut String) {
     out.push_str("export type GameStateRefs = ");
     emit_luau_game_state_node(
         &EngineStateTreeNode::Object(catalog.tree().root().clone()),
-        catalog.entries(),
+        &catalog,
         "",
         out,
     );
@@ -260,6 +297,7 @@ pub fn luau_public_sdk_lib_block() -> String {
     remove_doc_and_decl_line(&mut block, "declare function stateCompare");
     remove_doc_and_decl_line(&mut block, "declare function createLocalState");
     remove_doc_and_decl_line(&mut block, "declare function Switch");
+    remove_doc_and_decl_line(&mut block, "declare function forEach");
     remove_decl_line(&mut block, "declare ui:");
     block.push('\n');
     block.push_str(LUAU_VIRTUAL_MODULE_TYPES);

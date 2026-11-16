@@ -14,7 +14,7 @@ use postretro_level_format as prl_format;
 use crate::load_progress::LoadProgress;
 use crate::prl::PrlLoadError;
 use crate::prl_file::{PrlFile, PrlReadCounters};
-use crate::sh_stream::read_vec_at;
+use crate::sh_stream::{read_section_prefix_positionally, read_vec_at};
 
 /// One fully validated PRL container image plus its parsed table.
 ///
@@ -41,7 +41,8 @@ enum PrlBacking {
     Whole(Vec<u8>),
     /// Sections are read on demand. `sh_bodies_streamed` forbids whole-body
     /// reads of the SH families that id 50 streams; lightmap streaming uses
-    /// this backing with SH bodies read whole as legacy decode expects.
+    /// this backing with SH bodies read whole as legacy decode expects, after
+    /// the whole-load gate has checked that every one is present.
     Positional {
         file: Arc<PrlFile>,
         sh_bodies_streamed: bool,
@@ -218,6 +219,39 @@ impl PrlContainer {
                 Ok(data.map(Cow::Borrowed))
             }
             PrlBacking::Positional { .. } => Ok(self.read_section(section_id)?.map(Cow::Owned)),
+        }
+    }
+
+    /// Up to `len` bytes from the start of a section, after validating its
+    /// container bounds. Reads only that prefix and credits no progress: the
+    /// section's own read credits it. Lets a check judge a header before the
+    /// section is decoded.
+    pub(crate) fn section_prefix(
+        &self,
+        section_id: u32,
+        len: u64,
+    ) -> Result<Option<Cow<'_, [u8]>>, PrlLoadError> {
+        let Some(entry) = self.metadata.find_section(section_id) else {
+            return Ok(None);
+        };
+        let len = len.min(entry.size);
+        match &self.backing {
+            PrlBacking::Whole(file_data) => {
+                prl_format::validate_container_entry_bounds(
+                    &self.metadata,
+                    entry,
+                    file_data.len() as u64,
+                )?;
+                // Bounds-validated above, so the range lies inside the image.
+                let start = entry.offset as usize;
+                Ok(Some(Cow::Borrowed(&file_data[start..start + len as usize])))
+            }
+            PrlBacking::Positional { file, .. } => {
+                Ok(
+                    read_section_prefix_positionally(file, &self.metadata, section_id, len)?
+                        .map(Cow::Owned),
+                )
+            }
         }
     }
 

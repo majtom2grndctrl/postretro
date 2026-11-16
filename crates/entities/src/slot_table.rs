@@ -178,6 +178,7 @@ pub struct StoreDeclarationSet {
 impl StoreDeclarationSet {
     pub fn add(&mut self, declaration: StoreDeclaration) -> Result<(), NamespaceInsertError> {
         validate_namespace_records(&declaration.namespace, &declaration.records)?;
+        reject_engine_reserved_namespace(&declaration.namespace)?;
 
         if let Some(existing) = self
             .declarations
@@ -307,6 +308,7 @@ impl SlotTable {
 
         for declaration in declarations.iter() {
             validate_namespace_records(&declaration.namespace, &declaration.records)?;
+            reject_engine_reserved_namespace(&declaration.namespace)?;
 
             if self.namespaces.contains(&declaration.namespace) {
                 if !self.namespace_schema_matches(declaration) {
@@ -576,7 +578,30 @@ pub enum NamespaceInsertError {
     SlotCollision { name: String },
     #[error("state-store namespace `{namespace}` changes an already committed schema")]
     IncompatibleSchema { namespace: String },
+    #[error(
+        "state-store namespace `{namespace}` is reserved: the engine declares `{reserved}` at run time"
+    )]
+    EngineReservedNamespace { namespace: String, reserved: String },
 }
+
+/// Reject a mod declaration of an engine namespace declared at run time, or
+/// one overlapping it. Engine inserts never pass through here.
+fn reject_engine_reserved_namespace(namespace: &str) -> Result<(), NamespaceInsertError> {
+    match crate::engine_state_collections::RESERVED_ENGINE_NAMESPACES
+        .iter()
+        .find(|reserved| namespaces_overlap(namespace, reserved))
+    {
+        Some(reserved) => Err(NamespaceInsertError::EngineReservedNamespace {
+            namespace: namespace.to_string(),
+            reserved: (*reserved).to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+#[path = "slot_table_families.rs"]
+mod families;
+pub use families::FamilyMembersChange;
 
 #[cfg(test)]
 mod tests {

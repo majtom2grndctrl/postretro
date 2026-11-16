@@ -306,7 +306,8 @@ pub fn staticize(map: &str, name: &str, waypoint: &str) -> String {
 pub type Tile = Vec<[f32; 3]>;
 
 /// Id 34 read back per probe from a build at uniform L0 storage
-/// (`_sh_coarsen "0"`), BC6H or uncompressed.
+/// (`_sh_coarsen "0"`), BC6H or uncompressed, baked with `--whole-load-sh`
+/// so id 34 keeps its atlas.
 pub struct Volume {
     pub section: OctahedralShVolumeSection,
     /// Stored slot per dense probe, valid probes only.

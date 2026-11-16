@@ -54,6 +54,8 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 pub(crate) mod level_streaming;
 pub(crate) mod lightmap_residency;
 mod lightmap_streaming_diagnostics;
+pub(crate) mod occupancy_families;
+pub(crate) mod players;
 pub(crate) mod role_state;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
@@ -67,7 +69,8 @@ use sh_residency::ShStreamingSession;
 /// `Session::build` is the sole session construction site — there is no transient
 /// pre-window construction bundle. `App` holds only boot-lifetime fields plus
 /// `session: Option<Session>`. Also owns host-local seat/session-roster state;
-/// connected clients receive its status-only projection from the endpoint.
+/// connected clients receive its roster projection (seat, connection, name,
+/// status) from the endpoint.
 /// See: context/lib/boot_sequence.md §1.
 pub(crate) struct Session {
     /// Keyboard/mouse/gamepad action state. Seeded at build with the loaded
@@ -297,6 +300,12 @@ pub(crate) struct Session {
     /// Durable local/listen-host player seats. Connected clients intentionally
     /// own no table: the host is the authority that mints session identities.
     pub(crate) seat_table: Option<netcode::SeatTable>,
+
+    /// Session player status and counts; see `players`.
+    pub(crate) session_players: players::SessionPlayers,
+
+    /// Which `occupancy` families exist; see `occupancy_families`.
+    pub(crate) occupancy_families: occupancy_families::OccupancyFamilies,
 
     /// Audio subsystem. Inner `Option` is genuine runtime absence: `None` if kira
     /// init fails — the game then runs silent, never a crash.
@@ -795,6 +804,8 @@ impl Session {
             net_endpoint,
             closing_host_transport: None,
             seat_table,
+            session_players: Default::default(),
+            occupancy_families: Default::default(),
             audio,
             // Lazy: built by `App::ensure_debug_ui` once the renderer/window are
             // available, reset on suspend. See the field doc.
@@ -1482,6 +1493,8 @@ mod tests {
             vec![postretro_net::wire::RosterEntry {
                 seat: 0,
                 connected: true,
+                name: String::new(),
+                status: 0,
             }],
             "single-player carry still owns local seat zero"
         );

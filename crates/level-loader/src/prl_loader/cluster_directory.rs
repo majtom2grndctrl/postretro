@@ -366,10 +366,21 @@ pub(super) fn validate_cluster_directory(
             // may soft-disable a malformed optional scatter companion, but
             // silently returning a manifest without its adjacency graph would
             // be unsafe; require the caller to use legacy/off mode instead.
+            // `off` needs the SH bodies, which a default bake omits; name the
+            // rebake when any are missing.
+            let omitted = super::whole_load_sh::omitted_sh_body_sections(container)?;
+            let remedy = if omitted.is_empty() {
+                "retry with POSTRETRO_SH_STREAMING=off".to_owned()
+            } else {
+                format!(
+                    "POSTRETRO_SH_STREAMING=off needs the SH bodies this level omits ({}); rebake with `prl-build --whole-load-sh`, then retry with POSTRETRO_SH_STREAMING=off",
+                    crate::prl::named_section_ids(&omitted)
+                )
+            };
             return Err(section_validation(
                 "SH streaming",
                 format!(
-                    "cannot start streaming because ClusterDirectory companion section(s) {:?} are unavailable; retry with POSTRETRO_SH_STREAMING=off",
+                    "cannot start streaming because ClusterDirectory companion section(s) {:?} are unavailable; {remedy}",
                     unavailable_directory_companions,
                 ),
             ));

@@ -358,7 +358,9 @@ pub(crate) fn load_prl_staged_from_container(
     }
     let streaming = stream_manifest.as_deref();
 
-    // Hand-out 1, before the first section read.
+    // Hand-out 1, before the first section decode. The whole-load SH gate ran
+    // at the open, before the container existed, so a refused level hands
+    // nothing out.
     stage_boundary!();
     sink(HandOut::ShManifest(ShManifestHandOut {
         manifest: stream_manifest.clone().map(ShManifestMetadata),

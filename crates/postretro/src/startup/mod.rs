@@ -12,6 +12,8 @@ mod assist_rebind_tests;
 pub(crate) mod audio_profile;
 #[cfg(test)]
 mod closet_reveal_surface_tests;
+#[cfg(test)]
+mod coop_activation_tests;
 pub(crate) mod data_script_staleness;
 #[cfg(test)]
 mod e16_content_tests;

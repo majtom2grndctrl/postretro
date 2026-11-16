@@ -31,8 +31,25 @@ fn empty_pin(map_text: &str, textured: bool) -> Fixture {
 }
 
 fn bake(fixture: &Fixture, compiler: &Path, label: &str) -> Bake {
+    bake_with(fixture, compiler, label, &[])
+}
+
+/// The current compiler with the SH bodies kept (`--whole-load-sh`): a test
+/// decoding id 34 whole needs them, and so does the pre-colour comparison,
+/// whose saved compiler predates the body-presence field and always writes them.
+fn bake_current_whole(fixture: &Fixture) -> Bake {
+    bake_with(
+        fixture,
+        &current_compiler(),
+        "current",
+        &["--whole-load-sh"],
+    )
+}
+
+fn bake_with(fixture: &Fixture, compiler: &Path, label: &str, extra: &[&str]) -> Bake {
     let mut flags = vec!["--no-cache", "--jobs", "1"];
     flags.extend(FOUR_SHADOW_SAMPLES);
+    flags.extend(extra);
     // Independent baked roots per label: both compilers see absent sidecars.
     fixture.bake(compiler, label, "info", &flags)
 }
@@ -83,12 +100,15 @@ fn assert_current_shape(current: &Bake) {
     assert_key_sidecar_correspondence(current);
 }
 
+/// `current` must be a `--whole-load-sh` bake. Its sections compare in the
+/// pre-flag SH format the grey compiler writes.
 fn assert_precolour_equal(grey: &Bake, current: &Bake) {
+    let current_sections = current.pre_flag_sections();
     // Missing optional sections compare as absence, never as a fabricated payload.
     for id in PRE_COLOUR_IDS {
         assert_eq!(
             grey.sections.get(&id),
-            current.sections.get(&id),
+            current_sections.get(&id),
             "pre-colour id {id}"
         );
     }
@@ -116,7 +136,7 @@ fn compare_with_pre_colour(test: &str, map_text: &str) {
     };
     let fixture = empty_pin(map_text, true);
     let grey = bake(&fixture, &grey_binary, "grey");
-    let current = bake(&fixture, &current_compiler(), "current");
+    let current = bake_current_whole(&fixture);
     assert_precolour_equal(&grey, &current);
     assert_current_shape(&current);
 }
@@ -130,11 +150,7 @@ fn no_fluid_tail_map() -> String {
 #[test]
 #[ignore = "cold real-CLI empty-tail bake"]
 fn no_fluid_only_tail_keeps_grey_lighting_texture_indices_and_one_report() {
-    let current = bake(
-        &empty_pin(&no_fluid_tail_map(), true),
-        &current_compiler(),
-        "current",
-    );
+    let current = bake_current_whole(&empty_pin(&no_fluid_tail_map(), true));
     assert_current_shape(&current);
     let names = current.names();
     assert_eq!(names.len(), 3);
@@ -166,11 +182,7 @@ fn unlit_room_map() -> String {
 #[test]
 #[ignore = "cold real-CLI no-light bake"]
 fn textured_room_without_lights_keeps_base_metadata_and_skips_direct_delta_work() {
-    let current = bake(
-        &empty_pin(&unlit_room_map(), true),
-        &current_compiler(),
-        "current",
-    );
+    let current = bake_current_whole(&empty_pin(&unlit_room_map(), true));
     assert_current_shape(&current);
     assert_eq!(
         current.sidecars.len(),
@@ -235,11 +247,7 @@ fn mover_only_map() -> String {
 #[test]
 #[ignore = "cold real-CLI mover-only/degenerate-grid bake"]
 fn mover_only_names_reach_materials_without_creating_static_world_sh_geometry() {
-    let current = bake(
-        &empty_pin(&mover_only_map(), true),
-        &current_compiler(),
-        "current",
-    );
+    let current = bake_current_whole(&empty_pin(&mover_only_map(), true));
     assert_current_shape(&current);
     assert_eq!(current.names(), ["bounce/red"]);
     assert!(geometry(&current).faces.is_empty());

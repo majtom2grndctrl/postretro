@@ -95,6 +95,7 @@ impl Installed {
                 impact_policy_runtime: &mut session.scripting.impact_policy_runtime,
                 mesh_clip_tables: &mut session.mesh_clip_tables,
                 hit_zone_store: &mut session.hit_zone_store,
+                occupancy_families: &mut session.occupancy_families,
                 trigger_pool_policy: crate::trigger_pools::TriggerPoolSeedPolicy::ArmAll,
                 suppress_host_replicated: false,
                 suppress_boot_pawn: false,

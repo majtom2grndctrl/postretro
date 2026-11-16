@@ -64,6 +64,26 @@ pub(crate) fn read_section_positionally(
     )?))
 }
 
+/// Up to `len` bytes from the start of a section, after validating its
+/// container bounds. Lets a check judge a header without reading the body.
+pub(crate) fn read_section_prefix_positionally(
+    file: &PrlFile,
+    container: &ContainerMeta,
+    section_id: u32,
+    len: u64,
+) -> Result<Option<Vec<u8>>, PrlLoadError> {
+    let Some(entry) = container.find_section(section_id) else {
+        return Ok(None);
+    };
+    validate_positional_entry_bounds(file, container, entry)?;
+    Ok(Some(read_vec_at(
+        file,
+        entry.offset,
+        len.min(entry.size),
+        "PRL section header",
+    )?))
+}
+
 /// The one positional reader: every loader and streaming read of a level's
 /// PRL goes through here, and each completed read credits the file's
 /// per-section byte counters.

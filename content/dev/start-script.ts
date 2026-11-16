@@ -10,6 +10,7 @@ import {
   read,
   sentiment,
 } from "postretro";
+import { kingHill } from "./scripts/coop-hill";
 import { onStateCrossing } from "postretro/ui";
 import { armor, shield } from "./scripts/defenses";
 import { heavy, melee, ranged } from "./scripts/attack-tokens";
@@ -90,6 +91,7 @@ import {
   hud,
   hudTheme,
   openSeatsReadout,
+  playerListReadout,
   reloadMeterTree,
   revivingMeterTree,
   spreadReticle,
@@ -183,6 +185,7 @@ export default defineMod({
     xpReadout,
     ammoReadout,
     openSeatsReadout,
+    playerListReadout,
     spreadReticle,
     reloadMeterTree,
     bleedOutMeterTree,
@@ -243,7 +246,7 @@ export default defineMod({
     shieldBreak,
   ],
   triggerEvents: [...factionSentimentTriggerEvents, boosterPads],
-  stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],
+  stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats, kingHill],
   // Registration lists each handle, as `stores` does; the default is one of
   // them, dealt by anything that names no type.
   defenseLayers: [shield, armor],

@@ -77,6 +77,8 @@ fn compile(temp: &TempBuildDir) -> PathBuf {
         .arg(&output_path)
         .arg("--no-cache")
         .arg("--no-tui")
+        // The share test decodes ids 27, 34 and 45 whole, so keep their bodies.
+        .arg("--whole-load-sh")
         .arg("--lightmap-density")
         .arg("0.25")
         .output()

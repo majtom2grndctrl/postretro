@@ -1850,6 +1850,12 @@ declare module "postretro" {
       readonly levelName: ComputedRef<string>;
       readonly progress: ComputedRef<number>;
     };
+    readonly occupancy: {
+      tag(key: string): {
+        readonly occupiedCount: ComputedRef<number>;
+        readonly occupants: ComputedRef<number>;
+      };
+    };
     readonly options: {
       readonly crouchMode: Ref<"hold" | "toggle">;
       readonly fogQuality: Ref<"low" | "medium" | "high">;
@@ -1913,6 +1919,19 @@ declare module "postretro" {
       readonly hostAddress: ComputedRef<string>;
       readonly hosting: ComputedRef<boolean>;
       readonly openSeats: ComputedRef<number>;
+      readonly playerCounts: {
+        readonly connected: ComputedRef<number>;
+        readonly down: ComputedRef<number>;
+        readonly inPlay: ComputedRef<number>;
+        readonly loading: ComputedRef<number>;
+        readonly reconnecting: ComputedRef<number>;
+      };
+      readonly players: StateList<{
+        readonly present: ComputedRef<boolean>;
+        readonly name: ComputedRef<string>;
+        readonly status: ComputedRef<"loading" | "inPlay" | "down" | "reconnecting">;
+        readonly isLocal: ComputedRef<boolean>;
+      }>;
     };
     readonly ui: {
       readonly textEntry: Ref<string>;
@@ -2700,6 +2719,8 @@ declare module "postretro" {
   export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
   export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
+  /** An engine catalog list: one row of state refs per index, up to its capacity. Each row's `present` says whether the row holds anything. Render rows with `forEach` from `"postretro/ui"`. */
+  export interface StateList<Row> extends ReadonlyArray<Row> { readonly __list: string }
   /** Who `byPlayer` addresses: the impact damager (`impact.source`), a player event's player (`on.player`), or a side of an assist pair expression (`assist.helper`, `assist.target`). */
   export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide;
   /** A per-player engine slot. A plain read means the local player (HUD binds, crossings, impact policies), or the evaluated player inside a player-event condition; `byPlayer(on.player)` in a player-event reaction, or `byPlayer(impact.source)` in an impact policy, reads that player's value. */
@@ -3213,6 +3234,7 @@ declare module "postretro/ui" {
   import type {
     ComputedRef,
     Ref,
+    StateList,
     ScalarStateValue,
     NumericArrayStateValue,
     GameStateRefs,
@@ -3485,6 +3507,8 @@ declare module "postretro/ui" {
   /** Declare presentation-local cells. `init` keys are cell names; values may be number, boolean, string, or RGBA tuple. Pure; cells live only inside the nearest container using the returned `scope`. */
   export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
   export function Switch(cell: LocalStateHandle<string>, map: Record<string, WidgetDescriptor>): WidgetDescriptor[];
+  /** Unroll a widget once per row of an engine list (`getGameState().session.players`) up to its capacity. A row shows only while its `present` flag and any `visibleWhen` it declares hold; its authored ids get the suffix `.<row>`, and same-row `labelledBy` / `focusNeighbors` targets follow. `i` counts from 0. */
+  export function forEach<Row extends { readonly present: ComputedRef<boolean> }>(list: StateList<Row>, build: (row: Row, i: number) => WidgetDescriptor): WidgetDescriptor[];
   export const ui: { createLocalState: typeof createLocalState };
   export function getGameState(): GameStateRefs;
 

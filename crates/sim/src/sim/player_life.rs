@@ -55,7 +55,38 @@ pub struct TriggerStageCapabilities {
     pub(crate) occupants: HashSet<PlayerId>,
 }
 
+/// The Triggers-stage player pawns of one tick, each list sorted: every pawn
+/// the stage captured and, of those, the ones the effective occupancy rule
+/// counts. Session player status reads this, never a later health read, so a
+/// player killed after the capture still counts for that tick.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TriggerStagePawns {
+    pub captured: Vec<EntityId>,
+    pub counted: Vec<EntityId>,
+    /// Each trigger volume with a counted pawn inside after the trigger stage
+    /// settles, in volume order, with those pawns. Empty on a tick with no
+    /// trigger stage.
+    pub occupied_volumes: Vec<(EntityId, Vec<EntityId>)>,
+}
+
 impl TriggerStageCapabilities {
+    /// The captured and counted pawns, for publishing past the tick.
+    pub fn stage_pawns(&self) -> TriggerStagePawns {
+        let mut captured: Vec<EntityId> = self.pawns.values().copied().collect();
+        let mut counted: Vec<EntityId> = self
+            .occupants
+            .iter()
+            .filter_map(|player| self.pawns.get(player).copied())
+            .collect();
+        captured.sort_unstable();
+        counted.sort_unstable();
+        TriggerStagePawns {
+            captured,
+            counted,
+            occupied_volumes: Vec::new(),
+        }
+    }
+
     pub fn capture(registry: &EntityRegistry, players: &[AuthoritativePlayer]) -> Self {
         let pawns = canonical_player_pawns(registry, players);
         let capabilities: BTreeMap<_, _> = pawns

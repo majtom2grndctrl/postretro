@@ -80,6 +80,8 @@ export type PostretroUiModule = {
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
   --- Expand a string cell into sorted visible subtrees keyed by cell value.
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
+  --- Unroll a widget once per row of an engine list; rows show while present.
+  forEach: <Row>(list: StateList<Row>, build: (row: Row, i: number) -> WidgetDescriptor) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
   --- Build a state-crossing watcher: either a numeric threshold or a Bool predicate over live store slots, a fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A predicate already true at registration only arms; it must return false, then true, to fire.

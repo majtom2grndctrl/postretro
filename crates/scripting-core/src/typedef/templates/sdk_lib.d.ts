@@ -767,6 +767,8 @@
   export type ComputedRef<T> = { readonly slot: string; readonly kind: StateRefKind; readonly [stateRefValueBrand]: T };
   export type Ref<T> = ComputedRef<T> & { readonly [writableStateRefBrand]: T };
   export type StateRef<T> = ComputedRef<T> | Ref<T>;
+  /** An engine catalog list: one row of state refs per index, up to its capacity. Each row's `present` says whether the row holds anything. Render rows with `forEach` from `"postretro/ui"`. */
+  export interface StateList<Row> extends ReadonlyArray<Row> { readonly __list: string }
   /** Who `byPlayer` addresses: the impact damager (`impact.source`), a player event's player (`on.player`), or a side of an assist pair expression (`assist.helper`, `assist.target`). */
   export type PlayerOwner = SourceHandle | PlayerTarget | AssistSide;
   /** A per-player engine slot. A plain read means the local player (HUD binds, crossings, impact policies), or the evaluated player inside a player-event condition; `byPlayer(on.player)` in a player-event reaction, or `byPlayer(impact.source)` in an impact policy, reads that player's value. */
@@ -1176,6 +1178,8 @@
   export function createLocalState<I extends Record<string, CellInit>>(init: I): LocalStateBundle<I>;
   /** `Switch(cell, map)` (M13 G2) — expand a string-valued cell's `map` of `value → subtree` into an array, injecting `visibleWhen: cell.is(key)` onto each subtree in LEXICOGRAPHICALLY-SORTED key order (byte-identical TS/Luau). Splice the result into a container's `children`. */
   export function Switch(cell: LocalStateHandle<string>, map: Record<string, WidgetDescriptor>): WidgetDescriptor[];
+  /** `forEach(list, (row, i) => widget)` — unroll a widget once per row of an engine list up to its capacity; a row shows only while its `present` flag and any `visibleWhen` it declares hold; authored ids get the suffix `.<row>` and same-row references follow. */
+  export function forEach<Row extends { readonly present: ComputedRef<boolean> }>(list: StateList<Row>, build: (row: Row, i: number) => WidgetDescriptor): WidgetDescriptor[];
   /** State-helper namespace (state helpers are namespaced; reactions stay bare). */
   export const ui: { createLocalState: typeof createLocalState };
 

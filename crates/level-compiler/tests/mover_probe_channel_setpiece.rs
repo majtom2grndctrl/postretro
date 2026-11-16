@@ -85,6 +85,8 @@ fn setpiece() -> &'static Setpiece {
             .arg("-o")
             .arg(&prl)
             .args(["--no-cache", "--no-tui", "--jobs", "6"])
+            // The gates decode id 34 whole, so keep its body.
+            .arg("--whole-load-sh")
             .arg("--baked-root")
             .arg(dir.join("baked"))
             .current_dir(&workspace)

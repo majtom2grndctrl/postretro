@@ -500,6 +500,17 @@ impl App {
                     Option<postretro_scripting_core::runtime::Frontend>,
                 > = None;
                 if let Some(manifest) = session.scripting.script_runtime.mod_manifest_mut() {
+                    // The mod's `occupancy` references declare their families
+                    // before its UI binds are checked and before any level binds
+                    // crossings or accumulators against them.
+                    let references = crate::session::occupancy_families::mod_scope_references(
+                        &session.scripting.script_ctx,
+                        manifest.ui_trees.iter().map(|registered| &registered.tree),
+                    );
+                    session.occupancy_families.commit_mod(
+                        &references,
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                    );
                     // UI trees / theme / fonts / frontend are windowed-only surfaces
                     // (headless has no modal stack), so they stay here rather than in
                     // the shared drain above. Register mod-scope UI trees into the

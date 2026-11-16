@@ -3,10 +3,12 @@
 
 use crate::prl_file::PrlFile;
 
-use postretro_level_format::SectionEntry;
+use postretro_level_format::sh_body::read_sh_body_presence;
 use postretro_level_format::sh_volume::{
-    AnimationDescriptor, OctahedralShProbe, SH_VOLUME_VERSION,
+    AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe, OctahedralShVolumeSection,
+    SH_VOLUME_VERSION,
 };
+use postretro_level_format::{SectionEntry, SectionId};
 
 use super::manifest::ensure_section_floor;
 use super::positional_io::read_vec_at;
@@ -16,12 +18,15 @@ pub(super) fn read_base_metadata(
     file: &PrlFile,
     entry: &SectionEntry,
 ) -> Result<ShStreamBaseMetadata, PrlLoadError> {
-    const HEADER: u64 = 84;
+    const HEADER: u64 = OctahedralShVolumeSection::HEADER_SIZE as u64;
     ensure_section_floor(entry, HEADER, "id-34 header")?;
     let header = read_vec_at(file, entry.offset, HEADER, "id-34 header")?;
     if read_u32(&header, 0) != SH_VOLUME_VERSION {
         return Err(stream_error("id 34 has an unsupported internal version"));
     }
+    // Either flag value streams: the atlas body comes from id 50.
+    let body = read_sh_body_presence(SectionId::OctahedralShVolume, &header)
+        .map_err(PrlLoadError::FormatError)?;
     let grid_origin = [
         read_f32(&header, 4),
         read_f32(&header, 8),
@@ -47,9 +52,9 @@ pub(super) fn read_base_metadata(
     let tiles_per_layer = read_u32(&header, 72);
     let irradiance_format = read_u32(&header, 76);
     let atlas_len = u64::from(read_u32(&header, 80));
-    if probe_stride != 8 {
+    if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
         return Err(stream_error(
-            "id 34 probe stride is not v11's 8-byte record",
+            "id 34 probe stride is not the 8-byte probe record",
         ));
     }
     let probe_count = checked_product(grid_dimensions, "id-34 probe count")?;
@@ -60,12 +65,15 @@ pub(super) fn read_base_metadata(
         .checked_add(probe_bytes)
         .ok_or_else(|| stream_error("id-34 metadata prefix size overflows"))?;
     ensure_section_floor(entry, prefix_len, "id-34 metadata prefix")?;
+    // The header keeps the full atlas length either way; an omitted body puts
+    // the animation tail right after the probe records.
+    let body_len = if body.is_present() { atlas_len } else { 0 };
     let atlas_start = entry
         .offset
         .checked_add(prefix_len)
         .ok_or_else(|| stream_error("id-34 atlas offset overflows"))?;
     let tail_start = atlas_start
-        .checked_add(atlas_len)
+        .checked_add(body_len)
         .ok_or_else(|| stream_error("id-34 atlas end overflows"))?;
     let section_end = entry
         .offset
@@ -76,7 +84,9 @@ pub(super) fn read_base_metadata(
             "id-34 metadata and declared atlas exceed section bounds",
         ));
     }
-    let prefix = read_vec_at(file, entry.offset, prefix_len, "id-34 metadata")?;
+    // The header is already read: each metadata byte is read once, so the
+    // manifest never reads more than a section holds, body or not.
+    let probe_records = read_vec_at(file, entry.offset + HEADER, probe_bytes, "id-34 probes")?;
     let probe_count = usize::try_from(probe_count)
         .map_err(|_| stream_error("id-34 probe count exceeds usize"))?;
     let mut probes = Vec::new();
@@ -84,19 +94,15 @@ pub(super) fn read_base_metadata(
         .try_reserve_exact(probe_count)
         .map_err(|_| stream_error("id-34 probe metadata allocation failed"))?;
     for index in 0..probe_count {
-        let offset = 84usize
-            .checked_add(
-                index
-                    .checked_mul(8)
-                    .ok_or_else(|| stream_error("id-34 probe offset overflows"))?,
-            )
+        let offset = index
+            .checked_mul(OCTAHEDRAL_PROBE_STRIDE as usize)
             .ok_or_else(|| stream_error("id-34 probe offset overflows"))?;
         probes.push(OctahedralShProbe {
-            validity: prefix[offset],
-            mean_distance: read_u16(&prefix, offset + 1),
-            mean_sq_distance: read_u16(&prefix, offset + 3),
-            density_level: prefix[offset + 5],
-            node_scale: prefix[offset + 6],
+            validity: probe_records[offset],
+            mean_distance: read_u16(&probe_records, offset + 1),
+            mean_sq_distance: read_u16(&probe_records, offset + 3),
+            density_level: probe_records[offset + 5],
+            node_scale: probe_records[offset + 6],
         });
     }
     postretro_level_format::sh_volume::validate_probe_metadata(grid_dimensions, &probes)

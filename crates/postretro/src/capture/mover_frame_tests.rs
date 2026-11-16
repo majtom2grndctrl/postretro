@@ -4,7 +4,8 @@
 // the frame after, so no frame samples an unwritten live tile or pairs one
 // terminus's bounce with the other's depth. Run once with
 // `POSTRETRO_SH_STREAMING=off` (whole load) and once with `sync-proof`
-// (streamed); the loader reads the mode from the environment.
+// (streamed); the loader reads the mode from the environment. The `off` run
+// needs the SH bodies, so bake the closet with `prl-build --whole-load-sh`.
 // See: context/lib/rendering_pipeline.md §4 (Mover state lighting) · §7.8
 
 use super::prepared::PreparedCapture;
@@ -52,7 +53,7 @@ fn door_id(map: &str) -> u32 {
 }
 
 #[test]
-#[ignore = "requires a GPU adapter and MOVER_CLOSET_PRL (mover-closet compiled under content/dev/maps); run under POSTRETRO_SH_STREAMING=off and =sync-proof"]
+#[ignore = "requires a GPU adapter and MOVER_CLOSET_PRL (mover-closet compiled under content/dev/maps with `prl-build --whole-load-sh`); run under POSTRETRO_SH_STREAMING=off and =sync-proof"]
 fn d4_d5_first_hand_over_and_a_one_to_zero_step_render_within_two_levels_of_the_next_frame() {
     let map = std::env::var("MOVER_CLOSET_PRL").expect("set MOVER_CLOSET_PRL");
     let mode = std::env::var("POSTRETRO_SH_STREAMING").unwrap_or_default();

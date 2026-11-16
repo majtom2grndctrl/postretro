@@ -511,6 +511,7 @@ mod tests {
                 "createLocalState",
                 "ui",
                 "Switch",
+                "forEach",
                 "defineTheme",
                 "getDesignTokens",
                 "onStateCrossing",

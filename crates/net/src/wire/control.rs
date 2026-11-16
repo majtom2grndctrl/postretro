@@ -390,12 +390,12 @@ impl SpawnPoseHint {
     }
 }
 
-/// One seat's session-visible connection state.
+/// One seat's session-visible state: connection, display name and status.
 ///
-/// Claims remain in the host's seat table for future rejoin handling. They are
-/// deliberately absent from this wire type: a roster exposes only host-minted
-/// seats and the connection lifecycle fact. `connected` does not imply
-/// participation, since admitted peers receive the roster too.
+/// A claim's player id stays in the host's seat table for rejoin handling and
+/// never crosses this wire. Its display name does, for every peer's player
+/// list. `connected` does not imply participation, since admitted peers receive
+/// the roster too.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct RosterEntry {
     /// Host-minted seat, carried on the wire as its bare `u16` value.
@@ -403,6 +403,20 @@ pub struct RosterEntry {
     /// Whether the host currently has a live connection bound to this seat.
     /// The local host seat (`0`) is always reported as connected.
     pub connected: bool,
+    /// The seat's display name, at most `DISPLAY_NAME_MAX_BYTES`; empty when
+    /// unknown, which every peer shows as `Player N`.
+    pub name: String,
+    /// The seat's host-derived status: 0 loading, 1 inPlay, 2 down,
+    /// 3 reconnecting.
+    pub status: u8,
+}
+
+/// `RosterEntry::status` values, in wire order.
+pub mod roster_status {
+    pub const LOADING: u8 = 0;
+    pub const IN_PLAY: u8 = 1;
+    pub const DOWN: u8 = 2;
+    pub const RECONNECTING: u8 = 3;
 }
 
 /// Per-recipient session roster publication.
@@ -614,6 +628,8 @@ mod tests {
                 entries: vec![RosterEntry {
                     seat: 3,
                     connected: true,
+                    name: String::new(),
+                    status: 0,
                 }],
             }
         )));
@@ -670,6 +686,8 @@ mod tests {
             entries: vec![RosterEntry {
                 seat: 4,
                 connected: true,
+                name: String::new(),
+                status: 0,
             }],
         };
 
@@ -682,7 +700,14 @@ mod tests {
             open_seats,
             entries,
         } = roster;
-        let RosterEntry { seat, connected } = entries.into_iter().next().expect("one entry");
-        let _host_minted_or_observed = (session_id, your_seat, open_seats, seat, connected);
+        let RosterEntry {
+            seat,
+            connected,
+            name,
+            status,
+        } = entries.into_iter().next().expect("one entry");
+        let _host_minted_or_observed = (session_id, your_seat, open_seats, seat, connected, status);
+        // Shown to every peer by design; the claim's player id never crosses.
+        let _displayed_to_every_peer = name;
     }
 }

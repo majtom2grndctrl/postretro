@@ -128,24 +128,40 @@ fn only_roster(
     rosters.pop().expect("length checked")
 }
 
+/// With no session level the host records no statuses, so each seat reports by
+/// its connection: loading while connected, reconnecting while held. Names come
+/// from each seat's claim; the host's seat has none.
 fn status_entries(alpha: Seat, bravo: Seat, alpha_connected: bool) -> Vec<RosterEntry> {
+    use postretro_net::wire::roster_status;
     vec![
         RosterEntry {
             seat: 0,
             connected: true,
+            name: String::new(),
+            status: roster_status::LOADING,
         },
         RosterEntry {
             seat: alpha.0,
             connected: alpha_connected,
+            name: "Alpha Runner".to_string(),
+            status: if alpha_connected {
+                roster_status::LOADING
+            } else {
+                roster_status::RECONNECTING
+            },
         },
         RosterEntry {
             seat: bravo.0,
             connected: true,
+            name: "Bravo Runner".to_string(),
+            status: roster_status::LOADING,
         },
     ]
 }
 
-fn assert_claim_is_absent_from_roster(roster: &SessionRosterMessage, claim: &ConnectClaim) {
+/// The claim's player id, the rejoin key, never crosses; its display name
+/// does, on the claimed seat's entry, for every peer's player list.
+fn assert_claim_id_is_absent_from_roster(roster: &SessionRosterMessage, claim: &ConnectClaim) {
     let encoded = wire::encode(&ServerControlMessage::SessionRoster(roster.clone()));
     assert!(
         !encoded
@@ -154,10 +170,11 @@ fn assert_claim_is_absent_from_roster(roster: &SessionRosterMessage, claim: &Con
         "the roster payload never carries the host-local player identity"
     );
     assert!(
-        !encoded
-            .windows(claim.display_name.len())
-            .any(|bytes| bytes == claim.display_name.as_bytes()),
-        "the roster payload never carries a player display name"
+        roster
+            .entries
+            .iter()
+            .any(|entry| entry.name == claim.display_name),
+        "the claimed seat's entry carries its display name as sent"
     );
 }
 
@@ -247,8 +264,8 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
     assert_eq!(alpha_view.your_seat, Some(alpha_seat.0));
     assert_eq!(bravo_view.your_seat, Some(bravo_seat.0));
     assert_ne!(alpha_view.your_seat, bravo_view.your_seat);
-    assert_claim_is_absent_from_roster(&alpha_view, &alpha_claim);
-    assert_claim_is_absent_from_roster(&alpha_view, &bravo_claim);
+    assert_claim_id_is_absent_from_roster(&alpha_view, &alpha_claim);
+    assert_claim_id_is_absent_from_roster(&alpha_view, &bravo_claim);
 
     // The level boundary clears only pawn-level bindings. The durable seat/status
     // projection stays intact and a later publication keeps the same session id.
@@ -292,8 +309,8 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
     assert_eq!(alpha_rejoin_view.open_seats, bravo_rejoin_view.open_seats);
     assert_eq!(alpha_rejoin_view.your_seat, Some(alpha_seat.0));
     assert_eq!(bravo_rejoin_view.your_seat, Some(bravo_seat.0));
-    assert_claim_is_absent_from_roster(&alpha_rejoin_view, &alpha_claim);
-    assert_claim_is_absent_from_roster(&alpha_rejoin_view, &bravo_claim);
+    assert_claim_id_is_absent_from_roster(&alpha_rejoin_view, &alpha_claim);
+    assert_claim_id_is_absent_from_roster(&alpha_rejoin_view, &bravo_claim);
 
     assert!(
         server
@@ -315,10 +332,14 @@ fn roster_keeps_session_and_status_through_level_rejoin_and_expiry() {
             RosterEntry {
                 seat: 0,
                 connected: true,
+                name: String::new(),
+                status: 0,
             },
             RosterEntry {
                 seat: bravo_seat.0,
                 connected: true,
+                name: "Bravo Runner".to_string(),
+                status: 0,
             },
         ],
         "hold expiry removes the stale seat from the published status roster"
@@ -364,6 +385,8 @@ fn expired_seat_cycles_bound_host_local_seat_rows() {
             vec![RosterEntry {
                 seat: 0,
                 connected: true,
+                name: String::new(),
+                status: 0,
             }],
             "released seats leave no stale roster rows"
         );

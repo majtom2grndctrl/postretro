@@ -61,6 +61,7 @@ pub(crate) fn collect_trigger_diagnostics_rows(
                 latched: trigger.latched,
                 rearm_remaining_ms: trigger.rearm_remaining_ms,
                 occupancy: trigger_system.occupancy(id),
+                effective_occupancy: trigger_system.counted_occupancy(id),
                 on_fire: trigger.on_fire.clone(),
                 on_fire_resolved: bindings.is_bound(id, TriggerEventEdge::Enter),
                 on_exit: trigger.on_exit.clone(),

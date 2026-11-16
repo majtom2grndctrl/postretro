@@ -275,7 +275,7 @@ State that survives a level change, enumerated rather than accreted:
 
 - **The connection** — its id, lifecycle stage, last parity declaration, and the host's per-slot revealed record, which a host level change does not clear. On the client, its latest spawn-pose hint, which survives the level-scoped reset and demotion and goes with the endpoint when the client leaves.
 - **The seat** — the host-minted durable player key, its asserted claim when one exists, and its carried state. Its placement assignment and the overflow round-robin position are level-scoped (*Slot lifecycle*). A seat sits above participation and is never released by a level transition.
-- **The roster** — the host's seat-keyed projection of host-minted seat ids, current connection state, and remaining fresh-seat count. Each entry will also carry the seat's status and display name (decided, not yet built; `scripting.md` §5), rate-limited when only a status changes. Player ids stay host-local for rejoin.
+- **The roster** — the host's seat-keyed projection of host-minted seat ids, current connection state, and remaining fresh-seat count. Each entry also carries the seat's status and display name (`scripting.md` §5). A change to statuses alone publishes at most once per `STATUS_ROSTER_INTERVAL` (250 ms) of the hold clock; any other roster change publishes at once. Player ids stay host-local for rejoin.
 
 The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch.
 
@@ -287,7 +287,7 @@ The pawn a seat currently owns is one fact stored in two directions. The host's 
 
 Three constraints bind the seat wherever it lands. It sits **above** the participation lifecycle — the exit sweep clears a slot's state, never its seat, or a level change would churn the identity the seat exists to preserve. Its type belongs in `foundation`, the only crate the binary, `entities`, and a later floor-crate consumer can all name; `net` is postretro-free by contract and cannot depend on `foundation`, so a seat minted in `net` forces a duplicate the first time per-seat storage reaches the floor slot table. Seat *ids* may cross the wire as a bare integer, but seat *contents* never do — that is what keeps the transport registry-blind.
 
-The roster publishes no lower than admitted. Admission is a compatibility gate, not a trust decision: it checks the build constants and the mod id, admits automatically, and never asks the host who the peer is. A peer below it has proven only that it can reach the socket, so it receives no roster frame — not even a seat count. Admitted and participating peers receive a status-only frame encoded separately with their own seat.
+The roster publishes no lower than admitted. Admission is a compatibility gate, not a trust decision: it checks the build constants and the mod id, admits automatically, and never asks the host who the peer is. A peer below it has proven only that it can reach the socket, so it receives no roster frame — not even a seat count. Admitted and participating peers receive the roster frame, encoded separately with their own seat.
 
 ## Game-logic-owned apply invariant
 

@@ -4,7 +4,12 @@ use std::fs::File;
 use std::sync::Arc;
 
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
-use postretro_level_format::direct_sh_delta_volumes::DIRECT_SH_DELTA_VOLUMES_VERSION;
+use postretro_level_format::direct_sh_delta_volumes::{
+    DIRECT_SH_DELTA_VOLUMES_VERSION, DirectShDeltaVolumesSection,
+};
+use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::sh_body::ShBodyPresence;
+use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::{ContainerMeta, SectionEntry, SectionId};
 
 use super::boundary::{sorted_lists_intersect, validate_sorted_cluster_ids};
@@ -257,17 +262,37 @@ fn id50_source_count_cap_is_checked_before_metadata_allocation() {
 fn fixed_metadata_headers_are_bounded_before_positional_reads() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("short.prl");
-    std::fs::write(&path, vec![0; 84]).unwrap();
+    let short = |header_len: usize| header_len as u64 - 1;
+    std::fs::write(&path, vec![0; OctahedralShVolumeSection::HEADER_SIZE]).unwrap();
     let file = PrlFile::new(File::open(&path).unwrap());
 
-    assert!(read_base_metadata(&file, &entry(SectionId::OctahedralShVolume, 83)).is_err());
     assert!(
-        read_optional_direct_metadata(&file, Some(&entry(SectionId::DirectShVolume, 75)),).is_err()
+        read_base_metadata(
+            &file,
+            &entry(
+                SectionId::OctahedralShVolume,
+                short(OctahedralShVolumeSection::HEADER_SIZE)
+            )
+        )
+        .is_err()
+    );
+    assert!(
+        read_optional_direct_metadata(
+            &file,
+            Some(&entry(
+                SectionId::DirectShVolume,
+                short(DirectShVolumeSection::HEADER_SIZE)
+            )),
+        )
+        .is_err()
     );
     assert!(
         read_optional_sparse_metadata(
             &file,
-            Some(&entry(SectionId::DirectShDeltaVolumes, 21)),
+            Some(&entry(
+                SectionId::DirectShDeltaVolumes,
+                short(DirectShDeltaVolumesSection::FIXED_HEADER_SIZE)
+            )),
             SectionId::DirectShDeltaVolumes,
             &base_metadata_for_sparse_header_checks(),
         )
@@ -279,7 +304,8 @@ fn fixed_metadata_headers_are_bounded_before_positional_reads() {
 fn sparse_header_geometry_is_checked_before_variable_tables() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("sparse.prl");
-    let mut header = vec![0; 22];
+    let header_len = DirectShDeltaVolumesSection::FIXED_HEADER_SIZE;
+    let mut header = vec![0; header_len];
     header[0] = DIRECT_SH_DELTA_VOLUMES_VERSION;
     header[1] = postretro_level_format::delta_sh_volumes::AFFINITY_FACTOR;
     header[2..6].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -287,11 +313,12 @@ fn sparse_header_geometry_is_checked_before_variable_tables() {
     header[10..14].copy_from_slice(&u32::MAX.to_le_bytes());
     header[14..18].copy_from_slice(&4u32.to_le_bytes());
     header[18..22].copy_from_slice(&1u32.to_le_bytes());
+    header[header_len - 1] = ShBodyPresence::Present.flag();
     std::fs::write(&path, header).unwrap();
 
     let error = read_optional_sparse_metadata(
         &PrlFile::new(File::open(&path).unwrap()),
-        Some(&entry(SectionId::DirectShDeltaVolumes, 22)),
+        Some(&entry(SectionId::DirectShDeltaVolumes, header_len as u64)),
         SectionId::DirectShDeltaVolumes,
         &base_metadata_for_sparse_header_checks(),
     )

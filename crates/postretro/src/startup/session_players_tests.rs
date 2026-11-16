@@ -1,0 +1,296 @@
+//! Session player counts across a level's life in one app: written at install
+//! from the seats, each tick from the capture, zeroed at unload; a frontend
+//! backdrop is not a session level.
+//! See: context/lib/scripting.md §5 (Session players)
+
+use super::lifecycle_test_fixtures::{level_world, script_ctx, test_app};
+use super::*;
+use crate::netcode::session_players::CapturedPawns;
+use postretro_entities::{SlotValue, Transform};
+use postretro_foundation::Seat;
+use postretro_scripting_core::runtime::{Frontend, MenuCamera};
+
+const LEVEL: &str = "session-players";
+
+fn counts(app: &App) -> [f32; 5] {
+    let ctx = script_ctx(app);
+    let table = ctx.slot_table.borrow();
+    ["connected", "loading", "inPlay", "down", "reconnecting"].map(|name| {
+        match table
+            .get(&format!("session.playerCounts.{name}"))
+            .unwrap()
+            .value
+        {
+            Some(SlotValue::Number(value)) => value,
+            ref other => panic!("count `{name}` reads {other:?}"),
+        }
+    })
+}
+
+/// Row `index` as `(present, name, status, isLocal)`.
+fn player_row(app: &App, index: usize) -> (bool, String, String, bool) {
+    let ctx = script_ctx(app);
+    let table = ctx.slot_table.borrow();
+    let get = |field: &str| {
+        table
+            .get(&format!("session.players.{index}.{field}"))
+            .unwrap()
+            .value
+            .clone()
+    };
+    match (get("present"), get("name"), get("status"), get("isLocal")) {
+        (
+            Some(SlotValue::Boolean(present)),
+            Some(SlotValue::String(name)),
+            Some(SlotValue::Enum(status)),
+            Some(SlotValue::Boolean(is_local)),
+        ) => (present, name, status, is_local),
+        other => panic!("row {index} reads {other:?}"),
+    }
+}
+
+fn no_rows_present(app: &App) -> bool {
+    (0..postretro_foundation::seat::SESSION_PLAYER_CAPACITY).all(|index| !player_row(app, index).0)
+}
+
+fn single_player(app: &mut App) {
+    app.session.as_mut().unwrap().seat_table = Some(crate::netcode::SeatTable::local_only());
+}
+
+/// The host's pawn spawns and binds to seat 0, as install's first player does.
+fn spawn_host_pawn(app: &mut App) -> postretro_entities::EntityId {
+    let ctx = script_ctx(app);
+    let pawn = ctx.registry.borrow_mut().spawn(Transform::default());
+    app.session
+        .as_mut()
+        .unwrap()
+        .seat_table
+        .as_mut()
+        .unwrap()
+        .bind_pawn(&mut ctx.registry.borrow_mut(), Seat(0), pawn);
+    pawn
+}
+
+fn tick(
+    app: &mut App,
+    captured: &[postretro_entities::EntityId],
+    counted: &[postretro_entities::EntityId],
+) {
+    let ctx = script_ctx(app);
+    let session = app.session.as_mut().unwrap();
+    session.session_players.publish_tick(
+        session.seat_table.as_mut(),
+        &ctx.registry.borrow(),
+        CapturedPawns { captured, counted },
+        &mut ctx.slot_table.borrow_mut(),
+    );
+}
+
+// Single player reads `inPlay` 1, or `down` with `inPlay` 0 when dead; the host
+// seat reads `loading` between install and its pawn spawning (P26); unload
+// zeroes every count until the next install writes them (P14, P21).
+#[test]
+fn single_player_counts_follow_install_tick_death_and_unload() {
+    let mut app = test_app();
+    single_player(&mut app);
+    assert_eq!(counts(&app), [0.0; 5], "no session level yet");
+
+    app.install_level_identity(&level_world(LEVEL, 1));
+    assert!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .session_level()
+    );
+    assert_eq!(counts(&app), [1.0, 1.0, 0.0, 0.0, 0.0]);
+
+    let pawn = spawn_host_pawn(&mut app);
+    tick(&mut app, &[pawn], &[pawn]);
+    assert_eq!(counts(&app), [1.0, 0.0, 1.0, 0.0, 0.0]);
+    // L3: one present row, local, named Player 1, with its status.
+    assert_eq!(
+        player_row(&app, 0),
+        (true, "Player 1".to_string(), "inPlay".to_string(), true)
+    );
+    assert!(!player_row(&app, 1).0);
+
+    tick(&mut app, &[pawn], &[]);
+    assert_eq!(
+        counts(&app),
+        [1.0, 0.0, 0.0, 1.0, 0.0],
+        "dead: down, not in play"
+    );
+    assert_eq!(player_row(&app, 0).2, "down");
+
+    app.unload_level();
+    assert_eq!(counts(&app), [0.0; 5]);
+    assert!(no_rows_present(&app));
+    assert!(
+        !app.session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .session_level()
+    );
+    tick(&mut app, &[], &[]);
+    assert_eq!(
+        counts(&app),
+        [0.0; 5],
+        "no tick writes counts without a session level"
+    );
+}
+
+// A frontend backdrop is not a session level: its ticks write nothing, with or
+// without a pawn on it (P14).
+#[test]
+fn frontend_backdrop_is_not_a_session_level() {
+    let mut app = test_app();
+    single_player(&mut app);
+    let session = app.session.as_mut().unwrap();
+    session.modal_stack.registry_mut().register(
+        "mainMenu",
+        postretro_ui::demo::build_frontend_menu_descriptor(),
+        postretro_ui::modal_stack::ScopeTier::Mod,
+        false,
+    );
+    session.frontend = Some(Frontend {
+        menu_tree: "mainMenu".to_string(),
+        background_level: Some(LEVEL.to_string()),
+        camera: MenuCamera {
+            position: [0.0, 0.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+        },
+    });
+    app.present_frontend_menu();
+    assert!(app.frontend_menu_is_present());
+
+    app.install_level_identity(&level_world(LEVEL, 1));
+    assert!(
+        !app.session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .session_level()
+    );
+    let pawn = spawn_host_pawn(&mut app);
+    tick(&mut app, &[pawn], &[pawn]);
+    assert_eq!(counts(&app), [0.0; 5]);
+    assert!(no_rows_present(&app));
+    assert!(
+        app.session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .statuses()
+            .is_empty()
+    );
+}
+
+// A client holds the host's replicated counts while its level lives; leaving
+// unloads it, and every count reads 0 at the frontend (P14).
+#[test]
+fn client_counts_read_zero_once_its_level_unloads() {
+    let mut app = test_app();
+    super::lifecycle_test_fixtures::connect_test_app_as_client(&mut app);
+    {
+        let ctx = script_ctx(&app);
+        let mut table = ctx.slot_table.borrow_mut();
+        // As a snapshot applies them: engine writes bypass readonly.
+        for (name, value) in [("connected", 3.0), ("inPlay", 2.0), ("loading", 1.0)] {
+            table
+                .get_mut(&format!("session.playerCounts.{name}"))
+                .unwrap()
+                .write_value(Some(SlotValue::Number(value)));
+        }
+    }
+    assert_eq!(counts(&app), [3.0, 1.0, 2.0, 0.0, 0.0]);
+
+    // Its session level shows the roster's rows.
+    {
+        let session = app.session.as_mut().unwrap();
+        let Some(crate::netcode::NetEndpoint::Client { session_status, .. }) =
+            session.net_endpoint.as_mut()
+        else {
+            panic!("connected as a client");
+        };
+        crate::netcode::apply_client_session_roster(
+            session_status,
+            &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+            postretro_net::wire::SessionRosterMessage {
+                session_id: postretro_net::wire::SessionId([9; 16]),
+                your_seat: Some(1),
+                open_seats: 7,
+                entries: vec![
+                    postretro_net::wire::RosterEntry {
+                        seat: 0,
+                        connected: true,
+                        name: String::new(),
+                        status: postretro_net::wire::roster_status::IN_PLAY,
+                    },
+                    postretro_net::wire::RosterEntry {
+                        seat: 1,
+                        connected: true,
+                        name: "Wren".to_string(),
+                        status: postretro_net::wire::roster_status::LOADING,
+                    },
+                ],
+            },
+        );
+        let script_ctx = session.scripting.script_ctx.clone();
+        let Some(crate::netcode::NetEndpoint::Client { session_status, .. }) =
+            session.net_endpoint.as_ref()
+        else {
+            unreachable!()
+        };
+        session.session_players.begin_level(
+            true,
+            None,
+            Some(session_status),
+            &script_ctx.registry.borrow(),
+            &mut script_ctx.slot_table.borrow_mut(),
+        );
+    }
+    assert_eq!(
+        player_row(&app, 1),
+        (true, "Wren".to_string(), "loading".to_string(), true)
+    );
+    assert_eq!(
+        player_row(&app, 0),
+        (true, "Player 1".to_string(), "inPlay".to_string(), false)
+    );
+
+    app.unload_level();
+    assert_eq!(counts(&app), [0.0; 5]);
+    assert!(no_rows_present(&app), "a client that leaves shows no rows");
+}
+
+// The dev HUD's player list, the reference `forEach` consumer, loads from the
+// dev mod with one row per seat, each shown only while its seat is present.
+#[test]
+fn dev_hud_player_list_unrolls_one_row_per_seat() {
+    let manifest = crate::startup::fluids_swim_surface_tests::dev_manifest();
+    let tree = manifest
+        .ui_trees
+        .iter()
+        .find(|tree| tree.name == "hud.players")
+        .expect("the dev mod registers its player list");
+    assert!(tree.always_on);
+    let root = serde_json::to_value(&tree.tree.root).unwrap();
+    let rows = root["children"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        postretro_foundation::seat::SESSION_PLAYER_CAPACITY
+    );
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            row["visibleWhen"]["slot"],
+            format!("session.players.{index}.present")
+        );
+        assert_eq!(
+            row["children"][0]["bind"]["slot"],
+            format!("session.players.{index}.name")
+        );
+    }
+}

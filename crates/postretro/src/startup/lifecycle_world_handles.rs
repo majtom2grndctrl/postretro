@@ -123,6 +123,8 @@ pub(crate) struct WorldInstallHandles<'a> {
     pub(crate) impact_policy_runtime: &'a mut crate::impact_policy::ImpactPolicyRuntime,
     pub(crate) mesh_clip_tables: &'a mut crate::scripting_systems::mesh_anim::MeshClipTables,
     pub(crate) hit_zone_store: &'a mut crate::scripting_systems::hit_zones::HitZoneStore,
+    /// Which `occupancy` families exist; level references join at install.
+    pub(crate) occupancy_families: &'a mut crate::session::occupancy_families::OccupancyFamilies,
     /// Resolved separately for each install. A pinned seed repeats exactly;
     /// arm-all is the deterministic unpinned headless default.
     pub(crate) trigger_pool_policy: TriggerPoolSeedPolicy,

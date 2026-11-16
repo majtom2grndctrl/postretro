@@ -3139,15 +3139,16 @@ mod tests {
     // peer predates the ghost-link record. A wire-34 peer lacks the switch
     // declaration kind, a wire-35 peer the snapshot's host level tick, and a
     // wire-36 peer the host level life on `Relevel` and `Revealed`, a wire-37
-    // peer the player life-state record, and a wire-38 peer the assist fields.
+    // peer the player life-state record, a wire-38 peer the assist fields, and a
+    // wire-39 peer the roster entry's name and status.
     // A PRLC peer predates the spawn-pose hint and a PRLD peer the session-ended
     // cause. The admission gate refuses each declaration with a typed cause,
-    // logging the protocol mismatch, and admits a PRLE / 39 one.
+    // logging the protocol mismatch, and admits a PRLE / 40 one.
     #[test]
-    fn admission_refuses_prlb_to_prld_or_wire_32_to_38_and_admits_prle_39() {
+    fn admission_refuses_prlb_to_prld_or_wire_32_to_39_and_admits_prle_40() {
         let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C45,
-            wire_version: 39,
+            wire_version: 40,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
@@ -3217,6 +3218,13 @@ mod tests {
             (
                 wire::ProtocolVersion {
                     wire_version: 38,
+                    ..current
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 39,
                     ..current
                 },
                 false,

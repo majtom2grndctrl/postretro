@@ -56,6 +56,8 @@ mod load_pool;
 use postretro_physics::kinematic_mover;
 use postretro_sim::mover_commands;
 mod mod_digest;
+// The core count every engine thread pool sizes from; tests emulate fewer.
+mod parallelism;
 use postretro_physics::movement;
 // App-side debug-line geometry for rotating kinematic movers. This owns no GPU
 // state; the renderer only consumes its emitted lines.

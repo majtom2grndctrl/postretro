@@ -176,7 +176,7 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
     let lightmap_source = TestBlockSource::with_log(corridor_blocks(64, false), Arc::clone(&log));
     let set = corridor_set();
     let mut lightmap = lightmap_session(&lightmap_source);
-    let reads = LevelReadIssuer::spawn(Some(Box::new(sh_route)), lightmap.take_route()).unwrap();
+    let reads = LevelReadIssuer::spawn(Some(Box::new(sh_route)), lightmap.take_route(), None).unwrap();
     workers.attach_issuer(reads.issuer().clone());
     workers.publish_targets(&(0..5).collect::<BTreeSet<_>>());
 

@@ -5,8 +5,10 @@ use std::time::Duration;
 
 use postretro_render_cpu::lightmap_pool::{PerPool, PoolKind};
 
+use super::busy_stats::BusyStats;
 use super::mirror::MirrorStats;
 use super::pool_mirror::{PoolRun, PoolStats};
+use super::sh_walk::ShRunStats;
 use super::trip_record::{GateSplit, RunRecord, SplitTotals};
 use super::{Levers, Walk};
 
@@ -111,6 +113,10 @@ pub(super) struct RunReport {
     pub(super) record: RunRecord,
     /// The planar mirror, in planar mode.
     pub(super) mirror: Option<MirrorStats>,
+    /// The read issuer's busy time per physical read.
+    pub(super) issuer_busy: BusyStats,
+    /// SH beside the lightmap, when this run streamed it.
+    pub(super) sh: Option<ShRunStats>,
 }
 
 /// Drawn blocks still non-resident after the frame's last drain, by cause
@@ -119,8 +125,8 @@ pub(super) struct RunReport {
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct Causes {
     frames: u64,
-    deferred: u64,
-    left_behind: u64,
+    pub(super) deferred: u64,
+    pub(super) left_behind: u64,
     frames_deferred: u64,
     frames_left_behind: u64,
     max_deferred: u32,

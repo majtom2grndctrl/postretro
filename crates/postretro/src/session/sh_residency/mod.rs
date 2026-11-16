@@ -338,6 +338,25 @@ impl ShStreamingSession {
         self.controller.settle_set_targets()
     }
 
+    /// The controller, read by the walk measurement's completion gate and
+    /// report.
+    #[cfg(test)]
+    pub(in crate::session) fn controller(&self) -> &ShResidencyController {
+        &self.controller
+    }
+
+    /// As [`ShAsyncWorkers::interpose_completions`]; `None` before the
+    /// workers attach.
+    #[cfg(test)]
+    pub(in crate::session) fn interpose_worker_completions(
+        &mut self,
+        forward: std::sync::mpsc::Receiver<super::sh_async_workers::ShWorkerCompletion>,
+    ) -> Option<std::sync::mpsc::Receiver<super::sh_async_workers::ShWorkerCompletion>> {
+        self.workers
+            .as_mut()
+            .map(|workers| workers.interpose_completions(forward))
+    }
+
     #[cfg(test)]
     pub(in crate::session) fn set_mode_for_test(&mut self, mode: ShStreamingMode) {
         self.mode = mode;

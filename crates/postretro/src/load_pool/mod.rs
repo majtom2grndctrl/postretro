@@ -18,8 +18,7 @@ pub(crate) const LOAD_POOL_WIDTH_CAP: usize = 2;
 /// The pool width this machine ships with: two cores left to the main and
 /// upload threads, at least one worker, never past the cap.
 pub(crate) fn shipped_load_pool_width() -> usize {
-    let parallelism = std::thread::available_parallelism().map_or(1, usize::from);
-    width_for_parallelism(parallelism)
+    width_for_parallelism(crate::parallelism::available_parallelism())
 }
 
 fn width_for_parallelism(parallelism: usize) -> usize {

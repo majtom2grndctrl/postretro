@@ -30,6 +30,7 @@ use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::{
     MAX_INSTALL_DECODED_BYTES_PER_DRAIN, SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
 };
+use crate::streaming::issuer_busy::IssuerBusyLog;
 use crate::streaming::shared_drain::SharedDrain;
 
 /// One frame's visibility, as every streamed resource reads it.
@@ -81,6 +82,9 @@ pub(crate) struct LevelStreaming {
     /// placeholder). Its level runs without lightmap streaming. Weak, so it
     /// keeps the manifest's allocation, never the manifest.
     declined_lightmap: Option<Weak<LightmapStreamManifest>>,
+    /// Where each issuer this owner spawns logs its busy time; `None` (play)
+    /// times nothing. The walk measurement installs one.
+    issuer_busy: Option<Arc<IssuerBusyLog>>,
 }
 
 impl LevelStreaming {
@@ -159,6 +163,12 @@ impl LevelStreaming {
     #[cfg(test)]
     pub(crate) fn install_cell_demand(&mut self, stage: CellDemand) {
         self.cell_demand = Some(stage);
+    }
+
+    /// Every issuer spawned from now on logs its busy time into `busy`.
+    #[cfg(test)]
+    pub(crate) fn install_issuer_busy_log(&mut self, busy: Arc<IssuerBusyLog>) {
+        self.issuer_busy = Some(busy);
     }
 
     /// One frame's streaming work for both resources:
@@ -262,7 +272,7 @@ impl LevelStreaming {
             return Ok(());
         }
         let (sh_workers, sh_route) = sh_prepared.unzip();
-        let reads = LevelReadIssuer::spawn(sh_route, lightmap_route)?;
+        let reads = LevelReadIssuer::spawn(sh_route, lightmap_route, self.issuer_busy.clone())?;
         if let (Some(mut workers), Some(streaming)) = (sh_workers, sh.as_mut()) {
             workers.attach_issuer(reads.issuer().clone());
             streaming.attach_workers(workers);

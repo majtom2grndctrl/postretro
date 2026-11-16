@@ -78,7 +78,7 @@ impl ShWorkerSource for ManifestWorkerSource {
 }
 
 /// Decode threads: half the available cores, at least one, at most three.
-fn decode_pool_size(available_parallelism: usize) -> usize {
+pub(in crate::session) fn decode_pool_size(available_parallelism: usize) -> usize {
     (available_parallelism / 2).clamp(1, 3)
 }
 
@@ -156,7 +156,7 @@ impl ShAsyncWorkers {
     /// [`Self::prepare`] instead, so SH shares one issuer with lightmap blocks.
     #[cfg(test)]
     pub(super) fn new(manifest: Arc<ShStreamManifest>) -> std::io::Result<Self> {
-        let available = thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let available = crate::parallelism::available_parallelism();
         let mut workers = Self::with_source(
             Arc::new(ManifestWorkerSource {
                 manifest: manifest.clone(),
@@ -174,7 +174,7 @@ impl ShAsyncWorkers {
     pub(in crate::session) fn prepare(
         manifest: Arc<ShStreamManifest>,
     ) -> std::io::Result<(Self, Box<dyn ReadRoute>)> {
-        let available = thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let available = crate::parallelism::available_parallelism();
         let (mut workers, route) = Self::prepare_with_source(
             Arc::new(ManifestWorkerSource {
                 manifest: manifest.clone(),
@@ -298,6 +298,16 @@ impl ShAsyncWorkers {
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => Err("SH worker completion queue disconnected"),
         }
+    }
+
+    /// Makes `forward` the queue completions are taken from, and returns the
+    /// queue the workers deliver into: a measurement gate sits between them.
+    #[cfg(test)]
+    pub(super) fn interpose_completions(
+        &mut self,
+        forward: Receiver<ShWorkerCompletion>,
+    ) -> Receiver<ShWorkerCompletion> {
+        std::mem::replace(&mut self.completed, forward)
     }
 
     #[cfg(feature = "capture")]

@@ -11,6 +11,7 @@ use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::session::sh_async_workers::ShWorkerRetirement;
 use crate::sh_streaming::controller::MAX_STREAM_PERMITS;
 use crate::streaming::issuer::{ReadIssuer, ReadRoute, ReadRoutes};
+use crate::streaming::issuer_busy::IssuerBusyLog;
 use crate::streaming::request::StreamResource;
 
 /// Owns the one issuer thread every streamed resource of a level reads
@@ -30,12 +31,14 @@ pub(crate) struct LevelReadIssuer {
 impl LevelReadIssuer {
     /// Spawns one issuer over the routes present. Its queue covers every
     /// submission the routed resources can have outstanding, so a
-    /// submission never finds it full.
+    /// submission never finds it full. `busy`, when present, receives the
+    /// issuer's busy time per physical read.
     pub(crate) fn spawn(
         sh: Option<Box<dyn ReadRoute>>,
         lightmap: Option<Box<dyn ReadRoute>>,
+        busy: Option<Arc<IssuerBusyLog>>,
     ) -> std::io::Result<Self> {
-        let mut routes = ReadRoutes::default();
+        let mut routes = ReadRoutes::default().with_busy_log(busy);
         let mut queue_capacity = 0;
         if let Some(route) = sh {
             routes = routes.with(StreamResource::Sh, route);

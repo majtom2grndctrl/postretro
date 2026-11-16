@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use postretro_level_loader::PrlLoadError;
 
+use super::issuer_busy::IssuerBusyLog;
 use super::request::{MAX_READ_RANGES, ReadRequest, StreamResource};
 use super::schedule::{RangeSlot, ReadPlan, plan_next_read, split_span};
 
@@ -84,15 +85,23 @@ impl IntoIterator for ReadParts {
     }
 }
 
-/// The routes an issuer serves, one per resource at most.
+/// The routes an issuer serves, one per resource at most, and where it logs
+/// its busy time when a measurement asks.
 #[derive(Default)]
 pub(crate) struct ReadRoutes {
     routes: [Option<Box<dyn ReadRoute>>; StreamResource::COUNT],
+    busy: Option<Arc<IssuerBusyLog>>,
 }
 
 impl ReadRoutes {
     pub(crate) fn with(mut self, resource: StreamResource, route: Box<dyn ReadRoute>) -> Self {
         self.routes[resource.index()] = Some(route);
+        self
+    }
+
+    /// Times every physical read into `busy`; `None` times nothing.
+    pub(crate) fn with_busy_log(mut self, busy: Option<Arc<IssuerBusyLog>>) -> Self {
+        self.busy = busy;
         self
     }
 
@@ -292,7 +301,12 @@ fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: 
         let Some(plan) = plan_next_read(&scratch.slots) else {
             continue;
         };
-        if !issue_read(&plan, pending, &mut scratch, routes, cancel) {
+        let started = routes.busy.as_ref().map(|_| Instant::now());
+        let issued = issue_read(&plan, pending, &mut scratch, routes, cancel);
+        if let (Some(busy), Some(started)) = (&routes.busy, started) {
+            busy.record(started.elapsed());
+        }
+        if !issued {
             return;
         }
     }

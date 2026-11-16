@@ -3,6 +3,7 @@
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::Instant;
 
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
@@ -13,10 +14,13 @@ use super::super::LightmapStreamingSession;
 use super::completed_reads::CompletionGate;
 use super::modes::ReadsMode;
 use super::pool_mirror::{PoolMirror, RetireClock};
+use super::sh_walk::{ShCompletionGate, accept_all};
 use crate::cpu_timing::StreamingStage;
 use crate::lightmap_streaming::controller::LightmapResidencyCounters;
 use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
 use crate::session::sh_residency::ShStreamingSession;
+use crate::sh_streaming::controller::ShResidencyCounters;
+use crate::streaming::issuer_busy::IssuerBusyLog;
 
 /// Drains per frame in the completed-reads mode: drain 0 admits earlier reads
 /// and issues this frame's, and drain 1 admits the ones drain 0 issued (O17).
@@ -48,8 +52,8 @@ pub(super) struct FrameInput<'a> {
     /// Every cell the frame draws: the main view's, plus the planar mirror's
     /// reach in planar mode, as the play frame streams them.
     pub(super) visible_cells: &'a VisibleCells,
-    /// The cells SH visible targeting reads (the play frame's planar gate).
-    /// SH does not stream here; carried so the frame matches play's.
+    /// The cells SH visible targeting reads (the play frame's planar gate),
+    /// when SH streams (`sh_walk`).
     pub(super) sh_visible_cells: &'a VisibleCells,
     pub(super) camera_cell: u32,
     pub(super) path: VisibilityPath,
@@ -90,7 +94,8 @@ pub(super) struct FrameOutcome {
 }
 
 /// The level-scope streaming owner, the lightmap session inside it, and the
-/// pool mirror standing in for the renderer's drain.
+/// pool mirror standing in for the renderer's drain; with SH on, the SH
+/// session beside it (`sh_walk`).
 pub(super) struct FrameDriver {
     level: LevelStreaming,
     mirror: PoolMirror,
@@ -98,7 +103,10 @@ pub(super) struct FrameDriver {
     gate: Option<CompletionGate>,
     /// Each cell's blocks: what a drawn cell draws.
     cell_blocks: Vec<Range<u32>>,
-    no_sh: Option<ShStreamingSession>,
+    /// `None` keeps SH out of the walk: the harness's original run.
+    sh: Option<ShStreamingSession>,
+    /// Completed-reads mode with SH on, once SH's workers have attached.
+    sh_gate: Option<ShCompletionGate>,
 }
 
 impl FrameDriver {
@@ -118,8 +126,27 @@ impl FrameDriver {
             reads,
             gate,
             cell_blocks,
-            no_sh: None,
+            sh: None,
+            sh_gate: None,
         }
+    }
+
+    /// Streams `sh` beside the lightmap from the next frame; call before the
+    /// first frame, so both share the issuer it spawns.
+    pub(super) fn stream_sh(&mut self, sh: ShStreamingSession) {
+        self.sh = Some(sh);
+    }
+
+    /// The issuer the first frame spawns logs its busy time into `busy`.
+    pub(super) fn log_issuer_busy(&mut self, busy: Arc<IssuerBusyLog>) {
+        self.level.install_issuer_busy_log(busy);
+    }
+
+    /// SH's cumulative counters, while SH streams.
+    pub(super) fn sh_counters(&self) -> Option<ShResidencyCounters> {
+        self.sh
+            .as_ref()
+            .map(|session| session.controller().counters())
     }
 
     pub(super) fn session(&self) -> &LightmapStreamingSession {
@@ -156,13 +183,24 @@ impl FrameDriver {
             if let Some(gate) = &mut self.gate {
                 gate.await_in_flight(self.level.lightmap().expect("installed"));
             }
+            if self.reads == ReadsMode::CompletedReads
+                && let Some(sh) = &mut self.sh
+            {
+                if self.sh_gate.is_none() {
+                    self.sh_gate = ShCompletionGate::install(sh);
+                }
+                if let Some(gate) = &mut self.sh_gate {
+                    gate.await_in_flight(sh);
+                }
+            }
             if drain == 0 {
                 out.delivered = self.session().ledger().in_memory_bytes();
             }
             let part = Instant::now();
-            self.level
+            let sh_batch = self
+                .level
                 .prepare_drains(
-                    &mut self.no_sh,
+                    &mut self.sh,
                     Some(residency_set),
                     StreamingFrame {
                         visible_cells: input.visible_cells,
@@ -176,6 +214,9 @@ impl FrameDriver {
                 )
                 .expect("prepare streaming drains");
             out.prepare_nanos += elapsed_nanos(part);
+            if let Some(sh) = &mut self.sh {
+                accept_all(sh, &sh_batch).expect("apply the SH stand-in's outcome");
+            }
             let session = self.level.lightmap_mut().expect("installed");
             if let Some(batch) = session.take_drain_batch_for_renderer() {
                 let outcome = {
@@ -188,6 +229,10 @@ impl FrameDriver {
                 out.apply_nanos += elapsed_nanos(part);
             }
             out.drains += 1;
+        }
+        if let Some(sh) = &mut self.sh {
+            // The renderer submits compose once per frame, after its drains.
+            sh.mark_compose_submitted();
         }
         let session = self.level.lightmap_mut().expect("installed");
         let part = Instant::now();
@@ -224,8 +269,14 @@ impl FrameDriver {
         out
     }
 
+    /// Lightmap permits in use, plus SH's when SH streams: a real-time frame
+    /// with any held sleeps to its deadline.
     pub(super) fn permits_in_use(&self) -> usize {
         self.session().controller.permits_in_use()
+            + self
+                .sh
+                .as_ref()
+                .map_or(0, |sh| sh.controller().permits_in_use())
     }
 
     /// Retires the level's I/O and returns the session's final counters and
@@ -237,7 +288,8 @@ impl FrameDriver {
         // The issuer's deliveries fail once the gate's queue is gone, and
         // release their bytes; nothing waits on them.
         self.gate = None;
-        self.level.retire(&mut self.no_sh);
+        self.sh_gate = None;
+        self.level.retire(&mut self.sh);
         drop(self.level);
         (counters, physical_reads, self.mirror)
     }

@@ -5,6 +5,7 @@ pub(crate) mod cell_demand;
 pub(crate) mod cluster_hints;
 pub(crate) mod drain_budget;
 pub(crate) mod issuer;
+pub(crate) mod issuer_busy;
 #[cfg(test)]
 pub(crate) mod read_gate_test_fixture;
 pub(crate) mod request;

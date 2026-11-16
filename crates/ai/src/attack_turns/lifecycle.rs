@@ -110,6 +110,12 @@ pub(crate) fn arbitrate_attack_turns(
             let draws_unchanged = programs_entry
                 .and_then(|entry| entry.attack_draws(turn.attack))
                 .is_none_or(|draws| draws.same_draws(&turn.draws));
+            // A rest's queued grant is kept by nothing here but the mark: on
+            // the evaluation after its grant, its row passes and the hold's
+            // mark names it, or another row (or none) leaves the rest and the
+            // turn ends with its refresh. A rest never holds a turn past that
+            // evaluation, since it is unmarked and a queued turn neither waits
+            // out a cooldown nor executes before its release.
             draws_unchanged
                 && ((target.is_some() && mark == Some(turn.attack))
                     || executing_attack == Some(turn.attack)
@@ -147,13 +153,20 @@ pub(crate) fn arbitrate_attack_turns(
             next_request(
                 turns,
                 graph,
-                mark,
-                outcome.attack.as_ref(),
+                RequestSources {
+                    mark,
+                    queued: outcome.queued_attack,
+                    pending: outcome.attack.as_ref(),
+                },
                 programs_entry,
                 target,
                 pool,
             )
         });
+        // The clock is per target, not per attack: a change of requested
+        // attack, a gap in requesting (leaving a rest and re-entering it),
+        // and a move between a rest's request and its hold's mark all keep
+        // the enemy's place in line on one target.
         match (request, turns.wait) {
             (Some((request, _)), Some(wait)) if wait.target == request.target => {}
             (Some((request, _)), _) => {
@@ -243,21 +256,36 @@ pub(crate) fn arbitrate_attack_turns(
     }
 }
 
+/// Where an enemy's one request can come from this tick, highest first.
+#[derive(Clone, Copy)]
+pub(crate) struct RequestSources<'a> {
+    /// The attack marked on the active path.
+    pub(crate) mark: Option<u16>,
+    /// The attack a standing rest's first open queued row waits on.
+    pub(crate) queued: Option<u16>,
+    /// The unmarked attack the fire step resolved this tick.
+    pub(crate) pending: Option<&'a PendingAttack>,
+}
+
 /// The one request an enemy makes this tick, and whether it can be granted
-/// yet. A marked path requests its mark until granted; otherwise the attack
-/// the fire step resolved requests, only on a tick it is ready to fire.
-fn next_request(
+/// yet. A marked path requests its mark until granted. Else a rest's queued
+/// row requests its attack while the row waits on the turn alone. Else the
+/// attack the fire step resolved requests, only on a tick it is ready to
+/// fire. A queued request takes a mark's lifetime: it stands from the rest
+/// and waits in line, and its grant is held to the next evaluation, where
+/// only the hold's mark keeps it.
+pub(crate) fn next_request(
     turns: &AttackTurnState,
     graph: &BehaviorGraphDescriptor,
-    mark: Option<u16>,
-    pending: Option<&PendingAttack>,
+    sources: RequestSources<'_>,
     programs: Option<&BrainEntityPrograms>,
     target: EntityId,
     pool: AttackPoolId,
 ) -> Option<(TurnRequest, bool)> {
-    let (attack, marked) = match mark {
-        Some(mark) => (mark, true),
-        None => (attack_index(graph, &pending?.attack_name)?, false),
+    let (attack, marked) = match (sources.mark, sources.queued) {
+        (Some(mark), _) => (mark, true),
+        (None, Some(queued)) => (queued, true),
+        (None, None) => (attack_index(graph, &sources.pending?.attack_name)?, false),
     };
     if turns.holds_attack(attack) {
         return None;

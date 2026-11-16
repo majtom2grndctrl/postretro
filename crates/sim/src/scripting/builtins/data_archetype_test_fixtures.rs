@@ -146,6 +146,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                 "idle".to_string(),
                 vec![GuardedRow {
                     release_after: None,
+                    queue: None,
                     to: "attack".to_string(),
                     when: IrNode::Le {
                         a: Box::new(IrNode::Input {

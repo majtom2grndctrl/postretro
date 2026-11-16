@@ -1351,6 +1351,7 @@ fn hold_enemy_graph() -> BehaviorGraphDescriptor {
     };
     let after = |to: &str, ms: f32| GuardedRow {
         release_after: None,
+        queue: None,
         to: to.to_string(),
         when: IrNode::Ge {
             a: Box::new(IrNode::Input {
@@ -1440,6 +1441,7 @@ fn roll_enemy_graph() -> BehaviorGraphDescriptor {
             from.to_string(),
             vec![GuardedRow {
                 release_after: None,
+                queue: None,
                 to: to.to_string(),
                 when: rolled_dwell(base, span),
             }],
@@ -4931,6 +4933,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
                 "jab".to_string(),
                 vec![postretro_foundation::GuardedRow {
                     release_after: None,
+                    queue: None,
                     to: "rest".to_string(),
                     when: input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
                 }],
@@ -4939,6 +4942,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
                 "rest".to_string(),
                 vec![postretro_foundation::GuardedRow {
                     release_after: None,
+                    queue: None,
                     to: "jab".to_string(),
                     when: IrNode::Ge {
                         a: Box::new(input(postretro_foundation::BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),

@@ -179,6 +179,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
     };
     let edge = |to: &str| GuardedRow {
         release_after: None,
+        queue: None,
         to: to.into(),
         when: IrNode::Const {
             value: IrValue::Bool(true),

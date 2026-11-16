@@ -7,6 +7,7 @@ mod budget;
 mod facts;
 mod lifetime;
 mod pools;
+mod queued_rows;
 mod refresh;
 mod release;
 mod reload;
@@ -415,6 +416,7 @@ fn engaged_outcome(
         attack: None,
         weapon_aim: None,
         entered: None,
+        queued_attack: None,
         fresh_unmarked_grant: None,
     }
 }

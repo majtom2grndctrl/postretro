@@ -1296,6 +1296,7 @@ mod tests {
                     "rest".to_string(),
                     vec![GuardedRow {
                         release_after: None,
+                        queue: None,
                         to: "charge".to_string(),
                         when: IrNode::Le {
                             a: Box::new(IrNode::Input {

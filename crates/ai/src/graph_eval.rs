@@ -23,28 +23,55 @@ type SelectorLayer<'a> = (
 /// Evaluate each active envelope outer-to-inner. At a level, `"*"` rows run
 /// before the active activity's own rows. A winning edge seats its target and
 /// complete initial descent immediately, then ends this pass so an entered
-/// node cannot evaluate its own row until the following tick.
+//// node cannot evaluate its own row until the following tick.
+#[cfg(test)]
 pub(super) fn select_transition_path(
     bound: &BrainEntityPrograms,
     scope: &mut BrainScope,
     brain: &mut BrainComponent,
 ) -> bool {
+    select_transitions(bound, scope, brain).transitioned
+}
+
+/// What one transition pass did: whether it entered an activity, and the
+/// attack the active path's first waiting queued row asks a turn for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct TransitionPass {
+    pub(super) transitioned: bool,
+    /// The attack index of the first queued row, in path and row order, whose
+    /// `when`, range and cooldown pass while its turn is not yet held. Only a
+    /// level the pass left standing requests: a row winning at the
+    /// candidate's own level leaves the rest it waited in.
+    pub(super) queued: Option<u16>,
+}
+
+/// [`select_transition_path`], also reporting the queued request the
+/// standing path makes. Compute hands that request to arbitration: the row
+/// walk is the one place that already knows the path, its rows and their
+/// guards, so the request and the row gate read one evaluation and never
+/// disagree.
+pub(super) fn select_transitions(
+    bound: &BrainEntityPrograms,
+    scope: &mut BrainScope,
+    brain: &mut BrainComponent,
+) -> TransitionPass {
+    let mut queued = None;
     let mut envelope_index = 0;
     for depth in 0..brain.active_depth() {
         let Some(activity_index) = brain.active_activity_index(depth) else {
-            return false;
+            return TransitionPass::default();
         };
         let Some(envelope) = brain.envelope_at_depth(depth) else {
-            return false;
+            return TransitionPass::default();
         };
         let Some(bound_envelope) = bound.envelope(envelope_index) else {
-            return false;
+            return TransitionPass::default();
         };
         let Some((current_name, current)) = envelope.activities.iter().nth(activity_index) else {
-            return false;
+            return TransitionPass::default();
         };
         let Some(bound_activity) = bound_envelope.activities.get(activity_index) else {
-            return false;
+            return TransitionPass::default();
         };
         scope.repoint_scope_relative(ScopeRelativeValues {
             time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
@@ -66,24 +93,42 @@ pub(super) fn select_transition_path(
         // A `"*"` row into the pose the enemy already holds is skipped like a
         // row to the current activity; the level's own rows between a rest
         // and its holds still pass. A release row also waits out the pose's
-        // drawn release time.
+        // drawn release time, and a queued row its attack's turn.
         let wildcard_rows = RowSelection {
             envelope,
             current_name,
             current_pose: current.pose.as_deref(),
             release_due: brain.hold_release_due(depth),
+            queue: QueueGate { brain: &*brain },
         };
         let local_rows = RowSelection {
             current_pose: None,
             ..wildcard_rows
         };
-        if let Some(target) =
-            first_enabled_target(wildcard, &bound_envelope.wildcard, wildcard_rows, scope)
-                .or_else(|| first_enabled_target(local, &bound_activity.rows, local_rows, scope))
-            && let Some(target_index) = envelope.activities.keys().position(|name| name == target)
+        let mut level_queued = None;
+        if let Some(target) = first_enabled_target(
+            wildcard,
+            &bound_envelope.wildcard,
+            wildcard_rows,
+            scope,
+            &mut level_queued,
+        )
+        .or_else(|| {
+            first_enabled_target(
+                local,
+                &bound_activity.rows,
+                local_rows,
+                scope,
+                &mut level_queued,
+            )
+        }) && let Some(target_index) = envelope.activities.keys().position(|name| name == target)
         {
-            return brain.enter_activity_at(depth, target_index);
+            return TransitionPass {
+                transitioned: brain.enter_activity_at(depth, target_index),
+                queued,
+            };
         }
+        queued = queued.or(level_queued);
 
         // AC18 makes this unambiguous: a composite has at most one stateful
         // layer, while any number of selectors remain orthogonal/stateless.
@@ -91,11 +136,17 @@ pub(super) fn select_transition_path(
             BoundLayer::Graph(index) => Some(*index),
             BoundLayer::Selector(_) => None,
         }) else {
-            return false;
+            return TransitionPass {
+                transitioned: false,
+                queued,
+            };
         };
         envelope_index = child;
     }
-    false
+    TransitionPass {
+        transitioned: false,
+        queued,
+    }
 }
 
 /// What one level's row walk needs about the activity active there.
@@ -107,6 +158,7 @@ struct RowSelection<'e> {
     current_pose: Option<&'e str>,
     /// The current activity has lasted its drawn release time.
     release_due: bool,
+    queue: QueueGate<'e>,
 }
 
 impl RowSelection<'_> {
@@ -129,19 +181,89 @@ impl RowSelection<'_> {
     }
 }
 
+/// The engine gates on a queued row (`queue`), read from the brain as this
+/// tick's evaluation sees it: its turns as the previous tick's arbitration
+/// left them (what `attackTurnHeld` reads), its cooldowns already ticked for
+/// this tick, and the target distance guards read.
+#[derive(Clone, Copy)]
+struct QueueGate<'e> {
+    brain: &'e BrainComponent,
+}
+
+/// Where a queued row stands before its `when` is read.
+enum QueueState {
+    /// Out of range or cooling down: the row neither passes nor requests.
+    Closed,
+    /// Open, its turn not held: on its `when` the row requests that turn.
+    Waiting(u16),
+    /// Open with its turn held, or no queue at all: the row passes on its
+    /// `when`.
+    Open,
+}
+
+impl QueueGate<'_> {
+    fn state(&self, attack: &str, scope: &BrainScope) -> QueueState {
+        let graph = &self.brain.graph;
+        let (Some(index), Some(params)) = (
+            crate::attack_turns::attack_index(graph, attack),
+            graph.attacks.get(attack),
+        ) else {
+            return QueueState::Closed;
+        };
+        // The attack's own cooldown, never the path's `attackCooldownMs`.
+        let cooling = self
+            .brain
+            .attack_cooldown_remaining_ms
+            .get(attack)
+            .is_some_and(|remaining| *remaining > 0.0);
+        let out_of_range = params.max_range.is_some_and(|max_range| {
+            scope
+                .target_distance()
+                .is_none_or(|distance| distance > max_range)
+        });
+        if cooling || out_of_range {
+            QueueState::Closed
+        } else if self.brain.attack_turns.holds_attack(index) {
+            QueueState::Open
+        } else {
+            QueueState::Waiting(index)
+        }
+    }
+}
+
+/// The first row, in order, the walk takes. A queued row whose gates and
+/// `when` pass while its turn is not held is passed over, and the first such
+/// row's attack is left in `queued` as this level's request.
 fn first_enabled_target<'a>(
     rows: &'a [postretro_foundation::GuardedRow],
     programs: &'a [Option<postretro_foundation::BoundProgram<BrainScope>>],
     selection: RowSelection<'_>,
     scope: &BrainScope,
+    queued: &mut Option<u16>,
 ) -> Option<&'a str> {
     rows.iter()
         .zip(programs)
         .filter(|(row, _)| !selection.skips(row))
-        .find(|(_, program)| {
-            program
+        .find(|(row, program)| {
+            let gate = match row.queue.as_deref() {
+                None => QueueState::Open,
+                Some(attack) => selection.queue.state(attack, scope),
+            };
+            if matches!(gate, QueueState::Closed) {
+                return false;
+            }
+            let enabled = program
                 .as_ref()
-                .is_some_and(|program| eval_value(program, scope) == IrValue::Bool(true))
+                .is_some_and(|program| eval_value(program, scope) == IrValue::Bool(true));
+            match gate {
+                QueueState::Waiting(attack) => {
+                    if enabled {
+                        queued.get_or_insert(attack);
+                    }
+                    false
+                }
+                _ => enabled,
+            }
         })
         .map(|(row, _)| row.to.as_str())
 }
@@ -541,6 +663,7 @@ mod statechart_tests {
                     "windup".to_string(),
                     vec![GuardedRow {
                         release_after: None,
+                        queue: None,
                         to: "commit".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -549,6 +672,7 @@ mod statechart_tests {
                     "commit".to_string(),
                     vec![GuardedRow {
                         release_after: None,
+                        queue: None,
                         to: "recover".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -595,6 +719,7 @@ mod statechart_tests {
                         "*".to_string(),
                         vec![GuardedRow {
                             release_after: None,
+                            queue: None,
                             to: "rest".to_string(),
                             when: constant(true),
                         }],
@@ -889,6 +1014,7 @@ mod statechart_tests {
     fn row(to: &str, when: IrNode) -> GuardedRow {
         GuardedRow {
             release_after: None,
+            queue: None,
             to: to.to_string(),
             when,
         }

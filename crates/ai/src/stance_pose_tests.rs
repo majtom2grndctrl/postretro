@@ -235,7 +235,7 @@ fn pose_facts(reg: &EntityRegistry, enemy: EntityId) -> (f32, f32, f32, u32) {
     )
 }
 
-fn mesh_switches(reg: &EntityRegistry, enemy: EntityId) -> u32 {
+pub(super) fn mesh_switches(reg: &EntityRegistry, enemy: EntityId) -> u32 {
     reg.get_component::<MeshComponent>(enemy)
         .unwrap()
         .animation
@@ -247,7 +247,7 @@ fn mesh_switches(reg: &EntityRegistry, enemy: EntityId) -> u32 {
 
 /// Land `amount` on the enemy through the damage chokepoint, with no
 /// attacker, as `applyDamage` does.
-fn hit(reg: &mut EntityRegistry, enemy: EntityId, amount: f32) {
+pub(super) fn hit(reg: &mut EntityRegistry, enemy: EntityId, amount: f32) {
     assert!(apply_damage_with_context(
         reg,
         enemy,
@@ -295,7 +295,11 @@ fn step(reg: &mut EntityRegistry, runtime: &mut AiRuntime) -> AiTickResult {
 }
 
 /// The leaves `enemy` announced entering this tick: what plays an entry sound.
-fn announced(result: &AiTickResult, reg: &EntityRegistry, enemy: EntityId) -> Vec<String> {
+pub(super) fn announced(
+    result: &AiTickResult,
+    reg: &EntityRegistry,
+    enemy: EntityId,
+) -> Vec<String> {
     let _ = reg;
     result
         .events

@@ -115,7 +115,8 @@ pub struct HeldTurn {
 pub struct TurnRequest {
     pub attack: u16,
     pub draws: ResolvedDraws,
-    /// Requested by a marked activity rather than a ready fire step.
+    /// Requested by a marked activity, or by a rest's queued row, which takes
+    /// a mark's lifetime, rather than by a ready fire step.
     pub marked: bool,
     pub target: EntityId,
     pub pool: AttackPoolId,

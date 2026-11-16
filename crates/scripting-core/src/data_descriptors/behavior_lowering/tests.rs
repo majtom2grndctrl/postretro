@@ -66,7 +66,10 @@ fn rejection(mut behavior: Value) -> String {
 #[test]
 fn handles_resolve_to_names_and_build_the_attacks_map_from_declarations() {
     let behavior = lowered(behavior(None));
-    assert_eq!(behavior["activities"]["engage"]["action"], json!({ "attack": "jab" }));
+    assert_eq!(
+        behavior["activities"]["engage"]["action"],
+        json!({ "attack": "jab" })
+    );
     let commit = &behavior["activities"]["engage"]["layers"]["offense"]["activities"]["commit"];
     assert_eq!(commit["action"], json!({ "attack": "slam", "at": "hit" }));
     assert_eq!(commit["attackTurn"], json!("slam"));
@@ -113,7 +116,8 @@ fn without_a_list_the_attacks_are_those_actions_and_marks_reference() {
 // T3: a list is exhaustive: a listed attack nothing references still exists.
 #[test]
 fn a_list_is_exhaustive_and_keeps_an_unreferenced_entry() {
-    let claw = json!({ "kind": "attack", "name": "claw", "damage": 15, "maxRange": 2, "cooldownMs": 800 });
+    let claw =
+        json!({ "kind": "attack", "name": "claw", "damage": 15, "maxRange": 2, "cooldownMs": 800 });
     let behavior = lowered(behavior(Some(json!([jab(), slam(), claw]))));
     let names: Vec<&String> = behavior["attacks"].as_object().unwrap().keys().collect();
     assert_eq!(names, ["claw", "jab", "slam"]);
@@ -125,7 +129,8 @@ fn a_list_is_exhaustive_and_keeps_an_unreferenced_entry() {
 fn an_action_or_mark_to_an_unlisted_attack_rejects_load() {
     let error = rejection(behavior(Some(json!([slam()]))));
     assert!(
-        error.contains("`components.behavior.activities.engage.action.attack` names attack \"jab\""),
+        error
+            .contains("`components.behavior.activities.engage.action.attack` names attack \"jab\""),
         "{error}"
     );
 
@@ -162,7 +167,11 @@ fn a_row_to_an_unlisted_attack_drops_with_one_log_and_its_guard_goes_with_it() {
     let behavior = lowered(source);
 
     let rows = &behavior["activities"]["engage"]["layers"]["offense"]["transitions"]["windup"];
-    assert_eq!(rows, &json!([{ "to": "windup" }]), "only the row to `slam` drops");
+    assert_eq!(
+        rows,
+        &json!([{ "to": "windup" }]),
+        "only the row to `slam` drops"
+    );
     assert_eq!(behavior["attacks"].as_object().unwrap().len(), 1);
     capture.assert_logged_once(
         Level::Info,
@@ -177,12 +186,19 @@ fn a_kept_row_or_initial_handle_rejects_until_stance_lowering_lands() {
     let mut source = behavior(None);
     source["transitions"]["idle"][0]["to"] = jab();
     let error = rejection(source);
-    assert!(error.contains("`components.behavior.transitions.idle[0].to` targets attack \"jab\""), "{error}");
+    assert!(
+        error.contains("`components.behavior.transitions.idle[0].to` targets attack \"jab\""),
+        "{error}"
+    );
 
     let mut source = behavior(None);
-    source["initial"] = json!({ "kind": "stance", "name": "overhead", "animation": "smash_windup" });
+    source["initial"] =
+        json!({ "kind": "stance", "name": "overhead", "animation": "smash_windup" });
     let error = rejection(source);
-    assert!(error.contains("`components.behavior.initial` targets stance \"overhead\""), "{error}");
+    assert!(
+        error.contains("`components.behavior.initial` targets stance \"overhead\""),
+        "{error}"
+    );
 }
 
 // T4: a bare string, nil or a handle of the other kind where an attack handle
@@ -197,7 +213,9 @@ fn anything_but_an_attack_handle_rejects_load_with_a_pathed_error() {
             "bare string",
         ),
         (
-            Box::new(|b| b["attacks"] = json!({ "jab": { "damage": 8, "maxRange": 2, "cooldownMs": 400 } })),
+            Box::new(|b| {
+                b["attacks"] = json!({ "jab": { "damage": 8, "maxRange": 2, "cooldownMs": 400 } })
+            }),
             "`components.behavior.attacks` is a name-keyed map (jab)",
             "defineAttack",
         ),
@@ -213,7 +231,10 @@ fn anything_but_an_attack_handle_rejects_load_with_a_pathed_error() {
         ),
         (
             Box::new(|b| {
-                b["activities"]["engage"]["action"].as_object_mut().unwrap().remove("attack");
+                b["activities"]["engage"]["action"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("attack");
             }),
             "`components.behavior.activities.engage.action.attack` is missing",
             "defineAttack",
@@ -232,7 +253,9 @@ fn anything_but_an_attack_handle_rejects_load_with_a_pathed_error() {
             "bare string",
         ),
         (
-            Box::new(|b| b["activities"]["engage"]["action"]["attack"]["beginningStance"] = json!("overhead")),
+            Box::new(|b| {
+                b["activities"]["engage"]["action"]["attack"]["beginningStance"] = json!("overhead")
+            }),
             "`components.behavior.activities.engage.action.attack.beginningStance`",
             "pass the stance handle `defineStance` returned",
         ),
@@ -246,7 +269,10 @@ fn anything_but_an_attack_handle_rejects_load_with_a_pathed_error() {
         let mut source = behavior(None);
         mutate(&mut source);
         let error = rejection(source);
-        assert!(error.contains(path) && error.contains(detail), "expected {path} / {detail}: {error}");
+        assert!(
+            error.contains(path) && error.contains(detail),
+            "expected {path} / {detail}: {error}"
+        );
     }
 }
 
@@ -260,7 +286,8 @@ fn same_name_handles_load_when_equal_and_reject_when_unequal() {
     other["damage"] = json!(20);
     let error = rejection(behavior(Some(json!([jab(), other]))));
     assert!(
-        error.contains("declares attack \"slam\" differently from `components.behavior.attacks[1]`"),
+        error
+            .contains("declares attack \"slam\" differently from `components.behavior.attacks[1]`"),
         "{error}"
     );
 }

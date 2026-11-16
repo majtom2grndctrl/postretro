@@ -1,14 +1,14 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+#[cfg(test)]
+mod activity_speed_tests;
 pub mod assist;
 pub mod assist_pairs;
 mod assist_pass;
 mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
-#[cfg(test)]
-mod activity_speed_tests;
 #[cfg(test)]
 mod damage_in_activity_tests;
 #[cfg(test)]

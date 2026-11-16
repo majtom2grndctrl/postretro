@@ -1539,9 +1539,21 @@ mod tests {
                 "bundle should name `{name}` by its binding: {js}"
             );
         }
-        assert!(js.contains("defineAttack(\"jab\""), "explicit name stays: {js}");
-        assert!(js.contains("defineStance(\"coil\""), "explicit name stays: {js}");
-        for name in ["explicitAttack", "explicitStance", "held", "nested", "inline"] {
+        assert!(
+            js.contains("defineAttack(\"jab\""),
+            "explicit name stays: {js}"
+        );
+        assert!(
+            js.contains("defineStance(\"coil\""),
+            "explicit name stays: {js}"
+        );
+        for name in [
+            "explicitAttack",
+            "explicitStance",
+            "held",
+            "nested",
+            "inline",
+        ] {
             assert!(
                 !js.contains(&format!("\"{name}\"")),
                 "non-qualifying call must not receive `{name}`: {js}"

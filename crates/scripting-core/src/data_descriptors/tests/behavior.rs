@@ -560,7 +560,6 @@ fn shipped_pose_fixture_is_a_recursive_graph_with_valid_mesh_animation_states() 
 // Engaged motion surface (E10): `strafe`, `reposition`, `facing`, and
 // `attackTurn` marks, through both production VMs.
 
-
 fn js_activities(activities: &str) -> String {
     js_behavior(&format!(
         ", initial: \"engage\", attacks: [jab, slam], activities: {{ {activities} }}, transitions: {{}}"

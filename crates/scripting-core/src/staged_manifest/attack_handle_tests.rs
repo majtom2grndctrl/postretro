@@ -33,10 +33,16 @@ fn built(label: &str, files: &[(&str, &str)]) -> Box<transfer::StagedManifest> {
 
 fn assert_rejects(label: &str, files: &[(&str, &str)], needles: &[&str]) {
     let result = build(label, files);
-    assert_eq!(result.status, StagedManifestBuildStatus::Failed, "{label} must fail load");
+    assert_eq!(
+        result.status,
+        StagedManifestBuildStatus::Failed,
+        "{label} must fail load"
+    );
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
-            needles.iter().all(|needle| diagnostic.message.contains(needle))
+            needles
+                .iter()
+                .all(|needle| diagnostic.message.contains(needle))
         }),
         "{label}: no diagnostic mentions all of {needles:?}: {:?}",
         result.diagnostics
@@ -60,7 +66,9 @@ fn normalized(value: Value) -> Value {
     match value {
         Value::Number(number) => json!(number.as_f64().expect("finite")),
         Value::Array(items) => Value::Array(items.into_iter().map(normalized).collect()),
-        Value::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (k, normalized(v))).collect()),
+        Value::Object(map) => {
+            Value::Object(map.into_iter().map(|(k, v)| (k, normalized(v))).collect())
+        }
         other => other,
     }
 }
@@ -93,8 +101,9 @@ fn attack_and_stance_handles_cross_with_their_declarations_in_both_runtimes() {
     let ts = subsystem.definition_ctx().with(|ctx| {
         let _: rquickjs::Value = crate::quickjs::run_script(&ctx, &bundled, "handles.js")
             .expect("the handle module evaluates");
-        let handle: rquickjs::Value = crate::quickjs::run_script(&ctx, "globalThis.__handle", "read")
-            .expect("the handle is published");
+        let handle: rquickjs::Value =
+            crate::quickjs::run_script(&ctx, "globalThis.__handle", "read")
+                .expect("the handle is published");
         crate::conv::js_to_json(&ctx, handle).expect("the handle converts")
     });
 
@@ -135,7 +144,10 @@ fn attack_and_stance_handles_cross_with_their_declarations_in_both_runtimes() {
 #[test]
 fn an_unnamed_attack_or_stance_throws_the_binding_name_diagnostic() {
     for (definer, call) in [
-        ("defineAttack", "defineAttack({ damage: 1, maxRange: 1, cooldownMs: 1 })"),
+        (
+            "defineAttack",
+            "defineAttack({ damage: 1, maxRange: 1, cooldownMs: 1 })",
+        ),
         ("defineStance", "defineStance({ animation: \"idle\" })"),
     ] {
         let source = format!(
@@ -147,7 +159,9 @@ fn an_unnamed_attack_or_stance_throws_the_binding_name_diagnostic() {
         assert_rejects(
             &format!("{definer}_ts"),
             &[("start-script.js", &bundled)],
-            &[&format!("{definer} without an explicit name is binding-name sugar")],
+            &[&format!(
+                "{definer} without an explicit name is binding-name sugar"
+            )],
         );
         let luau_call = call.replace(": ", " = ");
         assert_rejects(
@@ -182,8 +196,16 @@ const JS_OK: Authoring<'static> = Authoring {
 };
 
 fn ts_source(case: &Authoring, wrapped: bool) -> String {
-    let attacks = if case.attacks.is_empty() { String::new() } else { format!("attacks: {},", case.attacks) };
-    let mark = if case.mark.is_empty() { String::new() } else { format!(", attackTurn: {}", case.mark) };
+    let attacks = if case.attacks.is_empty() {
+        String::new()
+    } else {
+        format!("attacks: {},", case.attacks)
+    };
+    let mark = if case.mark.is_empty() {
+        String::new()
+    } else {
+        format!(", attackTurn: {}", case.mark)
+    };
     let entity = format!(
         r#"{{ canonicalName: "brute", components: {{ behavior: {{
              initial: "idle", moveSpeed: 3, {attacks}
@@ -196,7 +218,11 @@ fn ts_source(case: &Authoring, wrapped: bool) -> String {
         action = case.action,
         row_to = case.row_to,
     );
-    let entity = if wrapped { format!("defineEntity({entity})") } else { entity };
+    let entity = if wrapped {
+        format!("defineEntity({entity})")
+    } else {
+        entity
+    };
     format!(
         r#"const overhead = defineStance("overhead", {{ animation: "smash_windup" }});
            const slam = defineAttack("slam", {{ damage: 8, maxRange: 2, cooldownMs: 1200{slam_extra} }});
@@ -208,8 +234,16 @@ fn ts_source(case: &Authoring, wrapped: bool) -> String {
 }
 
 fn luau_source(case: &Authoring, wrapped: bool) -> String {
-    let attacks = if case.attacks.is_empty() { String::new() } else { format!("attacks = {},", case.attacks) };
-    let mark = if case.mark.is_empty() { String::new() } else { format!(", attackTurn = {}", case.mark) };
+    let attacks = if case.attacks.is_empty() {
+        String::new()
+    } else {
+        format!("attacks = {},", case.attacks)
+    };
+    let mark = if case.mark.is_empty() {
+        String::new()
+    } else {
+        format!(", attackTurn = {}", case.mark)
+    };
     let entity = format!(
         r#"{{ canonicalName = "brute", components = {{ behavior = {{
              initial = "idle", moveSpeed = 3, {attacks}
@@ -222,7 +256,11 @@ fn luau_source(case: &Authoring, wrapped: bool) -> String {
         action = case.action,
         row_to = case.row_to,
     );
-    let entity = if wrapped { format!("defineEntity({entity})") } else { entity };
+    let entity = if wrapped {
+        format!("defineEntity({entity})")
+    } else {
+        entity
+    };
     format!(
         r#"local overhead = defineStance("overhead", {{ animation = "smash_windup" }})
            local slam = defineAttack("slam", {{ damage = 8, maxRange = 2, cooldownMs = 1200{slam_extra} }})
@@ -257,14 +295,20 @@ fn assert_rejects_everywhere(label: &str, ts: &Authoring, luau: &Authoring, need
 fn a_handle_authoring_loads_through_define_entity_and_a_bare_entity() {
     for wrapped in [true, false] {
         let js = built("ok_js", &[("start-script.js", &ts_source(&JS_OK, wrapped))]);
-        let luau = built("ok_luau", &[("start-script.luau", &luau_source(&JS_OK, wrapped))]);
+        let luau = built(
+            "ok_luau",
+            &[("start-script.luau", &luau_source(&JS_OK, wrapped))],
+        );
         assert_eq!(js.entities, luau.entities);
         let behavior = js.entities[0].behavior.as_ref().expect("behavior");
         assert_eq!(behavior.attacks.keys().collect::<Vec<_>>(), ["slam"]);
         assert_eq!(behavior.attacks["slam"].damage, Some(8.0));
         assert_eq!(
             behavior.envelope.activities["engage"].action,
-            Some(ActionVerb::Attack { name: "slam".to_string(), at: None })
+            Some(ActionVerb::Attack {
+                name: "slam".to_string(),
+                at: None
+            })
         );
     }
 }
@@ -279,50 +323,92 @@ fn a_string_where_an_attack_handle_is_expected_rejects_load_everywhere() {
     let cases: [(&str, Authoring, Authoring, &str, &str); 7] = [
         (
             "list_string",
-            Authoring { attacks: "[\"slam\"]", ..JS_OK },
-            Authoring { attacks: "{ \"slam\" }", ..JS_OK },
+            Authoring {
+                attacks: "[\"slam\"]",
+                ..JS_OK
+            },
+            Authoring {
+                attacks: "{ \"slam\" }",
+                ..JS_OK
+            },
             "components.behavior.attacks[0]",
             "bare string",
         ),
         (
             "name_keyed_map",
-            Authoring { attacks: "{ slam: { damage: 8, maxRange: 2, cooldownMs: 1200 } }", ..JS_OK },
-            Authoring { attacks: "{ slam = { damage = 8, maxRange = 2, cooldownMs = 1200 } }", ..JS_OK },
+            Authoring {
+                attacks: "{ slam: { damage: 8, maxRange: 2, cooldownMs: 1200 } }",
+                ..JS_OK
+            },
+            Authoring {
+                attacks: "{ slam = { damage = 8, maxRange = 2, cooldownMs = 1200 } }",
+                ..JS_OK
+            },
             "`components.behavior.attacks` is a name-keyed map",
             "defineAttack",
         ),
         (
             "action_string",
-            Authoring { action: "\"slam\"", ..JS_OK },
-            Authoring { action: "\"slam\"", ..JS_OK },
+            Authoring {
+                action: "\"slam\"",
+                ..JS_OK
+            },
+            Authoring {
+                action: "\"slam\"",
+                ..JS_OK
+            },
             "components.behavior.activities.engage.action.attack",
             "bare string",
         ),
         (
             "mark_string",
-            Authoring { mark: "\"slam\"", ..JS_OK },
-            Authoring { mark: "\"slam\"", ..JS_OK },
+            Authoring {
+                mark: "\"slam\"",
+                ..JS_OK
+            },
+            Authoring {
+                mark: "\"slam\"",
+                ..JS_OK
+            },
             "components.behavior.activities.engage.attackTurn",
             "bare string",
         ),
         (
             "row_to_string",
-            Authoring { row_to: "\"slam\"", ..JS_OK },
-            Authoring { row_to: "\"slam\"", ..JS_OK },
+            Authoring {
+                row_to: "\"slam\"",
+                ..JS_OK
+            },
+            Authoring {
+                row_to: "\"slam\"",
+                ..JS_OK
+            },
             "components.behavior.transitions.idle[0]",
             "slam",
         ),
         (
             "beginning_stance_string",
-            Authoring { slam_extra: ", beginningStance: \"overhead\"", ..JS_OK },
-            Authoring { slam_extra: ", beginningStance: \"overhead\"", ..JS_OK },
+            Authoring {
+                slam_extra: ", beginningStance: \"overhead\"",
+                ..JS_OK
+            },
+            Authoring {
+                slam_extra: ", beginningStance: \"overhead\"",
+                ..JS_OK
+            },
             "components.behavior.activities.engage.action.attack.beginningStance",
             "pass the stance handle `defineStance` returned",
         ),
         (
             "ending_stance_string",
-            Authoring { slam_extra: ", endingStance: \"overhead\"", ..JS_OK },
-            Authoring { slam_extra: ", endingStance: \"overhead\"", ..JS_OK },
+            Authoring {
+                slam_extra: ", endingStance: \"overhead\"",
+                ..JS_OK
+            },
+            Authoring {
+                slam_extra: ", endingStance: \"overhead\"",
+                ..JS_OK
+            },
             "components.behavior.activities.engage.action.attack.endingStance",
             "bare string",
         ),
@@ -354,7 +440,10 @@ fn same_name_handles_load_when_equal_and_reject_when_unequal() {
             ),
         ],
     );
-    assert_eq!(copies.entities[0].behavior.as_ref().unwrap().attacks.len(), 1);
+    assert_eq!(
+        copies.entities[0].behavior.as_ref().unwrap().attacks.len(),
+        1
+    );
     built(
         "equal_copies_js",
         &[(
@@ -407,8 +496,18 @@ fn same_name_handles_load_when_equal_and_reject_when_unequal() {
 #[test]
 fn turn_facts_given_a_string_or_nil_throw_at_the_call() {
     for (index, (fact, js_arg, luau_arg, found)) in [
-        ("attackTurnHeld", "\"slam\"", "\"slam\"", "the bare string \"slam\""),
-        ("attackTurnFree", "\"slam\"", "\"slam\"", "the bare string \"slam\""),
+        (
+            "attackTurnHeld",
+            "\"slam\"",
+            "\"slam\"",
+            "the bare string \"slam\"",
+        ),
+        (
+            "attackTurnFree",
+            "\"slam\"",
+            "\"slam\"",
+            "the bare string \"slam\"",
+        ),
         ("attackTurnHeld", "undefined", "nil", ""),
         ("attackTurnFree", "undefined", "nil", ""),
     ]
@@ -446,7 +545,13 @@ fn turn_facts_given_a_string_or_nil_throw_at_the_call() {
 // global and its line, rather than reading nil as an absent field.
 #[test]
 fn a_misspelled_luau_global_in_a_table_field_is_reported_at_load() {
-    let misspelled_handle = luau_source(&Authoring { action: "slamm", ..JS_OK }, true);
+    let misspelled_handle = luau_source(
+        &Authoring {
+            action: "slamm",
+            ..JS_OK
+        },
+        true,
+    );
     let line = misspelled_handle
         .lines()
         .position(|line| line.contains("slamm"))
@@ -455,10 +560,13 @@ fn a_misspelled_luau_global_in_a_table_field_is_reported_at_load() {
     assert_rejects(
         "misspelled_handle",
         &[("start-script.luau", &misspelled_handle)],
-        &[&format!("start-script.luau\"]:{line}: undeclared global `slamm`")],
+        &[&format!(
+            "start-script.luau\"]:{line}: undeclared global `slamm`"
+        )],
     );
 
-    let misspelled_guard = luau_source(&JS_OK, true).replace("when = brain.hasTarget", "when = hasTargt");
+    let misspelled_guard =
+        luau_source(&JS_OK, true).replace("when = brain.hasTarget", "when = hasTargt");
     let line = misspelled_guard
         .lines()
         .position(|line| line.contains("hasTargt"))
@@ -467,15 +575,23 @@ fn a_misspelled_luau_global_in_a_table_field_is_reported_at_load() {
     assert_rejects(
         "misspelled_guard",
         &[("start-script.luau", &misspelled_guard)],
-        &[&format!("start-script.luau\"]:{line}: undeclared global `hasTargt`")],
+        &[&format!(
+            "start-script.luau\"]:{line}: undeclared global `hasTargt`"
+        )],
     );
 
     // A required module is held to the same rule.
     assert_rejects(
         "misspelled_in_module",
         &[
-            ("attacks.luau", "return { slam = defineAttak(\"slam\", {}) }"),
-            ("start-script.luau", "local A = require(\"./attacks.luau\")\nreturn defineMod({ name = \"M\", id = \"m\", version = \"1\" })"),
+            (
+                "attacks.luau",
+                "return { slam = defineAttak(\"slam\", {}) }",
+            ),
+            (
+                "start-script.luau",
+                "local A = require(\"./attacks.luau\")\nreturn defineMod({ name = \"M\", id = \"m\", version = \"1\" })",
+            ),
         ],
         &["attacks.luau\"]:1: undeclared global `defineAttak`"],
     );
@@ -523,7 +639,10 @@ fn one_handle_serves_two_archetypes_by_name() {
         assert_eq!(behavior.attacks["slam"].damage, Some(8.0));
         assert_eq!(
             behavior.envelope.activities[activity].action,
-            Some(ActionVerb::Attack { name: "slam".to_string(), at: None })
+            Some(ActionVerb::Attack {
+                name: "slam".to_string(),
+                at: None
+            })
         );
     }
 }
@@ -545,7 +664,12 @@ fn an_exhaustive_list_drops_rows_to_unlisted_attacks_and_checks_only_kept_guards
     let js = built("p41a_js", &[("start-script.js", &dropped_js)]);
     let luau = built("p41a_luau", &[("start-script.luau", &dropped_luau)]);
     assert_eq!(js.entities, luau.entities);
-    let rows = &js.entities[0].behavior.as_ref().unwrap().envelope.transitions["idle"];
+    let rows = &js.entities[0]
+        .behavior
+        .as_ref()
+        .unwrap()
+        .envelope
+        .transitions["idle"];
     assert_eq!(rows.len(), 1, "only the row to `jab` drops");
     assert_eq!(rows[0].to, "engage");
     let drops = capture
@@ -558,10 +682,22 @@ fn an_exhaustive_list_drops_rows_to_unlisted_attacks_and_checks_only_kept_guards
         .count();
     assert_eq!(drops, 2, "one log per load, in each runtime");
 
-    let kept_js = ts_source(&Authoring { attacks: "[slam]", ..JS_OK }, true)
-        .replace("when: brain.hasTarget", "when: attackTurnFree(jab)");
-    let kept_luau = luau_source(&Authoring { attacks: "{ slam }", ..JS_OK }, false)
-        .replace("when = brain.hasTarget", "when = attackTurnFree(jab)");
+    let kept_js = ts_source(
+        &Authoring {
+            attacks: "[slam]",
+            ..JS_OK
+        },
+        true,
+    )
+    .replace("when: brain.hasTarget", "when: attackTurnFree(jab)");
+    let kept_luau = luau_source(
+        &Authoring {
+            attacks: "{ slam }",
+            ..JS_OK
+        },
+        false,
+    )
+    .replace("when = brain.hasTarget", "when = attackTurnFree(jab)");
     let needles = [
         "entities[0].components.behavior.transitions.idle[0].when",
         "@attackTurnFree.jab",
@@ -575,16 +711,32 @@ fn an_exhaustive_list_drops_rows_to_unlisted_attacks_and_checks_only_kept_guards
 fn a_row_without_when_loads_as_always_enabled_in_both_runtimes() {
     let js = built(
         "no_when_js",
-        &[("start-script.js", &ts_source(&JS_OK, true).replace("when: brain.hasTarget, ", ""))],
+        &[(
+            "start-script.js",
+            &ts_source(&JS_OK, true).replace("when: brain.hasTarget, ", ""),
+        )],
     );
     let luau = built(
         "no_when_luau",
-        &[("start-script.luau", &luau_source(&JS_OK, true).replace("when = brain.hasTarget, ", ""))],
+        &[(
+            "start-script.luau",
+            &luau_source(&JS_OK, true).replace("when = brain.hasTarget, ", ""),
+        )],
     );
     assert_eq!(js.entities, luau.entities);
-    let row = &js.entities[0].behavior.as_ref().unwrap().envelope.transitions["idle"][0];
+    let row = &js.entities[0]
+        .behavior
+        .as_ref()
+        .unwrap()
+        .envelope
+        .transitions["idle"][0];
     assert_eq!(row.to, "engage");
-    assert_eq!(row.when, IrNode::Const { value: IrValue::Bool(true) });
+    assert_eq!(
+        row.when,
+        IrNode::Const {
+            value: IrValue::Bool(true)
+        }
+    );
 }
 
 // T2: lowering runs once per entity read at mod load and again at a staged
@@ -611,7 +763,11 @@ fn lowering_runs_once_per_mod_load_and_staged_reload_never_per_level() {
 
     let before = lowering_runs();
     runtime.run_mod_init(&root).expect("mod init");
-    assert_eq!(lowering_runs() - before, 1, "one behavior lowers once at mod load");
+    assert_eq!(
+        lowering_runs() - before,
+        1,
+        "one behavior lowers once at mod load"
+    );
 
     let level = postretro_level_format::data_script::DataScriptSection {
         compiled_bytes: b"function setupLevel(ctx) return {} end".to_vec(),
@@ -624,6 +780,14 @@ fn lowering_runs_once_per_mod_load_and_staged_reload_never_per_level() {
 
     let before = lowering_runs();
     let result = build_staged_manifest(&root, 2, &StagedManifestBuildConfig::default());
-    assert!(matches!(result.status, StagedManifestBuildStatus::Built(_)), "{:?}", result.diagnostics);
-    assert_eq!(lowering_runs() - before, 1, "a staged reload lowers each behavior once");
+    assert!(
+        matches!(result.status, StagedManifestBuildStatus::Built(_)),
+        "{:?}",
+        result.diagnostics
+    );
+    assert_eq!(
+        lowering_runs() - before,
+        1,
+        "a staged reload lowers each behavior once"
+    );
 }

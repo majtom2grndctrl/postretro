@@ -30,8 +30,14 @@ const LOWERING_ONLY_FIELDS: &[&str] = &[
 /// An attack declaration's authoring fields: lowering expands them into
 /// generated activities (stance lowering) and never writes them into the
 /// runtime `attacks` map.
-const AUTHORING_ONLY_ATTACK_FIELDS: &[&str] =
-    &["kind", "name", "beginningStance", "endingStance", "release", "recover"];
+const AUTHORING_ONLY_ATTACK_FIELDS: &[&str] = &[
+    "kind",
+    "name",
+    "beginningStance",
+    "endingStance",
+    "release",
+    "recover",
+];
 
 #[cfg(test)]
 thread_local! {
@@ -115,7 +121,11 @@ impl Lowering {
     /// Record one attack handle's declaration. Two handles of one name in one
     /// archetype must declare the same attack: a Luau re-`require` makes
     /// equal copies, while unequal ones would hide which one a name reaches.
-    fn declare(&mut self, handle: &Map<String, Value>, path: &str) -> Result<String, DescriptorError> {
+    fn declare(
+        &mut self,
+        handle: &Map<String, Value>,
+        path: &str,
+    ) -> Result<String, DescriptorError> {
         let name = handle_name(handle);
         for field in ["beginningStance", "endingStance"] {
             if let Some(stance) = handle.get(field)
@@ -164,7 +174,10 @@ impl Lowering {
         envelope: &mut Map<String, Value>,
         path: &str,
     ) -> Result<(), DescriptorError> {
-        if let Some(activities) = envelope.get_mut("activities").and_then(Value::as_object_mut) {
+        if let Some(activities) = envelope
+            .get_mut("activities")
+            .and_then(Value::as_object_mut)
+        {
             for (name, activity) in activities.iter_mut() {
                 if let Some(activity) = activity.as_object_mut() {
                     self.collect_activity(activity, &format!("{path}.activities.{name}"))?;
@@ -205,7 +218,10 @@ impl Lowering {
                             if let Some(action) =
                                 entry.get_mut("action").and_then(Value::as_object_mut)
                             {
-                                self.resolve_action(action, &format!("{layer_path}[{index}].action"))?;
+                                self.resolve_action(
+                                    action,
+                                    &format!("{layer_path}[{index}].action"),
+                                )?;
                             }
                         }
                     }
@@ -287,7 +303,10 @@ fn drop_rows_to_unlisted_attacks(
     archetype: Option<&str>,
 ) -> usize {
     let mut dropped = 0;
-    if let Some(transitions) = envelope.get_mut("transitions").and_then(Value::as_object_mut) {
+    if let Some(transitions) = envelope
+        .get_mut("transitions")
+        .and_then(Value::as_object_mut)
+    {
         for (source, rows) in transitions.iter_mut() {
             let Some(rows) = rows.as_array_mut() else {
                 continue;
@@ -328,13 +347,21 @@ fn lower_row_targets(envelope: &mut Map<String, Value>, path: &str) -> Result<()
     if let Some(initial) = envelope.get("initial")
         && let Some(kind) = handle_kind(initial)
     {
-        return Err(stance_lowering_pending(&format!("{path}.initial"), kind, initial));
+        return Err(stance_lowering_pending(
+            &format!("{path}.initial"),
+            kind,
+            initial,
+        ));
     }
     for (row_path, row) in rows_mut(envelope, path) {
         if let Some(target) = row.get("to")
             && let Some(kind) = handle_kind(target)
         {
-            return Err(stance_lowering_pending(&format!("{row_path}.to"), kind, target));
+            return Err(stance_lowering_pending(
+                &format!("{row_path}.to"),
+                kind,
+                target,
+            ));
         }
     }
     let mut result = Ok(());
@@ -371,7 +398,10 @@ fn rows_mut<'a>(
     path: &str,
 ) -> Vec<(String, &'a mut Map<String, Value>)> {
     let mut rows_out = Vec::new();
-    if let Some(transitions) = envelope.get_mut("transitions").and_then(Value::as_object_mut) {
+    if let Some(transitions) = envelope
+        .get_mut("transitions")
+        .and_then(Value::as_object_mut)
+    {
         for (source, rows) in transitions.iter_mut() {
             if let Some(rows) = rows.as_array_mut() {
                 for (index, row) in rows.iter_mut().enumerate() {
@@ -391,7 +421,10 @@ fn for_each_nested_envelope(
     path: &str,
     mut visit: impl FnMut(&mut Map<String, Value>, &str),
 ) {
-    let Some(activities) = envelope.get_mut("activities").and_then(Value::as_object_mut) else {
+    let Some(activities) = envelope
+        .get_mut("activities")
+        .and_then(Value::as_object_mut)
+    else {
         return;
     };
     for (name, activity) in activities.iter_mut() {
@@ -400,7 +433,10 @@ fn for_each_nested_envelope(
         };
         for (layer_name, layer) in layers.iter_mut() {
             if let Some(nested) = layer.as_object_mut() {
-                visit(nested, &format!("{path}.activities.{name}.layers.{layer_name}"));
+                visit(
+                    nested,
+                    &format!("{path}.activities.{name}.layers.{layer_name}"),
+                );
             }
         }
     }
@@ -444,11 +480,17 @@ fn is_handle_of(value: &Value, kind: &str) -> bool {
 }
 
 /// The attack handle at `path`, or a pathed error naming what stands there.
-fn attack_handle<'a>(value: &'a Value, path: &str) -> Result<&'a Map<String, Value>, DescriptorError> {
+fn attack_handle<'a>(
+    value: &'a Value,
+    path: &str,
+) -> Result<&'a Map<String, Value>, DescriptorError> {
     expect_handle(value, path, "attack", "defineAttack")
 }
 
-fn stance_handle<'a>(value: &'a Value, path: &str) -> Result<&'a Map<String, Value>, DescriptorError> {
+fn stance_handle<'a>(
+    value: &'a Value,
+    path: &str,
+) -> Result<&'a Map<String, Value>, DescriptorError> {
     expect_handle(value, path, "stance", "defineStance")
 }
 

@@ -532,6 +532,7 @@ fn pose_graph(state: &str) -> BehaviorGraphDescriptor {
     };
     let after = |to: &str, ms: f32| GuardedRow {
         release_after: None,
+        queue: None,
         to: to.to_string(),
         when: IrNode::Ge {
             a: Box::new(IrNode::Input {

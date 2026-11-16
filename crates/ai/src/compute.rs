@@ -16,7 +16,7 @@ pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32
 use super::brain_scope::BrainFacts;
 use super::engine_floor::SteeringIntent;
 use super::graph_eval::{
-    action_for_path, engages_active, engages_path, resolved_motion, select_transition_path,
+    action_for_path, engages_active, engages_path, resolved_motion, select_transitions,
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
@@ -336,7 +336,7 @@ pub(super) fn evaluate(
         };
         let selected_distance = selected_target.map(|(_, distance, _)| distance);
         let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
-        let (transitioned, resolved, steering) = if !brain.aggro_armed {
+        let (transitioned, resolved, steering, queued_attack) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
             // selection nor its guards, and standing down clears steering outright
@@ -348,7 +348,7 @@ pub(super) fn evaluate(
             } else {
                 false
             };
-            (transitioned, None, SteeringIntent::Clear)
+            (transitioned, None, SteeringIntent::Clear, None)
         } else {
             // The think stride is derived from the CURRENT player distance; the
             // gate fires when the per-enemy counter aligns with the band's
@@ -421,11 +421,15 @@ pub(super) fn evaluate(
                 })
                 .flatten()
                 .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
-            let transitioned = programs
+            // The pass also names the attack a standing rest's first open
+            // queued row waits on; arbitration turns it into this tick's
+            // request.
+            let pass = programs
                 .with_entry_scope(snap.id, |bound, scope| {
-                    select_transition_path(bound, scope, &mut brain)
+                    select_transitions(bound, scope, &mut brain)
                 })
-                .unwrap_or(false);
+                .unwrap_or_default();
+            let transitioned = pass.transitioned;
             // The entered path's selectors read the clip `settle` is about to
             // restart, not its predecessor's; a path back onto the tracked
             // state reads the clock's own value, which a reseat's rows did not.
@@ -461,7 +465,7 @@ pub(super) fn evaluate(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
-            (transitioned, resolved, steering)
+            (transitioned, resolved, steering, pass.queued)
         };
         let motion = resolved.map(|motion| motion.verb);
 
@@ -662,6 +666,7 @@ pub(super) fn evaluate(
             travel_variant: tick_heading.travel_variant,
             combat_slot: None,
             engaged_ring,
+            queued_attack,
             fresh_unmarked_grant: None,
             brain,
         });

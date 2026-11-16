@@ -214,6 +214,9 @@ pub(crate) struct EnemyOutcome {
     /// The activity entered this tick, present only on the tick the brain
     /// entered it.
     entered: Option<EnteredActivity>,
+    /// The attack a standing rest's first open queued row waits on, by
+    /// attack index: the rest's request this tick, unless a mark outranks it.
+    queued_attack: Option<u16>,
     /// An unmarked turn granted this tick, by attack index. Released in apply
     /// unless that attack starts this tick.
     fresh_unmarked_grant: Option<u16>,

@@ -46,6 +46,13 @@ pub struct GuardedRow {
         skip_serializing_if = "Option::is_none"
     )]
     pub release_after: Option<[f32; 2]>,
+    /// A row to an attack, written only by lowering: the attack, by name, a
+    /// stance's rest strikes through this row. The row passes only once that
+    /// attack's turn reads held, the target is within its `maxRange` when it
+    /// declares one, its own cooldown has elapsed, and its `when` passes;
+    /// while all but the turn pass, the resting enemy requests the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
 }
 
 /// The guard an authored row without `when` reads.
@@ -462,6 +469,7 @@ fn validate_envelope(
                 });
             }
             validate_guard(&row.when, &format!("{row_path}.when"))?;
+            validate_queue(source, row, attacks, &row_path)?;
         }
         validate_release_rows(source, rows, &format!("{path}.transitions.{source}"))?;
     }
@@ -522,6 +530,36 @@ fn validate_release_rows(
                 reason: format!("`{row_path}` minimum {min} exceeds its maximum {max}"),
             });
         }
+    }
+    Ok(())
+}
+
+/// A queued row (`queue`) names an attack the graph declares, and sits on an
+/// activity's own rows: a strike leaves only out of its stance's rest, never
+/// from the `"*"` rows, which belong to no activity.
+fn validate_queue(
+    source: &str,
+    row: &GuardedRow,
+    attacks: &BTreeMap<String, AttackParams>,
+    row_path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(attack) = row.queue.as_deref() else {
+        return Ok(());
+    };
+    let queue_path = format!("{row_path}.queue");
+    if source == "*" {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{queue_path}` belongs to a rest's own rows; a strike never leaves from a `*` row"
+            ),
+        });
+    }
+    if !attacks.contains_key(attack) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{queue_path}` (\"{attack}\") does not name an attack in the behavior's `attacks`"
+            ),
+        });
     }
     Ok(())
 }
@@ -1088,11 +1126,11 @@ mod tests {
         let unknown = serde_json::from_value::<BehaviorGraphDescriptor>(serde_json::json!({
             "initial": "idle",
             "activities": { "idle": { "animation": "idle" } },
-            "transitions": { "idle": [{ "to": "idle", "queue": "slam" }] },
+            "transitions": { "idle": [{ "to": "idle", "wait": "slam" }] },
             "moveSpeed": 3.0
         }))
         .expect_err("an unknown row field rejects");
-        assert!(unknown.to_string().contains("queue"), "{unknown}");
+        assert!(unknown.to_string().contains("wait"), "{unknown}");
     }
 
     #[test]
@@ -1654,6 +1692,7 @@ mod tests {
                 when: always_enabled(),
                 to: "flinch".to_string(),
                 release_after: Some([0.0, 1.0]),
+                queue: None,
             }],
         );
         let error = graph.validate().expect_err("a `*` release row rejects");
@@ -1672,6 +1711,64 @@ mod tests {
             error
                 .to_string()
                 .contains("components.behavior.activities.overhead.pose"),
+            "{error}"
+        );
+    }
+
+    // Task 5b: the runtime descriptor accepts the lowering-only `queue` on a
+    // rest's row to an attack, serializes it only when set, and rejects one
+    // naming no declared attack or sitting on a `*` row, with its path.
+    #[test]
+    fn queued_rows_name_a_declared_attack_on_an_activitys_own_rows() {
+        let mut lowered = lowered_stance(serde_json::json!([500.0, 1200.0]));
+        lowered["transitions"]["overhead"][0]["queue"] = serde_json::json!("slam");
+        let graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered.clone()).expect("a queued row deserializes");
+        let graph = graph.validate().expect("a queued row validates");
+        assert_eq!(
+            graph.envelope.transitions["overhead"][0].queue.as_deref(),
+            Some("slam")
+        );
+        let round_trip = serde_json::to_value(&graph).expect("the graph serializes");
+        assert_eq!(
+            round_trip["transitions"]["overhead"][0]["queue"],
+            serde_json::json!("slam")
+        );
+        assert!(
+            round_trip["transitions"]["slam_overhead"][0]
+                .get("queue")
+                .is_none()
+        );
+
+        let mut undeclared = lowered.clone();
+        undeclared["transitions"]["overhead"][0]["queue"] = serde_json::json!("sweep");
+        let error = serde_json::from_value::<BehaviorGraphDescriptor>(undeclared)
+            .unwrap()
+            .validate()
+            .expect_err("a queue naming no declared attack rejects");
+        assert!(
+            error
+                .to_string()
+                .contains("components.behavior.transitions.overhead[0].queue")
+                && error.to_string().contains("sweep"),
+            "{error}"
+        );
+
+        let mut graph: BehaviorGraphDescriptor = serde_json::from_value(lowered).unwrap();
+        graph.envelope.transitions.insert(
+            "*".to_string(),
+            vec![GuardedRow {
+                when: always_enabled(),
+                to: "slam_overhead".to_string(),
+                release_after: None,
+                queue: Some("slam".to_string()),
+            }],
+        );
+        let error = graph.validate().expect_err("a `*` queued row rejects");
+        assert!(
+            error
+                .to_string()
+                .contains("components.behavior.transitions.*[0].queue"),
             "{error}"
         );
     }

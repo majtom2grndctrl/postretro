@@ -7149,6 +7149,7 @@ fn authored_state(
 fn edge(to: &str, when: IrNode) -> GuardedRow {
     GuardedRow {
         release_after: None,
+        queue: None,
         to: to.to_string(),
         when,
     }

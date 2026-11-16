@@ -271,6 +271,16 @@ impl BrainScope {
         }
     }
 
+    /// The selected target's distance as `targetDistance` reads it this tick,
+    /// or `None` with no target: the value a queued row's range gate checks,
+    /// so the gate and a guard on the same row never disagree.
+    pub(crate) fn target_distance(&self) -> Option<f32> {
+        match (self.fixed[0], self.fixed[1]) {
+            (IrValue::Bool(true), IrValue::Number(distance)) => Some(distance),
+            _ => None,
+        }
+    }
+
     /// Re-point all registered scope-relative inputs to one active activity's
     /// fixed-path values. This mutates only pre-existing array slots and makes
     /// no heap allocation.

@@ -99,6 +99,7 @@ mod tests {
                     "initial".to_string(),
                     vec![GuardedRow {
                         release_after: None,
+                        queue: None,
                         when: IrNode::Const {
                             value: IrValue::Bool(true),
                         },

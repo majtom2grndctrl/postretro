@@ -58,6 +58,7 @@ fn chase(speed: Option<f32>) -> BehaviorActivityDescriptor {
 fn after(to: &str, ms: f32) -> GuardedRow {
     GuardedRow {
         release_after: None,
+        queue: None,
         to: to.to_string(),
         when: IrNode::Ge {
             a: Box::new(IrNode::Input {
@@ -168,10 +169,7 @@ impl Arena {
                 postretro_entities::DEFAULT_ENEMY_FACTION_INDEX,
             );
         registry
-            .set_component(
-                enemy,
-                AgentComponent::new(0.35, 1.8, 0.4, graph.move_speed),
-            )
+            .set_component(enemy, AgentComponent::new(0.35, 1.8, 0.4, graph.move_speed))
             .unwrap();
         enemy
     }
@@ -356,7 +354,11 @@ fn an_activity_reseated_and_left_in_one_pass_never_steers_at_its_speed() {
     // Leaves the spawn-seated `sprint` at once, then cruises in `walk`.
     let cruise = trace(&mut arena, enemy, 60);
     assert_eq!(cruise.last().unwrap().leaf, "walk");
-    assert_near(cruise.last().unwrap().speed, move_speed, "cruising in `walk`");
+    assert_near(
+        cruise.last().unwrap().speed,
+        move_speed,
+        "cruising in `walk`",
+    );
 
     // A restored brain with a malformed path reseats to `initial` on the next
     // AI pass, before any row runs.
@@ -376,7 +378,11 @@ fn an_activity_reseated_and_left_in_one_pass_never_steers_at_its_speed() {
     }
     arena.tick();
 
-    assert_eq!(arena.leaf(enemy), "walk", "the reseat left `sprint` at once");
+    assert_eq!(
+        arena.leaf(enemy),
+        "walk",
+        "the reseat left `sprint` at once"
+    );
     assert_eq!(arena.agent(enemy).activity_speed, 1.0);
     assert!(
         arena.speed_xz(enemy) <= move_speed * (1.0 + SPEED_TOLERANCE),
@@ -411,7 +417,10 @@ fn an_inner_activity_speed_overrides_the_outer_one_and_an_unset_one_inherits_it(
             BehaviorLayerDescriptor::Graph(offense),
         )]),
     };
-    let graph = graph(move_speed, envelope("engage", vec![("engage", engage)], vec![]));
+    let graph = graph(
+        move_speed,
+        envelope("engage", vec![("engage", engage)], vec![]),
+    );
     let mut arena = Arena::new();
     let enemy = arena.spawn_enemy(&graph, ENEMY_START);
     let trace = trace(&mut arena, enemy, 90);
@@ -434,7 +443,11 @@ fn slide(motion: MotionVerb, speed: Option<f32>) -> (Vec<Vec3>, Vec<Vec3>, f32) 
     let move_speed = 3.0_f32;
     let graph = graph(
         move_speed,
-        envelope("act", vec![("act", leaf("locomotion", motion, speed))], vec![]),
+        envelope(
+            "act",
+            vec![("act", leaf("locomotion", motion, speed))],
+            vec![],
+        ),
     );
     let mut arena = Arena::new();
     let enemy = arena.spawn_enemy(&graph, ENEMY_START);
@@ -481,12 +494,14 @@ fn a_knockback_slide_is_the_same_under_speed_two_as_under_none() {
         "the impulse slid the enemy: {:?}",
         planted.last()
     );
-    assert_eq!(planted, planted_fast, "the slide is the same under `speed: 2`");
+    assert_eq!(
+        planted, planted_fast,
+        "the slide is the same under `speed: 2`"
+    );
     assert_eq!(planted_knockback, planted_fast_knockback);
 
     let (_, chasing_knockback, _) = slide(MotionVerb::ChaseTarget, None);
-    let (_, chasing_fast_knockback, chasing_multiplier) =
-        slide(MotionVerb::ChaseTarget, Some(2.0));
+    let (_, chasing_fast_knockback, chasing_multiplier) = slide(MotionVerb::ChaseTarget, Some(2.0));
     assert_eq!(chasing_multiplier, 2.0);
     // Collision resolution along a different steered path leaves only float
     // noise on the cross axis.

@@ -67,6 +67,7 @@ fn graph(activities: &[&str], rows: &[(&str, &str, f32)]) -> BehaviorGraphDescri
             .or_default()
             .push(GuardedRow {
                 release_after: None,
+                queue: None,
                 to: to.to_string(),
                 when: damage_at_least(*points),
             });

@@ -1,0 +1,97 @@
+# lightmap-compact-storage — plan of record
+
+mode: resumable
+status: proposed
+read at: f5bb5d5c8
+branch: lightmap-compact-storage
+
+The brief was claimed on `main` as `2f1e71af3`. Decisions and Acceptance remain the brief's contract. AC numbers below are planning labels in the brief's order, not rewritten acceptance.
+
+## Corrections
+- **Baseline commit.** The brief compares against `17c2f1e`; main has moved 177 commits since. `git diff 17c2f1e..f5bb5d5c8` changes nothing under `lightmap_bake/`, `lightmap_layer/`, `shadowmask_bake/`, `cell_residency_bake.rs`, the animated-atlas stages, `bc6h.rs`, ray traversal, `crates/visibility`, the level-format lightmap, shadowmask, residency and pool files, `lightmap_streaming/`, `session/`, `sh_streaming/`, `streaming/`, `render-cpu`, `lightmap_sample.wgsl`, `forward.wgsl`, or the toolchain. For ids 22, 42, 51 and 58, the animated weight maps and lightmap late blocks, `f5bb5d5c8` is therefore a byte-equivalent baseline, and the build measures against it, so baseline and feature share one toolchain and machine. Id 50 is **not** equivalent on maps with movers: it now carries per-pose mover rows (id 57 is at epoch 6). Every id-50 size, SH late-chunk and SH-on row is baselined against `f5bb5d5c8`. The owner chose current main as the Tracy baseline (AC M3).
+- **Showcase.** The brief's showcase is the owner's showcase map, which lives in an adjacent, unpublished game project rather than this repo. Baseline and feature builds each bake that map's current source from one pinned copy taken into the session scratchpad, so its later edits never enter an A/B. Campaign-test is `content/dev/maps/campaign-test.map`. A generated stress warren (`stress-warren-showcase.map`) joins as a third measurement map.
+- **Id-50 chunk "flags word".** The u32 at chunk-header offset 12 is a *reserved* word that must be 0 (`cluster_sh_payloads/decode.rs:25-29`), not a flags word. It becomes the codec word. `payload_len`, `decoded_bytes` and the blake3 `hash` live in the 80-B index record (`types.rs:126-135`). The next value of `CLUSTER_SH_PAYLOADS_VERSION` (now 2) is the brief's "epoch 3".
+- **`mover_probe_bounce`.** `bounce_memo.rs` is gone. The BC6H-codec fold the brief copies now sits at `mover_probe_channel/pose_memo.rs:90` (`BC6H_CODEC_VERSION`). The zstd identity folds the same way.
+- **Id 42 tag.** It is currently `SMB8`, which already skips all-zero planes. `SMB9` is next, and SMB8 joins the retired tags (SMB5–7) that load rejects with a re-bake message.
+- **Block table.** WGSL reads a bare `array<vec4<u32>>` (`forward.wgsl:349`), not a struct. The two-word entry becomes `array<vec4<u32>>` at stride 2, or a two-field struct, whichever keeps naga and the existing address-constant tests readable. Block resolve runs in the vertex stage (`resolve_lightmap_block`, `lightmap_sample.wgsl:60`), so the mask offset arrives as a flat vertex varying.
+- **Conflicting-offset stamp (AC 12).** At HEAD a conflicting shared-vertex owner logs a `[PRL]` error and clears the owner stream; it does not hard-fail (`prl_spec_owners.rs:32`). "Fail the stamp by name, as conflicting owners do today" means that same named error and the same cleared stream.
+- **Payload split.** `LightmapReadRoute::deliver` sends `{lightmap, shadowmask}` vectors. The per-plane split happens later on the frame side (`level-loader/src/lightmap_stream/manifest.rs::split_pair`, from `lightmap_streaming/reads.rs:316`). That split moves into the decode job. The route's "nothing is decoded" comment (`route.rs:17-18`) is updated with it.
+- **Decode pool today.** `ShAsyncWorkers` feeds a FIFO `SyncSender<DecodeJob>` sized `(cores/2).clamp(1,3)`. Pickup by tier is new work. SH "decode" today only validates; its bytes pass through.
+- **Fixture regeneration.** `sh-streaming-hinted-door.prl` is regenerated after every bump of ids 22, 42, 50, 51 or 58, not only id 50's. Its readers are `streaming_hints.rs`, `cluster_sh_payloads/shared_storage_tests.rs` and `level-loader/src/lightmap_stream/tests.rs`.
+- **Walk harness at HEAD.** `session/lightmap_residency/walk_measurement/` has none of the spike's instrumentation. It has no order-independent payload hash and no issuer-busy p95/max, and SH does not stream (`mod.rs:8`, `frame_driver.rs:52`). Task 1 adds these before any baseline is taken, so baseline and feature share one harness.
+- **Pinned cores.** The research's pinned runs came from a Linux box. macOS has no hard CPU affinity. Pinned runs (AC 22, M1) use the harness's thread-count limits to emulate 1 and 2 cores (issuer + one decode thread; issuer + two), and each run reports that it was emulated. A true pinned run, if wanted, is an owner run on the Windows PC (`start /affinity`). See Owner questions.
+- **`prl_sections.py`.** This file is not in the repo. Task 0 adds a section-size report to `postretro-tool`, or reuses an existing xtask, so AC M1's section sizes come from a committed tool, and the owner's open question about the 2.8 GB showcase can be answered from a bundle.
+- **Doc pointers.** Six context notes point at `plans/ready/lightmap-compact-storage` (`build_pipeline.md:457,477,507,523`, `rendering_pipeline.md:248,312`). Landing folds them. The draft seed `context/plans/drafts/lightmap-payload-split-frame-thread.md` is retired at landing as superseded.
+- **Split before adding.** `pack.rs` (2,908 lines), `cluster_sh_payloads.rs` (1,370) and `level-format/src/lightmap.rs` (1,013) are past §2.1's line. The coded-plane framing helper goes in its own `postretro-level-format` module (`coded_plane.rs`). New id-22 and id-42 record code goes in sibling modules, not into those files.
+
+## Delegated answers
+- **Codec 0 (stored raw).** It stays writable, behind a compiler diagnostic switch (`prl-build --section-codec raw`) that is never the default. AC 15 and AC 17 compare against "an uncoded build of the same layout", so an uncoded build has to be producible. Load accepts both codecs.
+- **Runtime decoder.** The same `zstd` crate (libzstd bindings) encodes and decodes. The research measured this decoder; a pure-Rust decoder decodes slower, and there is no compiler-only feature split to maintain. The decode speed is reported in M1.
+- **SH charge while queued.** It switches to decoded size, like lightmap pairs. One charging rule for both resources keeps a single ledger invariant. Decoded size is the in-hand memory the pool actually holds, and `decoded_bytes` is already in the id-50 index record.
+- **Pool rule.** Chosen by Task 6's sweep on the final layout and reported with its MiB.
+- **The owner's 2.8 GB showcase.** Owner-run, using Task 0's section report. It does not change the build.
+
+## AC-to-proof
+
+Baseline = `f5bb5d5c8` plus Task 1's harness instrumentation and Task 0's tools (no format change), built as branch `lightmap-compact-storage-baseline`. See Corrections.
+
+| AC | Proof | Status |
+|---|---|---|
+| 1 Coded data decodes byte-identical through all-resident load, streaming read, capture preload (showcase, campaign-test) | level-format round-trip unit tests per section, plus `#[ignore]` PRL-driven test `coded_sections_decode_identical_through_every_load_path` comparing against a `--section-codec raw` bake of the same layout | achievable as stated |
+| 2 Rejects flipped byte, short read, raw-length/extent mismatch, broken adjacency, decoded-size mismatch | unit tests on `coded_plane` + id-22/42 readers; streaming route test asserts block never uploaded | achievable as stated |
+| 3 Level baked at the old format rejected with re-bake message per bumped section | per-section load tests using bytes written by the pre-change writers (retained as test-only fixtures) | achievable as stated |
+| 4 Corrupt id-51 fails load by name; corrupt id-50 chunk takes the failed-chunk path (async: one warning, one retry; sync-proof: error; mover-probe read: load fails by name) | extend `sh_streaming/controller_refusal_tests.rs` and the level-load tests | achievable as stated |
+| 5 Irradiance, mask planes, weight maps bit-identical per chart before BC encode vs baseline (showcase, campaign-test, carried blocks) | compiler diagnostic `--dump-chart-texels <dir>` (present in baseline branch too) + `#[ignore]` comparator test over both dumps | achievable as stated (baseline per Corrections) |
+| 6 Direction bit-identical across two layouts, and to baseline for even-origin charts | same dump; second layout forced by `--pack-heuristic` override | achievable as stated |
+| 7 Synthetic chart with order-sensitive 2×2 direction sums reduces identically transposed/untransposed | unit test in the direction reducer | achievable as stated |
+| 8 Owned face's mask texels via stamped offset equal baseline lightmap-layout mask texels; unowned face never samples a mask | dump comparator (mask dumped through offsets) + loader stamp test | achievable as stated |
+| 9 P1: chart outside plane-B sub-rect owns no channel 2/3 | compiler unit test + `#[ignore]` showcase check | achievable as stated |
+| 10 P8: filtered mask sample reads only own chart + padding | CPU sample harness (`shadowmask_sample_harness.rs`) over every owned chart's border texels | achievable as stated |
+| 11 P9/P10: no-owner block stores no plane, no placement; compiled mask bound = runtime all-resident mask layers; carried-block layout fixed after last face | compiler tests + `place_all_resident` vs id-58 on both maps | achievable as stated |
+| 12 Shared vertex with equal owners, different offsets fails stamp by name | `prl_spec_owners` unit test (named `[PRL]` error, stream cleared, per Corrections) | achievable as stated |
+| 13 Showcase has transposed charts; kept layout ≤ every single heuristic; two worker counts → same layout | packer unit tests + `#[ignore]` showcase bake at 1 and N workers | achievable as stated |
+| 14 Shader passes naga; mask sample clamps to own plane extent | `forward_wgsl_passes_naga_validation` (+ no-cube) and `pool_sample_harness` clamp test | achievable as stated |
+| 15 Completed mode: pool decode = uncoded build (installs, uploads, late blocks, payload hash) | walk harness (Task 1 hash) coded vs `--section-codec raw` PRL | achievable as stated |
+| 16 Decoded pair arrives split per plane; admit copies no payload bytes | route/admit unit test asserting buffer identity (pointer moves) | achievable as stated |
+| 17 Each drain admits by decoded size; installs ≤ uncoded build | drain-budget unit test + walk harness per-drain byte max coded vs raw | achievable as stated |
+| 18 P2: SH off / no id 50 still decodes off issuer; same installs and late blocks as SH on | walk harness SH-on/off modes (Task 1) + session test that pool spawns without SH | achievable as stated |
+| 19 Pool rule changes policy identity; growth reserve 5/4 or reports new rule; late-block row runs both pools under chosen rule | `growth.rs` identity test + harness run | achievable as stated |
+| 20 Late blocks (completed) ≤ baseline on far-point and random walk; realtime medians of 3 reported | walk harness, baseline vs feature, showcase | achievable as stated (baseline per Corrections) |
+| 21 P3/P4: mandatory decode taken before queued optional, waits only for running job; raised pair decodes ≤ 2×, charged once | decode-pool unit tests with a gated fake job | achievable as stated |
+| 22 Pinned 1-/2-core realtime walks, SH on: late SH chunks and lightmap blocks ≤ baseline, medians of 3 | walk harness with emulated core counts (Corrections) | achievable as stated if emulation is accepted; see Owner questions |
+| 23 P5–P7: decoded-size charges; drop pool, SH replace, decline, unload, block leaves target → every pair delivered or released, ledger 0 | extend `session/level_streaming/tests.rs` lifecycle tests | achievable as stated |
+| 24 P11: evict + re-tenant in one drain writes both words together | block-table writer unit test | achievable as stated |
+| 25 zstd level or library-version change misses both memos | key tests beside `shadowmask_bake/tests.rs:1015` and the lightmap cache tests | achievable as stated |
+| 26 Warm rebuild writes 22/42/50/51 byte-identical to cold | extend `cold_lightmap_cache_streams_once_warm_and_no_cache_write_nothing` / `layer_budget_sections_match_pre_change_cold_and_warm` | achievable as stated |
+| 27 Bumped stage versions and fingerprint miss the cache once | cache tests | achievable as stated |
+| 28 Moving one light re-bakes only its layers; fingerprint unchanged | extend `memo_hit_rebuild_then_light_edit_rebakes_one_light` | achievable as stated |
+| M1 Report sizes, file size, id-58 MiB per pool, pack time, all-resident load time, 1-/2-core issuer busy p95/max (showcase, campaign-test) | Task 7 measurement run; section sizes from Task 0's tool | manual, measure-and-report |
+| M2 Visual A/B at fixed poses, both maps: no visible difference | capture-mode frames at the baseline poses, side by side, for the owner | manual, owner |
+| M3 Tracy GPU frame time on showcase vs baseline | baseline batch at `f5bb5d5c8` (in progress, scratchpad `baseline/`), rerun with the same script on the feature build | manual, measure-and-report |
+
+## Tasks
+
+Commits: one per completed task, each carrying its `plan.md` row update. Sequential, on the feature branch, in this worktree, by the integrating executor. Bounded slices may be delegated with the full brief, per the skill. No concurrent workers are planned: tasks 2–6 share the id-22/42/58 wire and the block table.
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 0 | **Measurement tools.** Section-size report in `postretro-tool`; `--dump-chart-texels` compiler diagnostic (pre-BC texels per chart, plus mask through owner/offset); comparator `#[ignore]` test. No format change. | integrating executor | — | |
+| 1 | **Walk-harness instrumentation.** Order-independent payload hash; issuer busy p95/max; SH-streaming-on mode; thread-count caps emulating 1-/2-core. Cut `lightmap-compact-storage-baseline` from `f5bb5d5c8` + tasks 0–1, bake showcase, campaign-test and warren, record the baseline: texel dumps, late blocks (completed + realtime ×3, both walks, SH off/on, 1/2/default cores), sizes, load time, issuer busy. | integrating executor | 0 | |
+| 2 | **First slice: separate mask layout.** Per-cell mask layout of owned charts copied in lightmap orientation; plane-B sub-rect; per-face i16 offset; SMB9; id-58 per-plane extents; loader offset stamp on the owner stream; two-word block table + shader clamp per plane. Real showcase bake: check the 378 MiB simulation and AC 5/8–12/14/24. | integrating executor | 1 | |
+| 3 | **Transposed packer.** Even chart origins; transposed placement; multi-heuristic with width trim, smallest kept; transposed flag in the layout fingerprint; stage bumps. AC 5–7, 13, 27, 28. | integrating executor | 2 | |
+| 4 | **Coded planes for ids 22/42 + shared decode pool.** `coded_plane` framing (codec, raw/stored length, zstd-7 frame with content size + checksum); id 22 v4 records; memo key folds of zstd identity; `--section-codec raw`; decode pool generalized from `ShAsyncWorkers`, spawned with the issuer whenever a route needs decode, tier-priority pickup; decoded-size charging; pre-split pairs; all-resident decode on the loading thread; corrupt-block failure path. AC 1–3, 15–18, 21, 23, 25, 26. | integrating executor | 3 | |
+| 5 | **Ids 50/51.** Per-chunk zstd in the pack spool (codec in chunk word, `payload_len` = stored, hash over stored); id 51 whole-section frame; SH charged at decoded size; failed-chunk path. Regenerate `sh-streaming-hinted-door.prl`. AC 1, 4, 22 (SH-on), 26. | integrating executor | 4 | |
+| 6 | **Pool rule sweep.** On the final layout, sweep ratio/floor for `first_generation_layers` until late blocks ≤ baseline on both walks; update policy identity and growth reserve; report MiB. AC 19, 20, 22. | integrating executor | 5 | |
+| 7 | **Measurement + visual report.** Rerun the baseline Tracy script, sizes, load time, issuer busy; capture A/B frames at fixed poses. AC M1–M3. | integrating executor | 6 | |
+| 8 | **Preflight, review panel, fix loop; results column.** | integrating executor | 7 | |
+
+## Hot paths and constraints
+- **Frame thread admit:** no payload copies (AC 16); no per-frame allocation added.
+- **Issuer:** read only; decode never runs on it.
+- **Decode pool:** bounded by the in-hand cap at decoded size; mandatory work first.
+- **Forward/vertex shader:** one extra varying and one extra table word read per vertex; per-fragment clamp per plane. Measured by M3; any GPU regression past baseline + 25% stops for the owner.
+- **Bake:** pack time reported (M1); zstd-7 adds about 0.9 s on showcase per research.
+
+## Owner questions
+1. **Pinned cores (AC 22, M1).** Accept thread-count emulation on the Mac, or run true affinity-pinned walks on the Windows PC?
+2. **Baseline.** Use `f5bb5d5c8` (byte-equivalent for every lightmap section; see Corrections) in place of `17c2f1e` everywhere?

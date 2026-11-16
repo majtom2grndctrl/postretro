@@ -322,6 +322,7 @@ fn attach_brain(registry: &mut EntityRegistry, id: EntityId) {
             activities: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 postretro_foundation::BehaviorActivityDescriptor {
+                    pose: None,
                     sound: None,
                     animation: None,
                     motion: Some(postretro_foundation::MotionVerb::Hold),

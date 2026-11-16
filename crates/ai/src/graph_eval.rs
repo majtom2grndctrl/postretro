@@ -6,9 +6,9 @@ use postretro_entities::components::brain::BrainComponent;
 #[cfg(test)]
 use postretro_foundation::BehaviorGraphDescriptor;
 use postretro_foundation::{
-    ActionVerb, BehaviorActivityDescriptor, BehaviorLayerDescriptor, BehaviorSelectorEntry,
-    FacingPolicy, IrValue, MotionVerb, RepositionParams, eval_value, is_locomotion_activity,
-    rest_animation,
+    ActionVerb, BehaviorActivityDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
+    BehaviorSelectorEntry, FacingPolicy, IrValue, MotionVerb, RepositionParams, eval_value,
+    is_locomotion_activity, rest_animation,
 };
 
 use super::brain_programs::{BoundLayer, BrainEntityPrograms};
@@ -40,7 +40,7 @@ pub(super) fn select_transition_path(
         let Some(bound_envelope) = bound.envelope(envelope_index) else {
             return false;
         };
-        let Some((current_name, _)) = envelope.activities.iter().nth(activity_index) else {
+        let Some((current_name, current)) = envelope.activities.iter().nth(activity_index) else {
             return false;
         };
         let Some(bound_activity) = bound_envelope.activities.get(activity_index) else {
@@ -63,9 +63,23 @@ pub(super) fn select_transition_path(
             .get(current_name)
             .map(Vec::as_slice)
             .unwrap_or_default();
+        // A `"*"` row into the pose the enemy already holds is skipped like a
+        // row to the current activity; the level's own rows between a rest
+        // and its holds still pass. A release row also waits out the pose's
+        // drawn release time.
+        let wildcard_rows = RowSelection {
+            envelope,
+            current_name,
+            current_pose: current.pose.as_deref(),
+            release_due: brain.hold_release_due(depth),
+        };
+        let local_rows = RowSelection {
+            current_pose: None,
+            ..wildcard_rows
+        };
         if let Some(target) =
-            first_enabled_target(wildcard, &bound_envelope.wildcard, current_name, scope)
-                .or_else(|| first_enabled_target(local, &bound_activity.rows, current_name, scope))
+            first_enabled_target(wildcard, &bound_envelope.wildcard, wildcard_rows, scope)
+                .or_else(|| first_enabled_target(local, &bound_activity.rows, local_rows, scope))
             && let Some(target_index) = envelope.activities.keys().position(|name| name == target)
         {
             return brain.enter_activity_at(depth, target_index);
@@ -84,15 +98,46 @@ pub(super) fn select_transition_path(
     false
 }
 
+/// What one level's row walk needs about the activity active there.
+#[derive(Clone, Copy)]
+struct RowSelection<'e> {
+    envelope: &'e BehaviorGraphEnvelope,
+    current_name: &'e str,
+    /// Skip rows into this pose: set for the `"*"` rows only.
+    current_pose: Option<&'e str>,
+    /// The current activity has lasted its drawn release time.
+    release_due: bool,
+}
+
+impl RowSelection<'_> {
+    /// A row the walk passes over without evaluating its guard: one to the
+    /// current activity, one into the pose being skipped, or a release row
+    /// before its time.
+    fn skips(&self, row: &postretro_foundation::GuardedRow) -> bool {
+        if row.to == self.current_name {
+            return true;
+        }
+        if row.release_after.is_some() && !self.release_due {
+            return true;
+        }
+        self.current_pose.is_some_and(|pose| {
+            self.envelope
+                .activities
+                .get(&row.to)
+                .is_some_and(|target| target.pose.as_deref() == Some(pose))
+        })
+    }
+}
+
 fn first_enabled_target<'a>(
     rows: &'a [postretro_foundation::GuardedRow],
     programs: &'a [Option<postretro_foundation::BoundProgram<BrainScope>>],
-    current_name: &str,
+    selection: RowSelection<'_>,
     scope: &BrainScope,
 ) -> Option<&'a str> {
     rows.iter()
         .zip(programs)
-        .filter(|(row, _)| row.to != current_name)
+        .filter(|(row, _)| !selection.skips(row))
         .find(|(_, program)| {
             program
                 .as_ref()
@@ -222,12 +267,24 @@ fn is_engaged_motion(motion: MotionVerb) -> bool {
 /// verb a selector resolves this tick. An in-range selector may intentionally
 /// hold through an actionless committed phase and still need target facts next
 /// tick.
+///
+/// A stance's pose and any activity marked for an attack retain too, wherever
+/// they sit: a strike beside a chase, outside any engaging ancestor, keeps its
+/// target and committed aim through a co-op re-rank inside the switch margin
+/// and a tick out of sight, so its turn holds and it releases. Retention is
+/// hysteresis, not a lock: a player nearer by more than the margin still
+/// takes the target.
 pub(super) fn engages_active(brain: &BrainComponent) -> bool {
     (0..brain.active_depth()).any(|depth| {
-        brain
-            .activity_at_depth(depth)
-            .is_some_and(|(_, activity)| activity_can_engage(activity))
+        brain.activity_at_depth(depth).is_some_and(|(_, activity)| {
+            activity_can_engage(activity) || commits_to_target(activity)
+        })
     })
+}
+
+/// A stance's rest or hold, or an activity marked for an attack.
+fn commits_to_target(activity: &BehaviorActivityDescriptor) -> bool {
+    activity.pose.is_some() || activity.attack_turn.is_some()
 }
 
 /// Retention cannot depend only on a selector's current row: before fact
@@ -422,6 +479,7 @@ mod statechart_tests {
         layers: BTreeMap<String, BehaviorLayerDescriptor>,
     ) -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
+            pose: None,
             sound: None,
             animation: Some(animation.to_string()),
             motion,
@@ -482,6 +540,7 @@ mod statechart_tests {
                 (
                     "windup".to_string(),
                     vec![GuardedRow {
+                        release_after: None,
                         to: "commit".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -489,6 +548,7 @@ mod statechart_tests {
                 (
                     "commit".to_string(),
                     vec![GuardedRow {
+                        release_after: None,
                         to: "recover".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -534,6 +594,7 @@ mod statechart_tests {
                     BTreeMap::from([(
                         "*".to_string(),
                         vec![GuardedRow {
+                            release_after: None,
                             to: "rest".to_string(),
                             when: constant(true),
                         }],
@@ -827,6 +888,7 @@ mod statechart_tests {
 
     fn row(to: &str, when: IrNode) -> GuardedRow {
         GuardedRow {
+            release_after: None,
             to: to.to_string(),
             when,
         }
@@ -964,7 +1026,11 @@ mod statechart_tests {
         let mut brain = seeded(&graph, 0);
 
         assert!(select_transition_path(&programs, &mut scope, &mut brain));
-        assert_eq!(brain.active_path_names(), ["walk"], "the unguarded row passes");
+        assert_eq!(
+            brain.active_path_names(),
+            ["walk"],
+            "the unguarded row passes"
+        );
         assert!(select_transition_path(&programs, &mut scope, &mut brain));
         assert_eq!(brain.active_path_names(), ["idle"]);
 

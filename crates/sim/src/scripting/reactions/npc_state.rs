@@ -99,6 +99,7 @@ mod tests {
                         activities: std::collections::BTreeMap::from([(
                             "idle".to_string(),
                             postretro_foundation::BehaviorActivityDescriptor {
+                                pose: None,
                                 sound: None,
                                 animation: Some("idle".to_string()),
                                 motion: Some(postretro_foundation::MotionVerb::Hold),

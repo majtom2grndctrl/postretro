@@ -37,7 +37,7 @@ fn attacker_spot(index: usize) -> Vec3 {
 }
 
 /// Run every enemy under per-token `limits`, none refreshing.
-fn set_limits(runtime: &mut AiRuntime, limits: &[u32]) {
+pub(super) fn set_limits(runtime: &mut AiRuntime, limits: &[u32]) {
     runtime.turns.budgets = AttackBudgets::new(BudgetTable::new(
         limits
             .iter()
@@ -62,7 +62,7 @@ fn draws(list: &[(u16, u32)]) -> ResolvedDraws {
 
 /// Make `attack` on `enemy` draw `list`, standing in for authored `draws`.
 /// Binds every brain now against `descriptors`, as the next tick would.
-fn set_draws(
+pub(super) fn set_draws(
     reg: &EntityRegistry,
     runtime: &mut AiRuntime,
     descriptors: &[EntityTypeDescriptor],
@@ -86,7 +86,7 @@ fn turns(reg: &EntityRegistry, enemy: EntityId) -> AttackTurnState {
 }
 
 /// The attacks `enemy` holds turns for, by name.
-fn held(reg: &EntityRegistry, enemy: EntityId) -> Vec<String> {
+pub(super) fn held(reg: &EntityRegistry, enemy: EntityId) -> Vec<String> {
     let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
     brain
         .attack_turns

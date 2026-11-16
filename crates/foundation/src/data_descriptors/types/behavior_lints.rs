@@ -71,6 +71,7 @@ mod tests {
 
     fn leaf() -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
+            pose: None,
             sound: None,
             animation: Some("idle".to_string()),
             motion: None,
@@ -97,6 +98,7 @@ mod tests {
                 transitions: BTreeMap::from([(
                     "initial".to_string(),
                     vec![GuardedRow {
+                        release_after: None,
                         when: IrNode::Const {
                             value: IrValue::Bool(true),
                         },

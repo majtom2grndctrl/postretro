@@ -491,6 +491,7 @@ pub(crate) mod tests {
                 activities: BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),

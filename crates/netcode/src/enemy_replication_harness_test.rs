@@ -150,6 +150,7 @@ fn brain() -> BrainComponent {
             activities: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 BehaviorActivityDescriptor {
+                    pose: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: Some(MotionVerb::Hold),
@@ -367,6 +368,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -382,6 +384,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "attack".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
@@ -401,6 +404,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
             transitions: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 vec![GuardedRow {
+                    release_after: None,
                     to: "attack".to_string(),
                     when: IrNode::Le {
                         a: Box::new(IrNode::Input {

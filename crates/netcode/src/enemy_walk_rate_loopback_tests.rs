@@ -40,6 +40,7 @@ fn paced_graph(state: &str, speed: f32, attacks: bool) -> BehaviorGraphDescripto
         activities: std::collections::BTreeMap::from([(
             "pace".to_string(),
             BehaviorActivityDescriptor {
+                pose: None,
                 sound: None,
                 animation: Some(state.to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
@@ -509,5 +510,137 @@ fn a_charging_attack_activity_strides_against_its_own_travel_speed_on_host_and_c
         &charge,
         2.0 * MOVE_SPEED / stride,
         "charge on `run`: steered speed over its travelSpeed",
+    );
+}
+
+/// A stance's rest and hold sharing one pose and one animation state: the
+/// rest takes its hold after 100 ms, and past 200 ms of pose the two trade
+/// places every tick.
+fn pose_graph(state: &str) -> BehaviorGraphDescriptor {
+    let posed = || BehaviorActivityDescriptor {
+        pose: Some("overhead".to_string()),
+        sound: None,
+        animation: Some(state.to_string()),
+        motion: Some(MotionVerb::Hold),
+        action: None,
+        on_enter: None,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
+        speed: None,
+        layers: Default::default(),
+    };
+    let after = |to: &str, ms: f32| GuardedRow {
+        release_after: None,
+        to: to.to_string(),
+        when: IrNode::Ge {
+            a: Box::new(IrNode::Input {
+                name: postretro_foundation::BRAIN_TIME_IN_ACTIVITY_MS_INPUT.to_string(),
+                owner: None,
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(ms),
+            }),
+        },
+    };
+    let mut graph = enemy_behavior_graph();
+    graph.move_speed = MOVE_SPEED;
+    graph.envelope = BehaviorGraphEnvelope {
+        initial: "overhead".to_string(),
+        activities: std::collections::BTreeMap::from([
+            ("overhead".to_string(), posed()),
+            ("slam_overhead".to_string(), posed()),
+        ]),
+        transitions: std::collections::BTreeMap::from([
+            ("overhead".to_string(), vec![after("slam_overhead", 100.0)]),
+            ("slam_overhead".to_string(), vec![after("overhead", 200.0)]),
+        ]),
+    };
+    graph
+}
+
+/// The animation presentation one peer shows: state, switch count and entry
+/// stamp.
+fn presented(registry: &EntityRegistry, entity: EntityId) -> (String, u32, Option<f64>) {
+    let animation = registry
+        .get_component::<MeshComponent>(entity)
+        .expect("the enemy carries its mesh")
+        .animation
+        .clone()
+        .expect("the mesh is animated");
+    (
+        animation.current_state.clone(),
+        animation.switches.get(),
+        animation.entered_at,
+    )
+}
+
+// AC C2: entering an activity whose clip is already playing restarts nothing
+// on the host or on a loopback client. A pose's rest and hold share a state,
+// so the host never switches between them, nothing re-enters the wire, and the
+// client keeps the clip it started. (This harness's clips never resolve, so
+// the host half is proven with resolved clips in `postretro-ai`'s
+// `entering_an_activity_on_the_playing_clip_restarts_nothing`.)
+#[test]
+fn moving_within_a_pose_restarts_no_clip_on_host_or_loopback_client() {
+    const STATE: &str = "smash_windup";
+    let graph = pose_graph(STATE);
+    let states = paced_states(STATE, None);
+    let mut h = EnemyReplicationHarness::new(perfect_link());
+    h.descriptors = vec![paced_descriptor(&graph, &states)];
+    spawn_host_player(&mut h.host_registry);
+    let enemy = spawn_host_paced_enemy(&mut h.host_registry, &graph, &states, STATE);
+    h.host_register_descriptors();
+    let net_id = h.enemy_network_id(enemy);
+    let mut host = HostTick::new();
+
+    let mut host_baseline = None;
+    let mut client_baseline = None;
+    let mut activities = Vec::new();
+    for _ in 0..60 {
+        host.run(&mut h.host_registry);
+        h.host_tick();
+        h.client_receive_with_walk_playback();
+        let activity = h
+            .host_registry
+            .get_component::<BrainComponent>(enemy)
+            .expect("host enemy keeps its brain")
+            .state_name()
+            .expect("the brain sits in a declared activity")
+            .to_string();
+        if activities.last() != Some(&activity) {
+            activities.push(activity);
+        }
+
+        let host_view = presented(&h.host_registry, enemy);
+        assert_eq!(host_view.0, STATE);
+        let host_seen = *host_baseline.get_or_insert(host_view.1);
+        assert_eq!(host_view.1, host_seen, "the host never switches again");
+
+        let Some(remote) = h.client_mapped_entity(net_id) else {
+            continue;
+        };
+        let render_tick = f64::from(h.server_tick.saturating_sub(4));
+        h.client_replication
+            .sample_into_registry(&mut h.client_registry, render_tick, 1.0);
+        let client_view = presented(&h.client_registry, remote);
+        if client_view.0 != STATE {
+            assert!(
+                client_baseline.is_none(),
+                "the client leaves the pose's clip"
+            );
+            continue;
+        }
+        let client_seen = client_baseline.get_or_insert((client_view.1, client_view.2));
+        assert_eq!(
+            (client_view.1, client_view.2),
+            *client_seen,
+            "the client neither switches nor re-stamps its clip"
+        );
+    }
+    assert!(client_baseline.is_some(), "the client presents the pose");
+    assert!(
+        activities.len() >= 6,
+        "the host moves between rest and hold repeatedly: {activities:?}"
     );
 }

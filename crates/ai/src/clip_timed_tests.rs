@@ -1732,3 +1732,81 @@ fn clip_timed_wave_allocates_no_more_per_tick_than_an_untimed_one() {
         "clip-timed {timed:.1} vs untimed {untimed:.1} allocations per tick"
     );
 }
+
+// C2 on the host: entering an activity whose clip already plays restarts
+// nothing. A stance's rest and hold share one state, and so does an unposed
+// sibling: moving among them never switches the mesh, never re-stamps its
+// entry, and the brain's clip time runs on.
+#[test]
+fn entering_an_activity_on_the_playing_clip_restarts_nothing() {
+    let posed = |attack: Option<&str>| {
+        let mut activity = act("smash_windup", None);
+        activity.pose = Some("overhead".to_string());
+        activity.attack_turn = attack.map(str::to_string);
+        activity
+    };
+    let graph = clip_graph(
+        "overhead",
+        vec![
+            ("overhead", posed(None)),
+            ("slam_overhead", posed(Some(JAB))),
+            ("glare", act("smash_windup", None)),
+        ],
+        vec![
+            ("overhead", vec![edge("slam_overhead", after_ms(100.0))]),
+            ("slam_overhead", vec![edge("glare", after_ms(200.0))]),
+            ("glare", vec![edge("overhead", after_ms(100.0))]),
+        ],
+        vec![(JAB, contact_attack(10.0))],
+    );
+    let mut scene = Scene::new(vec![one_shot("smash_windup", 4.0, &[])]);
+    let enemy = scene.spawn(0, &graph, "overhead");
+    scene.tick();
+    assert_eq!(mesh_state(&scene, enemy), "smash_windup");
+    let switches = scene
+        .reg
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .switches
+        .get();
+    let stamp = enemy_anim_entered_at(&scene.reg, enemy);
+
+    let mut visited = vec![scene.state(enemy)];
+    let mut clip_time = scene.brain(enemy).clip_clock.time;
+    for _ in 0..20 {
+        scene.tick();
+        let state = scene.state(enemy);
+        if visited.last() != Some(&state) {
+            visited.push(state);
+        }
+        let now = scene.brain(enemy).clip_clock.time;
+        assert!(
+            (now - clip_time - f64::from(DT)).abs() < 1.0e-6,
+            "clip time runs on across `{}`: {clip_time} → {now}",
+            scene.state(enemy)
+        );
+        clip_time = now;
+        let animation = scene
+            .reg
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .clone()
+            .unwrap();
+        assert_eq!(animation.current_state, "smash_windup");
+        assert_eq!(animation.switches.get(), switches, "no switch is drawn");
+        assert_eq!(
+            enemy_anim_entered_at(&scene.reg, enemy),
+            stamp,
+            "nor re-stamped"
+        );
+    }
+    assert_eq!(
+        visited,
+        ["overhead", "slam_overhead", "glare", "overhead"].map(String::from),
+        "the walk covers the hold, an unposed sibling and the rest"
+    );
+}

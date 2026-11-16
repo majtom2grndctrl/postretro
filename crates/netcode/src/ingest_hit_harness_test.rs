@@ -804,6 +804,7 @@ fn retaliation_graph() -> BehaviorGraphDescriptor {
             activities: BTreeMap::from([(
                 "engaged".into(),
                 BehaviorActivityDescriptor {
+                    pose: None,
                     sound: None,
                     animation: None,
                     motion: Some(MotionVerb::ChaseTarget),

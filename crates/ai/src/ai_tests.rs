@@ -7132,6 +7132,7 @@ fn authored_state(
     action: Option<ActionVerb>,
 ) -> BehaviorActivityDescriptor {
     BehaviorActivityDescriptor {
+        pose: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(motion),
@@ -7147,6 +7148,7 @@ fn authored_state(
 
 fn edge(to: &str, when: IrNode) -> GuardedRow {
     GuardedRow {
+        release_after: None,
         to: to.to_string(),
         when,
     }
@@ -8302,6 +8304,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             (
                 "first".to_string(),
                 BehaviorActivityDescriptor {
+                    pose: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
@@ -8317,6 +8320,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             (
                 "second".to_string(),
                 BehaviorActivityDescriptor {
+                    pose: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
@@ -8354,6 +8358,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
         activities: BTreeMap::from([(
             "engage".to_string(),
             BehaviorActivityDescriptor {
+                pose: None,
                 sound: None,
                 animation: Some("idle".to_string()),
                 motion: None,
@@ -9157,6 +9162,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     attack_turn: Option<&str>,
                     layers: BTreeMap<String, BehaviorLayerDescriptor>| {
         BehaviorActivityDescriptor {
+            pose: None,
             sound: None,
             animation: animation.map(str::to_string),
             motion: None,
@@ -9178,6 +9184,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     };
     // The slam's phases stand their ground.
     let planted = |action: Option<&str>| BehaviorActivityDescriptor {
+        pose: None,
         motion: Some(MotionVerb::Hold),
         ..leaf("attack_slam", action, Some("slam"))
     };
@@ -9310,6 +9317,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "engage".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
                         sound: None,
                         animation: Some("walk".to_string()),
                         motion: None,
@@ -11152,6 +11160,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
         activities: BTreeMap::from([(
             "engage".to_string(),
             BehaviorActivityDescriptor {
+                pose: None,
                 sound: None,
                 animation: Some("idle_aiming".to_string()),
                 motion: None,
@@ -13048,6 +13057,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
         activities: BTreeMap::from([(
             "composite".to_string(),
             BehaviorActivityDescriptor {
+                pose: None,
                 sound: None,
                 animation: Some("locomotion".to_string()),
                 motion: None,
@@ -13645,6 +13655,9 @@ mod attack_turn_ticks;
 
 #[path = "clip_timed_tests.rs"]
 mod clip_timed;
+
+#[path = "stance_pose_tests.rs"]
+mod stance_pose;
 
 #[test]
 fn contact_attack_deals_its_damage_type() {

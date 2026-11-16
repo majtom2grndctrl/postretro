@@ -764,6 +764,7 @@ mod tests {
         behavior.envelope.activities.insert(
             "slam".to_string(),
             BehaviorActivityDescriptor {
+                pose: None,
                 sound: None,
                 animation: Some("attack".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),

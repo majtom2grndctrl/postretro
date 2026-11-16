@@ -109,6 +109,7 @@ impl Fixture {
                     activities: std::collections::BTreeMap::from([(
                         "idle".into(),
                         postretro_foundation::BehaviorActivityDescriptor {
+                            pose: None,
                             sound: None,
                             animation: None,
                             motion: Some(postretro_foundation::MotionVerb::Hold),

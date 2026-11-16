@@ -717,6 +717,7 @@ fn enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
             activities: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 postretro_foundation::BehaviorActivityDescriptor {
+                    pose: None,
                     sound: None,
                     animation: None,
                     motion: Some(postretro_foundation::MotionVerb::Hold),

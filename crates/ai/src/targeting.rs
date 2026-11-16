@@ -500,6 +500,7 @@ mod tests {
                 activities: BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
                         sound: None,
                         animation: None,
                         motion: None,

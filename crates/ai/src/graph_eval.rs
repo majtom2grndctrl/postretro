@@ -49,6 +49,7 @@ pub(super) fn select_transition_path(
         scope.repoint_scope_relative(ScopeRelativeValues {
             time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
             attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+            activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
         });
 
         let wildcard = envelope
@@ -261,6 +262,7 @@ fn selector_motion(
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+        activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
     });
     for (entry, program) in entries.iter().zip(programs) {
         match entry {
@@ -289,6 +291,7 @@ fn selector_action<'a>(
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+        activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
     });
     entries
         .iter()
@@ -389,8 +392,9 @@ mod statechart_tests {
 
     use postretro_entities::components::brain::BrainComponent;
     use postretro_foundation::{
-        ActionVerb, AttackParams, BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BehaviorGraphEnvelope,
-        BehaviorSelectorRow, GuardedRow, IrNode, IrValue,
+        ActionVerb, AttackParams, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_TIME_IN_ACTIVITY_MS_INPUT,
+        BehaviorDrawSalt, BehaviorGraphEnvelope, BehaviorSelectorRow, GuardedRow, IrNode, IrValue,
+        behavior_draw_seed,
     };
 
     use super::*;
@@ -768,6 +772,318 @@ mod statechart_tests {
         assert!(
             !activity_can_engage(&custom),
             "only selectors named move/offense feed AI engagement semantics"
+        );
+    }
+
+    fn roll_input() -> Box<IrNode> {
+        Box::new(IrNode::Input {
+            name: BRAIN_ACTIVITY_ROLL_INPUT.to_string(),
+            owner: None,
+        })
+    }
+
+    fn half() -> Box<IrNode> {
+        Box::new(IrNode::Const {
+            value: IrValue::Number(0.5),
+        })
+    }
+
+    fn roll_below_half() -> IrNode {
+        IrNode::Lt {
+            a: roll_input(),
+            b: half(),
+        }
+    }
+
+    fn roll_at_least_half() -> IrNode {
+        IrNode::Ge {
+            a: roll_input(),
+            b: half(),
+        }
+    }
+
+    fn and(a: IrNode, b: IrNode) -> IrNode {
+        IrNode::And {
+            a: Box::new(a),
+            b: Box::new(b),
+        }
+    }
+
+    fn row(to: &str, when: IrNode) -> GuardedRow {
+        GuardedRow {
+            to: to.to_string(),
+            when,
+        }
+    }
+
+    fn flat_graph(
+        activities: &[&str],
+        transitions: BTreeMap<String, Vec<GuardedRow>>,
+    ) -> BehaviorGraphDescriptor {
+        BehaviorGraphDescriptor {
+            knockback: Default::default(),
+            envelope: BehaviorGraphEnvelope {
+                initial: activities[0].to_string(),
+                activities: activities
+                    .iter()
+                    .map(|name| {
+                        (
+                            name.to_string(),
+                            activity(name, Some(MotionVerb::Hold), None, BTreeMap::new()),
+                        )
+                    })
+                    .collect(),
+                transitions,
+            },
+            candidate_filter: None,
+            retaliation: None,
+            patrol: None,
+            attacks: BTreeMap::new(),
+            engagement_radius: None,
+            move_speed: 3.5,
+        }
+    }
+
+    fn seeded(graph: &BehaviorGraphDescriptor, placement: u32) -> BrainComponent {
+        let mut brain = BrainComponent::from_graph(graph);
+        brain.seed_behavior_draws(behavior_draw_seed(
+            "roller",
+            BehaviorDrawSalt::Placement(placement),
+        ));
+        brain
+    }
+
+    // R3 (P3) and R6: one entry holds one roll that every row at its level
+    // reads; each re-entry draws again.
+    #[test]
+    fn activity_roll_is_fixed_for_one_entry_shared_by_its_rows_and_redrawn_on_reentry() {
+        // `decide` branches on the roll once its dwell passes. A trailing
+        // always-true row catches branch rows that disagree about the roll: if
+        // they read different values, neither may pass.
+        let graph = flat_graph(
+            &["decide", "high", "low", "stuck"],
+            BTreeMap::from([
+                (
+                    "decide".to_string(),
+                    vec![
+                        row("low", and(roll_below_half(), elapsed_at_least(10.0))),
+                        row("high", and(roll_at_least_half(), elapsed_at_least(10.0))),
+                        row("stuck", elapsed_at_least(10.0)),
+                    ],
+                ),
+                (
+                    "low".to_string(),
+                    vec![row("decide", elapsed_at_least(10.0))],
+                ),
+                (
+                    "high".to_string(),
+                    vec![row("decide", elapsed_at_least(10.0))],
+                ),
+            ]),
+        );
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = seeded(&graph, 1);
+
+        let mut entry_rolls = Vec::new();
+        for _ in 0..200 {
+            assert_eq!(brain.active_path_names(), ["decide"]);
+            let roll = brain.activity_roll(0).expect("decide is active");
+            assert!((0.0..1.0).contains(&roll), "roll {roll} lies in [0, 1)");
+            entry_rolls.push(roll);
+
+            // Fixed for the entry: evaluating while it holds never redraws.
+            for _ in 0..3 {
+                assert!(!select_transition_path(&programs, &mut scope, &mut brain));
+                brain.tick_activity_timers(2.0);
+                assert_eq!(brain.activity_roll(0), Some(roll), "fixed until left");
+            }
+
+            brain.tick_activity_timers(10.0);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+            let expected = if roll < 0.5 { "low" } else { "high" };
+            assert_eq!(
+                brain.active_path_names(),
+                [expected],
+                "both branch rows read this entry's roll {roll}"
+            );
+
+            brain.tick_activity_timers(10.0);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        }
+
+        let mut distinct = entry_rolls.clone();
+        distinct.sort_by(f32::total_cmp);
+        distinct.dedup();
+        assert!(
+            distinct.len() > 190,
+            "re-entry draws again: {} distinct rolls over 200 entries",
+            distinct.len()
+        );
+        assert!(entry_rolls.iter().any(|roll| *roll < 0.5));
+        assert!(entry_rolls.iter().any(|roll| *roll >= 0.5));
+    }
+
+    // R3 (P3): a graph reseat seats `decide` and its own row leaves it in the
+    // same pass, so the rows read the roll the reseat drew, not the one the
+    // replaced activity held.
+    #[test]
+    fn an_activity_reseated_and_left_on_one_tick_reads_its_own_fresh_roll() {
+        let graph = flat_graph(
+            &["decide", "high", "low"],
+            BTreeMap::from([(
+                "decide".to_string(),
+                vec![
+                    row("low", roll_below_half()),
+                    row("high", roll_at_least_half()),
+                ],
+            )]),
+        );
+        let (programs, mut scope) = bound(&graph);
+        let mut discriminating = 0;
+        for placement in 0..64 {
+            let mut brain = seeded(&graph, placement);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+            for _ in 0..8 {
+                let stale = brain.activity_roll(0).expect("a branch is active");
+                // The AI pass reseats, then evaluates, on one tick.
+                assert!(brain.reseat_to_initial());
+                let fresh = brain.activity_roll(0).expect("decide is reseated");
+                assert!(select_transition_path(&programs, &mut scope, &mut brain));
+                let expected = if fresh < 0.5 { "low" } else { "high" };
+                assert_eq!(brain.active_path_names(), [expected]);
+                if (stale < 0.5) != (fresh < 0.5) {
+                    discriminating += 1;
+                }
+            }
+        }
+        assert!(
+            discriminating > 0,
+            "some reseat must replace a roll on the other side of 0.5"
+        );
+    }
+
+    // R4 (P4): levels seated by one descent draw independent rolls, and a
+    // nested transition redraws and zeroes only the nested level.
+    #[test]
+    fn nested_levels_draw_independent_rolls_and_a_nested_transition_redraws_only_its_level() {
+        let graph = nested_fixture(false);
+        let (programs, mut scope) = bound(&graph);
+        let mut opposite_sides = [false; 2];
+        for placement in 0..64 {
+            let mut brain = seeded(&graph, placement);
+            assert_eq!(brain.active_path_names(), ["engage", "windup"]);
+            let outer = brain.activity_roll(0).expect("engage is seated");
+            let inner = brain.activity_roll(1).expect("windup is seated");
+            assert_ne!(outer, inner, "one descent draws one roll per level");
+            if (outer < 0.5) != (inner < 0.5) {
+                opposite_sides[usize::from(outer < 0.5)] = true;
+            }
+
+            brain.tick_activity_timers(20.0);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+            assert_eq!(brain.active_path_names(), ["engage", "commit"]);
+            assert_eq!(
+                brain.activity_roll(0),
+                Some(outer),
+                "the parent keeps its roll"
+            );
+            assert_eq!(brain.activity_timer(0), Some(20.0), "and its timer");
+            assert_eq!(
+                brain.activity_timer(1),
+                Some(0.0),
+                "the entered level zeroes"
+            );
+            let redrawn = brain.activity_roll(1).expect("commit is seated");
+            assert_ne!(redrawn, inner, "the entered level draws again");
+        }
+        assert_eq!(
+            opposite_sides,
+            [true, true],
+            "the levels' rolls are uncorrelated: each falls either side of the other"
+        );
+    }
+
+    // R5 (P5): move and offense selectors read their own level's roll, not the
+    // roll of the level the transition pass evaluated last.
+    #[test]
+    fn selector_guards_read_their_own_levels_roll() {
+        let inner = BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: BTreeMap::from([(
+                "idle".to_string(),
+                activity("idle", None, None, BTreeMap::new()),
+            )]),
+            transitions: BTreeMap::new(),
+        };
+        let layers = BTreeMap::from([
+            (
+                "move".to_string(),
+                BehaviorLayerDescriptor::Selector(vec![
+                    BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+                        when: Some(roll_below_half()),
+                        motion: Some(MotionVerb::ChaseTarget),
+                        action: None,
+                    }),
+                    BehaviorSelectorEntry::Motion(MotionVerb::Hold),
+                ]),
+            ),
+            (
+                "offense".to_string(),
+                BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(
+                    BehaviorSelectorRow {
+                        when: Some(roll_below_half()),
+                        motion: None,
+                        action: Some(ActionVerb::Attack {
+                            name: "slam".to_string(),
+                            at: None,
+                        }),
+                    },
+                )]),
+            ),
+            ("inner".to_string(), BehaviorLayerDescriptor::Graph(inner)),
+        ]);
+        let mut graph = nested_fixture(false);
+        graph.envelope = BehaviorGraphEnvelope {
+            initial: "engage".to_string(),
+            activities: BTreeMap::from([(
+                "engage".to_string(),
+                activity("locomotion", None, None, layers),
+            )]),
+            transitions: BTreeMap::new(),
+        };
+        let (programs, mut scope) = bound(&graph);
+
+        let mut discriminating = 0;
+        for placement in 0..64 {
+            let mut brain = seeded(&graph, placement);
+            assert_eq!(brain.active_path_names(), ["engage", "idle"]);
+            let outer = brain.activity_roll(0).expect("engage is seated");
+            let inner = brain.activity_roll(1).expect("idle is seated");
+            // The transition pass leaves the scope pointing at the inner level.
+            assert!(!select_transition_path(&programs, &mut scope, &mut brain));
+
+            let expected_motion = if outer < 0.5 {
+                MotionVerb::ChaseTarget
+            } else {
+                MotionVerb::Hold
+            };
+            assert_eq!(
+                motion_for_path(&programs, &mut scope, &brain),
+                Some(expected_motion),
+                "the move selector reads engage's roll {outer}"
+            );
+            assert_eq!(
+                action_for_path(&programs, &mut scope, &brain).is_some(),
+                outer < 0.5,
+                "the offense selector reads engage's roll {outer}"
+            );
+            if (outer < 0.5) != (inner < 0.5) {
+                discriminating += 1;
+            }
+        }
+        assert!(
+            discriminating > 0,
+            "some seed must put the two levels' rolls on opposite sides of 0.5"
         );
     }
 }

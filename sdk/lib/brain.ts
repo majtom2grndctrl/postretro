@@ -104,6 +104,11 @@ export interface BrainInputs {
    * clip did not resolve. Entity-wide: parent and nested rows read one value,
    * unlike `timeInActivityMs` (boolean). */
   readonly animationDone: RuntimeGuardNode;
+  /** A per-entry roll, uniform in [0, 1): drawn when the currently-evaluated
+   * activity was entered and fixed until it is left. Scope-relative like
+   * `timeInActivityMs`: each level, and its selectors, read their own roll,
+   * and every row at one level reads the same value (number). */
+  readonly activityRoll: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -155,6 +160,7 @@ export const brain: BrainInputs = Object.freeze({
   damageSourceKnown: input("@brain.damageSourceKnown"),
   hasAttackTurn: input("@brain.hasAttackTurn"),
   animationDone: input("@brain.animationDone"),
+  activityRoll: input("@brain.activityRoll"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

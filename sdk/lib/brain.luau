@@ -55,7 +55,9 @@ local BrainSdk = {}
 --- previous tick), and `animationDone` (boolean; true from the tick after the
 --- selected non-looping animation's clip reaches its duration, false on a
 --- looping state, true for a non-looping state whose clip did not resolve; entity-wide,
---- not scope-relative).
+--- not scope-relative), and `activityRoll` (number; uniform in [0, 1), drawn
+--- when the currently-evaluated activity was entered and fixed until it is
+--- left; scope-relative like `timeInActivityMs`).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -79,6 +81,7 @@ BrainSdk.brain = table.freeze({
   damageSourceKnown = input("@brain.damageSourceKnown"),
   hasAttackTurn = input("@brain.hasAttackTurn"),
   animationDone = input("@brain.animationDone"),
+  activityRoll = input("@brain.activityRoll"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

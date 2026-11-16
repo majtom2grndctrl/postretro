@@ -27,7 +27,7 @@ use crate::data_descriptors::{
     BehaviorLayerDescriptor, MAX_BEHAVIOR_NESTING_DEPTH,
 };
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
-use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
+use postretro_foundation::{BRAIN_NO_TARGET_DISTANCE, BehaviorDrawStream, BehaviorDraws};
 
 use super::mesh::MeshComponent;
 
@@ -338,6 +338,17 @@ pub struct BrainComponent {
     /// envelope's rows. This host-only state does not alter snapshot payloads.
     #[serde(default = "default_activity_attack_counts")]
     pub attacks_fired_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// Scope-relative `@brain.activityRoll` for the matching active activity:
+    /// drawn from [`Self::behavior_draws`] on that level's entry and fixed
+    /// until the level's activity is left. Host-only: clients never evaluate
+    /// guards, and no roll crosses the wire. Old brains read `0.0` until a
+    /// level is next entered.
+    #[serde(default = "default_activity_rolls")]
+    pub activity_roll: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// The per-instance seed and per-stream counters every host-only behavior
+    /// draw comes from. Serialized so a restore keeps drawing the same values.
+    #[serde(default)]
+    pub behavior_draws: BehaviorDraws,
     /// An initial descent, transition, gate reset, or graph reseat seats a path
     /// atomically and marks its newly entered suffix for one entry-dependent
     /// presentation pass. This is consumed by the AI tick after timers are zeroed.
@@ -389,6 +400,8 @@ impl BrainComponent {
             active_activity_path_len: 0,
             time_in_activity_ms: default_activity_timers(),
             attacks_fired_in_activity: default_activity_attack_counts(),
+            activity_roll: default_activity_rolls(),
+            behavior_draws: BehaviorDraws::default(),
             entry_pending: false,
             entry_pending_start_depth: 0,
             entry_event_pending: false,
@@ -460,6 +473,30 @@ impl BrainComponent {
             Some(self.attacks_fired_in_activity[depth])
         } else {
             None
+        }
+    }
+
+    /// The roll the activity active at `depth` drew on entry.
+    pub fn activity_roll(&self, depth: usize) -> Option<f32> {
+        if depth < self.active_depth() {
+            Some(self.activity_roll[depth])
+        } else {
+            None
+        }
+    }
+
+    /// Salt this brain's behavior draws with its per-instance seed. Spawn
+    /// seats the initial path in [`Self::from_graph`] before the spawn path
+    /// knows the enemy's placement, so this restarts the streams and redraws
+    /// every seated level's roll: the first evaluation reads this enemy's own
+    /// salted rolls, and seeding twice is the same as seeding once.
+    pub fn seed_behavior_draws(&mut self, seed: u64) {
+        self.behavior_draws.reseed(seed);
+        let active_depth = self.active_depth();
+        for depth in 0..active_depth {
+            self.activity_roll[depth] = self
+                .behavior_draws
+                .next_unit(BehaviorDrawStream::ActivityRoll);
         }
     }
 
@@ -636,7 +673,8 @@ impl BrainComponent {
 
     /// Enter `target_index` in the envelope at `depth`, discard all inactive
     /// descendants, zero their timers and attack counters, then atomically
-    /// descend nested initials.
+    /// descend nested initials. Every level entered draws its own roll, in
+    /// root-to-leaf order.
     /// A parser-validated graph cannot fail this; `false` is the safe answer for
     /// malformed hand-built/restored data.
     pub fn enter_activity_at(&mut self, depth: usize, target_index: usize) -> bool {
@@ -666,6 +704,9 @@ impl BrainComponent {
         for count in self.attacks_fired_in_activity[depth..].iter_mut() {
             *count = 0;
         }
+        for roll in self.activity_roll[depth..].iter_mut() {
+            *roll = 0.0;
+        }
 
         loop {
             let Some(envelope) = self.envelope_at_depth_for_prefix(depth) else {
@@ -685,6 +726,9 @@ impl BrainComponent {
             self.active_activity_path[depth] = target_index;
             self.time_in_activity_ms[depth] = 0.0;
             self.attacks_fired_in_activity[depth] = 0;
+            self.activity_roll[depth] = self
+                .behavior_draws
+                .next_unit(BehaviorDrawStream::ActivityRoll);
             self.active_activity_path_len = depth + 1;
 
             let Some(initial) = child_initial else {
@@ -796,6 +840,10 @@ const fn default_activity_timers() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
 
 const fn default_activity_attack_counts() -> [u32; MAX_BEHAVIOR_NESTING_DEPTH] {
     [0; MAX_BEHAVIOR_NESTING_DEPTH]
+}
+
+const fn default_activity_rolls() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
+    [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
 }
 
 /// The index of `name` in the root envelope's activity map, or `None` when the
@@ -2035,5 +2083,65 @@ mod tests {
         brain.active_activity_path[0] = 99;
         assert_eq!(brain.state_name(), None);
         assert_eq!(graph_activity_index(&brain.graph, "sprint"), None);
+    }
+
+    // Sp7 (roll half): a brain saved before rolls existed restores, and its
+    // next entry draws a roll in [0, 1).
+    #[test]
+    fn brain_serialized_before_activity_rolls_restores_and_draws_on_next_entry() {
+        let graph = authored_graph();
+        let mut legacy =
+            serde_json::to_value(BrainComponent::from_graph(&graph)).expect("brain serializes");
+        let fields = legacy.as_object_mut().expect("brain is an object");
+        fields.remove("activity_roll");
+        fields.remove("behavior_draws");
+        let mut restored: BrainComponent =
+            serde_json::from_value(legacy).expect("pre-roll brain deserializes");
+        assert_eq!(restored.activity_roll(0), Some(0.0));
+        assert_eq!(restored.behavior_draws, BehaviorDraws::default());
+
+        let charge = graph_activity_index(&graph, "charge").expect("charge is declared");
+        let draws = (0..8)
+            .map(|_| {
+                assert!(restored.enter_activity_at(0, charge));
+                restored.activity_roll(0).expect("charge is active")
+            })
+            .collect::<Vec<_>>();
+        assert!(draws.iter().all(|roll| (0.0..1.0).contains(roll)));
+        assert!(
+            draws.windows(2).any(|pair| pair[0] != pair[1]),
+            "each entry draws again: {draws:?}"
+        );
+    }
+
+    // P13: spawn seats the initial activity before it knows the placement;
+    // seeding then redraws the seated roll, so the first evaluation reads this
+    // enemy's own salted roll whatever was drawn at seating.
+    #[test]
+    fn seeding_redraws_the_seated_roll_from_the_seed_alone() {
+        use postretro_foundation::{BehaviorDrawSalt, behavior_draw_seed};
+
+        let graph = authored_graph();
+        let seed = |ordinal| behavior_draw_seed("brute", BehaviorDrawSalt::Placement(ordinal));
+        let seeded = |ordinal| {
+            let mut brain = BrainComponent::from_graph(&graph);
+            brain.seed_behavior_draws(seed(ordinal));
+            brain
+        };
+
+        let first = seeded(3);
+        let mut twice = seeded(3);
+        twice.seed_behavior_draws(seed(3));
+        assert_eq!(
+            first.activity_roll(0),
+            twice.activity_roll(0),
+            "reseeding replays rather than advancing the stream"
+        );
+        assert_eq!(first.behavior_draws, twice.behavior_draws);
+        assert_ne!(
+            first.activity_roll(0),
+            seeded(4).activity_roll(0),
+            "two same-descriptor placements draw different seated rolls"
+        );
     }
 }

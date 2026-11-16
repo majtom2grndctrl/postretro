@@ -3098,6 +3098,8 @@ declare module "postretro" {
     readonly hasAttackTurn: RuntimeGuardNode;
     /** `true` from the tick after the selected non-looping animation's clip reaches its duration; false on a looping state; true for a non-looping state whose clip did not resolve. Entity-wide: parent and nested rows read one value, unlike `timeInActivityMs` (boolean). */
     readonly animationDone: RuntimeGuardNode;
+    /** A per-entry roll, uniform in [0, 1): drawn when the currently-evaluated activity was entered and fixed until it is left. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own roll, and every row at one level reads the same value (number). */
+    readonly activityRoll: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */

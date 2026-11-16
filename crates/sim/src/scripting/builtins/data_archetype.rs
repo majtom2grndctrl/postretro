@@ -40,7 +40,9 @@ use postretro_entities::provenance::{
     parse_bool,
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
-use postretro_foundation::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
+use postretro_foundation::{
+    ARCHETYPE_TOLERANCE_STATE_FIELD, BehaviorDrawSalt, FACTION_STATE_FIELD, behavior_draw_seed,
+};
 use postretro_foundation::{NavAgentParams, ProjectileBodyVisual};
 #[cfg(test)]
 use postretro_scripting_core::data_descriptors::WeaponResource;
@@ -578,6 +580,13 @@ pub(crate) fn attach_descriptor_components(
         {
             brain.aggro_armed = aggro_armed;
             brain.home_anchor = home_anchor;
+            brain.seed_behavior_draws(behavior_draw_seed(
+                descriptor
+                    .canonical_name
+                    .as_deref()
+                    .unwrap_or(&entity.classname),
+                placement_draw_salt(id, entity),
+            ));
             let _ = registry.set_component(id, brain);
         }
         let state = registry
@@ -632,6 +641,18 @@ pub(crate) fn attach_descriptor_components(
         };
         let _ = registry.set_component(id, provenance);
     }
+}
+
+/// The behavior draw salt a descriptor spawn knows at attach: its authored
+/// entity index. A runtime spawner reseeds its enemies with its own placement
+/// and spawn count after attach (`spawner.rs`). A synthetic placement with no
+/// map ordinal falls back to the entity's registry id, the nearest identity
+/// that is replay-stable under a fixed spawn order.
+fn placement_draw_salt(id: EntityId, entity: &MapEntity) -> BehaviorDrawSalt {
+    entity.map_ordinal.map_or(
+        BehaviorDrawSalt::Entity(id.to_raw()),
+        BehaviorDrawSalt::Placement,
+    )
 }
 
 /// Materialize the descriptor-owned mesh presentation shared by local spawns
@@ -3188,6 +3209,59 @@ mod tests {
                 "models/droppable/muzzle.gltf".to_string(),
             ],
             "only meshes that the drop path can restore are preloaded"
+        );
+    }
+
+    // R8 (P13): two same-descriptor placements spawned on one tick read
+    // different rolls on their first evaluation. The roll is salted by the
+    // authored entity index, so reversing the placements' spawn order (which
+    // swaps their registry ids) leaves each placement's roll unchanged.
+    #[test]
+    fn same_descriptor_placements_draw_their_own_rolls_by_authored_index() {
+        use postretro_entities::components::brain::BrainComponent;
+        use postretro_entities::components::map_ordinal::MapOrdinal;
+
+        let rolls_by_ordinal = |ordinals: [u32; 2]| {
+            let placements = ordinals.map(|ordinal| {
+                let mut placement = placement("grunt", &[]);
+                placement.map_ordinal = Some(ordinal);
+                placement
+            });
+            let mut reg = EntityRegistry::new();
+            apply_data_archetype_dispatch(
+                &placements,
+                &[behavior_enemy_descriptor("grunt")],
+                &HashSet::new(),
+                &mut reg,
+                None,
+            );
+            let mut rolls = reg
+                .iter_with_kind(ComponentKind::Brain)
+                .map(|(id, _)| {
+                    let ordinal = reg.get_component::<MapOrdinal>(id).unwrap().0;
+                    let roll = reg
+                        .get_component::<BrainComponent>(id)
+                        .unwrap()
+                        .activity_roll(0)
+                        .expect("the initial activity is seated");
+                    (ordinal, roll)
+                })
+                .collect::<Vec<_>>();
+            rolls.sort_by_key(|(ordinal, _)| *ordinal);
+            rolls
+        };
+
+        let forward = rolls_by_ordinal([4, 9]);
+        assert_eq!(forward.len(), 2);
+        assert_ne!(
+            forward[0].1, forward[1].1,
+            "same-descriptor enemies spawned on one tick draw different rolls"
+        );
+        assert!(forward.iter().all(|(_, roll)| (0.0..1.0).contains(roll)));
+        assert_eq!(
+            rolls_by_ordinal([9, 4]),
+            forward,
+            "a reversed spawn order keeps each placement's roll"
         );
     }
 

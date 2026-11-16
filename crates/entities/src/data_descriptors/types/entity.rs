@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::components::billboard_emitter::BillboardEmitterComponent;
-use crate::components::mesh::{AnimationState, InterruptPolicy};
+use crate::components::mesh::{AnimationState, InterruptPolicy, RATE_MAX};
 use crate::data_descriptors::{
     BehaviorGraphDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor,
     TouchableDescriptor, WeaponDescriptor,
@@ -24,7 +24,9 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 ///
 /// Validation (at parse time): `model`, attachment socket names, attachment model
 /// paths, and each state's `clip` are non-empty; `crossfade_ms` finite ≥ 0;
-/// `travel_speed` (when present) finite > 0; `interrupt` (when present on the
+/// `travel_speed` (when present) finite > 0; `max_playback_rate` (when present)
+/// finite and `>= RATE_MAX`; `playback_rate` (when present) finite > 0;
+/// `interrupt` (when present on the
 /// wire) one of `"smooth"`/`"snap"`. When `animations` is present it must be
 /// non-empty and `default_state` must be present and name a declared state. A
 /// `defaultState` without an `animations` block is also rejected. Clip resolution
@@ -101,6 +103,14 @@ pub struct RawAnimationState {
     /// finiteness is validated in [`MeshDescriptor::build`] so both FFI paths
     /// reject the same inputs.
     pub travel_speed: Option<f32>,
+    /// Raw per-state `maxPlaybackRate` (`None` = absent ⇒ the engine default
+    /// `RATE_MAX`). Validated in [`MeshDescriptor::build`].
+    pub max_playback_rate: Option<f32>,
+    /// Raw per-state `scaleWithSpeed` (`None` = absent ⇒ `true`).
+    pub scale_with_speed: Option<bool>,
+    /// Raw per-state `playbackRate` (`None` = absent ⇒ 1). Validated in
+    /// [`MeshDescriptor::build`].
+    pub playback_rate: Option<f32>,
 }
 
 /// Parsed mesh fields supplied by the JS and Luau descriptor bridges before
@@ -235,6 +245,31 @@ impl MeshDescriptor {
                     ),
                 });
             }
+            // A present `maxPlaybackRate` only raises the stride cap: finite
+            // and at least the engine default, so `RATE_MIN..=cap` stays a
+            // valid range and production states cannot lower it.
+            if let Some(max_playback_rate) = raw.max_playback_rate
+                && (!max_playback_rate.is_finite() || max_playback_rate < RATE_MAX)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.animations.{}.maxPlaybackRate` must be a finite value >= {RATE_MAX}, got {}",
+                        raw.name, max_playback_rate
+                    ),
+                });
+            }
+            // A present `playbackRate` is a fixed authored speed: finite and
+            // strictly positive, with no stride clamp.
+            if let Some(playback_rate) = raw.playback_rate
+                && (!playback_rate.is_finite() || playback_rate <= 0.0)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.animations.{}.playbackRate` must be a finite value > 0.0, got {}",
+                        raw.name, playback_rate
+                    ),
+                });
+            }
             animations.insert(
                 raw.name,
                 AnimationState {
@@ -246,6 +281,9 @@ impl MeshDescriptor {
                     // runtime `AnimationState`; no extra threading needed since
                     // this map is what `MeshAnimation::new` receives.
                     travel_speed: raw.travel_speed,
+                    max_playback_rate: raw.max_playback_rate,
+                    scale_with_speed: raw.scale_with_speed.unwrap_or(true),
+                    playback_rate: raw.playback_rate,
                     // Resolved against the model's clip metadata at level load
                     // by `resolve_mesh_entity_clips`; unresolved here.
                     clip_index: None,

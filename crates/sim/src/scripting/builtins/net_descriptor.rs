@@ -703,6 +703,9 @@ mod tests {
                     crossfade_ms: 150.0,
                     interrupt: InterruptPolicy::Smooth,
                     travel_speed: None,
+                    max_playback_rate: None,
+                    scale_with_speed: true,
+                    playback_rate: None,
                     clip_index: None,
                 },
             );
@@ -714,6 +717,9 @@ mod tests {
                     crossfade_ms: 0.0,
                     interrupt: InterruptPolicy::Snap,
                     travel_speed: None,
+                    max_playback_rate: None,
+                    scale_with_speed: true,
+                    playback_rate: None,
                     clip_index: None,
                 },
             );

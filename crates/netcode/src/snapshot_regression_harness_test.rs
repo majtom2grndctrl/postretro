@@ -119,6 +119,9 @@ fn host_player_locomotion_selects_walk_and_calibrates_rate_before_replication() 
             crossfade_ms: 50.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(0),
         },
     );
@@ -130,6 +133,9 @@ fn host_player_locomotion_selects_walk_and_calibrates_rate_before_replication() 
             crossfade_ms: 50.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: Some(2.0),
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(1),
         },
     );

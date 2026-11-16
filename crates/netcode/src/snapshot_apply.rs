@@ -141,8 +141,9 @@ pub(super) fn materialize_remote_entities(
 
 /// A remote enemy's stride-rate reference from the shared descriptor: its base
 /// `moveSpeed` and its graph's rate-scaled states. Neither belongs on the
-/// snapshot wire format. `None` without a mesh, a behavior graph, or a scaled
-/// state the mesh declares, so the client leaves that enemy's rate alone.
+/// snapshot wire format. `None` without a mesh, a behavior graph, or either a
+/// scaled state the mesh declares or a state with a fixed `playbackRate`, so
+/// the client leaves that enemy's rate alone.
 ///
 /// The states are the host tick's playback-rate set, derived once here by the
 /// same foundation function (`RateScaledStates`): the graph's locomotion state
@@ -177,7 +178,13 @@ fn remote_enemy_stride_reference(
                     })
             })
             .collect();
-    (!scaled_states.is_empty()).then_some(client::RemoteEnemyWalkPlayback {
+    // A state with a fixed `playbackRate` needs the per-frame rate pass even
+    // when nothing in the graph strides.
+    let fixed_rates = mesh
+        .animations
+        .values()
+        .any(|state| state.playback_rate.is_some());
+    (!scaled_states.is_empty() || fixed_rates).then_some(client::RemoteEnemyWalkPlayback {
         move_speed: graph.move_speed,
         scaled_states,
     })
@@ -423,6 +430,9 @@ mod tests {
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         };
         let mut descriptor = mesh_descriptor("strider", true);

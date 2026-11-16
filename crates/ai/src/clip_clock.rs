@@ -647,3 +647,39 @@ fn collect_timed_activities<'a>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A loop played at a fixed 2.5× (`playbackRate`) advances clip time by
+    // `dt × 2.5` per tick, and every pass of its moment falls in exactly one
+    // tick's window: once per pass, never skipped or doubled.
+    #[test]
+    fn a_loop_at_two_and_a_half_times_reaches_its_moment_once_per_pass() {
+        const DT: f64 = 1.0 / 60.0;
+        const RATE: f64 = 2.5;
+        let facts = ClipFacts {
+            duration: 0.8,
+            looping: true,
+        };
+        let ticks = 600; // 10 s of game time: 25 s of clip time.
+        let mut time = 0.0f64;
+        let mut reached_ticks = Vec::new();
+        for tick in 0..ticks {
+            let previous = time;
+            time += DT * RATE;
+            if reached(previous, time, 0.4, facts) {
+                reached_ticks.push(tick);
+            }
+        }
+        // Passes at 0.4, 1.2, … 24.4 s of clip time: 31 of them.
+        assert_eq!(reached_ticks.len(), 31, "{reached_ticks:?}");
+        assert!(
+            reached_ticks
+                .windows(2)
+                .all(|pair| (19..=20).contains(&(pair[1] - pair[0]))),
+            "one pass per 0.32 s of game time: {reached_ticks:?}"
+        );
+    }
+}

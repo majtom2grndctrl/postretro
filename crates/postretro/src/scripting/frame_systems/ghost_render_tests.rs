@@ -365,6 +365,9 @@ fn aiming_pawn(registry: &mut EntityRegistry, aim_pitch: f32) -> EntityId {
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(0),
         },
     );

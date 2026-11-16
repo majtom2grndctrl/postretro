@@ -239,6 +239,9 @@ fn usable_state(clip: &str, idx: usize) -> AnimationState {
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: Some(idx),
     }
 }

@@ -59,6 +59,40 @@ pub struct AnimationState {
         skip_serializing_if = "Option::is_none"
     )]
     pub travel_speed: Option<f32>,
+    /// Optional per-state upper bound on the stride rule's playback rate
+    /// (`maxPlaybackRate` on the wire). `None` keeps the engine default
+    /// [`super::RATE_MAX`]. When present it is finite and `>= RATE_MAX` —
+    /// validated in [`crate::data_descriptors::MeshDescriptor::build`] — so it
+    /// only ever raises the cap; [`super::RATE_MIN`] is unchanged. Production
+    /// content keeps the default: legs flail past 1.5x.
+    #[serde(
+        rename = "maxPlaybackRate",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_playback_rate: Option<f32>,
+    /// Whether the stride rule may scale this state's playback rate
+    /// (`scaleWithSpeed` on the wire, default `true`). `false` plays the state
+    /// at 1x however its activity moves, so an airborne clip keeps its hit
+    /// time while the enemy steers.
+    #[serde(
+        rename = "scaleWithSpeed",
+        default = "default_scale_with_speed",
+        skip_serializing_if = "scale_with_speed_is_default"
+    )]
+    pub scale_with_speed: bool,
+    /// Optional fixed authored playback rate (`playbackRate` on the wire).
+    /// `None` plays at 1x. Finite and `> 0` when present. It sets the rate
+    /// whenever the stride rule does not scale this state — a state outside
+    /// the graph's rate-scaled set, or one with `scale_with_speed == false` —
+    /// and is not bounded by [`super::RATE_MIN`], [`super::RATE_MAX`] or
+    /// `max_playback_rate`. A stride-scaled state ignores it.
+    #[serde(
+        rename = "playbackRate",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub playback_rate: Option<f32>,
     /// Clip index this state resolves to, filled at level load by
     /// `resolve_mesh_entity_clips` against the model's clip metadata. `None` =
     /// unresolved / unusable: switching *to* this state is a warn + no-op, and
@@ -74,6 +108,28 @@ impl AnimationState {
     pub fn effective_travel_speed(&self, derived_travel_speed: Option<f32>) -> Option<f32> {
         self.travel_speed.or(derived_travel_speed)
     }
+    /// The stride rule's playback-rate ceiling for this state: the authored
+    /// `maxPlaybackRate`, else [`super::RATE_MAX`]. Host and remote sampling
+    /// both read it, so a raised cap plays the same rate on both.
+    pub fn max_playback_rate(&self) -> f32 {
+        self.max_playback_rate.unwrap_or(super::RATE_MAX)
+    }
+
+    /// The fixed rate this state plays at when the stride rule does not
+    /// scale it: the authored `playbackRate`, else 1.
+    pub fn playback_rate(&self) -> f32 {
+        self.playback_rate.unwrap_or(1.0)
+    }
+}
+
+/// Default for [`AnimationState::scale_with_speed`]: the stride rule scales a
+/// state unless it opts out.
+fn default_scale_with_speed() -> bool {
+    true
+}
+
+fn scale_with_speed_is_default(value: &bool) -> bool {
+    *value == default_scale_with_speed()
 }
 
 /// The source the active fade blends *from*. Set by [`switch_animation_state`]
@@ -175,6 +231,12 @@ mod tests {
         // stays off the wire.
         animation.speed_scale = false;
         animation.states.get_mut("attack").unwrap().travel_speed = Some(3.5);
+        {
+            let attack = animation.states.get_mut("attack").unwrap();
+            attack.max_playback_rate = Some(2.75);
+            attack.scale_with_speed = false;
+            attack.playback_rate = Some(2.5);
+        }
         let value = MeshComponent {
             model: "decraniated".into(),
             animation: Some(animation),
@@ -208,6 +270,15 @@ mod tests {
             states["idle"].get("travelSpeed").is_none(),
             "absent `travelSpeed` override must not enter the serialized state"
         );
+        assert_eq!(states["attack"]["maxPlaybackRate"], 2.75);
+        assert_eq!(states["attack"]["scaleWithSpeed"], false);
+        assert_eq!(states["attack"]["playbackRate"], 2.5);
+        for key in ["maxPlaybackRate", "scaleWithSpeed", "playbackRate"] {
+            assert!(
+                states["idle"].get(key).is_none(),
+                "default `{key}` stays off the serialized state"
+            );
+        }
         assert!(
             json.get("pose_inputs").is_none(),
             "transient pose inputs must not enter the serialized component"
@@ -269,6 +340,14 @@ mod tests {
                 .values()
                 .all(|state| state.travel_speed.is_none()),
             "absent travelSpeed restores no per-state override"
+        );
+        assert!(
+            animation.states.values().all(|state| {
+                state.max_playback_rate.is_none()
+                    && state.scale_with_speed
+                    && state.playback_rate.is_none()
+            }),
+            "absent rate-policy keys restore their defaults"
         );
     }
 

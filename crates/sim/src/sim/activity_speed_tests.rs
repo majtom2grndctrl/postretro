@@ -561,6 +561,9 @@ fn strolling_mesh() -> MeshComponent {
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: None,
     };
     MeshComponent::animated(
@@ -626,4 +629,168 @@ fn a_state_played_under_a_position_goal_rate_scales_with_its_steered_speed() {
             animation.rate
         );
     }
+}
+
+// --- per-state rate policy: maxPlaybackRate, scaleWithSpeed, playbackRate ---
+
+const CHARGE_MOVE_SPEED: f32 = 3.0;
+/// A `speed: 2` chase steers at 2× base: an uncalibrated stride ratio of 2.0,
+/// past the default 1.5 cap.
+const CHARGE: f32 = 2.0;
+
+/// `charge` chases at `speed: 2` on `run`; `jab`, never entered unless it is
+/// the initial activity, holds on `jab`.
+fn charge_graph(initial: &str) -> BehaviorGraphDescriptor {
+    graph(
+        CHARGE_MOVE_SPEED,
+        envelope(
+            initial,
+            vec![
+                ("charge", leaf("run", MotionVerb::ChaseTarget, Some(CHARGE))),
+                ("jab", leaf("jab", MotionVerb::Hold, None)),
+            ],
+            vec![],
+        ),
+    )
+}
+
+/// An uncalibrated mesh whose `run` and `jab` states carry `edit`'s policy.
+fn policy_mesh(initial: &str, edit: impl Fn(&str, &mut AnimationState)) -> MeshComponent {
+    let state = |clip: &str| {
+        let mut state = AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
+            clip_index: None,
+        };
+        edit(clip, &mut state);
+        state
+    };
+    MeshComponent::animated(
+        "charger".to_string(),
+        MeshAnimation::new(
+            HashMap::from([
+                ("run".to_string(), state("run")),
+                ("jab".to_string(), state("jab")),
+            ]),
+            initial.to_string(),
+        ),
+    )
+}
+
+/// Run `initial` for 60 ticks on `mesh`; returns the settled state and rate.
+fn settled_rate(initial: &str, mesh: MeshComponent) -> (String, f32) {
+    let mut arena = Arena::new();
+    let enemy = arena.spawn_enemy(&charge_graph(initial), ENEMY_START);
+    arena
+        .registry
+        .borrow_mut()
+        .set_component(enemy, mesh)
+        .unwrap();
+    for _ in 0..60 {
+        arena.tick();
+    }
+    let animation = arena
+        .registry
+        .borrow()
+        .get_component::<MeshComponent>(enemy)
+        .expect("enemy keeps its mesh")
+        .animation
+        .clone()
+        .expect("the mesh is animated");
+    (animation.current_state, animation.rate)
+}
+
+#[test]
+fn a_default_state_clamps_the_charge_stride_at_one_point_five() {
+    let (state, rate) = settled_rate("charge", policy_mesh("run", |_, _| {}));
+    assert_eq!(state, "run");
+    assert!(
+        (rate - postretro_entities::components::mesh::RATE_MAX).abs() < 1e-6,
+        "an uncapped `run` clamps at RATE_MAX, got {rate}"
+    );
+}
+
+#[test]
+fn a_raised_max_playback_rate_lets_the_charge_stride_past_one_point_five() {
+    let (state, rate) = settled_rate(
+        "charge",
+        policy_mesh("run", |clip, state| {
+            if clip == "run" {
+                state.max_playback_rate = Some(3.0);
+            }
+        }),
+    );
+    assert_eq!(state, "run");
+    assert!(
+        (rate - CHARGE).abs() <= 0.03,
+        "`run` strides at its steered ratio {CHARGE} under a 3.0 cap, got {rate}"
+    );
+
+    // A cap below the ratio still clamps, at the raised value.
+    let (_, rate) = settled_rate(
+        "charge",
+        policy_mesh("run", |clip, state| {
+            if clip == "run" {
+                state.max_playback_rate = Some(1.75);
+            }
+        }),
+    );
+    assert!(
+        (rate - 1.75).abs() < 1e-6,
+        "clamps at the 1.75 cap, got {rate}"
+    );
+}
+
+#[test]
+fn scale_with_speed_false_holds_a_steering_state_at_its_fixed_rate() {
+    let (state, rate) = settled_rate(
+        "charge",
+        policy_mesh("run", |clip, state| {
+            if clip == "run" {
+                state.scale_with_speed = false;
+                state.max_playback_rate = Some(3.0);
+            }
+        }),
+    );
+    assert_eq!(state, "run");
+    assert_eq!(rate, 1.0, "an opted-out state plays at 1x while it steers");
+
+    let (_, rate) = settled_rate(
+        "charge",
+        policy_mesh("run", |clip, state| {
+            if clip == "run" {
+                state.scale_with_speed = false;
+                state.playback_rate = Some(0.8);
+            }
+        }),
+    );
+    assert_eq!(rate, 0.8, "an opted-out state plays its playbackRate");
+}
+
+#[test]
+fn playback_rate_sets_an_unscaled_state_and_is_ignored_while_stride_scaled() {
+    let fast = |clip: &str, state: &mut AnimationState| {
+        if clip == "jab" || clip == "run" {
+            state.playback_rate = Some(2.5);
+        }
+    };
+    let (state, rate) = settled_rate("jab", policy_mesh("jab", fast));
+    assert_eq!(state, "jab");
+    assert_eq!(
+        rate, 2.5,
+        "a held state plays its playbackRate, past RATE_MAX"
+    );
+
+    let (state, rate) = settled_rate("charge", policy_mesh("run", fast));
+    assert_eq!(state, "run");
+    assert!(
+        (rate - postretro_entities::components::mesh::RATE_MAX).abs() < 1e-6,
+        "the stride rule decides a scaled state's rate, got {rate}"
+    );
 }

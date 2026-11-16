@@ -1981,6 +1981,9 @@ fn driven_agent_mesh(current_state: &str) -> MeshComponent {
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: Some(clip_index),
     };
     let mut states = std::collections::HashMap::new();
@@ -2724,6 +2727,9 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );
@@ -3025,6 +3031,9 @@ fn connected_client_own_pawn_shadow_folds_with_the_host_sent_backward_clip() {
         crossfade_ms: 50.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: Some(clip_index),
     };
     animation
@@ -3392,6 +3401,9 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(0),
         },
     );
@@ -5001,6 +5013,9 @@ fn clip_timed_fire_ticks(ticks_per_frame: usize, time_scale: f64, ticks: usize) 
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: model.clips.iter().position(|loaded| loaded.name == clip),
     };
     let states = HashMap::from([

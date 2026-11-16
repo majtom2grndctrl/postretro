@@ -2901,35 +2901,37 @@ impl ClientReplication {
         let Some(reference) = self.remote_enemy_walk_playback.get(&network_id) else {
             return;
         };
-        let raw_ratio = registry
+        // The host's per-state policy (`MeshAnimation::stride_playback_target`)
+        // over the same local descriptor fields: `scaleWithSpeed: false` opts
+        // out, `maxPlaybackRate` bounds the clamp, and an unscaled state plays
+        // its fixed `playbackRate` from the frame it is entered.
+        let Some(target) = registry
             .get_component::<MeshComponent>(entity_id)
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
             .and_then(|animation| {
-                let derived = reference.derived_speed_of(&animation.current_state);
-                let Some(derived) = derived.filter(|_| animation.speed_scale) else {
-                    return Some(1.0);
-                };
-                let state = animation.states.get(&animation.current_state)?;
-                let effective = state.effective_travel_speed(derived);
-                Some(MeshAnimation::locomotion_rate_ratio(
-                    speed_xz,
-                    effective,
-                    reference.move_speed,
-                ))
-            });
-        let Some(raw_ratio) = raw_ratio else {
+                let stride_ratio = reference
+                    .derived_speed_of(&animation.current_state)
+                    .filter(|_| animation.speed_scale)
+                    .map(|derived| {
+                        let effective = animation
+                            .states
+                            .get(&animation.current_state)
+                            .map_or(derived, |state| state.effective_travel_speed(derived));
+                        MeshAnimation::locomotion_rate_ratio(
+                            speed_xz,
+                            effective,
+                            reference.move_speed,
+                        )
+                    });
+                let target = animation.stride_playback_target(stride_ratio);
+                animation
+                    .playback_rate_target_needs_update(target)
+                    .then_some(target)
+            })
+        else {
             return;
         };
-
-        let needs_rebase = registry
-            .get_component::<MeshComponent>(entity_id)
-            .ok()
-            .and_then(|mesh| mesh.animation.as_ref())
-            .is_some_and(|animation| animation.playback_rate_needs_update(raw_ratio));
-        if !needs_rebase {
-            return;
-        }
 
         // `sample_into_registry` intentionally allocates its mapped-id vector
         // before this helper to split the map and registry borrows. This helper
@@ -2941,7 +2943,7 @@ impl ClientReplication {
         let Some(animation) = mesh.animation.as_mut() else {
             return;
         };
-        animation.update_playback_rate(raw_ratio, frame_anim_time);
+        animation.apply_playback_rate_target(target, frame_anim_time);
         let _ = registry.set_component(entity_id, mesh);
     }
 
@@ -3599,6 +3601,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         };
         let mut states = HashMap::new();
@@ -3621,6 +3626,9 @@ mod tests {
             crossfade_ms: 50.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let mut states = HashMap::new();

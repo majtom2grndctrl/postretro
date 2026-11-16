@@ -1894,6 +1894,39 @@ and plays `X` when the mesh declares no such state. A directional state's walk
 cycle follows the enemy's speed exactly as `X`'s does, against its own
 `travelSpeed`.
 
+**Playback rate.** An enemy's walk cycle follows its speed on its locomotion
+state and on every state an activity plays while it chases, strafes,
+repositions or walks to a position. That rate is the enemy's speed over the
+state's `travelSpeed`, kept between 0.5x and 1.5x. Every other state plays at
+1x. Three optional fields on an animation state change this:
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `maxPlaybackRate` | `number` | `1.5` | The highest rate the walk cycle may reach on this state. Must be finite and at least `1.5`; it raises only this state's limit. The 0.5x floor stays. |
+| `scaleWithSpeed` | `boolean` | `true` | `false` stops the walk cycle from following speed on this state. It plays at `playbackRate` however the enemy moves. |
+| `playbackRate` | `number` | `1` | A fixed speed for a state that does not follow speed: one no moving activity plays, or one with `scaleWithSpeed: false`. Must be finite and above 0. The 0.5x–1.5x range and `maxPlaybackRate` do not limit it. A state that follows speed ignores it. |
+
+Keep `maxPlaybackRate` at its default in shipped content: legs flail past 1.5x.
+Raise it only on a state whose clip still reads at the faster pace, such as a
+charge on a short stride.
+
+Use `scaleWithSpeed: false` on a clip whose timing must hold while the enemy
+moves, such as a leap whose `hit` must land when the body does. Use
+`playbackRate` to speed up or slow down a clip without re-exporting it. Clip
+moments follow the rate: at `playbackRate: 2.5`, a `hit` 400 ms into the clip
+lands 160 ms after the state starts, and a looping state strikes once per pass.
+
+```ts
+animations: {
+  run: { clip: "Run", loop: true, travelSpeed: 2.2, maxPlaybackRate: 3 },
+  leap: { clip: "Jump_Attack", scaleWithSpeed: false },
+  jab_combo: { clip: "jab_quick", loop: true, playbackRate: 2.5 },
+},
+```
+
+These fields never cross the network. Host and clients each read them from
+their own copy of the descriptor, so both play the same rate.
+
 ### Firing at a clip event
 
 An attack can land on a moment in its clip instead of on entry. A clip carries

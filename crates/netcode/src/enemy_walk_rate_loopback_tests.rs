@@ -73,6 +73,9 @@ fn paced_states(state: &str, travel_speed: Option<f32>) -> HashMap<String, Anima
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Smooth,
                 travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
                 clip_index: None,
             },
         ),
@@ -84,6 +87,9 @@ fn paced_states(state: &str, travel_speed: Option<f32>) -> HashMap<String, Anima
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Smooth,
                 travel_speed,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
                 clip_index: None,
             },
         ),
@@ -727,5 +733,99 @@ fn moving_within_a_pose_restarts_no_clip_on_host_or_loopback_client() {
     assert!(
         activities.len() >= 6,
         "the host moves between rest and hold repeatedly: {activities:?}"
+    );
+}
+
+// --- per-state rate policy: maxPlaybackRate, scaleWithSpeed, playbackRate ---
+// None of these fields replicate: each peer reads them from its own copy of
+// the descriptor, so the same state plays the same rate on both.
+
+/// [`paced_run`] with `edit` applied to the paced state's policy.
+fn paced_policy_run(speed: f32, edit: impl FnOnce(&mut AnimationState)) -> PacedRun {
+    let graph = paced_graph("locomotion", speed, false);
+    let mut states = paced_states("locomotion", None);
+    edit(states.get_mut("locomotion").expect("the paced state"));
+    run_paced(&graph, &states, "locomotion", |_| {})
+}
+
+#[test]
+fn a_raised_max_playback_rate_presents_one_rate_on_host_and_loopback_client() {
+    // Uncalibrated `speed: 2` is a stride ratio of 2.0: past the default cap,
+    // under the raised one.
+    let raised = paced_policy_run(2.0, |state| state.max_playback_rate = Some(3.0));
+    assert_rates_match(&raised, 2.0, "a 3.0 cap lets the stride reach 2.0");
+
+    let clamped = paced_policy_run(2.0, |state| state.max_playback_rate = Some(1.75));
+    assert_rates_match(&clamped, 1.75, "a 1.75 cap clamps on both peers");
+
+    let default = paced_policy_run(2.0, |_| {});
+    assert_rates_match(&default, RATE_MAX, "an uncapped state keeps 1.5x");
+}
+
+#[test]
+fn scale_with_speed_false_presents_one_fixed_rate_while_steering_on_host_and_client() {
+    let held = paced_policy_run(2.0, |state| {
+        state.scale_with_speed = false;
+        state.max_playback_rate = Some(3.0);
+    });
+    assert!(
+        (held.host_speed - 2.0 * MOVE_SPEED).abs() <= 0.05,
+        "the host still steers at its activity speed: {}",
+        held.host_speed
+    );
+    assert_rates_match(&held, 1.0, "an opted-out state plays at 1x");
+
+    let fixed = paced_policy_run(2.0, |state| {
+        state.scale_with_speed = false;
+        state.playback_rate = Some(0.8);
+    });
+    assert_rates_match(&fixed, 0.8, "an opted-out state plays its playbackRate");
+}
+
+#[test]
+fn a_held_state_plays_its_fixed_playback_rate_on_host_and_loopback_client() {
+    // `jab` holds on `jab`, a state outside the rate-scaled set authored at
+    // 2.5x; `pace` beside it keeps `locomotion` in the set. The client builds
+    // its mesh at the descriptor's default state and enters `jab` from the
+    // replicated state alone, then applies the rate from its own descriptor.
+    let mut graph = paced_graph("locomotion", 1.0, false);
+    graph.envelope.initial = "jab".to_string();
+    graph.envelope.activities.insert(
+        "jab".to_string(),
+        BehaviorActivityDescriptor {
+            pose: None,
+            stagger_to: None,
+            sound: None,
+            animation: Some("jab".to_string()),
+            motion: Some(MotionVerb::Hold),
+            action: None,
+            on_enter: None,
+            facing: None,
+            reposition: None,
+            attack_turn: None,
+            speed: None,
+            layers: Default::default(),
+        },
+    );
+    let mut states = paced_states("locomotion", None);
+    states.insert(
+        "jab".to_string(),
+        AnimationState {
+            clip: "jab_clip".to_string(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: Some(2.5),
+            clip_index: None,
+        },
+    );
+    let run = run_paced(&graph, &states, "jab", |_| {});
+    assert_eq!(run.host_rate, 2.5, "the host plays jab's fixed rate");
+    assert_eq!(
+        run.client_rate, 2.5,
+        "the client applies the same rate from its own descriptor"
     );
 }

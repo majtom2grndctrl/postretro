@@ -94,6 +94,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("crossfadeMs?", "f32", "Crossfade duration into this state, in milliseconds. Optional; must be finite and >= 0. Defaults to 150 ms.")
         .field("travelSpeed?", "f32", "Per-state locomotion travel-speed override, in ground units per animated second. Optional; must be finite and > 0. When present it replaces this clip's load-derived travel speed; omit to use the derived value. V1 consumes this calibration for engine-selected player locomotion and for the AI alert-mapped locomotion state and its `_left`, `_right` and `_backward` variants; player `crouch_idle` and jump states play at the authored rate and ignore it.")
         .field("interrupt?", "InterruptPolicy", "How a fade into this state takes over an in-flight fade. Optional; defaults to \"smooth\".")
+        .field("maxPlaybackRate?", "f32", "Upper bound of the enemy stride rule's playback rate for this state. Optional; must be finite and >= 1.5, the engine default. Raises only this state's cap; the 0.5 floor is unchanged. Production content should keep the default: legs flail past 1.5x.")
+        .field("scaleWithSpeed?", "bool", "Whether the enemy stride rule may scale this state's playback rate. Optional; defaults to true. `false` plays the state at `playbackRate` however its activity moves, so an airborne clip keeps its hit time while the enemy steers.")
+        .field("playbackRate?", "f32", "Fixed playback speed for an enemy state the stride rule does not scale: one outside the rate-scaled set, or one with `scaleWithSpeed: false`. Optional; must be finite and > 0; defaults to 1. Not bounded by the stride clamp. Clip moments such as `hit` land at clip time divided by this rate. A stride-scaled state ignores it.")
         .finish();
     registry
         .register_type("MeshDescriptor")

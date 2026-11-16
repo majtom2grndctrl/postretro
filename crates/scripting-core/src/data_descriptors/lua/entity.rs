@@ -624,6 +624,11 @@ pub fn raw_animation_state_from_lua(
     // Optional per-state `travelSpeed` override, read raw here; positivity /
     // finiteness is validated in `MeshDescriptor::build`.
     let travel_speed = get_optional_f32_lua(table, "travelSpeed")?;
+    // Optional per-state rate policy, read raw; `maxPlaybackRate` and
+    // `playbackRate` bounds are validated in `MeshDescriptor::build`.
+    let max_playback_rate = get_optional_f32_lua(table, "maxPlaybackRate")?;
+    let scale_with_speed = get_optional_bool_lua(table, "scaleWithSpeed")?;
+    let playback_rate = get_optional_f32_lua(table, "playbackRate")?;
     let interrupt = if table.contains_key("interrupt").map_err(lua_err)? {
         let raw: LuaValue = table.get("interrupt").map_err(lua_err)?;
         match raw {
@@ -645,6 +650,9 @@ pub fn raw_animation_state_from_lua(
         crossfade_ms,
         interrupt,
         travel_speed,
+        max_playback_rate,
+        scale_with_speed,
+        playback_rate,
     })
 }
 

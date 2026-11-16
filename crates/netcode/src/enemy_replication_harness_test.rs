@@ -320,6 +320,9 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             crossfade_ms: 150.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );
@@ -331,6 +334,9 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             crossfade_ms: 50.0,
             interrupt: InterruptPolicy::Snap,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );
@@ -474,6 +480,9 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Snap,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );

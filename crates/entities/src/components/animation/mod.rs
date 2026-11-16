@@ -12,7 +12,7 @@ mod resolve;
 mod state;
 mod transitions;
 
-pub use playback::{RATE_CHANGE_EPSILON, RATE_MAX, RATE_MIN};
+pub use playback::{PlaybackRateTarget, RATE_CHANGE_EPSILON, RATE_MAX, RATE_MIN};
 pub use resolve::resolve_pending_animation_stamps;
 pub use state::{
     AnimStamp, AnimationState, DEFAULT_CROSSFADE_MS, FadeSourceKind, InterruptPolicy,
@@ -246,6 +246,9 @@ pub(crate) mod test_support {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         }
     }

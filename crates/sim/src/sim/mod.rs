@@ -1415,23 +1415,28 @@ fn update_brain_animation_playback_rates(
         // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
         // The fallback is the archetype's base speed, never the activity's
         // steered speed, because the client has only the base to divide by.
+        // The active state's own policy applies last
+        // (`MeshAnimation::stride_playback_target`): `scaleWithSpeed: false`
+        // opts it out, `maxPlaybackRate` (default `RATE_MAX`) bounds the
+        // clamp, and a state the rule does not scale plays its fixed
+        // `playbackRate` (default 1). The client reads the same fields from
+        // its local descriptor.
         let is_rate_scaled = animation.speed_scale
             && brain
                 .rate_scaled_states()
                 .iter()
                 .any(|state| TravelVariant::of_state(state, &animation.current_state).is_some());
-        let rate_input = if is_rate_scaled {
+        let stride_ratio = is_rate_scaled.then(|| {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);
             MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)
-        } else {
-            1.0
-        };
-        if animation.playback_rate_needs_update(rate_input) {
-            rebases.push((id, rate_input));
+        });
+        let target = animation.stride_playback_target(stride_ratio);
+        if animation.playback_rate_target_needs_update(target) {
+            rebases.push((id, target));
         }
     }
 
-    for (id, rate_input) in rebases {
+    for (id, target) in rebases {
         // The read-only predicate above centralizes clamping and the epsilon
         // policy, so clone/write only the components whose timeline will rebase.
         let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
@@ -1441,7 +1446,7 @@ fn update_brain_animation_playback_rates(
             continue;
         };
 
-        animation.update_playback_rate(rate_input, anim_time);
+        animation.apply_playback_rate_target(target, anim_time);
         let _ = registry.set_component(id, mesh);
     }
 }
@@ -2618,6 +2623,9 @@ mod tests {
                     crossfade_ms: DEFAULT_CROSSFADE_MS,
                     interrupt: InterruptPolicy::Smooth,
                     travel_speed: None,
+                    max_playback_rate: None,
+                    scale_with_speed: true,
+                    playback_rate: None,
                     clip_index: Some(clip_index),
                 },
             );
@@ -2820,6 +2828,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let states = HashMap::from([
@@ -2869,6 +2880,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index,
         };
         let set_states = |registry: &mut EntityRegistry, states: Vec<(&str, AnimationState)>| {
@@ -2975,6 +2989,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let states = HashMap::from([
@@ -3079,6 +3096,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let states = HashMap::from([

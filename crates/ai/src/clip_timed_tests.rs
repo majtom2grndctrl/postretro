@@ -609,6 +609,36 @@ fn fire15_a_loop_fires_once_per_entry_at_the_next_pass_from_its_drawn_phase() {
     );
 }
 
+// A fixed authored `playbackRate` (here 2.5×, as the combo's 0.8 s
+// `jab_quick` loop plays) runs clip time at that rate: the loop's moment comes
+// at the first pass from its drawn phase in clip time over the rate.
+#[test]
+fn a_loop_at_two_and_a_half_times_reaches_its_moment_at_clip_time_over_the_rate() {
+    const RATE: f32 = 2.5;
+    let mut scene = Scene::new(vec![looping("jab_quick", 0.8, &[("hit", 0.4)])]);
+    let graph = clip_graph(
+        "combo",
+        vec![("combo", act("jab_quick", Some(timed(JAB, "hit"))))],
+        vec![],
+        vec![(JAB, contact_attack(10.0))],
+    );
+    let enemy = scene.spawn(0, &graph, "combo");
+    let phase = instance_phase(enemy.to_raw(), 0.8);
+    // Clip time `phase + DT·RATE·k` crosses a pass exactly when game time
+    // `phase/RATE + DT·k` crosses one of the clip scaled by the rate.
+    let passes = loop_pass_ticks(phase / RATE, 0.4 / RATE, 0.8 / RATE, 240);
+    assert!(
+        passes.windows(2).all(|pair| pair[1] - pair[0] >= 19),
+        "fixture: one 0.32 s pass per ~19 ticks: {passes:?}"
+    );
+    let hits = scene.hits_with(240, |scene, tick| {
+        if tick > 0 {
+            scene.set_rate(enemy, RATE);
+        }
+    });
+    assert_eq!(hits, vec![passes[0]], "the first pass at 2.5×");
+}
+
 /// A projectile weapon whose action fires `shots` shots `wait_ms` apart.
 fn burst_weapon(name: &str, shots: usize, wait_ms: f32) -> EntityTypeDescriptor {
     let mut descriptor = projectile_weapon_descriptor(name, 4.0, 1.0, 300.0);

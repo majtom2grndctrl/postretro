@@ -46,6 +46,12 @@ declare module "postretro" {
     travelSpeed?: number;
     /** How a fade into this state takes over an in-flight fade. Optional; defaults to "smooth". */
     interrupt?: InterruptPolicy;
+    /** Upper bound of the enemy stride rule's playback rate for this state. Optional; must be finite and >= 1.5, the engine default. Raises only this state's cap; the 0.5 floor is unchanged. Production content should keep the default: legs flail past 1.5x. */
+    maxPlaybackRate?: number;
+    /** Whether the enemy stride rule may scale this state's playback rate. Optional; defaults to true. `false` plays the state at `playbackRate` however its activity moves, so an airborne clip keeps its hit time while the enemy steers. */
+    scaleWithSpeed?: boolean;
+    /** Fixed playback speed for an enemy state the stride rule does not scale: one outside the rate-scaled set, or one with `scaleWithSpeed: false`. Optional; must be finite and > 0; defaults to 1. Not bounded by the stride clamp. Clip moments such as `hit` land at clip time divided by this rate. A stride-scaled state ignores it. */
+    playbackRate?: number;
   };
 
   /** Authored mesh component preset attached to `EntityTypeDescriptor.components.mesh`. A descriptor carrying `components.mesh` is directly map-placeable via `canonicalName`. `model` is the model handle; `animations` declares the per-entity logical animation-state map (state name → clip + loop + crossfade + interrupt). When `animations` is present it must be non-empty and `defaultState` must name a declared state; omit both for a stateless mesh. */

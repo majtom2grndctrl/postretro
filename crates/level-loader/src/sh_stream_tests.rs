@@ -43,15 +43,27 @@ use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
 use postretro_level_format::mover_probe_channel::MoverProbeChannelSection;
 use postretro_level_format::octahedral::{MAX_SH_ATLAS_DIMENSION, irradiance_atlas_array_layout};
 use postretro_level_format::portals::PortalsSection;
+use postretro_level_format::sh_body::ShBodyPresence;
 use postretro_level_format::sh_volume::{
     AnimationDescriptor, OCTAHEDRAL_PROBE_STRIDE, OctahedralShProbe, OctahedralShVolumeSection,
 };
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{SectionBlob, SectionId, read_container, write_prl};
 
-use crate::ShStorage;
+use std::sync::Arc;
+
+use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES;
+use postretro_level_format::sh_body::{
+    SH_BODY_SECTIONS, read_sh_body_presence, sh_body_header_len,
+};
+
+use crate::lightmap_stream::LightmapStreamingMode;
+use crate::prl_loader::MAX_DELTA_SECTION_BINDING_BYTES;
 use crate::prl_loader::load_prl_with_streaming_mode_for_test;
+use crate::prl_loader::staged_tests::assert_worlds_match_across_layouts;
+use crate::prl_streaming::{ModeSource, load_prl_with_modes};
 use crate::sh_stream::{ShStreamingMode, observe_positional_reads};
+use crate::{LoadProgress, PrlLoadError, ShStorage};
 
 const GRID_DIMENSIONS: [u32; 3] = [16, 16, 4];
 const AFFINITY_DIMENSIONS: [u32; 3] = [4, 4, 1];
@@ -166,6 +178,287 @@ fn stream_mode_keeps_large_sh_bodies_in_the_prl_and_retains_only_metadata() {
     assert_eq!(legacy.animation_descriptors().len(), 1);
     assert_eq!(legacy.animated_direct_descriptor_indices(), &[0]);
     assert_eq!(legacy.animated_direct_affinity_lights(), &[0]);
+}
+
+fn section_size(fixture: &StreamFixture, section: SectionId) -> u64 {
+    let mut file = std::fs::File::open(&fixture.path).unwrap();
+    read_container(&mut file)
+        .unwrap()
+        .find_section(section as u32)
+        .unwrap()
+        .size
+}
+
+fn sh_body_presence(fixture: &StreamFixture, section: SectionId) -> ShBodyPresence {
+    let data = std::fs::read(&fixture.path).unwrap();
+    let table = read_container(&mut std::io::Cursor::new(&data)).unwrap();
+    let entry = table.find_section(section as u32).unwrap();
+    read_sh_body_presence(section, &data[entry.offset as usize..]).unwrap()
+}
+
+fn sh_body_ids(omitted: &[SectionId]) -> Vec<u32> {
+    SH_BODY_SECTIONS
+        .into_iter()
+        .filter(|section| omitted.contains(section))
+        .map(|section| section as u32)
+        .collect()
+}
+
+// A default bake omits the five SH bodies; streaming takes payload from id 50
+// and must load the level exactly as it loads one that carries them.
+#[test]
+fn streaming_loads_omitted_sh_bodies_as_it_loads_present_ones() {
+    let present = write_stream_fixture(Id50Body::Valid);
+    let omitted = write_stream_fixture_omitting(&SH_BODY_SECTIONS);
+    for section in SH_BODY_SECTIONS {
+        assert_eq!(sh_body_presence(&omitted, section), ShBodyPresence::Omitted);
+        assert!(
+            section_size(&omitted, section) < section_size(&present, section),
+            "{section:?} is written without its body"
+        );
+    }
+    for mode in [ShStreamingMode::SyncProof, ShStreamingMode::Async] {
+        let load = |fixture: &StreamFixture| {
+            load_prl_with_streaming_mode_for_test(fixture.path.to_str().unwrap(), mode)
+                .unwrap_or_else(|error| panic!("{mode:?}: {error}"))
+        };
+        let (with_bodies, without_bodies) = (load(&present), load(&omitted));
+        assert!(matches!(
+            without_bodies.sh_storage(),
+            ShStorage::Streaming(_)
+        ));
+        assert_worlds_match_across_layouts(&without_bodies, &with_bodies);
+
+        // The manifest reads each metadata byte once: a body-omitted section
+        // is read whole, and no more, so the load's read plan stays a bound.
+        let reads = without_bodies.prl_read_counters().unwrap();
+        for section in SH_BODY_SECTIONS {
+            assert_eq!(
+                reads.section_bytes(section as u32),
+                section_size(&omitted, section),
+                "{mode:?}: {section:?} metadata reads"
+            );
+        }
+
+        // Chunks address id 50 alone, so they decode alike.
+        let (a, b) = (
+            with_bodies.sh_stream_manifest().unwrap(),
+            without_bodies.sh_stream_manifest().unwrap(),
+        );
+        for cluster in 0..a.cluster_count() {
+            assert_eq!(
+                format!("{:?}", a.read_and_decode_cluster(cluster).unwrap()),
+                format!("{:?}", b.read_and_decode_cluster(cluster).unwrap()),
+                "{mode:?}: cluster {cluster}"
+            );
+        }
+    }
+}
+
+// `off` reads every body, so one omitted body refuses the whole load by name
+// before any SH decode — never the soft "malformed -> disable" path that ids
+// 41 and 45 take. Every load here is cross-checked against the staged parse.
+#[test]
+fn off_refuses_any_omitted_sh_body_by_name() {
+    let cases = std::iter::once(SH_BODY_SECTIONS.to_vec())
+        .chain(SH_BODY_SECTIONS.into_iter().map(|section| vec![section]));
+    for omitted in cases {
+        let fixture = write_stream_fixture_omitting(&omitted);
+        let path = fixture.path.to_str().unwrap();
+        let error = load_prl_with_streaming_mode_for_test(path, ShStreamingMode::Off)
+            .expect_err("off cannot load an omitted body");
+        let expected = sh_body_ids(&omitted);
+        assert!(
+            matches!(
+                &error,
+                PrlLoadError::ShBodiesOmitted { section_ids, streamable: true }
+                    if *section_ids == expected
+            ),
+            "{omitted:?}: {error:?}"
+        );
+        let message = error.to_string();
+        for id in &expected {
+            assert!(message.contains(&format!("(id {id})")), "{message}");
+        }
+        for remedy in ["prl-build --whole-load-sh", "async", "sync-proof"] {
+            assert!(message.contains(remedy), "{message}");
+        }
+        load_prl_with_streaming_mode_for_test(path, ShStreamingMode::SyncProof)
+            .unwrap_or_else(|error| panic!("{omitted:?} streams: {error}"));
+    }
+}
+
+// Without id 50 nothing can stream, so the only remedy is the rebake.
+#[test]
+fn a_level_without_id50_refuses_an_omitted_sh_body_whatever_the_mode() {
+    let fixture = into_whole_load_fixture(write_stream_fixture_omitting(&[
+        SectionId::DirectShDeltaVolumes,
+    ]));
+    for mode in [ShStreamingMode::Async, ShStreamingMode::Off] {
+        let error = load_prl_with_streaming_mode_for_test(fixture.path.to_str().unwrap(), mode)
+            .expect_err("a whole load cannot read an omitted body");
+        assert!(
+            matches!(
+                &error,
+                PrlLoadError::ShBodiesOmitted { section_ids, streamable: false }
+                    if *section_ids == [SectionId::DirectShDeltaVolumes as u32]
+            ),
+            "{mode:?}: {error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("DirectShDeltaVolumes (id 41)")
+                && message.contains("no ClusterShPayloads")
+                && message.contains("prl-build --whole-load-sh")
+                && !message.contains("sync-proof"),
+            "{message}"
+        );
+    }
+}
+
+// A whole SH load judges body presence from header prefixes on the retained
+// file, before the image read or any container: a default bake under `off` is
+// refused without reading the image or any SH body. Without id 50 nothing
+// else reads the file, so each SH section gives up its header alone.
+#[test]
+fn off_refuses_a_default_bake_before_reading_its_image() {
+    let streamable = write_stream_fixture_omitting(&SH_BODY_SECTIONS);
+    let whole_only = into_whole_load_fixture(write_stream_fixture_omitting(&SH_BODY_SECTIONS));
+    for (fixture, streamable) in [(&streamable, true), (&whole_only, false)] {
+        let path = fixture.path.to_str().unwrap();
+        let data = std::fs::read(path).unwrap();
+        let table = read_container(&mut std::io::Cursor::new(&data)).unwrap();
+        let (result, report) = observe_positional_reads(Vec::new(), || {
+            load_prl_with_streaming_mode_for_test(path, ShStreamingMode::Off)
+        });
+        assert!(
+            matches!(
+                &result,
+                Err(PrlLoadError::ShBodiesOmitted { section_ids, streamable: s })
+                    if *section_ids == sh_body_ids(&SH_BODY_SECTIONS) && *s == streamable
+            ),
+            "{result:?}"
+        );
+        let read_in = |range: Range<u64>| -> u64 {
+            report
+                .reads
+                .iter()
+                .map(|read| {
+                    read.end
+                        .min(range.end)
+                        .saturating_sub(read.start.max(range.start))
+                })
+                .sum()
+        };
+        let total: u64 = report.reads.iter().map(|read| read.end - read.start).sum();
+        assert!(
+            total < data.len() as u64 / 2,
+            "streamable {streamable}: read {total} of {} bytes",
+            data.len()
+        );
+        if streamable {
+            // The manifest reads id 50's metadata, never its payloads.
+            let payloads = table
+                .find_section(SectionId::ClusterShPayloads as u32)
+                .unwrap();
+            let payload_start = payloads.offset + fixture.id50_metadata_len as u64;
+            assert_eq!(read_in(payload_start..payloads.offset + payloads.size), 0);
+        } else {
+            for section in SH_BODY_SECTIONS {
+                let entry = table.find_section(section as u32).unwrap();
+                let header_len = sh_body_header_len(section).unwrap() as u64;
+                assert_eq!(
+                    read_in(entry.offset..entry.offset + entry.size),
+                    header_len.min(entry.size),
+                    "{section:?} gives up its header alone"
+                );
+            }
+        }
+    }
+}
+
+// A current-version header whose body-presence flag is neither 0 nor 1 fails
+// every load by the flag's name: streaming meets it in the metadata readers,
+// a whole load at the gate, never at a soft "malformed -> disable" path.
+#[test]
+fn an_invalid_sh_body_flag_fails_every_load_alike() {
+    for section in [
+        SectionId::DirectShDeltaVolumes,
+        SectionId::AnimatedDirectShDeltaVolumes,
+    ] {
+        let streamable = write_stream_fixture(Id50Body::Valid);
+        set_sh_body_flag(&streamable, section, 2);
+        let whole_only = into_whole_load_fixture(write_stream_fixture(Id50Body::Valid));
+        set_sh_body_flag(&whole_only, section, 2);
+        for (fixture, mode) in [
+            (&streamable, ShStreamingMode::Async),
+            (&streamable, ShStreamingMode::SyncProof),
+            (&streamable, ShStreamingMode::Off),
+            (&whole_only, ShStreamingMode::Off),
+        ] {
+            let error = load_prl_with_streaming_mode_for_test(fixture.path.to_str().unwrap(), mode)
+                .expect_err("an invalid flag is a hard failure");
+            let message = error.to_string();
+            assert!(
+                matches!(error, PrlLoadError::FormatError(_))
+                    && message.contains(&format!(
+                        "section {} body-presence flag 2 is invalid",
+                        section as u32
+                    )),
+                "{section:?} {mode:?}: {message}"
+            );
+        }
+    }
+}
+
+/// Overwrite the body-presence flag of `section`, the last byte of its
+/// fixed header (ids 27/41/45 carry it as a `u8`).
+fn set_sh_body_flag(fixture: &StreamFixture, section: SectionId, flag: u8) {
+    let mut data = std::fs::read(&fixture.path).unwrap();
+    let table = read_container(&mut std::io::Cursor::new(&data)).unwrap();
+    let entry = table.find_section(section as u32).unwrap();
+    let at = entry.offset as usize + sh_body_header_len(section).unwrap() - 1;
+    data[at] = flag;
+    std::fs::write(&fixture.path, data).unwrap();
+}
+
+// The 128 MiB delta binding floor sizes a whole-loaded id 27/41/45 body.
+// Streaming binds no whole section, so the floor never judges a streamed
+// level, bodies or not; `off` meets an omitted body at the gate, never at the
+// floor's soft degrade.
+#[test]
+fn the_delta_binding_floor_is_unchanged_by_omitted_sh_bodies() {
+    let present = write_stream_fixture(Id50Body::Valid);
+    let omitted = write_stream_fixture_omitting(&SH_BODY_SECTIONS);
+    let load = |fixture: &StreamFixture, sh: ShStreamingMode, delta_floor: u64| {
+        load_prl_with_modes(
+            fixture.path.to_str().unwrap(),
+            ModeSource::Injected {
+                sh,
+                lightmap: LightmapStreamingMode::AllResident,
+            },
+            delta_floor,
+            MAX_ANIMATED_BILLBOARD_DIRECT_SCATTER_SECTION_BYTES,
+            &Arc::new(LoadProgress::new()),
+        )
+    };
+    for mode in [ShStreamingMode::SyncProof, ShStreamingMode::Async] {
+        let reference = load(&present, mode, MAX_DELTA_SECTION_BINDING_BYTES).unwrap();
+        for fixture in [&present, &omitted] {
+            let tiny_floor = load(fixture, mode, 1).unwrap();
+            assert_worlds_match_across_layouts(&tiny_floor, &reference);
+        }
+    }
+
+    let degraded = load(&present, ShStreamingMode::Off, 1).unwrap();
+    assert!(degraded.delta_sh_volumes().is_none());
+    assert!(degraded.direct_sh_delta_volumes().is_none());
+    assert!(degraded.animated_direct_sh_delta_volumes().is_none());
+    let error = load(&omitted, ShStreamingMode::Off, 1).unwrap_err();
+    assert!(
+        matches!(error, PrlLoadError::ShBodiesOmitted { .. }),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -451,7 +744,20 @@ pub(crate) fn write_stream_fixture(id50_body: Id50Body) -> StreamFixture {
 }
 
 fn write_stream_fixture_with(id50_body: Id50Body, shape: DirectoryShape) -> StreamFixture {
-    write_stream_fixture_variant(id50_body, shape, |_| {}, Vec::new(), None)
+    write_stream_fixture_variant(id50_body, shape, |_| {}, Vec::new(), None, &[])
+}
+
+/// A valid stream fixture whose `omitted` SH sections (any of ids 27, 34, 35,
+/// 41, 45) are written without their bodies, as a default bake writes them.
+pub(crate) fn write_stream_fixture_omitting(omitted: &[SectionId]) -> StreamFixture {
+    write_stream_fixture_variant(
+        Id50Body::Valid,
+        DirectoryShape::default(),
+        |_| {},
+        Vec::new(),
+        None,
+        omitted,
+    )
 }
 
 /// A valid stream fixture whose id-34 base `edit_base` changes before every
@@ -466,6 +772,7 @@ pub(crate) fn write_stream_fixture_with_base(
         edit_base,
         extra_sections,
         None,
+        &[],
     )
 }
 
@@ -484,6 +791,7 @@ pub(crate) fn write_stream_fixture_with_mover_channel(
         |_| {},
         extra_sections,
         Some(mover_channel),
+        &[],
     )
 }
 
@@ -493,7 +801,11 @@ pub(crate) fn write_whole_load_fixture_with_base(
     edit_base: impl FnOnce(&mut OctahedralShVolumeSection),
     extra_sections: Vec<SectionBlob>,
 ) -> StreamFixture {
-    let mut fixture = write_stream_fixture_with_base(edit_base, extra_sections);
+    into_whole_load_fixture(write_stream_fixture_with_base(edit_base, extra_sections))
+}
+
+/// `fixture` without ids 49 and 50, written beside it.
+fn into_whole_load_fixture(mut fixture: StreamFixture) -> StreamFixture {
     let whole = fixture.path.with_file_name("whole-load.prl");
     let data = std::fs::read(&fixture.path).unwrap();
     let container = read_container(&mut std::io::Cursor::new(&data)).unwrap();
@@ -522,8 +834,16 @@ fn write_stream_fixture_variant(
     edit_base: impl FnOnce(&mut OctahedralShVolumeSection),
     extra_sections: Vec<SectionBlob>,
     mover_channel: Option<&MoverProbeChannelSection>,
+    omitted_bodies: &[SectionId],
 ) -> StreamFixture {
     let mover_channel = mover_channel.filter(|section| section.streams());
+    let body = |section: SectionId| {
+        if omitted_bodies.contains(&section) {
+            ShBodyPresence::Omitted
+        } else {
+            ShBodyPresence::Present
+        }
+    };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("cluster-stream.prl");
     let cells = fixture_cells();
@@ -601,20 +921,41 @@ fn write_stream_fixture_variant(
         blob(SectionId::Bvh, 1, bvh.to_bytes()),
         blob(SectionId::Cells, 1, cells.to_bytes()),
         blob(SectionId::CellLocator, 1, locator.to_bytes()),
-        blob(SectionId::DeltaShVolumes, 1, indirect_delta.to_bytes()),
-        blob(SectionId::OctahedralShVolume, 1, base.to_bytes()),
-        blob(SectionId::DirectShVolume, 1, direct.to_bytes()),
+        blob(
+            SectionId::DeltaShVolumes,
+            1,
+            indirect_delta.to_bytes_with_body(body(SectionId::DeltaShVolumes)),
+        ),
+        blob(
+            SectionId::OctahedralShVolume,
+            1,
+            base.try_to_bytes_with_body(body(SectionId::OctahedralShVolume))
+                .unwrap(),
+        ),
+        blob(
+            SectionId::DirectShVolume,
+            1,
+            direct
+                .try_to_bytes_with_body(body(SectionId::DirectShVolume))
+                .unwrap(),
+        ),
         blob(SectionId::AlphaLights, 1, alpha_lights.to_bytes()),
         blob(
             SectionId::EntityShadowLights,
             1,
             shadow_selection.to_bytes(),
         ),
-        blob(SectionId::DirectShDeltaVolumes, 1, direct_delta.to_bytes()),
+        blob(
+            SectionId::DirectShDeltaVolumes,
+            1,
+            direct_delta.to_bytes_with_body(body(SectionId::DirectShDeltaVolumes)),
+        ),
         blob(
             SectionId::AnimatedDirectShDeltaVolumes,
             1,
-            animated_direct_delta.to_bytes(),
+            animated_direct_delta
+                .try_to_bytes_with_body(body(SectionId::AnimatedDirectShDeltaVolumes))
+                .unwrap(),
         ),
         blob(
             SectionId::BillboardDirectScatterVolume,
@@ -853,12 +1194,12 @@ fn indirect_delta_section() -> DeltaShVolumesSection {
         affinity_dims: AFFINITY_DIMENSIONS,
         tile_dimension: 6,
         tile_border: 1,
-        animation_descriptor_indices: Vec::new(),
+        animation_descriptor_indices: vec![0],
         valid_probe_masks: vec![u64::MAX; AFFINITY_COUNT as usize],
         cell_levels: vec![0; AFFINITY_COUNT as usize],
-        affinity_offsets: vec![0; AFFINITY_COUNT as usize + 1],
-        affinity_lights: Vec::new(),
-        delta_subblocks: Vec::new(),
+        affinity_offsets: one_entry_offsets(),
+        affinity_lights: vec![0],
+        delta_subblocks: vec![0; sparse_tile_f16_count()],
     }
 }
 
@@ -1031,7 +1372,7 @@ fn valid_id50(
     let mover_bytes = mover_block
         .as_ref()
         .map_or(0, |(_, body)| body.len() as u64);
-    let chunk = dense_and_empty_sparse_chunk(mover_block);
+    let chunk = dense_and_sparse_chunk(mover_block);
     let payload = chunk.clone();
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {
@@ -1055,7 +1396,7 @@ fn valid_id50(
                 payload_len: chunk.len() as u64,
                 decoded_bytes: decoded_chunk_bytes() + mover_bytes,
                 requested_resident_bytes: u64::from(STORED_TILES) * 2 * 8 * 8 * 8
-                    + 2 * (16 + sparse_tile_f16_count() as u64 * 2)
+                    + 3 * (16 + sparse_tile_f16_count() as u64 * 2)
                     + mover_bytes,
                 stored_tile_count: STORED_TILES,
                 dense_patch_count: PROBE_COUNT,
@@ -1086,7 +1427,7 @@ fn valid_id50(
 
 /// The fixture's one chunk, with id 57's row block (row count, body) last
 /// when given.
-fn dense_and_empty_sparse_chunk(mover_block: Option<(u32, Vec<u8>)>) -> Vec<u8> {
+fn dense_and_sparse_chunk(mover_block: Option<(u32, Vec<u8>)>) -> Vec<u8> {
     let isolated_layout = cluster_sh_isolated_atlas_array_layout(STORED_TILES).unwrap();
     let isolated_atlas_len = isolated_layout.layer_count as usize
         * isolated_layout.atlas_width as usize
@@ -1097,7 +1438,7 @@ fn dense_and_empty_sparse_chunk(mover_block: Option<(u32, Vec<u8>)>) -> Vec<u8> 
             SectionId::DeltaShVolumes,
             3,
             AFFINITY_COUNT,
-            empty_sparse_rows(),
+            one_entry_sparse_rows(),
         ),
         (
             SectionId::OctahedralShVolume,
@@ -1171,8 +1512,7 @@ fn decoded_chunk_bytes() -> u64 {
             * 8;
     u64::from(PROBE_COUNT) * 16
         + 2 * isolated_atlas_body_len
-        + sparse_rows_len() as u64
-        + 2 * one_entry_sparse_rows_len() as u64
+        + 3 * one_entry_sparse_rows_len() as u64
 }
 
 fn probe_patches() -> Vec<u8> {
@@ -1206,20 +1546,6 @@ fn isolated_atlas_body(
     push_u32(&mut bytes, layout.atlas_height);
     push_u32(&mut bytes, layout.layer_count);
     bytes.resize(20 + atlas_len, 0);
-    bytes
-}
-
-fn empty_sparse_rows() -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(sparse_rows_len());
-    push_u32(&mut bytes, AFFINITY_COUNT);
-    push_u32(&mut bytes, 0);
-    push_u32(&mut bytes, 0);
-    push_u32(&mut bytes, 0);
-    for row in 0..AFFINITY_COUNT {
-        push_u32(&mut bytes, row);
-        push_u32(&mut bytes, 0);
-        push_u32(&mut bytes, 0);
-    }
     bytes
 }
 
@@ -1270,16 +1596,29 @@ fn streamed_body_ranges(fixture: &StreamFixture) -> Vec<Range<u64>> {
     let direct_delta = entry(SectionId::DirectShDeltaVolumes);
     let animated_direct_delta = entry(SectionId::AnimatedDirectShDeltaVolumes);
     let payloads = entry(SectionId::ClusterShPayloads);
-    let base_body_start = base.offset + 84 + u64::from(PROBE_COUNT) * 8;
-    let direct_body_start = direct.offset + 76;
+    let header = |len: usize| len as u64;
+    let base_body_start = base.offset
+        + header(OctahedralShVolumeSection::HEADER_SIZE)
+        + u64::from(PROBE_COUNT) * u64::from(OCTAHEDRAL_PROBE_STRIDE);
+    let direct_body_start = direct.offset + header(DirectShVolumeSection::HEADER_SIZE);
     // Each affinity row has an eight-byte mask and a one-byte level. The
     // offsets are a separate (count + 1)-element table, rather than four
     // bytes per row.
     let sparse_metadata_len = u64::from(AFFINITY_COUNT) * 9 + 4 * 17;
-    let indirect_delta_body_start = indirect_delta.offset + 26 + sparse_metadata_len;
-    let direct_delta_body_start = direct_delta.offset + 22 + sparse_metadata_len + 4;
-    let animated_direct_delta_body_start =
-        animated_direct_delta.offset + 26 + 4 + sparse_metadata_len + 4;
+    let indirect_delta_body_start = indirect_delta.offset
+        + header(DeltaShVolumesSection::FIXED_HEADER_SIZE)
+        + 4
+        + sparse_metadata_len
+        + 4;
+    let direct_delta_body_start = direct_delta.offset
+        + header(DirectShDeltaVolumesSection::FIXED_HEADER_SIZE)
+        + sparse_metadata_len
+        + 4;
+    let animated_direct_delta_body_start = animated_direct_delta.offset
+        + header(AnimatedDirectShDeltaVolumesSection::FIXED_HEADER_SIZE)
+        + 4
+        + sparse_metadata_len
+        + 4;
     vec![
         base_body_start..base_body_start + fixture.large_atlas_bytes as u64,
         direct_body_start..direct.offset + direct.size,

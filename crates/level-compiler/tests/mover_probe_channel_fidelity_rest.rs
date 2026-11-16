@@ -1,5 +1,6 @@
 //! Mover probe channel: bake fidelity `low` against `high` at rest. Each map builds `--no-cache`
-//! (interactive, `low`) and `--release` (`high`); at each terminus every probe either mover build
+//! (interactive, `low`) and `--release` (`high`), both `--whole-load-sh` so id 34 keeps the atlas
+//! it is read back from; at each terminus every probe either mover build
 //! stores a bounce state for composes that state or id 34, and the two composes are compared in
 //! display levels, with their sign. Direct and depth never depend on fidelity.
 //!
@@ -65,8 +66,9 @@ fn low_against_high_at_rest_stays_within_the_owners_bound_and_reports_the_larges
     for name in ["mover-closet", "mover-setpiece"] {
         // Uniform L0, so id 34 reads back per probe.
         let map = with_worldspawn_key(&dev_map(&format!("{name}.map")), "_sh_coarsen", "0");
-        let low = build(&map, name, Cache::Cold, &[]);
-        let high = build(&map, name, Cache::Cold, &["--release"]);
+        // `--whole-load-sh` keeps id 34's atlas, which `Volume::read` decodes.
+        let low = build(&map, name, Cache::Cold, &["--whole-load-sh"]);
+        let high = build(&map, name, Cache::Cold, &["--release", "--whole-load-sh"]);
         let volume = Volume::read(&high.prl);
         assert!(
             section(&low.prl, SectionId::OctahedralShVolume)

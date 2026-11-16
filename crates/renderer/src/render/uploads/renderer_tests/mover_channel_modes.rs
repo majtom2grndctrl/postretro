@@ -457,7 +457,8 @@ enum Bar {
 }
 
 /// The C10 comparison over every map `var` names (`:`-separated compiled
-/// PRLs, each with id 50 and id 57), judged by `bar`; the misses. `None`
+/// PRLs, each with id 50 and id 57, baked with `prl-build --whole-load-sh`
+/// so the `off` load has the SH bodies), judged by `bar`; the misses. `None`
 /// when no adapter is present.
 fn c10_misses(var: &str, bar: Bar) -> Option<Vec<String>> {
     let paths = std::env::var(var).unwrap_or_else(|_| panic!("set {var}"));
@@ -592,7 +593,8 @@ fn c10_misses(var: &str, bar: Bar) -> Option<Vec<String>> {
 /// the weighted bases plus that bound ([`Clamped`]). The depth-tile texture
 /// is bit-identical between the modes at every t′.
 #[test]
-#[ignore = "requires MOVER_C10_PRLS: `:`-separated compiled PRLs (mover-closet, mover-setpiece, \
+#[ignore = "requires MOVER_C10_PRLS: `:`-separated PRLs compiled with `prl-build --whole-load-sh` \
+            (mover-closet, mover-setpiece, \
             mover-setpiece built with --mover-payload-resident-bar 0, enemy-movers)"]
 fn c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe() {
     let Some(misses) = c10_misses("MOVER_C10_PRLS", Bar::Derived) else {
@@ -607,7 +609,7 @@ fn c10_off_and_sync_proof_compose_the_same_channel_tiles_at_every_probe() {
 /// bit for bit at every t′.
 #[test]
 #[ignore = "requires MOVER_C10_UNCOMPRESSED_PRLS: `:`-separated compiled PRLs built \
-            --uncompressed-irradiance (mover-closet, mover-setpiece, enemy-movers)"]
+            --uncompressed-irradiance --whole-load-sh (mover-closet, mover-setpiece, enemy-movers)"]
 fn c10_uncompressed_builds_compose_bit_for_bit_in_both_modes() {
     let Some(misses) = c10_misses("MOVER_C10_UNCOMPRESSED_PRLS", Bar::BitForBit) else {
         return;

@@ -28,6 +28,19 @@ pub(super) fn compile_dev_map(workspace: &Path, map_name: &str) -> tempfile::Tem
     compile_dev_map_with(workspace, map_name, &[])
 }
 
+/// [`compile_dev_map`] with `--whole-load-sh`, so the five whole-load SH
+/// sections keep their bodies. A map needs it when a capture loads it with
+/// `POSTRETRO_SH_STREAMING=off`, or when the test decodes one of those
+/// sections whole.
+// Shared by several test binaries, each using part of it.
+#[allow(dead_code)]
+pub(super) fn compile_dev_map_whole_load_sh(
+    workspace: &Path,
+    map_name: &str,
+) -> tempfile::TempPath {
+    compile_dev_map_with(workspace, map_name, &["--whole-load-sh"])
+}
+
 /// [`compile_dev_map`] with `flags` passed to `prl-build`, e.g. `--release`.
 pub(super) fn compile_dev_map_with(
     workspace: &Path,

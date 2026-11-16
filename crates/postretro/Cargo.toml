@@ -139,6 +139,9 @@ postretro-ui = { workspace = true, features = ["test-fixtures"] }
 postretro-physics = { workspace = true, features = ["test-support"] }
 postretro-sim = { workspace = true, features = ["test-support"] }
 postretro-netcode = { workspace = true, features = ["test-support"] }
+# `sh_body::pre_flag`: upgrades C10's baseline-compiler PRLs to the current
+# SH section format so the engine loads them.
+postretro-level-format = { workspace = true, features = ["gltf-resolve", "test-support"] }
 # Provoked wgpu validation errors, for the level-load failure tests.
 postretro-renderer = { workspace = true, features = ["test-seams"] }
 # The mirror entry's capped test seam, for the app-side forced-trip test.

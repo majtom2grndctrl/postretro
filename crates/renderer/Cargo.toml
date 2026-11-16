@@ -52,6 +52,9 @@ test-seams = []
 blake3.workspace = true
 tempfile.workspace = true
 postretro-sim = { workspace = true, features = ["test-support"] }
+# `sh_body::pre_flag`: upgrades a baseline compiler's pre-flag PRL to the
+# current SH section format for the rest-parity test.
+postretro-level-format = { workspace = true, features = ["gltf-resolve", "test-support"] }
 syn = { version = "3", features = ["full", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 naga = { version = "30", features = ["wgsl-in"] }

@@ -8,7 +8,7 @@ use postretro_render_cpu::sh_compose::u16_slice_to_bytes;
 
 use super::sh_allocation::{TextureAllocation, indirect_base_atlas_empty_payload};
 
-/// Upload v11's node-aware base-volume stored-tile atlas without re-expanding it.
+/// Upload the node-aware base-volume stored-tile atlas without re-expanding it.
 /// BC6H blobs remain compressed through upload and hardware-decode only in the
 /// compose pass; the uncompressed debug tag keeps its compact `Rgba16Float` texels.
 pub(super) fn upload_compact_base_atlas_texture(

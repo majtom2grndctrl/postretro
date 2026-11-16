@@ -117,6 +117,8 @@ fn compile(temp: &TempBuildDir, map_text: &str, rust_log: &str) -> (Output, Path
         .arg(&output_path)
         .arg("--no-cache")
         .arg("--no-tui")
+        // The script test decodes id 34 whole, so keep its body.
+        .arg("--whole-load-sh")
         .arg("--sh-probe-spacing")
         .arg("4")
         .arg("--lightmap-density")

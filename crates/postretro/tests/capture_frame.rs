@@ -9,7 +9,10 @@ mod capture_ghost_controls;
 mod capture_receiver_controls;
 mod capture_support;
 
-use capture_support::{capture_command, compile_dev_map, load_capture_rgba, workspace_root};
+use capture_support::{
+    capture_command, compile_dev_map, compile_dev_map_whole_load_sh, load_capture_rgba,
+    workspace_root,
+};
 
 const CAPTURE_WIDTH: u32 = 64;
 const CAPTURE_HEIGHT: u32 = 48;
@@ -416,8 +419,9 @@ fn specular_shadowmask_capture_scene_compiles_loads_and_writes_png() {
 fn spawner_capture_forced_alarm_reds_dynamic_receivers_and_keeps_baked_rest() {
     let workspace = workspace_root();
     // Beside its source, so capture resolves the baked material cache rather
-    // than placeholder resources (see `compile_dev_map`).
-    let map_guard = compile_dev_map(&workspace, "spawner-test");
+    // than placeholder resources (see `compile_dev_map`). The direct-light
+    // control decodes id 45 whole, so the bake keeps its body.
+    let map_guard = compile_dev_map_whole_load_sh(&workspace, "spawner-test");
     let map = map_guard.to_path_buf();
 
     let loaded = postretro_level_loader::load_prl(&map.to_string_lossy())

@@ -2,10 +2,12 @@
 // See: context/lib/build_pipeline.md
 
 use crate::FormatError;
+use crate::SectionId;
 use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use crate::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, MAX_SH_ATLAS_LAYERS, RUNTIME_SUPPORTED_TILE_DIMENSION,
 };
+use crate::sh_body::{ShBodyPresence, require_sh_body};
 
 /// Section-internal version written as the first u32 of the `DirectShVolume`
 /// section payload. Bumped any time the on-disk layout changes so the loader can
@@ -14,8 +16,10 @@ use crate::octahedral::{
 /// indirect `OctahedralShVolume` section's version line. Version 2 adds
 /// layer-aware atlas metadata for 2D array texture uploads. Version 3 changes
 /// that geometry from the dense grid to id-34's metadata-derived stored tiles.
-/// Version 4 shares id 34 v11's node-aware stored-set geometry.
-pub const DIRECT_SH_VOLUME_VERSION: u32 = 4;
+/// Version 4 shares id 34 v11's node-aware stored-set geometry. Version 5
+/// appends a `u32` body-presence field to the header; an omitted body drops
+/// the atlas bytes and keeps `irradiance_len` at its full value.
+pub const DIRECT_SH_VOLUME_VERSION: u32 = 5;
 
 /// Direct-light octahedral irradiance volume section (ID 35).
 ///
@@ -48,7 +52,7 @@ pub const DIRECT_SH_VOLUME_VERSION: u32 = 4;
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   Header (76 bytes):
+///   Header (80 bytes):
 ///     u32      version                (= DIRECT_SH_VOLUME_VERSION)
 ///     f32 × 3  grid_origin
 ///     f32 × 3  cell_size
@@ -61,9 +65,12 @@ pub const DIRECT_SH_VOLUME_VERSION: u32 = 4;
 ///     u32      layer_count            (2D array layers)
 ///     u32      tiles_per_layer        (whole probe tiles per layer)
 ///     u32      irradiance_format      (IRRADIANCE_FORMAT_BC6H / _RGBA16F)
-///     u32      irradiance_len         (byte length of the atlas blob)
+///     u32      irradiance_len         (byte length of the atlas blob,
+///                                      full value even when omitted)
+///     u32      body_present           (1 = atlas blob follows, 0 = omitted;
+///                                      see `sh_body`)
 ///
-///   Atlas blob (irradiance_len bytes):
+///   Atlas blob (irradiance_len bytes; absent when body_present is 0):
 ///     IRRADIANCE_FORMAT_RGBA16F: layer-major, then row-major
 ///                                atlas_width × atlas_height texels per layer,
 ///                                f16 × 4 RGBA per texel (BYTE-IDENTICAL to the
@@ -95,10 +102,19 @@ pub struct DirectShVolumeSection {
 }
 
 impl DirectShVolumeSection {
-    pub const HEADER_SIZE: usize = 76;
+    pub const HEADER_SIZE: usize = 80;
 
     pub fn byte_len(&self) -> usize {
-        Self::HEADER_SIZE + self.atlas.len()
+        self.byte_len_with_body(ShBodyPresence::Present)
+    }
+
+    /// Byte length of the form [`Self::try_to_bytes_with_body`] writes.
+    pub fn byte_len_with_body(&self, body: ShBodyPresence) -> usize {
+        if body.is_present() {
+            Self::HEADER_SIZE + self.atlas.len()
+        } else {
+            Self::HEADER_SIZE
+        }
     }
 
     pub fn placeholder() -> Self {
@@ -129,16 +145,26 @@ impl DirectShVolumeSection {
     }
 
     pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.try_byte_len_with_body(ShBodyPresence::Present)
+    }
+
+    pub fn try_byte_len_with_body(&self, body: ShBodyPresence) -> crate::Result<usize> {
         self.validate_wire_contract()?;
-        Ok(self.byte_len())
+        Ok(self.byte_len_with_body(body))
     }
 
     /// Encode only a canonical stored-atlas section whose payload fits the
     /// fixed `u32` length field.
     pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
+        self.try_to_bytes_with_body(ShBodyPresence::Present)
+    }
+
+    /// Encode with the atlas present or omitted. The omitted form keeps
+    /// `irradiance_len` at its full value; only the atlas bytes are absent.
+    pub fn try_to_bytes_with_body(&self, body: ShBodyPresence) -> crate::Result<Vec<u8>> {
         self.validate_wire_contract()?;
 
-        let mut buf = Vec::with_capacity(Self::HEADER_SIZE + self.atlas.len());
+        let mut buf = Vec::with_capacity(self.byte_len_with_body(body));
 
         buf.extend_from_slice(&DIRECT_SH_VOLUME_VERSION.to_le_bytes());
         for v in &self.grid_origin {
@@ -159,8 +185,11 @@ impl DirectShVolumeSection {
         buf.extend_from_slice(&self.tiles_per_layer.to_le_bytes());
         buf.extend_from_slice(&self.irradiance_format.to_le_bytes());
         buf.extend_from_slice(&(self.atlas.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&u32::from(body.flag()).to_le_bytes());
 
-        buf.extend_from_slice(&self.atlas);
+        if body.is_present() {
+            buf.extend_from_slice(&self.atlas);
+        }
         Ok(buf)
     }
 
@@ -175,7 +204,7 @@ impl DirectShVolumeSection {
         if version != DIRECT_SH_VOLUME_VERSION {
             return Err(invalid_data(format!(
                 "direct sh volume section version {version}, expected {DIRECT_SH_VOLUME_VERSION} — \
-                 recompile the .prl with the current `prl-build` for the v4 node-aware stored-atlas format"
+                 recompile the .prl with the current `prl-build` for the v5 body-presence format"
             )));
         }
         if data.len() < Self::HEADER_SIZE {
@@ -215,7 +244,10 @@ impl DirectShVolumeSection {
         o += 4;
         let irradiance_len = read_u32(data, o) as usize;
         o += 4;
+        let body_flag = read_u32(data, o);
+        o += 4;
         debug_assert_eq!(o, Self::HEADER_SIZE);
+        require_sh_body(SectionId::DirectShVolume, body_flag)?;
 
         if irradiance_format != IRRADIANCE_FORMAT_BC6H
             && irradiance_format != IRRADIANCE_FORMAT_RGBA16F
@@ -499,7 +531,7 @@ fn validate_irradiance_format(irradiance_format: u32) -> crate::Result<()> {
 fn atlas_len_for_header(len: u64) -> crate::Result<u32> {
     u32::try_from(len).map_err(|_| {
         invalid_data(format!(
-            "direct sh volume stored atlas byte length {len} exceeds the v4 u32 header maximum {}",
+            "direct sh volume stored atlas byte length {len} exceeds the current u32 header maximum {}",
             u32::MAX,
         ))
     })
@@ -719,13 +751,13 @@ mod tests {
     fn direct_sh_volume_rejects_previous_section_version() {
         let section = direct_section([1, 1, 1], IRRADIANCE_FORMAT_BC6H);
         let mut bytes = section.to_bytes();
-        bytes[0..4].copy_from_slice(&3u32.to_le_bytes());
+        bytes[0..4].copy_from_slice(&4u32.to_le_bytes());
         let err = DirectShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("version 3")
-                && msg.contains("expected 4")
-                && msg.contains("v4 node-aware stored-atlas"),
+            msg.contains("version 4")
+                && msg.contains("expected 5")
+                && msg.contains("v5 body-presence format"),
             "expected version-mismatch error, got: {msg}",
         );
     }
@@ -748,5 +780,57 @@ mod tests {
 
         assert_eq!(SectionId::DirectShVolume as u32, 35);
         assert_eq!(SectionId::from_u32(35), Some(SectionId::DirectShVolume));
+    }
+
+    #[test]
+    fn direct_sh_volume_body_flag_writes_present_and_omitted_forms() {
+        let section = direct_section([3, 2, 1], IRRADIANCE_FORMAT_BC6H);
+        let present = section
+            .try_to_bytes_with_body(ShBodyPresence::Present)
+            .unwrap();
+        let omitted = section
+            .try_to_bytes_with_body(ShBodyPresence::Omitted)
+            .unwrap();
+        assert_eq!(present, section.to_bytes());
+        assert_eq!(
+            section.byte_len_with_body(ShBodyPresence::Present),
+            present.len()
+        );
+        assert_eq!(
+            section
+                .try_byte_len_with_body(ShBodyPresence::Omitted)
+                .unwrap(),
+            DirectShVolumeSection::HEADER_SIZE
+        );
+        assert_eq!(omitted.len(), DirectShVolumeSection::HEADER_SIZE);
+
+        let body_start = DirectShVolumeSection::HEADER_SIZE;
+        crate::sh_body::assert_sh_body_wire_forms(
+            SectionId::DirectShVolume,
+            &present,
+            &omitted,
+            body_start..body_start + section.atlas.len(),
+            |bytes| {
+                assert_eq!(DirectShVolumeSection::from_bytes(bytes)?, section);
+                Ok(())
+            },
+        );
+
+        // The omitted header keeps the full atlas length, so metadata-only
+        // validation accepts it unchanged.
+        let atlas_len = read_u32(&omitted, 72);
+        assert_eq!(atlas_len as usize, section.atlas.len());
+        validate_metadata_projection(
+            section.grid_dimensions,
+            section.tile_dimension,
+            section.tile_border,
+            section.atlas_dimensions,
+            section.layer_count,
+            section.tiles_per_layer,
+            section.atlas_tiles_per_row,
+            section.irradiance_format,
+            atlas_len,
+        )
+        .unwrap();
     }
 }

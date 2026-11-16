@@ -60,6 +60,14 @@ pub enum FormatError {
     #[error("failed to allocate {size} bytes for section {section_id}")]
     SectionAllocationFailed { section_id: u32, size: u64 },
 
+    /// A whole-load SH section (id 27, 34, 35, 41 or 45) was packed without
+    /// its body, so only the streaming loader can use it.
+    #[error(
+        "section {section_id} was packed without its SH body; rebake the level with \
+         `prl-build --whole-load-sh` to load it with POSTRETRO_SH_STREAMING=off"
+    )]
+    ShBodyOmitted { section_id: u32 },
+
     #[error(transparent)]
     Io(#[from] io::Error),
 }

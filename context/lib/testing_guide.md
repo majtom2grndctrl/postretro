@@ -174,8 +174,16 @@ Some suites are expensive and must not be run reflexively:
 
 A blanket `--ignored` also selects manual measurements and historical comparisons.
 Read their ignore reasons and provide their inputs, or exclude them explicitly with
-`--skip`. The cluster and lightmap residency dry runs need compiled PRL paths;
-the fitting-map comparison needs `POSTRETRO_OVERSIZE_BASELINE_DIR` containing PRLs
+`--skip`. The cluster and lightmap residency dry runs need compiled PRL paths.
+A test that loads a compiled PRL under `POSTRETRO_SH_STREAMING=off`, such as the
+mover frame captures, or decodes one of ids 27/34/35/41/45 whole (`from_bytes`, or a
+compiler test's volume readers), needs it baked with `prl-build --whole-load-sh`; a
+default bake omits those bodies. A baseline compiler from before the SH body-presence
+field writes those ids in a format the engine refuses. A test comparing against one bakes
+its own side `--whole-load-sh` and upgrades the baseline's PRL with
+`sh_body::pre_flag::upgrade_pre_flag_prl`, or, against checked-in digests from that
+baseline, downgrades its own with `downgrade_to_pre_flag_prl`. Both sit behind
+`postretro-level-format`'s `test-support` feature. The fitting-map comparison needs `POSTRETRO_OVERSIZE_BASELINE_DIR` containing PRLs
 from its named baseline commit. Old-compiler oracle and reseeding helpers can return
 without comparing anything when their opt-in variables are absent; a green result
 alone does not prove those comparisons ran.

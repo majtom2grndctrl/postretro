@@ -15,8 +15,8 @@ pub use manifest::{ShStreamManifest, ShStreamSeamPortal};
 #[cfg(test)]
 pub(crate) use positional_io::observe_positional_reads;
 pub(crate) use positional_io::{
-    read_container_positionally, read_section_positionally, read_vec_at, read_vec_at_in_chunks,
-    validate_positional_entry_bounds,
+    read_container_positionally, read_section_positionally, read_section_prefix_positionally,
+    read_vec_at, read_vec_at_in_chunks, validate_positional_entry_bounds,
 };
 pub use projection::{
     ShStreamBaseMetadata, ShStreamDirectMetadata, ShStreamSourceMetadata, ShStreamSparseMetadata,
@@ -25,7 +25,8 @@ pub use projection::{
 use crate::prl::PrlLoadError;
 
 /// Resolve the developer/test gate only after id-50 structural validation.
-/// A PRL without id 50 ignores this setting and remains legacy-compatible.
+/// A PRL without id 50 ignores this setting and loads whole, refused by name
+/// if any SH body is omitted.
 pub fn requested_streaming_mode() -> Result<ShStreamingMode, PrlLoadError> {
     match std::env::var("POSTRETRO_SH_STREAMING") {
         Err(std::env::VarError::NotPresent) => Ok(ShStreamingMode::Async),

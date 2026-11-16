@@ -16,7 +16,7 @@
 - **Testing** → `testing_guide.md`
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
-- **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets / bounded SH pool / SH mandatory bound** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51: `build_pipeline.md` §PRL section IDs
+- **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets / bounded SH pool / SH mandatory bound / whole-load SH bodies / `--whole-load-sh`** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51, whole-load bodies: `build_pipeline.md` §PRL section IDs
 - **Probe depth visibility / Chebyshev weight and its floor / direction-aware probe visibility / probe depth tiles (id 59) / moment-texel tile reference / runtime tile-reference rewrite / probe-weight IP rules (Square Enix '372)** → `rendering_pipeline.md` §4 (Probe depth moments, Direction-aware probe visibility) · format, bake and selection: `build_pipeline.md` §PRL section IDs · IP: `context/research/gi-rtx-lite/ip-check.md` §Piece 2
 - **Lightmap/shadowmask residency / cell blocks / lightmap pool / bounded lightmap pool / lightmap pool bound / mask pool / vertex block table / lightmap miss policy / `POSTRETRO_LIGHTMAP_STREAMING` / shared SH+lightmap read issuer and drain budget** → `rendering_pipeline.md` §4 (Lightmap cell-block residency) · ids 22/42/51/58: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8

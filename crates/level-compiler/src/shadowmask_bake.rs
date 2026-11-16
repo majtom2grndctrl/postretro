@@ -153,6 +153,19 @@ impl FusedShadowmaskPlan<'_> {
         self.work_elapsed += started.elapsed();
     }
 
+    /// `--dump-chart-texels`: record each owned chart's mask texels as its
+    /// block is encoded. A memo hit or a level with nothing to own records
+    /// nothing.
+    pub(crate) fn attach_chart_dump(
+        &mut self,
+        writer: crate::chart_dump::SharedDumpWriter,
+        shared: &SharedAtlas<'_>,
+    ) {
+        if let Some(fill) = self.fill.as_mut() {
+            fill.chart_dump = Some(crate::chart_dump::capture::MaskCapture::new(writer, shared));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_raw_fill_probe(&mut self, probe: Option<RawFillProbe>) {
         if let (Some(fill), Some(probe)) = (&mut self.fill, probe) {

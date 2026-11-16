@@ -19,6 +19,7 @@ pub mod cache;
 pub mod cell_draw_index_bake;
 pub mod cell_residency_bake;
 pub mod cell_visibility_bake;
+pub mod chart_dump;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 mod cli;
@@ -848,6 +849,10 @@ pub struct Args {
     /// changing output; without analysis it forces emitted nodes subject to
     /// the same storage/protection constraints as production classification.
     sh_density_force_scale: Option<u8>,
+    /// `--dump-chart-texels` / `--dump-chart-hashes`: write every chart's
+    /// pre-BC texels (or only their hashes) for an A/B comparison. Requires
+    /// an uncached bake; never changes the PRL.
+    chart_dump: Option<chart_dump::ChartDumpConfig>,
 }
 
 impl Args {
@@ -905,6 +910,8 @@ fn help_text() -> String {
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
          --sh-density-force-level <0|1|2> Debug base SH brick level override; storage/protection ceilings still apply (default: none)\n    \
          --sh-density-force-scale <0..3> Debug base SH hierarchy scale override; with --sh-analyze it affects analysis only, otherwise it affects emitted nodes after storage/protection clamping (default: none)\n    \
+         --dump-chart-texels <DIR>  Diagnostic: write every chart's lightmap, shadow-mask and animated weight-map texels before BC encoding to <DIR>, for an A/B comparison; needs --no-cache or --release; the PRL is unchanged (default: off)\n    \
+         --dump-chart-hashes <DIR>  As --dump-chart-texels, but only per-chart hashes: small enough for a large map, though a difference cannot be located to a texel (default: off)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -993,6 +1000,7 @@ where
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
     let mut sh_density_force_level = None;
     let mut sh_density_force_scale = None;
+    let mut chart_dump: Option<chart_dump::ChartDumpConfig> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1215,6 +1223,18 @@ where
                 }
                 sh_density_force_scale = Some(parsed);
             }
+            "--dump-chart-texels" | "--dump-chart-hashes" => {
+                let dir = flag_value(&mut args, &arg)?;
+                if chart_dump.is_some() {
+                    anyhow::bail!(
+                        "--dump-chart-texels and --dump-chart-hashes name one dump; pass only one"
+                    );
+                }
+                chart_dump = Some(chart_dump::ChartDumpConfig {
+                    dir: PathBuf::from(dir),
+                    texels: arg == "--dump-chart-texels",
+                });
+            }
             _ if input.is_none() && !arg.starts_with('-') => {
                 input = Some(PathBuf::from(arg));
             }
@@ -1239,6 +1259,15 @@ where
     // did not type.
     if release && bake_fidelity.is_some() {
         anyhow::bail!("--release always bakes high fidelity; remove --bake-fidelity or --release");
+    }
+
+    // A cached stage replays its memo instead of baking, so its charts would
+    // never reach a capture site.
+    if chart_dump.is_some() && !no_cache && !release {
+        anyhow::bail!(
+            "--dump-chart-texels/--dump-chart-hashes need --no-cache or --release: \
+             a cached stage skips its bake, so its charts would not be dumped"
+        );
     }
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
@@ -1274,6 +1303,7 @@ where
         sh_protect_aabbs,
         sh_density_force_level,
         sh_density_force_scale,
+        chart_dump,
     })
 }
 

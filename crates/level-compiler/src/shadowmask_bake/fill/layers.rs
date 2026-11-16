@@ -90,6 +90,16 @@ impl OwnershipFill<'_> {
             let block = self.blocks[block_id];
             #[cfg(test)]
             self.record_block_snapshot(block, &raw);
+            if let Some(capture) = &self.chart_dump {
+                capture.capture_block(
+                    block_id as u32,
+                    &raw,
+                    block.width,
+                    [block.x, block.y],
+                    &self.owners,
+                    shared,
+                );
+            }
             let local = CellBlock {
                 x: 0,
                 y: 0,
@@ -125,6 +135,18 @@ impl OwnershipFill<'_> {
             } else {
                 ready.push(CellBlock { layer: 0, ..block });
                 ready_ids.push(block_id);
+            }
+        }
+        if let Some(capture) = &self.chart_dump {
+            for &block_id in &ready_ids {
+                capture.capture_block(
+                    block_id as u32,
+                    self.data.as_ref().unwrap(),
+                    self.width,
+                    [0, 0],
+                    &self.owners,
+                    shared,
+                );
             }
         }
         if !ready.is_empty() {

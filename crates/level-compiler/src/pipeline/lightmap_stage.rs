@@ -11,6 +11,8 @@ use crate::Args;
 use crate::bake_control::BakeControl;
 use crate::bvh_build::BvhPrimitive;
 use crate::cache::{CacheKey, StageCache};
+use crate::chart_dump::capture::LightmapCapture;
+use crate::chart_dump::{DumpKind, SharedDumpWriter};
 use crate::geometry::GeometryResult;
 use crate::light_namespaces::{AlphaLightsNs, StaticBakedLights};
 use crate::lightmap_bake::{self, CutParent, LightmapBakeOutput, LightmapConfig, PreparedAtlas};
@@ -421,6 +423,21 @@ pub(crate) fn bake_fused_with_movers(
     )?;
     #[cfg(test)]
     shadowmask.set_raw_fill_probe(window.raw_fill_probe.clone());
+    // `--dump-chart-texels`: one writer per record kind, fed at the encode
+    // points and finished once both bakes have closed their last layer.
+    let chart_dump = args
+        .chart_dump
+        .as_ref()
+        .map(|config| -> anyhow::Result<_> {
+            Ok((
+                SharedDumpWriter::create(config, DumpKind::Lightmap)?,
+                SharedDumpWriter::create(config, DumpKind::Mask)?,
+            ))
+        })
+        .transpose()?;
+    if let Some((_, mask)) = &chart_dump {
+        shadowmask.attach_chart_dump(mask.clone(), &shared);
+    }
     let log_report = |report: &shadowmask_bake::OwnerReport,
                       estimate: &shadowmask_bake::EstimateStats| {
         if args.verbose && estimate.cut_faces > 0 {
@@ -548,6 +565,13 @@ pub(crate) fn bake_fused_with_movers(
             &prepared.layout,
             config.uncompressed_irradiance,
         );
+        if let Some((lightmap, _)) = &chart_dump {
+            builder.attach_chart_dump(LightmapCapture::new(
+                lightmap.clone(),
+                &prepared.charts,
+                &prepared.placements,
+            ));
+        }
         let mut texel_steps = TexelStepReport::default();
         if layer_lights.is_empty() {
             for target_layer in 0..prepared.layer_count {
@@ -763,6 +787,10 @@ pub(crate) fn bake_fused_with_movers(
         elapsed: shadowmask_elapsed,
     } = shadowmask.finish(&shared);
     log_report(&shadowmask_report, &shadowmask_estimate);
+    if let Some((lightmap, mask)) = &chart_dump {
+        lightmap.finish()?;
+        mask.finish()?;
+    }
     Ok(FusedLightingOutput {
         lightmap: LightmapBakeOutput {
             section,

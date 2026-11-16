@@ -110,6 +110,14 @@ fn no_cut(layers: u32, dark_middle: bool) -> (Option<ShadowmaskAtlasSection>, Ow
 }
 
 fn cut(spans_layers: bool, all_dark: bool) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
+    cut_dumped(spans_layers, all_dark, None)
+}
+
+fn cut_dumped(
+    spans_layers: bool,
+    all_dark: bool,
+    dump: Option<crate::chart_dump::SharedDumpWriter>,
+) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
     let mut fixture = CutAtlas::new();
     let layers = if spans_layers { 4 } else { 1 };
     fixture.atlas.layer_count = layers;
@@ -151,6 +159,8 @@ fn cut(spans_layers: bool, all_dark: bool) -> (Option<ShadowmaskAtlasSection>, O
         vec![channels],
         None,
     );
+    fill.chart_dump =
+        dump.map(|writer| crate::chart_dump::capture::MaskCapture::new(writer, &shared));
     let probe = fill.probe.clone();
     for layer in 0..layers {
         for (arrival, light) in eligible.iter().enumerate() {
@@ -217,4 +227,51 @@ fn raw_fill_probes_do_not_mix_simultaneous_bakes() {
         let _ = one.join().unwrap();
         let _ = three.join().unwrap();
     });
+}
+
+// The cut's first sub-face's block is carried from layer 0 to the cut's last
+// layer: the dump records it once, when the carry is encoded, holding the
+// values BC5 encodes; a chart no light owns is not recorded.
+#[test]
+fn chart_dump_records_a_carried_cut_chart_once_from_its_final_values() {
+    use crate::chart_dump::reader::DumpReader;
+    use crate::chart_dump::{ChartDumpConfig, DumpKind, SharedDumpWriter};
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = ChartDumpConfig {
+        dir: dir.path().to_path_buf(),
+        texels: true,
+    };
+    let writer = SharedDumpWriter::create(&config, DumpKind::Mask).unwrap();
+    let (section, _) = cut_dumped(true, false, Some(writer.clone()));
+    let raw = take_last_raw_fill();
+    writer.finish().expect("each chart recorded once");
+    let section = section.expect("the cut owns channels");
+
+    let reader = DumpReader::open(dir.path(), DumpKind::Mask).unwrap();
+    let owned: Vec<u32> = (0..section.owners.len() as u32)
+        .filter(|&face| section.owners[face as usize] != NO_FACE_OWNERS)
+        .collect();
+    let recorded: Vec<u32> = reader.entries.keys().map(|key| key.face).collect();
+    assert_eq!(recorded, owned);
+    assert!(recorded.contains(&0), "the carried sub-face is recorded");
+
+    let width = CutAtlas::new().atlas.width as usize;
+    let plane = width * CHART as usize * 4;
+    for entry in reader.entries.values() {
+        let meta = &entry.meta;
+        assert_eq!(meta.owners, section.owners[meta.key.face as usize]);
+        let texels = reader
+            .read_plane(entry, crate::chart_dump::format::PlaneKind::Mask)
+            .unwrap()
+            .unwrap();
+        let p = &meta.placement;
+        let mut expected = Vec::new();
+        for y in 0..meta.height as usize {
+            let start = p.layer as usize * plane
+                + ((p.layer_y as usize + y) * width + p.layer_x as usize) * 4;
+            expected.extend_from_slice(&raw[start..start + meta.width as usize * 4]);
+        }
+        assert_eq!(texels, expected, "{}: the values BC5 encodes", meta.key);
+    }
 }

@@ -362,6 +362,8 @@ changes.
 
 PRL header `version` is 4. Loading a file with any other version fails.
 
+`postretro-tool prl-sections <level.prl>` prints a level's section table, largest first, with each section's table version, bytes and share of the file.
+
 | Section | ID | When present |
 |---------|-----|-------------|
 | Portals | 15 | Compiler emits every build; runtime treats missing, empty, decode/schema-failed, or polygon-unusable data as no usable portal graph; endpoint/adjacency mismatches are fatal when graph is otherwise usable |
@@ -726,6 +728,7 @@ Disk-backed content-hash cache that lets `prl-build` skip cached bake work when 
 | `--probe-depth-tile-cap <N>` | Probe depth tiles a level may hold, id 59's and the movers' live tiles together (default and maximum 32,768, the tile reference's range; step 12, Mover probe channel). A test seam for the id-59 trim and the named range error; lower it only to test those. A compiler diagnostic: `docs/` never names it. |
 | `--mover-payload-resident-bar <SIZE>` | Bytes of each id-57 payload block kept resident before it streams with id 50's cells (default and maximum 8 MiB, the owner's bars; §PRL section IDs, id 57). It only lowers the bars: a larger value is an error. Same byte syntax as `--cache-max-size`. A test seam for streamed placement; `docs/` never names it. |
 | `--direction-texel-scale <N>` | Per-axis static dominant-direction-atlas reduction (default 2). Must be a positive power of two no larger than 64; `1` preserves full-resolution direction bytes. It folds only into the warm composited-section key, never per-light layer keys or chart placement. |
+| `--dump-chart-texels <DIR>` / `--dump-chart-hashes <DIR>` | Compiler diagnostic: write every chart's pre-BC texels to `<DIR>` for an A/B comparison. Covers irradiance (f32, BC6H's input) and Rg8 direction from each layer encode, each owned chart's four mask channels at its block's BC5 encode (a block carried past its layer close is captured when the carry encodes), and each animated chunk's weight lists. Records are keyed by face index (plus chunk ordinal), in chart-local row-major order, with grid and padding ring hashed apart. `--dump-chart-hashes` writes only the hashes. Requires `--no-cache` or `--release`, since a cached stage skips its charts. The PRL is byte-identical with or without it. The `#[ignore]` test `chart_dump_candidate_matches_baseline` compares two dumps named by `POSTRETRO_CHART_DUMP_BASELINE` and `POSTRETRO_CHART_DUMP_CANDIDATE`. `docs/` never names it. |
 
 **Entry format.** One file per entry, named by the hex key. Every write stages to a per-writer `<digest>.<pid>-<n>.tmp` stage file, then renames atomically into place. `get()` validates integrity before returning payload; mismatch is a soft failure (warning, cache miss). Durability is by verification, not sync: a killed or torn write leaves a temp file or a hash mismatch, so the next build misses, never hits wrong. Entries are not fsynced. A hit opens the entry once and never touches its mtime; use is recorded in the build's use journal instead (see Eviction).
 

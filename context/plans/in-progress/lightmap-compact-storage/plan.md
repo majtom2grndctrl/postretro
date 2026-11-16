@@ -75,7 +75,7 @@ Commits: one per completed task, each carrying its `plan.md` row update. Sequent
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 0 | **Measurement tools.** Section-size report in `postretro-tool`; `--dump-chart-texels` compiler diagnostic (pre-BC texels per chart, plus mask through owner/offset); comparator `#[ignore]` test. No format change. | integrating executor | — | |
+| 0 | **Measurement tools.** Section-size report in `postretro-tool`; `--dump-chart-texels` compiler diagnostic (pre-BC texels per chart, plus mask through owner/offset); comparator `#[ignore]` test. No format change. | integrating executor | — | done: `prl-build --dump-chart-texels|--dump-chart-hashes <dir>` (refused unless `--no-cache`/`--release`), comparator `chart_dump_candidate_matches_baseline` (`--ignored`, env `POSTRETRO_CHART_DUMP_BASELINE`/`_CANDIDATE`), `postretro-tool prl-sections`; chart_dump 6 passed + 1 ignored, prl-build bin 2538 passed, postretro-tool 166 passed, clippy clean; PRL byte-identical with dump on/off and across -j 1/3/4 |
 | 1 | **Walk-harness instrumentation.** Order-independent payload hash; issuer busy p95/max; SH-streaming-on mode; thread-count caps emulating 1-/2-core. Cut `lightmap-compact-storage-baseline` from `f5bb5d5c8` + tasks 0–1, bake showcase, campaign-test and warren, record the baseline: texel dumps, late blocks (completed + realtime ×3, both walks, SH off/on, 1/2/default cores), sizes, load time, issuer busy. | integrating executor | 0 | |
 | 2 | **First slice: separate mask layout.** Per-cell mask layout of owned charts copied in lightmap orientation; plane-B sub-rect; per-face i16 offset; SMB9; id-58 per-plane extents; loader offset stamp on the owner stream; two-word block table + shader clamp per plane. Real showcase bake: check the 378 MiB simulation and AC 5/8–12/14/24. | integrating executor | 1 | |
 | 3 | **Transposed packer.** Even chart origins; transposed placement; multi-heuristic with width trim, smallest kept; transposed flag in the layout fingerprint; stage bumps. AC 5–7, 13, 27, 28. | integrating executor | 2 | |
@@ -84,6 +84,12 @@ Commits: one per completed task, each carrying its `plan.md` row update. Sequent
 | 6 | **Pool rule sweep.** On the final layout, sweep ratio/floor for `first_generation_layers` until late blocks ≤ baseline on both walks; update policy identity and growth reserve; report MiB. AC 19, 20, 22. | integrating executor | 5 | |
 | 7 | **Measurement + visual report.** Rerun the baseline Tracy script, sizes, load time, issuer busy; capture A/B frames at fixed poses. AC M1–M3. | integrating executor | 6 | |
 | 8 | **Preflight, review panel, fix loop; results column.** | integrating executor | 7 | |
+
+## Notes for later tasks
+- **Task 2:** move the mask capture to the new copy point and read through the per-face offset. The comparator compares plane B for every owned chart and does not treat an absent B as zero; if Task 2 stores no plane-B record for channel-0/1-only faces, adjust the comparator in the same task.
+- **Task 3:** `dilate_edges` sums up to 8 neighbours in a fixed (dy, dx) order. Dilate in chart-local orientation (or prove the sum order-independent), or ring texels and any uncovered interior texel can drift by an ulp, which breaks AC 5 for the grid. Dump records stay chart-local (un-transposed).
+- **Direction coverage:** odd origins are common today (16 of 24 charts on `animated-layer-spill`), so most baseline direction comparisons are counted skips. AC 6's cross-layout comparison carries the direction proof.
+- **Test threads:** cargo `-j` does not cap test threads; add `-- --test-threads=4` while the owner is at the machine.
 
 ## Hot paths and constraints
 - **Frame thread admit:** no payload copies (AC 16); no per-frame allocation added.

@@ -399,6 +399,15 @@ fn run_after_parsing(
 ) -> anyhow::Result<()> {
     let mut timings = Vec::new();
     timings.push((StageId::Parsing.label(), parsing_elapsed));
+    if let Some(dump) = &args.chart_dump {
+        // The parser refuses a cached dump; this holds for callers that
+        // hand the pipeline a cache of their own.
+        anyhow::ensure!(
+            stage_cache.is_none(),
+            "a chart dump needs an uncached bake: a cached stage would skip its charts"
+        );
+        crate::chart_dump::prepare_dir(dump)?;
+    }
     // DataScript runs after Partitioning (buried-light classification needs
     // the BSP), but a missing or unsupported script path needs no BSP, so it
     // still fails before any bake work.
@@ -1986,7 +1995,7 @@ fn run_after_parsing(
             step_threshold: crate::texel_step_detector::TEXEL_STEP_THRESHOLD,
         };
 
-        Some(animated_atlas_stage::bake_or_load_weight_maps(
+        let bake = animated_atlas_stage::bake_or_load_weight_maps(
             &wm_inputs,
             final_lightmap_density,
             stage_cache.as_ref(),
@@ -1994,7 +2003,11 @@ fn run_after_parsing(
             &animated_baked_lights,
             &map_data.light_source_labels,
             &animated_embedded_emitters,
-        )?)
+        )?;
+        if let Some(dump) = &args.chart_dump {
+            crate::chart_dump::capture::dump_animated_weight_maps(dump, &wm_inputs, &bake.section)?;
+        }
+        Some(bake)
     };
     let weight_map_step_elapsed = animated_light_weight_maps_section
         .as_ref()

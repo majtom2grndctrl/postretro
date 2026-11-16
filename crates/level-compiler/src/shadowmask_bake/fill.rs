@@ -106,6 +106,9 @@ pub(super) struct OwnershipFill<'a> {
     drops: Vec<OwnerDrop>,
     face_map: LayerFaceMap,
     control: Option<&'a BakeControl>,
+    /// `--dump-chart-texels`: reads each block's final values as it goes to
+    /// BC5; `None` costs nothing.
+    pub(super) chart_dump: Option<crate::chart_dump::capture::MaskCapture>,
 }
 
 impl<'a> OwnershipFill<'a> {
@@ -177,6 +180,7 @@ impl<'a> OwnershipFill<'a> {
                 faces: Vec::new(),
             },
             control,
+            chart_dump: None,
         }
     }
 

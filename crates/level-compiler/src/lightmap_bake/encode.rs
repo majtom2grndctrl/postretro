@@ -11,6 +11,7 @@ use postretro_level_format::lightmap::{
 use super::block_layout::BlockLayout;
 use super::{CompositedAtlas, MIN_ATLAS_DIMENSION};
 use crate::bc6h;
+use crate::chart_dump::capture::LightmapCapture;
 
 /// BC texel block edge and bytes per BC6H/BC5 block.
 const BC_EDGE: u32 = 4;
@@ -24,6 +25,9 @@ pub(crate) struct BlockSectionBuilder<'a> {
     layout: &'a BlockLayout,
     uncompressed_irradiance: bool,
     blocks: Vec<Option<LightmapBlock>>,
+    /// `--dump-chart-texels`: reads each layer's encoder input; `None` costs
+    /// nothing.
+    chart_dump: Option<LightmapCapture<'a>>,
 }
 
 impl<'a> BlockSectionBuilder<'a> {
@@ -32,7 +36,12 @@ impl<'a> BlockSectionBuilder<'a> {
             layout,
             uncompressed_irradiance,
             blocks: vec![None; layout.blocks.len()],
+            chart_dump: None,
         }
+    }
+
+    pub(crate) fn attach_chart_dump(&mut self, capture: LightmapCapture<'a>) {
+        self.chart_dump = Some(capture);
     }
 
     /// Encode one dilated bake-layer plane and keep its blocks.
@@ -40,6 +49,9 @@ impl<'a> BlockSectionBuilder<'a> {
         let scale = self.layout.direction_texel_scale;
         let (irradiance, direction) =
             encode_atlas_layer(plane, self.uncompressed_irradiance, scale);
+        if let Some(capture) = &self.chart_dump {
+            capture.capture_layer(layer, self.layout, plane, &direction);
+        }
         let (irr_unit, irr_unit_bytes) = if self.uncompressed_irradiance {
             (1, IRRADIANCE_TEXEL_BYTES)
         } else {

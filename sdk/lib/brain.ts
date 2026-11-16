@@ -212,17 +212,33 @@ export function defense(
   });
 }
 
+/** The attack name a turn fact reads. Anything but an attack handle (a bare
+ * string, `undefined`, a stance) throws at the call, naming the fact. */
+function attackHandleName(fact: string, attack: unknown): string {
+  const handle = attack as { kind?: unknown; name?: unknown } | null;
+  if (handle !== null && typeof handle === "object" && handle.kind === "attack" && typeof handle.name === "string") {
+    return handle.name;
+  }
+  let found: string;
+  if (typeof attack === "string") found = `the bare string "${attack}"`;
+  else if (attack === null || attack === undefined) found = String(attack);
+  else if (typeof attack === "object") found = `a "${String(handle?.kind)}" handle`;
+  else found = `a ${typeof attack}`;
+  throw new TypeError(`${fact}(attack): expected an attack handle from defineAttack, got ${found}`);
+}
+
 /** `true` while the enemy holds a turn for `attack`, one of its archetype's
- * attacks, as of the previous tick. Naming another attack fails load. */
-export function attackTurnHeld(attack: string): RuntimeGuardNode {
-  return runtime.read("@attackTurnHeld." + attack) as RuntimeGuardNode;
+ * attacks, as of the previous tick. Naming another attack fails load. Reading
+ * it registers no attack. */
+export function attackTurnHeld(attack: import("postretro").Attack): RuntimeGuardNode {
+  return runtime.read("@attackTurnHeld." + attackHandleName("attackTurnHeld", attack)) as RuntimeGuardNode;
 }
 
 /** `true` when a request for `attack`, one of its archetype's attacks, would be
  * granted now against the previous tick's counts and reservations, leaving out
  * the enemy's own pending request. False with no target, and for an attack
  * sharing a token with a turn the enemy holds. Naming another attack fails
- * load. */
-export function attackTurnFree(attack: string): RuntimeGuardNode {
-  return runtime.read("@attackTurnFree." + attack) as RuntimeGuardNode;
+ * load. Reading it registers no attack. */
+export function attackTurnFree(attack: import("postretro").Attack): RuntimeGuardNode {
+  return runtime.read("@attackTurnFree." + attackHandleName("attackTurnFree", attack)) as RuntimeGuardNode;
 }

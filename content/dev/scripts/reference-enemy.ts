@@ -9,6 +9,7 @@ import {
   attackTurnHeld,
   brain,
   defense,
+  defineAttack,
   defineEntity,
   runtime,
 } from "postretro";
@@ -63,6 +64,23 @@ const JAB_COOLDOWN_MS = 400;
 // punch cuts that jab before `hit`, and it never fires.
 const PRESS_MS = 5000;
 
+// The brute's attacks. `slam` draws two `melee` and the `heavy`, so jabs keep
+// drawing the third `melee` while one brute slams. `claw` is not wired into
+// the graph; the explicit `attacks` list keeps it on the archetype.
+const jab = defineAttack({
+  draws: [melee],
+  damage: 8,
+  maxRange: JAB_RANGE,
+  cooldownMs: JAB_COOLDOWN_MS,
+});
+const slam = defineAttack({
+  draws: [melee.with({ cost: 2 }), heavy],
+  damage: 14,
+  maxRange: SLAM_RANGE,
+  cooldownMs: 1800,
+});
+const claw = defineAttack({ damage: 15, damageType: corrosive, maxRange: 2, cooldownMs: 800 });
+
 // The jab loop both fighting phases run: close to jab reach, jab when a
 // `melee` turn is free, play the punch through, rest, and jab again. The jab
 // activity is marked, so its turn ends as it returns to `stalk`. A target that
@@ -73,8 +91,8 @@ const jabs: BehaviorGraphEnvelope = {
     stalk: { animation: "walk" },
     jab: {
       animation: "attack_jab",
-      action: { attack: "jab", at: "hit" },
-      attackTurn: "jab",
+      action: { attack: jab, at: "hit" },
+      attackTurn: jab,
     },
   },
   transitions: {
@@ -84,7 +102,7 @@ const jabs: BehaviorGraphEnvelope = {
         when: brain.targetDistance
           .le(JAB_RANGE)
           .and(brain.timeInActivityMs.ge(JAB_REST_MS))
-          .and(attackTurnFree("jab")),
+          .and(attackTurnFree(jab)),
       },
     ],
     jab: [
@@ -100,7 +118,7 @@ const jabs: BehaviorGraphEnvelope = {
  *
  * - `engage` runs a selector movement layer and a nested offense graph.
  * - `hunt` and `press` each nest the jab loop. `hunt` starts a slam the
- *   moment `attackTurnFree("slam")` says its turn would be granted.
+ *   moment `attackTurnFree(slam)` says its turn would be granted.
  * - the slam is a marked windup → commit → recover chain holding one turn,
  *   one smash across all three; it draws two `melee` and the `heavy`, so jabs
  *   keep drawing the third `melee` while one brute slams.
@@ -173,21 +191,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attacks: {
-        jab: {
-          draws: [melee],
-          damage: 8,
-          maxRange: JAB_RANGE,
-          cooldownMs: JAB_COOLDOWN_MS,
-        },
-        slam: {
-          draws: [melee.with({ cost: 2 }), heavy],
-          damage: 14,
-          maxRange: SLAM_RANGE,
-          cooldownMs: 1800,
-        },
-        claw: { damage: 15, damageType: corrosive, maxRange: 2, cooldownMs: 800 },
-      },
+      attacks: [jab, slam, claw],
       engagementRadius: CLOSE_STANDOFF,
       patrol: {
         mode: "pingPong",
@@ -219,18 +223,18 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
                 windup: {
                   animation: "attack_slam",
                   motion: "hold",
-                  attackTurn: "slam",
+                  attackTurn: slam,
                 },
                 commit: {
                   animation: "attack_slam",
                   motion: "hold",
-                  action: { attack: "slam", at: "hit" },
-                  attackTurn: "slam",
+                  action: { attack: slam, at: "hit" },
+                  attackTurn: slam,
                 },
                 recover: {
                   animation: "attack_slam",
                   motion: "hold",
-                  attackTurn: "slam",
+                  attackTurn: slam,
                 },
               },
               transitions: {
@@ -239,7 +243,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
                     to: "windup",
                     when: brain.targetDistance
                       .le(SLAM_RANGE)
-                      .and(attackTurnFree("slam")),
+                      .and(attackTurnFree(slam)),
                   },
                 ],
                 windup: [
@@ -247,7 +251,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
                     to: "commit",
                     when: brain.timeInActivityMs
                       .ge(SLAM_WINDUP_MS)
-                      .and(attackTurnHeld("slam")),
+                      .and(attackTurnHeld(slam)),
                   },
                   // Another brute asked on the same tick and won the turn.
                   { to: "hunt", when: brain.timeInActivityMs.ge(SLAM_WINDUP_MS) },

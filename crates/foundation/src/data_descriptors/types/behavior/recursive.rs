@@ -31,8 +31,18 @@ pub const MAX_BEHAVIOR_NESTING_DEPTH: usize = 8;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuardedRow {
+    /// The row's guard. An authored row may omit it; the row is then always
+    /// enabled, so it deserializes as the constant `true`.
+    #[serde(default = "always_enabled")]
     pub when: IrNode,
     pub to: String,
+}
+
+/// The guard an authored row without `when` reads.
+fn always_enabled() -> IrNode {
+    IrNode::Const {
+        value: crate::ir::IrValue::Bool(true),
+    }
 }
 
 /// A recursive graph envelope with no graph-wide gameplay fields.
@@ -985,6 +995,38 @@ pub(crate) fn unreachable_activities(envelope: &BehaviorGraphEnvelope) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // S5: a row may omit `when`; it is then always enabled, and still
+    // rejects a field it does not know.
+    #[test]
+    fn a_row_without_when_is_always_enabled_and_still_denies_unknown_fields() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "activities": {
+                "idle": { "animation": "idle" },
+                "walk": { "animation": "walk" }
+            },
+            "transitions": { "idle": [{ "to": "walk" }] },
+            "moveSpeed": 3.0
+        }))
+        .expect("a row without `when` deserializes");
+        assert_eq!(
+            graph.envelope.transitions["idle"][0].when,
+            IrNode::Const {
+                value: crate::ir::IrValue::Bool(true)
+            }
+        );
+        graph.validate().expect("an always-enabled row validates");
+
+        let unknown = serde_json::from_value::<BehaviorGraphDescriptor>(serde_json::json!({
+            "initial": "idle",
+            "activities": { "idle": { "animation": "idle" } },
+            "transitions": { "idle": [{ "to": "idle", "queue": "slam" }] },
+            "moveSpeed": 3.0
+        }))
+        .expect_err("an unknown row field rejects");
+        assert!(unknown.to_string().contains("queue"), "{unknown}");
+    }
 
     #[test]
     fn standoff_distance_defaults_to_per_attack_engagement_radius_override() {

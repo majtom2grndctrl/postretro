@@ -4,7 +4,7 @@
 //
 // See: context/lib/scripting.md §2
 
-import { brain, candidate, defaultToken, defineEntity } from "postretro";
+import { brain, candidate, defaultToken, defineAttack, defineEntity } from "postretro";
 import type { EntityTypeDescriptor } from "postretro";
 
 /** Classname for entities driven by `rotator_driver.{ts,luau}`. */
@@ -19,6 +19,12 @@ export const POSE_FIXTURE_ENEMY_CLASSNAME = "pose_fixture_enemy";
 const DETECTION_RANGE = 16;
 const JAB_RANGE = 2;
 const POSE_FIXTURE_AGGRO_RANGE = 50;
+
+// An attack is a handle its binding names. `draws` names the attack tokens a
+// turn for the jab takes from its target's allowance. `defaultToken` is what
+// an attack without `draws` draws; a mod declares its own with
+// `defineAttackToken`.
+const jab = defineAttack({ draws: [defaultToken], damage: 8, maxRange: JAB_RANGE, cooldownMs: 1200 });
 
 /**
  * A deliberately minimal AI fixture for E21 pose-modifier verification. Its
@@ -50,12 +56,7 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attacks: {
-        // `draws` names the attack tokens a turn for the jab takes from its
-        // target's allowance. `defaultToken` is what an attack without `draws`
-        // draws; a mod declares its own with `defineAttackToken`.
-        jab: { draws: [defaultToken], damage: 8, maxRange: JAB_RANGE, cooldownMs: 1200 },
-      },
+      // No `attacks` list: the behavior has the attacks its activities fire.
       engagementRadius: JAB_RANGE,
       candidateFilter: candidate.died.not().and(
         candidate.distance.le(POSE_FIXTURE_AGGRO_RANGE),
@@ -66,7 +67,7 @@ export const poseFixtureEnemyEntity: EntityTypeDescriptor = defineEntity({
         attack: {
           animation: "attack",
           motion: "chaseTarget",
-          action: { attack: "jab" },
+          action: { attack: jab },
         },
       },
       transitions: {

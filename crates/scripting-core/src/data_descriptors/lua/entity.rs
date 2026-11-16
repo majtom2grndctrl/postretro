@@ -173,6 +173,7 @@ pub fn entity_descriptor_from_lua(
                     }
                     let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
                     normalize_behavior_selectors(&mut json)?;
+                    lower_behavior(&mut json, canonical_name.as_deref())?;
                     validate_optional_knockback_object(&json, "components.behavior.knockback")?;
                     let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
                         .map_err(|e| DescriptorError::InvalidShape {
@@ -316,29 +317,46 @@ pub(super) fn validate_optional_string_field_lua(
     })
 }
 
-/// Validate the behavior graph's presentation-only sound keys:
-/// `AttackParams.sound` (root-only) and
-/// `BehaviorActivityDescriptor.sound` (every envelope, root and nested
-/// layers). Walks the raw Luau tables directly, before the JSON bridge can
-/// launder a function/userdata/thread value into `null`.
+/// Validate the behavior graph's presentation-only sound keys: every attack
+/// handle's `sound`, wherever the handle stands (the `attacks` list, an
+/// action, a mark, a row), and `BehaviorActivityDescriptor.sound` (every
+/// envelope, root and nested layers). Walks the raw Luau tables directly,
+/// before the JSON bridge can launder a function/userdata/thread value into
+/// `null`.
 fn validate_optional_behavior_sound_keys_lua(behavior: &Table) -> Result<(), DescriptorError> {
-    if let LuaValue::Table(attacks) = behavior.get::<LuaValue>("attacks").map_err(lua_err)? {
-        for pair in attacks.pairs::<LuaValue, LuaValue>() {
-            let (name, entry) = pair.map_err(lua_err)?;
-            let LuaValue::Table(entry) = entry else {
-                continue;
-            };
-            validate_optional_string_field_lua(
-                &entry,
-                "sound",
-                &format!(
-                    "components.behavior.attacks.{}.sound",
-                    lua_key_to_string(&name)
-                ),
-            )?;
-        }
-    }
+    validate_attack_handle_sound_keys_lua(behavior, "components.behavior", 0)?;
     validate_activity_sound_keys_lua(behavior, "components.behavior")
+}
+
+/// Deeper than any authored behavior nests; stops a cyclic table.
+const MAX_ATTACK_HANDLE_SEARCH_DEPTH: usize = 64;
+
+/// Check the `sound` of every attack handle reachable from `table`, naming
+/// the handle's path (sequence entries as `[index]`, from 0).
+fn validate_attack_handle_sound_keys_lua(
+    table: &Table,
+    path: &str,
+    depth: usize,
+) -> Result<(), DescriptorError> {
+    if depth > MAX_ATTACK_HANDLE_SEARCH_DEPTH {
+        return Ok(());
+    }
+    if matches!(table.raw_get::<LuaValue>("kind").map_err(lua_err)?, LuaValue::String(kind) if kind == "attack")
+    {
+        validate_optional_string_field_lua(table, "sound", &format!("{path}.sound"))?;
+    }
+    for pair in table.pairs::<LuaValue, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        let LuaValue::Table(child) = value else {
+            continue;
+        };
+        let child_path = match key {
+            LuaValue::Integer(index) => format!("{path}[{}]", index - 1),
+            other => format!("{path}.{}", lua_key_to_string(&other)),
+        };
+        validate_attack_handle_sound_keys_lua(&child, &child_path, depth + 1)?;
+    }
+    Ok(())
 }
 
 /// Recurses through one behavior envelope's `activities` map, then into every

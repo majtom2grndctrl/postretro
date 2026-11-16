@@ -39,6 +39,22 @@ local JAB_COOLDOWN_MS = 400
 -- An outer row: passing during a jab's punch, it cuts that jab before `hit`.
 local PRESS_MS = 5000
 
+-- The brute's attacks. `claw` is not wired into the graph; the explicit
+-- `attacks` list keeps it on the archetype.
+local jab = defineAttack("jab", {
+  draws = { AttackTokens.melee },
+  damage = 8,
+  maxRange = JAB_RANGE,
+  cooldownMs = JAB_COOLDOWN_MS,
+})
+local slam = defineAttack("slam", {
+  draws = { AttackTokens.melee:with({ cost = 2 }), AttackTokens.heavy },
+  damage = 14,
+  maxRange = SLAM_RANGE,
+  cooldownMs = 1800,
+})
+local claw = defineAttack("claw", { damage = 15, damageType = DamageTypes.corrosive, maxRange = 2, cooldownMs = 800 })
+
 -- `and` is a Luau keyword, so composition uses bracket spelling; bind the left
 -- operands first so a three-term guard does not repeat its prefix.
 local inReach = brain.targetDistance:le(JAB_RANGE)
@@ -60,15 +76,15 @@ local jabs = {
     stalk = { animation = "walk" },
     jab = {
       animation = "attack_jab",
-      action = { attack = "jab", at = "hit" },
-      attackTurn = "jab",
+      action = { attack = jab, at = "hit" },
+      attackTurn = jab,
     },
   },
   transitions = {
     stalk = {
       {
         to = "jab",
-        when = restedInReach["and"](restedInReach, attackTurnFree("jab")),
+        when = restedInReach["and"](restedInReach, attackTurnFree(jab)),
       },
     },
     jab = {
@@ -144,21 +160,7 @@ M.referenceEnemyEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attacks = {
-        jab = {
-          draws = { AttackTokens.melee },
-          damage = 8,
-          maxRange = JAB_RANGE,
-          cooldownMs = JAB_COOLDOWN_MS,
-        },
-        slam = {
-          draws = { AttackTokens.melee:with({ cost = 2 }), AttackTokens.heavy },
-          damage = 14,
-          maxRange = SLAM_RANGE,
-          cooldownMs = 1800,
-        },
-        claw = { damage = 15, damageType = DamageTypes.corrosive, maxRange = 2, cooldownMs = 800 },
-      },
+      attacks = { jab, slam, claw },
       engagementRadius = CLOSE_STANDOFF,
       patrol = {
         mode = "pingPong",
@@ -188,31 +190,31 @@ M.referenceEnemyEntity = defineEntity({
                 windup = {
                   animation = "attack_slam",
                   motion = "hold",
-                  attackTurn = "slam",
+                  attackTurn = slam,
                 },
                 commit = {
                   animation = "attack_slam",
                   motion = "hold",
-                  action = { attack = "slam", at = "hit" },
-                  attackTurn = "slam",
+                  action = { attack = slam, at = "hit" },
+                  attackTurn = slam,
                 },
                 recover = {
                   animation = "attack_slam",
                   motion = "hold",
-                  attackTurn = "slam",
+                  attackTurn = slam,
                 },
               },
               transitions = {
                 hunt = {
                   {
                     to = "windup",
-                    when = inSlamRange["and"](inSlamRange, attackTurnFree("slam")),
+                    when = inSlamRange["and"](inSlamRange, attackTurnFree(slam)),
                   },
                 },
                 windup = {
                   {
                     to = "commit",
-                    when = windupDone["and"](windupDone, attackTurnHeld("slam")),
+                    when = windupDone["and"](windupDone, attackTurnHeld(slam)),
                   },
                   -- Another brute asked on the same tick and won the turn.
                   { to = "hunt", when = brain.timeInActivityMs:ge(SLAM_WINDUP_MS) },

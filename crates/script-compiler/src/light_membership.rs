@@ -108,6 +108,11 @@ const DATA_SCRIPT_PART_LUAU: &[(&str, &str, &str)] = &[
         "sdk/lib/data_script/attack_budget.luau",
     ),
     (
+        "attacks",
+        include_str!("../../../sdk/lib/data_script/attacks.luau"),
+        "sdk/lib/data_script/attacks.luau",
+    ),
+    (
         "playerEvents",
         include_str!("../../../sdk/lib/data_script/player_events.luau"),
         "sdk/lib/data_script/player_events.luau",
@@ -631,6 +636,8 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineDamageType",
     "defineAttackToken",
     "defaultToken",
+    "defineAttack",
+    "defineStance",
     "read",
     "fromRuntime",
     "set",

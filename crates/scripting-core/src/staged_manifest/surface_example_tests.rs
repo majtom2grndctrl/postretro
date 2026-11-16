@@ -31,8 +31,12 @@ export const heavy  = defineAttackToken({ limit: 1, refreshMs: 4000 });
 "#;
 
 const START_SCRIPT_TS: &str = r#"
-import { attackTurnFree, brain, defineMod } from "postretro";
+import { attackTurnFree, brain, defineAttack, defineMod } from "postretro";
 import { heavy, melee, ranged } from "./budget";
+
+const jab = defineAttack({ draws: [melee], damage: 8, maxRange: 2, cooldownMs: 1200 });
+const slam = defineAttack({ draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800 });
+const shoot = defineAttack({ draws: [ranged], weapon: "enemy_rifle_burst", standoffDistance: 6 });
 
 export default defineMod({
   name: "Surface", id: "e10.surface", version: "1",
@@ -43,20 +47,14 @@ export default defineMod({
   entities: [
     { canonicalName: "reference_enemy", components: { behavior: {
       initial: "engage", moveSpeed: 3,
-      attacks: {
-        jab:  { draws: [melee], damage: 8, maxRange: 2, cooldownMs: 1200 },
-        slam: { draws: [melee.with({ cost: 2 }), heavy], damage: 14, maxRange: 3.5, cooldownMs: 1800 },
-      },
+      attacks: [jab, slam],
       activities: {
-        engage: { animation: "walk", motion: "chaseTarget", action: { attack: "jab" } },
+        engage: { animation: "walk", motion: "chaseTarget", action: { attack: jab } },
       },
       transitions: {},
     } } },
     { canonicalName: "rifle_trooper", components: { behavior: {
       initial: "engage", moveSpeed: 4,
-      attacks: {
-        shoot: { draws: [ranged], weapon: "enemy_rifle_burst", standoffDistance: 6 },
-      },
       activities: {
         engage: {
           animation: "walk",
@@ -65,12 +63,12 @@ export default defineMod({
               initial: "wait",
               activities: {
                 wait:  { animation: "walk", motion: "strafe" },
-                burst: { animation: "idle_aiming", motion: "hold", action: { attack: "shoot" }, attackTurn: "shoot" },
+                burst: { animation: "idle_aiming", motion: "hold", action: { attack: shoot }, attackTurn: shoot },
                 move:  { animation: "run", motion: "reposition", facing: "travel",
                          reposition: { arc: [60, 120] } },
               },
               transitions: {
-                wait:  [{ to: "burst", when: attackTurnFree("shoot").and(brain.targetVisible) }],
+                wait:  [{ to: "burst", when: attackTurnFree(shoot).and(brain.targetVisible) }],
                 burst: [{ to: "move", when: brain.attacksFiredInActivity.ge(1).and(brain.timeInActivityMs.ge(900)) },
                         { to: "wait", when: brain.hasAttackTurn.not().and(brain.timeInActivityMs.ge(100)) }],
                 move:  [{ to: "wait", when: brain.timeInActivityMs.ge(1500) }],
@@ -97,6 +95,10 @@ const START_SCRIPT_LUAU: &str = r#"
 local Budget = require("./budget.luau")
 local melee, ranged, heavy = Budget.melee, Budget.ranged, Budget.heavy
 
+local jab = defineAttack("jab", { draws = { melee }, damage = 8, maxRange = 2, cooldownMs = 1200 })
+local slam = defineAttack("slam", { draws = { melee:with({ cost = 2 }), heavy }, damage = 14, maxRange = 3.5, cooldownMs = 1800 })
+local shoot = defineAttack("shoot", { draws = { ranged }, weapon = "enemy_rifle_burst", standoffDistance = 6 })
+
 return defineMod({
   name = "Surface", id = "e10.surface", version = "1",
   attackTokens = { melee, ranged, heavy },
@@ -106,20 +108,14 @@ return defineMod({
   entities = {
     { canonicalName = "reference_enemy", components = { behavior = {
       initial = "engage", moveSpeed = 3,
-      attacks = {
-        jab = { draws = { melee }, damage = 8, maxRange = 2, cooldownMs = 1200 },
-        slam = { draws = { melee:with({ cost = 2 }), heavy }, damage = 14, maxRange = 3.5, cooldownMs = 1800 },
-      },
+      attacks = { jab, slam },
       activities = {
-        engage = { animation = "walk", motion = "chaseTarget", action = { attack = "jab" } },
+        engage = { animation = "walk", motion = "chaseTarget", action = { attack = jab } },
       },
       transitions = {},
     } } },
     { canonicalName = "rifle_trooper", components = { behavior = {
       initial = "engage", moveSpeed = 4,
-      attacks = {
-        shoot = { draws = { ranged }, weapon = "enemy_rifle_burst", standoffDistance = 6 },
-      },
       activities = {
         engage = {
           animation = "walk",
@@ -128,12 +124,12 @@ return defineMod({
               initial = "wait",
               activities = {
                 wait = { animation = "walk", motion = "strafe" },
-                burst = { animation = "idle_aiming", motion = "hold", action = { attack = "shoot" }, attackTurn = "shoot" },
+                burst = { animation = "idle_aiming", motion = "hold", action = { attack = shoot }, attackTurn = shoot },
                 move = { animation = "run", motion = "reposition", facing = "travel",
                          reposition = { arc = { 60, 120 } } },
               },
               transitions = {
-                wait = { { to = "burst", when = attackTurnFree("shoot")["and"](attackTurnFree("shoot"), brain.targetVisible) } },
+                wait = { { to = "burst", when = attackTurnFree(shoot)["and"](attackTurnFree(shoot), brain.targetVisible) } },
                 burst = {
                   { to = "move", when = brain.attacksFiredInActivity:ge(1)["and"](brain.attacksFiredInActivity:ge(1), brain.timeInActivityMs:ge(900)) },
                   { to = "wait", when = brain.hasAttackTurn["not"](brain.hasAttackTurn)["and"](brain.hasAttackTurn["not"](brain.hasAttackTurn), brain.timeInActivityMs:ge(100)) },
@@ -310,21 +306,22 @@ fn scripting_surface_example_parses_identically_in_both_runtimes() {
 }
 
 const CLIP_TIMED_TS: &str = r#"
-import { attackTurnFree, brain, defineMod } from "postretro";
+import { attackTurnFree, brain, defineAttack, defineMod } from "postretro";
+
+const jab = defineAttack({ damage: 8, maxRange: 2, cooldownMs: 1200 });
 
 const jabs = {
   initial: "stalk",
   moveSpeed: 3,
-  attacks: { jab: { damage: 8, maxRange: 2, cooldownMs: 1200 } },
   activities: {
     stalk: { animation: "walk" },
     jab: {
       animation: "attack_jab",                   // a state playing clip "punch"
-      action: { attack: "jab", at: "hit" },      // fires when punch reaches `hit`;
+      action: { attack: jab, at: "hit" },        // fires when punch reaches `hit`;
     },                                           // holds the jab's turn from entry
   },
   transitions: {
-    stalk: [{ to: "jab", when: brain.targetDistance.le(2).and(attackTurnFree("jab")) }],
+    stalk: [{ to: "jab", when: brain.targetDistance.le(2).and(attackTurnFree(jab)) }],
     jab: [{ to: "stalk", when: brain.animationDone }], // the punch has played through
   },
 };
@@ -337,20 +334,20 @@ export default defineMod({
 
 const CLIP_TIMED_LUAU: &str = r#"
 local inReach = brain.targetDistance:le(2)
+local jab = defineAttack("jab", { damage = 8, maxRange = 2, cooldownMs = 1200 })
 
 local jabs = {
   initial = "stalk",
   moveSpeed = 3,
-  attacks = { jab = { damage = 8, maxRange = 2, cooldownMs = 1200 } },
   activities = {
     stalk = { animation = "walk" },
     jab = {
       animation = "attack_jab",                  -- a state playing clip "punch"
-      action = { attack = "jab", at = "hit" },   -- fires when punch reaches `hit`;
+      action = { attack = jab, at = "hit" },     -- fires when punch reaches `hit`;
     },                                           -- holds the jab's turn from entry
   },
   transitions = {
-    stalk = { { to = "jab", when = inReach["and"](inReach, attackTurnFree("jab")) } },
+    stalk = { { to = "jab", when = inReach["and"](inReach, attackTurnFree(jab)) } },
     jab = { { to = "stalk", when = brain.animationDone } }, -- the punch has played through
   },
 }

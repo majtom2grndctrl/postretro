@@ -529,8 +529,8 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
         };
 
         // The arity-keyed definers take one argument fewer than their named
-        // form. The defense and attack-token definers end in an optional
-        // object, so arity cannot tell `(matrix, options)` from
+        // form. The defense, attack-token, attack and stance definers end in
+        // an object, so arity cannot tell `(matrix, options)` from
         // `(name, matrix)`; they key on an object-literal first argument
         // instead, and any other first argument is the explicit form.
         let qualifies = match callee.sym.as_ref() {
@@ -542,6 +542,9 @@ fn apply_binding_name_sugar(var: &mut swc_ecma_ast::VarDecl) {
             "defineDefenseLayer" | "defineAttackToken" => {
                 call.args.is_empty()
                     || (call.args.len() == 1 && first_arg_is_object_literal(&call.args))
+            }
+            "defineAttack" | "defineStance" => {
+                call.args.len() == 1 && first_arg_is_object_literal(&call.args)
             }
             _ => continue,
         };
@@ -1498,6 +1501,47 @@ mod tests {
             "explicit name stays: {js}"
         );
         for name in ["explicitToken", "held"] {
+            assert!(
+                !js.contains(&format!("\"{name}\"")),
+                "non-qualifying call must not receive `{name}`: {js}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // T1: `defineAttack` and `defineStance` name a handle by its direct
+    // top-level binding when their one argument is an object literal; an
+    // explicit name is kept, and a call anywhere else gets no name (the SDK
+    // then throws the binding-name diagnostic).
+    #[test]
+    fn binding_name_sugar_names_attacks_and_stances() {
+        let dir = unique_tempdir("binding-name-sugar-attack");
+        let entry = dir.join("entry.ts");
+        fs::write(
+            &entry,
+            r#"
+            export const overhead = defineStance({ animation: "smash_windup" });
+            const slam = defineAttack({ damage: 14, maxRange: 3.5, cooldownMs: 1800, beginningStance: overhead });
+            const explicitAttack = defineAttack("jab", { damage: 8, maxRange: 2, cooldownMs: 400 });
+            const explicitStance = defineStance("coil", { animation: "swipe_windup" });
+            const declaration = { damage: 1, maxRange: 1, cooldownMs: 1 };
+            const held = defineAttack(declaration);
+            const nested = { inline: defineAttack({ damage: 1, maxRange: 1, cooldownMs: 1 }) };
+            "#,
+        )
+        .unwrap();
+
+        let js = bundle_entry(&fs::canonicalize(&entry).unwrap()).expect("bundle should succeed");
+        for (call, name) in [("defineStance", "overhead"), ("defineAttack", "slam")] {
+            assert!(
+                js.contains(&format!("{call}(\"{name}\"")),
+                "bundle should name `{name}` by its binding: {js}"
+            );
+        }
+        assert!(js.contains("defineAttack(\"jab\""), "explicit name stays: {js}");
+        assert!(js.contains("defineStance(\"coil\""), "explicit name stays: {js}");
+        for name in ["explicitAttack", "explicitStance", "held", "nested", "inline"] {
             assert!(
                 !js.contains(&format!("\"{name}\"")),
                 "non-qualifying call must not receive `{name}`: {js}"

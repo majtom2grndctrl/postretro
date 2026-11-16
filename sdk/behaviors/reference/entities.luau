@@ -13,6 +13,12 @@ local DETECTION_RANGE = 16
 local JAB_RANGE = 2
 local POSE_FIXTURE_AGGRO_RANGE = 50
 
+-- An attack is a handle; Luau passes its name. `draws` names the attack tokens
+-- a turn for the jab takes from its target's allowance. `defaultToken` is what
+-- an attack without `draws` draws; a mod declares its own with
+-- `defineAttackToken`.
+local jab = defineAttack("jab", { draws = { defaultToken }, damage = 8, maxRange = JAB_RANGE, cooldownMs = 1200 })
+
 M.poseFixtureEnemyEntity = defineEntity({
   canonicalName = M.POSE_FIXTURE_ENEMY_CLASSNAME,
   components = {
@@ -38,12 +44,7 @@ M.poseFixtureEnemyEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attacks = {
-        -- `draws` names the attack tokens a turn for the jab takes from its
-        -- target's allowance. `defaultToken` is what an attack without `draws`
-        -- draws; a mod declares its own with `defineAttackToken`.
-        jab = { draws = { defaultToken }, damage = 8, maxRange = JAB_RANGE, cooldownMs = 1200 },
-      },
+      -- No `attacks` list: the behavior has the attacks its activities fire.
       engagementRadius = JAB_RANGE,
       candidateFilter = candidate.died["not"](candidate.died)["and"](
         candidate.died["not"](candidate.died),
@@ -55,7 +56,7 @@ M.poseFixtureEnemyEntity = defineEntity({
         attack = {
           animation = "attack",
           motion = "chaseTarget",
-          action = { attack = "jab" },
+          action = { attack = jab },
         },
       },
       transitions = {

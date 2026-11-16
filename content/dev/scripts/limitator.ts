@@ -17,7 +17,7 @@
 //
 // Map-placeable via `"classname" "limitator"`.
 
-import { attackTurnFree, brain, defineEntity } from "postretro";
+import { attackTurnFree, brain, defineAttack, defineEntity } from "postretro";
 import { ranged } from "./attack-tokens";
 
 // Ranged-combat tuning. Unlike the melee `reference_enemy`, the limitator wants
@@ -71,6 +71,15 @@ const BURST_MS = 600;
 const MOVE_MS = 1500;
 // A burst whose turn went to a squadmate asking on the same tick gives up.
 const TURN_LOST_MS = 100;
+
+// The weapon owns damage, reach, and cooldown; this attack keeps only AI
+// positioning and its draw. Its 12 m reach covers the fire band (entered
+// inside FIRE_RANGE and held to BREAK_RANGE) with a small safety margin.
+const shoot = defineAttack({
+  draws: [ranged],
+  weapon: "enemy_rifle_burst",
+  standoffDistance: STANDOFF_DISTANCE,
+});
 
 export const limitatorEntity = defineEntity({
   canonicalName: "limitator",
@@ -178,17 +187,6 @@ export const limitatorEntity = defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 4,
-      attacks: {
-        // The weapon owns damage, reach, and cooldown; this entry keeps only AI
-        // positioning and its draw. Its 12 m reach covers the fire band
-        // (entered inside FIRE_RANGE and held to BREAK_RANGE) with a small
-        // safety margin.
-        shoot: {
-          draws: [ranged],
-          weapon: "enemy_rifle_burst",
-          standoffDistance: STANDOFF_DISTANCE,
-        },
-      },
       // The strafe ring and reposition slots sit at this radius, the shoot
       // standoff, so the squad circles at its firing distance.
       engagementRadius: STANDOFF_DISTANCE,
@@ -221,8 +219,8 @@ export const limitatorEntity = defineEntity({
                 burst: {
                   animation: "shoot",
                   motion: "hold",
-                  action: { attack: "shoot", at: "kick" },
-                  attackTurn: "shoot",
+                  action: { attack: shoot, at: "kick" },
+                  attackTurn: shoot,
                 },
                 // Fire, then relocate: a slot to the side of where it fired.
                 move: {
@@ -251,7 +249,7 @@ export const limitatorEntity = defineEntity({
                     to: "burst",
                     when: brain.timeInActivityMs
                       .ge(WAIT_MS)
-                      .and(attackTurnFree("shoot")),
+                      .and(attackTurnFree(shoot)),
                   },
                 ],
                 burst: [

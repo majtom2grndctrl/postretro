@@ -9,12 +9,21 @@ use postretro_foundation::data_descriptors::{
 const JS_GUARD: &str = r#"{ op: "input", name: "@brain.hasTarget" }"#;
 const LUA_GUARD: &str = r#"{ op = "input", name = "@brain.hasTarget" }"#;
 
+// Attack handles as `defineAttack` builds them; these raw VMs carry no SDK.
+// `kick` is declared but never listed, for the unlisted-reference rejection.
+const JS_ATTACK_HANDLES: &str = r#"const jab = { kind: "attack", name: "jab", damage: 4, maxRange: 2, cooldownMs: 500 };
+const slam = { kind: "attack", name: "slam", damage: 9, maxRange: 3, cooldownMs: 1500 };
+const kick = { kind: "attack", name: "kick", damage: 1, maxRange: 1, cooldownMs: 1 };"#;
+const LUA_ATTACK_HANDLES: &str = r#"local jab = { kind = "attack", name = "jab", damage = 4, maxRange = 2, cooldownMs = 500 }
+local slam = { kind = "attack", name = "slam", damage = 9, maxRange = 3, cooldownMs = 1500 }
+local kick = { kind = "attack", name = "kick", damage = 1, maxRange = 1, cooldownMs = 1 }"#;
+
 fn js_behavior(root_extra: &str) -> String {
     format!(
-        r#"({{ components: {{ behavior: {{
+        r#"{JS_ATTACK_HANDLES}
+        ({{ components: {{ behavior: {{
             initial: "idle",
             moveSpeed: 3,
-            attacks: {{ slam: {{ damage: 8, maxRange: 2, cooldownMs: 1200 }} }},
             activities: {{
                 idle: {{ animation: "idle", motion: "hold" }},
                 engage: {{ animation: "walk", layers: {{
@@ -24,7 +33,7 @@ fn js_behavior(root_extra: &str) -> String {
                         initial: "windup",
                         activities: {{
                             windup: {{ animation: "windup" }},
-                            commit: {{ animation: "slam", action: {{ attack: "slam" }} }}
+                            commit: {{ animation: "slam", action: {{ attack: slam }} }}
                         }},
                         transitions: {{ windup: [{{ when: {JS_GUARD}, to: "commit" }}], "*": [] }}
                     }}
@@ -38,10 +47,10 @@ fn js_behavior(root_extra: &str) -> String {
 
 fn lua_behavior(root_extra: &str) -> String {
     format!(
-        r#"return {{ components = {{ behavior = {{
+        r#"{LUA_ATTACK_HANDLES}
+        return {{ components = {{ behavior = {{
             initial = "idle",
             moveSpeed = 3,
-            attacks = {{ slam = {{ damage = 8, maxRange = 2, cooldownMs = 1200 }} }},
             activities = {{
                 idle = {{ animation = "idle", motion = "hold" }},
                 engage = {{ animation = "walk", layers = {{
@@ -51,7 +60,7 @@ fn lua_behavior(root_extra: &str) -> String {
                         initial = "windup",
                         activities = {{
                             windup = {{ animation = "windup" }},
-                            commit = {{ animation = "slam", action = {{ attack = "slam" }} }}
+                            commit = {{ animation = "slam", action = {{ attack = slam }} }}
                         }},
                         transitions = {{ windup = {{ {{ when = {LUA_GUARD}, to = "commit" }} }}, ["*"] = {{}} }}
                     }}
@@ -159,10 +168,10 @@ fn both_runtimes_reject_inline_activity_transitions() {
 #[test]
 fn both_runtimes_reject_actions_on_move_to_last_known() {
     let js = js_error(&js_behavior(
-        ", initial: \"investigate\", activities: { investigate: { animation: \"walk\", motion: \"moveToLastKnown\", action: { attack: \"slam\" } } }, transitions: {}",
+        ", initial: \"investigate\", activities: { investigate: { animation: \"walk\", motion: \"moveToLastKnown\", action: { attack: slam } } }, transitions: {}",
     ));
     let lua = lua_error(&lua_behavior(
-        ", initial = \"investigate\", activities = { investigate = { animation = \"walk\", motion = \"moveToLastKnown\", action = { attack = \"slam\" } } }, transitions = {}",
+        ", initial = \"investigate\", activities = { investigate = { animation = \"walk\", motion = \"moveToLastKnown\", action = { attack = slam } } }, transitions = {}",
     ));
     for error in [&js, &lua] {
         assert!(
@@ -188,10 +197,10 @@ fn both_runtimes_reject_composite_position_goals_with_offense_actions() {
         ),
     ] {
         let js = js_error(&js_behavior(&format!(
-            r#", initial: "engage", activities: {{ engage: {{ animation: "walk", layers: {{ move: ["{motion}"], offense: [{{ action: {{ attack: "slam" }} }}] }} }} }}, transitions: {{}}{js_patrol}"#,
+            r#", initial: "engage", activities: {{ engage: {{ animation: "walk", layers: {{ move: ["{motion}"], offense: [{{ action: {{ attack: slam }} }}] }} }} }}, transitions: {{}}{js_patrol}"#,
         )));
         let lua = lua_error(&lua_behavior(&format!(
-            r#", initial = "engage", activities = {{ engage = {{ animation = "walk", layers = {{ move = {{ "{motion}" }}, offense = {{ {{ action = {{ attack = "slam" }} }} }} }} }} }}, transitions = {{}}{lua_patrol}"#,
+            r#", initial = "engage", activities = {{ engage = {{ animation = "walk", layers = {{ move = {{ "{motion}" }}, offense = {{ {{ action = {{ attack = slam }} }} }} }} }} }}, transitions = {{}}{lua_patrol}"#,
         )));
         for error in [&js, &lua] {
             assert!(
@@ -213,10 +222,10 @@ fn both_runtimes_reject_composite_position_goals_with_offense_actions() {
 #[test]
 fn both_runtimes_reject_nested_graph_position_goals_with_parent_actions() {
     let js = js_error(&js_behavior(
-        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { offense: [{ action: { attack: "slam" } }], phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" } }, transitions: {} } } } }, transitions: {}"#,
+        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { offense: [{ action: { attack: slam } }], phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" } }, transitions: {} } } } }, transitions: {}"#,
     ));
     let lua = lua_error(&lua_behavior(
-        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { offense = { { action = { attack = "slam" } } }, phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" } }, transitions = {} } } } }, transitions = {}"#,
+        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { offense = { { action = { attack = slam } } }, phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" } }, transitions = {} } } } }, transitions = {}"#,
     ));
     for error in [&js, &lua] {
         assert!(
@@ -240,10 +249,10 @@ fn both_runtimes_reject_nested_graph_position_goals_with_parent_actions() {
 #[test]
 fn both_runtimes_allow_mutually_exclusive_nested_position_goal_and_action() {
     let js = js_behavior(
-        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" }, attack: { animation: "slam", action: { attack: "slam" } } }, transitions: { investigate: [{ when: { op: "input", name: "@brain.hasTarget" }, to: "attack" }] } } } } }, transitions: {}"#,
+        r#", initial: "engage", activities: { engage: { animation: "walk", layers: { phase: { initial: "investigate", activities: { investigate: { animation: "walk", motion: "moveToLastKnown" }, attack: { animation: "slam", action: { attack: slam } } }, transitions: { investigate: [{ when: { op: "input", name: "@brain.hasTarget" }, to: "attack" }] } } } } }, transitions: {}"#,
     );
     let lua = lua_behavior(
-        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" }, attack = { animation = "slam", action = { attack = "slam" } } }, transitions = { investigate = { { when = { op = "input", name = "@brain.hasTarget" }, to = "attack" } } } } } } }, transitions = {}"#,
+        r#", initial = "engage", activities = { engage = { animation = "walk", layers = { phase = { initial = "investigate", activities = { investigate = { animation = "walk", motion = "moveToLastKnown" }, attack = { animation = "slam", action = { attack = slam } } }, transitions = { investigate = { { when = { op = "input", name = "@brain.hasTarget" }, to = "attack" } } } } } } }, transitions = {}"#,
     );
 
     assert!(
@@ -551,18 +560,16 @@ fn shipped_pose_fixture_is_a_recursive_graph_with_valid_mesh_animation_states() 
 // Engaged motion surface (E10): `strafe`, `reposition`, `facing`, and
 // `attackTurn` marks, through both production VMs.
 
-const TWO_ATTACKS_JS: &str = "jab: { damage: 4, maxRange: 2, cooldownMs: 500 }, slam: { damage: 9, maxRange: 3, cooldownMs: 1500 }";
-const TWO_ATTACKS_LUA: &str = "jab = { damage = 4, maxRange = 2, cooldownMs = 500 }, slam = { damage = 9, maxRange = 3, cooldownMs = 1500 }";
 
 fn js_activities(activities: &str) -> String {
     js_behavior(&format!(
-        ", initial: \"engage\", attacks: {{ {TWO_ATTACKS_JS} }}, activities: {{ {activities} }}, transitions: {{}}"
+        ", initial: \"engage\", attacks: [jab, slam], activities: {{ {activities} }}, transitions: {{}}"
     ))
 }
 
 fn lua_activities(activities: &str) -> String {
     lua_behavior(&format!(
-        ", initial = \"engage\", attacks = {{ {TWO_ATTACKS_LUA} }}, activities = {{ {activities} }}, transitions = {{}}"
+        ", initial = \"engage\", attacks = {{ jab, slam }}, activities = {{ {activities} }}, transitions = {{}}"
     ))
 }
 
@@ -576,7 +583,7 @@ fn engaged_motion_surface_parses_identically_in_both_runtimes() {
                 initial: "wait",
                 activities: {{
                     wait: {{ animation: "walk", motion: "strafe" }},
-                    burst: {{ animation: "idle_aiming", motion: "hold", action: {{ attack: "slam" }}, attackTurn: "slam" }},
+                    burst: {{ animation: "idle_aiming", motion: "hold", action: {{ attack: slam }}, attackTurn: slam }},
                     move: {{ animation: "run", motion: "reposition", facing: "travel", reposition: {{ arc: [60, 120] }} }},
                     far: {{ animation: "run", motion: "reposition", facing: "target", reposition: {{ minTravel: 8 }} }}
                 }},
@@ -595,7 +602,7 @@ fn engaged_motion_surface_parses_identically_in_both_runtimes() {
                 initial = "wait",
                 activities = {{
                     wait = {{ animation = "walk", motion = "strafe" }},
-                    burst = {{ animation = "idle_aiming", motion = "hold", action = {{ attack = "slam" }}, attackTurn = "slam" }},
+                    burst = {{ animation = "idle_aiming", motion = "hold", action = {{ attack = slam }}, attackTurn = slam }},
                     move = {{ animation = "run", motion = "reposition", facing = "travel", reposition = {{ arc = {{ 60, 120 }} }} }},
                     far = {{ animation = "run", motion = "reposition", facing = "target", reposition = {{ minTravel = 8 }} }}
                 }},
@@ -785,23 +792,23 @@ fn both_runtimes_reject_disagreeing_attack_turn_marks_with_paths() {
     let guard_lua = LUA_GUARD;
     for (js_activity, lua_activity, path) in [
         (
-            r#"engage: { animation: "idle", attackTurn: "kick" }"#.to_string(),
-            r#"engage = { animation = "idle", attackTurn = "kick" }"#.to_string(),
+            r#"engage: { animation: "idle", attackTurn: kick }"#.to_string(),
+            r#"engage = { animation = "idle", attackTurn = kick }"#.to_string(),
             format!("{ENGAGE}.attackTurn"),
         ),
         (
-            r#"engage: { attackTurn: "slam", layers: { offense: { initial: "jab", activities: { jab: { animation: "jab", attackTurn: "jab" } }, transitions: {} } } }"#.to_string(),
-            r#"engage = { attackTurn = "slam", layers = { offense = { initial = "jab", activities = { jab = { animation = "jab", attackTurn = "jab" } }, transitions = {} } } }"#.to_string(),
+            r#"engage: { attackTurn: slam, layers: { offense: { initial: "jab", activities: { jab: { animation: "jab", attackTurn: jab } }, transitions: {} } } }"#.to_string(),
+            r#"engage = { attackTurn = slam, layers = { offense = { initial = "jab", activities = { jab = { animation = "jab", attackTurn = jab } }, transitions = {} } } }"#.to_string(),
             format!("{ENGAGE}.layers.offense.activities.jab.attackTurn"),
         ),
         (
-            r#"engage: { animation: "jab", attackTurn: "slam", action: { attack: "jab" } }"#.to_string(),
-            r#"engage = { animation = "jab", attackTurn = "slam", action = { attack = "jab" } }"#.to_string(),
+            r#"engage: { animation: "jab", attackTurn: slam, action: { attack: jab } }"#.to_string(),
+            r#"engage = { animation = "jab", attackTurn = slam, action = { attack = jab } }"#.to_string(),
             format!("{ENGAGE}.action.attack"),
         ),
         (
-            format!(r#"engage: {{ attackTurn: "slam", layers: {{ offense: [{{ when: {guard_js}, action: {{ attack: "jab" }} }}] }} }}"#),
-            format!(r#"engage = {{ attackTurn = "slam", layers = {{ offense = {{ {{ when = {guard_lua}, action = {{ attack = "jab" }} }} }} }} }}"#),
+            format!(r#"engage: {{ attackTurn: slam, layers: {{ offense: [{{ when: {guard_js}, action: {{ attack: jab }} }}] }} }}"#),
+            format!(r#"engage = {{ attackTurn = slam, layers = {{ offense = {{ {{ when = {guard_lua}, action = {{ attack = jab }} }} }} }} }}"#),
             format!("{ENGAGE}.layers.offense[0].action.attack"),
         ),
     ] {

@@ -22,13 +22,22 @@ local SLAM_RANGE = 3.5
 local CHARGE_REACH = 2.5
 -- Combat slots sit inside jab reach, so the brute fights close enough to jab.
 local CLOSE_STANDOFF = 1.5
+-- The leap's tell waits in line from this far out; its hit lands at slam range.
+local LEAP_QUEUE_RANGE = 15
+local LEAP_SPEED = 3.5
+-- The combo and the leap each hold their tell for exactly this long.
+local TELL_MS = 666
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
 -- Strolls on the walk at its planted-foot speed, 1.2 m/s.
 local STROLL = 0.4
--- `approach`'s tell, from one roll per entry.
+-- `approach`'s tell, from one roll per entry: below 0.4 the crouch at slam
+-- range, below 0.25 the leaping crouch beyond it, 0.85 and up the roar,
+-- 0.65 to 0.85 the combo's drawn fist, else the cocked fist.
 local OVERHEAD_SHARE = 0.4
+local LEAP_SHARE = 0.25
 local BELLOW_FROM = 0.85
+local FLURRY_FROM = 0.65
 -- The crouch's two strikes.
 local SLAM_SHARE = 0.5
 local OVERHEAD_WAIT_MS = 3000
@@ -36,6 +45,8 @@ local COCK_WAIT_MS = 2000
 local BELLOW_WAIT_MS = 2500
 local OVERHEAD_LEAVE_RANGE = SLAM_RANGE + 1
 local COCK_LEAVE_RANGE = JAB_RANGE + 1
+local CROUCH_WAIT_MS = 3000
+local CROUCH_LEAVE_RANGE = LEAP_QUEUE_RANGE + 1
 local COIL_MS = 500
 local FLINCH_MS = 700
 
@@ -59,6 +70,20 @@ local bellow = defineStance("bellow", {
   sound = "fixtures/growl",
   holdMs = { 800, 1400 },
   breakOn = { damage = 40, to = "flinch" },
+})
+-- The combo's tell: the cocked fist's pose, told apart by its sound.
+local flurry = defineStance("flurry", {
+  animation = "punch_windup",
+  sound = "fixtures/pellet_hit",
+  holdMs = TELL_MS,
+  breakOn = { damage = 20, to = "flinch" },
+})
+-- The leap's tell: the slam's crouch, taken from afar.
+local crouch = defineStance("crouch", {
+  animation = "smash_windup",
+  sound = "fixtures/jump",
+  holdMs = TELL_MS,
+  breakOn = { damage = 30, to = "flinch" },
 })
 
 -- Strikes, each firing at its clip's `hit` unasked; the charge on reach.
@@ -101,6 +126,32 @@ local charge = defineAttack("charge", {
   release = { animation = "run", motion = "chaseTarget", speed = 2, ms = 1200, at = false },
   recover = { animation = "idle", ms = 500 },
 })
+-- Three quick jabs, 320 ms apart; one cooldown from the last. The recover
+-- leans back, a held pose that is not the drawn fist.
+local combo = defineAttack("combo", {
+  draws = { AttackTokens.melee },
+  damage = 5,
+  maxRange = JAB_RANGE,
+  cooldownMs = 2400,
+  beginningStance = flurry,
+  endingStance = coil,
+  release = { animation = "jab_combo", ["repeat"] = 3 },
+  recover = { animation = "swipe_windup", ms = 400 },
+})
+-- Leaps at its target from up to 15 m and slams at the clip's `hit`, a whiff
+-- if the target is then out of slam range.
+local leap = defineAttack("leap", {
+  draws = { AttackTokens.melee:with({ cost = 2 }), AttackTokens.heavy },
+  damage = 18,
+  maxRange = SLAM_RANGE,
+  queueRange = LEAP_QUEUE_RANGE,
+  standoffDistance = CLOSE_STANDOFF,
+  cooldownMs = 6000,
+  beginningStance = crouch,
+  endingStance = coil,
+  release = { animation = "leap_strike", motion = "chaseTarget", speed = LEAP_SPEED },
+  recover = { animation = "idle", ms = 600 },
+})
 -- `claw` is not wired into the graph; the explicit `attacks` list keeps it on
 -- the archetype.
 local claw = defineAttack("claw", { damage = 15, damageType = DamageTypes.corrosive, maxRange = 2, cooldownMs = 800 })
@@ -109,6 +160,8 @@ local claw = defineAttack("claw", { damage = 15, damageType = DamageTypes.corros
 -- operands first so a three-term guard does not repeat its prefix.
 local inSlamRange = brain.targetDistance:le(SLAM_RANGE)
 local inChargeReach = brain.targetDistance:le(CHARGE_REACH)
+local inLeapQueue = brain.targetDistance:le(LEAP_QUEUE_RANGE)
+local inJabRange = brain.targetDistance:le(JAB_RANGE)
 local noTarget = brain.hasTarget["not"](brain.hasTarget)
 local staleNoTarget = noTarget["and"](noTarget, brain.timeSinceDamageMs:gt(ALERT_MS))
 local freshKnownDamage = brain.damageSourceKnown["and"](brain.damageSourceKnown, brain.timeSinceDamageMs:le(STARTLE_MS))
@@ -142,7 +195,9 @@ M.referenceEnemyEntity = defineEntity({
       animations = {
         idle = { clip = "idle", loop = true },
         walk = { clip = "walk", loop = true, crossfadeMs = 200, travelSpeed = 1.2 },
-        run = { clip = "run", loop = true, crossfadeMs = 200, travelSpeed = 2.2 },
+        -- Dev-content exception: the charge strides about 2.7x on `run`.
+        -- Shipped content keeps the 1.5x default.
+        run = { clip = "run", loop = true, crossfadeMs = 200, travelSpeed = 2.2, maxPlaybackRate = 3 },
         smash_windup = { clip = "smash_windup", loop = false, crossfadeMs = 80 },
         swipe_windup = { clip = "swipe_windup", loop = false, crossfadeMs = 80 },
         punch_windup = { clip = "punch_windup", loop = false, crossfadeMs = 80 },
@@ -150,6 +205,20 @@ M.referenceEnemyEntity = defineEntity({
         smash_strike = { clip = "smash_strike", loop = false, crossfadeMs = 80, interrupt = "snap" },
         swipe_strike = { clip = "swipe_strike", loop = false, crossfadeMs = 80, interrupt = "snap" },
         punch_strike = { clip = "punch_strike", loop = false, crossfadeMs = 80, interrupt = "snap" },
+        jab_combo = {
+          clip = "jab_quick",
+          loop = true,
+          crossfadeMs = 80,
+          interrupt = "snap",
+          playbackRate = 2.5,
+        },
+        leap_strike = {
+          clip = "smash_strike",
+          loop = false,
+          crossfadeMs = 80,
+          interrupt = "snap",
+          scaleWithSpeed = false,
+        },
         flinch = {
           clip = "hit_reaction",
           loop = false,
@@ -169,7 +238,7 @@ M.referenceEnemyEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attacks = { jab, slam, lunge, charge, claw },
+      attacks = { jab, slam, lunge, charge, combo, leap, claw },
       engagementRadius = CLOSE_STANDOFF,
       patrol = {
         mode = "pingPong",
@@ -201,8 +270,16 @@ M.referenceEnemyEntity = defineEntity({
                     when = inSlamRange["and"](inSlamRange, brain.activityRoll:lt(OVERHEAD_SHARE)),
                   },
                   {
+                    to = crouch,
+                    when = inLeapQueue["and"](inLeapQueue, brain.activityRoll:lt(LEAP_SHARE)),
+                  },
+                  {
                     to = bellow,
                     when = inChargeReach["and"](inChargeReach, brain.activityRoll:ge(BELLOW_FROM)),
+                  },
+                  {
+                    to = flurry,
+                    when = inJabRange["and"](inJabRange, brain.activityRoll:ge(FLURRY_FROM)),
                   },
                   { to = cock, when = brain.targetDistance:le(JAB_RANGE) },
                 },
@@ -220,6 +297,16 @@ M.referenceEnemyEntity = defineEntity({
                 bellow = {
                   { to = charge },
                   { to = "approach", when = brain.timeInActivityMs:ge(BELLOW_WAIT_MS) },
+                },
+                flurry = {
+                  { to = combo },
+                  { to = "approach", when = brain.targetDistance:gt(COCK_LEAVE_RANGE) },
+                  { to = "approach", when = brain.timeInActivityMs:ge(COCK_WAIT_MS) },
+                },
+                crouch = {
+                  { to = leap },
+                  { to = "approach", when = brain.targetDistance:gt(CROUCH_LEAVE_RANGE) },
+                  { to = "approach", when = brain.timeInActivityMs:ge(CROUCH_WAIT_MS) },
                 },
                 coil = { { to = "approach", when = brain.timeInActivityMs:ge(COIL_MS) } },
                 flinch = { { to = "approach", when = brain.timeInActivityMs:ge(FLINCH_MS) } },

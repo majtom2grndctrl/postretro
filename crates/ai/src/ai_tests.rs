@@ -9195,6 +9195,13 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const FLINCH_MS: f32 = 700.0;
     const CHARGE_MS: f32 = 1200.0;
     const CHARGE_RECOVER_MS: f32 = 500.0;
+    const LEAP_QUEUE_RANGE: f32 = 15.0;
+    const LEAP_SPEED: f32 = 3.5;
+    const LEAP_SHARE: f32 = 0.25;
+    const FLURRY_FROM: f32 = 0.65;
+    const CROUCH_WAIT_MS: f32 = 3000.0;
+    const COMBO_RECOVER_MS: f32 = 400.0;
+    const LEAP_RECOVER_MS: f32 = 600.0;
 
     let number = |value: f32| {
         Box::new(IrNode::Const {
@@ -9309,9 +9316,13 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const OVERHEAD_HOLD: [f32; 2] = [500.0, 1100.0];
     const COCK_HOLD: [f32; 2] = [400.0, 800.0];
     const BELLOW_HOLD: [f32; 2] = [800.0, 1400.0];
+    // The combo's and the leap's tells hold exactly 666 ms.
+    const TELL_HOLD: [f32; 2] = [666.0, 666.0];
     const OVERHEAD_BREAK: f32 = 30.0;
     const COCK_BREAK: f32 = 20.0;
     const BELLOW_BREAK: f32 = 40.0;
+    const FLURRY_BREAK: f32 = 20.0;
+    const CROUCH_BREAK: f32 = 30.0;
 
     let mut charge_release = BehaviorActivityDescriptor {
         // `at: false`: the charge's contact fires on reach.
@@ -9324,6 +9335,17 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     };
     charge_release.motion = Some(MotionVerb::ChaseTarget);
     charge_release.speed = Some(2.0);
+    // `repeat: 3`: three passes of the looping `jab_combo`, a jab at each.
+    let combo_release = BehaviorActivityDescriptor {
+        passes: Some(3),
+        ..release("jab_combo", "combo", "coil")
+    };
+    // The leap steers at its target while its jump attack plays.
+    let leap_release = BehaviorActivityDescriptor {
+        motion: Some(MotionVerb::ChaseTarget),
+        speed: Some(LEAP_SPEED),
+        ..release("leap_strike", "leap", "coil")
+    };
 
     let move_selector = BehaviorLayerDescriptor::Selector(vec![
         BehaviorSelectorEntry::Row(BehaviorSelectorRow {
@@ -9357,6 +9379,14 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "bellow".to_string(),
                 rest("roar", "bellow", "fixtures/growl"),
+            ),
+            (
+                "flurry".to_string(),
+                rest("punch_windup", "flurry", "fixtures/pellet_hit"),
+            ),
+            (
+                "crouch".to_string(),
+                rest("smash_windup", "crouch", "fixtures/jump"),
             ),
             // Strikes: hold, release, recover.
             (
@@ -9401,6 +9431,21 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 "charge_recover".to_string(),
                 recover("idle", "charge", "cock"),
             ),
+            (
+                "combo_flurry".to_string(),
+                hold("punch_windup", "flurry", "combo"),
+            ),
+            ("combo_release".to_string(), combo_release),
+            (
+                "combo_recover".to_string(),
+                recover("swipe_windup", "combo", "coil"),
+            ),
+            (
+                "leap_crouch".to_string(),
+                hold("smash_windup", "crouch", "leap"),
+            ),
+            ("leap_release".to_string(), leap_release),
+            ("leap_recover".to_string(), recover("idle", "leap", "coil")),
         ]),
         transitions: BTreeMap::from([
             (
@@ -9411,8 +9456,16 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                         and(target_within(SLAM_RANGE), roll_below(OVERHEAD_SHARE)),
                     ),
                     edge(
+                        "crouch",
+                        and(target_within(LEAP_QUEUE_RANGE), roll_below(LEAP_SHARE)),
+                    ),
+                    edge(
                         "bellow",
                         and(target_within(CHARGE_REACH), roll_from(BELLOW_FROM)),
+                    ),
+                    edge(
+                        "flurry",
+                        and(target_within(JAB_RANGE), roll_from(FLURRY_FROM)),
                     ),
                     edge("cock", target_within(JAB_RANGE)),
                 ],
@@ -9442,6 +9495,24 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     break_row(BELLOW_BREAK),
                     queued("charge_bellow", "charge", always()),
                     edge("approach", in_activity_ms(BELLOW_WAIT_MS)),
+                ],
+            ),
+            (
+                "flurry".to_string(),
+                vec![
+                    break_row(FLURRY_BREAK),
+                    queued("combo_flurry", "combo", always()),
+                    edge("approach", target_beyond(JAB_RANGE + 1.0)),
+                    edge("approach", in_activity_ms(COCK_WAIT_MS)),
+                ],
+            ),
+            (
+                "crouch".to_string(),
+                vec![
+                    break_row(CROUCH_BREAK),
+                    queued("leap_crouch", "leap", always()),
+                    edge("approach", target_beyond(LEAP_QUEUE_RANGE + 1.0)),
+                    edge("approach", in_activity_ms(CROUCH_WAIT_MS)),
                 ],
             ),
             // No strike begins in `coil` and it breaks on nothing.
@@ -9484,6 +9555,24 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "charge_recover".to_string(),
                 vec![edge("cock", in_activity_ms(CHARGE_RECOVER_MS))],
+            ),
+            (
+                "combo_flurry".to_string(),
+                hold_rows("flurry", "combo", FLURRY_BREAK, TELL_HOLD),
+            ),
+            ("combo_release".to_string(), after_moment("combo", always())),
+            (
+                "combo_recover".to_string(),
+                vec![edge("coil", in_activity_ms(COMBO_RECOVER_MS))],
+            ),
+            (
+                "leap_crouch".to_string(),
+                hold_rows("crouch", "leap", CROUCH_BREAK, TELL_HOLD),
+            ),
+            ("leap_release".to_string(), after_moment("leap", always())),
+            (
+                "leap_recover".to_string(),
+                vec![edge("coil", in_activity_ms(LEAP_RECOVER_MS))],
             ),
         ]),
     });
@@ -9731,6 +9820,27 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     standoff_distance: Some(CLOSE_STANDOFF),
                     queue_range: None,
                     ..contact(16.0, CHARGE_REACH, 5000.0, vec![TokenDraw(token("heavy"))])
+                },
+            ),
+            (
+                "combo".to_string(),
+                contact(5.0, JAB_RANGE, 2400.0, vec![TokenDraw(token("melee"))]),
+            ),
+            (
+                "leap".to_string(),
+                AttackParams {
+                    // It queues from 15 m and runs for a slot inside its hit.
+                    standoff_distance: Some(CLOSE_STANDOFF),
+                    queue_range: Some(LEAP_QUEUE_RANGE),
+                    ..contact(
+                        18.0,
+                        SLAM_RANGE,
+                        6000.0,
+                        vec![
+                            TokenDraw(serde_json::json!({ "token": token("melee"), "cost": 2 })),
+                            TokenDraw(token("heavy")),
+                        ],
+                    )
                 },
             ),
             (
@@ -10367,13 +10477,15 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
         "smash_strike",
         "swipe_strike",
         "punch_strike",
+        "jab_combo",
+        "leap_strike",
         "flinch",
     ]
     .into_iter()
     .enumerate()
     {
         let mut once = usable_state(state, 4 + index);
-        once.looping = state == "run";
+        once.looping = ["run", "jab_combo"].contains(&state);
         states.insert(state.to_string(), once);
     }
     reg.set_component(enemy, mesh).unwrap();
@@ -10432,8 +10544,9 @@ fn reference_trace_reports_full_nested_paths_through_stances_and_strikes() {
             let leaf = leaf(state);
             state.starts_with(OFFENSE)
                 && match phase {
-                    "rest" => ["overhead", "coil", "cock", "bellow"].contains(&leaf.as_str()),
-                    "hold" => ["_overhead", "_cock", "_bellow"]
+                    "rest" => ["overhead", "coil", "cock", "bellow", "flurry", "crouch"]
+                        .contains(&leaf.as_str()),
+                    "hold" => ["_overhead", "_cock", "_bellow", "_flurry", "_crouch"]
                         .iter()
                         .any(|suffix| leaf.ends_with(suffix)),
                     other => leaf.ends_with(&format!("_{other}")),
@@ -10478,9 +10591,16 @@ fn reference_trace_reports_full_nested_paths_through_stances_and_strikes() {
         authored
             .iter()
             .filter(|row| row.state.starts_with(OFFENSE))
-            .filter(|row| ![APPROACH, "engage/offense/charge_release"].contains(&row.state.as_str()))
+            .filter(|row| {
+                ![
+                    APPROACH,
+                    "engage/offense/charge_release",
+                    "engage/offense/leap_release",
+                ]
+                .contains(&row.state.as_str())
+            })
             .all(|row| !row.has_destination),
-        "every pose and planted strike holds its ground; only the charge runs"
+        "every pose and planted strike holds its ground; only the charge and the leap run"
     );
 }
 

@@ -245,38 +245,120 @@ fn shipped_brute_strikes_fire_at_their_strike_clips_hit() {
     assert!(missing.is_empty(), "no missing-event warning: {missing:#?}");
 }
 
-/// What one charge run left: each tick's path, the ticks the charge fired,
-/// and the brute's ground speed and steering multiplier on each tick.
+/// What one brute run on the open floor left, tick by tick: the path, the
+/// mesh state and the playback rate the pose stage set, the brute's ground
+/// speed and steering multiplier, and its distance to the player; plus the
+/// ticks the run's attack fired (its cooldown restarted) and the ticks the
+/// player lost health, with the health lost.
 #[derive(Debug, Default)]
-struct ChargeRun {
+struct BruteRun {
     paths: Vec<String>,
-    fired: Vec<usize>,
+    states: Vec<String>,
+    rates: Vec<f32>,
     speed: Vec<f32>,
     steering: Vec<f32>,
+    distance: Vec<f32>,
+    fired: Vec<usize>,
+    hits: Vec<(usize, f32)>,
+    /// Each mesh state whose clip carries `hit`: the hit's clip time and the
+    /// clip's length, in seconds.
+    moments: BTreeMap<String, (f32, f32)>,
 }
 
-impl ChargeRun {
+impl BruteRun {
     fn entered(&self, leaf: &str) -> usize {
         entry_tick(&self.paths, leaf, 0)
             .unwrap_or_else(|| panic!("the brute enters `{leaf}`: {:?}", self.paths))
     }
 }
 
-/// Where the charge runs start: the brute, and the player 1.5 m off along +X,
-/// both resting on an open floor.
+/// Where the brute runs start, resting on an open floor.
+fn brute_home() -> Vec3 {
+    Vec3::new(10.0, chaser_rest_y(), 10.0)
+}
+
+/// Where the charge runs start: the brute, and the player 1.5 m off along +X.
 fn charge_home() -> (Vec3, Vec3) {
-    let brute = Vec3::new(10.0, chaser_rest_y(), 10.0);
+    let brute = brute_home();
     (brute, brute + Vec3::new(1.5, 0.0, 0.0))
 }
 
-/// The shipped brute's charge from `bellow` on an open floor, AI and steering
-/// ticked at 60 Hz, its tell seated as soon as the brute engages. While it
-/// holds the tell, `place` may move the player.
-fn charge_run(place: impl Fn(&Shipped, EntityId) -> Option<Vec3>) -> ChargeRun {
+impl Shipped {
+    /// Set the playback rate `enemy`'s current state plays at, as the pose
+    /// stage does after steering: the stride rule's clamped ratio of its
+    /// steered ground speed to the state's stride, for a state the graph
+    /// rate-scales, else the state's fixed `playbackRate`. Both through the
+    /// state's own policy (`MeshAnimation::stride_playback_target`). Returns
+    /// the rate.
+    fn pose_rate(&mut self, enemy: EntityId) -> f32 {
+        use postretro_entities::components::brain::TravelVariant;
+        use postretro_entities::components::mesh::PlaybackRateTarget;
+
+        let travel = agent_steering::path_state(&self.reg, enemy)
+            .expect("the brute steers")
+            .steering_velocity();
+        let speed = Vec3::new(travel.x, 0.0, travel.z).length();
+        let move_speed = self
+            .reg
+            .get_component::<AgentComponent>(enemy)
+            .unwrap()
+            .move_speed;
+        let brain = self.reg.get_component::<BrainComponent>(enemy).unwrap();
+        let mut mesh = self
+            .reg
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .clone();
+        let model = mesh.model.clone();
+        let animation = mesh.animation.as_mut().unwrap();
+        let current = animation.current_state.clone();
+        let scaled = animation.speed_scale
+            && brain
+                .rate_scaled_states()
+                .iter()
+                .any(|state| TravelVariant::of_state(state, &current).is_some());
+        let stride = scaled.then(|| {
+            let declared = &animation.states[&current];
+            let derived = self
+                .clips
+                .get_by_name(&model)
+                .and_then(|model| model.state_clip(declared.clip_index, &declared.clip))
+                .and_then(|clip| clip.travel_speed);
+            MeshAnimation::locomotion_rate_ratio(
+                speed,
+                declared.effective_travel_speed(derived),
+                move_speed,
+            )
+        });
+        let rate = match animation.stride_playback_target(stride) {
+            PlaybackRateTarget::Stride {
+                raw_ratio,
+                max_rate,
+            } => MeshAnimation::normalized_playback_rate_capped(raw_ratio, max_rate),
+            PlaybackRateTarget::Fixed(rate) => rate,
+        };
+        animation.rate = rate;
+        self.reg.set_component(enemy, mesh).unwrap();
+        rate
+    }
+}
+
+/// The shipped brute on an open floor with the player at `player_at` from it,
+/// AI, steering and the pose stage's playback rate ticked at 60 Hz for
+/// `seconds`, its offense seated in `tell` as soon as it engages. Before each
+/// tick `place`, given the paths so far, may move the player. `attack` names
+/// the attack whose fires are recorded.
+fn brute_run(
+    tell: &str,
+    attack: &str,
+    player_at: Vec3,
+    seconds: f32,
+    mut place: impl FnMut(&Shipped, EntityId, &[String]) -> Option<Vec3>,
+) -> BruteRun {
     let floor = OpenFloor::new();
     let (world, nav) = (floor.collision_world(), floor.nav_graph());
-    let (home, player_at) = charge_home();
-    let mut shipped = Shipped::new(dev_manifest(), player_at);
+    let home = brute_home();
+    let mut shipped = Shipped::new(dev_manifest(), home + player_at);
     let brute = spawn_shipped(
         &mut shipped.reg,
         &shipped.manifest,
@@ -285,32 +367,14 @@ fn charge_run(place: impl Fn(&Shipped, EntityId) -> Option<Vec3>) -> ChargeRun {
         home,
     );
     give_reference_armor(&mut shipped.reg, brute);
-    let mut run = ChargeRun::default();
+    let mut run = BruteRun::default();
     let mut seated = false;
-    for tick in 0..(8.0 / DT) as usize {
+    for tick in 0..(seconds / DT) as usize {
         if !seated && shipped.path(brute).ends_with("/approach") {
-            let mut brain = shipped
-                .reg
-                .get_component::<BrainComponent>(brute)
-                .unwrap()
-                .clone();
-            let BehaviorLayerDescriptor::Graph(offense) =
-                &brain.graph.envelope.activities["engage"].layers["offense"]
-            else {
-                panic!("the brute's offense is a graph");
-            };
-            let bellow = offense
-                .activities
-                .keys()
-                .position(|name| name == "bellow")
-                .expect("the offense lowers `bellow`'s rest");
-            assert!(brain.enter_activity_at(1, bellow));
-            shipped.reg.set_component(brute, brain).unwrap();
+            shipped.seat_offense(brute, tell);
             seated = true;
         }
-        if shipped.path(brute).ends_with("/charge_bellow")
-            && let Some(at) = place(&shipped, brute)
-        {
+        if let Some(at) = place(&shipped, brute, &run.paths) {
             shipped.place_player(at);
         }
         let at = shipped
@@ -318,7 +382,8 @@ fn charge_run(place: impl Fn(&Shipped, EntityId) -> Option<Vec3>) -> ChargeRun {
             .get_component::<Transform>(brute)
             .unwrap()
             .position;
-        let cooldown = shipped.cooldown(brute, "charge");
+        let cooldown = shipped.cooldown(brute, attack);
+        let hp = player_hp(&shipped.reg, shipped.player);
         run_ai_tick_with_navigation_and_impact(
             &mut shipped.reg,
             &mut shipped.runtime,
@@ -342,15 +407,26 @@ fn charge_run(place: impl Fn(&Shipped, EntityId) -> Option<Vec3>) -> ChargeRun {
             postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
             DT,
         );
-        if shipped.cooldown(brute, "charge") > cooldown {
+        run.rates.push(shipped.pose_rate(brute));
+        if shipped.cooldown(brute, attack) > cooldown {
             run.fired.push(tick);
+        }
+        let lost = hp - player_hp(&shipped.reg, shipped.player);
+        if lost > 0.0 {
+            run.hits.push((tick, lost));
         }
         let now = shipped
             .reg
             .get_component::<Transform>(brute)
             .unwrap()
             .position;
+        let player = shipped
+            .reg
+            .get_component::<Transform>(shipped.player)
+            .unwrap()
+            .position;
         run.speed.push(distance_xz(at, now) / DT);
+        run.distance.push(distance_xz(now, player));
         run.steering.push(
             shipped
                 .reg
@@ -358,9 +434,36 @@ fn charge_run(place: impl Fn(&Shipped, EntityId) -> Option<Vec3>) -> ChargeRun {
                 .unwrap()
                 .activity_speed,
         );
+        run.states.push(shipped.anim_state(brute));
         run.paths.push(shipped.path(brute));
     }
+    let mesh = shipped.reg.get_component::<MeshComponent>(brute).unwrap();
+    for state in mesh.animation.as_ref().unwrap().states.keys() {
+        let clip = shipped.clip(brute, state);
+        if let Some(hit) = clip.event_time("hit") {
+            run.moments.insert(state.clone(), (hit, clip.duration));
+        }
+    }
     run
+}
+
+/// The shipped brute's charge from `bellow`. While it holds the tell, `place`
+/// may move the player.
+fn charge_run(place: impl Fn(&Shipped, EntityId) -> Option<Vec3>) -> BruteRun {
+    let (home, player_at) = charge_home();
+    brute_run(
+        "bellow",
+        "charge",
+        player_at - home,
+        8.0,
+        |shipped, brute, _| {
+            if shipped.path(brute).ends_with("/charge_bellow") {
+                place(shipped, brute)
+            } else {
+                None
+            }
+        },
+    )
 }
 
 // Sp6, shipped: the brute's charge under `bellow` lands its contact on reach,
@@ -434,6 +537,258 @@ fn shipped_brute_charge_lands_on_reach_once_or_recovers_with_no_hit() {
             .any(|path| path.ends_with("/cock")),
         "it rests in its ending stance: {:?}",
         fled.paths
+    );
+}
+
+/// How long a stance's pose held before its strike released, in
+/// milliseconds: from the entry tick of its rest, where the pose is taken
+/// and its time starts, to its release's. The hold carries that time.
+fn held_ms(run: &BruteRun, rest: &str, release: &str) -> f32 {
+    (run.entered(release) - run.entered(rest)) as f32 * DT * 1000.0
+}
+
+/// A tell holding exactly `ms` releases on the first evaluation its pose's
+/// time reaches it: within two ticks of it, since f32 ticks may fall a hair
+/// short.
+fn assert_held_exactly(held: f32, ms: f32, run: &BruteRun) {
+    assert!(
+        (ms..ms + 2000.0 * DT).contains(&held),
+        "the tell holds {ms} ms: {held} ms, {:?}",
+        run.paths
+    );
+}
+
+/// Ticks from a loop's restart at clip time 0, played at `rate`, until each of
+/// its first `passes` passes of a moment at `event` on a clip of `duration`,
+/// the restart tick being 0.
+fn zero_phase_pass_ticks(event: f32, duration: f32, rate: f32, passes: usize) -> Vec<usize> {
+    const SLACK: f64 = 1.0e-4;
+    let step = f64::from(DT) * f64::from(rate);
+    (0..passes)
+        .map(|pass| {
+            let at = f64::from(event) + pass as f64 * f64::from(duration);
+            (0..)
+                .find(|&tick| tick as f64 * step + SLACK >= at)
+                .expect("a finite moment")
+        })
+        .collect()
+}
+
+// Sp3, shipped: the dev brute's charge strides its `run` past the engine's
+// 1.5x default. The state's raised `maxPlaybackRate` (a dev-content
+// exception) lets the stride rule play it at its steered speed, twice the
+// brute's 3 m/s, over the state's 2.2 m/s stride: about 2.7x, under the 3x cap.
+#[test]
+fn shipped_brute_charge_strides_run_past_the_default_playback_cap() {
+    use postretro_entities::components::mesh::RATE_MAX;
+
+    let (_, start) = charge_home();
+    let run = charge_run(|shipped, brute| Some(shipped.away_from(brute, start, 6.0)));
+    let release = run.entered("charge_release");
+    let recover = run.entered("charge_recover");
+    assert!(
+        run.states[release..recover]
+            .iter()
+            .all(|state| state == "run"),
+        "the charge plays `run`: {:?}",
+        &run.states[release..recover]
+    );
+    let top = run.rates[release..recover]
+        .iter()
+        .copied()
+        .fold(0.0_f32, f32::max);
+    let stride = 2.0 * 3.0 / 2.2;
+    assert!(
+        top > RATE_MAX && (top - stride).abs() <= 0.05,
+        "the charge strides at its steered ratio {stride}, past {RATE_MAX}: {top}"
+    );
+}
+
+// The combo: `flurry` holds the drawn fist exactly 666 ms, then the release
+// plays `jab_combo` (`jab_quick` at a fixed 2.5x) from clip time 0 and lands a
+// 5-point jab at `hit` on each of its three passes, about 320 ms apart, under
+// one turn. It recovers leaning back and rests coiled.
+#[test]
+fn shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_666_ms_hold() {
+    let run = brute_run(
+        "flurry",
+        "combo",
+        Vec3::new(1.5, 0.0, 0.0),
+        6.0,
+        |_, _, _| None,
+    );
+    assert_held_exactly(held_ms(&run, "flurry", "combo_release"), 666.0, &run);
+    let release = run.entered("combo_release");
+    let recover = run.entered("combo_recover");
+    assert!(
+        run.states[release..recover]
+            .iter()
+            .all(|state| state == "jab_combo")
+            && run.rates[release..recover].iter().all(|&rate| rate == 2.5),
+        "the release plays `jab_combo` at 2.5x: {:?} {:?}",
+        &run.states[release..recover],
+        &run.rates[release..recover]
+    );
+
+    let (hit, pass) = run.moments["jab_combo"];
+    let expected: Vec<usize> = zero_phase_pass_ticks(hit, pass, 2.5, 3)
+        .into_iter()
+        .map(|tick| release + tick)
+        .collect();
+    assert_eq!(
+        run.hits_in(release, recover),
+        expected.iter().map(|&tick| (tick, 5.0)).collect::<Vec<_>>(),
+        "three 5-point jabs, one per pass at `hit`: {:?}",
+        &run.paths[release..recover]
+    );
+    assert_eq!(run.fired, expected, "each jab restarts the one cooldown");
+    for pair in expected.windows(2) {
+        let apart = (pair[1] - pair[0]) as f32 * DT * 1000.0;
+        assert!(
+            (apart - 320.0).abs() <= 1000.0 * DT,
+            "the jabs land about 320 ms apart: {apart} ms"
+        );
+    }
+    assert!(
+        recover > expected[2],
+        "the release lasts through its last pass"
+    );
+    assert_eq!(
+        run.states[recover], "swipe_windup",
+        "it recovers leaning back"
+    );
+    assert!(
+        entry_tick(&run.paths, "coil", recover).is_some(),
+        "it rests coiled: {:?}",
+        &run.paths[recover..]
+    );
+}
+
+/// The shipped brute's leap from `crouch` with the player `distance` away
+/// along +X. With `sidestep`, the player steps 8 m along +Z one second into
+/// the release, 200 ms before the hit.
+fn leap_run(distance: f32, sidestep: bool) -> BruteRun {
+    brute_run(
+        "crouch",
+        "leap",
+        Vec3::new(distance, 0.0, 0.0),
+        6.0,
+        move |shipped, _, paths| {
+            let release = entry_tick(paths, "leap_release", 0)?;
+            (sidestep && paths.len() == release + (1.0 / DT) as usize).then(|| {
+                let at = shipped
+                    .reg
+                    .get_component::<Transform>(shipped.player)
+                    .unwrap()
+                    .position;
+                at + Vec3::new(0.0, 0.0, 8.0)
+            })
+        },
+    )
+}
+
+impl BruteRun {
+    /// The hits that landed from `from` up to, not including, `to`.
+    fn hits_in(&self, from: usize, to: usize) -> Vec<(usize, f32)> {
+        self.hits
+            .iter()
+            .copied()
+            .filter(|&(tick, _)| (from..to).contains(&tick))
+            .collect()
+    }
+}
+
+// The leap: from 12 m, and from the edge of its 15 m queue, the brute takes
+// `crouch` and its tell waits in line there (`queueRange: 15`), holds exactly
+// 666 ms, then leaps at a target that holds still, steering at 3.5 times its
+// pace while `leap_strike` plays at 1x, and slams once, for 18, as the clip
+// reaches `hit`, inside slam range. It stands up on `idle` and rests coiled.
+#[test]
+fn shipped_brute_leap_queues_from_afar_closes_and_slams_at_the_clip_hit() {
+    for distance in [12.0, 15.0] {
+        let run = leap_run(distance, false);
+        let hold = run.entered("leap_crouch");
+        assert!(
+            (run.distance[hold] - distance).abs() <= 0.5,
+            "the tell queues from about {distance} m: {}",
+            run.distance[hold]
+        );
+        assert_held_exactly(held_ms(&run, "crouch", "leap_release"), 666.0, &run);
+        let release = run.entered("leap_release");
+        let recover = run.entered("leap_recover");
+        let (hit, _) = run.moments["leap_strike"];
+        let moment = release + one_shot_moment_tick(hit);
+        assert_eq!(
+            run.hits_in(release, recover),
+            vec![(moment, 18.0)],
+            "one slam as `leap_strike` reaches `hit` from {distance} m: {:?}",
+            &run.paths[release..recover]
+        );
+        assert_eq!(run.fired, vec![moment]);
+        assert!(
+            run.distance[moment] <= 3.5,
+            "the leap from {distance} m closes into slam range by the hit: {} m",
+            run.distance[moment]
+        );
+        assert!(
+            run.steering[release..recover]
+                .iter()
+                .all(|&speed| speed == 3.5),
+            "the release steers at `speed: 3.5`"
+        );
+        // `scaleWithSpeed: false` holds the strike at 1x however fast it
+        // moves, and `run`'s raised cap never reaches it.
+        let top = run.speed[release..=moment]
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        assert!(
+            top > 3.0 * 3.0,
+            "the leap outruns the brute's pace: {top} m/s"
+        );
+        assert!(
+            run.states[release..recover]
+                .iter()
+                .all(|state| state == "leap_strike")
+                && run.rates[release..recover].iter().all(|&rate| rate == 1.0),
+            "the leap plays `leap_strike` at 1x: {:?}",
+            &run.rates[release..recover]
+        );
+        assert_eq!(run.states[recover], "idle", "it stands up on `idle`");
+        assert!(
+            entry_tick(&run.paths, "coil", recover).is_some(),
+            "it rests coiled: {:?}",
+            &run.paths[recover..]
+        );
+    }
+}
+
+// A target that sidesteps 8 m during the leap is out of slam range at the
+// clip's `hit`: the leap whiffs, deals nothing, and still recovers and rests
+// coiled.
+#[test]
+fn shipped_brute_leap_whiffs_when_the_target_sidesteps_out_of_slam_range() {
+    let run = leap_run(12.0, true);
+    let release = run.entered("leap_release");
+    let recover = run.entered("leap_recover");
+    let (hit, _) = run.moments["leap_strike"];
+    let moment = release + one_shot_moment_tick(hit);
+    assert!(
+        run.distance[moment] > 3.5,
+        "fixture: the target is out of slam range at the hit: {} m",
+        run.distance[moment]
+    );
+    assert!(
+        run.hits_in(release, recover).is_empty() && run.fired.is_empty(),
+        "a whiff deals nothing: {:?} {:?}",
+        run.hits,
+        run.fired
+    );
+    assert!(recover > moment, "the release still ends at its moment");
+    assert!(
+        entry_tick(&run.paths, "coil", recover).is_some(),
+        "it rests coiled: {:?}",
+        &run.paths[recover..]
     );
 }
 

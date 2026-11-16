@@ -3299,6 +3299,7 @@ mod tests {
                 "falling",
                 "hit_reaction",
                 "idle",
+                "jab_quick",
                 "punch",
                 "punch_strike",
                 "punch_windup",
@@ -3370,12 +3371,21 @@ mod tests {
             );
             assert_eq!(event(&format!("{attack}_windup")), None);
         }
+        // The combo's loop: one swing of the punch from the drawn fist, 800 ms,
+        // carrying the punch's `hit` shifted by the same cut.
+        assert!((duration("jab_quick") - 0.8).abs() < 1e-3);
+        assert!(
+            (event("jab_quick").expect("`jab_quick` carries `hit`") - (0.267 - 5.0 / 30.0)).abs()
+                < 1e-3
+        );
     }
 
     #[test]
     fn reference_enemy_strikes_start_on_their_windup_pose() {
         // A stance holds its windup's last pose, then its release plays the
-        // strike from 0: the two poses must agree, or the body pops.
+        // strike from 0: the two poses must agree, or the body pops. The leap
+        // plays `smash_strike` from the crouch as the slam does, and the
+        // combo's loop, `jab_quick`, starts from the drawn fist.
         use crate::anim::{Loop, sample_clip_looped_world};
 
         let path = reference_enemy_model_path();
@@ -3392,9 +3402,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("clip `{name}` binds"))
         };
         let (mut held, mut released) = (Vec::new(), Vec::new());
-        for attack in ["smash", "swipe", "punch"] {
-            let windup = clip(&format!("{attack}_windup"));
-            let strike = clip(&format!("{attack}_strike"));
+        for (windup_name, strike_name) in [
+            ("smash_windup", "smash_strike"),
+            ("swipe_windup", "swipe_strike"),
+            ("punch_windup", "punch_strike"),
+            ("punch_windup", "jab_quick"),
+        ] {
+            let (windup, strike) = (clip(windup_name), clip(strike_name));
             sample_clip_looped_world(
                 windup,
                 &model.skeleton,
@@ -3415,7 +3429,7 @@ mod tests {
                 .fold(0.0_f32, f32::max);
             assert!(
                 gap < 1e-3,
-                "`{attack}_strike` starts {gap} off `{attack}_windup`'s held pose"
+                "`{strike_name}` starts {gap} off `{windup_name}`'s held pose"
             );
         }
     }

@@ -3,17 +3,17 @@
 // This is deliberately hand-authored beside `reference-enemy.luau`: the
 // scripting-core twin parser test keeps their descriptors byte-for-byte equal
 // after canonical conversion.
+// See: context/lib/entity_model.md §7c (Stances and attacks)
 
 import {
-  attackTurnFree,
-  attackTurnHeld,
   brain,
   defense,
   defineAttack,
   defineEntity,
+  defineStance,
   runtime,
 } from "postretro";
-import type { BehaviorGraphEnvelope, EntityTypeDescriptor } from "postretro";
+import type { EntityTypeDescriptor } from "postretro";
 import { heavy, melee } from "./attack-tokens";
 import { corrosive } from "./damage-types";
 import { armor } from "./defenses";
@@ -28,102 +28,124 @@ const ARRIVE = 1;
 const HALF_PI = Math.PI / 2;
 const STARTLE_MS = 200;
 const JAB_RANGE = 2;
+const LUNGE_RANGE = 3;
 const SLAM_RANGE = 3.5;
+// The charge's contact reach. Its `maxRange` both opens its queue and lands
+// its contact, so the brute bellows only with its target this close; a target
+// that backs off during the roar is chased down at twice the brute's pace.
+const CHARGE_REACH = 2.5;
 // Combat slots sit inside jab reach, so the brute fights close enough to jab.
 const CLOSE_STANDOFF = 1.5;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
+// Patrol and investigation stroll on the walk: 0.4 of `moveSpeed` is 1.2 m/s,
+// the walk clip's planted-foot speed.
+const STROLL = 0.4;
+// `approach` picks its tell from one roll per entry: the crouch at slam range,
+// the roar at charge reach, else the cocked fist at jab reach.
+const OVERHEAD_SHARE = 0.4;
+const BELLOW_FROM = 0.85;
+// From the crouch, half the strikes slam and half lunge: one pose, two timings.
+const SLAM_SHARE = 0.5;
+// A tell waiting in line this long, or a target this far, sends the brute back
+// to `approach`, which rolls a fresh tell.
+const OVERHEAD_WAIT_MS = 3000;
+const COCK_WAIT_MS = 2000;
+const BELLOW_WAIT_MS = 2500;
+const OVERHEAD_LEAVE_RANGE = SLAM_RANGE + 1;
+const COCK_LEAVE_RANGE = JAB_RANGE + 1;
+// The slam lands coiled and catches its breath before the next tell.
+const COIL_MS = 500;
+const FLINCH_MS = 700;
 
-// `punch`, on the `mixamo_brute` library, runs 1,100 ms. Its swipe connects at
-// its `hit` event, 267 ms in; the rest is follow-through and the return to
-// rest. The jab fires at `hit`.
-// `smash`, the jump attack, runs 3,700 ms. It crouches by 400 ms, where
-// `smash_windup` cuts it. Its `hit`, 1,633 ms in, is the hands slamming down
-// past camera height, a frame before they reach the floor. The slam's three
-// phases share `attack_slam`, so its smash runs on from the windup's entry:
-// the windup crouches, the commit fires at `hit` and holds 100 ms past it, and
-// the recovery leaves once the smash has played through. The commit must still
-// be active when the smash reaches `hit`, or the slam never fires.
-const SMASH_CROUCHED_MS = 400;
-const SMASH_HIT_MS = 1633;
-const SLAM_WINDUP_MS = SMASH_CROUCHED_MS;
-const SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100;
-// A jab fires at the punch's `hit`, leaves once the punch has played through,
-// then rests JAB_REST_MS before it may jab again. A target stepping out of
-// reach can end a jab on the tick after its fire; it then rests and plays a
-// fresh punch to `hit`, so the soonest a re-entered jab's moment follows a
-// fire is 1 + 9 + 17 = 27 ticks (450 ms) on whole 60 Hz ticks. The cooldown
-// sits below JAB_REST_MS plus the punch's `hit` (417 ms), so no jab's moment
-// meets it.
-const JAB_REST_MS = 150;
-const JAB_COOLDOWN_MS = 400;
-// After its own slam the brute only jabs, longer than `heavy`'s 4 s refresh,
-// so a second brute on the same target takes the next slam, and far longer
-// than the slam's 1,800 ms cooldown, so a slam is always ready when its turn
-// comes round. `press`'s exit is an outer row, so one passing during a jab's
-// punch cuts that jab before `hit`, and it never fires.
-const PRESS_MS = 5000;
+// Poses, each holding its attack's windup cut from the `mixamo_brute` library:
+// the crouch's bottom, the lean back, the fist drawn back, the roar. Stance
+// sounds have no assets yet; dev fixtures stand in.
+const overhead = defineStance({
+  animation: "smash_windup",
+  sound: "fixtures/jump",
+  holdMs: [500, 1100],
+  breakOn: { damage: 30, to: "flinch" },
+});
+// The slam's landing. No strike begins here: the brute's four strikes fill
+// three tells, the crouch serving two.
+const coil = defineStance({ animation: "swipe_windup", sound: "fixtures/land" });
+const cock = defineStance({
+  animation: "punch_windup",
+  sound: "fixtures/bite",
+  holdMs: [400, 800],
+  breakOn: { damage: 20, to: "flinch" },
+});
+const bellow = defineStance({
+  animation: "roar",
+  sound: "fixtures/growl",
+  holdMs: [800, 1400],
+  breakOn: { damage: 40, to: "flinch" },
+});
 
-// The brute's attacks. `slam` draws two `melee` and the `heavy`, so jabs keep
-// drawing the third `melee` while one brute slams. `claw` is not wired into
-// the graph; the explicit `attacks` list keeps it on the archetype.
+// Strikes. Each release plays the rest of its attack from its tell's cut and
+// fires at the clip's `hit`, unasked: the slam 1,200 ms in, the lunge 400 ms,
+// the jab 100 ms. `slam` draws two `melee` and the `heavy`, so another
+// brute's jab or lunge keeps drawing the third `melee` while one slams.
 const jab = defineAttack({
   draws: [melee],
   damage: 8,
   maxRange: JAB_RANGE,
-  cooldownMs: JAB_COOLDOWN_MS,
+  cooldownMs: 800,
+  beginningStance: cock,
+  endingStance: overhead, // the jab drops into the crouch: slam or lunge next
+  release: { animation: "punch_strike" },
 });
 const slam = defineAttack({
   draws: [melee.with({ cost: 2 }), heavy],
   damage: 14,
   maxRange: SLAM_RANGE,
   cooldownMs: 1800,
+  beginningStance: overhead,
+  endingStance: coil,
+  release: { animation: "smash_strike" },
 });
+const lunge = defineAttack({
+  draws: [melee],
+  damage: 10,
+  maxRange: LUNGE_RANGE,
+  cooldownMs: 1500,
+  beginningStance: overhead,
+  endingStance: cock, // the claw lands with the fist drawn for a jab
+  release: { animation: "swipe_strike" },
+});
+// The roar releases into a run at twice the brute's pace, landing its contact
+// on reach: at once if the target held its ground, else when it catches up.
+// It runs for a combat slot at jab reach, well inside its contact reach;
+// without a standoff its slot would sit at `maxRange` and it would pull up
+// short of contact.
+const charge = defineAttack({
+  draws: [heavy],
+  damage: 16,
+  maxRange: CHARGE_REACH,
+  standoffDistance: CLOSE_STANDOFF,
+  cooldownMs: 5000,
+  beginningStance: bellow,
+  endingStance: cock,
+  release: { animation: "run", motion: "chaseTarget", speed: 2, ms: 1200, at: false },
+  recover: { animation: "idle", ms: 500 },
+});
+// `claw` is not wired into the graph; the explicit `attacks` list keeps it on
+// the archetype.
 const claw = defineAttack({ damage: 15, damageType: corrosive, maxRange: 2, cooldownMs: 800 });
 
-// The jab loop both fighting phases run: close to jab reach, jab when a
-// `melee` turn is free, play the punch through, rest, and jab again. The jab
-// activity is marked, so its turn ends as it returns to `stalk`. A target that
-// steps out of reach before `hit` ends the jab, and it misses.
-const jabs: BehaviorGraphEnvelope = {
-  initial: "stalk",
-  activities: {
-    stalk: { animation: "walk" },
-    jab: {
-      animation: "attack_jab",
-      action: { attack: jab, at: "hit" },
-      attackTurn: jab,
-    },
-  },
-  transitions: {
-    stalk: [
-      {
-        to: "jab",
-        when: brain.targetDistance
-          .le(JAB_RANGE)
-          .and(brain.timeInActivityMs.ge(JAB_REST_MS))
-          .and(attackTurnFree(jab)),
-      },
-    ],
-    jab: [
-      { to: "stalk", when: brain.animationDone },
-      { to: "stalk", when: brain.targetDistance.gt(JAB_RANGE) },
-    ],
-  },
-};
-
 /**
- * The reference enemy exercises the full recursive statechart path and the
- * attack budget:
+ * The reference enemy exercises the full recursive statechart path, stances
+ * and the attack budget:
  *
  * - `engage` runs a selector movement layer and a nested offense graph.
- * - `hunt` and `press` each nest the jab loop. `hunt` starts a slam the
- *   moment `attackTurnFree(slam)` says its turn would be granted.
- * - the slam is a marked windup → commit → recover chain holding one turn,
- *   one smash across all three; it draws two `melee` and the `heavy`, so jabs
- *   keep drawing the third `melee` while one brute slams.
- * - after its slam the brute presses with jabs only, so with two brutes on
- *   one target the slams alternate as `heavy` refreshes.
+ * - `approach` closes on the target and takes a tell: `overhead`, `cock` or
+ *   `bellow`. Each tell waits in line for its strike's turn, holds a hidden
+ *   time, and releases.
+ * - `overhead` leads to two strikes, the slam and the lunge, so the crouch
+ *   names the threat and not its timing.
+ * - the strikes chain through their ending stances: jab → crouch, lunge →
+ *   cocked fist, charge → cocked fist, slam → coiled, then `approach`.
  */
 export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
   canonicalName: REFERENCE_ENEMY_CLASSNAME,
@@ -144,34 +166,21 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     },
     // A single normal hit is enough to redirect this playtest fixture.
     tolerance: 4,
-    // The Mixamo Mutant, on the `mixamo_brute` clip library.
+    // The Mixamo Mutant, on the `mixamo_brute` clip library. Each state plays
+    // its namesake clip; travel speeds are the clips' planted-foot speeds.
     mesh: {
       model: "models/mutant/model.gltf",
       animations: {
         idle: { clip: "idle", loop: true },
-        // Every move runs at `moveSpeed`, so locomotion plays the run; its
-        // planted foot travels about 2.2 m/s.
-        walk: {
-          clip: "run",
-          loop: true,
-          crossfadeMs: 200,
-          travelSpeed: 2.2,
-        },
-        attack_jab: {
-          clip: "punch",
-          loop: false,
-          crossfadeMs: 80,
-          interrupt: "snap",
-        },
-        // The smash's hands pass camera height at its `hit`, 1,633 ms in,
-        // during the slam's commit. Stances split it into `smash_windup` and
-        // `smash_strike`.
-        attack_slam: {
-          clip: "smash",
-          loop: false,
-          crossfadeMs: 80,
-          interrupt: "snap",
-        },
+        walk: { clip: "walk", loop: true, crossfadeMs: 200, travelSpeed: 1.2 },
+        run: { clip: "run", loop: true, crossfadeMs: 200, travelSpeed: 2.2 },
+        smash_windup: { clip: "smash_windup", loop: false, crossfadeMs: 80 },
+        swipe_windup: { clip: "swipe_windup", loop: false, crossfadeMs: 80 },
+        punch_windup: { clip: "punch_windup", loop: false, crossfadeMs: 80 },
+        roar: { clip: "roar", loop: false, crossfadeMs: 120 },
+        smash_strike: { clip: "smash_strike", loop: false, crossfadeMs: 80, interrupt: "snap" },
+        swipe_strike: { clip: "swipe_strike", loop: false, crossfadeMs: 80, interrupt: "snap" },
+        punch_strike: { clip: "punch_strike", loop: false, crossfadeMs: 80, interrupt: "snap" },
         flinch: {
           clip: "hit_reaction",
           loop: false,
@@ -191,7 +200,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 3,
-      attacks: [jab, slam, claw],
+      attacks: [jab, slam, lunge, charge, claw],
       engagementRadius: CLOSE_STANDOFF,
       patrol: {
         mode: "pingPong",
@@ -199,12 +208,13 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
       },
       activities: {
         idle: { animation: "idle", motion: "hold" },
-        patrol: { animation: "walk", motion: "patrol" },
+        patrol: { animation: "walk", motion: "patrol", speed: STROLL },
         engage: {
-          animation: "walk",
+          animation: "run",
           layers: {
             // In jab reach, release movement but retain the selected target
-            // for offense; outside it, the fallback chases the target.
+            // for offense; outside it, the fallback chases the target. Every
+            // pose and strike stands its ground.
             move: [
               {
                 when: brain.targetDistance.le(JAB_RANGE),
@@ -213,61 +223,53 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
               "chaseTarget",
             ],
             offense: {
-              initial: "hunt",
+              initial: "approach",
               activities: {
-                hunt: { layers: { offense: jabs } },
-                press: { layers: { offense: jabs } },
-                // The slam stands its ground through the whole smash rather
-                // than chasing, so the brute does not walk off its target
-                // before `hit`.
-                windup: {
-                  animation: "attack_slam",
-                  motion: "hold",
-                  attackTurn: slam,
-                },
-                commit: {
-                  animation: "attack_slam",
-                  motion: "hold",
-                  action: { attack: slam, at: "hit" },
-                  attackTurn: slam,
-                },
-                recover: {
-                  animation: "attack_slam",
-                  motion: "hold",
-                  attackTurn: slam,
-                },
+                approach: { animation: "run" },
+                flinch: { animation: "flinch", motion: "hold" },
               },
               transitions: {
-                hunt: [
+                approach: [
                   {
-                    to: "windup",
+                    to: overhead,
                     when: brain.targetDistance
                       .le(SLAM_RANGE)
-                      .and(attackTurnFree(slam)),
+                      .and(brain.activityRoll.lt(OVERHEAD_SHARE)),
                   },
-                ],
-                windup: [
                   {
-                    to: "commit",
-                    when: brain.timeInActivityMs
-                      .ge(SLAM_WINDUP_MS)
-                      .and(attackTurnHeld(slam)),
+                    to: bellow,
+                    when: brain.targetDistance
+                      .le(CHARGE_REACH)
+                      .and(brain.activityRoll.ge(BELLOW_FROM)),
                   },
-                  // Another brute asked on the same tick and won the turn.
-                  { to: "hunt", when: brain.timeInActivityMs.ge(SLAM_WINDUP_MS) },
+                  { to: cock, when: brain.targetDistance.le(JAB_RANGE) },
                 ],
-                commit: [
-                  { to: "recover", when: brain.timeInActivityMs.ge(SLAM_COMMIT_MS) },
+                // Rows out of each rest. A row to an attack also waits for its
+                // turn, its range and its cooldown.
+                overhead: [
+                  { to: slam, when: brain.activityRoll.lt(SLAM_SHARE) },
+                  { to: lunge },
+                  { to: "approach", when: brain.targetDistance.gt(OVERHEAD_LEAVE_RANGE) },
+                  { to: "approach", when: brain.timeInActivityMs.ge(OVERHEAD_WAIT_MS) },
                 ],
-                recover: [{ to: "press", when: brain.animationDone }],
-                press: [{ to: "hunt", when: brain.timeInActivityMs.ge(PRESS_MS) }],
+                cock: [
+                  { to: jab },
+                  { to: "approach", when: brain.targetDistance.gt(COCK_LEAVE_RANGE) },
+                  { to: "approach", when: brain.timeInActivityMs.ge(COCK_WAIT_MS) },
+                ],
+                bellow: [
+                  { to: charge },
+                  { to: "approach", when: brain.timeInActivityMs.ge(BELLOW_WAIT_MS) },
+                ],
+                coil: [{ to: "approach", when: brain.timeInActivityMs.ge(COIL_MS) }],
+                flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(FLINCH_MS) }],
               },
             },
           },
         },
-        investigate: { animation: "walk", motion: "moveToLastKnown" },
+        investigate: { animation: "walk", motion: "moveToLastKnown", speed: STROLL },
         startle: { animation: "flinch", motion: "hold" },
-        retreat: { animation: "walk", motion: "moveToAnchor" },
+        retreat: { animation: "run", motion: "moveToAnchor" },
       },
       transitions: {
         "*": [

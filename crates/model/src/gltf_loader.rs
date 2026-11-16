@@ -3332,10 +3332,11 @@ mod tests {
                 .duration
         };
         // Trims end at their windup peak, on a 30 fps key, and each strike is
-        // the rest of its attack from there.
-        assert!((duration("smash_windup") - 0.4).abs() < 1e-3);
+        // the rest of its attack from there: the crouch's bottom, the lean
+        // back, and the fist drawn back (the library's `license.txt`).
+        assert!((duration("smash_windup") - 13.0 / 30.0).abs() < 1e-3);
         assert!((duration("swipe_windup") - 0.9).abs() < 1e-3);
-        assert!((duration("punch_windup") - 14.0 / 30.0).abs() < 1e-3);
+        assert!((duration("punch_windup") - 5.0 / 30.0).abs() < 1e-3);
         for attack in ["smash", "swipe", "punch"] {
             let windup = duration(&format!("{attack}_windup"));
             let strike = duration(&format!("{attack}_strike"));
@@ -3348,10 +3349,9 @@ mod tests {
                 "`{attack}_windup` and `{attack}_strike` together span `{attack}`"
             );
         }
-        // Clip events: a strike inherits its attack's `hit`, shifted by the
-        // windup cut's key, when the windup ends before the moment, and the
-        // windup carries none; `punch_windup` ends after the punch's swipe, so
-        // it keeps the `hit` and its strike carries none.
+        // Clip events: every windup ends before its attack's `hit`, so it
+        // carries none, and its strike inherits the `hit` shifted by the
+        // windup cut's key.
         let event = |name: &str| {
             model
                 .clips
@@ -3360,7 +3360,7 @@ mod tests {
                 .unwrap()
                 .event_time("hit")
         };
-        for (attack, hit) in [("smash", 1.633), ("swipe", 1.3)] {
+        for (attack, hit) in [("smash", 1.633), ("swipe", 1.3), ("punch", 0.267)] {
             let windup = duration(&format!("{attack}_windup"));
             let strike = event(&format!("{attack}_strike")).expect("the strike carries `hit`");
             assert!((event(attack).expect("the attack carries `hit`") - hit).abs() < 1e-4);
@@ -3370,13 +3370,6 @@ mod tests {
             );
             assert_eq!(event(&format!("{attack}_windup")), None);
         }
-        let punch_hit = 0.267;
-        assert!((event("punch").expect("`punch` carries `hit`") - punch_hit).abs() < 1e-4);
-        assert!(
-            (event("punch_windup").expect("`punch_windup` keeps `hit`") - punch_hit).abs() < 1e-4,
-            "`punch_windup` keeps the punch's `hit` unshifted"
-        );
-        assert_eq!(event("punch_strike"), None);
     }
 
     #[test]

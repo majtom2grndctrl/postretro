@@ -9141,10 +9141,21 @@ fn reference_single_attack_graph() -> BehaviorGraphDescriptor {
 }
 
 /// The recursive dev reference enemy, hand-transcribed from
-/// `content/dev/scripts/reference-enemy.{ts,luau}`. The twin parser guard and
-/// the Luau oracle below keep this executable fixture honest.
+/// `content/dev/scripts/reference-enemy.{ts,luau}` and lowered by hand from
+/// the stance rules (`entity_model.md` §7c, Stances and attacks): each rest
+/// leads with its `breakOn` row, then its authored rows, a row to an attack
+/// queued and aimed at the attack's hold; each hold breaks, falls back to its
+/// rest without its turn, and releases after its drawn time; each release
+/// waits on its moment; each recover enters the attack's ending stance. The
+/// twin parser guard and the Luau oracle below keep this executable fixture
+/// honest.
 fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     use postretro_foundation::attack_budget::TokenDraw;
+    use postretro_foundation::stance_defaults::DEFAULT_RECOVERY_MS;
+    use postretro_foundation::{
+        ATTACK_TURN_HELD_INPUT_PREFIX, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_ANIMATION_DONE_INPUT,
+        BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
+    };
 
     const DETECTION_RANGE: f32 = 16.0;
     const ALERT_MS: f32 = 4000.0;
@@ -9153,50 +9164,31 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
     const STARTLE_MS: f32 = 200.0;
     const JAB_RANGE: f32 = 2.0;
+    const LUNGE_RANGE: f32 = 3.0;
     const SLAM_RANGE: f32 = 3.5;
+    const CHARGE_REACH: f32 = 2.5;
     const CLOSE_STANDOFF: f32 = 1.5;
     const LEASH_RANGE: f32 = 100.0;
     const RETURN_ARRIVAL_EPSILON: f32 = 1.0;
-    const SMASH_CROUCHED_MS: f32 = 400.0;
-    const SMASH_HIT_MS: f32 = 1633.0;
-    const SLAM_WINDUP_MS: f32 = SMASH_CROUCHED_MS;
-    const SLAM_COMMIT_MS: f32 = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100.0;
-    const JAB_REST_MS: f32 = 150.0;
-    const JAB_COOLDOWN_MS: f32 = 400.0;
-    const PRESS_MS: f32 = 5000.0;
+    const STROLL: f32 = 0.4;
+    const OVERHEAD_SHARE: f32 = 0.4;
+    const BELLOW_FROM: f32 = 0.85;
+    const SLAM_SHARE: f32 = 0.5;
+    const OVERHEAD_WAIT_MS: f32 = 3000.0;
+    const COCK_WAIT_MS: f32 = 2000.0;
+    const BELLOW_WAIT_MS: f32 = 2500.0;
+    const COIL_MS: f32 = 500.0;
+    const FLINCH_MS: f32 = 700.0;
+    const CHARGE_MS: f32 = 1200.0;
+    const CHARGE_RECOVER_MS: f32 = 500.0;
 
-    let activity = |animation: Option<&str>,
-                    action: Option<&str>,
-                    attack_turn: Option<&str>,
-                    layers: BTreeMap<String, BehaviorLayerDescriptor>| {
-        BehaviorActivityDescriptor {
-            pose: None,
-            stagger_to: None,
-            sound: None,
-            animation: animation.map(str::to_string),
-            motion: None,
-            // Both shipped attacks fire at their punch's `hit`.
-            action: action.map(|attack| ActionVerb::Attack {
-                name: attack.to_string(),
-                at: Some("hit".to_string()),
-                at_default: false,
-            }),
-            on_enter: None,
-            facing: None,
-            reposition: None,
-            attack_turn: attack_turn.map(str::to_string),
-            speed: None,
-            layers,
-        }
+    let number = |value: f32| {
+        Box::new(IrNode::Const {
+            value: IrValue::Number(value),
+        })
     };
-    let leaf = |animation: &str, action: Option<&str>, attack_turn: Option<&str>| {
-        activity(Some(animation), action, attack_turn, BTreeMap::new())
-    };
-    // The slam's phases stand their ground.
-    let planted = |action: Option<&str>| BehaviorActivityDescriptor {
-        pose: None,
-        motion: Some(MotionVerb::Hold),
-        ..leaf("attack_slam", action, Some("slam"))
+    let always = || IrNode::Const {
+        value: IrValue::Bool(true),
     };
     let and = |a: IrNode, b: IrNode| IrNode::And {
         a: Box::new(a),
@@ -9204,12 +9196,117 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     };
     let at_least = |input: &str, value: f32| IrNode::Ge {
         a: Box::new(brain_input(input)),
-        b: Box::new(IrNode::Const {
-            value: IrValue::Number(value),
-        }),
+        b: number(value),
     };
     let in_activity_ms = |ms: f32| at_least(BRAIN_TIME_IN_ACTIVITY_MS_INPUT, ms);
-    let turn_read = |prefix: &str, attack: &str| brain_input(&format!("{prefix}{attack}"));
+    let roll_below = |share: f32| IrNode::Lt {
+        a: Box::new(brain_input(BRAIN_ACTIVITY_ROLL_INPUT)),
+        b: number(share),
+    };
+    let roll_from = |share: f32| at_least(BRAIN_ACTIVITY_ROLL_INPUT, share);
+
+    // A plain activity of the offense level, and a lowered one: every rest,
+    // hold, release and recover stands its ground unless its release moves.
+    let activity = |animation: &str, motion: Option<MotionVerb>| BehaviorActivityDescriptor {
+        pose: None,
+        stagger_to: None,
+        sound: None,
+        animation: Some(animation.to_string()),
+        motion,
+        action: None,
+        on_enter: None,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
+        speed: None,
+        layers: BTreeMap::new(),
+    };
+    let rest = |animation: &str, stance: &str, sound: &str| BehaviorActivityDescriptor {
+        pose: Some(stance.to_string()),
+        sound: Some(sound.to_string()),
+        ..activity(animation, Some(MotionVerb::Hold))
+    };
+    let hold = |animation: &str, stance: &str, attack: &str| BehaviorActivityDescriptor {
+        pose: Some(stance.to_string()),
+        attack_turn: Some(attack.to_string()),
+        ..activity(animation, Some(MotionVerb::Hold))
+    };
+    // Slam, lunge and jab name no `at`: lowering defaults it to `hit`.
+    let release = |animation: &str, attack: &str, ending: &str| BehaviorActivityDescriptor {
+        action: Some(ActionVerb::Attack {
+            name: attack.to_string(),
+            at: Some("hit".to_string()),
+            at_default: true,
+        }),
+        attack_turn: Some(attack.to_string()),
+        stagger_to: Some(ending.to_string()),
+        ..activity(animation, Some(MotionVerb::Hold))
+    };
+    let recover = |animation: &str, attack: &str, ending: &str| BehaviorActivityDescriptor {
+        attack_turn: Some(attack.to_string()),
+        stagger_to: Some(ending.to_string()),
+        ..activity(animation, Some(MotionVerb::Hold))
+    };
+
+    let break_row = |damage: f32| edge("flinch", at_least(BRAIN_DAMAGE_IN_ACTIVITY_INPUT, damage));
+    let queued = |hold: &str, attack: &str, when: IrNode| GuardedRow {
+        queue: Some(attack.to_string()),
+        ..edge(hold, when)
+    };
+    // A hold's rows: its stance's break, back to the rest without the turn,
+    // and the release once the pose has lasted its drawn time.
+    let hold_rows = |stance: &str, attack: &str, damage: f32, hold_ms: [f32; 2]| {
+        vec![
+            break_row(damage),
+            edge(
+                stance,
+                IrNode::Not {
+                    x: Box::new(brain_input(&format!(
+                        "{ATTACK_TURN_HELD_INPUT_PREFIX}{attack}"
+                    ))),
+                },
+            ),
+            GuardedRow {
+                release_after: Some(hold_ms),
+                ..edge(&format!("{attack}_release"), always())
+            },
+        ]
+    };
+    let after_moment = |attack: &str, when: IrNode| {
+        vec![GuardedRow {
+            after_moment: true,
+            ..edge(&format!("{attack}_recover"), when)
+        }]
+    };
+    // The default recover: its clip plays through, or the default duration.
+    let default_recover = |ending: &str| {
+        vec![edge(
+            ending,
+            IrNode::Or {
+                a: Box::new(brain_input(BRAIN_ANIMATION_DONE_INPUT)),
+                b: Box::new(in_activity_ms(DEFAULT_RECOVERY_MS)),
+            },
+        )]
+    };
+
+    const OVERHEAD_HOLD: [f32; 2] = [500.0, 1100.0];
+    const COCK_HOLD: [f32; 2] = [400.0, 800.0];
+    const BELLOW_HOLD: [f32; 2] = [800.0, 1400.0];
+    const OVERHEAD_BREAK: f32 = 30.0;
+    const COCK_BREAK: f32 = 20.0;
+    const BELLOW_BREAK: f32 = 40.0;
+
+    let mut charge_release = BehaviorActivityDescriptor {
+        // `at: false`: the charge's contact fires on reach.
+        action: Some(ActionVerb::Attack {
+            name: "charge".to_string(),
+            at: None,
+            at_default: false,
+        }),
+        ..release("run", "charge", "cock")
+    };
+    charge_release.motion = Some(MotionVerb::ChaseTarget);
+    charge_release.speed = Some(2.0);
 
     let move_selector = BehaviorLayerDescriptor::Selector(vec![
         BehaviorSelectorEntry::Row(BehaviorSelectorRow {
@@ -9219,97 +9316,177 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         }),
         BehaviorSelectorEntry::Motion(MotionVerb::ChaseTarget),
     ]);
-    let jabs = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
-        initial: "stalk".to_string(),
-        activities: BTreeMap::from([
-            ("stalk".to_string(), leaf("walk", None, None)),
-            (
-                "jab".to_string(),
-                leaf("attack_jab", Some("jab"), Some("jab")),
-            ),
-        ]),
-        transitions: BTreeMap::from([
-            (
-                "stalk".to_string(),
-                vec![edge(
-                    "jab",
-                    and(
-                        and(target_within(JAB_RANGE), in_activity_ms(JAB_REST_MS)),
-                        turn_read(postretro_foundation::ATTACK_TURN_FREE_INPUT_PREFIX, "jab"),
-                    ),
-                )],
-            ),
-            (
-                "jab".to_string(),
-                vec![
-                    edge(
-                        "stalk",
-                        brain_input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
-                    ),
-                    edge("stalk", target_beyond(JAB_RANGE)),
-                ],
-            ),
-        ]),
-    });
-    let jabbing = || {
-        activity(
-            None,
-            None,
-            None,
-            BTreeMap::from([("offense".to_string(), jabs.clone())]),
-        )
-    };
     let offense = BehaviorLayerDescriptor::Graph(BehaviorGraphEnvelope {
-        initial: "hunt".to_string(),
+        initial: "approach".to_string(),
         activities: BTreeMap::from([
-            ("hunt".to_string(), jabbing()),
-            ("press".to_string(), jabbing()),
-            ("windup".to_string(), planted(None)),
-            ("commit".to_string(), planted(Some("slam"))),
-            ("recover".to_string(), planted(None)),
+            ("approach".to_string(), activity("run", None)),
+            (
+                "flinch".to_string(),
+                activity("flinch", Some(MotionVerb::Hold)),
+            ),
+            // Rests.
+            (
+                "overhead".to_string(),
+                rest("smash_windup", "overhead", "fixtures/jump"),
+            ),
+            (
+                "coil".to_string(),
+                rest("swipe_windup", "coil", "fixtures/land"),
+            ),
+            (
+                "cock".to_string(),
+                rest("punch_windup", "cock", "fixtures/bite"),
+            ),
+            (
+                "bellow".to_string(),
+                rest("roar", "bellow", "fixtures/growl"),
+            ),
+            // Strikes: hold, release, recover.
+            (
+                "slam_overhead".to_string(),
+                hold("smash_windup", "overhead", "slam"),
+            ),
+            (
+                "slam_release".to_string(),
+                release("smash_strike", "slam", "coil"),
+            ),
+            (
+                "slam_recover".to_string(),
+                recover("smash_strike", "slam", "coil"),
+            ),
+            (
+                "lunge_overhead".to_string(),
+                hold("smash_windup", "overhead", "lunge"),
+            ),
+            (
+                "lunge_release".to_string(),
+                release("swipe_strike", "lunge", "cock"),
+            ),
+            (
+                "lunge_recover".to_string(),
+                recover("swipe_strike", "lunge", "cock"),
+            ),
+            ("jab_cock".to_string(), hold("punch_windup", "cock", "jab")),
+            (
+                "jab_release".to_string(),
+                release("punch_strike", "jab", "overhead"),
+            ),
+            (
+                "jab_recover".to_string(),
+                recover("punch_strike", "jab", "overhead"),
+            ),
+            (
+                "charge_bellow".to_string(),
+                hold("roar", "bellow", "charge"),
+            ),
+            ("charge_release".to_string(), charge_release),
+            (
+                "charge_recover".to_string(),
+                recover("idle", "charge", "cock"),
+            ),
         ]),
         transitions: BTreeMap::from([
             (
-                "hunt".to_string(),
-                vec![edge(
-                    "windup",
-                    and(
-                        target_within(SLAM_RANGE),
-                        turn_read(postretro_foundation::ATTACK_TURN_FREE_INPUT_PREFIX, "slam"),
-                    ),
-                )],
-            ),
-            (
-                "windup".to_string(),
+                "approach".to_string(),
                 vec![
                     edge(
-                        "commit",
-                        and(
-                            in_activity_ms(SLAM_WINDUP_MS),
-                            turn_read(postretro_foundation::ATTACK_TURN_HELD_INPUT_PREFIX, "slam"),
-                        ),
+                        "overhead",
+                        and(target_within(SLAM_RANGE), roll_below(OVERHEAD_SHARE)),
                     ),
-                    edge("hunt", in_activity_ms(SLAM_WINDUP_MS)),
+                    edge(
+                        "bellow",
+                        and(target_within(CHARGE_REACH), roll_from(BELLOW_FROM)),
+                    ),
+                    edge("cock", target_within(JAB_RANGE)),
                 ],
             ),
             (
-                "commit".to_string(),
-                vec![edge("recover", in_activity_ms(SLAM_COMMIT_MS))],
+                "overhead".to_string(),
+                vec![
+                    break_row(OVERHEAD_BREAK),
+                    queued("slam_overhead", "slam", roll_below(SLAM_SHARE)),
+                    queued("lunge_overhead", "lunge", always()),
+                    edge("approach", target_beyond(SLAM_RANGE + 1.0)),
+                    edge("approach", in_activity_ms(OVERHEAD_WAIT_MS)),
+                ],
             ),
             (
-                "recover".to_string(),
-                vec![edge(
-                    "press",
-                    brain_input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
-                )],
+                "cock".to_string(),
+                vec![
+                    break_row(COCK_BREAK),
+                    queued("jab_cock", "jab", always()),
+                    edge("approach", target_beyond(JAB_RANGE + 1.0)),
+                    edge("approach", in_activity_ms(COCK_WAIT_MS)),
+                ],
             ),
             (
-                "press".to_string(),
-                vec![edge("hunt", in_activity_ms(PRESS_MS))],
+                "bellow".to_string(),
+                vec![
+                    break_row(BELLOW_BREAK),
+                    queued("charge_bellow", "charge", always()),
+                    edge("approach", in_activity_ms(BELLOW_WAIT_MS)),
+                ],
+            ),
+            // No strike begins in `coil` and it breaks on nothing.
+            (
+                "coil".to_string(),
+                vec![edge("approach", in_activity_ms(COIL_MS))],
+            ),
+            (
+                "flinch".to_string(),
+                vec![edge("approach", in_activity_ms(FLINCH_MS))],
+            ),
+            (
+                "slam_overhead".to_string(),
+                hold_rows("overhead", "slam", OVERHEAD_BREAK, OVERHEAD_HOLD),
+            ),
+            ("slam_release".to_string(), after_moment("slam", always())),
+            ("slam_recover".to_string(), default_recover("coil")),
+            (
+                "lunge_overhead".to_string(),
+                hold_rows("overhead", "lunge", OVERHEAD_BREAK, OVERHEAD_HOLD),
+            ),
+            ("lunge_release".to_string(), after_moment("lunge", always())),
+            ("lunge_recover".to_string(), default_recover("cock")),
+            (
+                "jab_cock".to_string(),
+                hold_rows("cock", "jab", COCK_BREAK, COCK_HOLD),
+            ),
+            ("jab_release".to_string(), after_moment("jab", always())),
+            ("jab_recover".to_string(), default_recover("overhead")),
+            (
+                "charge_bellow".to_string(),
+                hold_rows("bellow", "charge", BELLOW_BREAK, BELLOW_HOLD),
+            ),
+            // The charge's authored `ms` holds it at least that long, and its
+            // authored recover lasts its own `ms`.
+            (
+                "charge_release".to_string(),
+                after_moment("charge", in_activity_ms(CHARGE_MS)),
+            ),
+            (
+                "charge_recover".to_string(),
+                vec![edge("cock", in_activity_ms(CHARGE_RECOVER_MS))],
             ),
         ]),
     });
     let token = |name: &str| serde_json::json!({ "kind": "attackToken", "name": name });
+    let contact =
+        |damage: f32, max_range: f32, cooldown_ms: f32, draws: Vec<TokenDraw>| AttackParams {
+            sound: None,
+            weapon: None,
+            damage: Some(damage),
+            max_range: Some(max_range),
+            cooldown_ms: Some(cooldown_ms),
+            engagement_radius: None,
+            standoff_distance: None,
+            damage_type: None,
+            draws: Some(draws),
+        };
+    let strolling = |motion: MotionVerb| BehaviorActivityDescriptor {
+        speed: Some(STROLL),
+        ..authored_state("walk", motion, None)
+    };
 
     BehaviorGraphDescriptor {
         knockback: Default::default(),
@@ -9320,33 +9497,20 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "idle".to_string(),
                     authored_state("idle", MotionVerb::Hold, None),
                 ),
-                (
-                    "patrol".to_string(),
-                    authored_state("walk", MotionVerb::Patrol, None),
-                ),
+                ("patrol".to_string(), strolling(MotionVerb::Patrol)),
                 (
                     "engage".to_string(),
                     BehaviorActivityDescriptor {
-                        pose: None,
-                        stagger_to: None,
-                        sound: None,
-                        animation: Some("walk".to_string()),
-                        motion: None,
-                        action: None,
-                        on_enter: None,
-                        facing: None,
-                        reposition: None,
-                        attack_turn: None,
-                        speed: None,
                         layers: BTreeMap::from([
                             ("move".to_string(), move_selector),
                             ("offense".to_string(), offense),
                         ]),
+                        ..activity("run", None)
                     },
                 ),
                 (
                     "investigate".to_string(),
-                    authored_state("walk", MotionVerb::MoveToLastKnown, None),
+                    strolling(MotionVerb::MoveToLastKnown),
                 ),
                 (
                     "startle".to_string(),
@@ -9354,7 +9518,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 ),
                 (
                     "retreat".to_string(),
-                    authored_state("walk", MotionVerb::MoveToAnchor, None),
+                    authored_state("run", MotionVerb::MoveToAnchor, None),
                 ),
             ]),
             transitions: BTreeMap::from([
@@ -9524,33 +9688,30 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         attacks: BTreeMap::from([
             (
                 "jab".to_string(),
-                AttackParams {
-                    sound: None,
-                    weapon: None,
-                    damage: Some(8.0),
-                    max_range: Some(JAB_RANGE),
-                    cooldown_ms: Some(JAB_COOLDOWN_MS),
-                    engagement_radius: None,
-                    standoff_distance: None,
-                    damage_type: None,
-                    draws: Some(vec![TokenDraw(token("melee"))]),
-                },
+                contact(8.0, JAB_RANGE, 800.0, vec![TokenDraw(token("melee"))]),
             ),
             (
                 "slam".to_string(),
-                AttackParams {
-                    sound: None,
-                    weapon: None,
-                    damage: Some(14.0),
-                    max_range: Some(SLAM_RANGE),
-                    cooldown_ms: Some(1800.0),
-                    engagement_radius: None,
-                    standoff_distance: None,
-                    damage_type: None,
-                    draws: Some(vec![
+                contact(
+                    14.0,
+                    SLAM_RANGE,
+                    1800.0,
+                    vec![
                         TokenDraw(serde_json::json!({ "token": token("melee"), "cost": 2 })),
                         TokenDraw(token("heavy")),
-                    ]),
+                    ],
+                ),
+            ),
+            (
+                "lunge".to_string(),
+                contact(10.0, LUNGE_RANGE, 1500.0, vec![TokenDraw(token("melee"))]),
+            ),
+            (
+                "charge".to_string(),
+                AttackParams {
+                    // The charge runs for a slot inside its contact reach.
+                    standoff_distance: Some(CLOSE_STANDOFF),
+                    ..contact(16.0, CHARGE_REACH, 5000.0, vec![TokenDraw(token("heavy"))])
                 },
             ),
             (
@@ -9582,11 +9743,12 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
 /// The module is evaluated verbatim against the same SDK helper modules the
 /// engine's Luau prelude installs (`sdk/lib/runtime.luau` for the IR builders,
 /// `sdk/lib/brain.luau` for the `@brain.*` leaves,
-/// `sdk/lib/data_script/attacks.luau` for `defineAttack`), with `defineEntity`
-/// stubbed to the identity it is for a plain descriptor, and read through the
-/// engine's Luau entity reader, so its attack handles lower as they do at mod
-/// load. Reading the guards out of the real source is the whole point: a
-/// second hand-written copy would prove only that someone edited both.
+/// `sdk/lib/data_script/attacks.luau` for `defineAttack` and `defineStance`),
+/// with `defineEntity` stubbed to the identity it is for a plain descriptor,
+/// and read through the engine's Luau entity reader, so its attack and stance
+/// handles lower as they do at mod load. Reading the guards out of the real
+/// source is the whole point: a second hand-written copy would prove only that
+/// someone edited both.
 fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
     const RUNTIME_LUAU_SRC: &str = include_str!("../../../sdk/lib/runtime.luau");
     const BRAIN_LUAU_SRC: &str = include_str!("../../../sdk/lib/brain.luau");
@@ -9639,6 +9801,10 @@ fn shipped_reference_behavior_graph() -> BehaviorGraphDescriptor {
         .get("defineAttack")
         .expect("attacks.luau exports `defineAttack`");
     globals.set("defineAttack", define_attack).unwrap();
+    let define_stance: mlua::Function = attack_builders
+        .get("defineStance")
+        .expect("attacks.luau exports `defineStance`");
+    globals.set("defineStance", define_stance).unwrap();
     // A token handle's `with` lives on its metatable, off the wire, as the
     // SDK's does.
     let token_methods: mlua::Table = lua
@@ -10167,12 +10333,28 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
     let pawn = spawn_player(&mut reg, Vec3::new(reference_player_x(0), 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
     give_reference_armor(&mut reg, enemy);
-    // The shipped mesh plays its attacks once. With no clip store their clips
-    // do not resolve, so each has played through (`brain.animationDone`).
+    // The shipped brute's states, each played once. With no clip store their
+    // clips do not resolve, so each has played through (`brain.animationDone`)
+    // and a release's defaulted moment resolves on its entry tick.
     let mut mesh = reg.get_component::<MeshComponent>(enemy).unwrap().clone();
     let states = &mut mesh.animation.as_mut().unwrap().states;
-    for attack in ["attack_jab", "attack_slam"] {
-        states.get_mut(attack).unwrap().looping = false;
+    for (index, state) in [
+        "run",
+        "smash_windup",
+        "swipe_windup",
+        "punch_windup",
+        "roar",
+        "smash_strike",
+        "swipe_strike",
+        "punch_strike",
+        "flinch",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut once = usable_state(state, 4 + index);
+        once.looping = state == "run";
+        states.insert(state.to_string(), once);
     }
     reg.set_component(enemy, mesh).unwrap();
 
@@ -10212,34 +10394,44 @@ fn trace_reference_fixture(brain: BrainComponent) -> Vec<BrainTrace> {
         .collect()
 }
 
+// The brute takes a tell in reach of its target, strikes from it, and lands
+// in its strike's ending stance: every phase reports its full nested path.
 #[test]
-fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
+fn reference_trace_reports_full_nested_paths_through_stances_and_strikes() {
     let authored = trace_reference_fixture(BrainComponent::from_graph(&reference_behavior_graph()));
 
-    // The fixture has to visit the nested phases, or the full-path assertion is
-    // vacuous. The slam comes first, as soon as its turn is free; the jabs
-    // follow while the brute presses.
-    const HUNT_STALK: &str = "engage/offense/hunt/offense/stalk";
-    const PRESS_JAB: &str = "engage/offense/press/offense/jab";
-    let states: Vec<&str> = authored
-        .iter()
-        .map(|row| row.state.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    assert_eq!(
-        states,
-        vec![
-            "engage/offense/commit",
-            HUNT_STALK,
-            PRESS_JAB,
-            "engage/offense/press/offense/stalk",
-            "engage/offense/recover",
-            "engage/offense/windup",
-            "patrol",
-        ],
-        "the trace must record the root-to-leaf activity path for every nested phase"
+    const OFFENSE: &str = "engage/offense/";
+    const APPROACH: &str = "engage/offense/approach";
+    let states: std::collections::BTreeSet<&str> =
+        authored.iter().map(|row| row.state.as_str()).collect();
+    let leaf = |state: &str| state.strip_prefix(OFFENSE).unwrap_or(state).to_string();
+    // The fixture has to visit a tell and a whole strike, or the full-path
+    // assertion is vacuous.
+    for phase in ["rest", "hold", "release", "recover"] {
+        let visited = states.iter().any(|state| {
+            let leaf = leaf(state);
+            state.starts_with(OFFENSE)
+                && match phase {
+                    "rest" => ["overhead", "coil", "cock", "bellow"].contains(&leaf.as_str()),
+                    "hold" => ["_overhead", "_cock", "_bellow"]
+                        .iter()
+                        .any(|suffix| leaf.ends_with(suffix)),
+                    other => leaf.ends_with(&format!("_{other}")),
+                }
+        });
+        assert!(
+            visited,
+            "the trace records a {phase} at its full path: {states:?}"
+        );
+    }
+    assert!(states.contains(APPROACH), "{states:?}");
+    assert!(
+        states
+            .iter()
+            .all(|state| *state == "patrol" || state.starts_with(OFFENSE)),
+        "the trace must record the root-to-leaf activity path for every nested phase: {states:?}"
     );
+
     let damage_ticks: Vec<usize> = authored
         .windows(2)
         .enumerate()
@@ -10248,25 +10440,27 @@ fn reference_trace_reports_full_nested_paths_and_committed_slam_rotation() {
         .collect();
     assert!(
         damage_ticks.len() >= 2,
-        "the committed slam and a jab must both fire: {damage_ticks:?}"
+        "two strikes land: {damage_ticks:?}"
     );
-    let first_animation = |name: &str| authored.iter().position(|row| row.animation == name);
     assert!(
-        first_animation("attack_slam") < first_animation("attack_jab")
-            && first_animation("attack_jab").is_some(),
-        "the fixture must switch from the committed slam clip to the jab"
+        damage_ticks
+            .iter()
+            .all(|&tick| authored[tick].state.ends_with("_release")),
+        "every hit lands from a release: {damage_ticks:?}"
     );
     assert!(
         authored
             .iter()
-            .any(|row| row.state == HUNT_STALK && row.has_destination),
+            .any(|row| row.state == APPROACH && row.has_destination),
         "the engage.move fallback chases while the target is outside jab reach"
     );
     assert!(
         authored
             .iter()
-            .any(|row| row.state == PRESS_JAB && !row.has_destination),
-        "the engage.move selector holds at the authored combat range"
+            .filter(|row| row.state.starts_with(OFFENSE))
+            .filter(|row| ![APPROACH, "engage/offense/charge_release"].contains(&row.state.as_str()))
+            .all(|row| !row.has_destination),
+        "every pose and planted strike holds its ground; only the charge runs"
     );
 }
 
@@ -12988,10 +13182,10 @@ fn a_composite_move_selector_supplies_the_shared_locomotion_animation() {
         engage.layers.get("move"),
         Some(BehaviorLayerDescriptor::Selector(_))
     ));
-    assert_eq!(engage.animation.as_deref(), Some("walk"));
+    assert_eq!(engage.animation.as_deref(), Some("run"));
     assert_eq!(
         locomotion_animation(&graph),
-        Some("walk"),
+        Some("run"),
         "host playback scaling and remote animation caching share the composite move clip"
     );
 }

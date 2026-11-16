@@ -12,24 +12,42 @@ License:
 
 Packaging notes (PostRetro):
 * Mutant clips from Mixamo, on the Mutant rig, each file named for its clip:
-  idle (Mutant Breathing Idle), walk, run, punch, swipe, smash (Mutant Jump
-  Attack), roar, hit_reaction (Standing React Large From Front), death
-  (Mutant Dying), falling (Falling Idle). Built with:
-    mixamo_to_gltf.py --library --base Mutant.fbx --yaw 180 --in-place smash hit_reaction \
-      --trim smash_windup=smash:400 --trim swipe_windup=swipe:900 \
-      --trim punch_windup=punch:467 \
-      --trim smash_strike=smash:400- --trim swipe_strike=swipe:900- \
-      --trim punch_strike=punch:467- \
-      --event punch:hit=267 --event smash:hit=1633 --event swipe:hit=1300
+  idle (Mutant Breathing Idle), walk (Mutant Walking), run (Mutant Run),
+  punch (Mutant Punch), swipe (Mutant Swiping), smash (Mutant Jump Attack),
+  roar (Mutant Roaring), hit_reaction (Standing React Large From Front),
+  death (Mutant Dying), falling (Falling Idle). The source FBXs stay outside
+  the repo. Copy each into one folder under its clip name (idle.fbx, ...),
+  beside the rig as Mutant.fbx, and build with Blender 5.2.3:
+    blender --background --python tools/mixamo_to_gltf.py -- \
+      --input-dir <folder> --library --base Mutant.fbx --yaw 180 \
+      --in-place smash hit_reaction \
+      --trim smash_windup=smash:434 --trim swipe_windup=swipe:900 \
+      --trim punch_windup=punch:167 \
+      --trim smash_strike=smash:434- --trim swipe_strike=swipe:900- \
+      --trim punch_strike=punch:167- \
+      --event punch:hit=267 --event smash:hit=1633 --event swipe:hit=1300 \
+      --output content/dev/models/clip_libraries/mixamo_brute/library.gltf
+  The export is deterministic: rerun, it reproduces library.gltf and
+  library.bin byte for byte (checked 2026-11-15, with and without
+  --factory-startup).
 * --yaw 180 turns the rig to face +Z, the front AI facing aims, matching
   the bound Mutant model; root motion then runs the way the model faces.
 * smash and hit_reaction are pinned in place: the jump attack lands 1.6 m
   forward and the hit reaction staggers 1 m back, and the
   body would snap back when either clip ended.
 * smash_windup, swipe_windup and punch_windup are the attacks cut at their
-  windup peak (the crouch before the leap; the lean back before the lunge;
-  the fist drawn back high, 467 ms, frame 14, where it stops moving). Played
-  without looping they hold that pose, for enemy stances.
+  windup peak. Played without looping they hold that pose, for enemy
+  stances. Each cut is measured from the library's own joint positions,
+  hips-relative, at 30 fps keys:
+  - smash_windup at 434 ms, ending on the key at 433 ms (frame 13): the
+    crouch's bottom, where the hips sit lowest (0.535 m, from 0.805 m
+    standing) before the leap.
+  - swipe_windup at 900 ms (frame 27): the lean back before the lunge.
+    The hips and the striking left claw are furthest back at 867-900 ms,
+    within 1 cm of each other.
+  - punch_windup at 167 ms, ending on the key at 167 ms (frame 5): the
+    fist drawn back. The right hand is furthest back at 133-167 ms (within
+    2 mm) and slowest at 167 ms (1.2 m/s), where it turns before the swing.
 * smash_strike, swipe_strike and punch_strike are the rest of each attack
   from its windup cut, starting on the windup's last pose: a stance's release
   plays one after its windup holds.
@@ -45,10 +63,7 @@ Packaging notes (PostRetro):
   hit meets the camera, not the floor (2026-11-14). swipe hit at 1300 ms
   (the left claw sweeping across, frame 39) is the first frame the claw is
   within about 5% of its full reach.
-* smash_strike and swipe_strike start at their windup cuts, so their hits
-  fall at 1233 and 400 ms; smash_windup and swipe_windup end before their
-  hits and carry none. punch_windup, cut at 467 ms, ends after the swipe, so
-  it carries the punch's hit at 267 ms and punch_strike carries none: its
-  467 ms pose is the arm raised in follow-through, and the swipe's real
-  draw-back is near 167 ms, where the hand is almost still. Recut both
-  before a stance plays them.
+* Every windup cut falls before its attack's hit, so the windups carry no
+  events and each strike carries its attack's hit, shifted by its cut's
+  key: smash_strike at 1200 ms, swipe_strike at 400 ms and punch_strike
+  at 100 ms, each to the nearest millisecond.

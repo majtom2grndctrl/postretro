@@ -1,5 +1,5 @@
 // Clip-timed attacks in the shipped dev brute and limitator, on their committed clip libraries.
-// See: context/lib/entity_model.md §7c (Clip-timed attacks)
+// See: context/lib/entity_model.md §7c (Clip-timed attacks, Stances and attacks)
 
 use postretro_model::skeleton::AnimationClip;
 use postretro_scripting_core::runtime::ModManifestResult;
@@ -136,150 +136,304 @@ fn entry_tick(paths: &[String], leaf: &str, from: usize) -> Option<usize> {
     })
 }
 
-// The reference brute's slam lands as `smash` reaches its `hit`, and its jabs
-// as `punch` reaches its own, each timed from its entry onto the clip.
+/// One brute strike's release: the attack, its release's entry tick and the
+/// ticks its attack fired from that entry until the next.
+#[derive(Debug)]
+struct Release {
+    attack: &'static str,
+    entered: usize,
+    fired: Vec<usize>,
+}
+
+/// Every release of `attacks` in `paths`, with the ticks each attack's
+/// cooldown restarted (it fired) from that entry until the next.
+fn releases(
+    paths: &[String],
+    fires: &[(&'static str, usize)],
+    attacks: &[&'static str],
+) -> Vec<Release> {
+    let mut found = Vec::new();
+    for &attack in attacks {
+        let leaf = format!("{attack}_release");
+        let mut from = 0;
+        while let Some(entered) = entry_tick(paths, &leaf, from) {
+            let next = entry_tick(paths, &leaf, entered + 1).unwrap_or(paths.len());
+            let fired = fires
+                .iter()
+                .filter(|(name, tick)| *name == attack && (entered..next).contains(tick))
+                .map(|&(_, tick)| tick)
+                .collect();
+            found.push(Release {
+                attack,
+                entered,
+                fired,
+            });
+            from = entered + 1;
+        }
+    }
+    found
+}
+
+// K1: the reference brute's slam, lunge and jab releases fire as their
+// `*_strike` clip reaches its `hit`, timed from the release's entry onto the
+// clip, and no missing-event warning is logged once its clips bind.
 #[test]
-fn shipped_brute_slam_fires_at_the_smash_hit_and_jabs_at_the_punch_hit() {
+fn shipped_brute_strikes_fire_at_their_strike_clips_hit() {
+    let capture = postretro_test_log_capture::LogCapture::start();
     let mut shipped = Shipped::new(dev_manifest(), Vec3::new(1.5, 0.0, 0.0));
     let brute = shipped.spawn("reference_enemy");
     // Its own armor broken sends it to retreat; the shipped archetype spawns
     // with 120.
     give_reference_armor(&mut shipped.reg, brute);
-    assert_eq!(
-        shipped.clip(brute, "attack_slam").name,
-        "smash",
-        "fixture: the slam plays the smash"
-    );
-    assert_eq!(
-        shipped.clip(brute, "attack_jab").name,
-        "punch",
-        "fixture: the jab plays the punch"
-    );
-    let slam_hit = shipped
-        .clip(brute, "attack_slam")
-        .event_time("hit")
-        .expect("`smash` carries its `hit`");
-    let jab_hit = shipped
-        .clip(brute, "attack_jab")
-        .event_time("hit")
-        .expect("`punch` carries its `hit`");
-    let (slam_moment, jab_moment) = (
-        one_shot_moment_tick(slam_hit),
-        one_shot_moment_tick(jab_hit),
-    );
-
-    let (mut paths, mut slams, mut jabs, mut hurt) = (Vec::new(), Vec::new(), Vec::new(), 0);
-    for tick in 0..(8.0 / DT) as usize {
-        let (slam, jab) = (
-            shipped.cooldown(brute, "slam"),
-            shipped.cooldown(brute, "jab"),
+    let strikes = [
+        ("slam", "smash_strike"),
+        ("lunge", "swipe_strike"),
+        ("jab", "punch_strike"),
+    ];
+    let mut moments = BTreeMap::new();
+    for (attack, state) in strikes {
+        let clip = shipped.clip(brute, state);
+        assert_eq!(
+            clip.name, state,
+            "fixture: `{state}` plays its namesake clip"
         );
+        let hit = clip
+            .event_time("hit")
+            .unwrap_or_else(|| panic!("`{state}` carries `hit`"));
+        moments.insert(attack, one_shot_moment_tick(hit));
+    }
+
+    let attacks = strikes.map(|(attack, _)| attack);
+    let (mut paths, mut fires, mut hurt) = (Vec::new(), Vec::new(), 0);
+    for tick in 0..(30.0 / DT) as usize {
+        let before = attacks.map(|attack| shipped.cooldown(brute, attack));
         let hp = player_hp(&shipped.reg, shipped.player);
         shipped.tick();
-        if shipped.cooldown(brute, "slam") > slam {
-            slams.push(tick);
-        }
-        if shipped.cooldown(brute, "jab") > jab {
-            jabs.push(tick);
+        for (index, attack) in attacks.into_iter().enumerate() {
+            if shipped.cooldown(brute, attack) > before[index] {
+                fires.push((attack, tick));
+            }
         }
         hurt += usize::from(player_hp(&shipped.reg, shipped.player) < hp);
         paths.push(shipped.path(brute));
     }
 
-    let windup = entry_tick(&paths, "windup", 0).expect("the brute winds up a slam");
-    assert!(!slams.is_empty(), "the brute slams: {paths:?}");
-    assert_eq!(
-        paths[windup + 1..=slams[0]]
-            .iter()
-            .filter(|path| !path.ends_with("/windup") && !path.ends_with("/commit"))
-            .count(),
-        0,
-        "the slam's smash runs from the windup through the commit"
-    );
-    assert_eq!(
-        slams.first().copied(),
-        Some(windup + slam_moment),
-        "the slam fires as the smash, started at the windup's entry, reaches `hit` ({slam_hit} s)"
-    );
-    assert!(!jabs.is_empty(), "the brute jabs after its slam: {paths:?}");
-    let mut from = 0;
-    for &fired in &jabs {
-        let entered = entry_tick(&paths, "jab", from).expect("each jab enters `jab`");
-        assert_eq!(
-            fired,
-            entered + jab_moment,
-            "a jab fires as its punch reaches `hit` ({jab_hit} s)"
+    let releases = releases(&paths, &fires, &attacks);
+    for attack in attacks {
+        assert!(
+            releases
+                .iter()
+                .any(|release| release.attack == attack && !release.fired.is_empty()),
+            "the brute's `{attack}` releases and fires within 30 s: {releases:?}"
         );
-        from = fired;
     }
-    assert_eq!(
-        hurt,
-        slams.len() + jabs.len(),
-        "each fire lands on the player"
-    );
+    for release in &releases {
+        assert_eq!(
+            release.fired,
+            vec![release.entered + moments[release.attack]],
+            "a release fires once, as its clip reaches `hit`: {release:?}"
+        );
+    }
+    assert_eq!(hurt, fires.len(), "each fire lands on the player");
+    let missing: Vec<_> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level <= log::Level::Warn && record.message.contains("cannot time it")
+        })
+        .collect();
+    assert!(missing.is_empty(), "no missing-event warning: {missing:#?}");
 }
 
-// A jab cut short the tick after it fires, by its target stepping out of
-// reach, and re-entered as soon as `stalk`'s rest allows still fires at its
-// punch's `hit`: the soonest re-entered moment falls after the jab's cooldown.
-#[test]
-fn shipped_brute_jab_re_entered_right_after_a_fire_fires_at_the_punch_hit() {
-    let near = Vec3::new(1.5, 0.0, 0.0);
-    let mut shipped = Shipped::new(dev_manifest(), near);
-    let brute = shipped.spawn("reference_enemy");
-    give_reference_armor(&mut shipped.reg, brute);
-    let hit = shipped
-        .clip(brute, "attack_jab")
-        .event_time("hit")
-        .expect("`punch` carries its `hit`");
-    let moment = one_shot_moment_tick(hit);
+/// What one charge run left: each tick's path, the ticks the charge fired,
+/// and the brute's ground speed and steering multiplier on each tick.
+#[derive(Debug, Default)]
+struct ChargeRun {
+    paths: Vec<String>,
+    fired: Vec<usize>,
+    speed: Vec<f32>,
+    steering: Vec<f32>,
+}
 
-    let (mut paths, mut jabs, mut hurt) = (Vec::new(), Vec::<usize>::new(), Vec::new());
-    for tick in 0..(6.0 / DT) as usize {
-        // Out of jab reach for the one tick after the first jab fires.
-        let stepped_out = jabs.first().is_some_and(|&fired| fired + 1 == tick);
-        let at = if stepped_out {
-            shipped.away_from(brute, near, 3.0)
-        } else {
-            near
-        };
-        shipped.place_player(at);
-        let (jab, hp) = (
-            shipped.cooldown(brute, "jab"),
-            player_hp(&shipped.reg, shipped.player),
-        );
-        shipped.tick();
-        if shipped.cooldown(brute, "jab") > jab {
-            jabs.push(tick);
-        }
-        if player_hp(&shipped.reg, shipped.player) < hp {
-            hurt.push(tick);
-        }
-        paths.push(shipped.path(brute));
-        if jabs.len() == 2 {
-            break;
-        }
+impl ChargeRun {
+    fn entered(&self, leaf: &str) -> usize {
+        entry_tick(&self.paths, leaf, 0)
+            .unwrap_or_else(|| panic!("the brute enters `{leaf}`: {:?}", self.paths))
     }
+}
 
-    let fired = *jabs.first().expect("the brute jabs");
-    assert!(
-        paths[fired + 1].ends_with("/stalk"),
-        "stepping out of reach ends the jab the tick after it fires: {paths:?}"
+/// Where the charge runs start: the brute, and the player 1.5 m off along +X,
+/// both resting on an open floor.
+fn charge_home() -> (Vec3, Vec3) {
+    let brute = Vec3::new(10.0, chaser_rest_y(), 10.0);
+    (brute, brute + Vec3::new(1.5, 0.0, 0.0))
+}
+
+/// The shipped brute's charge from `bellow` on an open floor, AI and steering
+/// ticked at 60 Hz, its tell seated as soon as the brute engages. While it
+/// holds the tell, `place` may move the player.
+fn charge_run(place: impl Fn(&Shipped, EntityId) -> Option<Vec3>) -> ChargeRun {
+    let floor = OpenFloor::new();
+    let (world, nav) = (floor.collision_world(), floor.nav_graph());
+    let (home, player_at) = charge_home();
+    let mut shipped = Shipped::new(dev_manifest(), player_at);
+    let brute = spawn_shipped(
+        &mut shipped.reg,
+        &shipped.manifest,
+        &mut shipped.clips,
+        "reference_enemy",
+        home,
     );
-    let reentered = entry_tick(&paths, "jab", fired + 1).expect("the brute jabs again");
-    // `stalk`'s 150 ms rest, nine or ten whole ticks.
-    assert!(
-        reentered <= fired + 1 + 10,
-        "fixture: the jab re-enters as soon as the rest allows: {paths:?}"
-    );
+    give_reference_armor(&mut shipped.reg, brute);
+    let mut run = ChargeRun::default();
+    let mut seated = false;
+    for tick in 0..(8.0 / DT) as usize {
+        if !seated && shipped.path(brute).ends_with("/approach") {
+            let mut brain = shipped
+                .reg
+                .get_component::<BrainComponent>(brute)
+                .unwrap()
+                .clone();
+            let BehaviorLayerDescriptor::Graph(offense) =
+                &brain.graph.envelope.activities["engage"].layers["offense"]
+            else {
+                panic!("the brute's offense is a graph");
+            };
+            let bellow = offense
+                .activities
+                .keys()
+                .position(|name| name == "bellow")
+                .expect("the offense lowers `bellow`'s rest");
+            assert!(brain.enter_activity_at(1, bellow));
+            shipped.reg.set_component(brute, brain).unwrap();
+            seated = true;
+        }
+        if shipped.path(brute).ends_with("/charge_bellow")
+            && let Some(at) = place(&shipped, brute)
+        {
+            shipped.place_player(at);
+        }
+        let at = shipped
+            .reg
+            .get_component::<Transform>(brute)
+            .unwrap()
+            .position;
+        let cooldown = shipped.cooldown(brute, "charge");
+        run_ai_tick_with_navigation_and_impact(
+            &mut shipped.reg,
+            &mut shipped.runtime,
+            DT,
+            AiTickInputs {
+                mover_nav: crate::nav::MoverNav::none(),
+                nav_graph: Some(&nav),
+                collision_world: Some(&world),
+                descriptors: &shipped.manifest.entities,
+                descriptor_generation: 0,
+                factions: &FactionRegistry::default(),
+                faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+                clips: Some(&shipped.clips),
+            },
+            |_| {},
+        );
+        agent_steering::tick(
+            &mut shipped.reg,
+            &world,
+            Some(&nav),
+            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
+            DT,
+        );
+        if shipped.cooldown(brute, "charge") > cooldown {
+            run.fired.push(tick);
+        }
+        let now = shipped
+            .reg
+            .get_component::<Transform>(brute)
+            .unwrap()
+            .position;
+        run.speed.push(distance_xz(at, now) / DT);
+        run.steering.push(
+            shipped
+                .reg
+                .get_component::<AgentComponent>(brute)
+                .unwrap()
+                .activity_speed,
+        );
+        run.paths.push(shipped.path(brute));
+    }
+    run
+}
+
+// Sp6, shipped: the brute's charge under `bellow` lands its contact on reach,
+// once per entry. A target in reach as the release begins is hit on its entry
+// tick; one that backed off is chased down at twice the brute's pace and hit
+// on reach; one too far to catch sees no hit, and the recover fires nothing.
+#[test]
+fn shipped_brute_charge_lands_on_reach_once_or_recovers_with_no_hit() {
+    let (_, start) = charge_home();
+
+    // Held ground: hit as the release begins, once.
+    let held = charge_run(|_, _| None);
+    let release = held.entered("charge_release");
     assert_eq!(
-        jabs.get(1).copied(),
-        Some(reentered + moment),
-        "the re-entered jab fires as its punch reaches `hit` ({hit} s), not a cooldown whiff"
+        held.fired,
+        vec![release],
+        "in reach on entry: {:?}",
+        held.paths
     );
     assert!(
-        hurt.contains(&(reentered + moment)),
-        "the re-entered jab lands on the player"
+        held.paths[release + 1..]
+            .iter()
+            .any(|path| path.ends_with("/charge_recover")),
+        "the charge recovers: {:?}",
+        held.paths
+    );
+
+    // Backed off out of reach during the roar: chased at twice the pace.
+    let backed_off = charge_run(|shipped, brute| Some(shipped.away_from(brute, start, 6.0)));
+    let release = backed_off.entered("charge_release");
+    let recover = backed_off.entered("charge_recover");
+    assert_eq!(
+        backed_off.fired.len(),
+        1,
+        "one contact per entry: {:?}",
+        backed_off.paths
+    );
+    let fired = backed_off.fired[0];
+    assert!(
+        (release + 1..recover).contains(&fired),
+        "the contact lands after the chase, before the recover: {fired} in {release}..{recover}"
+    );
+    assert!(
+        backed_off.steering[release..recover]
+            .iter()
+            .all(|&speed| speed == 2.0),
+        "the release steers at `speed: 2`: {:?}",
+        &backed_off.steering[release..recover]
+    );
+    let top = backed_off.speed[release..=fired]
+        .iter()
+        .copied()
+        .fold(0.0_f32, f32::max);
+    assert!(
+        top > 3.0 * 1.5,
+        "the charge outruns the brute's 3 m/s pace: {top} m/s"
+    );
+
+    // Out of reach for the whole charge, though on the floor's navmesh: no
+    // hit, and the recover never fires.
+    let fled = charge_run(|shipped, brute| Some(shipped.away_from(brute, start, 20.0)));
+    let recover = fled.entered("charge_recover");
+    assert!(
+        fled.fired.is_empty(),
+        "never reached, never hit: {:?}",
+        fled.paths
+    );
+    assert!(
+        fled.paths[recover..]
+            .iter()
+            .any(|path| path.ends_with("/cock")),
+        "it rests in its ending stance: {:?}",
+        fled.paths
     );
 }
 

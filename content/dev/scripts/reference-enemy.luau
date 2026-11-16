@@ -16,51 +16,99 @@ local ARRIVE = 1
 local HALF_PI = math.pi / 2
 local STARTLE_MS = 200
 local JAB_RANGE = 2
+local LUNGE_RANGE = 3
 local SLAM_RANGE = 3.5
+-- The charge's `maxRange` both opens its queue and lands its contact.
+local CHARGE_REACH = 2.5
 -- Combat slots sit inside jab reach, so the brute fights close enough to jab.
 local CLOSE_STANDOFF = 1.5
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
--- `punch` (1,100 ms) connects at its `hit`, 267 ms in; the rest is
--- follow-through.
--- `smash` (3,700 ms) crouches by 400 ms; its `hit`, 1,633 ms in, is the hands
--- slamming down past camera height, a frame before they reach the floor. The
--- slam's phases share one smash; the commit holds 100 ms past `hit`.
-local SMASH_CROUCHED_MS = 400
-local SMASH_HIT_MS = 1633
-local SLAM_WINDUP_MS = SMASH_CROUCHED_MS
-local SLAM_COMMIT_MS = SMASH_HIT_MS - SMASH_CROUCHED_MS + 100
--- A jab re-entered the tick after its fire rests, then plays a fresh punch to
--- `hit`: 27 ticks (450 ms) at the soonest. The cooldown sits below rest plus
--- `hit` (417 ms), so no jab's moment meets it.
-local JAB_REST_MS = 150
-local JAB_COOLDOWN_MS = 400
--- Longer than `heavy`'s 4 s refresh, so a second brute takes the next slam.
--- An outer row: passing during a jab's punch, it cuts that jab before `hit`.
-local PRESS_MS = 5000
+-- Strolls on the walk at its planted-foot speed, 1.2 m/s.
+local STROLL = 0.4
+-- `approach`'s tell, from one roll per entry.
+local OVERHEAD_SHARE = 0.4
+local BELLOW_FROM = 0.85
+-- The crouch's two strikes.
+local SLAM_SHARE = 0.5
+local OVERHEAD_WAIT_MS = 3000
+local COCK_WAIT_MS = 2000
+local BELLOW_WAIT_MS = 2500
+local OVERHEAD_LEAVE_RANGE = SLAM_RANGE + 1
+local COCK_LEAVE_RANGE = JAB_RANGE + 1
+local COIL_MS = 500
+local FLINCH_MS = 700
 
--- The brute's attacks. `claw` is not wired into the graph; the explicit
--- `attacks` list keeps it on the archetype.
+-- Poses. Stance sounds have no assets yet; dev fixtures stand in.
+local overhead = defineStance("overhead", {
+  animation = "smash_windup",
+  sound = "fixtures/jump",
+  holdMs = { 500, 1100 },
+  breakOn = { damage = 30, to = "flinch" },
+})
+-- The slam's landing; no strike begins here.
+local coil = defineStance("coil", { animation = "swipe_windup", sound = "fixtures/land" })
+local cock = defineStance("cock", {
+  animation = "punch_windup",
+  sound = "fixtures/bite",
+  holdMs = { 400, 800 },
+  breakOn = { damage = 20, to = "flinch" },
+})
+local bellow = defineStance("bellow", {
+  animation = "roar",
+  sound = "fixtures/growl",
+  holdMs = { 800, 1400 },
+  breakOn = { damage = 40, to = "flinch" },
+})
+
+-- Strikes, each firing at its clip's `hit` unasked; the charge on reach.
 local jab = defineAttack("jab", {
   draws = { AttackTokens.melee },
   damage = 8,
   maxRange = JAB_RANGE,
-  cooldownMs = JAB_COOLDOWN_MS,
+  cooldownMs = 800,
+  beginningStance = cock,
+  endingStance = overhead,
+  release = { animation = "punch_strike" },
 })
 local slam = defineAttack("slam", {
   draws = { AttackTokens.melee:with({ cost = 2 }), AttackTokens.heavy },
   damage = 14,
   maxRange = SLAM_RANGE,
   cooldownMs = 1800,
+  beginningStance = overhead,
+  endingStance = coil,
+  release = { animation = "smash_strike" },
 })
+local lunge = defineAttack("lunge", {
+  draws = { AttackTokens.melee },
+  damage = 10,
+  maxRange = LUNGE_RANGE,
+  cooldownMs = 1500,
+  beginningStance = overhead,
+  endingStance = cock,
+  release = { animation = "swipe_strike" },
+})
+-- It runs for a combat slot at jab reach, inside its contact reach.
+local charge = defineAttack("charge", {
+  draws = { AttackTokens.heavy },
+  damage = 16,
+  maxRange = CHARGE_REACH,
+  standoffDistance = CLOSE_STANDOFF,
+  cooldownMs = 5000,
+  beginningStance = bellow,
+  endingStance = cock,
+  release = { animation = "run", motion = "chaseTarget", speed = 2, ms = 1200, at = false },
+  recover = { animation = "idle", ms = 500 },
+})
+-- `claw` is not wired into the graph; the explicit `attacks` list keeps it on
+-- the archetype.
 local claw = defineAttack("claw", { damage = 15, damageType = DamageTypes.corrosive, maxRange = 2, cooldownMs = 800 })
 
 -- `and` is a Luau keyword, so composition uses bracket spelling; bind the left
 -- operands first so a three-term guard does not repeat its prefix.
-local inReach = brain.targetDistance:le(JAB_RANGE)
-local restedInReach = inReach["and"](inReach, brain.timeInActivityMs:ge(JAB_REST_MS))
 local inSlamRange = brain.targetDistance:le(SLAM_RANGE)
-local windupDone = brain.timeInActivityMs:ge(SLAM_WINDUP_MS)
+local inChargeReach = brain.targetDistance:le(CHARGE_REACH)
 local noTarget = brain.hasTarget["not"](brain.hasTarget)
 local staleNoTarget = noTarget["and"](noTarget, brain.timeSinceDamageMs:gt(ALERT_MS))
 local freshKnownDamage = brain.damageSourceKnown["and"](brain.damageSourceKnown, brain.timeSinceDamageMs:le(STARTLE_MS))
@@ -68,31 +116,6 @@ local alertKnownDamage = brain.damageSourceKnown["and"](brain.damageSourceKnown,
 
 local aheadBearing = brain.damageBearing:gt(HALF_PI)
 local behindBearing = aheadBearing["or"](aheadBearing, brain.damageBearing:lt(-HALF_PI))
-
--- The jab loop both fighting phases nest.
-local jabs = {
-  initial = "stalk",
-  activities = {
-    stalk = { animation = "walk" },
-    jab = {
-      animation = "attack_jab",
-      action = { attack = jab, at = "hit" },
-      attackTurn = jab,
-    },
-  },
-  transitions = {
-    stalk = {
-      {
-        to = "jab",
-        when = restedInReach["and"](restedInReach, attackTurnFree(jab)),
-      },
-    },
-    jab = {
-      { to = "stalk", when = brain.animationDone },
-      { to = "stalk", when = brain.targetDistance:gt(JAB_RANGE) },
-    },
-  },
-}
 
 M.referenceEnemyEntity = defineEntity({
   canonicalName = M.REFERENCE_ENEMY_CLASSNAME,
@@ -118,29 +141,15 @@ M.referenceEnemyEntity = defineEntity({
       model = "models/mutant/model.gltf",
       animations = {
         idle = { clip = "idle", loop = true },
-        -- Every move runs at `moveSpeed`, so locomotion plays the run; its
-        -- planted foot travels about 2.2 m/s.
-        walk = {
-          clip = "run",
-          loop = true,
-          crossfadeMs = 200,
-          travelSpeed = 2.2,
-        },
-        attack_jab = {
-          clip = "punch",
-          loop = false,
-          crossfadeMs = 80,
-          interrupt = "snap",
-        },
-        -- The smash's hands pass camera height at its `hit`, 1,633 ms in,
-        -- during the slam's commit. Stances split it into `smash_windup` and
-        -- `smash_strike`.
-        attack_slam = {
-          clip = "smash",
-          loop = false,
-          crossfadeMs = 80,
-          interrupt = "snap",
-        },
+        walk = { clip = "walk", loop = true, crossfadeMs = 200, travelSpeed = 1.2 },
+        run = { clip = "run", loop = true, crossfadeMs = 200, travelSpeed = 2.2 },
+        smash_windup = { clip = "smash_windup", loop = false, crossfadeMs = 80 },
+        swipe_windup = { clip = "swipe_windup", loop = false, crossfadeMs = 80 },
+        punch_windup = { clip = "punch_windup", loop = false, crossfadeMs = 80 },
+        roar = { clip = "roar", loop = false, crossfadeMs = 120 },
+        smash_strike = { clip = "smash_strike", loop = false, crossfadeMs = 80, interrupt = "snap" },
+        swipe_strike = { clip = "swipe_strike", loop = false, crossfadeMs = 80, interrupt = "snap" },
+        punch_strike = { clip = "punch_strike", loop = false, crossfadeMs = 80, interrupt = "snap" },
         flinch = {
           clip = "hit_reaction",
           loop = false,
@@ -160,7 +169,7 @@ M.referenceEnemyEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attacks = { jab, slam, claw },
+      attacks = { jab, slam, lunge, charge, claw },
       engagementRadius = CLOSE_STANDOFF,
       patrol = {
         mode = "pingPong",
@@ -168,9 +177,9 @@ M.referenceEnemyEntity = defineEntity({
       },
       activities = {
         idle = { animation = "idle", motion = "hold" },
-        patrol = { animation = "walk", motion = "patrol" },
+        patrol = { animation = "walk", motion = "patrol", speed = STROLL },
         engage = {
-          animation = "walk",
+          animation = "run",
           layers = {
             move = {
               {
@@ -180,57 +189,47 @@ M.referenceEnemyEntity = defineEntity({
               "chaseTarget",
             },
             offense = {
-              initial = "hunt",
+              initial = "approach",
               activities = {
-                hunt = { layers = { offense = jabs } },
-                press = { layers = { offense = jabs } },
-                -- The slam stands its ground through the whole smash rather
-                -- than chasing, so the brute does not walk off its target
-                -- before `hit`.
-                windup = {
-                  animation = "attack_slam",
-                  motion = "hold",
-                  attackTurn = slam,
-                },
-                commit = {
-                  animation = "attack_slam",
-                  motion = "hold",
-                  action = { attack = slam, at = "hit" },
-                  attackTurn = slam,
-                },
-                recover = {
-                  animation = "attack_slam",
-                  motion = "hold",
-                  attackTurn = slam,
-                },
+                approach = { animation = "run" },
+                flinch = { animation = "flinch", motion = "hold" },
               },
               transitions = {
-                hunt = {
+                approach = {
                   {
-                    to = "windup",
-                    when = inSlamRange["and"](inSlamRange, attackTurnFree(slam)),
+                    to = overhead,
+                    when = inSlamRange["and"](inSlamRange, brain.activityRoll:lt(OVERHEAD_SHARE)),
                   },
-                },
-                windup = {
                   {
-                    to = "commit",
-                    when = windupDone["and"](windupDone, attackTurnHeld(slam)),
+                    to = bellow,
+                    when = inChargeReach["and"](inChargeReach, brain.activityRoll:ge(BELLOW_FROM)),
                   },
-                  -- Another brute asked on the same tick and won the turn.
-                  { to = "hunt", when = brain.timeInActivityMs:ge(SLAM_WINDUP_MS) },
+                  { to = cock, when = brain.targetDistance:le(JAB_RANGE) },
                 },
-                commit = {
-                  { to = "recover", when = brain.timeInActivityMs:ge(SLAM_COMMIT_MS) },
+                overhead = {
+                  { to = slam, when = brain.activityRoll:lt(SLAM_SHARE) },
+                  { to = lunge },
+                  { to = "approach", when = brain.targetDistance:gt(OVERHEAD_LEAVE_RANGE) },
+                  { to = "approach", when = brain.timeInActivityMs:ge(OVERHEAD_WAIT_MS) },
                 },
-                recover = { { to = "press", when = brain.animationDone } },
-                press = { { to = "hunt", when = brain.timeInActivityMs:ge(PRESS_MS) } },
+                cock = {
+                  { to = jab },
+                  { to = "approach", when = brain.targetDistance:gt(COCK_LEAVE_RANGE) },
+                  { to = "approach", when = brain.timeInActivityMs:ge(COCK_WAIT_MS) },
+                },
+                bellow = {
+                  { to = charge },
+                  { to = "approach", when = brain.timeInActivityMs:ge(BELLOW_WAIT_MS) },
+                },
+                coil = { { to = "approach", when = brain.timeInActivityMs:ge(COIL_MS) } },
+                flinch = { { to = "approach", when = brain.timeInActivityMs:ge(FLINCH_MS) } },
               },
             },
           },
         },
-        investigate = { animation = "walk", motion = "moveToLastKnown" },
+        investigate = { animation = "walk", motion = "moveToLastKnown", speed = STROLL },
         startle = { animation = "flinch", motion = "hold" },
-        retreat = { animation = "walk", motion = "moveToAnchor" },
+        retreat = { animation = "run", motion = "moveToAnchor" },
       },
       transitions = {
         ["*"] = {

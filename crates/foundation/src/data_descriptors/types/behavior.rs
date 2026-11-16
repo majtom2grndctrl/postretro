@@ -244,6 +244,46 @@ pub fn locomotion_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
         .and_then(|activity| activity.animation.as_deref())
 }
 
+/// Visit the animation states a graph rate-scales by steered travel speed:
+/// its [`locomotion_animation`], then every animation an activity at any depth
+/// plays under its own `chaseTarget`, `strafe` or `reposition` motion, with
+/// or without an action, so a moving attack strides at its speed. The host
+/// tick and remote presentation both derive the set from the descriptor
+/// graph, so they agree on which states scale without anything on the wire.
+///
+/// Stops at the first animation `visit` accepts and reports whether one did.
+/// A state may be visited more than once. Allocates nothing.
+pub fn any_rate_scaled_animation(
+    graph: &BehaviorGraphDescriptor,
+    mut visit: impl FnMut(&str) -> bool,
+) -> bool {
+    if locomotion_animation(graph).is_some_and(&mut visit) {
+        return true;
+    }
+    envelope_any_rate_scaled_animation(&graph.envelope, &mut visit)
+}
+
+fn envelope_any_rate_scaled_animation(
+    envelope: &BehaviorGraphEnvelope,
+    visit: &mut dyn FnMut(&str) -> bool,
+) -> bool {
+    envelope.activities.values().any(|activity| {
+        let steers = matches!(
+            activity.motion,
+            Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
+        );
+        if steers && activity.animation.as_deref().is_some_and(&mut *visit) {
+            return true;
+        }
+        activity.layers.values().any(|layer| match layer {
+            BehaviorLayerDescriptor::Graph(nested) => {
+                envelope_any_rate_scaled_animation(nested, visit)
+            }
+            BehaviorLayerDescriptor::Selector(_) => false,
+        })
+    })
+}
+
 /// Resolve the animation authored on the graph's initial activity.
 pub fn rest_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
     graph

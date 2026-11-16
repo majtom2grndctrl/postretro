@@ -725,6 +725,7 @@ fn enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),

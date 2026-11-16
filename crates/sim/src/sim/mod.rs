@@ -8,6 +8,8 @@ mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
 #[cfg(test)]
+mod activity_speed_tests;
+#[cfg(test)]
 mod damage_in_activity_tests;
 #[cfg(test)]
 mod damage_type_tests;
@@ -1398,19 +1400,23 @@ fn update_brain_animation_playback_rates(
             continue;
         };
 
-        // Rate-scale only the graph's locomotion state — the one that chases
-        // without an action of its own — or a directional variant of it
+        // Rate-scale only the graph's rate-scaled states — its locomotion
+        // state, and each state an activity plays under its own steering
+        // motion, a moving attack's included — or a directional variant of one
         // (`_left`, `_right`, `_backward`), and only while the archetype leaves
-        // `speedScale` on. Every other case rests at the authored rate (1.0).
+        // `speedScale` on. The remote client derives the same set from the
+        // descriptor graph. Every other case rests at the authored rate (1.0).
         // Calibration is `measured_ground_speed / effective_travel_speed`, each
         // variant against its own clip's stride; a state with neither an
         // override nor a derived clip stride falls back to
         // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
-        let is_locomotion =
-            postretro_foundation::locomotion_animation(&brain.graph).is_some_and(|locomotion| {
-                TravelVariant::of_state(locomotion, &animation.current_state).is_some()
+        // The fallback is the archetype's base speed, never the activity's
+        // steered speed, because the client has only the base to divide by.
+        let is_rate_scaled =
+            postretro_foundation::any_rate_scaled_animation(&brain.graph, |state| {
+                TravelVariant::of_state(state, &animation.current_state).is_some()
             });
-        let rate_input = if is_locomotion && animation.speed_scale {
+        let rate_input = if is_rate_scaled && animation.speed_scale {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);
             MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)
         } else {
@@ -1436,7 +1442,7 @@ fn update_brain_animation_playback_rates(
     }
 }
 
-/// Resolve the effective travel speed for a locomotion state's speed-scaled
+/// Resolve the effective travel speed for a rate-scaled state's speed-scaled
 /// playback: the active state's authored `travelSpeed` override wins, else the
 /// model clip's load-derived stride (via [`HitZoneStore`], keyed by the mesh's
 /// model handle, with the clip picked by `ModelHitZones::state_clip`, which the
@@ -2229,6 +2235,7 @@ mod tests {
                             facing: None,
                             reposition: None,
                             attack_turn: None,
+                            speed: None,
                             layers: BTreeMap::new(),
                         },
                     ),
@@ -2243,6 +2250,7 @@ mod tests {
                             facing: None,
                             reposition: None,
                             attack_turn: None,
+                            speed: None,
                             layers: BTreeMap::new(),
                         },
                     ),

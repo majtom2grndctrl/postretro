@@ -158,6 +158,7 @@ fn brain() -> BrainComponent {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),
@@ -374,6 +375,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: Default::default(),
                     },
                 ),
@@ -391,6 +393,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: Default::default(),
                     },
                 ),
@@ -2158,3 +2161,6 @@ fn despawn_for_unmapped_network_id_is_a_clean_noop() {
 
 #[path = "descriptor_world_harness_tests.rs"]
 mod descriptor_world_harness_tests;
+
+#[path = "enemy_walk_rate_loopback_tests.rs"]
+mod enemy_walk_rate_loopback_tests;

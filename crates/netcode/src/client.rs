@@ -168,10 +168,19 @@ enum DeltaApply {
 /// shared descriptor table when that remote is materialized.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RemoteEnemyWalkPlayback {
+    /// The archetype's base `moveSpeed`, the uncalibrated reference. The host
+    /// divides by the same base value whatever an activity's `speed`.
     pub(crate) move_speed: f32,
-    /// The graph's locomotion state. It and its directional variants
-    /// (`_left`, `_right`, `_backward`) scale with presented speed.
-    pub(crate) walk_state: String,
+    /// The graph's rate-scaled states (foundation `any_rate_scaled_animation`)
+    /// the mesh declares. Each and its directional variants (`_left`,
+    /// `_right`, `_backward`) scale with presented speed.
+    pub(crate) scaled_states: Vec<RemoteScaledState>,
+}
+
+/// One rate-scaled state of a remote enemy's graph.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RemoteScaledState {
+    pub(crate) state: String,
     /// Load-derived speed of each variant's clip, indexed by
     /// [`TravelVariant::index`]. The runtime state applies its authored
     /// `travelSpeed` override before this value.
@@ -179,7 +188,7 @@ pub(crate) struct RemoteEnemyWalkPlayback {
 }
 
 impl RemoteEnemyWalkPlayback {
-    /// A reference whose only calibrated clip is the base walk's.
+    /// A reference whose one scaled state has only its base clip calibrated.
     #[cfg(test)]
     pub(crate) fn base(
         move_speed: f32,
@@ -188,9 +197,21 @@ impl RemoteEnemyWalkPlayback {
     ) -> Self {
         Self {
             move_speed,
-            walk_state: walk_state.into(),
-            derived_travel_speeds: [derived_travel_speed, None, None, None],
+            scaled_states: vec![RemoteScaledState {
+                state: walk_state.into(),
+                derived_travel_speeds: [derived_travel_speed, None, None, None],
+            }],
         }
+    }
+
+    /// The derived clip speed of the scaled-state variant `current` presents:
+    /// `None` when `current` is no rate-scaled state or variant of one,
+    /// `Some(None)` when its clip has no derived stride.
+    fn derived_speed_of(&self, current: &str) -> Option<Option<f32>> {
+        self.scaled_states.iter().find_map(|scaled| {
+            let variant = TravelVariant::of_state(&scaled.state, current)?;
+            Some(scaled.derived_travel_speeds[variant.index()])
+        })
     }
 }
 
@@ -2856,8 +2877,8 @@ impl ClientReplication {
     }
 
     /// Apply the rate for one presented remote pose. Only an enemy whose current
-    /// mesh state is the descriptor's locomotion walk state, or a directional
-    /// variant of it, receives its displayed XZ speed; every other state
+    /// mesh state is one of the descriptor graph's rate-scaled states, or a
+    /// directional variant of one, receives its displayed XZ speed; every other state
     /// deliberately rests at rate 1. That speed includes knockback, which the
     /// host's steering-velocity rate excludes (sim
     /// `update_brain_animation_playback_rates`): a known divergence until
@@ -2878,14 +2899,12 @@ impl ClientReplication {
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
             .and_then(|animation| {
-                let variant =
-                    TravelVariant::of_state(&reference.walk_state, &animation.current_state);
-                let Some(variant) = variant.filter(|_| animation.speed_scale) else {
+                let derived = reference.derived_speed_of(&animation.current_state);
+                let Some(derived) = derived.filter(|_| animation.speed_scale) else {
                     return Some(1.0);
                 };
                 let state = animation.states.get(&animation.current_state)?;
-                let effective =
-                    state.effective_travel_speed(reference.derived_travel_speeds[variant.index()]);
+                let effective = state.effective_travel_speed(derived);
                 Some(MeshAnimation::locomotion_rate_ratio(
                     speed_xz,
                     effective,
@@ -5508,8 +5527,10 @@ mod tests {
         let measured = 3.0_f32;
         let reference = RemoteEnemyWalkPlayback {
             move_speed: 3.5,
-            walk_state: "locomotion".to_string(),
-            derived_travel_speeds: [Some(2.5), Some(2.0), Some(2.4), Some(1.5)],
+            scaled_states: vec![RemoteScaledState {
+                state: "locomotion".to_string(),
+                derived_travel_speeds: [Some(2.5), Some(2.0), Some(2.4), Some(1.5)],
+            }],
         };
         for (state, expected) in [
             ("locomotion_left", measured / 2.0),

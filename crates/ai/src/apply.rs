@@ -6,7 +6,7 @@ use super::attack_turns;
 use super::clip_clock;
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
-use super::graph_eval::animation_for_path;
+use super::graph_eval::{animation_for_path, speed_for_path};
 use super::launch;
 use super::targeting::selected_target_alive;
 use super::travel_variants;
@@ -69,9 +69,18 @@ where
     // outcome can run damage or callbacks. A contact attack may mutate a later
     // outcome's brain through the damage chokepoint; publishing that later
     // snapshot after the hit would restore its stale pre-hit perception state.
+    // Each agent's steered speed follows the same published, post-transition
+    // path, so steering (after AI) moves under an activity's `speed` from the
+    // tick it is entered through the tick before it is left, and never under
+    // one entered and left in this pass.
     for outcome in &outcomes {
         if !registry.is_inventory_owned(outcome.id) {
             let _ = registry.set_component(outcome.id, outcome.brain.clone());
+            agent_steering::set_activity_speed(
+                registry,
+                outcome.id,
+                speed_for_path(&outcome.brain),
+            );
         }
     }
 

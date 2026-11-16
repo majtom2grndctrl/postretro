@@ -73,6 +73,7 @@ fn spawn_brain(registry: &mut EntityRegistry, tag: &str) -> EntityId {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),

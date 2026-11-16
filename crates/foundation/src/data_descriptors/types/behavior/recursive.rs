@@ -76,6 +76,12 @@ pub struct BehaviorActivityDescriptor {
     /// the active path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attack_turn: Option<String>,
+    /// Multiplier on the archetype's `moveSpeed` while this is the innermost
+    /// active activity that sets one; an activity without one inherits its
+    /// nearest ancestor's, and the whole path without one moves at 1. Scales
+    /// the agent's own steered travel only, never knockback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f32>,
     #[serde(default)]
     pub layers: BTreeMap<String, BehaviorLayerDescriptor>,
 }
@@ -457,6 +463,13 @@ fn validate_activity(
 ) -> Result<ActivePathVerbs, DescriptorError> {
     if let Some(sound) = activity.sound.as_deref() {
         validate_sound_key(&format!("{path}.sound"), sound)?;
+    }
+    if let Some(speed) = activity.speed
+        && (!speed.is_finite() || speed <= 0.0)
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}.speed` must be a finite value > 0.0, got {speed}"),
+        });
     }
     validate_reposition(activity, path)?;
     if !activity.layers.is_empty() {
@@ -1297,5 +1310,119 @@ mod tests {
             serde_json::from_str::<BehaviorGraphDescriptor>(nested_graph).is_err(),
             "a duplicate inside a nested graph layer must reject the whole descriptor"
         );
+    }
+
+    /// A root `engage` composite carrying `speed` over a nested `run` leaf,
+    /// for the speed validation and rate-scaled-state rows.
+    fn speed_graph(engage_speed: serde_json::Value, run_speed: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "engage": {
+                    "speed": engage_speed,
+                    "layers": {
+                        "offense": {
+                            "initial": "run",
+                            "activities": {
+                                "run": { "animation": "run", "motion": "chaseTarget", "speed": run_speed }
+                            },
+                            "transitions": {}
+                        }
+                    }
+                }
+            },
+            "transitions": { "idle": [] }
+        })
+    }
+
+    // AC S26 (activity speed row): a non-positive or non-finite `speed`
+    // rejects load with the activity's path, on a composite and a leaf alike.
+    #[test]
+    fn activity_speed_rejects_zero_negative_and_non_finite_with_its_path() {
+        let accepted: BehaviorGraphDescriptor =
+            serde_json::from_value(speed_graph(serde_json::json!(2.0), serde_json::json!(0.5)))
+                .expect("positive speeds deserialize");
+        let accepted = accepted.validate().expect("positive speeds load");
+        let engage = &accepted.envelope.activities["engage"];
+        assert_eq!(engage.speed, Some(2.0));
+
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for leaf in [false, true] {
+                let mut graph = accepted.clone();
+                let engage = graph.envelope.activities.get_mut("engage").unwrap();
+                let expected_path = if leaf {
+                    let BehaviorLayerDescriptor::Graph(offense) =
+                        engage.layers.get_mut("offense").unwrap()
+                    else {
+                        panic!("offense is a nested graph");
+                    };
+                    offense.activities.get_mut("run").unwrap().speed = Some(bad);
+                    "components.behavior.activities.engage.layers.offense.activities.run.speed"
+                } else {
+                    engage.speed = Some(bad);
+                    "components.behavior.activities.engage.speed"
+                };
+                let error = graph
+                    .validate()
+                    .expect_err("a non-positive or non-finite speed rejects");
+                assert!(
+                    error.to_string().contains(&format!("`{expected_path}`")),
+                    "speed {bad}: {error}"
+                );
+            }
+        }
+    }
+
+    // The rate-scaled set: the graph's locomotion state, plus each animation
+    // an activity at any depth plays under its own steering motion, action or
+    // not. Position goals, holds and selector-supplied motion add nothing.
+    #[test]
+    fn rate_scaled_animations_add_states_played_under_an_own_steering_motion() {
+        use super::super::any_rate_scaled_animation;
+
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "attacks": { "bite": { "damage": 1.0, "maxRange": 2.0, "cooldownMs": 500.0 } },
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "engage": {
+                    "animation": "walk",
+                    "layers": {
+                        "move": ["chaseTarget"],
+                        "offense": {
+                            "initial": "close",
+                            "activities": {
+                                "close": { "animation": "jog" },
+                                "charge": {
+                                    "animation": "run",
+                                    "motion": "chaseTarget",
+                                    "action": { "attack": "bite" }
+                                },
+                                "circle": { "animation": "strafe_walk", "motion": "strafe" },
+                                "planted": { "animation": "aim", "motion": "hold" }
+                            },
+                            "transitions": {}
+                        }
+                    }
+                },
+                "retreat": { "animation": "limp", "motion": "moveToAnchor" }
+            },
+            "transitions": { "idle": [] }
+        }))
+        .expect("graph deserializes");
+        let mut scaled = Vec::new();
+        assert!(!any_rate_scaled_animation(&graph, |state| {
+            if !scaled.contains(&state.to_string()) {
+                scaled.push(state.to_string());
+            }
+            false
+        }));
+        scaled.sort();
+        assert_eq!(scaled, ["run", "strafe_walk", "walk"]);
+        assert!(any_rate_scaled_animation(&graph, |state| state == "run"));
+        assert!(!any_rate_scaled_animation(&graph, |state| state == "jog"));
     }
 }

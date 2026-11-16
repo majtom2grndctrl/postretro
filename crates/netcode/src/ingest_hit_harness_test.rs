@@ -812,6 +812,7 @@ fn retaliation_graph() -> BehaviorGraphDescriptor {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: BTreeMap::new(),
                 },
             )]),

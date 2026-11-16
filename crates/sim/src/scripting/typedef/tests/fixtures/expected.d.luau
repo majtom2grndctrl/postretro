@@ -867,6 +867,8 @@ export type BehaviorActivityDescriptor = {
   reposition: RepositionParams?,
   --- Marks this activity for one of the root `attacks`: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: the name must be declared, and a mark nested inside a mark for another attack, or an action under a mark that fires another attack, rejects.
   attackTurn: string?,
+  --- Multiplier on the archetype's `moveSpeed` while this is the innermost active activity that sets one: an inner activity's `speed` overrides an outer one's, and one without inherits its nearest ancestor's. Omitted everywhere, it is 1. Scales the enemy's own steered travel only; knockback is unaffected. Must be finite and > 0.
+  speed: number?,
   --- Composite-only orthogonal layers.
   layers: BehaviorLayers?,
 }

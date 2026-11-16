@@ -159,6 +159,16 @@ pub(super) fn authored_facing(brain: &BrainComponent) -> Option<FacingPolicy> {
         .find_map(|depth| brain.activity_at_depth(depth)?.1.facing)
 }
 
+/// The `speed` multiplier of the deepest active activity that sets one, so an
+/// inner activity overrides an outer one and one without a `speed` inherits
+/// its nearest ancestor's; 1 when none on the path sets one.
+pub(super) fn speed_for_path(brain: &BrainComponent) -> f32 {
+    (0..brain.active_depth())
+        .rev()
+        .find_map(|depth| brain.activity_at_depth(depth)?.1.speed)
+        .unwrap_or(1.0)
+}
+
 pub(super) fn action_for_path<'a>(
     bound: &'a BrainEntityPrograms,
     scope: &mut BrainScope,
@@ -420,6 +430,7 @@ mod statechart_tests {
             facing: None,
             reposition: None,
             attack_turn: None,
+            speed: None,
             layers,
         }
     }

@@ -133,6 +133,7 @@ mod tests {
             facing: None,
             reposition: Some(params),
             attack_turn: None,
+            speed: None,
             layers: BTreeMap::new(),
         }
     }

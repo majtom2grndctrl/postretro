@@ -330,6 +330,7 @@ fn attach_brain(registry: &mut EntityRegistry, id: EntityId) {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),

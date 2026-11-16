@@ -102,33 +102,43 @@ pub(super) fn materialize_remote_entities(
             // the immutable reference speed and the locomotion state; neither belongs
             // on the snapshot wire format.
             //
-            // "The walking state" is picked by the same rule the host tick's
-            // animation substitution uses: the graph's locomotion state, which chases
-            // without an action of its own. The brain's graph is the descriptor's
-            // authored `behavior` block, so both ends agree on what this enemy carries.
-            // Its directional variants scale too, each against its own clip.
+            // The scaled states are picked by the rule the host tick's playback
+            // rate uses: the graph's rate-scaled states, its locomotion state and
+            // each state an activity plays under its own steering motion. The
+            // brain's graph is the descriptor's authored `behavior` block, so both
+            // ends agree on what this enemy carries. Directional variants scale
+            // too, each against its own clip.
             let walk_reference = descriptor.and_then(|descriptor| {
                 let mesh = descriptor.mesh.as_ref()?;
                 let graph = descriptor.behavior.as_ref()?;
-                let locomotion = postretro_foundation::locomotion_animation(graph)?;
-                // Bails when the mesh never declares the graph's locomotion
-                // state: no walk reference, so this client leaves the enemy's
-                // playback rate alone.
-                mesh.animations.get(locomotion)?;
                 let model =
                     hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
-                // The same clip pick as the host's `effective_travel_speed`; a
-                // descriptor state has no resolved clip index.
-                let derived_travel_speeds = TravelVariant::ALL.map(|variant| {
-                    let state = mesh
-                        .animations
-                        .get(&format!("{locomotion}{}", variant.suffix()))?;
-                    model?.state_clip(None, &state.clip)?.travel_speed
+                let mut scaled_states: Vec<client::RemoteScaledState> = Vec::new();
+                postretro_foundation::any_rate_scaled_animation(graph, |state| {
+                    // A state the mesh never declares has nothing to scale.
+                    if mesh.animations.contains_key(state)
+                        && !scaled_states.iter().any(|scaled| scaled.state == state)
+                    {
+                        // The same clip pick as the host's `effective_travel_speed`;
+                        // a descriptor state has no resolved clip index.
+                        let derived_travel_speeds = TravelVariant::ALL.map(|variant| {
+                            let state = mesh
+                                .animations
+                                .get(&format!("{state}{}", variant.suffix()))?;
+                            model?.state_clip(None, &state.clip)?.travel_speed
+                        });
+                        scaled_states.push(client::RemoteScaledState {
+                            state: state.to_string(),
+                            derived_travel_speeds,
+                        });
+                    }
+                    false
                 });
-                Some(client::RemoteEnemyWalkPlayback {
+                // No scaled state the mesh declares: no walk reference, so this
+                // client leaves the enemy's playback rate alone.
+                (!scaled_states.is_empty()).then(|| client::RemoteEnemyWalkPlayback {
                     move_speed: graph.move_speed,
-                    walk_state: locomotion.to_string(),
-                    derived_travel_speeds,
+                    scaled_states,
                 })
             });
             replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);

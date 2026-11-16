@@ -1171,7 +1171,7 @@ fn deterministic_trigger_activator_damage(amount: f32) -> NamedReaction {
     }
 }
 
-fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
+pub(super) fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
     let id = registry.spawn(Transform {
         position,
         ..Transform::default()
@@ -1302,6 +1302,7 @@ fn roll_enemy_graph() -> BehaviorGraphDescriptor {
             facing: None,
             reposition: None,
             attack_turn: None,
+            speed: None,
             layers: BTreeMap::new(),
         }
     }
@@ -1524,7 +1525,7 @@ fn player_descriptor() -> PlayerMovementDescriptor {
     }
 }
 
-fn floor_world() -> CollisionWorld {
+pub(super) fn floor_world() -> CollisionWorld {
     sloped_floor_world(0.0)
 }
 
@@ -1563,7 +1564,7 @@ fn sloped_floor_world(slope: f32) -> CollisionWorld {
     CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
-fn open_floor_nav_graph() -> NavGraph {
+pub(super) fn open_floor_nav_graph() -> NavGraph {
     NavGraph::from_section(&NavMeshSection {
         version: NAVMESH_VERSION,
         origin: [0.0, 0.0, 0.0],
@@ -1746,6 +1747,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
@@ -1760,6 +1762,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
@@ -1777,6 +1780,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
@@ -1791,6 +1795,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
@@ -1901,7 +1906,7 @@ fn determinism_enemy_helpers_seed_home_anchor_from_spawn_position() {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_driven_agent_sim_tick(
+pub(super) fn run_driven_agent_sim_tick(
     registry: Rc<RefCell<EntityRegistry>>,
     world: &CollisionWorld,
     hit_zones: &HitZoneStore,
@@ -2012,18 +2017,15 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let mut mover_states = MoverTickStateTable::default();
     let empty_hit_zones = HitZoneStore::new();
 
-    // Attack is not the alert-mapped locomotion state, so the sim-tick path
-    // must restore its previously scaled playback rate to one.
+    // `idle` is played by no steering activity, so it is no rate-scaled state
+    // and the sim-tick path must restore its previously scaled playback rate
+    // to one. (The chasing `attack` state is rate-scaled: a moving attack
+    // strides at its speed.)
     let non_walk_registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let non_walk_enemy = {
         let mut registry = non_walk_registry.borrow_mut();
         spawn_player(&mut registry, Vec3::new(7.0, 1.21, 5.0));
-        let enemy = spawn_driven_agent(
-            &mut registry,
-            Vec3::new(5.0, 1.21, 5.0),
-            ATTACK_STATE,
-            "attack",
-        );
+        let enemy = spawn_driven_agent(&mut registry, Vec3::new(5.0, 1.21, 5.0), "idle", "idle");
         let mut mesh = registry
             .get_component::<MeshComponent>(enemy)
             .expect("driven agent keeps mesh")
@@ -2192,10 +2194,21 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
 fn no_locomotion_graph_restores_authored_playback_rate_through_sim_tick() {
     let mut graph = enemy_graph(3.5, "unused-locomotion");
     graph.envelope.activities.remove(ALERT_STATE);
+    // A chasing attack is rate-scaled, so plant it.
+    graph
+        .envelope
+        .activities
+        .get_mut(ATTACK_STATE)
+        .expect("the graph declares the attack")
+        .motion = Some(MotionVerb::Hold);
     assert_eq!(
         postretro_foundation::locomotion_animation(&graph),
         None,
-        "a graph containing only rest, attack, and death has no locomotion activity",
+        "a graph containing only rest, a planted attack, and death has no locomotion activity",
+    );
+    assert!(
+        !postretro_foundation::any_rate_scaled_animation(&graph, |_| true),
+        "nor any other rate-scaled state",
     );
 
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -2586,6 +2599,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
                 facing: None,
                 reposition: None,
                 attack_turn: None,
+                speed: None,
                 layers: BTreeMap::new(),
             },
         );
@@ -4700,6 +4714,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
         facing: None,
         reposition: None,
         attack_turn: None,
+        speed: None,
         layers: BTreeMap::new(),
     };
     let mut jab = activity(

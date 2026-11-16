@@ -112,9 +112,19 @@ pub struct AgentComponent {
     /// this; it is a stored field so downstream steering uses the baked step
     /// the navmesh was eroded for.
     pub step_height: f32,
-    /// Top horizontal speed the steering system drives the agent at, in
-    /// world-units/sec. Passed to `attach_agent` at attach time.
+    /// The archetype's base top horizontal speed, in world-units/sec. Passed
+    /// to `attach_agent` at attach time and never rescaled: presentation on
+    /// every peer references this base value.
     pub move_speed: f32,
+    /// Multiplier the active behavior activity sets on `move_speed` for path
+    /// steering, written by the AI pass from its post-transition path each
+    /// tick; 1 when no activity on the path sets one. See
+    /// [`Self::steered_speed`].
+    #[serde(
+        default = "unit_activity_speed",
+        skip_serializing_if = "is_unit_activity_speed"
+    )]
+    pub activity_speed: f32,
     /// Live velocity (world space) the agent controller integrates and resolves
     /// each tick.
     pub velocity: Vec3,
@@ -225,6 +235,14 @@ pub struct AgentComponent {
     pub drift_wait_ticks: u32,
 }
 
+fn unit_activity_speed() -> f32 {
+    1.0
+}
+
+fn is_unit_activity_speed(value: &f32) -> bool {
+    *value == 1.0
+}
+
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
@@ -246,6 +264,7 @@ impl AgentComponent {
             height,
             step_height,
             move_speed,
+            activity_speed: 1.0,
             velocity: Vec3::ZERO,
             knockback_velocity: Vec3::ZERO,
             knockback: KnockbackResponse::default(),
@@ -294,6 +313,13 @@ impl AgentComponent {
             self.ground = GroundRef::Airborne;
         }
         true
+    }
+
+    /// Top horizontal speed of the agent's own steered travel this tick: the
+    /// base `move_speed` scaled by the active activity's `speed`. Knockback
+    /// is added after this cap and never scales with it.
+    pub fn steered_speed(&self) -> f32 {
+        self.move_speed * self.activity_speed
     }
 
     /// Whether the capsule rests on a walkable floor, static or mover.

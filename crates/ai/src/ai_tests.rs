@@ -7140,6 +7140,7 @@ fn authored_state(
         facing: None,
         reposition: None,
         attack_turn: None,
+        speed: None,
         layers: BTreeMap::new(),
     }
 }
@@ -8309,6 +8310,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: BTreeMap::new(),
                 },
             ),
@@ -8323,6 +8325,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: BTreeMap::new(),
                 },
             ),
@@ -8359,6 +8362,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 facing: None,
                 reposition: None,
                 attack_turn: None,
+                speed: None,
                 layers: BTreeMap::from([
                     ("offense".to_string(), offense),
                     ("phase".to_string(), BehaviorLayerDescriptor::Graph(phase)),
@@ -9165,6 +9169,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             facing: None,
             reposition: None,
             attack_turn: attack_turn.map(str::to_string),
+            speed: None,
             layers,
         }
     };
@@ -9313,6 +9318,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::from([
                             ("move".to_string(), move_selector),
                             ("offense".to_string(), offense),
@@ -11145,6 +11151,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                 facing: None,
                 reposition: None,
                 attack_turn: None,
+                speed: None,
                 layers: BTreeMap::from([
                     (
                         "move".to_string(),
@@ -13040,6 +13047,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                 facing: None,
                 reposition: None,
                 attack_turn: None,
+                speed: None,
                 layers: BTreeMap::from([
                     (
                         "move".to_string(),

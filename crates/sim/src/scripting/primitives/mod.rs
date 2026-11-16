@@ -743,6 +743,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("facing?", "FacingPolicy", "Which heading the enemy faces while this activity is active, covering the motion its own `move` layer supplies. Omitted, the motion's default applies: `strafe` and `reposition` face the target, and other verbs keep their usual rule.")
         .field("reposition?", "RepositionParams", "Bounds for this activity's own `reposition` motion. Valid only when `motion` is `\"reposition\"`; a `move` selector's `reposition` uses the defaults.")
         .field("attackTurn?", "String", "Marks this activity for one of the root `attacks`: one attack turn is held while any activity marked for that attack is on the active path, so a windup, commit and recover chain holds one turn. Checked at load: the name must be declared, and a mark nested inside a mark for another attack, or an action under a mark that fires another attack, rejects.")
+        .field("speed?", "f32", "Multiplier on the archetype's `moveSpeed` while this is the innermost active activity that sets one: an inner activity's `speed` overrides an outer one's, and one without inherits its nearest ancestor's. Omitted everywhere, it is 1. Scales the enemy's own steered travel only; knockback is unaffected. Must be finite and > 0.")
         .field("layers?", "BehaviorLayers", "Composite-only orthogonal layers.")
         .finish();
     registry

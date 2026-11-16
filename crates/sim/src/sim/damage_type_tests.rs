@@ -515,6 +515,7 @@ fn idle_brain() -> BrainComponent {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),

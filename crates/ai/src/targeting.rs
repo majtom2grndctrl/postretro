@@ -508,6 +508,7 @@ mod tests {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 )]),

@@ -175,7 +175,9 @@ const REPLAN_DEST_THRESHOLD: f32 = 0.5;
 /// personal-space cushion that resolves crowding before contact.
 const SEPARATION_RADIUS_FACTOR: f32 = 2.5;
 
-/// Strength of the separation push relative to the agent's `move_speed`. The
+/// Strength of the separation push relative to the agent's steered top speed
+/// ([`AgentComponent::steered_speed`]), so an activity's `speed` changes only
+/// the pace of path steering, not its shape. The
 /// summed neighbor-avoidance vector is clamped to this fraction of top speed so
 /// separation nudges agents apart without overwhelming goal-directed steering.
 const SEPARATION_STRENGTH: f32 = 0.6;
@@ -303,6 +305,27 @@ pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     updated.replan_cooldown_ticks = 0;
     updated.arrived = false;
     updated.blocked = false;
+    let _ = registry.set_component(agent, updated);
+}
+
+/// Set the multiplier the active behavior activity puts on an agent's base
+/// `move_speed` for path steering. The AI pass writes it from its
+/// post-transition path every tick, so steering, which runs after AI, moves
+/// under an activity's `speed` from the tick it is entered through the tick
+/// before it is left. Writes only on change; a silent no-op for an entity with
+/// no agent component or a non-finite or non-positive multiplier.
+pub fn set_activity_speed(registry: &mut EntityRegistry, agent: EntityId, multiplier: f32) {
+    if !multiplier.is_finite() || multiplier <= 0.0 {
+        return;
+    }
+    let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
+        return;
+    };
+    if component.activity_speed == multiplier {
+        return;
+    }
+    let mut updated = component.clone();
+    updated.activity_speed = multiplier;
     let _ = registry.set_component(agent, updated);
 }
 
@@ -731,7 +754,7 @@ fn tick_impl(
             &agent,
             position,
             goal_speed,
-            STEERING_ACCEL_PER_SPEED * agent.move_speed * control,
+            STEERING_ACCEL_PER_SPEED * agent.steered_speed() * control,
             MAX_TURN_RATE * control,
             LOOKAHEAD_DISTANCE_RADIUS_FACTOR * agent.radius,
             dt,
@@ -770,7 +793,7 @@ fn tick_impl(
         // window here means intent was live this tick, i.e. `steer_velocity`
         // is provably nonzero.
         if recovery_active_this_tick {
-            desired += recovery_tangent_bias(steer_velocity, agent.move_speed);
+            desired += recovery_tangent_bias(steer_velocity, agent.steered_speed());
             agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
         }
 
@@ -783,9 +806,11 @@ fn tick_impl(
             separation(current, &agent, &snapshot),
         ) * control;
 
-        // Clamp horizontal speed to the agent's top speed so the combined
-        // (goal + separation) vector never drives faster than `move_speed`.
-        desired = clamp_xz_speed(desired, agent.move_speed) + agent.knockback_velocity;
+        // Clamp horizontal speed to the agent's steered top speed so the
+        // combined (goal + separation) vector never drives faster than it.
+        // Knockback joins after the clamp, so an activity's `speed` never
+        // scales a shove.
+        desired = clamp_xz_speed(desired, agent.steered_speed()) + agent.knockback_velocity;
 
         // Move through the world.
         let capsule = AgentCapsule {
@@ -1235,10 +1260,10 @@ fn goal_speed(
         }
         agent.arrived = false;
         if final_distance < slowdown_radius {
-            return agent.move_speed * (final_distance / slowdown_radius).clamp(0.0, 1.0);
+            return agent.steered_speed() * (final_distance / slowdown_radius).clamp(0.0, 1.0);
         }
     }
-    agent.move_speed
+    agent.steered_speed()
 }
 
 /// Integrated pre-collision path-following velocity. Direction comes from the
@@ -1535,7 +1560,7 @@ fn separation(current: &AgentSnapshot, agent: &AgentComponent, snapshot: &[Agent
     if push.length_squared() <= 1e-12 {
         return Vec3::ZERO;
     }
-    push.normalize() * (agent.move_speed * SEPARATION_STRENGTH)
+    push.normalize() * (agent.steered_speed() * SEPARATION_STRENGTH)
 }
 
 fn separation_preserving_goal_progress(steer_velocity: Vec3, separation: Vec3) -> Vec3 {

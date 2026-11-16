@@ -708,6 +708,76 @@ fn both_runtimes_reject_invalid_reposition_params_with_paths() {
     }
 }
 
+// Per-activity `speed` (E10 stances): it crosses both production VMs on a
+// composite and a leaf, and a zero, negative or non-finite value rejects load
+// with the activity's path (AC S26).
+#[test]
+fn both_runtimes_carry_activity_speed_and_reject_invalid_values_with_paths() {
+    let js = eval_js(
+        &js_activities(
+            r#"engage: { speed: 1.5, layers: { offense: {
+                initial: "charge",
+                activities: { charge: { animation: "run", motion: "chaseTarget", speed: 2 } },
+                transitions: {}
+            } } }"#,
+        ),
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_activities(
+            r#"engage = { speed = 1.5, layers = { offense = {
+                initial = "charge",
+                activities = { charge = { animation = "run", motion = "chaseTarget", speed = 2 } },
+                transitions = {}
+            } } }"#,
+        ),
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let (js, lua) = (js.behavior.unwrap(), lua.behavior.unwrap());
+    assert_eq!(js, lua);
+    let engage = &js.envelope.activities["engage"];
+    assert_eq!(engage.speed, Some(1.5));
+    let BehaviorLayerDescriptor::Graph(offense) = &engage.layers["offense"] else {
+        panic!("offense is a nested graph");
+    };
+    assert_eq!(offense.activities["charge"].speed, Some(2.0));
+
+    const ENGAGE: &str = "components.behavior.activities.engage";
+    for (js_activity, lua_activity, path, needle) in [
+        (
+            r#"engage: { animation: "run", motion: "chaseTarget", speed: 0 }"#,
+            r#"engage = { animation = "run", motion = "chaseTarget", speed = 0 }"#,
+            format!("{ENGAGE}.speed"),
+            "> 0.0",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "chaseTarget", speed: -2 }"#,
+            r#"engage = { animation = "run", motion = "chaseTarget", speed = -2 }"#,
+            format!("{ENGAGE}.speed"),
+            "> 0.0",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "chaseTarget", speed: Infinity }"#,
+            r#"engage = { animation = "run", motion = "chaseTarget", speed = math.huge }"#,
+            "activities.engage.speed".to_string(),
+            "non-finite",
+        ),
+        (
+            r#"engage: { animation: "run", motion: "chaseTarget", speed: NaN }"#,
+            r#"engage = { animation = "run", motion = "chaseTarget", speed = 0 / 0 }"#,
+            "activities.engage.speed".to_string(),
+            "non-finite",
+        ),
+    ] {
+        let js = js_error(&js_activities(js_activity));
+        let lua = lua_error(&lua_activities(lua_activity));
+        for error in [&js, &lua] {
+            assert!(error.contains(&path), "{js_activity}: {error}");
+            assert!(error.contains(needle), "{js_activity}: {error}");
+        }
+    }
+}
+
 #[test]
 fn both_runtimes_reject_disagreeing_attack_turn_marks_with_paths() {
     const ENGAGE: &str = "components.behavior.activities.engage";

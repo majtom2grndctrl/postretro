@@ -108,3 +108,31 @@ defineAttack({
   // @ts-expect-error `endingStance` takes a stance handle, not an attack.
   endingStance: jab,
 });
+
+// Rows take a stance or an attack handle as well as an activity name, and a
+// level's `initial` may be a stance.
+defineEntity({
+  components: {
+    behavior: {
+      initial: overhead,
+      moveSpeed: 3,
+      activities: { approach: { animation: "walk" } },
+      transitions: {
+        approach: [{ to: overhead }],
+        overhead: [{ to: slam }, { to: "approach" }],
+      },
+    },
+  },
+});
+
+defineEntity({
+  components: {
+    behavior: {
+      // @ts-expect-error `initial` takes an activity name or a stance, never an attack.
+      initial: slam,
+      moveSpeed: 3,
+      activities: { approach: { animation: "walk" } },
+      transitions: {},
+    },
+  },
+});

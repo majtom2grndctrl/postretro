@@ -1123,6 +1123,33 @@ fn spawn_windup_covers_interpolation_ceiling_without_equality_pin() {
     );
 }
 
+/// Whether a stance's co-op floor still covers the remote interpolation
+/// ceiling: a tell shorter than the buffer can release before a remote player
+/// sees the pose.
+fn stance_floor_covers_interpolation_ceiling(floor_ms: f32, ceiling_micros: u64) -> bool {
+    floor_ms >= ceiling_micros as f32 / 1000.0
+}
+
+// F1: the stance floor lowering reads (`foundation`) stays at or above this
+// crate's interpolation clamp, and the guard trips once the clamp outgrows it.
+#[test]
+fn stance_hold_floor_covers_interpolation_ceiling_without_equality_pin() {
+    let floor_ms = postretro_foundation::stance_defaults::STANCE_HOLD_FLOOR_MS;
+    assert!(
+        stance_floor_covers_interpolation_ceiling(floor_ms, MAX_DELAY_MICROS),
+        "the stance floor ({floor_ms} ms) fell below the interpolation ceiling ({MAX_DELAY_MICROS} us)"
+    );
+    let ceiling_past_floor = (floor_ms * 1000.0) as u64 + 1;
+    assert!(
+        !stance_floor_covers_interpolation_ceiling(floor_ms, ceiling_past_floor),
+        "raising interpolation policy above the stance floor must trip the guard"
+    );
+    assert!(
+        stance_floor_covers_interpolation_ceiling(floor_ms + 1.0, MAX_DELAY_MICROS),
+        "raising the floor above the interpolation ceiling remains valid"
+    );
+}
+
 // A fixed-tick spawner creates this entity after level installation, so the host's
 // post-tick re-sweep is the only production path that can register it. Once registered,
 // its Transform-only baseline must carry the descriptor class and materialize the same

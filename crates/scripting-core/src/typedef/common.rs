@@ -149,6 +149,8 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         }
         "BehaviorAttacks" => "ReadonlyArray<Attack>".to_string(),
         "Attack" => "Attack".to_string(),
+        "BehaviorRowTarget" => "string | Stance | Attack".to_string(),
+        "BehaviorInitial" => "string | Stance".to_string(),
         // A transition guard is an authored IR tree. The Rust field is the raw
         // `IrNode` (descriptor-partition rule); the author surface for that same
         // tree is `RuntimeValue` (scripting.md §11, "Author-facing naming").
@@ -360,6 +362,8 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "BehaviorTransitions" => "{ [string]: {GuardedRow} }".to_string(),
         "BehaviorAttacks" => "{Attack}".to_string(),
         "Attack" => "Attack".to_string(),
+        "BehaviorRowTarget" => "string | Stance | Attack".to_string(),
+        "BehaviorInitial" => "string | Stance".to_string(),
         // See the TS mapping: a guard's Rust type is the raw `IrNode`, whose
         // author surface is `RuntimeValue`.
         "IrNode" => "RuntimeValue".to_string(),

@@ -12,6 +12,9 @@ mod shipped;
 #[path = "release_exit_tests.rs"]
 mod release_exit;
 
+#[path = "stance_lowering_tests.rs"]
+mod stance_lowering;
+
 use super::*;
 use crate::alloc_probe::AllocSnapshot;
 use crate::attack_turns::{AttackBudgets, BudgetTable, TokenBudget, attack_index};

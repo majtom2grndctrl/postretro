@@ -535,6 +535,83 @@ fn the_shipped_reference_enemy_descriptor_is_identical_in_both_authorings() {
     );
 }
 
+const STANCE_SURFACE_TS_SRC: &str =
+    include_str!("../../../../../content/dev/scripts/stance-surface.ts");
+const STANCE_SURFACE_LUAU_SRC: &str =
+    include_str!("../../../../../content/dev/scripts/stance-surface.luau");
+
+// S1: `defineStance`, `defineAttack` and the stances brief's Scripting surface
+// example, shipped as `content/dev` content, lower to identical runtime
+// descriptors from TypeScript and Luau, its stances expanded in the offense
+// level and its struck attacks registered.
+#[test]
+fn the_stance_surface_example_lowers_identically_in_both_authorings() {
+    let typescript = shipped_reference_descriptor_from_typescript(
+        STANCE_SURFACE_TS_SRC,
+        "stanceSurfaceEntity",
+        "content/dev/scripts/stance-surface.ts",
+    );
+    let luau = shipped_reference_descriptor_from_luau(
+        STANCE_SURFACE_LUAU_SRC,
+        "stanceSurfaceEntity",
+        "content/dev/scripts/stance-surface.luau",
+    );
+    assert_eq!(typescript, luau, "the two authorings lower alike");
+
+    let behavior = typescript.behavior.expect("the example carries a behavior");
+    assert_eq!(
+        behavior.attacks.keys().collect::<Vec<_>>(),
+        ["charge", "lunge", "slam", "sweep"],
+        "every attack its rows strike"
+    );
+    let BehaviorLayerDescriptor::Graph(offense) =
+        &behavior.envelope.activities["engage"].layers["offense"]
+    else {
+        panic!("the offense layer is a graph");
+    };
+    assert_eq!(
+        offense.activities.keys().collect::<Vec<_>>(),
+        [
+            "approach",
+            "bellow",
+            "charge_bellow",
+            "charge_recover",
+            "charge_release",
+            "coil",
+            "flinch",
+            "lunge_coil",
+            "lunge_recover",
+            "lunge_release",
+            "overhead",
+            "slam_overhead",
+            "slam_recover",
+            "slam_release",
+            "sweep_overhead",
+            "sweep_recover",
+            "sweep_release",
+        ]
+    );
+    let rest_rows: Vec<(&str, Option<&str>)> = offense.transitions["overhead"]
+        .iter()
+        .map(|row| (row.to.as_str(), row.queue.as_deref()))
+        .collect();
+    assert_eq!(
+        rest_rows,
+        [
+            ("flinch", None),
+            ("slam_overhead", Some("slam")),
+            ("sweep_overhead", Some("sweep")),
+            ("approach", None),
+        ],
+        "the break row first, then the authored rows, strikes queued"
+    );
+    assert_eq!(offense.activities["charge_release"].speed, Some(2.0));
+    assert_eq!(
+        offense.activities["charge_release"].motion,
+        Some(MotionVerb::ChaseTarget)
+    );
+}
+
 #[test]
 fn shipped_pose_fixture_is_a_recursive_graph_with_valid_mesh_animation_states() {
     let typescript = shipped_reference_descriptor_from_typescript(

@@ -1,6 +1,7 @@
-// Load-time lowering of an authored behavior's attack handles into the runtime
-// behavior descriptor: one route for both runtimes, run on the behavior's JSON
-// before serde, once per entity read (mod load and staged reload).
+// Load-time lowering of an authored behavior's attack and stance handles into
+// the runtime behavior descriptor: one route for both runtimes, run on the
+// behavior's JSON before serde, once per entity read (mod load and staged
+// reload).
 // See: context/lib/scripting.md §2 (Attack and stance declarations)
 //      context/lib/entity_model.md §7c
 
@@ -10,8 +11,20 @@ use serde_json::{Map, Value};
 
 use super::DescriptorError;
 
+mod declarations;
+mod expand;
+mod floor;
+mod prune;
+
+use declarations::Catalog;
+pub(crate) use floor::stance_floor_warning_scope;
+use prune::prune_to_fixed_point;
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod stance_tests;
 
 /// Path every lowering error and log names a behavior field under.
 const ROOT: &str = "components.behavior";
@@ -52,8 +65,9 @@ pub(crate) fn lowering_runs() -> usize {
 }
 
 /// Lower an authored `components.behavior` value in place: resolve attack
-/// handles to the names the engine reads, build the name-keyed `attacks` map
-/// from their declarations, and drop rows an explicit `attacks` list excludes.
+/// handles to the names the engine reads, drop rows an explicit `attacks`
+/// list excludes, expand each level's stances and strikes into activities,
+/// and build the name-keyed `attacks` map from their declarations.
 /// `archetype` names the entity in drop logs.
 pub(crate) fn lower_behavior(
     behavior: &mut Value,
@@ -61,6 +75,8 @@ pub(crate) fn lower_behavior(
 ) -> Result<(), DescriptorError> {
     #[cfg(test)]
     LOWERING_RUNS.with(|runs| runs.set(runs.get() + 1));
+    // Inside a mod load's scope this joins it; alone, it dedupes per behavior.
+    let _floor_warnings = stance_floor_warning_scope();
 
     reject_lowering_only_fields(behavior, ROOT)?;
     let Some(root) = behavior.as_object_mut() else {
@@ -71,6 +87,7 @@ pub(crate) fn lower_behavior(
     let mut lowering = Lowering::default();
     let listed = take_attack_list(root, &mut lowering)?;
     lowering.collect_envelope(root, ROOT)?;
+    let catalog = Catalog::parse(&lowering.stances, &lowering.declarations)?;
 
     if let Some(listed) = &listed {
         for reference in &lowering.non_row_references {
@@ -81,11 +98,12 @@ pub(crate) fn lower_behavior(
                 )));
             }
         }
-        prune_to_fixed_point(root, ROOT, listed, archetype);
+        prune_to_fixed_point(root, ROOT, listed, &catalog, archetype);
     }
-    lower_row_targets(root, ROOT)?;
+    let struck = expand_envelope(root, ROOT, &catalog, false)?;
 
-    let names = listed.unwrap_or(lowering.referenced);
+    // Without a list, struck attacks count as referenced.
+    let names = listed.unwrap_or_else(|| lowering.referenced.union(&struck).cloned().collect());
     let mut attacks = Map::new();
     for name in names {
         let declared = &lowering.declarations[&name];
@@ -101,7 +119,11 @@ pub(crate) fn lower_behavior(
 struct Lowering {
     /// Every attack handle seen, by name, with the path it was first seen at.
     declarations: BTreeMap<String, Declared>,
-    /// Attacks a row, action or mark references: the inferred `attacks` set.
+    /// Every stance handle seen, by name, with the path it was first seen at:
+    /// row targets, `initial`, and attacks' beginning and ending stances.
+    stances: BTreeMap<String, Declared>,
+    /// Attacks an action or mark references; with the attacks rows strike,
+    /// the inferred `attacks` set.
     referenced: BTreeSet<String>,
     /// Action and mark references, which an explicit list must cover.
     non_row_references: Vec<Reference>,
@@ -131,26 +153,22 @@ impl Lowering {
             if let Some(stance) = handle.get(field)
                 && !stance.is_null()
             {
-                stance_handle(stance, &format!("{path}.{field}"))?;
+                let field_path = format!("{path}.{field}");
+                let stance = stance_handle(stance, &field_path)?;
+                self.declare_stance(stance, &field_path)?;
             }
         }
-        match self.declarations.get(&name) {
-            Some(first) if first.declaration != *handle => Err(shape(format!(
-                "`{path}` declares attack \"{name}\" differently from `{}`; two attack handles of one name must declare the same attack",
-                first.path
-            ))),
-            Some(_) => Ok(name),
-            None => {
-                self.declarations.insert(
-                    name.clone(),
-                    Declared {
-                        declaration: handle.clone(),
-                        path: path.to_string(),
-                    },
-                );
-                Ok(name)
-            }
-        }
+        declare_into(&mut self.declarations, "attack", handle, path)?;
+        Ok(name)
+    }
+
+    /// Record one stance handle's declaration, by the same equal-copies rule.
+    fn declare_stance(
+        &mut self,
+        handle: &Map<String, Value>,
+        path: &str,
+    ) -> Result<(), DescriptorError> {
+        declare_into(&mut self.stances, "stance", handle, path)
     }
 
     /// Resolve a non-row reference (an action's `attack`, an `attackTurn`
@@ -184,13 +202,25 @@ impl Lowering {
                 }
             }
         }
+        if let Some(initial) = envelope.get("initial")
+            && is_handle_of(initial, "stance")
+        {
+            let initial_path = format!("{path}.initial");
+            self.declare_stance(stance_handle(initial, &initial_path)?, &initial_path)?;
+        }
         for (row_path, row) in rows_mut(envelope, path) {
-            if let Some(target) = row.get("to")
-                && is_handle_of(target, "attack")
-            {
-                let handle = attack_handle(target, &format!("{row_path}.to"))?;
-                let name = self.declare(handle, &format!("{row_path}.to"))?;
-                self.referenced.insert(name);
+            let Some(target) = row.get("to") else {
+                continue;
+            };
+            let target_path = format!("{row_path}.to");
+            match handle_kind(target) {
+                Some("attack") => {
+                    self.declare(attack_handle(target, &target_path)?, &target_path)?;
+                }
+                Some("stance") => {
+                    self.declare_stance(stance_handle(target, &target_path)?, &target_path)?;
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -281,106 +311,33 @@ fn take_attack_list(
     Ok(Some(listed))
 }
 
-/// Drop what an explicit `attacks` list excludes, repeating until nothing
-/// more drops. Each dropped row logs once and its guard is never checked, so a
-/// variant reuses its parent's graph with a shorter list. Stance lowering adds
-/// its rule here: the authored rows of a rest no longer reached.
-fn prune_to_fixed_point(
-    root: &mut Map<String, Value>,
-    path: &str,
-    listed: &BTreeSet<String>,
-    archetype: Option<&str>,
-) {
-    while drop_rows_to_unlisted_attacks(root, path, listed, archetype) > 0 {}
-}
-
-/// Drop every row, in this envelope and those nested in it, whose `to` is an
-/// attack the list leaves out. Returns how many rows dropped.
-fn drop_rows_to_unlisted_attacks(
+/// Expand this envelope's stances and strikes, then each nested envelope's.
+/// A nested level may leave through an outer row: the enclosing level's
+/// `"*"` rows, its rows out of the composite, or an exit further out.
+/// Returns every attack struck.
+fn expand_envelope(
     envelope: &mut Map<String, Value>,
     path: &str,
-    listed: &BTreeSet<String>,
-    archetype: Option<&str>,
-) -> usize {
-    let mut dropped = 0;
-    if let Some(transitions) = envelope
-        .get_mut("transitions")
-        .and_then(Value::as_object_mut)
-    {
-        for (source, rows) in transitions.iter_mut() {
-            let Some(rows) = rows.as_array_mut() else {
-                continue;
-            };
-            let mut index = 0;
-            rows.retain(|row| {
-                let row_path = format!("{path}.transitions.{source}[{index}]");
-                index += 1;
-                let Some(name) = row
-                    .get("to")
-                    .filter(|target| is_handle_of(target, "attack"))
-                    .and_then(|target| target.get("name"))
-                    .and_then(Value::as_str)
-                else {
-                    return true;
-                };
-                if listed.contains(name) {
-                    return true;
-                }
-                log::info!(
-                    "[Scripting] {}: `{row_path}` drops its row to attack \"{name}\", which the behavior's `attacks` list leaves out",
-                    archetype.unwrap_or("<unnamed archetype>"),
-                );
-                dropped += 1;
-                false
-            });
-        }
-    }
-    for_each_nested_envelope(envelope, path, |nested, nested_path| {
-        dropped += drop_rows_to_unlisted_attacks(nested, nested_path, listed, archetype);
-    });
-    dropped
-}
-
-/// Lower every remaining row's handle `to` and handle `initial` to the
-/// activity name stance lowering generates for it.
-fn lower_row_targets(envelope: &mut Map<String, Value>, path: &str) -> Result<(), DescriptorError> {
-    if let Some(initial) = envelope.get("initial")
-        && let Some(kind) = handle_kind(initial)
-    {
-        return Err(stance_lowering_pending(
-            &format!("{path}.initial"),
-            kind,
-            initial,
-        ));
-    }
-    for (row_path, row) in rows_mut(envelope, path) {
-        if let Some(target) = row.get("to")
-            && let Some(kind) = handle_kind(target)
-        {
-            return Err(stance_lowering_pending(
-                &format!("{row_path}.to"),
-                kind,
-                target,
-            ));
-        }
-    }
+    catalog: &Catalog,
+    ancestor_exit: bool,
+) -> Result<BTreeSet<String>, DescriptorError> {
+    let mut struck = expand::expand_level(envelope, path, catalog, ancestor_exit)?;
+    let star_exit = expand::has_rows(envelope, "*");
+    let exits: BTreeSet<String> = expand::authored_activities(envelope)
+        .into_iter()
+        .filter(|name| expand::has_rows(envelope, name))
+        .collect();
     let mut result = Ok(());
-    for_each_nested_envelope(envelope, path, |nested, nested_path| {
+    for_each_nested_envelope_of(envelope, path, |activity, nested, nested_path| {
         if result.is_ok() {
-            result = lower_row_targets(nested, nested_path);
+            let exit = ancestor_exit || star_exit || exits.contains(activity);
+            match expand_envelope(nested, nested_path, catalog, exit) {
+                Ok(more) => struck.extend(more),
+                Err(error) => result = Err(error),
+            }
         }
     });
-    result
-}
-
-/// Seam for stance lowering (E10 stances, Task 7): it expands a row to a
-/// stance or an attack, and an `initial` stance, into generated activities.
-/// Until then such a target rejects load.
-fn stance_lowering_pending(path: &str, kind: &str, target: &Value) -> DescriptorError {
-    let name = target.get("name").and_then(Value::as_str).unwrap_or("");
-    shape(format!(
-        "`{path}` targets {kind} \"{name}\"; rows and `initial` to stances and attacks are not lowered yet, so target an activity name"
-    ))
+    result.map(|()| struck)
 }
 
 /// The runtime `AttackParams` an attack declaration lowers to.
@@ -421,6 +378,17 @@ fn for_each_nested_envelope(
     path: &str,
     mut visit: impl FnMut(&mut Map<String, Value>, &str),
 ) {
+    for_each_nested_envelope_of(envelope, path, |_, nested, nested_path| {
+        visit(nested, nested_path);
+    });
+}
+
+/// [`for_each_nested_envelope`], naming the activity each layer belongs to.
+fn for_each_nested_envelope_of(
+    envelope: &mut Map<String, Value>,
+    path: &str,
+    mut visit: impl FnMut(&str, &mut Map<String, Value>, &str),
+) {
     let Some(activities) = envelope
         .get_mut("activities")
         .and_then(Value::as_object_mut)
@@ -434,10 +402,40 @@ fn for_each_nested_envelope(
         for (layer_name, layer) in layers.iter_mut() {
             if let Some(nested) = layer.as_object_mut() {
                 visit(
+                    name,
                     nested,
                     &format!("{path}.activities.{name}.layers.{layer_name}"),
                 );
             }
+        }
+    }
+}
+
+/// Record a handle's declaration under its name. Two handles of one name
+/// must declare the same thing: a Luau re-`require` makes equal copies, while
+/// unequal ones would hide which one a name reaches.
+fn declare_into(
+    declarations: &mut BTreeMap<String, Declared>,
+    kind: &str,
+    handle: &Map<String, Value>,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let name = handle_name(handle);
+    match declarations.get(&name) {
+        Some(first) if first.declaration != *handle => Err(shape(format!(
+            "`{path}` declares {kind} \"{name}\" differently from `{}`; two {kind} handles of one name must declare the same {kind}",
+            first.path
+        ))),
+        Some(_) => Ok(()),
+        None => {
+            declarations.insert(
+                name,
+                Declared {
+                    declaration: handle.clone(),
+                    path: path.to_string(),
+                },
+            );
+            Ok(())
         }
     }
 }

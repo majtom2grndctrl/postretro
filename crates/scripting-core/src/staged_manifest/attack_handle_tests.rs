@@ -793,3 +793,94 @@ fn lowering_runs_once_per_mod_load_and_staged_reload_never_per_level() {
         "a staged reload lowers each behavior once"
     );
 }
+
+// F2 end to end: a stance whose authored hold starts below the co-op floor
+// warns once per mod load naming it, though two archetypes strike from it.
+#[test]
+fn a_hold_below_the_floor_warns_once_per_mod_load_across_archetypes() {
+    let capture = LogCapture::start();
+    let js = r#"const overhead = defineStance("overhead", { animation: "smash_windup", holdMs: [100, 900] });
+        const slam = defineAttack("slam", { damage: 8, maxRange: 2, cooldownMs: 1200,
+          beginningStance: overhead, release: { animation: "smash_strike" } });
+        const brute = (name) => defineEntity({ canonicalName: name, components: { behavior: {
+          initial: "approach", moveSpeed: 3,
+          activities: { approach: { animation: "walk" } },
+          transitions: {
+            approach: [{ to: overhead }],
+            overhead: [{ to: slam }, { to: "approach", when: brain.timeInActivityMs.ge(900) }]
+          } } } });
+        globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+          entities: [brute("brute"), brute("ogre")] });"#;
+    let luau = r#"local overhead = defineStance("overhead", { animation = "smash_windup", holdMs = { 100, 900 } })
+        local slam = defineAttack("slam", { damage = 8, maxRange = 2, cooldownMs = 1200,
+          beginningStance = overhead, release = { animation = "smash_strike" } })
+        local function brute(name)
+          return defineEntity({ canonicalName = name, components = { behavior = {
+            initial = "approach", moveSpeed = 3,
+            activities = { approach = { animation = "walk" } },
+            transitions = {
+              approach = { { to = overhead } },
+              overhead = { { to = slam }, { to = "approach", when = brain.timeInActivityMs:ge(900) } },
+            } } } })
+        end
+        return defineMod({ name = "M", id = "m", version = "1", entities = { brute("brute"), brute("ogre") } })"#;
+    let warnings = || {
+        capture
+            .records()
+            .into_iter()
+            .filter(|record| {
+                record.level == Level::Warn
+                    && record.message.contains("stance \"overhead\"")
+                    && record.message.contains("below the co-op floor")
+            })
+            .count()
+    };
+    let js_manifest = built("floor_once_js", &[("start-script.js", js)]);
+    assert_eq!(warnings(), 1, "one warning for two archetypes in one load");
+    let luau_manifest = built("floor_once_luau", &[("start-script.luau", luau)]);
+    assert_eq!(warnings(), 2, "each mod load warns again");
+    assert_eq!(js_manifest.entities, luau_manifest.entities);
+    let release_after = js_manifest.entities[0]
+        .behavior
+        .as_ref()
+        .unwrap()
+        .envelope
+        .transitions["slam_overhead"][1]
+        .release_after;
+    assert_eq!(
+        release_after,
+        Some([100.0, 900.0]),
+        "it still loads as authored"
+    );
+}
+
+// T3 / P41 (c) end to end: under `attacks: [sweep]`, `coil` is reached only
+// through `slam`'s ending stance, so it is not generated; its authored row,
+// whose guard reads `slam`'s turn, drops with a log and never rejects load.
+#[test]
+fn an_unreached_rests_row_reading_an_unlisted_attack_drops_and_loads() {
+    let capture = LogCapture::start();
+    let js = r#"const overhead = defineStance("overhead", { animation: "smash_windup" });
+        const coil = defineStance("coil", { animation: "swipe_windup" });
+        const slam = defineAttack("slam", { damage: 8, maxRange: 2, cooldownMs: 1200,
+          beginningStance: overhead, endingStance: coil, release: { animation: "smash_strike" } });
+        const sweep = defineAttack("sweep", { damage: 4, maxRange: 2, cooldownMs: 900,
+          beginningStance: overhead, release: { animation: "swipe_strike" } });
+        globalThis.__postretroModManifest = defineMod({ name: "M", id: "m", version: "1",
+          entities: [defineEntity({ canonicalName: "brute", components: { behavior: {
+            initial: "approach", moveSpeed: 3, attacks: [sweep],
+            activities: { approach: { animation: "walk" } },
+            transitions: {
+              approach: [{ to: overhead }],
+              overhead: [{ to: slam }, { to: sweep }, { to: "approach", when: brain.timeInActivityMs.ge(2000) }],
+              coil: [{ to: "approach", when: attackTurnFree(slam) }]
+            } } } })] });"#;
+    let manifest = built("p41c_js", &[("start-script.js", js)]);
+    let behavior = manifest.entities[0].behavior.as_ref().unwrap();
+    assert!(!behavior.envelope.activities.contains_key("coil"));
+    assert_eq!(behavior.attacks.keys().collect::<Vec<_>>(), ["sweep"]);
+    capture.assert_logged_once(
+        Level::Info,
+        "brute: `components.behavior.transitions.coil[0]` drops with stance \"coil\"'s rest",
+    );
+}

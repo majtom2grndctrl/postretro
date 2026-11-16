@@ -690,7 +690,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("GuardedRow")
         .doc("One source-keyed adjacency row: a destination activity plus the guard that selects it. Rows are evaluated in declaration order; the first true row wins.")
-        .field("to", "String", "Destination activity name. Must name an activity declared in the same envelope.")
+        .field("to", "BehaviorRowTarget", "Destination: an activity name declared in the same envelope, a stance handle from `defineStance` (takes the pose: its rest), or an attack handle from `defineAttack` (strikes: legal only from the rest of the attack's `beginningStance`, and waits in line for its turn, range and cooldown). A string never names an activity lowering generates for a stance or attack.")
         .field("when?", "IrNode", "Guard expression, built with the `runtime` builders over `brain.*` inputs and `state(\"name\")` leaves. Must produce a boolean; validated at parse. Omitted, the row is always enabled.")
         .finish();
     registry
@@ -749,7 +749,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("BehaviorGraphEnvelope")
         .doc("Recursive behavior graph envelope used by the root brain and nested graph layers. It carries no graph-wide gameplay fields.")
-        .field("initial", "String", "Initial activity name. Must resolve in this envelope's `activities` map.")
+        .field("initial", "BehaviorInitial", "Initial activity: a name in this envelope's `activities` map, or a stance handle to start in its rest.")
         .field("activities", "BehaviorActivities", "Declared same-level activities. Must be non-empty.")
         .field("transitions", "BehaviorTransitions", "Source-keyed ordered adjacency rows; `\"*\"` is the enclosing scope-all key.")
         .finish();
@@ -763,7 +763,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
     registry
         .register_type("BehaviorGraphDescriptor")
         .doc("Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy.")
-        .field("initial", "String", "Root initial activity. It is also forced when the aggro gate closes.")
+        .field("initial", "BehaviorInitial", "Root initial activity, or a stance handle to start in its rest. It is also forced when the aggro gate closes.")
         .field("activities", "BehaviorActivities", "Root activities, keyed by author-chosen name. Must be non-empty.")
         .field("transitions", "BehaviorTransitions", "Root source-keyed ordered adjacency rows. `\"*\"` applies at root scope.")
         .field("candidateFilter?", "IrNode", "Optional boolean eligibility predicate evaluated per candidate the engine offers during acquisition. It can only narrow that offer set; it does not rank candidates or drop a retained target.")

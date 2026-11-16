@@ -822,8 +822,8 @@ declare module "postretro" {
 
   /** One source-keyed adjacency row: a destination activity plus the guard that selects it. Rows are evaluated in declaration order; the first true row wins. */
   export type GuardedRow = {
-    /** Destination activity name. Must name an activity declared in the same envelope. */
-    to: string;
+    /** Destination: an activity name declared in the same envelope, a stance handle from `defineStance` (takes the pose: its rest), or an attack handle from `defineAttack` (strikes: legal only from the rest of the attack's `beginningStance`, and waits in line for its turn, range and cooldown). A string never names an activity lowering generates for a stance or attack. */
+    to: string | Stance | Attack;
     /** Guard expression, built with the `runtime` builders over `brain.*` inputs and `state("name")` leaves. Must produce a boolean; validated at parse. Omitted, the row is always enabled. */
     when?: RuntimeValue;
   };
@@ -876,8 +876,8 @@ declare module "postretro" {
 
   /** Recursive behavior graph envelope used by the root brain and nested graph layers. It carries no graph-wide gameplay fields. */
   export type BehaviorGraphEnvelope = {
-    /** Initial activity name. Must resolve in this envelope's `activities` map. */
-    initial: string;
+    /** Initial activity: a name in this envelope's `activities` map, or a stance handle to start in its rest. */
+    initial: string | Stance;
     /** Declared same-level activities. Must be non-empty. */
     activities: { readonly [activity: string]: BehaviorActivityDescriptor };
     /** Source-keyed ordered adjacency rows; `"*"` is the enclosing scope-all key. */
@@ -896,8 +896,8 @@ declare module "postretro" {
 
   /** Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy. */
   export type BehaviorGraphDescriptor = {
-    /** Root initial activity. It is also forced when the aggro gate closes. */
-    initial: string;
+    /** Root initial activity, or a stance handle to start in its rest. It is also forced when the aggro gate closes. */
+    initial: string | Stance;
     /** Root activities, keyed by author-chosen name. Must be non-empty. */
     activities: { readonly [activity: string]: BehaviorActivityDescriptor };
     /** Root source-keyed ordered adjacency rows. `"*"` applies at root scope. */

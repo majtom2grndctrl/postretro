@@ -179,28 +179,6 @@ fn a_row_to_an_unlisted_attack_drops_with_one_log_and_its_guard_goes_with_it() {
     );
 }
 
-// Seam: a kept row to an attack, or an `initial` handle, waits on stance
-// lowering and rejects load naming the row.
-#[test]
-fn a_kept_row_or_initial_handle_rejects_until_stance_lowering_lands() {
-    let mut source = behavior(None);
-    source["transitions"]["idle"][0]["to"] = jab();
-    let error = rejection(source);
-    assert!(
-        error.contains("`components.behavior.transitions.idle[0].to` targets attack \"jab\""),
-        "{error}"
-    );
-
-    let mut source = behavior(None);
-    source["initial"] =
-        json!({ "kind": "stance", "name": "overhead", "animation": "smash_windup" });
-    let error = rejection(source);
-    assert!(
-        error.contains("`components.behavior.initial` targets stance \"overhead\""),
-        "{error}"
-    );
-}
-
 // T4: a bare string, nil or a handle of the other kind where an attack handle
 // is expected rejects load with a pathed error; so does the retired map.
 #[test]

@@ -119,9 +119,9 @@ mod lua {
 // (top-level files via `use super::*`, nested files via `use super::super::*`).
 pub use attack_budgets::{drain_attack_budgets_js, drain_attack_budgets_lua};
 pub(crate) use audio_profile::*;
-pub(crate) use behavior_lowering::lower_behavior;
 #[cfg(test)]
 pub(crate) use behavior_lowering::lowering_runs;
+pub(crate) use behavior_lowering::{lower_behavior, stance_floor_warning_scope};
 pub(crate) use charge_interrupts::*;
 pub use error::*;
 pub use fluids::{drain_fluids_js, drain_fluids_lua};

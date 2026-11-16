@@ -1922,7 +1922,8 @@ moments follow the rate: at `playbackRate: 2.5`, a `hit` 400 ms into the clip
 lands 160 ms after the state starts, and a looping state strikes once per pass.
 A directional state (`run_left`, `run_right`, `run_backward`) takes each of
 these fields it leaves out from its base state (`run`), so it plays as the base
-does.
+does. The match is by name alone: any state named `<base>_left`, `_right` or
+`_backward` beside a declared `<base>` inherits this way.
 
 ```ts
 animations: {
@@ -2447,8 +2448,10 @@ no longer holds it, and `"*"` and outer rows still leave at once.
 The queue makes a tell a promise: a strike never starts without its turn and
 never meets its own cooldown. The player can still make it miss. A whiffed
 release still starts its attack's cooldown, as a hit would: the enemy
-committed, so it does not throw the same strike again at once. A release
-whiffs, firing nothing that entry, when at its moment:
+committed, so it does not throw the same strike again at once. A flinch is
+the exception: a release a flinch staggers starts no cooldown, even after its
+moment whiffed, while one cancelled by a knockback launch counts as a whiff. A
+release whiffs, firing nothing that entry, when at its moment:
 
 - **the target is out of range,** having stepped back past `maxRange`, or
   never come within it: a strike queued from its `queueRange` that has not

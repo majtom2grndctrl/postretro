@@ -1,7 +1,7 @@
 # E10--enemy-stances-and-telegraphs — plan of record
 
 mode: resumable
-status: owner additions in progress
+status: review complete
 read at: f5bb5d5
 feature branch: `claude/enemy-stances-telegraphs-837003`
 
@@ -131,7 +131,7 @@ Proposed test names are working names. Every row names its crate and module; the
 | D5 limitator aim breaks into `hit_reaction`; both roll branches in one engagement | `ai` shipped-content test | achievable as stated | pass |
 | Sp1 `speed: 2` on two archetypes; inner overrides outer | `sim` steering test | achievable as stated | pass |
 | Sp2 speed from entry tick to tick before leave (P17) | `sim` steering test | achievable as stated | pass |
-| Sp3 charge `run` rate vs `travelSpeed`, host and loopback client | `sim` playback test + `netcode` loopback test | achievable as stated | pass on the engine fixture (host and loopback agree); the shipped brute charge (6 m/s on a 2.2 m/s stride) clamps at the 1.5x playback limit: owner decision pending |
+| Sp3 charge `run` rate vs `travelSpeed`, host and loopback client | `sim` playback test + `netcode` loopback test | achievable as stated | pass, with an owner-ruled exception: the engine fixture agrees on host and loopback; the shipped brute charge (6 m/s on a 2.2 m/s stride) plays planted at about 2.73x because dev content raises `run`'s cap with `maxPlaybackRate: 3`. Production content keeps the 1.5x default (owner, 2026-11-16) |
 | Sp4 knockback unaffected by `speed` | `sim` steering test | achievable as stated | pass |
 | Sp5 locomotion clip rate equal host/client, calibrated or not | `netcode` loopback test | achievable as stated | pass |
 | Sp6 charge release reach edges (P18) | `ai`/`sim` tick test | achievable as stated | pass |
@@ -146,6 +146,9 @@ Proposed test names are working names. Every row names its crate and module; the
 | M3 brute stances read, mix-up unpredictable, heavy fire breaks, bellow reads as charge | owner, in-engine | manual | outstanding (owner, in-engine) |
 | M4 limitator branches and aim flinch | owner, in-engine | manual | outstanding (owner, in-engine) |
 | M5 co-op loopback hears stance sounds, sees stance before hit | owner, in-engine | manual (after the sounds brief) | outstanding until the sounds brief lands |
+| A1 (owner addition) charge plays planted | owner, in-engine | manual | outstanding: watch the bellow's charge for foot slide at about 2.7x |
+| A2 (owner addition) combo: 666 ms hold, then three jabs | `ai` shipped combo test; owner in-engine | automated + manual | automated pass; owner playtest outstanding (the loop wrap pops about 0.3 m / 40° at the hand) |
+| A3 (owner addition) leap: 666 ms crouch, leap from up to 15 m, slam at the hit, whiff on a sidestep, then cooldown | `ai` shipped leap tests; owner in-engine | automated + manual | automated pass; owner playtest outstanding (10.5 m/s is fast; the crouch can show while the leap cools) |
 | Doc1 `docs/` and `sdk/behaviors/reference` | review + `sdk/behaviors/reference` load test | achievable as stated | pass |
 
 ## Tasks
@@ -222,13 +225,19 @@ After the review loop the owner ruled on the charge stride and added two brute a
 
 Left: the crouch tell can show while the leap cools (no guard fact reads one attack's cooldown); the zero-phase set is derived at mesh materialize, so a reload that adds `repeat` takes effect on the next spawn (documented); a recover's own mark can still request a turn after a release (as round 1 left). Lib suites after the fixes: ai 511, entities 329, scripting-core 1115, foundation 219, sim 2007, netcode 1034, all passing; the full gate runs after the merge from `origin/main`.
 
+**Round 5** (a tracer (opus) and hygiene and drift (sonnet) on the round-4 fix diff): no must-fix or should-fix. The tracer confirmed the whiff cooldown fires once per release, never after a strike or a flinch, works for a weapon release without touching the weapon's state machine, and breaks no Acceptance row (199–209, 276, 296). Docs now say a flinch-staggered release starts no cooldown while a knockback-cancelled one counts as a whiff, and that variant inheritance matches by name. The "decided, not yet built" labels in `scripting.md`, `audio.md` and `networking.md` fall to landing. The loop stops here.
+
+**Merge** of `origin/main` (43 commits: the E18 co-op activation policy, which raised `WIRE_VERSION` to 40, and opt-in whole-load SH bodies) at 330911a: no conflicts. This branch's version-pin test now reads 40. The branch still changes no wire constant.
+
+**Gate after the merge** (on 330911a): fmt clean; clippy `--workspace --all-targets --features postretro/dev-tools -D warnings` clean; workspace tests 16,405 passed, 0 failed (`--no-fail-fast --features postretro/dev-tools`); `cargo check --workspace --release` clean; `crate-graph --check` up to date.
+
 **Final gate** (on 40fb77d, plus round 3's scripting-core message fixes): fmt clean; clippy `--workspace --all-targets --features postretro/dev-tools -D warnings` clean (scripting-core re-run after round 3); workspace tests 16,279 passed, 0 failed (`--no-fail-fast --features postretro/dev-tools`); scripting-core 1,106 passed after round 3; `cargo check --workspace --release` clean; `crate-graph --check` up to date.
 
 ## Trial notes
 - mode: resumable
 - sessions used: 1
-- delegated implementation slices: 11 (Tasks 1–4, 5a, 5b, 6, 7, 8a, 8b, 9), plus 8 fix agents and 1 gate agent
-- review-panel findings: round 1 14 should-fix plus drift and nits (all acted on but 4 left with reasons); round 2 3 should-fix (all acted on); round 3 1 should-fix (acted on)
+- delegated implementation slices: 15 (Tasks 1–4, 5a, 5b, 6, 7, 8a, 8b, 9, 11–14), plus 10 fix agents, 1 gate agent and 1 merge agent
+- review-panel findings: round 1 14 should-fix plus drift and nits (all acted on but 4 left with reasons); round 2 3 should-fix (all acted on); round 3 1 should-fix (acted on); round 4 (owner additions) 7 should-fix plus drift and nits (all acted on but 3 left with reasons); round 5 nits only
 - Decision premises found false: 0
 - Path claims corrected: 14 (Corrections), plus 9 owner-visible clarifications
 

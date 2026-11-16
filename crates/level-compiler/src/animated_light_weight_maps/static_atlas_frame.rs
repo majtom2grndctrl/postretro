@@ -9,7 +9,8 @@ use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement, chart_interior_d
 use crate::lightmap_bake::{BlockLayout, Chart};
 
 /// One block per face with a chunk: its whole chart placement, padding
-/// included, so the zero gutter travels with it. Blocks are indexed in
+/// included and turned when the chart is stored transposed, so the zero
+/// gutter travels with it. Blocks are indexed in
 /// ascending face order, which is cell order (faces are emitted grouped
 /// by cell), the order the compact repack packs them in. `AnimatedLightChunk`s
 /// keep their original order for baking and serialization.
@@ -33,13 +34,12 @@ pub(super) fn static_frame_blocks(
         .iter()
         .map(|&face| {
             let face = face as usize;
-            rebase_to_cell_block(
-                layout,
-                face,
-                face_placements[face],
+            let placement = face_placements[face];
+            let (width, height) = placement.placed_extent(
                 face_charts[face].width_texels,
                 face_charts[face].height_texels,
-            )
+            );
+            rebase_to_cell_block(layout, face, placement, width, height)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok((block_faces, blocks))
@@ -87,6 +87,8 @@ pub(crate) fn rebase_to_cell_block(
     })
 }
 
+/// The chunk's rect in bake-layer texels, turned with a transposed chart.
+///
 /// Center-based half-open ownership: a chart-interior texel `t` (whose center
 /// projects to UV `chart.uv_min + (t + 0.5) / interior * uv_extent`) belongs to
 /// a chunk iff its center UV is in `[chunk.uv_min, chunk.uv_max)`. Siblings
@@ -140,10 +142,21 @@ pub(super) fn chunk_atlas_rect(
     let fy_min_interior = snap_to_int((chunk_uv_min[1] - chart.uv_min[1]) * scale_v - 0.5);
     let fy_max_interior = snap_to_int((chunk_uv_max[1] - chart.uv_min[1]) * scale_v - 0.5);
 
-    let fx_min_unclamped = placement.x as f32 + padding + fx_min_interior.ceil();
-    let fx_max_unclamped = placement.x as f32 + padding + fx_max_interior.ceil();
-    let fy_min_unclamped = placement.y as f32 + padding + fy_min_interior.ceil();
-    let fy_max_unclamped = placement.y as f32 + padding + fy_max_interior.ceil();
+    // Chart-local padded bounds, then placed: a transposed chart's U runs
+    // down the bake layer. Whole-texel f32 sums, so the grouping is exact.
+    let (u_min, u_max) = (
+        padding + fx_min_interior.ceil(),
+        padding + fx_max_interior.ceil(),
+    );
+    let (v_min, v_max) = (
+        padding + fy_min_interior.ceil(),
+        padding + fy_max_interior.ceil(),
+    );
+    let ((x_min, x_max), (y_min, y_max)) = placement.orient((u_min, u_max), (v_min, v_max));
+    let fx_min_unclamped = placement.x as f32 + x_min;
+    let fx_max_unclamped = placement.x as f32 + x_max;
+    let fy_min_unclamped = placement.y as f32 + y_min;
+    let fy_max_unclamped = placement.y as f32 + y_max;
 
     // Clamp before `f32 as u32`: a misplaced chart can put coordinates below 0,
     // and `(-n as u32)` saturates to 0 (wrong). Clamping pins rogue rects to

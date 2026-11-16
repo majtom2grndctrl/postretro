@@ -1456,8 +1456,34 @@ fn memo_hit_rebuild_then_light_edit_rebakes_one_light() {
     assert!(section_hit && shadowmask_hit, "both memos must hit");
     assert_eq!(rebuild.read_attempts, 0, "memo hits read no partition");
 
+    // Move the edited light as well as dimming it: the lightmap layout never
+    // reads a light, so its fingerprint, and every other layer's key, holds.
     let mut edited = lights.clone();
     edited[3].intensity = 0.5;
+    edited[3].origin += DVec3::new(0.5, -0.25, 0.75);
+    let layout_fingerprint = |lights: &[MapLight]| {
+        let mut geometry = quads_in_one_cell(WINDOW_QUADS);
+        let static_lights = StaticBakedLights::from_lights(lights);
+        let prepared = lightmap_bake::prepare_atlas(
+            &mut geometry,
+            &static_lights,
+            config(false).lightmap_density,
+            &[],
+        )
+        .expect("window fixture atlas");
+        crate::lightmap_layer::atlas_layout_fingerprint(&crate::lightmap_layer::SharedAtlas {
+            charts: &prepared.charts,
+            placements: &prepared.placements,
+            atlas_width: prepared.atlas_width,
+            atlas_height: prepared.atlas_height,
+            layout: &prepared.layout,
+        })
+    };
+    assert_eq!(
+        layout_fingerprint(&lights),
+        layout_fingerprint(&edited),
+        "moving a light leaves the atlas layout fingerprint unchanged"
+    );
     let (section_hit, _, after_edit) = build(&edited);
     assert!(!section_hit, "the edit must miss the lightmap memo");
     assert_eq!(

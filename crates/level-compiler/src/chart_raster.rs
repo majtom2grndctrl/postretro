@@ -16,9 +16,12 @@ pub const CHART_PADDING_TEXELS: u32 = 2;
 
 /// Where a chart landed in the atlas, in texel coordinates.
 ///
-/// The interior (covered) rectangle of the chart is:
-///   `[x + CHART_PADDING_TEXELS, x + width_texels - CHART_PADDING_TEXELS)` on X
-///   `[y + CHART_PADDING_TEXELS, y + height_texels - CHART_PADDING_TEXELS)` on Y
+/// The chart keeps its own texel grid; only where its texels sit changes. An
+/// untransposed chart's padded-local texel `(x, y)` (chart row-major, padding
+/// included) sits at atlas `(self.x + x, self.y + y)`; a transposed chart's at
+/// `(self.x + y, self.y + x)`, so its placed rect is `height × width`. Every
+/// chart-to-atlas mapping goes through the methods below, and every walk over
+/// a chart's texels stays in the chart's own row-major order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChartPlacement {
     pub x: u32,
@@ -26,6 +29,53 @@ pub struct ChartPlacement {
     /// Internal bake layer this chart landed on: a compiler working plane that
     /// never ships. Charts pack per cell block, and blocks pack into layers.
     pub layer: u32,
+    /// The chart's rows run down the atlas's columns.
+    pub transposed: bool,
+}
+
+impl ChartPlacement {
+    /// An untransposed placement.
+    pub const fn at(x: u32, y: u32, layer: u32) -> Self {
+        Self {
+            x,
+            y,
+            layer,
+            transposed: false,
+        }
+    }
+
+    /// A chart-oriented pair `(along the chart's rows, along its columns)` in
+    /// atlas orientation; applied twice it is the identity.
+    pub fn orient<T>(&self, a: T, b: T) -> (T, T) {
+        if self.transposed { (b, a) } else { (a, b) }
+    }
+
+    /// The atlas extent of a `width × height` padded chart.
+    pub fn placed_extent(&self, width: u32, height: u32) -> (u32, u32) {
+        self.orient(width, height)
+    }
+
+    /// Atlas texel of padded-local chart texel `(x, y)`.
+    pub fn padded_texel(&self, x: u32, y: u32) -> (u32, u32) {
+        let (dx, dy) = self.orient(x, y);
+        (self.x + dx, self.y + dy)
+    }
+
+    /// Atlas texel of chart-interior texel `(tx, ty)`, one padding in.
+    pub fn interior_texel(&self, tx: i32, ty: i32) -> (i32, i32) {
+        let padding = CHART_PADDING_TEXELS as i32;
+        let (dx, dy) = self.orient(padding + tx, padding + ty);
+        (self.x as i32 + dx, self.y as i32 + dy)
+    }
+
+    /// Chart-interior texel of atlas texel `(x, y)`: the inverse of
+    /// [`Self::interior_texel`].
+    pub fn interior_of(&self, x: u32, y: u32) -> (i32, i32) {
+        let padding = CHART_PADDING_TEXELS as i32;
+        let (dx, dy) = (x as i32 - self.x as i32, y as i32 - self.y as i32);
+        let (cx, cy) = self.orient(dx, dy);
+        (cx - padding, cy - padding)
+    }
 }
 
 /// Interior (non-padded) dimensions of a chart in atlas texels. Clamped to at

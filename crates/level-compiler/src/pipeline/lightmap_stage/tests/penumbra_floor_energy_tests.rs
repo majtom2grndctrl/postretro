@@ -438,6 +438,7 @@ pub(super) fn front_end(map: &str, density: &str, baked: &std::path::Path) -> Fr
             animated_lights: &animated_lights,
             config: &config,
             working_set_max_bytes: args.working_set_max_bytes,
+            pack_heuristic: None,
             generated_portals: &generated_portals,
             exterior_leaves: &exterior_leaves,
             control: &control,

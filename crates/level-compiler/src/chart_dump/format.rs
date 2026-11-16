@@ -78,8 +78,7 @@ pub(crate) struct Placement {
     pub(crate) layer: u32,
     pub(crate) layer_x: u32,
     pub(crate) layer_y: u32,
-    /// Stored transposed. Always false before charts can turn; the planes
-    /// are chart-local either way.
+    /// Stored transposed. The planes are chart-local either way.
     pub(crate) transposed: bool,
 }
 

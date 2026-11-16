@@ -87,7 +87,10 @@ pub(crate) use skip_stats::{ChartTally, ReachPhase, SkipStats};
 /// `EMBEDDED_EMITTER_MIN_DIRECTIONS` of the test's directions are embedded,
 /// and a flagged light keeps the all-blocked probe early-out (stores 0),
 /// skipping only the all-clear one.
-pub const LAYER_FORMAT_VERSION: u32 = 13;
+///
+/// v14: a chart may be stored transposed, so a texel's atlas index maps to
+/// the chart through its placement's orientation.
+pub const LAYER_FORMAT_VERSION: u32 = 14;
 
 /// Bump when the composite/dilate/`encode_section` pipeline, the memo entry's
 /// layout or `LightmapSection::to_bytes` serialization changes. Folded into the
@@ -109,7 +112,10 @@ pub const LAYER_FORMAT_VERSION: u32 = 13;
 ///
 /// v5: the entry leads with the texel-step report, so a hit repeats the
 /// detector's warnings.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 5;
+///
+/// v6: dilation and the direction reduction walk a transposed chart's
+/// texels in the chart's own order.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 6;
 
 /// One analytically reached atlas texel from a single light.
 ///
@@ -322,8 +328,27 @@ impl IncrementalLayerAccumulator {
                 accumulator.fallback_normal[idx] = sample.surface_normal;
                 accumulator.chart_index[idx] = face_idx as u32;
             });
+            accumulator.mark_transposed(atlas, face_idx);
         }
         accumulator
+    }
+
+    /// Mark a transposed chart's placed padded rect, as the cold bake's
+    /// scatter does, so dilation and the direction reduction read it in the
+    /// chart's own order. A degenerate chart scatters nothing and marks
+    /// nothing on either path.
+    fn mark_transposed(&mut self, atlas: &SharedAtlas<'_>, face_idx: usize) {
+        let placement = &atlas.placements[face_idx];
+        let chart = &atlas.charts[face_idx];
+        if !placement.transposed || chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
+            return;
+        }
+        let (width, height) = placement.placed_extent(chart.width_texels, chart.height_texels);
+        for y in placement.y..placement.y + height {
+            let row = (y * self.atlas.atlas_width) as usize;
+            self.atlas.transposed[row + placement.x as usize..row + (placement.x + width) as usize]
+                .fill(true);
+        }
     }
 
     /// Fold one already-validated `(light, target_layer)` partition. Callers
@@ -345,11 +370,8 @@ impl IncrementalLayerAccumulator {
             let face_idx = face_idx as usize;
             let chart = &atlas.charts[face_idx];
             let placement = &atlas.placements[face_idx];
-            let padding = crate::chart_raster::CHART_PADDING_TEXELS;
-            let atlas_x = texel.idx % atlas.atlas_width;
-            let atlas_y = texel.idx / atlas.atlas_width;
-            let tx = (atlas_x - placement.x - padding) as i32;
-            let ty = (atlas_y - placement.y - padding) as i32;
+            let (tx, ty) =
+                placement.interior_of(texel.idx % atlas.atlas_width, texel.idx / atlas.atlas_width);
             let world_p = chart_texel_world_position(chart, tx, ty);
             let (irradiance, weighted_dir) =
                 reconstruct_light_texel(light, world_p, chart.normal, texel.raw_visibility);
@@ -747,6 +769,7 @@ pub fn composite_layers(
         atlas.irradiance[offset * 4..(offset + plane) * 4].copy_from_slice(&layer.irradiance);
         atlas.direction[offset..offset + plane].copy_from_slice(&layer.direction);
         atlas.coverage[offset..offset + plane].copy_from_slice(&layer.coverage);
+        atlas.transposed[offset..offset + plane].copy_from_slice(&layer.transposed);
     }
     atlas
 }

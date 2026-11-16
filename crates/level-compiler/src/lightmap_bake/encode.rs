@@ -147,6 +147,7 @@ impl CompositedAtlas {
                 irradiance: self.irradiance[offset * 4..(offset + plane) * 4].to_vec(),
                 direction: self.direction[offset..offset + plane].to_vec(),
                 coverage: self.coverage[offset..offset + plane].to_vec(),
+                transposed: self.transposed[offset..offset + plane].to_vec(),
                 atlas_width: self.atlas_width,
                 atlas_height: self.atlas_height,
                 layer_count: 1,
@@ -185,6 +186,7 @@ pub(crate) fn encode_atlas_layer(
         let (direction, coverage) = reduce_direction_atlas(
             &atlas.direction,
             &atlas.coverage,
+            &atlas.transposed,
             atlas.atlas_width,
             atlas.atlas_height,
             1,
@@ -229,11 +231,15 @@ pub(crate) fn normalized_direction_texel_scale(scale: u32) -> u32 {
 /// Reduce full-resolution dominant directions for the static direction atlas.
 ///
 /// Each output layer reads only its matching input plane. Within a block the
-/// loop is fixed row-major, coverage is ORed, and covered cancelling vectors
-/// resolve to neutral up rather than normalizing zero.
+/// loop is fixed row-major in the chart's own orientation — column-major in
+/// the atlas when the block's top-left texel is `transposed` — coverage is
+/// ORed, and covered cancelling vectors resolve to neutral up rather than
+/// normalizing zero. Chart origins on the `factor` grid put every block inside
+/// one chart, so a transposed chart reduces bit for bit as it would upright.
 pub(super) fn reduce_direction_atlas(
     direction: &[Vec3],
     coverage: &[bool],
+    transposed: &[bool],
     atlas_width: u32,
     atlas_height: u32,
     layer_count: u32,
@@ -257,8 +263,16 @@ pub(super) fn reduce_direction_atlas(
             for x in 0..reduced_width {
                 let mut sum = Vec3::ZERO;
                 let mut covered = false;
-                for block_y in 0..factor {
-                    for block_x in 0..factor {
+                let turned = transposed[layer_start
+                    + (y * factor) as usize * atlas_width as usize
+                    + (x * factor) as usize];
+                for outer in 0..factor {
+                    for inner in 0..factor {
+                        let (block_x, block_y) = if turned {
+                            (outer, inner)
+                        } else {
+                            (inner, outer)
+                        };
                         let source_x = x * factor + block_x;
                         let source_y = y * factor + block_y;
                         let index = layer_start

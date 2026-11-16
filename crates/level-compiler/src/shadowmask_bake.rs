@@ -70,7 +70,10 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 ///
 /// v10: `SMB9`, each block's mask block holds only its owned charts, with
 /// plane B a sub-rect and each owned face's mask offset in its owner entry.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 10;
+///
+/// v11: a chart may be stored transposed; its mask chart is copied turned
+/// with it, and its padding dilates in the chart's own coordinates.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 11;
 
 /// The widest texture the two mask groups may span side by side: the pinned
 /// device texture dimension. The residency dry run prices its rival layouts

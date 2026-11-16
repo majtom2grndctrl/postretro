@@ -120,6 +120,7 @@ fn compiler_count_matches_renderer_on_id22_built_from_its_finalized_scale8_layou
         irradiance: vec![0.0; texels * 4],
         direction: vec![Vec3::Y; texels],
         coverage: vec![true; texels],
+        transposed: vec![false; texels],
         atlas_width: prepared.atlas_width,
         atlas_height: prepared.atlas_height,
         layer_count: 1,

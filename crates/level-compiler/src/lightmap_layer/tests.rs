@@ -222,6 +222,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let shared = SharedAtlas {
         charts: &charts,
@@ -740,8 +741,8 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 13);
-    assert_eq!(LIGHTMAP_SECTION_VERSION, 5);
+    assert_eq!(LAYER_FORMAT_VERSION, 14);
+    assert_eq!(LIGHTMAP_SECTION_VERSION, 6);
 }
 
 #[test]
@@ -1173,6 +1174,15 @@ fn lone_chart_layout_fingerprint(
     height_texels: u32,
     uv_extent: [f32; 2],
 ) -> Vec<u8> {
+    lone_chart_layout_fingerprint_placed(width_texels, height_texels, uv_extent, false)
+}
+
+fn lone_chart_layout_fingerprint_placed(
+    width_texels: u32,
+    height_texels: u32,
+    uv_extent: [f32; 2],
+    transposed: bool,
+) -> Vec<u8> {
     let charts = [Chart {
         origin: Vec3::ZERO,
         u_axis: Vec3::X,
@@ -1191,6 +1201,7 @@ fn lone_chart_layout_fingerprint(
         x: 0,
         y: 0,
         layer: 0,
+        transposed,
     }];
     atlas_layout_fingerprint(&SharedAtlas {
         charts: &charts,
@@ -1199,6 +1210,20 @@ fn lone_chart_layout_fingerprint(
         atlas_height: 64,
         layout: &BlockLayout::whole_layers(64, 64, &placements, 2),
     })
+}
+
+/// AC 27: a chart turned in place, same corner and layer, moves every texel
+/// but its corner, so every layer keyed on the layout must miss once.
+#[test]
+fn atlas_layout_fingerprint_rekeys_a_chart_turned_in_place() {
+    let upright = lone_chart_layout_fingerprint_placed(40, 20, [1.0, 1.0], false);
+    let turned = lone_chart_layout_fingerprint_placed(40, 20, [1.0, 1.0], true);
+    assert_ne!(upright, turned);
+    assert_eq!(
+        turned,
+        lone_chart_layout_fingerprint_placed(40, 20, [1.0, 1.0], true),
+        "the same turned layout keys the same"
+    );
 }
 
 #[test]
@@ -2091,6 +2116,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let shared = SharedAtlas {
         charts: &charts,
@@ -2164,6 +2190,7 @@ fn all_sdf_section_cache_rekeys_when_prepared_dimensions_change() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let layout_a = SharedAtlas {
         charts: &charts,

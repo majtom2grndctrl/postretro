@@ -1768,6 +1768,7 @@ fn sibling_chunks_with_shared_uv_edge_pack_without_overlap() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     };
     let atlas_size = 64u32;
 
@@ -1848,6 +1849,7 @@ fn sibling_chunks_with_drifted_shared_uv_edge_pack_without_overlap() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     };
     let atlas_size = 4096u32;
 
@@ -1898,6 +1900,7 @@ fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
         x: atlas_size - 1,
         y: atlas_size - 1,
         layer: 0,
+        transposed: false,
     };
     let (ax, ay, w, h) = chunk_atlas_rect(
         &chart,
@@ -1926,6 +1929,7 @@ fn chunk_atlas_rect_handles_placement_at_and_beyond_atlas_bound() {
         x: atlas_size + 100,
         y: atlas_size + 100,
         layer: 0,
+        transposed: false,
     };
     let (ax2, ay2, w2, h2) = chunk_atlas_rect(
         &chart,

@@ -20,7 +20,7 @@ use rayon::prelude::*;
 
 use super::{ChartRect, DryRunInput};
 pub(crate) use crate::lightmap_bake::CANDIDATE_WIDTHS;
-use crate::lightmap_bake::pack_cell_sub_blocks;
+use crate::lightmap_bake::{PACK_HEURISTICS, pack_cell_sub_blocks};
 
 /// Edge of one runtime pool layer, in irradiance texels.
 pub(crate) const POOL_LAYER_EDGE: u32 = LIGHTMAP_POOL_LAYER_EDGE;
@@ -81,21 +81,27 @@ impl CellBlocks {
             .par_iter()
             .map(|charts| {
                 let sizes: Vec<(u32, u32)> = charts.iter().map(|c| (c.width, c.height)).collect();
-                pack_cell_sub_blocks(&sizes, alignment, POOL_LAYER_EDGE)
-                    .into_iter()
-                    .map(|sub| {
-                        let dims = BlockDims {
-                            width: sub.block.width,
-                            height: sub.block.height,
-                        };
-                        let mut planes = [false; 2];
-                        for &member in &sub.members {
-                            let stored = formats.stored_planes(charts[member].layer as usize);
-                            planes = [planes[0] || stored[0], planes[1] || stored[1]];
-                        }
-                        (dims, planes)
-                    })
-                    .collect()
+                pack_cell_sub_blocks(
+                    &sizes,
+                    formats.pack_rules(),
+                    POOL_LAYER_EDGE,
+                    &PACK_HEURISTICS,
+                )
+                .blocks
+                .into_iter()
+                .map(|sub| {
+                    let dims = BlockDims {
+                        width: sub.block.width,
+                        height: sub.block.height,
+                    };
+                    let mut planes = [false; 2];
+                    for &member in &sub.members {
+                        let stored = formats.stored_planes(charts[member].layer as usize);
+                        planes = [planes[0] || stored[0], planes[1] || stored[1]];
+                    }
+                    (dims, planes)
+                })
+                .collect()
             })
             .collect();
         let mut dims = Vec::new();

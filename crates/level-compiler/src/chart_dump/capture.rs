@@ -46,24 +46,36 @@ fn placement_of(layout: &BlockLayout, face: usize, placement: &ChartPlacement) -
         layer: placement.layer,
         layer_x: placement.x,
         layer_y: placement.y,
-        transposed: false,
+        transposed: placement.transposed,
     }
 }
 
-/// A chart's padded rect copied out of a row-major buffer `buffer_width`
-/// texels wide, its top-left at buffer texel `(x, y)`.
-fn copy_rect_at(
+/// A `width × height` chart-local rect read out of a row-major buffer
+/// `buffer_width` texels wide, its placed top-left at buffer texel `(x, y)`,
+/// in the chart's own row-major order: a transposed placement's rows are
+/// read down the buffer's columns.
+fn copy_chart_rect(
     buffer: &[u8],
     buffer_width: u32,
     texel_bytes: usize,
     (x, y): (u32, u32),
-    chart: &Chart,
+    (width, height): (u32, u32),
+    placement: &ChartPlacement,
 ) -> Vec<u8> {
-    let row_bytes = chart.width_texels as usize * texel_bytes;
-    let mut out = Vec::with_capacity(row_bytes * chart.height_texels as usize);
-    for row in 0..chart.height_texels {
-        let start = ((y + row) as usize * buffer_width as usize + x as usize) * texel_bytes;
-        out.extend_from_slice(&buffer[start..start + row_bytes]);
+    let row_bytes = width as usize * texel_bytes;
+    let mut out = Vec::with_capacity(row_bytes * height as usize);
+    for row in 0..height {
+        if !placement.transposed {
+            let start = ((y + row) as usize * buffer_width as usize + x as usize) * texel_bytes;
+            out.extend_from_slice(&buffer[start..start + row_bytes]);
+            continue;
+        }
+        for column in 0..width {
+            let (dx, dy) = placement.orient(column, row);
+            let start =
+                ((y + dy) as usize * buffer_width as usize + (x + dx) as usize) * texel_bytes;
+            out.extend_from_slice(&buffer[start..start + texel_bytes]);
+        }
     }
     out
 }
@@ -105,30 +117,42 @@ impl<'a> LightmapCapture<'a> {
             if placement.layer != layer {
                 continue;
             }
-            // The f32 RGBA texels the BC6H encoder reads, little-endian.
+            // The f32 RGBA texels the BC6H encoder reads, little-endian, in
+            // the chart's own row-major order.
             let row_floats = chart.width_texels as usize * 4;
             let mut irradiance = Vec::with_capacity(row_floats * 4 * chart.height_texels as usize);
             for row in 0..chart.height_texels {
-                let start = ((placement.y + row) as usize * plane.atlas_width as usize
-                    + placement.x as usize)
-                    * 4;
-                for c in &plane.irradiance[start..start + row_floats] {
-                    irradiance.extend_from_slice(&c.to_le_bytes());
+                for column in 0..chart.width_texels {
+                    let (x, y) = placement.padded_texel(column, row);
+                    let start = (y as usize * plane.atlas_width as usize + x as usize) * 4;
+                    for c in &plane.irradiance[start..start + 4] {
+                        irradiance.extend_from_slice(&c.to_le_bytes());
+                    }
                 }
             }
             // Whole direction texels only: a texel straddling the padded
             // rect's edge also groups a neighbour's (or empty) texels, so it
-            // is not this chart's value.
+            // is not this chart's value. Found on the placed rect, recorded
+            // in the chart's own orientation.
+            let (placed_w, placed_h) =
+                placement.placed_extent(chart.width_texels, chart.height_texels);
             let x0 = placement.x.div_ceil(scale);
             let y0 = placement.y.div_ceil(scale);
-            let x1 = (placement.x + chart.width_texels) / scale;
-            let y1 = (placement.y + chart.height_texels) / scale;
-            let dims = [x1.saturating_sub(x0), y1.saturating_sub(y0)];
-            let mut dir = Vec::with_capacity(dims[0] as usize * dims[1] as usize * 2);
-            for row in 0..dims[1] {
-                let start = ((y0 + row) as usize * direction_width as usize + x0 as usize) * 2;
-                dir.extend_from_slice(&direction[start..start + dims[0] as usize * 2]);
-            }
+            let x1 = (placement.x + placed_w) / scale;
+            let y1 = (placement.y + placed_h) / scale;
+            let placed_dims = (x1.saturating_sub(x0), y1.saturating_sub(y0));
+            let (dims_w, dims_h) = placement.orient(placed_dims.0, placed_dims.1);
+            let dims = [dims_w, dims_h];
+            let dir = copy_chart_rect(
+                direction,
+                direction_width,
+                2,
+                (x0, y0),
+                (dims_w, dims_h),
+                placement,
+            );
+            let (offset_x, offset_y) =
+                placement.orient(x0 * scale - placement.x, y0 * scale - placement.y);
             let meta = ChartMeta {
                 key: ChartKey {
                     face: face as u32,
@@ -141,7 +165,7 @@ impl<'a> LightmapCapture<'a> {
                 origin: [0, 0],
                 placement: placement_of(layout, face, placement),
                 direction_texel_scale: scale,
-                direction_offset: [x0 * scale - placement.x, y0 * scale - placement.y],
+                direction_offset: [offset_x, offset_y],
                 direction_dims: dims,
                 owners: NO_FACE_OWNERS,
             };
@@ -204,7 +228,14 @@ impl MaskCapture {
                 at(placement.x, block_origin[0], dx),
                 at(placement.y, block_origin[1], dy),
             );
-            let texels = copy_rect_at(image, image_width, 4, rect, chart);
+            let texels = copy_chart_rect(
+                image,
+                image_width,
+                4,
+                rect,
+                (chart.width_texels, chart.height_texels),
+                placement,
+            );
             let meta = ChartMeta {
                 key: ChartKey {
                     face: face as u32,
@@ -251,9 +282,19 @@ pub(crate) fn dump_animated_weight_maps(
         let block = &section.blocks[rect.block as usize];
         let chart = &inputs.face_charts[face];
         texels.clear();
+        let placement = &inputs.face_placements[face];
         let entries = &section.offset_counts
             [rect.texel_offset as usize..(rect.texel_offset + rect.width * rect.height) as usize];
-        for entry in entries {
+        // The chunk in its chart's own orientation: a transposed chart's
+        // rect rows are its columns.
+        let (width, height) = placement.orient(rect.width, rect.height);
+        let chart_order = (0..height).flat_map(|row| {
+            (0..width).map(move |column| {
+                let (x, y) = placement.orient(column, row);
+                &entries[(y * rect.width + x) as usize]
+            })
+        });
+        for entry in chart_order {
             texels.extend_from_slice(&entry.count.to_le_bytes());
             let lights =
                 &section.texel_lights[entry.offset as usize..(entry.offset + entry.count) as usize];
@@ -266,21 +307,22 @@ pub(crate) fn dump_animated_weight_maps(
         }
         // Block and chunk rects share one translation into the compact
         // atlas, so their difference is the chunk's place in the chart.
-        let origin = [
+        let (origin_x, origin_y) = placement.orient(
             rect.compact_x as i32 - block.compact_x as i32,
             rect.compact_y as i32 - block.compact_y as i32,
-        ];
+        );
+        let origin = [origin_x, origin_y];
         let meta = ChartMeta {
             key: ChartKey {
                 face: chunk.face_index,
                 sub,
             },
             chart_fingerprint: chart_fingerprint(chart),
-            width: rect.width,
-            height: rect.height,
+            width,
+            height,
             padding: 0,
             origin,
-            placement: placement_of(inputs.layout, face, &inputs.face_placements[face]),
+            placement: placement_of(inputs.layout, face, placement),
             direction_texel_scale: 0,
             direction_offset: [0, 0],
             direction_dims: [0, 0],

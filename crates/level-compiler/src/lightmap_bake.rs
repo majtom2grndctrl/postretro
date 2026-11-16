@@ -19,6 +19,7 @@ mod cell_blocks;
 mod charts;
 mod encode;
 mod face_cut;
+mod pack_heuristics;
 mod reference;
 mod working_set;
 #[cfg(test)]
@@ -38,7 +39,7 @@ pub(crate) use atlas_pack::MaxRects;
 pub(crate) use atlas_pack::{pack_layers, pack_layers_with_layer_limit};
 
 pub use block_layout::{BlockLayout, BlockOrdering, CellBlock};
-pub(crate) use cell_blocks::pack_cell_block_reserving;
+pub(crate) use cell_blocks::{BlockSlot, pack_cell_block_reserving};
 #[cfg(test)]
 pub(crate) use cell_blocks::{
     CANDIDATE_WIDTHS, PackedBlock, pack_cell_block, pack_cell_sub_blocks,
@@ -49,6 +50,10 @@ pub use face_cut::CutParent;
 pub(crate) use face_cut::cut_map_key_bytes;
 #[cfg(test)]
 pub(crate) use face_cut::{plan_face_cuts, planned_chart_area};
+#[cfg(test)]
+pub(crate) use pack_heuristics::PACK_HEURISTICS;
+pub use pack_heuristics::PackHeuristic;
+pub(crate) use pack_heuristics::PackRules;
 #[cfg(test)]
 pub(crate) use reference::{bake_monolithic_atlas, bake_monolithic_atlas_controlled};
 
@@ -258,6 +263,11 @@ pub struct CompositedAtlas {
     /// Per-texel coverage flag (logical OR across contributing charts/layers).
     /// Layer-major.
     pub coverage: Vec<bool>,
+    /// Per texel: inside a transposed chart's placed padded rect. Dilation
+    /// and the direction reduction walk such a texel's neighbours in the
+    /// chart's own order, so a transposed chart's floats sum exactly as they
+    /// would untransposed. Layer-major.
+    pub transposed: Vec<bool>,
     pub atlas_width: u32,
     pub atlas_height: u32,
     /// Number of atlas array layers. The three buffers above are sized
@@ -284,6 +294,7 @@ impl CompositedAtlas {
             irradiance: vec![0f32; texels * 4],
             direction: vec![Vec3::Y; texels],
             coverage: vec![false; texels],
+            transposed: vec![false; texels],
             atlas_width: atlas_w,
             atlas_height: atlas_h,
             layer_count,
@@ -307,6 +318,7 @@ impl CompositedAtlas {
                 &mut self.irradiance[texel_start * 4..texel_end * 4],
                 &mut self.direction[texel_start..texel_end],
                 &mut self.coverage[texel_start..texel_end],
+                &self.transposed[texel_start..texel_end],
                 self.atlas_width,
                 self.atlas_height,
             );
@@ -559,9 +571,8 @@ fn bake_atlas_layer_controlled(
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let rebased_placement = ChartPlacement {
-                x: placement.x,
-                y: placement.y,
                 layer: 0,
+                ..*placement
             };
             scatter_chart_into_atlas(&chart_atlas, &rebased_placement, &mut atlas);
         }
@@ -1336,10 +1347,16 @@ fn orthonormal_basis(n: Vec3) -> (Vec3, Vec3) {
     (tangent, bitangent)
 }
 
+/// Fill each uncovered texel touching coverage with the mean of its covered
+/// 8-neighbours, `CHART_PADDING_TEXELS` passes. Ring `n` of a chart's padding
+/// reads only ring `n - 1` of the same chart, so every sum stays inside one
+/// chart; a `transposed` texel sums its neighbours `dx`-outer, which is its
+/// chart's own `(dy, dx)` row-major order.
 fn dilate_edges(
     irradiance: &mut [f32],
     direction: &mut [Vec3],
     coverage: &mut [bool],
+    transposed: &[bool],
     atlas_w: u32,
     atlas_h: u32,
 ) {
@@ -1361,11 +1378,17 @@ fn dilate_edges(
                 let mut sum_b = 0.0;
                 let mut sum_dir = Vec3::ZERO;
                 let mut count = 0u32;
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        if dx == 0 && dy == 0 {
+                let turned = transposed[idx];
+                for outer in -1..=1 {
+                    for inner in -1..=1 {
+                        if outer == 0 && inner == 0 {
                             continue;
                         }
+                        let (dx, dy) = if turned {
+                            (outer, inner)
+                        } else {
+                            (inner, outer)
+                        };
                         let nx = x + dx;
                         let ny = y + dy;
                         if nx < 0 || ny < 0 || nx >= w || ny >= h {

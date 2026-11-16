@@ -54,6 +54,7 @@ impl Atlas {
                 x: face as u32 * CHART,
                 y: 0,
                 layer: 0,
+                transposed: false,
             })
             .collect();
         Self {
@@ -573,6 +574,7 @@ fn a_chart_on_a_later_layer_and_row_dilates_its_own_padding() {
         x: 4,
         y: 4,
         layer: 1,
+        transposed: false,
     };
     let atlas = Atlas::new(1).placed(placement, 16, 16, 2);
     let light = light_over(0, 2.0);

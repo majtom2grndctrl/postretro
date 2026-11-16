@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use bvh::bvh::Bvh;
 
 use crate::bvh_build::BvhPrimitive;
-use crate::chart_raster::{CHART_PADDING_TEXELS, chart_interior_dims};
+use crate::chart_raster::chart_interior_dims;
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::CutParent;
 use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
@@ -97,16 +97,18 @@ impl<'a> StepDetector<'a> {
         }
         let placement = self.shared.placements[face];
         let (width, height) = chart_interior_dims(chart);
-        let (width, height) = (width as u32, height as u32);
-        let row_start = |ty: u32| {
-            (placement.y + CHART_PADDING_TEXELS + ty) * self.shared.atlas_width
-                + placement.x
-                + CHART_PADDING_TEXELS
+        let index_of = |tx: u32, ty: u32| {
+            let (x, y) = placement.interior_texel(tx as i32, ty as i32);
+            y as u32 * self.shared.atlas_width + x as u32
         };
+        let (width, height) = (width as u32, height as u32);
         let texels = &partition.texels;
-        let mut cursor = texels.partition_point(|texel| texel.idx < row_start(0));
+        // The interior's first and one-past-last atlas index, in either
+        // orientation: its placed rect's top-left and bottom-right corners.
+        let first = index_of(0, 0);
+        let last = index_of(width - 1, height - 1) + 1;
+        let mut cursor = texels.partition_point(|texel| texel.idx < first);
         // A chart the light left without a record costs one search.
-        let last = row_start(height - 1) + width;
         if texels.get(cursor).is_none_or(|texel| texel.idx >= last) {
             return None;
         }
@@ -121,7 +123,18 @@ impl<'a> StepDetector<'a> {
                 height,
             },
             |ty, row| {
-                let start = row_start(ty);
+                if placement.transposed {
+                    // A chart row runs down an atlas column: one search per
+                    // texel.
+                    for (tx, value) in (0..width).zip(row.iter_mut()) {
+                        let idx = index_of(tx, ty);
+                        if let Ok(at) = texels.binary_search_by_key(&idx, |texel| texel.idx) {
+                            *value = Some(texels[at].raw_visibility);
+                        }
+                    }
+                    return;
+                }
+                let start = index_of(0, ty);
                 cursor += texels[cursor..].partition_point(|texel| texel.idx < start);
                 while let Some(texel) = texels.get(cursor)
                     && texel.idx < start + width

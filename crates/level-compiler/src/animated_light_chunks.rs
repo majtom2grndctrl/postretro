@@ -731,6 +731,7 @@ mod tests {
             x: 0,
             y: 0,
             layer: 0,
+            transposed: false,
         }];
         let (section, ranges) = build_placed_animated_light_chunks(
             &bvh,

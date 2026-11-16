@@ -21,6 +21,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+mod transpose_tests;
+
 fn unit_quad_geometry() -> GeometryResult {
     let v0 = Vertex::new(
         [0.0, 0.0, 0.0],
@@ -1338,6 +1340,7 @@ fn per_layer_bake_rebases_nonzero_layer_scatter_to_temporary_plane() {
         x: 0,
         y: 0,
         layer: 1,
+        transposed: false,
     }];
 
     let whole = bake_monolithic_atlas(
@@ -1395,11 +1398,13 @@ fn per_layer_parallel_scatter_joins_before_dilation() {
             x: 0,
             y: 0,
             layer: 0,
+            transposed: false,
         },
         ChartPlacement {
             x: 32,
             y: 0,
             layer: 0,
+            transposed: false,
         },
     ];
     let expected = bake_monolithic_atlas(
@@ -1459,11 +1464,13 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
             x: 0,
             y: 0,
             layer: 0,
+            transposed: false,
         },
         ChartPlacement {
             x: 0,
             y: 0,
             layer: 1,
+            transposed: false,
         },
     ];
     let layout = BlockLayout::whole_layers(64, 64, &placements, DIRECTION_TEXEL_SCALE);
@@ -1522,6 +1529,7 @@ fn monolithic_atlas_counts_degenerate_chart_progress_without_scatter() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let progress = StageProgress::with_total(placements.len());
     let control = BakeControl::new(Arc::new(Governor::new(1, false)), &progress);
@@ -2864,6 +2872,7 @@ fn direction_scale_one_emits_rg8_bytes() {
         irradiance: vec![0.0; 4 * 4],
         direction: direction.clone(),
         coverage: coverage.clone(),
+        transposed: vec![false; 4],
         atlas_width: 2,
         atlas_height: 2,
         layer_count: 1,
@@ -2872,6 +2881,7 @@ fn direction_scale_one_emits_rg8_bytes() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
 
     let section = atlas.encode_section(&BlockLayout::whole_layers(2, 2, &placements, 1), true);
@@ -2915,7 +2925,7 @@ fn direction_reduction_uses_neutral_up_for_covered_cancelling_block() {
     let coverage = vec![true; 4];
 
     let (reduced_direction, reduced_coverage) =
-        reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+        reduce_direction_atlas(&direction, &coverage, &[false; 4], 2, 2, 1, 2);
 
     assert_eq!(reduced_coverage, vec![true]);
     assert_eq!(
@@ -2938,7 +2948,7 @@ fn direction_reduction_keeps_array_layers_separate() {
         .collect::<Vec<_>>();
     let coverage = vec![true; direction.len()];
     let (reduced_direction, reduced_coverage) =
-        reduce_direction_atlas(&direction, &coverage, 4, 2, 2, 2);
+        reduce_direction_atlas(&direction, &coverage, &[false; 16], 4, 2, 2, 2);
 
     assert_eq!(reduced_coverage, vec![true; 4]);
     assert_eq!(reduced_direction[..2], [Vec3::X; 2]);
@@ -2948,11 +2958,12 @@ fn direction_reduction_keeps_array_layers_separate() {
         irradiance: vec![0.0; direction.len() * 4],
         direction,
         coverage,
+        transposed: vec![false; 16],
         atlas_width: 4,
         atlas_height: 2,
         layer_count: 2,
     };
-    let placements = [0, 1].map(|layer| ChartPlacement { x: 0, y: 0, layer });
+    let placements = [0, 1].map(|layer| ChartPlacement::at(0, 0, layer));
     let section = atlas.encode_section(&BlockLayout::whole_layers(4, 2, &placements, 2), true);
     assert_eq!(section.blocks.len(), 2);
     for (block, expected) in section.blocks.iter().zip([Vec3::X, -Vec3::X]) {
@@ -2969,8 +2980,8 @@ fn direction_reduction_is_deterministic_in_fixed_row_major_order() {
     let direction = vec![Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X];
     let coverage = vec![true; 4];
 
-    let first = reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
-    let second = reduce_direction_atlas(&direction, &coverage, 2, 2, 1, 2);
+    let first = reduce_direction_atlas(&direction, &coverage, &[false; 4], 2, 2, 1, 2);
+    let second = reduce_direction_atlas(&direction, &coverage, &[false; 4], 2, 2, 1, 2);
     assert_eq!(first, second);
 
     let expected = (Vec3::X + Vec3::Y + Vec3::Z - Vec3::X).normalize();
@@ -3173,8 +3184,8 @@ fn chart_window_texels_and_vertices_are_the_parents_bit_for_bit() {
     }
 
     let vertex = Vec3::new(2.9, 0.0, 1.7);
-    let (sx, sy) = chart_texel_position(&sub, 40, 60, vertex);
-    let (px, py) = chart_texel_position(&parent, 40, 60, vertex);
+    let (sx, sy) = chart_texel_position(&sub, 40, 60, false, vertex);
+    let (px, py) = chart_texel_position(&parent, 40, 60, false, vertex);
     assert!(
         (sx - (px - origin[0] as f32)).abs() < 1.0e-3,
         "{sx} vs {px}"
@@ -3274,8 +3285,13 @@ fn block_local_vertex_uv_addresses_the_same_chart_texel_as_the_bake_layer_uv() {
             assert_eq!(block.layer, placement.layer);
             nonzero_origin |= block.x > 0 || block.y > 0;
 
-            let (bake_x, bake_y) =
-                chart_texel_position(chart, placement.x, placement.y, Vec3::from(vertex.position));
+            let (bake_x, bake_y) = chart_texel_position(
+                chart,
+                placement.x,
+                placement.y,
+                placement.transposed,
+                Vec3::from(vertex.position),
+            );
             let resolve =
                 |quantized: u16, extent: u32| f32::from(quantized) / 65535.0 * extent as f32;
             let pre_rebase = [

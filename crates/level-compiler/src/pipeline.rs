@@ -1730,6 +1730,7 @@ fn run_after_parsing(
             animated_lights: &animated_baked_lights,
             config: &lightmap_config,
             working_set_max_bytes: args.working_set_max_bytes,
+            pack_heuristic: args.pack_heuristic,
             generated_portals: &runtime.portals,
             exterior_leaves: &runtime.cells.exterior_cells,
             control: &atlas_control,

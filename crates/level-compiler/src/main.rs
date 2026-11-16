@@ -853,6 +853,10 @@ pub struct Args {
     /// pre-BC texels (or only their hashes) for an A/B comparison. Requires
     /// an uncached bake; never changes the PRL.
     chart_dump: Option<chart_dump::ChartDumpConfig>,
+    /// `--pack-heuristic`: pack every cell's lightmap blocks with this one
+    /// heuristic instead of keeping the smallest of all. A diagnostic that
+    /// forces a second layout for A/B comparisons.
+    pack_heuristic: Option<lightmap_bake::PackHeuristic>,
 }
 
 impl Args {
@@ -912,6 +916,7 @@ fn help_text() -> String {
          --sh-density-force-scale <0..3> Debug base SH hierarchy scale override; with --sh-analyze it affects analysis only, otherwise it affects emitted nodes after storage/protection clamping (default: none)\n    \
          --dump-chart-texels <DIR>  Diagnostic: write every chart's lightmap, shadow-mask and animated weight-map texels before BC encoding to <DIR>, for an A/B comparison; needs --no-cache or --release; the PRL is unchanged (default: off)\n    \
          --dump-chart-hashes <DIR>  As --dump-chart-texels, but only per-chart hashes: small enough for a large map, though a difference cannot be located to a texel (default: off)\n    \
+         --pack-heuristic <NAME>    Diagnostic: pack every cell's lightmap blocks with one heuristic, one of {pack_heuristics}, instead of keeping the smallest of all (default: all)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -927,6 +932,7 @@ fn help_text() -> String {
         direction_texel_scale_max = lightmap_bake::MIN_ATLAS_DIMENSION,
         probe_depth_tile_max = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
         mover_payload_bar = size_options::format_size_for_help(mover_payload_resident_bar_max()),
+        pack_heuristics = lightmap_bake::PackHeuristic::names().join(", "),
     )
 }
 
@@ -1001,6 +1007,7 @@ where
     let mut sh_density_force_level = None;
     let mut sh_density_force_scale = None;
     let mut chart_dump: Option<chart_dump::ChartDumpConfig> = None;
+    let mut pack_heuristic = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1235,6 +1242,16 @@ where
                     texels: arg == "--dump-chart-texels",
                 });
             }
+            "--pack-heuristic" => {
+                let name = flag_value(&mut args, "--pack-heuristic")?;
+                pack_heuristic =
+                    Some(lightmap_bake::PackHeuristic::parse(&name).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--pack-heuristic must be one of: {}",
+                            lightmap_bake::PackHeuristic::names().join(", ")
+                        )
+                    })?);
+            }
             _ if input.is_none() && !arg.starts_with('-') => {
                 input = Some(PathBuf::from(arg));
             }
@@ -1304,6 +1321,7 @@ where
         sh_density_force_level,
         sh_density_force_scale,
         chart_dump,
+        pack_heuristic,
     })
 }
 

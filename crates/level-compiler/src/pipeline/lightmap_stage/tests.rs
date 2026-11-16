@@ -867,7 +867,7 @@ fn predicted_peak_charges_one_layer_fill_scratch_and_each_section_once() {
     let layer_texels = u64::from(prepared.atlas_width) * u64::from(prepared.atlas_height);
     let peak = predicted_peak(&prepared, metadata_counts(&prepared, &lights), false, 1);
     assert_eq!(peak.shadowmask_fill, 4 * layer_texels);
-    assert_eq!(peak.layer_plane, 57 * layer_texels);
+    assert_eq!(peak.layer_plane, 58 * layer_texels);
     let block_texels: u64 = prepared
         .layout
         .blocks

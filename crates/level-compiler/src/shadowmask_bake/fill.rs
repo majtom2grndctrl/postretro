@@ -354,9 +354,8 @@ impl<'a> OwnershipFill<'a> {
         let window = shared.charts[face]
             .window
             .expect("a cut sub-face's chart windows its parent");
-        let tx = idx % shared.atlas_width - placement.x - CHART_PADDING_TEXELS;
-        let ty = idx / shared.atlas_width - placement.y - CHART_PADDING_TEXELS;
-        u.contains(&(window.origin[0] + tx)) && v.contains(&(window.origin[1] + ty))
+        let (tx, ty) = placement.interior_of(idx % shared.atlas_width, idx / shared.atlas_width);
+        u.contains(&(window.origin[0] + tx as u32)) && v.contains(&(window.origin[1] + ty as u32))
     }
 
     /// An estimated owner whose partitions lit no texel of its cut face holds
@@ -433,7 +432,9 @@ impl<'a> OwnershipFill<'a> {
     ) -> impl Iterator<Item = usize> + use<> {
         let chart = &shared.charts[face];
         let (width, x, y) = self.face_rect(face, shared);
-        let (chart_w, chart_h) = (chart.width_texels as usize, chart.height_texels as usize);
+        let (chart_w, chart_h) =
+            shared.placements[face].placed_extent(chart.width_texels, chart.height_texels);
+        let (chart_w, chart_h) = (chart_w as usize, chart_h as usize);
         (0..chart_h).flat_map(move |row| {
             let start = (y + row) * width + x;
             (start..start + chart_w).map(|texel| texel * SHADOWMASK_OWNER_CHANNELS)
@@ -499,6 +500,7 @@ impl<'a> OwnershipFill<'a> {
             return;
         }
         let (atlas_width, placement_x, placement_y) = self.face_rect(face, shared);
+        let turned = shared.placements[face].transposed;
         let data = self.face_data_mut(face, shared);
         let padding = i64::from(CHART_PADDING_TEXELS);
         // Inclusive interior bounds in padded-rect coordinates.
@@ -510,8 +512,11 @@ impl<'a> OwnershipFill<'a> {
             move |x: i64, y: i64| (x_lo - x).max(x - x_hi).max(y_lo - y).max(y - y_hi).max(0);
         // Only called for texels of ring `CHART_PADDING_TEXELS` or less, which
         // all lie inside the padded rect, so both coordinates are non-negative.
+        // `(x, y)` are the chart's own padded coordinates; a transposed chart
+        // sits turned. The sums are integer, so neighbour order is moot.
         let offset = move |x: i64, y: i64| {
-            ((placement_y + y as usize) * atlas_width + placement_x + x as usize)
+            let (dx, dy) = if turned { (y, x) } else { (x, y) };
+            ((placement_y + dy as usize) * atlas_width + placement_x + dx as usize)
                 * SHADOWMASK_OWNER_CHANNELS
         };
         for ring in 1..=padding {
@@ -558,11 +563,8 @@ fn rect_perimeter(x0: i64, x1: i64, y0: i64, y1: i64) -> impl Iterator<Item = (i
 
 /// World position of the chart-interior texel at bake-layer index `idx`.
 fn texel_world_position(shared: &SharedAtlas<'_>, face: usize, idx: u32) -> glam::Vec3 {
-    let placement = &shared.placements[face];
-    let atlas_x = idx % shared.atlas_width;
-    let atlas_y = idx / shared.atlas_width;
-    let tx = (atlas_x - placement.x - CHART_PADDING_TEXELS) as i32;
-    let ty = (atlas_y - placement.y - CHART_PADDING_TEXELS) as i32;
+    let (tx, ty) =
+        shared.placements[face].interior_of(idx % shared.atlas_width, idx / shared.atlas_width);
     chart_texel_world_position(&shared.charts[face], tx, ty)
 }
 

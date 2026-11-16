@@ -633,8 +633,10 @@ fn chunks_split_far_inside_a_cut_face_own_every_texel_once() {
             let scale = f64::from(interior) / f64::from(chart.uv_extent[axis]);
             (f64::from(chunk.uv_max[axis] - chunk.uv_min[axis]) * scale).round() as u32
         };
+        // A transposed chart's chunk rect is stored turned.
+        let placement = &prepared.placements[chunk.face_index as usize];
         assert_eq!(
-            (rect.width, rect.height),
+            placement.orient(rect.width, rect.height),
             (texels(0, iw), texels(1, ih)),
             "face {} chunk {:?}..{:?}",
             chunk.face_index,

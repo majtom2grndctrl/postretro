@@ -8,7 +8,7 @@ use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_OWNER_EMPTY,
 };
 
-use crate::lightmap_bake::{CellBlock, pack_cell_block_reserving};
+use crate::lightmap_bake::{CellBlock, PackHeuristic, PackRules, pack_cell_block_reserving};
 use crate::lightmap_layer::SharedAtlas;
 
 /// BC5 block edge: mask extents and the plane-B sub-rect are whole BC blocks,
@@ -49,12 +49,13 @@ pub(crate) fn owns_plane_b(owners: &FaceOwners) -> bool {
     owners[2] != SHADOWMASK_OWNER_EMPTY
 }
 
-/// A chart's padded extent as it sits in the lightmap block: the rect the
-/// mask copies whole, padding ring included, so a bilinear tap at the chart's
-/// edge reads the same padding it read in the lightmap layout.
+/// A chart's padded extent as it sits in the lightmap block, turned when the
+/// chart is stored transposed: the rect the mask copies whole, padding ring
+/// included, so a bilinear tap at the chart's edge reads the same padding it
+/// read in the lightmap layout.
 fn placed_extent(face: usize, shared: &SharedAtlas<'_>) -> (u32, u32) {
     let chart = &shared.charts[face];
-    (chart.width_texels, chart.height_texels)
+    shared.placements[face].placed_extent(chart.width_texels, chart.height_texels)
 }
 
 /// Lay out `block`'s mask block from its `faces` (ascending) and their final
@@ -98,6 +99,17 @@ pub(crate) fn layout_mask_block(
     }
 }
 
+/// Mask slots never turn: a mask chart keeps its lightmap orientation.
+fn origins(slots: &[crate::lightmap_bake::BlockSlot]) -> Vec<(u32, u32)> {
+    slots
+        .iter()
+        .map(|slot| {
+            debug_assert!(!slot.transposed, "mask charts pack upright");
+            (slot.x, slot.y)
+        })
+        .collect()
+}
+
 /// Plane-B charts tight at the origin, then channel-0/1 charts around them.
 /// `None` when either pass does not fit a pool layer.
 fn pack_owned(in_b: &[u32], in_a: &[u32], shared: &SharedAtlas<'_>) -> Option<MaskBlockLayout> {
@@ -108,13 +120,17 @@ fn pack_owned(in_b: &[u32], in_a: &[u32], shared: &SharedAtlas<'_>) -> Option<Ma
             .map(|&face| placed_extent(face as usize, shared))
             .collect()
     };
+    let rules = PackRules::mask(MASK_ALIGNMENT);
+    let pack = |faces: &[u32], reserved| {
+        pack_cell_block_reserving(&sizes(faces), reserved, rules, edge, PackHeuristic::DEFAULT)
+    };
     let mut charts = Vec::with_capacity(in_b.len() + in_a.len());
-    let plane_b = match pack_cell_block_reserving(&sizes(in_b), None, MASK_ALIGNMENT, edge) {
+    let plane_b = match pack(in_b, None) {
         Some(block) => {
             if !block.fits(edge) {
                 return None;
             }
-            charts.extend(in_b.iter().copied().zip(block.placements));
+            charts.extend(in_b.iter().copied().zip(origins(&block.placements)));
             (block.width, block.height)
         }
         None => (0, 0),
@@ -123,11 +139,11 @@ fn pack_owned(in_b: &[u32], in_a: &[u32], shared: &SharedAtlas<'_>) -> Option<Ma
     let extent = if in_a.is_empty() {
         plane_b
     } else {
-        let block = pack_cell_block_reserving(&sizes(in_a), reserved, MASK_ALIGNMENT, edge)?;
+        let block = pack(in_a, reserved)?;
         if !block.fits(edge) {
             return None;
         }
-        charts.extend(in_a.iter().copied().zip(block.placements));
+        charts.extend(in_a.iter().copied().zip(origins(&block.placements)));
         (block.width, block.height)
     };
     charts.sort_unstable_by_key(|&(face, _)| face);

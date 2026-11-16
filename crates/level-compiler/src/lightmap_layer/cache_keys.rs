@@ -22,7 +22,7 @@ use crate::texel_footprint::TexelFrame;
 /// changing this fingerprint.
 ///
 /// `ChartPlacement` does not derive `Serialize`, so this folds its `x`/`y`/`layer`
-/// fields directly into the digest — the deterministically-derived proxy-bytes
+/// fields and its `transposed` flag directly into the digest — the deterministically-derived proxy-bytes
 /// fingerprint the animated-weight-map stage uses for its non-`Serialize` atlas
 /// types. Every resolved per-chart sampling input is folded explicitly because
 /// a scale-region edit can change texel world positions or resize a lone chart
@@ -72,6 +72,8 @@ pub(crate) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
         // Fold the atlas layer so a repack that moves a chart to a different
         // array layer (same x/y) still invalidates the per-light cache.
         hasher.update(&p.layer.to_le_bytes());
+        // A chart turned in place moves every texel but its corner.
+        hasher.update(&[u8::from(p.transposed)]);
     }
     let layout = atlas.layout;
     hasher.update(&layout.direction_texel_scale.to_le_bytes());
@@ -363,11 +365,9 @@ pub fn validate_layer_partition(
             continue;
         }
         let (interior_width, interior_height) = chart_interior_dims(chart);
-        let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
         for y in 0..interior_height {
             for x in 0..interior_width {
-                let atlas_x = placement.x as i32 + padding + x;
-                let atlas_y = placement.y as i32 + padding + y;
+                let (atlas_x, atlas_y) = placement.interior_texel(x, y);
                 let expected_idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
                 covered[expected_idx as usize] = true;
             }

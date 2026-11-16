@@ -87,8 +87,9 @@ const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
 /// is preserved (the plane runs through the vertex, so the agent cannot cut back
 /// inside the corner disk) without making progress hostage to sub-skin precision.
 ///
-/// Intermediate mandatory vertices are traversed at full `move_speed` (no arrival
-/// throttle — they are corners to round, not points to settle onto). But near the
+/// Intermediate mandatory vertices are traversed at the full steered speed
+/// ([`AgentComponent::steered_speed`]), with no arrival throttle — they are
+/// corners to round, not points to settle onto. But near the
 /// vertex the goal-projected forward progress can still legitimately be small for
 /// a tick or two: the heading-restart zeroing above resets the speed to re-accel
 /// from zero, and a hard full-speed turn advances mostly sideways. So while an
@@ -744,7 +745,7 @@ fn tick_impl(
         let slowdown_radius = ARRIVAL_SLOWDOWN_RADIUS_FACTOR * agent.radius;
         let goal_speed = goal_speed(&mut agent, position, arrival_radius, slowdown_radius);
         // Is the agent inside a mandatory clearance vertex's arrival band this
-        // tick? It rounds the vertex at full `move_speed`, but the heading-restart
+        // tick? It rounds the vertex at full steered speed, but the heading-restart
         // zeroing and hard-turn geometry can make the goal-projected step briefly
         // small there — legitimate cornering rather than a wedge — so the stuck
         // detector must not accumulate against it (see below).
@@ -1242,7 +1243,7 @@ fn goal_speed(
     let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
     let final_distance = distance_xz(position, target);
     // Intermediate mandatory clearance vertices are traversed at full
-    // `move_speed`: they are corner-offset waypoints a chasing agent must round,
+    // steered speed: they are corner-offset waypoints a chasing agent must round,
     // not points it must settle onto. The cursor advances via
     // [`mandatory_waypoint_cleared`] as soon as the agent is within the ordinary
     // arrival band AND has passed the vertex plane toward the next leg, so
@@ -1390,12 +1391,12 @@ fn clamp_xz_speed(mut velocity: Vec3, max_speed: f32) -> Vec3 {
     velocity
 }
 
-fn recovery_tangent_bias(steer_velocity: Vec3, move_speed: f32) -> Vec3 {
+fn recovery_tangent_bias(steer_velocity: Vec3, steered_speed: f32) -> Vec3 {
     let tangent = Vec3::new(-steer_velocity.z, 0.0, steer_velocity.x);
     if tangent.length_squared() <= MIN_XZ_LEN_SQ {
         Vec3::ZERO
     } else {
-        tangent.normalize() * (TANGENT_BIAS * move_speed)
+        tangent.normalize() * (TANGENT_BIAS * steered_speed)
     }
 }
 
@@ -1434,7 +1435,7 @@ fn mandatory_waypoint_cleared(
 /// True when the agent's current path target is a mandatory clearance vertex it
 /// is inside the arrival band of: mandatory, non-final, and within the ordinary
 /// arrival band (`arrival_radius`). Intermediate mandatory vertices are traversed
-/// at full `move_speed`, but this window still sees legitimately-small forward
+/// at full steered speed, but this window still sees legitimately-small forward
 /// progress on a tick or two — the tight-band heading restart in [`goal_speed`]
 /// zeroes and re-accelerates the speed, and a hard full-speed corner turn
 /// advances mostly sideways — so [`update_stuck_ticks`] uses it to preserve the
@@ -1479,7 +1480,7 @@ fn update_stuck_ticks(
     );
     let progress = displacement.dot(goal_dir);
     // Inside a mandatory clearance vertex's arrival band the agent runs at full
-    // move_speed, but goal-projected forward progress can briefly be tiny yet
+    // steered speed, but goal-projected forward progress can briefly be tiny yet
     // positive — the tight-band heading restart re-accelerates from zero and a
     // hard corner turn advances mostly sideways. Measure it against the much
     // smaller easing floor instead of the ordinary intent-relative floor: bounded

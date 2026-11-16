@@ -1,8 +1,5 @@
-// Stance lowering on the JSON both runtimes hand it: the hand-written fixture,
-// reach, generated activities and rows, the co-op floor warning, the drops an
-// exhaustive `attacks` list makes, and the pathed rejections.
-// See: context/lib/scripting.md §2 (Attack and stance declarations)
-//      context/lib/entity_model.md §7c (Stances and attacks)
+// Stance lowering on the JSON both runtimes hand it, from the fixture to the pathed rejections.
+// See: context/lib/entity_model.md §7c (Stances and attacks)
 
 use log::Level;
 use postretro_foundation::BehaviorGraphDescriptor;
@@ -142,7 +139,7 @@ fn floor_warnings(capture: &LogCapture) -> Vec<String> {
 // fixture: the rest, the hold, the release and the recover, their lowering-only
 // fields, and their rows, row order included.
 #[test]
-fn s2_a_stance_and_its_strike_lower_to_the_hand_written_fixture() {
+fn a_stance_and_its_strike_lower_to_the_hand_written_fixture() {
     let authored: Value =
         serde_json::from_str(include_str!("fixtures/stance_overhead_slam.authored.json"))
             .expect("the authored fixture parses");
@@ -158,7 +155,7 @@ fn s2_a_stance_and_its_strike_lower_to_the_hand_written_fixture() {
 // nothing reaches is not generated, and a level that targets nothing gains
 // nothing.
 #[test]
-fn s3_a_level_gains_only_the_rests_and_strikes_it_reaches() {
+fn a_level_gains_only_the_rests_and_strikes_it_reaches() {
     let behavior = loaded(offense());
     assert_eq!(
         activity_names(&behavior),
@@ -214,7 +211,7 @@ fn s3_a_level_gains_only_the_rests_and_strikes_it_reaches() {
 // load naming both; so does a string `to` or `initial` naming a generated
 // activity.
 #[test]
-fn s3_a_collision_or_a_string_naming_a_generated_activity_rejects_load() {
+fn a_collision_or_a_string_naming_a_generated_activity_rejects_load() {
     let mut collides = offense();
     collides["activities"]["slam_release"] = json!({ "animation": "idle" });
     let error = rejection(collides);
@@ -256,7 +253,7 @@ fn s3_a_collision_or_a_string_naming_a_generated_activity_rejects_load() {
 // S4 (lowering half): `{ to: overhead }` enters the rest, which holds no turn
 // and carries the stance sound; an `initial` stance starts there.
 #[test]
-fn s4_a_row_and_an_initial_to_a_stance_lower_to_its_unmarked_rest() {
+fn a_row_and_an_initial_to_a_stance_lower_to_its_unmarked_rest() {
     let sounded = stance(
         "overhead",
         json!({ "animation": "smash_windup", "sound": "brute/stance_overhead" }),
@@ -286,7 +283,7 @@ fn s4_a_row_and_an_initial_to_a_stance_lower_to_its_unmarked_rest() {
 // with the stance's animation, hold range and `breakOn` row, each marked for
 // its own attack.
 #[test]
-fn s6_two_attacks_sharing_a_stance_get_their_own_holds_in_its_pose() {
+fn two_attacks_sharing_a_stance_get_their_own_holds_in_its_pose() {
     let behavior = loaded(offense());
     let break_row = json!({
         "to": "flinch",
@@ -325,7 +322,7 @@ fn s6_two_attacks_sharing_a_stance_get_their_own_holds_in_its_pose() {
 // S7: the body `stance` option waits on the enemy cover brief; until then it
 // rejects load with a pathed error.
 #[test]
-fn s7_the_body_stance_option_rejects_load_until_enemy_cover_lands() {
+fn the_body_stance_option_rejects_load_until_enemy_cover_lands() {
     let error = rejection(with_overhead(|s| s["stance"] = json!("crouch")));
     assert!(
         error.contains("`components.behavior.transitions.approach[0].to.stance`"),
@@ -337,7 +334,7 @@ fn s7_the_body_stance_option_rejects_load_until_enemy_cover_lands() {
 // naming the stance, with or without a `breakOn`; a `"*"` or an outer row is a
 // way out.
 #[test]
-fn s8_a_rest_with_no_way_out_rejects_load_naming_the_stance() {
+fn a_rest_with_no_way_out_rejects_load_naming_the_stance() {
     for options in [
         json!({ "animation": "smash_windup" }),
         json!({ "animation": "smash_windup", "breakOn": { "damage": 25, "to": "flinch" } }),
@@ -384,7 +381,7 @@ fn s8_a_rest_with_no_way_out_rejects_load_naming_the_stance() {
 // S9 (lowering half): an attack's release and recover route to its ending
 // stance's rest, which defaults to its beginning stance.
 #[test]
-fn s9_a_strike_lands_in_its_ending_stance_which_defaults_to_its_beginning() {
+fn a_strike_lands_in_its_ending_stance_which_defaults_to_its_beginning() {
     let behavior = loaded(offense());
     assert_eq!(behavior["activities"]["slam_release"]["staggerTo"], "coil");
     assert_eq!(behavior["activities"]["slam_recover"]["staggerTo"], "coil");
@@ -402,7 +399,7 @@ fn s9_a_strike_lands_in_its_ending_stance_which_defaults_to_its_beginning() {
 // S10: every generated rest, hold, release and recover is planted; a release's
 // `motion` and `speed` replace that on the release alone.
 #[test]
-fn s10_generated_activities_are_planted_and_a_moving_release_moves_alone() {
+fn generated_activities_are_planted_and_a_moving_release_moves_alone() {
     let behavior = loaded(offense());
     for (name, activity) in behavior["activities"].as_object().unwrap() {
         if name != "approach" {
@@ -463,7 +460,7 @@ fn s10_generated_activities_are_planted_and_a_moving_release_moves_alone() {
 // `hit`, and the recover holds the release's state until its clip plays
 // through or the default duration passes.
 #[test]
-fn s11_a_minimal_stance_and_attack_load_silently_with_the_defaults() {
+fn a_minimal_stance_and_attack_load_silently_with_the_defaults() {
     let capture = LogCapture::start();
     let minimal = stance("overhead", json!({ "animation": "smash_windup" }));
     let jab = attack(
@@ -514,7 +511,7 @@ fn s11_a_minimal_stance_and_attack_load_silently_with_the_defaults() {
 // load naming it, `holdMs: 0` included, however many strikes and levels lower
 // it; one at or above the floor loads silently.
 #[test]
-fn f2_a_hold_below_the_floor_warns_once_per_mod_load_naming_the_stance() {
+fn a_hold_below_the_floor_warns_once_per_mod_load_naming_the_stance() {
     let fast = |hold: Value| {
         let mut behavior = offense();
         let overhead = stance(
@@ -559,7 +556,7 @@ fn f2_a_hold_below_the_floor_warns_once_per_mod_load_naming_the_stance() {
 // S20: a release on its beginning stance's own state rejects load naming the
 // attack; one on its own state loads.
 #[test]
-fn s20_a_release_on_its_stances_state_rejects_load_naming_the_attack() {
+fn a_release_on_its_stances_state_rejects_load_naming_the_attack() {
     let mut behavior = offense();
     behavior["transitions"]["overhead"][1]["to"]["release"]["animation"] = json!("smash_windup");
     let error = rejection(behavior);
@@ -590,7 +587,7 @@ fn with_sweep(edit: impl Fn(&mut Value)) -> Value {
 
 // S26: each malformed stance, attack or row rejects load with a pathed error.
 #[test]
-fn s26_malformed_stances_attacks_and_rows_reject_load_with_pathed_errors() {
+fn malformed_stances_attacks_and_rows_reject_load_with_pathed_errors() {
     let approach_row = "components.behavior.transitions.approach[0].to";
     let sweep_row = "components.behavior.transitions.overhead[1].to";
     let cases: Vec<(&str, Value, Vec<String>)> = vec![
@@ -754,7 +751,7 @@ fn s26_malformed_stances_attacks_and_rows_reject_load_with_pathed_errors() {
 // S26: any non-finite value rejects load, naming its path, at the JSON bridge
 // both runtimes lower through.
 #[test]
-fn s26_a_non_finite_stance_value_rejects_load_with_its_path() {
+fn a_non_finite_stance_value_rejects_load_with_its_path() {
     let runtime = rquickjs::Runtime::new().expect("runtime");
     let context = rquickjs::Context::full(&runtime).expect("context");
     let error = context.with(|ctx| {
@@ -777,7 +774,7 @@ fn s26_a_non_finite_stance_value_rejects_load_with_its_path() {
 // T3 / P37 (a): under `attacks: [sweep]`, a reached rest whose only row struck
 // `slam` drops it, and is left with no way out: load rejects naming it.
 #[test]
-fn p37a_a_reached_rest_whose_only_row_drops_rejects_load_naming_it() {
+fn a_reached_rest_whose_only_row_drops_rejects_load_naming_it() {
     let capture = LogCapture::start();
     let mut behavior = offense();
     behavior["attacks"] = json!([sweep()]);
@@ -801,7 +798,7 @@ fn p37a_a_reached_rest_whose_only_row_drops_rejects_load_naming_it() {
 // `slam`'s ending stance, is not generated; its authored rows drop with a log,
 // one of them reading `slam`'s turn, which is never checked.
 #[test]
-fn p37b_a_rest_reached_only_through_a_dropped_attack_drops_its_rows() {
+fn a_rest_reached_only_through_a_dropped_attack_drops_its_rows() {
     let capture = LogCapture::start();
     let mut behavior = offense();
     behavior["attacks"] = json!([sweep()]);
@@ -839,7 +836,7 @@ fn p37b_a_rest_reached_only_through_a_dropped_attack_drops_its_rows() {
 // holds `bellow`'s only route in, and `bellow`'s only row strikes `charge`;
 // neither rest is generated, every dropped row logs once, and load succeeds.
 #[test]
-fn p40_drops_repeat_to_a_fixed_point() {
+fn drops_repeat_to_a_fixed_point() {
     let capture = LogCapture::start();
     let bellow = stance("bellow", json!({ "animation": "roar" }));
     let charge = attack(
@@ -864,6 +861,250 @@ fn p40_drops_repeat_to_a_fixed_point() {
         capture.assert_logged_once(
             Level::Info,
             &format!("`components.behavior.transitions.{row}` {what}"),
+        );
+    }
+}
+
+// Regression: rows keyed by a stance nothing reached even before the list's
+// drops were dropped with a log blaming the list; they reject load, as they do
+// without a list.
+#[test]
+fn rows_keyed_by_a_stance_nothing_ever_reaches_reject_load_under_an_attacks_list() {
+    let capture = LogCapture::start();
+    let bellow = stance("bellow", json!({ "animation": "roar" }));
+    let charge = attack(
+        "charge",
+        json!({ "beginningStance": bellow, "release": { "animation": "run", "at": false } }),
+    );
+    let mut behavior = offense();
+    behavior["attacks"] = json!([slam(), sweep(), lunge(), charge]);
+    behavior["transitions"]["bellow"] = json!([{ "to": "approach", "when": ms(500.0) }]);
+    let error = rejection(behavior);
+    assert!(
+        error.contains(
+            "`components.behavior.transitions.bellow` keys rows by stance \"bellow\", which no row or `initial` at this level reaches"
+        ),
+        "{error}"
+    );
+    assert!(
+        !capture
+            .records()
+            .iter()
+            .any(|record| record.message.contains("drops with stance")),
+        "a never-reached rest's rows are not the list's drops"
+    );
+}
+
+// Regression: a `"*"` row into the stance itself counted as its rest's way
+// out, though the engine skips a `"*"` row into the pose the enemy holds, so
+// the rest never left. A `"*"` row to a sibling still counts.
+#[test]
+fn a_star_row_into_the_stance_itself_is_no_way_out_of_its_rest() {
+    let overhead = stance("overhead", json!({ "animation": "smash_windup" }));
+    let level = |star: Value| {
+        json!({
+            "initial": "approach",
+            "activities": {
+                "approach": { "animation": "walk" },
+                "flinch": { "animation": "flinch", "motion": "hold" }
+            },
+            "transitions": {
+                "approach": [{ "to": overhead }],
+                "flinch": [{ "to": "approach" }],
+                "*": star
+            }
+        })
+    };
+    let root = |star: Value| {
+        let mut root = level(star);
+        root["moveSpeed"] = json!(3);
+        root
+    };
+    let error = rejection(root(json!([{ "to": overhead, "when": ms(5000.0) }])));
+    assert!(
+        error.contains("stance \"overhead\"'s rest has no way out"),
+        "{error}"
+    );
+    loaded(root(json!([{ "to": "flinch", "when": ms(5000.0) }])));
+    loaded(root(json!([
+        { "to": overhead, "when": ms(5000.0) },
+        { "to": "flinch", "when": ms(5000.0) }
+    ])));
+
+    // Nested: an outer `"*"` row into the composite holding the level is
+    // skipped while the enemy is inside it; one to a sibling leaves.
+    let outer = |star: Value| {
+        json!({
+            "initial": "idle",
+            "moveSpeed": 3,
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "engage": { "animation": "walk", "layers": { "offense": level(json!([])) } }
+            },
+            "transitions": { "idle": [{ "to": "engage" }], "*": star }
+        })
+    };
+    let error = rejection(outer(json!([{ "to": "engage", "when": ms(9000.0) }])));
+    assert!(
+        error.contains("stance \"overhead\"'s rest has no way out"),
+        "{error}"
+    );
+    loaded(outer(json!([{ "to": "idle", "when": ms(9000.0) }])));
+}
+
+// Regression: a moving release whose `recover` named no animation fell back
+// to the release's state, so its stride played in place. A planted release
+// keeps the fallback.
+#[test]
+fn a_moving_release_needs_a_recover_with_its_own_animation() {
+    let error = rejection(with_sweep(|a| {
+        a["release"]["motion"] = json!("chaseTarget");
+        a["recover"] = json!({ "ms": 600 });
+    }));
+    assert!(
+        error.contains(
+            "`components.behavior.transitions.overhead[1].to.recover.animation` is missing"
+        ) && error.contains("release moves"),
+        "{error}"
+    );
+
+    let behavior = loaded(with_sweep(|a| a["recover"] = json!({ "ms": 600 })));
+    assert_eq!(
+        behavior["activities"]["sweep_recover"]["animation"],
+        "swipe_strike"
+    );
+}
+
+// Regression: a number finite as f64 but infinite as f32 lowered to an
+// infinite constant or failed later at a generated path.
+#[test]
+fn a_number_too_large_for_single_precision_rejects_load_with_its_path() {
+    let approach_row = "components.behavior.transitions.approach[0].to";
+    let sweep_row = "components.behavior.transitions.overhead[1].to";
+    let cases = [
+        (
+            with_sweep(|a| a["release"]["ms"] = json!(1e39)),
+            format!("`{sweep_row}.release.ms`"),
+        ),
+        (
+            with_sweep(|a| a["recover"] = json!({ "ms": 1e39 })),
+            format!("`{sweep_row}.recover.ms`"),
+        ),
+        (
+            with_sweep(|a| a["release"]["speed"] = json!(1e39)),
+            format!("`{sweep_row}.release.speed`"),
+        ),
+        (
+            with_overhead(|s| s["breakOn"]["damage"] = json!(1e39)),
+            format!("`{approach_row}.breakOn.damage`"),
+        ),
+        (
+            with_overhead(|s| s["holdMs"] = json!([400, 1e39])),
+            format!("`{approach_row}.holdMs[1]`"),
+        ),
+    ];
+    for (behavior, path) in cases {
+        let error = rejection(behavior);
+        assert!(
+            error.contains(&path) && error.contains("overflows single precision"),
+            "{path}: {error}"
+        );
+    }
+}
+
+// Regression: the floor warning deduped by stance name alone, so a second
+// stance of that name in another archetype of the mod never warned.
+#[test]
+fn two_stances_sharing_a_name_across_archetypes_each_warn_below_the_floor() {
+    let with_hold = |hold: Value| with_overhead(move |s| s["holdMs"] = hold.clone());
+    let capture = LogCapture::start();
+    let load = stance_floor_warning_scope();
+    loaded(with_hold(json!([100, 900])));
+    loaded(with_hold(json!([200, 900])));
+    loaded(with_hold(json!([100, 900])));
+    drop(load);
+    let warnings = floor_warnings(&capture);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| warning.contains("stance \"overhead\"")),
+        "{warnings:?}"
+    );
+}
+
+// Regression: the lowering-only field check matched every key at every depth,
+// so an activity, layer or stance named like a lowering-only field rejected
+// load as if it were that field.
+#[test]
+fn an_activity_or_stance_named_like_a_lowering_only_field_loads() {
+    let pose = stance("pose", json!({ "animation": "smash_windup" }));
+    let behavior = loaded(json!({
+        "initial": "queue",
+        "moveSpeed": 3,
+        "activities": {
+            "queue": { "animation": "walk", "layers": { "staggerTo": {
+                "initial": "atDefault",
+                "activities": { "atDefault": { "animation": "walk" } },
+                "transitions": {}
+            } } },
+            "afterMoment": { "animation": "idle", "motion": "hold" }
+        },
+        "transitions": {
+            "queue": [{ "to": pose }],
+            "pose": [{ "to": "afterMoment", "when": ms(500.0) }],
+            "afterMoment": [{ "to": "queue", "when": ms(500.0) }]
+        }
+    }));
+    assert_eq!(behavior["activities"]["pose"]["pose"], "pose");
+    assert_eq!(behavior["transitions"]["queue"][0]["to"], "pose");
+}
+
+// T6: an authored lowering-only field still rejects load in every field
+// position, a stance or attack handle's declaration included.
+#[test]
+fn an_authored_lowering_only_field_in_a_body_or_handle_rejects_load() {
+    let approach_row = "components.behavior.transitions.approach[0].to";
+    let sweep_row = "components.behavior.transitions.overhead[1].to";
+    let cases = [
+        (
+            {
+                let mut behavior = offense();
+                behavior["activities"]["approach"]["pose"] = json!("approach");
+                behavior
+            },
+            "`components.behavior.activities.approach.pose`".to_string(),
+        ),
+        (
+            with_overhead(|s| s["pose"] = json!("overhead")),
+            format!("`{approach_row}.pose`"),
+        ),
+        (
+            with_overhead(|s| s["breakOn"]["queue"] = json!("slam")),
+            format!("`{approach_row}.breakOn.queue`"),
+        ),
+        (
+            with_sweep(|a| a["atDefault"] = json!(true)),
+            format!("`{sweep_row}.atDefault`"),
+        ),
+        (
+            with_sweep(|a| a["release"]["afterMoment"] = json!(true)),
+            format!("`{sweep_row}.release.afterMoment`"),
+        ),
+        (
+            with_sweep(|a| a["recover"] = json!({ "staggerTo": "coil" })),
+            format!("`{sweep_row}.recover.staggerTo`"),
+        ),
+        (
+            with_sweep(|a| a["beginningStance"]["releaseAfter"] = json!([0, 1])),
+            format!("`{sweep_row}.beginningStance.releaseAfter`"),
+        ),
+    ];
+    for (behavior, path) in cases {
+        let error = rejection(behavior);
+        assert!(
+            error.contains(&format!("{path} is written only by load-time lowering")),
+            "{path}: {error}"
         );
     }
 }

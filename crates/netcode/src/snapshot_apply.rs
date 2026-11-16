@@ -98,49 +98,9 @@ pub(super) fn materialize_remote_entities(
             )
         } else {
             // Remote AI has no local AgentComponent, so derive its walk rate from
-            // exactly the motion this client presents. The shared descriptor supplies
-            // the immutable reference speed and the locomotion state; neither belongs
-            // on the snapshot wire format.
-            //
-            // The scaled states are picked by the rule the host tick's playback
-            // rate uses: the graph's rate-scaled states, its locomotion state and
-            // each state an activity plays under its own steering motion. The
-            // brain's graph is the descriptor's authored `behavior` block, so both
-            // ends agree on what this enemy carries. Directional variants scale
-            // too, each against its own clip.
-            let walk_reference = descriptor.and_then(|descriptor| {
-                let mesh = descriptor.mesh.as_ref()?;
-                let graph = descriptor.behavior.as_ref()?;
-                let model =
-                    hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
-                let mut scaled_states: Vec<client::RemoteScaledState> = Vec::new();
-                postretro_foundation::any_rate_scaled_animation(graph, |state| {
-                    // A state the mesh never declares has nothing to scale.
-                    if mesh.animations.contains_key(state)
-                        && !scaled_states.iter().any(|scaled| scaled.state == state)
-                    {
-                        // The same clip pick as the host's `effective_travel_speed`;
-                        // a descriptor state has no resolved clip index.
-                        let derived_travel_speeds = TravelVariant::ALL.map(|variant| {
-                            let state = mesh
-                                .animations
-                                .get(&format!("{state}{}", variant.suffix()))?;
-                            model?.state_clip(None, &state.clip)?.travel_speed
-                        });
-                        scaled_states.push(client::RemoteScaledState {
-                            state: state.to_string(),
-                            derived_travel_speeds,
-                        });
-                    }
-                    false
-                });
-                // No scaled state the mesh declares: no walk reference, so this
-                // client leaves the enemy's playback rate alone.
-                (!scaled_states.is_empty()).then_some(client::RemoteEnemyWalkPlayback {
-                    move_speed: graph.move_speed,
-                    scaled_states,
-                })
-            });
+            // exactly the motion this client presents.
+            let walk_reference = descriptor
+                .and_then(|descriptor| remote_enemy_stride_reference(descriptor, hit_zone_store));
             replication.cache_remote_enemy_walk_playback(remote.network_id, walk_reference);
             remote_materialize::materialize_armed_remote_enemy(
                 remote,
@@ -177,6 +137,50 @@ pub(super) fn materialize_remote_entities(
         changed |= materialized || attachment_changed;
     }
     changed
+}
+
+/// A remote enemy's stride-rate reference from the shared descriptor: its base
+/// `moveSpeed` and its graph's rate-scaled states. Neither belongs on the
+/// snapshot wire format. `None` without a mesh, a behavior graph, or a scaled
+/// state the mesh declares, so the client leaves that enemy's rate alone.
+///
+/// The states are the host tick's playback-rate set, derived once here by the
+/// same foundation function (`RateScaledStates`): the graph's locomotion state
+/// and each state an activity plays under a motion that steers. The brain's
+/// graph is the descriptor's authored `behavior` block, so both ends agree on
+/// what this enemy carries. Directional variants scale too, each against its
+/// own clip, and a state stays when the mesh declares its base or any variant,
+/// because the host matches every presented variant of a set state.
+fn remote_enemy_stride_reference(
+    descriptor: &EntityTypeDescriptor,
+    hit_zone_store: &HitZoneStore,
+) -> Option<client::RemoteEnemyWalkPlayback> {
+    let mesh = descriptor.mesh.as_ref()?;
+    let graph = descriptor.behavior.as_ref()?;
+    let model = hit_zone_store.get(&postretro_model::ModelHandle::from(mesh.model.clone()));
+    let scaled_states: Vec<client::RemoteScaledState> =
+        postretro_foundation::RateScaledStates::of(graph)
+            .iter()
+            .filter_map(|state| {
+                // The same clip pick as the host's `effective_travel_speed`; a
+                // descriptor state has no resolved clip index.
+                let declared = TravelVariant::ALL
+                    .map(|variant| mesh.animations.get(&format!("{state}{}", variant.suffix())));
+                // A state the mesh declares in no variant has nothing to scale.
+                declared
+                    .iter()
+                    .any(Option::is_some)
+                    .then(|| client::RemoteScaledState {
+                        state: state.to_string(),
+                        derived_travel_speeds: declared
+                            .map(|declared| model?.state_clip(None, &declared?.clip)?.travel_speed),
+                    })
+            })
+            .collect();
+    (!scaled_states.is_empty()).then_some(client::RemoteEnemyWalkPlayback {
+        move_speed: graph.move_speed,
+        scaled_states,
+    })
 }
 
 #[cfg(test)]
@@ -387,6 +391,70 @@ mod tests {
             );
             assert_eq!(complete.remote_entities.len(), usize::from(!with_mesh));
             assert_eq!(registry.iter_with_kind(ComponentKind::HitVolume).count(), 1);
+        }
+    }
+
+    // The client keeps the host's rate-scaled set: a state whose base the mesh
+    // never declares stays when it declares a directional variant, so a mesh
+    // with `run_left` but no `run` scales `run_left` on host and client alike.
+    // Position goals count, and a state the mesh declares in no variant drops.
+    #[test]
+    fn a_remote_stride_reference_keeps_every_host_scaled_state_the_mesh_declares_in_any_variant() {
+        use postretro_entities::components::brain::BrainComponent;
+        use postretro_entities::components::mesh::{AnimationState, InterruptPolicy};
+
+        let graph: postretro_foundation::BehaviorGraphDescriptor =
+            serde_json::from_value(serde_json::json!({
+                "initial": "idle",
+                "moveSpeed": 3.0,
+                "patrol": { "mode": "loop", "points": [[0.0, 0.0], [6.0, 0.0]] },
+                "activities": {
+                    "idle": { "animation": "idle", "motion": "hold" },
+                    "engage": { "animation": "run", "motion": "chaseTarget" },
+                    "wander": { "animation": "walk", "motion": "patrol" },
+                    "retreat": { "animation": "limp", "motion": "moveToAnchor" }
+                },
+                "transitions": { "idle": [] }
+            }))
+            .expect("graph deserializes");
+        let state = |clip: &str| AnimationState {
+            clip: clip.to_string(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: InterruptPolicy::Smooth,
+            travel_speed: None,
+            clip_index: None,
+        };
+        let mut descriptor = mesh_descriptor("strider", true);
+        let mesh = descriptor.mesh.as_mut().expect("fixture has a mesh");
+        mesh.animations = ["idle", "walk", "run_left"]
+            .into_iter()
+            .map(|name| (name.to_string(), state(name)))
+            .collect();
+        descriptor.behavior = Some(graph.clone());
+
+        let reference = remote_enemy_stride_reference(&descriptor, &HitZoneStore::new())
+            .expect("the mesh declares scaled states");
+        assert_eq!(reference.move_speed, 3.0);
+        let mut kept: Vec<&str> = reference
+            .scaled_states
+            .iter()
+            .map(|scaled| scaled.state.as_str())
+            .collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["run", "walk"], "`limp` is declared in no variant");
+
+        let host = BrainComponent::from_graph(&graph);
+        for presented in ["run_left", "walk"] {
+            let client_scales = reference
+                .scaled_states
+                .iter()
+                .any(|scaled| TravelVariant::of_state(&scaled.state, presented).is_some());
+            let host_scales = host
+                .rate_scaled_states()
+                .iter()
+                .any(|scaled| TravelVariant::of_state(scaled, presented).is_some());
+            assert!(client_scales && host_scales, "`{presented}` scales on both");
         }
     }
 }

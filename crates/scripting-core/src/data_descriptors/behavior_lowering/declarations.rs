@@ -1,6 +1,4 @@
-// Stance and attack declarations as stance lowering reads them: parsed once per
-// behavior from the handles that carry them, each authoring field checked with
-// its path before anything is expanded.
+// Stance and attack declarations parsed from their handles, each field checked with its path.
 // See: context/lib/scripting.md §2 (Attack and stance declarations)
 
 use std::collections::BTreeMap;
@@ -119,8 +117,8 @@ fn parse_stance(name: &str, declared: &Declared) -> Result<StanceDecl, Descripto
         // Seam: `E10--enemy-cover` defines the activity `stance` property this
         // option sets; whichever of the two briefs lands second wires it.
         return Err(shape(format!(
-            "`{path}.stance`: stance \"{name}\" sets the body stance, which needs the enemy cover \
-             brief's crouch support; remove the option until it lands"
+            "`{path}.stance`: stance \"{name}\" sets the body stance, which needs crouching \
+             enemies, which the engine does not support yet; remove the option"
         )));
     }
     let (hold_ms, hold_authored) = match present(fields, "holdMs") {
@@ -238,15 +236,27 @@ fn parse_strike(
         None => None,
         Some(value) => Some(parse_recover(value, &format!("{path}.recover"), name)?),
     };
+    // A recover without its own animation holds the release's state, which
+    // rate-scales only while an activity steers: after a moving release its
+    // stride would play in place. A planted release may fall back.
     if release
         .motion
         .as_deref()
         .is_some_and(|motion| motion != "hold")
-        && recover.is_none()
     {
-        return Err(shape(format!(
-            "`{path}.recover` is missing: attack \"{name}\"'s release moves, and the default recover holds the release's state, so its stride would play in place; give it a `recover`"
-        )));
+        match &recover {
+            None => {
+                return Err(shape(format!(
+                    "`{path}.recover` is missing: attack \"{name}\"'s release moves, and the default recover holds the release's state, so its stride would play in place; give it a `recover`"
+                )));
+            }
+            Some(recover) if recover.animation.is_none() => {
+                return Err(shape(format!(
+                    "`{path}.recover.animation` is missing: attack \"{name}\"'s release moves, and a recover without `animation` holds the release's state, so its stride would play in place; give the recover its own animation"
+                )));
+            }
+            Some(_) => {}
+        }
     }
     if catalog
         .stances
@@ -423,12 +433,16 @@ fn optional_duration(
     Ok(Some(ms))
 }
 
-/// A finite number. The JSON bridge already rejects non-finite numbers with
-/// their path; this names a non-number.
+/// A number finite at the runtime's `f32`. The JSON bridge already rejects
+/// non-finite numbers with their path; this names a non-number, and one too
+/// large for `f32`, which would otherwise lower to an infinite constant.
 fn number(value: &Value, path: &str) -> Result<f64, DescriptorError> {
     match value.as_f64() {
-        Some(number) if number.is_finite() => Ok(number),
-        _ => Err(shape(format!(
+        Some(number) if (number as f32).is_finite() => Ok(number),
+        Some(number) => Err(shape(format!(
+            "`{path}` must be a finite number, found {number}, which overflows single precision"
+        ))),
+        None => Err(shape(format!(
             "`{path}` must be a finite number, found {}",
             describe(value)
         ))),

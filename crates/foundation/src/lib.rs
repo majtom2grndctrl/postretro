@@ -27,7 +27,7 @@ pub use weapon_activation::*;
 
 pub use behavior_draws::{
     BEHAVIOR_DRAW_STREAMS, BehaviorDrawSalt, BehaviorDrawStream, BehaviorDraws, behavior_draw_seed,
-    behavior_draw_unit,
+    behavior_draw_unit, hold_release_range, release_draw,
 };
 pub use brain::{
     ARCHETYPE_TOLERANCE_STATE_FIELD, ATTACK_TURN_FREE_INPUT_PREFIX, ATTACK_TURN_HELD_INPUT_PREFIX,

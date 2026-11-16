@@ -220,7 +220,7 @@ fn an_authored_stance_and_strike_lower_at_load_and_tick_into_the_ending_stance()
 // stance sound once; moving into the hold plays nothing. A level whose
 // `initial` is a stance starts in its rest.
 #[test]
-fn s4_a_row_to_a_stance_enters_its_rest_holding_no_turn_with_one_sound() {
+fn a_row_to_a_stance_enters_its_rest_holding_no_turn_with_one_sound() {
     let (mut scene, enemy, graph) = strike_scene(&strike_source(Some("coil")), "s4");
     assert_eq!(
         graph.envelope.activities["overhead"].sound.as_deref(),
@@ -260,7 +260,7 @@ fn s4_a_row_to_a_stance_enters_its_rest_holding_no_turn_with_one_sound() {
 // turn there; with no `endingStance` it rests in its beginning stance, and its
 // turn ends there.
 #[test]
-fn s9_a_strike_rests_in_its_ending_stance_holding_no_turn() {
+fn a_strike_rests_in_its_ending_stance_holding_no_turn() {
     for (ending, rest) in [(Some("coil"), "coil"), (None, "overhead")] {
         let (mut scene, enemy, _) = strike_scene(&strike_source(ending), "s9");
         let log = run(&mut scene, enemy, 150);
@@ -289,7 +289,7 @@ fn s9_a_strike_rests_in_its_ending_stance_holding_no_turn() {
 // composite whose move layer chases, the rest, hold, release and recover never
 // steer, while the level's own `approach` does.
 #[test]
-fn s10_a_strike_entered_from_a_chasing_level_stays_planted() {
+fn a_strike_entered_from_a_chasing_level_stays_planted() {
     let source = format!(
         r#"import {{ brain, defineAttack, defineEntity, defineMod, defineStance }} from "postretro";
 
@@ -358,7 +358,7 @@ fn s10_a_strike_entered_from_a_chasing_level_stays_planted() {
 // clip library, it loads silently, takes a pose in reach of its target,
 // strikes from it and lands the strike.
 #[test]
-fn s1_the_scripting_surface_example_runs_as_dev_content() {
+fn the_scripting_surface_example_runs_as_dev_content() {
     let capture = postretro_test_log_capture::LogCapture::start();
     let manifest = dev_manifest();
     let loud: Vec<_> = capture

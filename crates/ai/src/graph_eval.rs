@@ -1,7 +1,8 @@
 // Recursive behavior-statechart evaluation and the verb resolvers used by the
 // AI tick. The transition ordering contract lives entirely in
-// `select_transition`.
+// `select_transitions`.
 
+use postretro_entities::EntityId;
 use postretro_entities::components::brain::BrainComponent;
 #[cfg(test)]
 use postretro_foundation::BehaviorGraphDescriptor;
@@ -21,17 +22,17 @@ type SelectorLayer<'a> = (
     &'a [Option<postretro_foundation::BoundProgram<BrainScope>>],
 );
 
-/// Evaluate each active envelope outer-to-inner. At a level, `"*"` rows run
-/// before the active activity's own rows. A winning edge seats its target and
-/// complete initial descent immediately, then ends this pass so an entered
-/// node cannot evaluate its own row until the following tick.
+/// Test wrapper over [`select_transitions`]: whether the pass entered an
+/// activity, with the brain's acquired target standing in for the target
+/// compute selects this tick.
 #[cfg(test)]
 pub(super) fn select_transition_path(
     bound: &BrainEntityPrograms,
     scope: &mut BrainScope,
     brain: &mut BrainComponent,
 ) -> bool {
-    select_transitions(bound, scope, brain).transitioned
+    let target = brain.acquired_target;
+    select_transitions(bound, scope, brain, target).transitioned
 }
 
 /// What one transition pass did: whether it entered an activity, and the
@@ -46,15 +47,21 @@ pub(super) struct TransitionPass {
     pub(super) queued: Option<u16>,
 }
 
-/// [`select_transition_path`], also reporting the queued request the
-/// standing path makes. Compute hands that request to arbitration: the row
-/// walk is the one place that already knows the path, its rows and their
-/// guards, so the request and the row gate read one evaluation and never
-/// disagree.
+/// Evaluate each active envelope outer-to-inner. At a level, `"*"` rows run
+/// before the active activity's own rows. A winning edge seats its target and
+/// complete initial descent immediately, then ends this pass so an entered
+/// node cannot evaluate its own row until the following tick.
+///
+/// The pass also reports the queued request the standing path makes. Compute
+/// hands that request to arbitration: the row walk is the one place that
+/// already knows the path, its rows and their guards, so the request and the
+/// row gate read one evaluation and never disagree. `target` is the target
+/// selected this tick, against which a hold's release row reads its turn.
 pub(super) fn select_transitions(
     bound: &BrainEntityPrograms,
     scope: &mut BrainScope,
     brain: &mut BrainComponent,
+    target: Option<EntityId>,
 ) -> TransitionPass {
     let mut queued = None;
     let mut envelope_index = 0;
@@ -94,15 +101,18 @@ pub(super) fn select_transitions(
         // A `"*"` row into the pose the enemy already holds is skipped like a
         // row to the current activity; the level's own rows between a rest
         // and its holds still pass. A release row also waits out the pose's
-        // drawn release time, a queued row its attack's turn, and a
-        // release's own rows its moment.
+        // drawn release time and its turn on the current target, a queued
+        // row its attack's turn, and a release's own rows its moment.
         let wildcard_rows = RowSelection {
             envelope,
             current_name,
             current_pose: current.pose.as_deref(),
             release_due: brain.hold_release_due(depth),
             moment_resolved: brain.clip_clock.release_resolved,
-            queue: QueueGate { brain: &*brain },
+            turns: TurnGate {
+                brain: &*brain,
+                target,
+            },
         };
         let local_rows = RowSelection {
             current_pose: None,
@@ -176,18 +186,21 @@ struct RowSelection<'e> {
     /// The current release's moment resolved, or its clip played one pass,
     /// on an earlier evaluation: its `afterMoment` rows may pass.
     moment_resolved: bool,
-    queue: QueueGate<'e>,
+    turns: TurnGate<'e>,
 }
 
 impl RowSelection<'_> {
     /// A row the walk passes over without evaluating its guard: one to the
     /// current activity, one into the pose being skipped, a hold's release
-    /// row before its time, or a release's own row before its moment.
+    /// row before its time or without its turn on the current target, or a
+    /// release's own row before its moment.
     fn skips(&self, row: &postretro_foundation::GuardedRow) -> bool {
         if row.to == self.current_name {
             return true;
         }
-        if row.release_after.is_some() && !self.release_due {
+        if row.release_after.is_some()
+            && !(self.release_due && self.turns.release_held(self.envelope, &row.to))
+        {
             return true;
         }
         if row.after_moment && !self.moment_resolved {
@@ -202,27 +215,31 @@ impl RowSelection<'_> {
     }
 }
 
-/// The engine gates on a queued row (`queue`), read from the brain as this
-/// tick's evaluation sees it: its turns as the previous tick's arbitration
-/// left them (what `attackTurnHeld` reads), its cooldowns already ticked for
-/// this tick, and the target distance guards read.
+/// The engine's turn gates on a level's rows, a queued row's (`queue`) and a
+/// hold's release row's (`releaseAfter`), read from the brain as this tick's
+/// evaluation sees it: its turns as the previous tick's arbitration left them
+/// (what `attackTurnHeld` reads), its cooldowns already ticked for this tick,
+/// the target distance guards read, and the target selected now.
 #[derive(Clone, Copy)]
-struct QueueGate<'e> {
+struct TurnGate<'e> {
     brain: &'e BrainComponent,
+    target: Option<EntityId>,
 }
 
 /// Where a queued row stands before its `when` is read.
 enum QueueState {
     /// Out of range or cooling down: the row neither passes nor requests.
     Closed,
-    /// Open, its turn not held: on its `when` the row requests that turn.
+    /// Open, no turn granted to its request: on its `when` the row requests
+    /// that turn. A turn a burst carried in from the strike reads so too: no
+    /// request is made while it holds, and it ends with the burst.
     Waiting(u16),
-    /// Open with its turn held, or no queue at all: the row passes on its
-    /// `when`.
+    /// Open with its turn granted on the previous tick, or no queue at all:
+    /// the row passes on its `when`.
     Open,
 }
 
-impl QueueGate<'_> {
+impl TurnGate<'_> {
     fn state(&self, attack: &str, scope: &BrainScope) -> QueueState {
         let graph = &self.brain.graph;
         let (Some(index), Some(params)) = (
@@ -244,11 +261,47 @@ impl QueueGate<'_> {
         });
         if cooling || out_of_range {
             QueueState::Closed
-        } else if self.brain.attack_turns.holds_attack(index) {
+        } else if self.granted_last_tick(index) {
             QueueState::Open
         } else {
             QueueState::Waiting(index)
         }
+    }
+
+    /// A rest's grant lives one evaluation, as a mark's would: its row passes
+    /// on a turn granted on the previous tick, whatever its target (after a
+    /// switch the hold is still entered, and its mark re-requests). An older
+    /// turn was carried in by a burst outlasting the strike's recover. Were
+    /// it to open the row, the hold's mark would keep it across the repeat:
+    /// it would never end and refresh, and waiters would starve.
+    fn granted_last_tick(&self, attack: u16) -> bool {
+        let turns = &self.brain.attack_turns;
+        turns.held().any(|turn| {
+            turn.attack == attack && turn.granted_tick.wrapping_add(1) == turns.seen_tick
+        })
+    }
+
+    /// Whether the enemy holds the turn of the attack marked on `release`
+    /// against the target selected now; true when `release` is unmarked. On
+    /// a switch tick the hold's turn still reads held on the old target until
+    /// arbitration ends it, and a release entered on it would whiff.
+    fn release_held(&self, envelope: &BehaviorGraphEnvelope, release: &str) -> bool {
+        let Some(attack) = envelope
+            .activities
+            .get(release)
+            .and_then(|activity| activity.attack_turn.as_deref())
+        else {
+            return true;
+        };
+        let Some(index) = crate::attack_turns::attack_index(&self.brain.graph, attack) else {
+            return false;
+        };
+        self.target.is_some_and(|target| {
+            self.brain
+                .attack_turns
+                .held()
+                .any(|turn| turn.attack == index && turn.target == target)
+        })
     }
 }
 
@@ -268,7 +321,7 @@ fn first_enabled_target<'a>(
         .find(|(row, program)| {
             let gate = match row.queue.as_deref() {
                 None => QueueState::Open,
-                Some(attack) => selection.queue.state(attack, scope),
+                Some(attack) => selection.turns.state(attack, scope),
             };
             if matches!(gate, QueueState::Closed) {
                 return false;

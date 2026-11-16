@@ -113,9 +113,11 @@ pub(crate) fn arbitrate_attack_turns(
             // A rest's queued grant is kept by nothing here but the mark: on
             // the evaluation after its grant, its row passes and the hold's
             // mark names it, or another row (or none) leaves the rest and the
-            // turn ends with its refresh. A rest never holds a turn past that
-            // evaluation, since it is unmarked and a queued turn neither waits
-            // out a cooldown nor executes before its release.
+            // turn ends with its refresh. A queued turn neither waits out a
+            // cooldown nor executes before its release. A burst can still
+            // outlast its recover and carry its turn into the rest; that turn
+            // opens no queued row, which passes only on the evaluation after
+            // a grant, so it ends here with its refresh once the burst does.
             draws_unchanged
                 && ((target.is_some() && mark == Some(turn.attack))
                     || executing_attack == Some(turn.attack)
@@ -232,6 +234,7 @@ pub(crate) fn arbitrate_attack_turns(
             pool: request.pool,
             draws: request.draws,
             until_cooldown: !request.marked,
+            granted_tick: *tick,
         });
         debug_assert!(held, "a request is made only with a free turn slot");
         turns.wait = None;

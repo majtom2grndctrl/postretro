@@ -312,14 +312,19 @@ where
         // latch closes. Apply rechecks the selected target before the shared
         // executor may debit or produce this tick's immutable shot. A flinch
         // over a release or recover cancels a burst in flight: it fires
-        // nothing further that entry.
+        // nothing further, though a `"*"` or ancestor row, or the flinch
+        // route on a reaction already played out, left the strike this tick.
+        // Cancelled before this tick's request, an attack the row entered
+        // still starts.
+        if outcome.flinched {
+            weapons.cancel_actor(outcome.id);
+        }
         let weapon_aim = outcome.weapon_aim.filter(|_| {
-            outcome.brain.clip_clock.stagger.is_none()
-                && outcome.target.is_some_and(|target| {
-                    !invalidated_entities.contains(&target.entity)
-                        && selected_target_alive(registry, target.entity)
-                        && !host.is_quiescent(registry, target.entity)
-                })
+            outcome.target.is_some_and(|target| {
+                !invalidated_entities.contains(&target.entity)
+                    && selected_target_alive(registry, target.entity)
+                    && !host.is_quiescent(registry, target.entity)
+            })
         });
         let fire = weapons.advance_actor(
             registry,
@@ -399,6 +404,10 @@ where
         // on a stop, a stride resuming or a travel variant changing. That
         // holds for one an earlier slot's contact hit just switched in too,
         // which the next compute reads as foreign and starts staggering on.
+        // Not on an entry tick: there the entry's own switch draws over such
+        // a flinch, a recover's as any other's, and the next compute reads
+        // no foreign switch, so no stagger starts. That absorption is the
+        // same one a clip-timed attack's entry makes.
         let flinch_shows = !outcome.state_changed
             && (outcome.brain.clip_clock.stagger.is_some()
                 || (clip_clock::routes_flinches(&outcome.brain)

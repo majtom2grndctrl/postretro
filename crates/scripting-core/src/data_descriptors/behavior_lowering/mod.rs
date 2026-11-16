@@ -1,9 +1,5 @@
-// Load-time lowering of an authored behavior's attack and stance handles into
-// the runtime behavior descriptor: one route for both runtimes, run on the
-// behavior's JSON before serde, once per entity read (mod load and staged
-// reload).
+// Load-time lowering of a behavior's attack and stance handles into its runtime descriptor.
 // See: context/lib/scripting.md §2 (Attack and stance declarations)
-//      context/lib/entity_model.md §7c
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,10 +10,12 @@ use super::DescriptorError;
 mod declarations;
 mod expand;
 mod floor;
+mod lowering_only;
 mod prune;
 
 use declarations::Catalog;
 pub(crate) use floor::stance_floor_warning_scope;
+use lowering_only::reject_lowering_only_fields;
 use prune::prune_to_fixed_point;
 
 #[cfg(test)]
@@ -28,17 +26,6 @@ mod stance_tests;
 
 /// Path every lowering error and log names a behavior field under.
 const ROOT: &str = "components.behavior";
-
-/// Fields only lowering writes into the runtime descriptor. An authored copy
-/// rejects load wherever it appears.
-const LOWERING_ONLY_FIELDS: &[&str] = &[
-    "pose",
-    "queue",
-    "afterMoment",
-    "atDefault",
-    "releaseAfter",
-    "staggerTo",
-];
 
 /// An attack declaration's authoring fields: lowering expands them into
 /// generated activities (stance lowering) and never writes them into the
@@ -140,9 +127,8 @@ struct Reference {
 }
 
 impl Lowering {
-    /// Record one attack handle's declaration. Two handles of one name in one
-    /// archetype must declare the same attack: a Luau re-`require` makes
-    /// equal copies, while unequal ones would hide which one a name reaches.
+    /// Record one attack handle's declaration, and the stances it begins and
+    /// ends in, by [`declare_into`]'s equal-copies rule.
     fn declare(
         &mut self,
         handle: &Map<String, Value>,
@@ -162,7 +148,7 @@ impl Lowering {
         Ok(name)
     }
 
-    /// Record one stance handle's declaration, by the same equal-copies rule.
+    /// Record one stance handle's declaration, by [`declare_into`]'s rule.
     fn declare_stance(
         &mut self,
         handle: &Map<String, Value>,
@@ -202,17 +188,27 @@ impl Lowering {
                 }
             }
         }
+        // Anything but a name or the handles lowering resolves would otherwise
+        // reach serde, whose type error names no path.
         if let Some(initial) = envelope.get("initial")
-            && is_handle_of(initial, "stance")
+            && !initial.is_string()
         {
             let initial_path = format!("{path}.initial");
+            if !is_handle_of(initial, "stance") {
+                return Err(shape(format!(
+                    "`{initial_path}`: {}; `initial` takes an activity name or a stance handle from `defineStance`",
+                    found(initial)
+                )));
+            }
             self.declare_stance(stance_handle(initial, &initial_path)?, &initial_path)?;
         }
         for (row_path, row) in rows_mut(envelope, path) {
-            let Some(target) = row.get("to") else {
-                continue;
-            };
             let target_path = format!("{row_path}.to");
+            let Some(target) = row.get("to") else {
+                return Err(shape(format!(
+                    "`{target_path}` is missing; a row targets an activity name, a stance handle or an attack handle (in Luau, a misspelled handle reads nil)"
+                )));
+            };
             match handle_kind(target) {
                 Some("attack") => {
                     self.declare(attack_handle(target, &target_path)?, &target_path)?;
@@ -220,7 +216,13 @@ impl Lowering {
                 Some("stance") => {
                     self.declare_stance(stance_handle(target, &target_path)?, &target_path)?;
                 }
-                _ => {}
+                _ if target.is_string() => {}
+                _ => {
+                    return Err(shape(format!(
+                        "`{target_path}`: {}; a row's `to` takes an activity name, a stance handle from `defineStance` or an attack handle from `defineAttack`",
+                        found(target)
+                    )));
+                }
             }
         }
         Ok(())
@@ -313,8 +315,9 @@ fn take_attack_list(
 
 /// Expand this envelope's stances and strikes, then each nested envelope's.
 /// A nested level may leave through an outer row: the enclosing level's
-/// `"*"` rows, its rows out of the composite, or an exit further out.
-/// Returns every attack struck.
+/// `"*"` rows to anywhere but the composite holding it (the engine skips a
+/// `"*"` row into the current activity), its rows out of the composite, or an
+/// exit further out. Returns every attack struck.
 fn expand_envelope(
     envelope: &mut Map<String, Value>,
     path: &str,
@@ -322,7 +325,7 @@ fn expand_envelope(
     ancestor_exit: bool,
 ) -> Result<BTreeSet<String>, DescriptorError> {
     let mut struck = expand::expand_level(envelope, path, catalog, ancestor_exit)?;
-    let star_exit = expand::has_rows(envelope, "*");
+    let star_targets = expand::star_targets(envelope);
     let exits: BTreeSet<String> = expand::authored_activities(envelope)
         .into_iter()
         .filter(|name| expand::has_rows(envelope, name))
@@ -330,6 +333,7 @@ fn expand_envelope(
     let mut result = Ok(());
     for_each_nested_envelope_of(envelope, path, |activity, nested, nested_path| {
         if result.is_ok() {
+            let star_exit = star_targets.iter().any(|target| target != activity);
             let exit = ancestor_exit || star_exit || exits.contains(activity);
             match expand_envelope(nested, nested_path, catalog, exit) {
                 Ok(more) => struck.extend(more),
@@ -411,9 +415,9 @@ fn for_each_nested_envelope_of(
     }
 }
 
-/// Record a handle's declaration under its name. Two handles of one name
-/// must declare the same thing: a Luau re-`require` makes equal copies, while
-/// unequal ones would hide which one a name reaches.
+/// Record a handle's declaration under its name. Two handles of one name in
+/// one archetype must declare the same thing: a Luau re-`require` makes equal
+/// copies, while unequal ones would hide which one a name reaches.
 fn declare_into(
     declarations: &mut BTreeMap<String, Declared>,
     kind: &str,
@@ -437,31 +441,6 @@ fn declare_into(
             );
             Ok(())
         }
-    }
-}
-
-/// Reject an authored lowering-only field anywhere in the behavior.
-fn reject_lowering_only_fields(value: &Value, path: &str) -> Result<(), DescriptorError> {
-    match value {
-        Value::Object(object) => {
-            for (key, child) in object {
-                let child_path = format!("{path}.{key}");
-                if LOWERING_ONLY_FIELDS.contains(&key.as_str()) {
-                    return Err(shape(format!(
-                        "`{child_path}` is written only by load-time lowering; remove it"
-                    )));
-                }
-                reject_lowering_only_fields(child, &child_path)?;
-            }
-            Ok(())
-        }
-        Value::Array(items) => {
-            for (index, child) in items.iter().enumerate() {
-                reject_lowering_only_fields(child, &format!("{path}[{index}]"))?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
     }
 }
 
@@ -498,16 +477,29 @@ fn expect_handle<'a>(
     kind: &str,
     definer: &str,
 ) -> Result<&'a Map<String, Value>, DescriptorError> {
-    let found = match value {
-        Value::Object(object)
-            if object.get("kind").and_then(Value::as_str) == Some(kind)
-                && object
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| !name.is_empty()) =>
+    if let Value::Object(object) = value
+        && object.get("kind").and_then(Value::as_str) == Some(kind)
+    {
+        if object
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty())
         {
             return Ok(object);
         }
+        return Err(shape(format!(
+            "`{path}`: the {kind} handle has an empty name; give `{definer}` a non-empty name"
+        )));
+    }
+    Err(shape(format!(
+        "`{path}`: {}; pass the {kind} handle `{definer}` returned",
+        found(value)
+    )))
+}
+
+/// What stands where a handle was expected, for a rejection.
+fn found(value: &Value) -> String {
+    match value {
         Value::String(text) => format!("`\"{text}\"` is a bare string"),
         Value::Null => "is nil or undefined (in Luau, a misspelled handle reads nil)".to_string(),
         Value::Object(object) => match object.get("kind").and_then(Value::as_str) {
@@ -515,10 +507,7 @@ fn expect_handle<'a>(
             None => "is a plain object, not a handle".to_string(),
         },
         other => format!("is {}", kind_of(other)),
-    };
-    Err(shape(format!(
-        "`{path}`: {found}; pass the {kind} handle `{definer}` returned"
-    )))
+    }
 }
 
 fn missing_handle(path: &str) -> DescriptorError {

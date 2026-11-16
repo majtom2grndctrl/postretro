@@ -163,17 +163,22 @@ enum DeltaApply {
     Rejected,
 }
 
-/// Descriptor-immutable locomotion reference data for a remote enemy. The host
-/// replicates only its changing pose and mesh state; the client reads this from the
-/// shared descriptor table when that remote is materialized.
+/// Descriptor-immutable stride-rate reference data for a remote enemy: every
+/// state its graph rate-scales, not only a walk (the name predates the shared
+/// rule). The host replicates only its changing pose and mesh state; the
+/// client reads this from the shared descriptor table when that remote is
+/// materialized.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RemoteEnemyWalkPlayback {
     /// The archetype's base `moveSpeed`, the uncalibrated reference. The host
     /// divides by the same base value whatever an activity's `speed`.
     pub(crate) move_speed: f32,
-    /// The graph's rate-scaled states (foundation `any_rate_scaled_animation`)
-    /// the mesh declares. Each and its directional variants (`_left`,
-    /// `_right`, `_backward`) scale with presented speed.
+    /// The graph's rate-scaled states (foundation `RateScaledStates`: its
+    /// locomotion state and every state an activity plays under a motion that
+    /// steers, position goals included) whose base or any directional variant
+    /// (`_left`, `_right`, `_backward`) the mesh declares. The host matches
+    /// the same set the same way, so a mesh declaring `run_left` but not `run`
+    /// scales `run_left` on both. Each variant scales with presented speed.
     pub(crate) scaled_states: Vec<RemoteScaledState>,
 }
 
@@ -182,8 +187,9 @@ pub(crate) struct RemoteEnemyWalkPlayback {
 pub(crate) struct RemoteScaledState {
     pub(crate) state: String,
     /// Load-derived speed of each variant's clip, indexed by
-    /// [`TravelVariant::index`]. The runtime state applies its authored
-    /// `travelSpeed` override before this value.
+    /// [`TravelVariant::index`]; `None` for a variant the mesh does not
+    /// declare. The runtime state applies its authored `travelSpeed` override
+    /// before this value.
     pub(crate) derived_travel_speeds: [Option<f32>; 4],
 }
 
@@ -192,13 +198,13 @@ impl RemoteEnemyWalkPlayback {
     #[cfg(test)]
     pub(crate) fn base(
         move_speed: f32,
-        walk_state: impl Into<String>,
+        scaled_state: impl Into<String>,
         derived_travel_speed: Option<f32>,
     ) -> Self {
         Self {
             move_speed,
             scaled_states: vec![RemoteScaledState {
-                state: walk_state.into(),
+                state: scaled_state.into(),
                 derived_travel_speeds: [derived_travel_speed, None, None, None],
             }],
         }
@@ -2683,7 +2689,8 @@ impl ClientReplication {
     }
 
     /// Record (or clear) the immutable descriptor data used to derive a remote
-    /// enemy's walk playback rate. Called by descriptor-aware receive glue, while
+    /// enemy's stride playback rate for every rate-scaled state. Called by
+    /// descriptor-aware receive glue, while
     /// all per-frame registry writes remain in [`Self::sample_into_registry`].
     pub(crate) fn cache_remote_enemy_walk_playback(
         &mut self,

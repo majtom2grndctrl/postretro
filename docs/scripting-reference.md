@@ -56,7 +56,7 @@ the manifest lacks any required field.
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer`, `defineAttackToken`, `defineAttack` and `defineStance` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
+**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer`, `defineAttackToken`, `defineAttack` and `defineStance` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. For `defineDamageType`, `defineAttack` and `defineStance` the first argument must also be an object literal; `defineDefenseLayer` and `defineAttackToken` take the binding when called with no arguments or with an object literal, so a variable passed as the options takes no name from the binding. `defineStore`, `definePresentationTemplate` and `defineImpactEvent` need only the call shape. Otherwise pass the name as the first argument. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -1765,6 +1765,13 @@ path.
   in Luau, pass the name first: `local slam = defineAttack("slam", { ... })`.
   A misspelled Luau global fails load, naming the global and the line, since
   it would otherwise read `nil`.
+- **Undeclared globals raise.** In a mod's Luau scripts, reading a global
+  nothing declared raises at load, naming the global and the line: a
+  misspelled handle or guard builder is reported there. The idiom
+  `X = X or {}` raises too, because it reads `X` first; declare with
+  `local X = {}`, or assign without reading. A misspelled field
+  (`Attacks.slamm`) still reads `nil`: a `nil` in an `attacks` list or
+  `attackTurn` is not caught, though a `nil` row `to` fails load.
 - **Declaration travels with the handle.** A behavior that references a handle
   has the attack; nothing registers it separately. One handle may serve
   several archetypes. Two handles of one name in one behavior load only when
@@ -2210,8 +2217,8 @@ An attack that begins in a stance adds these to its engine fields:
   strike miss.
 - **`release.motion`** is `hold` (the default), `chaseTarget`, `strafe` or
   `reposition`, and `release.speed` multiplies `moveSpeed`. A moving release
-  needs a `recover`, since the default recovery holds the release's state and
-  its stride would play in place. Its stride follows its speed against the
+  needs a `recover` with its own `animation`, since a recover without one
+  holds the release's state and its stride would play in place. Its stride follows its speed against the
   state's `travelSpeed`. `release.at: false` with a fast `chaseTarget` makes a
   charge that hits on reach. A contact attack's `maxRange` is both how far
   out it waits in line and how far it hits, so a charge cannot start farther
@@ -2230,7 +2237,8 @@ its level's motion, except a release given a `motion`.
 - **`{ to: overhead }` takes the pose.** It enters the stance's **rest**, which
   holds the pose and no attack turn. A level's `initial` may be a stance.
 - **Key the rest's rows by the stance's name,** as for any activity. A rest
-  needs a way out: a row of its own, or a `"*"` or outer-level row. Its
+  needs a way out: a row of its own, or a `"*"` or outer-level row to
+  somewhere else (a `"*"` row into the stance itself is skipped). Its
   `breakOn` row does not count, since an enemy nobody shoots would hold the
   pose forever.
 - **`{ to: slam }` strikes.** It is legal only in the rows of the rest of
@@ -2338,7 +2346,8 @@ A tell a remote player cannot see is no tell. The **co-op floor** is 400 ms:
 the 250 ms a client's view of an enemy can trail the host, which is the
 ceiling of its interpolation buffer, plus a 150 ms budget to read the pose and
 react. An omitted `holdMs` starts at it, `[400, 1000]`. An authored `holdMs`
-whose minimum is below it loads with one warning naming the stance. It is a
+whose minimum is below it loads with one warning naming the stance, for a
+stance that at least one attack strikes from. It is a
 default and a warning, not a guarantee.
 
 The floor leaves out network transit, which has no bound at load. On top of

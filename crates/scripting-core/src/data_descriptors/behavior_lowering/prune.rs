@@ -1,20 +1,23 @@
-// The exhaustive `attacks` list's drops: rows to unlisted attacks, then the
-// authored rows of every rest no longer reached, repeated to a fixed point
-// before stance expansion checks what is left.
+// The exhaustive `attacks` list's drops, repeated to a fixed point before stance expansion.
 // See: context/lib/scripting.md §2 (Attack and stance declarations)
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
 use super::declarations::Catalog;
 use super::{expand, for_each_nested_envelope, is_handle_of};
 
+/// The rests each envelope, by path, reaches before anything drops.
+type ReachedRests = BTreeMap<String, BTreeSet<String>>;
+
 /// Drop what an explicit `attacks` list excludes, repeating until nothing
 /// more drops: every row to an unlisted attack, then the authored rows of any
-/// rest no longer reached. Each dropped row logs once, at its authored index,
-/// and its guard is never checked, so a variant reuses its parent's graph with
-/// a shorter list.
+/// rest the drops left unreached. Each dropped row logs once, at its authored
+/// index, and its guard is never checked, so a variant reuses its parent's
+/// graph with a shorter list. Rows keyed by a stance nothing reached even
+/// before the drops are no variant's leftovers: they stay for expansion to
+/// reject, as it does without a list.
 pub(super) fn prune_to_fixed_point(
     root: &mut Map<String, Value>,
     path: &str,
@@ -22,14 +25,31 @@ pub(super) fn prune_to_fixed_point(
     catalog: &Catalog,
     archetype: Option<&str>,
 ) {
+    let mut reached = ReachedRests::new();
+    record_reached_rests(root, path, catalog, &mut reached);
     loop {
         let dropped = drop_rows_to_unlisted_attacks(root, path, listed, archetype)
-            + drop_unreached_rest_rows(root, path, catalog, archetype);
+            + drop_unreached_rest_rows(root, path, catalog, &reached, archetype);
         if dropped == 0 {
             break;
         }
     }
     strip_dropped_rows(root, path);
+}
+
+fn record_reached_rests(
+    envelope: &mut Map<String, Value>,
+    path: &str,
+    catalog: &Catalog,
+    reached: &mut ReachedRests,
+) {
+    reached.insert(
+        path.to_string(),
+        expand::reach(envelope, path, catalog).rests,
+    );
+    for_each_nested_envelope(envelope, path, |nested, nested_path| {
+        record_reached_rests(nested, nested_path, catalog, reached);
+    });
 }
 
 /// Drop every row, in this envelope and those nested in it, whose `to` is an
@@ -76,15 +96,18 @@ fn drop_rows_to_unlisted_attacks(
 }
 
 /// Drop the authored rows of every stance rest this envelope, or one nested
-/// in it, no longer reaches. Returns how many rows dropped.
+/// in it, reached before the drops and no longer. Returns how many rows
+/// dropped.
 fn drop_unreached_rest_rows(
     envelope: &mut Map<String, Value>,
     path: &str,
     catalog: &Catalog,
+    reached: &ReachedRests,
     archetype: Option<&str>,
 ) -> usize {
     let reach = expand::reach(envelope, path, catalog);
     let authored = expand::authored_activities(envelope);
+    let was_reached = reached.get(path);
     let mut dropped = 0;
     if let Some(transitions) = envelope
         .get_mut("transitions")
@@ -93,7 +116,9 @@ fn drop_unreached_rest_rows(
         let unreached: Vec<String> = transitions
             .keys()
             .filter(|source| {
-                expand::is_rest_key(source, &authored, catalog) && !reach.rests.contains(*source)
+                expand::is_rest_key(source, &authored, catalog)
+                    && !reach.rests.contains(*source)
+                    && was_reached.is_some_and(|rests| rests.contains(*source))
             })
             .cloned()
             .collect();
@@ -114,7 +139,7 @@ fn drop_unreached_rest_rows(
         }
     }
     for_each_nested_envelope(envelope, path, |nested, nested_path| {
-        dropped += drop_unreached_rest_rows(nested, nested_path, catalog, archetype);
+        dropped += drop_unreached_rest_rows(nested, nested_path, catalog, reached, archetype);
     });
     dropped
 }

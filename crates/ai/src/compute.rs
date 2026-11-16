@@ -228,6 +228,10 @@ pub(super) fn evaluate(
             id: snap.id,
         };
         clip_clock::begin_tick(&mut brain, &clip_source, tick_dt);
+        // Read before transitions: a `"*"` or ancestor row, or the flinch
+        // route itself on a reaction already played out, can leave the
+        // flinched activity this tick and clear its stagger.
+        let flinched = brain.clip_clock.stagger.is_some();
         let mut animation_done = clip_clock::animation_done(&brain.clip_clock, &clip_source);
         // A path seated before this tick's rows run (a reseat) evaluates them
         // against the clip it is about to restart, not its predecessor's.
@@ -424,10 +428,12 @@ pub(super) fn evaluate(
                 .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
             // The pass also names the attack a standing rest's first open
             // queued row waits on; arbitration turns it into this tick's
-            // request.
+            // request. A hold's release row reads its turn against the target
+            // selected now, as the turn facts do.
+            let selected = target.map(|target| target.entity);
             let pass = programs
                 .with_entry_scope(snap.id, |bound, scope| {
-                    select_transitions(bound, scope, &mut brain)
+                    select_transitions(bound, scope, &mut brain, selected)
                 })
                 .unwrap_or_default();
             let transitioned = pass.transitioned;
@@ -685,6 +691,7 @@ pub(super) fn evaluate(
             engaged_ring,
             queued_attack,
             fresh_unmarked_grant: None,
+            flinched,
             brain,
         });
     }

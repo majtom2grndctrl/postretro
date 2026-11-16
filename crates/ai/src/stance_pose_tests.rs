@@ -999,6 +999,111 @@ fn a_hold_with_no_target_left_returns_to_its_rest_unbroken() {
     assert_eq!(now_roll, roll);
 }
 
+/// An enemy just entered into its hold, holding its turn on `near`, whose
+/// fixed `holdMs: 0` release is due on every evaluation from the next. The
+/// rest waits 48 ms first, so any hog has taken its turn by then.
+fn hold_due_now(reg: &mut EntityRegistry, runtime: &mut AiRuntime, near: EntityId) -> EntityId {
+    let graph = stance_graph(vec![edge(HOLD, after_ms(48.0))], [0.0, 0.0], vec![]);
+    let enemy = spawn_posed(reg, &graph, REST);
+    set_draws(reg, runtime, &[], enemy, SLAM, &[(0, 1)]);
+    step_until(reg, runtime, enemy, HOLD, 12);
+    assert_eq!(enemy_acquired_target(reg, enemy), Some(near));
+    assert_eq!(held(reg, enemy), vec![SLAM], "fixture: granted on entry");
+    assert!(
+        brain(reg, enemy).hold_release_due(0),
+        "fixture: the release is due"
+    );
+    enemy
+}
+
+// Regression (P16, P33(b)): the release row read the hold's turn whatever its
+// target, so a release due on the tick the target switched to one with no
+// room was entered on the old target's turn, which arbitration ended only
+// later, and whiffed. It now waits for the turn on the new target: the hold
+// returns to its rest on the next evaluation and the release is never entered.
+#[test]
+fn a_release_due_on_a_switch_to_a_target_with_no_room_is_never_entered() {
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    set_limits(&mut runtime, &[1]);
+    let near = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let far = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 6.0));
+    let hog = spawn_enemy(
+        &mut reg,
+        Vec3::new(0.0, 0.0, 6.3),
+        authored_brain(&hog_graph(), "hog"),
+        500.0,
+    );
+    set_draws(&reg, &mut runtime, &[], hog, SLAM, &[(0, 1)]);
+    let enemy = hold_due_now(&mut reg, &mut runtime, near);
+    assert_eq!(enemy_acquired_target(&reg, hog), Some(far));
+    assert_eq!(held(&reg, hog), vec![SLAM], "the hog takes the far room");
+
+    reg.despawn(near).unwrap();
+    step(&mut reg, &mut runtime);
+    assert_eq!(enemy_acquired_target(&reg, enemy), Some(far));
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        HOLD,
+        "the switch tick waits for the turn on the new target"
+    );
+    step(&mut reg, &mut runtime);
+    assert_eq!(enemy_state_name(&reg, enemy), REST, "no room on it");
+    for _ in 0..8 {
+        step(&mut reg, &mut runtime);
+        assert_ne!(enemy_state_name(&reg, enemy), RELEASE);
+    }
+}
+
+// Regression (P16, P33(b)): a release due on the tick the last target is lost
+// was entered on the lost target's turn. The hold returns to its rest on the
+// next evaluation and the release is never entered.
+#[test]
+fn a_release_due_on_the_tick_its_target_is_lost_is_never_entered() {
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let enemy = hold_due_now(&mut reg, &mut runtime, pawn);
+
+    reg.despawn(pawn).unwrap();
+    step(&mut reg, &mut runtime);
+    assert_eq!(enemy_state_name(&reg, enemy), HOLD, "no target, no turn");
+    step(&mut reg, &mut runtime);
+    assert_eq!(enemy_state_name(&reg, enemy), REST);
+    for _ in 0..8 {
+        step(&mut reg, &mut runtime);
+        assert_ne!(enemy_state_name(&reg, enemy), RELEASE);
+    }
+}
+
+// P33(a): a release due on the switch tick waits one evaluation for the mark's
+// re-request, granted against a new target with room that same tick, and is
+// then entered on the new turn; the hold never returns to its rest.
+#[test]
+fn a_release_due_on_a_switch_to_a_target_with_room_is_entered_on_the_new_turn() {
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let near = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
+    let far = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 6.0));
+    let enemy = hold_due_now(&mut reg, &mut runtime, near);
+
+    reg.despawn(near).unwrap();
+    step(&mut reg, &mut runtime);
+    assert_eq!(enemy_acquired_target(&reg, enemy), Some(far));
+    assert_eq!(enemy_state_name(&reg, enemy), HOLD);
+    assert_eq!(
+        held(&reg, enemy),
+        vec![SLAM],
+        "re-granted on the new target"
+    );
+    step(&mut reg, &mut runtime);
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        RELEASE,
+        "the tell carries on against the new target"
+    );
+}
+
 // P6 / P23: a strike at the root level beside a chase, under no engaging
 // ancestor, keeps its target and committed aim through a co-op re-rank inside
 // the switch margin and a tick out of sight; its turn holds and it releases

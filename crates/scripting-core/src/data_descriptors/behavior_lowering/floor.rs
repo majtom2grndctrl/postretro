@@ -1,5 +1,4 @@
-// The co-op floor warning: a stance whose authored hold can release below the
-// floor warns once per mod load, however many levels and archetypes lower it.
+// The co-op floor warning, deduped per stance across one mod load.
 // See: context/lib/scripting.md §2 (Attack and stance declarations)
 
 use std::cell::RefCell;
@@ -7,9 +6,13 @@ use std::collections::BTreeSet;
 
 use postretro_foundation::stance_defaults::STANCE_HOLD_FLOOR_MS;
 
+/// A warned stance: its name and the bits of its hold minimum, so two
+/// different stances sharing a name in one mod each warn.
+type WarnedStance = (String, u64);
+
 thread_local! {
     /// Stances already warned in the open scope; `None` outside one.
-    static WARNED: RefCell<Option<BTreeSet<String>>> = const { RefCell::new(None) };
+    static WARNED: RefCell<Option<BTreeSet<WarnedStance>>> = const { RefCell::new(None) };
 }
 
 /// One mod load's dedupe of floor warnings. The outermost scope on a thread
@@ -42,10 +45,11 @@ impl Drop for FloorWarningScope {
 }
 
 /// Warn, once per open scope, that `stance`'s hold can release at `min_ms`,
-/// below the co-op floor.
+/// below the co-op floor. One stance used by many archetypes warns once;
+/// keying by name alone would let one stance hide another of its name.
 pub(super) fn warn_below_floor(stance: &str, min_ms: f64) {
     let first = WARNED.with(|warned| match warned.borrow_mut().as_mut() {
-        Some(set) => set.insert(stance.to_string()),
+        Some(set) => set.insert((stance.to_string(), min_ms.to_bits())),
         None => true,
     });
     if first {

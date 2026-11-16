@@ -1,8 +1,5 @@
-// Stance expansion: each level's reach (the rests its rows and `initial` take,
-// and the strikes rows out of them make), and the plain activities and rows
-// lowering generates for them, row order included.
+// Stance expansion: each level's reached rests and strikes, lowered to activities and rows.
 // See: context/lib/entity_model.md §7c (Stances and attacks)
-//      context/lib/scripting.md §2 (Attack and stance declarations)
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -130,8 +127,9 @@ pub(super) fn expand_level(
     }
     reject_unreached_rest_rows(envelope, path, &authored, &reach, catalog)?;
     reject_names_of_generated(envelope, path, &generated, &reach)?;
+    reject_unknown_sources(envelope, path, &authored, catalog)?;
 
-    let star_exit = has_rows(envelope, "*");
+    let star_targets = star_targets(envelope);
     let mut activities = Map::new();
     let mut rows = Map::new();
     let mut struck = BTreeSet::new();
@@ -139,9 +137,11 @@ pub(super) fn expand_level(
         let stance = &catalog.stances[rest];
         let break_row = break_row(stance, rest, path, &authored, &generated)?;
         let authored_rows = take_rows(envelope, rest);
+        // The engine skips a `"*"` row into the pose the enemy is in.
+        let star_exit = star_targets.iter().any(|target| target != rest);
         if authored_rows.is_empty() && !star_exit && !ancestor_exit {
             return Err(shape(format!(
-                "`{path}`: stance \"{rest}\"'s rest has no way out; give it a row of its own (`transitions.{rest}`), or a `\"*\"` or outer-level row (its `breakOn` row does not count, since an enemy nobody shoots would hold the pose forever)"
+                "`{path}`: stance \"{rest}\"'s rest has no way out; give it a row of its own (`transitions.{rest}`), or a `\"*\"` or outer-level row to somewhere else (a `\"*\"` row into the stance itself is skipped while the enemy holds it, and its `breakOn` row does not count, since an enemy nobody shoots would hold the pose forever)"
             )));
         }
         activities.insert(rest.clone(), rest_activity(stance, rest));
@@ -178,8 +178,9 @@ pub(super) fn expand_level(
     Ok(struck)
 }
 
-/// Without an `attacks` list nothing drops, so rows keyed by a stance no row
-/// or `initial` reaches are dead: they reject load.
+/// Rows keyed by a stance no row or `initial` ever reaches are dead: they
+/// reject load. Under an `attacks` list, pruning has already dropped the rows
+/// of rests only its drops left unreached, and kept these for this check.
 fn reject_unreached_rest_rows(
     envelope: &Map<String, Value>,
     path: &str,
@@ -277,6 +278,26 @@ fn reject_names_of_generated(
             {
                 return Err(error);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Rows key an authored activity, a stance's rest or `"*"`. Any other key
+/// would leave its rows' handle targets unlowered for serde to reject with no
+/// path.
+fn reject_unknown_sources(
+    envelope: &Map<String, Value>,
+    path: &str,
+    authored: &BTreeSet<String>,
+    catalog: &Catalog,
+) -> Result<(), DescriptorError> {
+    let transitions = envelope.get("transitions").and_then(Value::as_object);
+    for source in transitions.into_iter().flat_map(Map::keys) {
+        if source != "*" && !authored.contains(source) && !is_rest_key(source, authored, catalog) {
+            return Err(shape(format!(
+                "`{path}.transitions.{source}` does not name a declared activity or stance at this level; key rows by an activity, a stance's name or `\"*\"`"
+            )));
         }
     }
     Ok(())
@@ -442,6 +463,21 @@ fn insert_all(envelope: &mut Map<String, Value>, field: &str, entries: Map<Strin
     if let Some(map) = slot.as_object_mut() {
         map.extend(entries);
     }
+}
+
+/// The activity names this level's `"*"` rows target, stances by name.
+pub(super) fn star_targets(envelope: &Map<String, Value>) -> BTreeSet<String> {
+    let rows = envelope
+        .get("transitions")
+        .and_then(|transitions| transitions.get("*"))
+        .and_then(Value::as_array);
+    rows.into_iter()
+        .flatten()
+        .filter_map(|row| match row.get("to") {
+            Some(Value::String(name)) => Some(name.clone()),
+            target => stance_target(target),
+        })
+        .collect()
 }
 
 /// Whether this level has a non-empty row list keyed by `source`.

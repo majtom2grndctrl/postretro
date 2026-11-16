@@ -220,6 +220,10 @@ pub(crate) struct EnemyOutcome {
     /// An unmarked turn granted this tick, by attack index. Released in apply
     /// unless that attack starts this tick.
     fresh_unmarked_grant: Option<u16>,
+    /// A flinch played over an activity routing flinches (`staggerTo`) as
+    /// this tick began, even one a transition this tick then left: apply
+    /// cancels the burst in flight.
+    flinched: bool,
 }
 
 /// An activity the brain entered this tick: its authored `on_enter` address,

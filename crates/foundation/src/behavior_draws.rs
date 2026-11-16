@@ -1,6 +1,6 @@
 // Host-only enemy behavior draws: the per-instance seed and the counter-based
-// streams the `activityRoll` fact (and, later, a hold's hidden release time)
-// draw from.
+// streams the `activityRoll` fact and a stance hold's hidden release time draw
+// from, and the mapping of a release draw onto its hold's `releaseAfter` range.
 // See: context/lib/networking.md (engine randomness, second carved exception)
 //      context/lib/entity_model.md §7c (Stances and attacks)
 
@@ -11,8 +11,13 @@
 // placement. It lives here, below `entities`, because the brain component draws
 // on entry and `entities` cannot reach `postretro-sim`'s `SplitMix64`; the mix
 // below is the same SplitMix64 finalizer and increment.
+//
+// The roll and the release time draw from separate streams so that a guard
+// reading `activityRoll` can never predict when a hold releases.
 
 use serde::{Deserialize, Serialize};
+
+use crate::data_descriptors::BehaviorGraphEnvelope;
 
 /// SplitMix64's golden-ratio increment.
 const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -33,9 +38,9 @@ const fn splitmix64_finalize(mut z: u64) -> u64 {
 pub enum BehaviorDrawStream {
     /// `@brain.activityRoll`, one draw per activity-level entry.
     ActivityRoll = 0,
-    /// A stance hold's hidden release time, one draw per hold entry. Reserved
-    /// so the roll stream is never reused for it: guards must not be able to
-    /// predict a release from the roll they read.
+    /// A stance hold's hidden release time, one draw per hold entry, a
+    /// pose-mate's included. Its own stream, never the roll's: guards must
+    /// not be able to predict a release from the roll they read.
     HoldRelease = 1,
 }
 
@@ -91,17 +96,23 @@ pub enum BehaviorDrawSalt {
 }
 
 impl BehaviorDrawSalt {
-    /// One 64-bit word per salt. The top two bits keep the three kinds apart.
+    /// One 64-bit word per salt. The top two bits keep the three kinds apart,
+    /// so a spawner ordinal keeps its low 30 bits (below them); a level holds
+    /// far fewer entities than that.
     const fn word(self) -> u64 {
         match self {
             BehaviorDrawSalt::Placement(ordinal) => ordinal as u64,
             BehaviorDrawSalt::Spawned { spawner, count } => {
-                (1 << 62) | ((spawner as u64) << 32) | count as u64
+                (1 << 62) | (((spawner & SPAWNER_ORDINAL_MASK) as u64) << 32) | count as u64
             }
             BehaviorDrawSalt::Entity(index) => (2 << 62) | index as u64,
         }
     }
 }
+
+/// The spawner-ordinal bits a [`BehaviorDrawSalt::Spawned`] word keeps, below
+/// its kind tag.
+const SPAWNER_ORDINAL_MASK: u32 = (1 << 30) - 1;
 
 /// The behavior draw seed for one enemy: its descriptor name mixed with its
 /// placement salt through SplitMix64. Two same-descriptor enemies differ by
@@ -129,6 +140,27 @@ pub fn behavior_draw_unit(seed: u64, stream: BehaviorDrawStream, counter: u64) -
     // The top 24 bits fill an f32 mantissa exactly, so the result never
     // rounds up to 1.0.
     (bits >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// The `releaseAfter` range of the row releasing `name` in `envelope`, if the
+/// activity is a stance hold. Validation allows at most one per activity.
+pub fn hold_release_range(envelope: &BehaviorGraphEnvelope, name: &str) -> Option<[f32; 2]> {
+    envelope
+        .transitions
+        .get(name)?
+        .iter()
+        .find_map(|row| row.release_after)
+}
+
+/// A hold's release time in `[min, max]` from a [`BehaviorDrawStream::HoldRelease`]
+/// draw `unit` in `[0, 1)`, mapped uniformly; `[x, x]`, or an inverted range,
+/// is `min`.
+pub fn release_draw([min, max]: [f32; 2], unit: f32) -> f32 {
+    if max <= min {
+        min
+    } else {
+        min + unit * (max - min)
+    }
 }
 
 #[cfg(test)]
@@ -201,5 +233,67 @@ mod tests {
             ),
             "the descriptor name is part of the seed"
         );
+    }
+
+    // The kind tag stays apart from a spawner ordinal too wide for its field:
+    // the word keeps the ordinal's low 30 bits.
+    #[test]
+    fn a_wide_spawner_ordinal_never_reaches_the_kind_tag() {
+        for spawner in [0, 7, SPAWNER_ORDINAL_MASK, 1 << 30, u32::MAX] {
+            let word = BehaviorDrawSalt::Spawned { spawner, count: 3 }.word();
+            assert_eq!(word >> 62, 1, "spawner {spawner} keeps the spawned tag");
+            assert_eq!(
+                word & u64::from(u32::MAX),
+                3,
+                "the count fills the low word"
+            );
+        }
+        assert_eq!(
+            BehaviorDrawSalt::Spawned {
+                spawner: 7,
+                count: 0
+            }
+            .word(),
+            (1 << 62) | (7 << 32),
+            "an ordinal in range is unchanged"
+        );
+    }
+
+    // A release draw maps the unit interval onto its range; a point range is
+    // its one value.
+    #[test]
+    fn a_release_draw_spans_its_range() {
+        assert_eq!(release_draw([500.0, 1200.0], 0.0), 500.0);
+        assert_eq!(release_draw([500.0, 1200.0], 0.5), 850.0);
+        assert!(release_draw([500.0, 1200.0], 0.999_999) < 1200.0);
+        assert_eq!(release_draw([400.0, 400.0], 0.7), 400.0);
+        assert_eq!(release_draw([900.0, 400.0], 0.7), 900.0);
+    }
+
+    // Only the row carrying `releaseAfter` names a hold's range.
+    #[test]
+    fn a_hold_release_range_comes_from_its_release_row() {
+        let envelope: BehaviorGraphEnvelope = serde_json::from_value(serde_json::json!({
+            "initial": "overhead",
+            "activities": {
+                "overhead": { "animation": "idle", "motion": "hold", "pose": "overhead" },
+                "slam_overhead": { "animation": "idle", "motion": "hold", "pose": "overhead" },
+                "slam_release": { "animation": "attack", "motion": "hold" }
+            },
+            "transitions": {
+                "overhead": [{ "to": "slam_overhead" }],
+                "slam_overhead": [
+                    { "to": "overhead" },
+                    { "to": "slam_release", "releaseAfter": [500.0, 1200.0] }
+                ]
+            }
+        }))
+        .expect("the lowered envelope deserializes");
+        assert_eq!(
+            hold_release_range(&envelope, "slam_overhead"),
+            Some([500.0, 1200.0])
+        );
+        assert_eq!(hold_release_range(&envelope, "overhead"), None);
+        assert_eq!(hold_release_range(&envelope, "slam_release"), None);
     }
 }

@@ -41,7 +41,8 @@ pub(super) enum Moment {
     /// No clip-timed attack on the path, or one its drawn clip cannot time
     /// (the clip did not resolve or lacks the event) while this entry's moment
     /// is unspent. The untimed rule: the attack may propose from its first
-    /// dwell tick.
+    /// dwell tick. A stance release whose moment an earlier clip of this
+    /// entry timed reads [`Moment::Pending`] instead.
     Untimed,
     /// The moment falls on this tick and its once-per-entry latch was open.
     Reached,
@@ -74,7 +75,9 @@ impl Moment {
 ///
 /// A flinch already playing over a release or recover advances first, at the
 /// rate presentation drew it; a foreign switch then starts one, or moves a
-/// playing one's end to the new reaction's (see [`stagger`]).
+/// playing one's end to the new reaction's (see [`stagger`]). A reaction
+/// state is not one the graph rate-scales (no activity steers on it), so it
+/// draws at 1 and the flinch's time, the cap included, runs in game time.
 pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, tick_dt: f32) {
     let mesh = source
         .registry
@@ -255,6 +258,18 @@ pub(super) fn settle(
     let gated = gate == Some(owner);
     let clock = &mut brain.clip_clock;
     let Some((event, facts)) = timing else {
+        if gated && clock.moment_timed {
+            // A release's moment an earlier clip of this entry timed (or one
+            // resolved on its entry tick) stays pending on a later clip that
+            // cannot time it, such as a travel variant's lacking the event:
+            // it never fires mid-swing as without `at`. Unreached within one
+            // summed pass of its clip, it whiffs.
+            if clock.moment_open && played_one_pass(clock) {
+                clock.moment_open = false;
+            }
+            clock.release_resolved = !clock.moment_open;
+            return Moment::Pending;
+        }
         // A clip that cannot time the moment fires as without `at`, unless
         // this entry already spent a moment a clip timed.
         let moment = if clock.moment_timed && !clock.moment_open {

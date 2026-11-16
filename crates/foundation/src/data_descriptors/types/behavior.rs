@@ -2,7 +2,9 @@
 // See: context/lib/scripting.md §11 (typed command buffer) ·
 //      context/lib/entity_model.md §7c (enemy brain ownership).
 
+use std::borrow::Cow;
 use std::fmt;
+use std::sync::{Arc, OnceLock, Weak};
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -46,6 +48,22 @@ impl MotionVerb {
             self,
             MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol
         )
+    }
+
+    /// Whether this motion steers the body along a path: every verb but
+    /// `hold` and `freeze`, which plant it. A state an activity plays under a
+    /// steering motion is rate-scaled ([`any_rate_scaled_animation`]).
+    /// Exhaustive so that a new verb decides here.
+    pub const fn steers(self) -> bool {
+        match self {
+            MotionVerb::ChaseTarget
+            | MotionVerb::MoveToAnchor
+            | MotionVerb::MoveToLastKnown
+            | MotionVerb::Patrol
+            | MotionVerb::Strafe
+            | MotionVerb::Reposition => true,
+            MotionVerb::Hold | MotionVerb::Freeze => false,
+        }
     }
 }
 
@@ -286,13 +304,17 @@ pub fn locomotion_animation(graph: &BehaviorGraphDescriptor) -> Option<&str> {
 
 /// Visit the animation states a graph rate-scales by steered travel speed:
 /// its [`locomotion_animation`], then every animation an activity at any depth
-/// plays under its own `chaseTarget`, `strafe` or `reposition` motion, with
-/// or without an action, so a moving attack strides at its speed. The host
-/// tick and remote presentation both derive the set from the descriptor
-/// graph, so they agree on which states scale without anything on the wire.
+/// plays under its own steering motion ([`MotionVerb::steers`]: every verb but
+/// `hold` and `freeze`), position goals included, with or without an action,
+/// so a patrol's walk and a moving attack's stride both match their speed. A
+/// motion a composite's `move` selector supplies adds nothing beyond the
+/// locomotion state. The host tick and remote presentation both derive the set
+/// from the descriptor graph, through [`RateScaledStates::of`], so they agree
+/// on which states scale without anything on the wire.
 ///
 /// Stops at the first animation `visit` accepts and reports whether one did.
-/// A state may be visited more than once. Allocates nothing.
+/// A state may be visited more than once. Allocates nothing, but walks the
+/// whole graph: per-tick callers read a [`RateScaledStates`] derived once.
 pub fn any_rate_scaled_animation(
     graph: &BehaviorGraphDescriptor,
     mut visit: impl FnMut(&str) -> bool,
@@ -308,10 +330,7 @@ fn envelope_any_rate_scaled_animation(
     visit: &mut dyn FnMut(&str) -> bool,
 ) -> bool {
     envelope.activities.values().any(|activity| {
-        let steers = matches!(
-            activity.motion,
-            Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
-        );
+        let steers = activity.motion.is_some_and(MotionVerb::steers);
         if steers && activity.animation.as_deref().is_some_and(&mut *visit) {
             return true;
         }
@@ -322,6 +341,86 @@ fn envelope_any_rate_scaled_animation(
             BehaviorLayerDescriptor::Selector(_) => false,
         })
     })
+}
+
+/// A graph's rate-scaled animation states ([`any_rate_scaled_animation`]),
+/// collected once, each named once, in visit order. The one set the host's
+/// playback-rate pass and a remote client's walk reference both read, so a
+/// per-tick check walks a handful of names instead of the graph.
+///
+/// Matching a presented state against it, directional variants included, is
+/// the reader's: `entities`' `TravelVariant::of_state`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateScaledStates(Arc<[Box<str>]>);
+
+impl RateScaledStates {
+    /// Collect `graph`'s rate-scaled states. Walks the graph and allocates:
+    /// call it when a graph is attached or materialized, not per tick.
+    pub fn of(graph: &BehaviorGraphDescriptor) -> Self {
+        let mut states: Vec<Box<str>> = Vec::new();
+        any_rate_scaled_animation(graph, |state| {
+            if !states.iter().any(|known| &**known == state) {
+                states.push(state.into());
+            }
+            false
+        });
+        Self(states.into())
+    }
+
+    /// The states, in visit order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|state| &**state)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// A brain's [`RateScaledStates`], derived from its graph on first read and
+/// kept for that graph, so the per-tick playback-rate pass reads a borrowed
+/// set. Derived data: it is never serialized (a restored brain derives it on
+/// its first read) and equality ignores it, since it is a pure function of the
+/// graph that equality already compares. Clones share the derived set.
+#[derive(Debug, Clone, Default)]
+pub struct RateScaledStatesMemo {
+    /// The graph the states were derived from, held weakly: the allocation
+    /// stays reserved while this lives, so a pointer compare never mistakes a
+    /// new graph at a reused address for the one derived.
+    derived: OnceLock<(Weak<BehaviorGraphDescriptor>, RateScaledStates)>,
+}
+
+impl RateScaledStatesMemo {
+    /// A memo already holding `graph`'s states.
+    pub fn of(graph: &Arc<BehaviorGraphDescriptor>) -> Self {
+        let memo = Self::default();
+        let _ = memo
+            .derived
+            .set((Arc::downgrade(graph), RateScaledStates::of(graph)));
+        memo
+    }
+
+    /// `graph`'s rate-scaled states, derived on the first read and borrowed
+    /// after. A memo derived for another graph (a brain whose `graph` was
+    /// swapped in place) derives anew on every read rather than serve stale
+    /// states; production replaces the whole brain instead.
+    pub fn get(&self, graph: &Arc<BehaviorGraphDescriptor>) -> Cow<'_, RateScaledStates> {
+        let (held, states) = self
+            .derived
+            .get_or_init(|| (Arc::downgrade(graph), RateScaledStates::of(graph)));
+        if std::ptr::eq(held.as_ptr(), Arc::as_ptr(graph)) {
+            Cow::Borrowed(states)
+        } else {
+            Cow::Owned(RateScaledStates::of(graph))
+        }
+    }
+}
+
+impl PartialEq for RateScaledStatesMemo {
+    /// Always equal: the memo is derived from the graph its owner compares.
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
 }
 
 /// Resolve the animation authored on the graph's initial activity.

@@ -698,7 +698,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .doc("One selector row. In a `move` layer it supplies `when` and `motion`; in an `offense` layer it supplies `when` and `action`.")
         .field("when?", "IrNode", "Optional boolean guard. `action:` leaf sugar lowers to one unconditional offense row; authored selector rows supply a guard.")
         .field("motion?", "MotionVerb", "Motion selected when this row wins in a `move` layer.")
-        .field("action?", "ActionVerb", "Root-attack action selected when this row wins in an `offense` layer.")
+        .field("action?", "ActionVerb", "Action selected when this row wins in an `offense` layer: fires the attack of the attack handle it carries.")
         .finish();
     registry
         .register_type("BehaviorActivities")

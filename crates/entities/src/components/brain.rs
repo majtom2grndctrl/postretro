@@ -17,7 +17,7 @@
 //      component, no script surface)
 //      context/lib/scripting.md §1 (scripts declare, Rust executes)
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 use glam::Vec3;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -27,7 +27,10 @@ use crate::data_descriptors::{
     BehaviorLayerDescriptor, MAX_BEHAVIOR_NESTING_DEPTH,
 };
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
-use postretro_foundation::{BRAIN_NO_TARGET_DISTANCE, BehaviorDrawStream, BehaviorDraws};
+use postretro_foundation::{
+    BRAIN_NO_TARGET_DISTANCE, BehaviorDrawStream, BehaviorDraws, RateScaledStates,
+    RateScaledStatesMemo, hold_release_range, release_draw,
+};
 
 use super::mesh::MeshComponent;
 
@@ -317,6 +320,12 @@ pub struct BrainComponent {
     /// deserialized brain gets its own allocation, which is why `sync`'s
     /// pointer test correctly rebinds after a load.
     pub graph: Arc<BehaviorGraphDescriptor>,
+    /// [`Self::graph`]'s rate-scaled animation states, derived once for the
+    /// per-tick playback-rate pass ([`Self::rate_scaled_states`]). Derived
+    /// data: never serialized, so a restored brain derives it on first read,
+    /// and ignored by equality.
+    #[serde(skip)]
+    rate_scaled_states: RateScaledStatesMemo,
     /// One resolved activity index for every active envelope from root to the
     /// current nested activity. The descriptor validator caps nesting, so this
     /// is a fixed array rather than a per-tick-growing `Vec`.
@@ -387,6 +396,7 @@ impl BrainComponent {
     /// Materialize a fresh brain from an authored `components.behavior` graph.
     /// Seeded in the graph's `initial` state with every timer at rest.
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
+        let graph = Arc::new(graph.clone());
         let mut brain = Self {
             time_since_damage_ms: default_time_since_damage_ms(),
             damage_bearing: 0.0,
@@ -412,7 +422,8 @@ impl BrainComponent {
             retaliation_acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
-            graph: Arc::new(graph.clone()),
+            rate_scaled_states: RateScaledStatesMemo::of(&graph),
+            graph,
             active_activity_path: default_active_activity_path(),
             active_activity_path_len: 0,
             time_in_activity_ms: default_activity_timers(),
@@ -427,6 +438,14 @@ impl BrainComponent {
         };
         brain.reseat_to_initial_without_event();
         brain
+    }
+
+    /// The animation states [`Self::graph`] rate-scales by steered travel
+    /// speed (foundation `any_rate_scaled_animation`), the set a remote client
+    /// derives from the same descriptor. Lent from a set derived once per
+    /// graph, so a per-tick read walks a handful of names, not the graph.
+    pub fn rate_scaled_states(&self) -> Cow<'_, RateScaledStates> {
+        self.rate_scaled_states.get(&self.graph)
     }
 
     /// The root activity name. Kept as the single-name convenience for legacy
@@ -1002,25 +1021,6 @@ const fn default_activity_damage() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
 
 const fn default_hold_release_ms() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
     [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
-}
-
-/// The `releaseAfter` range of the row releasing `name` in `envelope`, if the
-/// activity is a stance hold. Validation allows at most one per activity.
-fn hold_release_range(envelope: &BehaviorGraphEnvelope, name: &str) -> Option<[f32; 2]> {
-    envelope
-        .transitions
-        .get(name)?
-        .iter()
-        .find_map(|row| row.release_after)
-}
-
-/// A uniform draw in `[min, max]` from `unit` in `[0, 1)`; `[x, x]` is `x`.
-fn release_draw([min, max]: [f32; 2], unit: f32) -> f32 {
-    if max <= min {
-        min
-    } else {
-        min + unit * (max - min)
-    }
 }
 
 /// The index of `name` in the root envelope's activity map, or `None` when the
@@ -1896,6 +1896,54 @@ mod tests {
         assert_eq!(back, brain);
         assert_eq!(back.state_name(), Some("charge"));
         assert_eq!(*back.graph, authored_graph());
+    }
+
+    // The rate-scaled set is derived data: a fresh brain holds its graph's,
+    // a restored brain derives the same on its first read, and a graph
+    // swapped in place is never served the old graph's states.
+    #[test]
+    fn a_restored_brain_reads_the_same_rate_scaled_states_as_a_fresh_one() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "investigate": { "animation": "walk", "motion": "moveToLastKnown" },
+                "engage": { "animation": "run", "motion": "chaseTarget" }
+            },
+            "transitions": { "idle": [] }
+        }))
+        .expect("graph deserializes");
+        let names = |brain: &BrainComponent| {
+            let mut names: Vec<String> = brain
+                .rate_scaled_states()
+                .iter()
+                .map(str::to_string)
+                .collect();
+            names.sort();
+            names
+        };
+        let brain = BrainComponent::from_graph(&graph);
+        assert_eq!(names(&brain), ["run", "walk"]);
+
+        let json = serde_json::to_value(&brain).expect("brain serializes");
+        assert!(
+            json.get("rate_scaled_states").is_none(),
+            "derived data stays out of the save"
+        );
+        let restored: BrainComponent = serde_json::from_value(json).expect("brain restores");
+        assert_eq!(names(&restored), ["run", "walk"]);
+        assert_eq!(restored, brain);
+
+        let mut swapped = brain.clone();
+        let mut replacement = graph.clone();
+        replacement
+            .envelope
+            .activities
+            .remove("investigate")
+            .expect("declared");
+        swapped.graph = Arc::new(replacement);
+        assert_eq!(names(&swapped), ["run"]);
     }
 
     #[test]

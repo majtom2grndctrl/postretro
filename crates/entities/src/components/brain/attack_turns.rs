@@ -108,6 +108,9 @@ pub struct HeldTurn {
     /// Granted with no mark on the path: holds until the attack's cooldown
     /// ends. A marked grant holds while a mark for the attack is on the path.
     pub until_cooldown: bool,
+    /// The AI tick the turn was granted on. A rest's queued row passes on a
+    /// turn only on the evaluation after its grant.
+    pub granted_tick: u64,
 }
 
 /// The one turn an enemy asked for on its latest tick, while ungranted.

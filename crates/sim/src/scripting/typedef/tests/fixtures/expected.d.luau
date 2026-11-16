@@ -833,7 +833,7 @@ export type BehaviorSelectorRow = {
   when: RuntimeValue?,
   --- Motion selected when this row wins in a `move` layer.
   motion: MotionVerb?,
-  --- Root-attack action selected when this row wins in an `offense` layer.
+  --- Action selected when this row wins in an `offense` layer: fires the attack of the attack handle it carries.
   action: ActionVerb?,
 }
 
@@ -3256,10 +3256,11 @@ declare function defineAttackToken(name: string, budget: AttackTokenBudget?): At
 
 --- A stance's options: the pose an enemy rests in before the attacks that
 --- begin in it. `animation` names one of the archetype's animation states;
---- `sound` is a sound key played once per pose entry; `stance` sets the body
---- stance; `holdMs` bounds how long the pose holds before a strike releases,
---- one value or `{ min, max }`; `breakOn` leaves the pose for the sibling
---- activity `to` once `damage` has landed in it.
+--- `sound` is a sound key played once per pose entry; `stance` is reserved:
+--- it rejects load until crouching enemies are supported; `holdMs` bounds how
+--- long the pose holds before a strike releases, one value or `{ min, max }`;
+--- `breakOn` leaves the pose for the sibling activity `to` once `damage` has
+--- landed in it.
 export type StanceOptions = {
   animation: string,
   sound: string?,
@@ -3276,7 +3277,7 @@ export type Stance = { kind: "stance", name: string } & StanceOptions
 export type AttackRelease = {
   animation: string,
   ms: number?,
-  at: (string | boolean)?,
+  at: (string | false)?,
   motion: ("hold" | "chaseTarget" | "strafe" | "reposition")?,
   speed: number?,
 }

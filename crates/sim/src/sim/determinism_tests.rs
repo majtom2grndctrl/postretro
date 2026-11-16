@@ -2925,10 +2925,8 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
             }
             target
         });
-        let brain = BrainComponent {
-            acquired_target,
-            ..brain_in_state(&driven_agent_graph(), ATTACK_STATE)
-        };
+        let mut brain = brain_in_state(&driven_agent_graph(), ATTACK_STATE);
+        brain.acquired_target = acquired_target;
         registry.set_component(entity, brain).unwrap();
 
         super::update_pose_inputs(

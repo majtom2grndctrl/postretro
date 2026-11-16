@@ -419,5 +419,6 @@ fn engaged_outcome(
         entered: None,
         queued_attack: None,
         fresh_unmarked_grant: None,
+        flinched: false,
     }
 }

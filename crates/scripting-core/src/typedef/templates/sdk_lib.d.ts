@@ -866,7 +866,7 @@
   export function defineAttackToken(budget?: AttackTokenBudget): AttackToken;
   export function defineAttackToken(name: string, budget?: AttackTokenBudget): AttackToken;
 
-  /** A stance's options: the pose an enemy rests in before the attacks that begin in it. `animation` names one of the archetype's animation states; `sound` is a sound key played once per pose entry; `stance` sets the body stance; `holdMs` bounds how long the pose holds before a strike releases, one value or `[min, max]`; `breakOn` leaves the pose for the sibling activity `to` once `damage` has landed in it. */
+  /** A stance's options: the pose an enemy rests in before the attacks that begin in it. `animation` names one of the archetype's animation states; `sound` is a sound key played once per pose entry; `stance` is reserved: it rejects load until crouching enemies are supported; `holdMs` bounds how long the pose holds before a strike releases, one value or `[min, max]`; `breakOn` leaves the pose for the sibling activity `to` once `damage` has landed in it. */
   export type StanceOptions = {
     readonly animation: string;
     readonly sound?: string;

@@ -1,6 +1,7 @@
 --!strict
--- The dev mod's hand-authored Luau twin of `stance-surface.ts`: the stances
--- brief's Scripting surface example. Luau names each declaration explicitly.
+-- The dev mod's hand-authored Luau twin of `stance-surface.ts`: the Stances
+-- section of docs/scripting-reference.md as dev content.
+-- Luau names each declaration explicitly.
 
 local M = {}
 

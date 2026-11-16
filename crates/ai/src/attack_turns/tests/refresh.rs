@@ -54,6 +54,7 @@ fn heavy_turn(target: EntityId, pool: AttackPoolId) -> AttackTurnState {
         pool,
         draws: draws(&[(HEAVY_ID.0, 1)]),
         until_cooldown: true,
+        granted_tick: 0,
     }));
     turns
 }

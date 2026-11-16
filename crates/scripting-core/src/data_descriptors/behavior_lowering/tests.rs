@@ -1,7 +1,7 @@
 // Behavior lowering on the JSON both runtimes hand it: handle resolution, the
 // inferred and exhaustive `attacks` set, row drops, and the pathed rejections.
 // Runtime parity and the SDK surface are proved through the readers in
-// `data_descriptors/tests/attack_handles.rs`.
+// `staged_manifest/attack_handle_tests.rs`.
 
 use log::Level;
 use postretro_test_log_capture::LogCapture;
@@ -253,6 +253,21 @@ fn anything_but_an_attack_handle_rejects_load_with_a_pathed_error() {
             "expected {path} / {detail}: {error}"
         );
     }
+}
+
+// Regression: a handle with an empty name (`defineAttack("", ...)`) was
+// reported as "a `attack` handle" where an attack handle was expected.
+#[test]
+fn a_handle_with_an_empty_name_rejects_load_saying_so() {
+    let mut source = behavior(None);
+    source["activities"]["engage"]["action"]["attack"]["name"] = json!("");
+    let error = rejection(source);
+    assert!(
+        error.contains(
+            "`components.behavior.activities.engage.action.attack`: the attack handle has an empty name"
+        ),
+        "{error}"
+    );
 }
 
 // T4: two handles of one name load when their declarations are equal and

@@ -77,8 +77,8 @@ const TURN_LOST_MS = 100;
 // next, else it stops and aims.
 const STRAFE_SHARE = 0.5;
 // The aim: the rifle shouldered on `idle_aiming` for a hidden time drawn from
-// AIM_HOLD_MS (the pose's whole time, its wait in line included), above the
-// 400 ms co-op floor, then the burst. Enough damage while it aims breaks it
+// AIM_HOLD_MS (the pose's whole time, its wait in line included), at or above
+// the co-op floor, then the burst. Enough damage while it aims breaks it
 // into a flinch; an aim kept waiting in line gives up and strafes.
 const AIM_HOLD_MS: [number, number] = [500, 900];
 const AIM_BREAK_DAMAGE = 25;

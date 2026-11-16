@@ -392,10 +392,28 @@ struct PacedRun {
 fn paced_run(state: &str, speed: f32, travel_speed: Option<f32>, attacks: bool) -> PacedRun {
     let graph = paced_graph(state, speed, attacks);
     let states = paced_states(state, travel_speed);
+    run_paced(&graph, &states, state, |_| {})
+}
+
+/// [`paced_run`] for any graph and mesh states: `prepare` adjusts the host
+/// brain once spawned, before the first tick.
+fn run_paced(
+    graph: &BehaviorGraphDescriptor,
+    states: &HashMap<String, AnimationState>,
+    state: &str,
+    prepare: impl FnOnce(&mut BrainComponent),
+) -> PacedRun {
     let mut h = EnemyReplicationHarness::new(perfect_link());
-    h.descriptors = vec![paced_descriptor(&graph, &states)];
+    h.descriptors = vec![paced_descriptor(graph, states)];
     spawn_host_player(&mut h.host_registry);
-    let enemy = spawn_host_paced_enemy(&mut h.host_registry, &graph, &states, state);
+    let enemy = spawn_host_paced_enemy(&mut h.host_registry, graph, states, state);
+    let mut brain = h
+        .host_registry
+        .get_component::<BrainComponent>(enemy)
+        .expect("the host enemy has a brain")
+        .clone();
+    prepare(&mut brain);
+    h.host_registry.set_component(enemy, brain).unwrap();
     h.host_register_descriptors();
     let net_id = h.enemy_network_id(enemy);
     let mut host = HostTick::new();
@@ -513,6 +531,68 @@ fn a_charging_attack_activity_strides_against_its_own_travel_speed_on_host_and_c
         2.0 * MOVE_SPEED / stride,
         "charge on `run`: steered speed over its travelSpeed",
     );
+}
+
+/// Where a position goal leads: far down +X, so the enemy still cruises
+/// when sampled.
+const GOAL: Vec3 = Vec3::new(40.0, 1.21, 32.0);
+/// The position goal's `speed`, below 1 and above the rate clamp's floor.
+const STROLL: f32 = 0.8;
+
+/// `wander` (initial) plays `walk` under `motion` at [`STROLL`] toward
+/// [`GOAL`]. `approach`, never entered, makes `run` the graph's locomotion
+/// state, so only the shared rule (every motion that steers) scales `walk`.
+fn position_goal_graph(motion: MotionVerb) -> BehaviorGraphDescriptor {
+    let mut graph = paced_graph("run", 1.0, false);
+    let mut approach = graph
+        .envelope
+        .activities
+        .remove("pace")
+        .expect("the paced graph declares `pace`");
+    approach.speed = None;
+    let mut wander = approach.clone();
+    wander.animation = Some("walk".to_string());
+    wander.motion = Some(motion);
+    wander.speed = Some(STROLL);
+    graph.envelope.initial = "wander".to_string();
+    graph.envelope.activities = std::collections::BTreeMap::from([
+        ("approach".to_string(), approach),
+        ("wander".to_string(), wander),
+    ]);
+    graph.patrol = Some(postretro_foundation::PatrolDescriptor {
+        // Patrol points are offsets from the home anchor (`GOAL`).
+        points: vec![[0.0, 0.0], [0.0, 8.0]],
+        mode: postretro_foundation::PatrolMode::Loop,
+    });
+    graph
+}
+
+// The shared rate-scale rule counts position goals: a state played under
+// `patrol`, `moveToLastKnown` or `moveToAnchor` strides at its steered speed
+// on the host and the loopback client alike, as the brute's strolling `walk`
+// does. Uncalibrated, the rate is the activity's `speed`, 0.8, where an
+// unscaled state would rest at 1.0 on both.
+#[test]
+fn a_state_played_under_a_position_goal_presents_one_scaled_rate_on_host_and_loopback_client() {
+    for motion in [
+        MotionVerb::Patrol,
+        MotionVerb::MoveToLastKnown,
+        MotionVerb::MoveToAnchor,
+    ] {
+        let graph = position_goal_graph(motion);
+        let mut states = paced_states("walk", None);
+        states.extend(paced_states("run", None));
+        let run = run_paced(&graph, &states, "walk", |brain| {
+            brain.home_anchor = GOAL;
+            brain.last_known_target_pos = Some(GOAL);
+        });
+        assert!(
+            (run.host_speed - STROLL * MOVE_SPEED).abs() <= 0.05,
+            "{motion:?}: the host strolls at its activity speed: {}",
+            run.host_speed
+        );
+        assert_rates_match(&run, STROLL, &format!("{motion:?} on `walk`"));
+    }
 }
 
 /// A stance's rest and hold sharing one pose and one animation state: the

@@ -381,8 +381,8 @@ export default defineMod({
     cyberpunkWarriorEntity,
     sciFiTrooperEntity,
     referenceEnemyEntity,
-    // The stances brief's Scripting surface example: poses that telegraph a
-    // mix-up of strikes. `"classname" "stance_surface_brute"`; in no map.
+    // The Stances section of docs/scripting-reference.md as dev content: poses
+    // that telegraph a mix-up of strikes. `"classname" "stance_surface_brute"`; in no map.
     stanceSurfaceEntity,
     // DEV FIXTURE: the damage-triangle playtest (scripts/damage-triangle.ts).
     shieldedEnemyEntity,

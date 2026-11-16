@@ -1,5 +1,5 @@
-// The stances brief's Scripting surface example as dev content: a brute-like
-// offense whose poses telegraph its strikes. Not placed in any map.
+// The Stances section of docs/scripting-reference.md as dev content:
+// a brute-like offense whose poses telegraph its strikes. Not placed in any map.
 //
 // Hand-authored beside `stance-surface.luau`: the scripting-core twin parser
 // test keeps their lowered descriptors equal.

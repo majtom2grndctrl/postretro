@@ -1612,15 +1612,17 @@ mod tests {
 
     // The rate-scaled set: the graph's locomotion state, plus each animation
     // an activity at any depth plays under its own steering motion, action or
-    // not. Position goals, holds and selector-supplied motion add nothing.
+    // not, position goals included. Holds, freezes and selector-supplied
+    // motion add nothing.
     #[test]
     fn rate_scaled_animations_add_states_played_under_an_own_steering_motion() {
-        use super::super::any_rate_scaled_animation;
+        use super::super::{RateScaledStates, any_rate_scaled_animation};
 
         let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
             "initial": "idle",
             "moveSpeed": 3.0,
             "attacks": { "bite": { "damage": 1.0, "maxRange": 2.0, "cooldownMs": 500.0 } },
+            "patrol": { "mode": "loop", "points": [[0.0, 0.0], [6.0, 0.0]] },
             "activities": {
                 "idle": { "animation": "idle", "motion": "hold" },
                 "engage": {
@@ -1637,7 +1639,21 @@ mod tests {
                                     "action": { "attack": "bite" }
                                 },
                                 "circle": { "animation": "strafe_walk", "motion": "strafe" },
-                                "planted": { "animation": "aim", "motion": "hold" }
+                                "planted": { "animation": "aim", "motion": "hold" },
+                                "stunned": { "animation": "stun", "motion": "freeze" }
+                            },
+                            "transitions": {}
+                        }
+                    }
+                },
+                "wander": { "animation": "stroll", "motion": "patrol" },
+                "search": {
+                    "animation": "idle",
+                    "layers": {
+                        "body": {
+                            "initial": "sweep",
+                            "activities": {
+                                "sweep": { "animation": "creep", "motion": "moveToLastKnown" }
                             },
                             "transitions": {}
                         }
@@ -1656,9 +1672,73 @@ mod tests {
             false
         }));
         scaled.sort();
-        assert_eq!(scaled, ["run", "strafe_walk", "walk"]);
+        assert_eq!(
+            scaled,
+            ["creep", "limp", "run", "strafe_walk", "stroll", "walk"]
+        );
         assert!(any_rate_scaled_animation(&graph, |state| state == "run"));
         assert!(!any_rate_scaled_animation(&graph, |state| state == "jog"));
+
+        // The collected set names each state once, the same states the
+        // visitor reaches.
+        let set = RateScaledStates::of(&graph);
+        let mut collected: Vec<&str> = set.iter().collect();
+        collected.sort_unstable();
+        assert_eq!(collected, scaled);
+        assert!(
+            set.iter()
+                .all(|state| !["idle", "jog", "aim", "stun"].contains(&state))
+        );
+    }
+
+    // Every verb decides whether it steers: all but the two planted ones.
+    #[test]
+    fn every_motion_but_hold_and_freeze_steers() {
+        for motion in MotionVerb::ALL {
+            let planted = matches!(motion, MotionVerb::Hold | MotionVerb::Freeze);
+            assert_eq!(motion.steers(), !planted, "{motion:?}");
+        }
+    }
+
+    // The memo derives a graph's set once and lends it after; a memo derived
+    // for another graph never serves that graph's states, and equality ignores
+    // the memo.
+    #[test]
+    fn rate_scaled_states_memo_lends_its_graphs_set_and_rederives_for_another() {
+        use super::super::{RateScaledStates, RateScaledStatesMemo};
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        let graph_playing = |animation: &str, motion: &str| -> Arc<BehaviorGraphDescriptor> {
+            Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "initial": "idle",
+                    "moveSpeed": 3.0,
+                    "activities": {
+                        "idle": { "animation": "idle", "motion": "hold" },
+                        "go": { "animation": animation, "motion": motion }
+                    },
+                    "transitions": { "idle": [] }
+                }))
+                .expect("graph deserializes"),
+            )
+        };
+        let walker = graph_playing("walk", "moveToAnchor");
+        let runner = graph_playing("run", "chaseTarget");
+
+        let memo = RateScaledStatesMemo::of(&walker);
+        let lent = memo.get(&walker);
+        assert!(matches!(lent, Cow::Borrowed(_)), "the derived set is lent");
+        assert_eq!(*lent, RateScaledStates::of(&walker));
+        assert_eq!(lent.iter().collect::<Vec<_>>(), ["walk"]);
+
+        let other = memo.get(&runner);
+        assert_eq!(other.iter().collect::<Vec<_>>(), ["run"]);
+
+        let lazy = RateScaledStatesMemo::default();
+        assert_eq!(lazy.get(&runner).iter().collect::<Vec<_>>(), ["run"]);
+        assert!(matches!(lazy.get(&runner), Cow::Borrowed(_)));
+        assert_eq!(lazy, memo, "equality ignores the derived set");
     }
 
     /// The lowered shape of one stance and one strike from it: a rest and a

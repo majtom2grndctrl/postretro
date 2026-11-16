@@ -302,7 +302,7 @@ fn ticks(seconds: f32) -> usize {
 // S14: a release at `hit` fires when its clip reaches the event, not on entry,
 // and its lowered action and mark agree and load.
 #[test]
-fn s14_a_release_at_hit_fires_at_its_moment_not_on_entry_and_its_lowered_shape_loads() {
+fn a_release_at_hit_fires_at_its_moment_not_on_entry_and_its_lowered_shape_loads() {
     let strike = Strike::default();
     let json = serde_json::to_value(strike.graph()).expect("the lowered graph serializes");
     serde_json::from_value::<BehaviorGraphDescriptor>(json)
@@ -320,7 +320,7 @@ fn s14_a_release_at_hit_fires_at_its_moment_not_on_entry_and_its_lowered_shape_l
 // leaves once it passes. The release's own rows never pass on or before the
 // moment's tick.
 #[test]
-fn p42_a_releases_ms_only_holds_it_past_its_moment() {
+fn a_releases_ms_only_holds_it_past_its_moment() {
     for (ms, leaves) in [
         (None, LEAVES),
         (Some(100.0), LEAVES),
@@ -345,7 +345,7 @@ fn p42_a_releases_ms_only_holds_it_past_its_moment() {
 // S15 / P43: a release on a looping state fires at the next pass of its event
 // from its drawn phase and leaves on the next evaluation, at every phase.
 #[test]
-fn p43_a_looping_release_fires_at_its_next_pass_and_then_leaves_at_every_phase() {
+fn a_looping_release_fires_at_its_next_pass_and_then_leaves_at_every_phase() {
     let strike = Strike {
         release_state: "strike_loop",
         recover_state: "strike_loop",
@@ -378,7 +378,7 @@ fn p43_a_looping_release_fires_at_its_next_pass_and_then_leaves_at_every_phase()
 // S15 / P47: a `"*"` row passing on the moment's tick wins: the release is
 // left and nothing fires.
 #[test]
-fn p47_a_wildcard_row_on_the_moments_tick_wins_and_nothing_fires() {
+fn a_wildcard_row_on_the_moments_tick_wins_and_nothing_fires() {
     let strike = Strike {
         wildcard: vec![edge(COIL, after_ms(495.0))],
         ..Strike::default()
@@ -403,7 +403,7 @@ fn p47_a_wildcard_row_on_the_moments_tick_wins_and_nothing_fires() {
 // entry, binds silently and lasts its clip; `at: false` fires on entry though
 // the clip carries `hit`, and lasts its clip.
 #[test]
-fn p53_a_defaulted_hit_fires_at_the_clips_hit_or_on_entry_and_binds_silently() {
+fn a_defaulted_hit_fires_at_the_clips_hit_or_on_entry_and_binds_silently() {
     let capture = LogCapture::start();
     let lasts_the_clip = ticks(1.0) + 1;
     for (label, clip, action, fires, leaves) in [
@@ -447,7 +447,7 @@ fn p53_a_defaulted_hit_fires_at_the_clips_hit_or_on_entry_and_binds_silently() {
 // gates passed then; the release leaves on the next evaluation, or once `ms`
 // passes.
 #[test]
-fn p51_an_untimed_named_moment_resolves_on_the_entry_tick_and_warns() {
+fn an_untimed_named_moment_resolves_on_the_entry_tick_and_warns() {
     let capture = LogCapture::start();
     for (label, clip, problem) in [
         (
@@ -502,7 +502,7 @@ fn reach_from_tick_one(scene: &mut Scene, tick: usize) {
 // S19 / P57(b, c): `at: false`, or a defaulted `hit` its clip lacks, fires on
 // the first tick its gates pass while the release lasts its clip.
 #[test]
-fn p57_gates_late_on_an_untimed_release_whiff_a_named_moment_but_fire_a_free_one() {
+fn gates_late_on_an_untimed_release_whiff_a_named_moment_but_fire_a_free_one() {
     let lacks_hit = || one_shot(STRIKE, 1.0, &[]);
     let lasts_the_clip = ticks(1.0) + 1;
     for (label, action, hits, leaves) in [
@@ -589,7 +589,7 @@ fn flip_every_half_second(scene: &mut Scene, enemy: EntityId, tick: usize) {
 // before each pass of its event whiffs once one pass of clip time, summed
 // across the restarts, has passed without the moment, and leaves.
 #[test]
-fn p48_p54b_a_moment_its_flipping_variant_never_reaches_whiffs_after_one_summed_pass() {
+fn a_moment_its_flipping_variant_never_reaches_whiffs_after_one_summed_pass() {
     let (mut scene, enemy) = flipping_scene(&moving_strike(timed(SLAM, "hit")));
     let log = run(&mut scene, enemy, 90, |scene, tick| {
         flip_every_half_second(scene, enemy, tick)
@@ -612,7 +612,7 @@ fn p48_p54b_a_moment_its_flipping_variant_never_reaches_whiffs_after_one_summed_
 // half rate, still reaches its moment, at its next pass from its drawn phase
 // in clip time, and leaves on the next evaluation.
 #[test]
-fn p54a_a_release_at_half_rate_still_fires_at_its_moment() {
+fn a_release_at_half_rate_still_fires_at_its_moment() {
     let mut scene = Scene::new(vec![looping("strike_loop", 1.0, &[("hit", 0.8)])]);
     let enemy = scene.spawn(0, &moving_strike(timed(SLAM, "hit")).graph(), RELEASE);
     let phase = f64::from(instance_phase(enemy.to_raw(), 1.0));
@@ -634,7 +634,7 @@ fn p54a_a_release_at_half_rate_still_fires_at_its_moment() {
 // flips every half second leaves once one second of clip time, summed across
 // the restarts, has passed.
 #[test]
-fn p54c_a_release_with_no_moment_leaves_after_one_summed_pass_across_restarts() {
+fn a_release_with_no_moment_leaves_after_one_summed_pass_across_restarts() {
     let (mut scene, enemy) = flipping_scene(&moving_strike(untimed(SLAM)));
     let log = run(&mut scene, enemy, 90, |scene, tick| {
         flip_every_half_second(scene, enemy, tick)
@@ -648,7 +648,7 @@ fn p54c_a_release_with_no_moment_leaves_after_one_summed_pass_across_restarts() 
 // reads played through, or once the default duration passes if that comes
 // first; on a looping state, only the duration.
 #[test]
-fn s12_the_default_recover_runs_the_releases_clip_out_capped_by_the_default_duration() {
+fn the_default_recover_runs_the_releases_clip_out_capped_by_the_default_duration() {
     let cap = timer_tick(DEFAULT_RECOVERY_MS);
     for (label, clip, leaves) in [
         ("clip ends first", strike_clip(), ticks(1.0) + 1),
@@ -690,7 +690,7 @@ fn s12_the_default_recover_runs_the_releases_clip_out_capped_by_the_default_dura
 // plays through or the default duration passes; on a looping state only the
 // duration; an authored `recover.ms` sets its duration.
 #[test]
-fn s13_an_authored_recover_leaves_on_its_clip_or_the_default_duration_or_its_ms() {
+fn an_authored_recover_leaves_on_its_clip_or_the_default_duration_or_its_ms() {
     let cap = timer_tick(DEFAULT_RECOVERY_MS);
     for (label, clip, rows, after_entry) in [
         (
@@ -731,7 +731,7 @@ fn s13_an_authored_recover_leaves_on_its_clip_or_the_default_duration_or_its_ms(
 // entry tick, and leaves once its clip plays through, one pass of a loop.
 // P9: `recover.ms: 0` leaves on its first evaluation after entry.
 #[test]
-fn p45_p56_zero_release_and_recover_ms() {
+fn zero_release_and_recover_ms() {
     let one_pass = ticks(1.0) + 1;
     for (label, clip, action, fires, leaves) in [
         (
@@ -803,7 +803,7 @@ fn run_flinched(
 // enters its ending stance's rest, playing its stance sound, never its
 // recover; the turn ends on leaving the strike.
 #[test]
-fn p52_a_flinch_before_the_moment_cancels_it_plays_out_and_enters_the_ending_rest() {
+fn a_flinch_before_the_moment_cancels_it_plays_out_and_enters_the_ending_rest() {
     let strike = Strike::default();
     let unflinched = run_flinched(&strike, vec![strike_clip()], RELEASE, 45, |_, _, _| {});
     assert_eq!(
@@ -866,7 +866,7 @@ fn p52_a_flinch_before_the_moment_cancels_it_plays_out_and_enters_the_ending_res
 // S21 / P46: a switch landing before the AI pass on the tick the release is
 // entered does not cancel it; one on the next tick does.
 #[test]
-fn p46_a_flinch_before_the_ai_on_the_releases_entry_tick_does_not_cancel_it() {
+fn a_flinch_before_the_ai_on_the_releases_entry_tick_does_not_cancel_it() {
     let strike = Strike::default();
     let entry = timer_tick(strike.hold_ms);
     let log = run_flinched(&strike, vec![strike_clip()], HOLD, 60, |_, _, _| {});
@@ -911,7 +911,7 @@ fn p46_a_flinch_before_the_ai_on_the_releases_entry_tick_does_not_cancel_it() {
 // the first switch, whatever the later reaction's length, and steady flinches
 // never hold it longer.
 #[test]
-fn p55a_a_later_flinch_never_extends_the_stagger_past_the_cap_from_the_first() {
+fn a_later_flinch_never_extends_the_stagger_past_the_cap_from_the_first() {
     let strike = Strike::default();
     let cap_ends = 10 + stagger_cap();
     let log = run_flinched(
@@ -954,7 +954,7 @@ fn p55a_a_later_flinch_never_extends_the_stagger_past_the_cap_from_the_first() {
 // S22 / P55(b): a level `"*"` row passing during the reaction leaves at once;
 // nothing fires.
 #[test]
-fn p55b_a_wildcard_row_during_the_reaction_leaves_at_once() {
+fn a_wildcard_row_during_the_reaction_leaves_at_once() {
     let strike = Strike {
         wildcard: vec![edge(OVERHEAD, after_ms(290.0))],
         ..Strike::default()
@@ -982,7 +982,7 @@ fn p55b_a_wildcard_row_during_the_reaction_leaves_at_once() {
 // the ending rest; a release with `ms: 2000` flinched at 200 ms by a 400 ms
 // reaction enters it at 600 ms.
 #[test]
-fn p52_a_flinch_after_the_moment_on_a_free_release_or_in_a_recover_plays_out_into_the_rest() {
+fn a_flinch_after_the_moment_on_a_free_release_or_in_a_recover_plays_out_into_the_rest() {
     let reaction = ticks(0.4);
     for (label, strike, flinch, hits) in [
         (
@@ -1050,7 +1050,7 @@ fn p52_a_flinch_after_the_moment_on_a_free_release_or_in_a_recover_plays_out_int
 // never redrawn before it enters the rest, though it stops, its stride
 // resumes and its travel variant changes under the reaction.
 #[test]
-fn p52_a_flinched_moving_release_stops_steering_and_never_redraws_its_strike() {
+fn a_flinched_moving_release_stops_steering_and_never_redraws_its_strike() {
     let strike = moving_strike(timed(SLAM, "hit"));
     let (mut scene, enemy) = strike_scene(variant_loops(), &strike, RELEASE);
     let mut destinations = Vec::new();
@@ -1124,7 +1124,7 @@ fn breaking_strike(hold_ms: f32) -> BehaviorGraphDescriptor {
 // fires. `breakOn` leaves on the first evaluation at or past the threshold,
 // never below it.
 #[test]
-fn p1_a_break_beats_a_due_release_and_trips_at_its_threshold_never_below() {
+fn a_break_beats_a_due_release_and_trips_at_its_threshold_never_below() {
     let due = timer_tick(290.0);
     let mut scene = Scene::new(vec![strike_clip()]);
     let enemy = scene.spawn(0, &breaking_strike(290.0), HOLD);
@@ -1162,7 +1162,7 @@ fn p1_a_break_beats_a_due_release_and_trips_at_its_threshold_never_below() {
 // recover leaves it, outranking the strike's own rows; damage taken in the
 // flinch does not carry into the rest it resumes.
 #[test]
-fn d4_a_release_does_not_break_a_wildcard_row_leaves_it_and_flinch_damage_stays_behind() {
+fn a_release_does_not_break_a_wildcard_row_leaves_it_and_flinch_damage_stays_behind() {
     let mut scene = Scene::new(vec![strike_clip()]);
     let enemy = scene.spawn(0, &breaking_strike(95.0), RELEASE);
     toughen(&mut scene, enemy);
@@ -1214,7 +1214,7 @@ fn d4_a_release_does_not_break_a_wildcard_row_leaves_it_and_flinch_damage_stays_
 // entry tick; one never reached before the later of `ms` and one pass of its
 // clip sees no hit, and the recover, with no action, never fires.
 #[test]
-fn p18_a_charge_hits_on_reach_once_or_leaves_after_ms_and_one_pass_with_no_hit() {
+fn a_charge_hits_on_reach_once_or_leaves_after_ms_and_one_pass_with_no_hit() {
     let charge = |ms: f32| Strike {
         action: untimed(SLAM),
         release_ms: Some(ms),
@@ -1260,7 +1260,7 @@ fn p18_a_charge_hits_on_reach_once_or_leaves_after_ms_and_one_pass_with_no_hit()
 // S23 / P52: a flinch before an `at: false` release's gates first pass fires
 // nothing that entry, though the target walks into reach mid-reaction.
 #[test]
-fn p52_a_flinch_before_a_free_release_first_reaches_fires_nothing() {
+fn a_flinch_before_a_free_release_first_reaches_fires_nothing() {
     let strike = Strike {
         action: untimed(SLAM),
         ..Strike::default()
@@ -1280,7 +1280,7 @@ fn p52_a_flinch_before_a_free_release_first_reaches_fires_nothing() {
 // S23 / P52: a flinch after a weapon release's moment cancels the burst in
 // flight: no shot after the switch.
 #[test]
-fn p52_a_flinch_cancels_a_weapon_burst_in_flight() {
+fn a_flinch_cancels_a_weapon_burst_in_flight() {
     let shots = |flinch: Option<usize>| {
         let mut volley = contact_attack(0.0);
         volley.weapon = Some("enemy.rifle".to_string());
@@ -1312,6 +1312,117 @@ fn p52_a_flinch_cancels_a_weapon_burst_in_flight() {
         shots(Some(MOMENT + 2)),
         vec![MOMENT],
         "the shots after the flinch never fire"
+    );
+}
+
+/// A release on `smash_strike` whose attack is a three-shot burst from its
+/// moment, 100 ms apart, held long past it by `ms`.
+fn burst_strike(wildcard: Vec<GuardedRow>) -> Strike {
+    let mut volley = contact_attack(0.0);
+    volley.weapon = Some("enemy.rifle".to_string());
+    (volley.damage, volley.max_range, volley.cooldown_ms) = (None, None, None);
+    Strike {
+        release_ms: Some(1490.0),
+        attack: volley,
+        wildcard,
+        ..Strike::default()
+    }
+}
+
+// Regression: a flinch whose own tick left the release, on a `"*"` row keyed
+// on the same hit or on the flinch route of a reaction already played out,
+// cleared its stagger before apply read it, so the burst in flight fired on.
+// The flinch cancels it whatever left the strike: no shot after the switch.
+#[test]
+fn a_flinch_that_leaves_the_release_on_its_own_tick_still_cancels_the_burst() {
+    const PAIN: f32 = 60.0;
+    let flinch = MOMENT + 2;
+    for (label, wildcard, reaction, damage, leaves_to) in [
+        (
+            "a `*` pain row on the same hit",
+            vec![edge(OVERHEAD, damage_at_least(50.0))],
+            "hit_reaction",
+            PAIN,
+            OVERHEAD,
+        ),
+        (
+            "a reaction played out on its own tick",
+            Vec::new(),
+            "hit_instant",
+            0.0,
+            COIL,
+        ),
+    ] {
+        let strike = burst_strike(wildcard);
+        let specs = vec![strike_clip(), one_shot("hit_instant", 0.00005, &[])];
+        let (mut scene, enemy) = strike_scene(specs, &strike, RELEASE);
+        scene.descriptors = vec![burst_weapon("enemy.rifle", 3, 100.0)];
+        let mut left_to = String::new();
+        let shots: Vec<usize> = (0..80)
+            .filter(|&tick| {
+                if tick == flinch {
+                    scene.switch(enemy, reaction);
+                    if damage > 0.0 {
+                        land(&mut scene, enemy, damage);
+                    }
+                }
+                let fired = !scene.tick().projectile_spawns.is_empty();
+                if tick == flinch {
+                    left_to = scene.state(enemy);
+                }
+                fired
+            })
+            .collect();
+        assert_eq!(
+            left_to, leaves_to,
+            "{label}: left the release on the flinch's tick"
+        );
+        assert_eq!(
+            shots,
+            vec![MOMENT],
+            "{label}: the shots after the flinch never fire"
+        );
+    }
+}
+
+// Regression: a release whose moment its entry clip times fired mid-swing as
+// without `at` once a travel variant whose clip lacks the event drew. The
+// moment stays pending on the variant and whiffs once one pass of clip time,
+// summed across the restart, has passed.
+#[test]
+fn a_travel_variant_lacking_the_event_leaves_the_releases_moment_pending_until_it_whiffs() {
+    let strike = Strike {
+        release_facing: Some(FacingPolicy::Target),
+        ..Strike::default()
+    };
+    let specs = || vec![strike_clip(), one_shot("smash_strike_right", 1.0, &[])];
+    let (mut scene, enemy) = strike_scene(specs(), &strike, RELEASE);
+    let log = run(&mut scene, enemy, 45, |_, _| {});
+    assert_eq!(
+        hit_ticks(&log),
+        vec![MOMENT],
+        "fixture: on its own clip it fires at its moment"
+    );
+
+    let (mut scene, enemy) = strike_scene(specs(), &strike, RELEASE);
+    let log = run(&mut scene, enemy, 75, |scene, tick| {
+        if tick == 10 {
+            scene.set_agent(enemy, |agent| agent.velocity = Vec3::new(0.0, 0.0, 2.0));
+        }
+    });
+    assert_eq!(
+        log[15].mesh, "smash_strike_right",
+        "fixture: the variant draws"
+    );
+    assert!(
+        hit_ticks(&log).is_empty(),
+        "never fired mid-swing: {:?}",
+        hit_ticks(&log)
+    );
+    assert_eq!(
+        first_in(&log, RECOVER),
+        Some(ticks(1.0) + 1),
+        "whiffed after one summed pass, left on the next evaluation"
     );
 }
 

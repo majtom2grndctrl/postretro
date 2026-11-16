@@ -252,7 +252,7 @@ local fallback, raise, describe = ...
 return function(_, key)
   local value = fallback[key]
   if value == nil then
-    raise("undeclared global `" .. describe(key) .. "` (a misspelled name reads nil)", 2)
+    raise("undeclared global `" .. describe(key) .. "`; check the spelling, or declare it with `local`", 2)
   end
   return value
 end

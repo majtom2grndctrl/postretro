@@ -9,8 +9,8 @@ type AttackDeclaration = import("postretro").AttackDeclaration;
 type Stance = import("postretro").Stance;
 type StanceOptions = import("postretro").StanceOptions;
 
-const ATTACK_NAME_DIAGNOSTIC = "defineAttack without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
-const STANCE_NAME_DIAGNOSTIC = "defineStance without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
+const ATTACK_NAME_DIAGNOSTIC = "defineAttack without an explicit name is binding-name sugar: it needs a direct top-level `const` binding and an object-literal argument, or pass the name explicitly as defineAttack(\"name\", { ... })";
+const STANCE_NAME_DIAGNOSTIC = "defineStance without an explicit name is binding-name sugar: it needs a direct top-level `const` binding and an object-literal argument, or pass the name explicitly as defineStance(\"name\", { ... })";
 
 /** Declare an attack: its engine fields (`damage`, `maxRange`, `cooldownMs`, `draws`, ... or `weapon`) plus the stance it begins and ends in and its `release` and `recover`. Omit `name` only in a TypeScript direct top-level binding declaration compiled by scripts-build, which names it by its binding. Reference the handle wherever an attack is meant: `action: { attack }`, `attackTurn`, a behavior's `attacks` list, `attackTurnFree`, `attackTurnHeld`. */
 export function defineAttack(declaration: AttackDeclaration): Attack;

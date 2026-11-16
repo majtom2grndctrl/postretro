@@ -4,16 +4,20 @@
 // See: context/lib/entity_model.md §7c · context/lib/scripting.md §2
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use glam::Vec3;
 use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::mesh::{
+    AnimationState, InterruptPolicy, MeshAnimation, MeshComponent,
+};
 use postretro_entities::{EntityId, EntityRegistry, Transform};
 use postretro_foundation::{
     BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BehaviorActivityDescriptor, BehaviorGraphDescriptor,
     BehaviorGraphEnvelope, BehaviorLayerDescriptor, GuardedRow, IrNode, IrValue, MotionVerb,
+    PatrolDescriptor, PatrolMode,
 };
 use postretro_scripting_core::reaction_dispatch::ProgressTracker;
 
@@ -512,6 +516,114 @@ fn a_knockback_slide_is_the_same_under_speed_two_as_under_none() {
         assert!(
             (*slow - *fast).length() <= 1.0e-5,
             "knockback decays the same while steering runs at 2×: {slow} vs {fast}"
+        );
+    }
+}
+
+/// Where each position goal leads: far enough down +X that the enemy is
+/// still cruising when sampled.
+const GOAL: Vec3 = Vec3::new(40.0, 1.21, 32.0);
+/// The position goal's `speed`, below 1 and above the rate clamp's floor.
+const STROLL: f32 = 0.8;
+/// The archetype's base `moveSpeed`.
+const STROLL_MOVE_SPEED: f32 = 3.0;
+
+/// `wander` (initial) plays `walk` under `motion` at `speed: 0.8`, toward
+/// [`GOAL`] whichever position goal it is. `approach`, never entered, makes
+/// `run` the graph's locomotion state, so only the shared rule (every motion
+/// that steers) can rate-scale `walk`.
+fn position_goal_graph(motion: MotionVerb) -> BehaviorGraphDescriptor {
+    let mut descriptor = graph(
+        STROLL_MOVE_SPEED,
+        envelope(
+            "wander",
+            vec![
+                ("approach", leaf("run", MotionVerb::ChaseTarget, None)),
+                ("wander", leaf("walk", motion, Some(STROLL))),
+            ],
+            vec![],
+        ),
+    );
+    descriptor.patrol = Some(PatrolDescriptor {
+        // Patrol points are offsets from the home anchor (`GOAL`).
+        points: vec![[0.0, 0.0], [0.0, 8.0]],
+        mode: PatrolMode::Loop,
+    });
+    descriptor
+}
+
+/// An uncalibrated mesh: no state has a `travelSpeed` and no model derives a
+/// stride, so a scaled state's rate is steered speed over base `moveSpeed`.
+fn strolling_mesh() -> MeshComponent {
+    let state = |clip: &str| AnimationState {
+        clip: clip.to_string(),
+        looping: true,
+        crossfade_ms: 0.0,
+        interrupt: InterruptPolicy::Smooth,
+        travel_speed: None,
+        clip_index: None,
+    };
+    MeshComponent::animated(
+        "stroller".to_string(),
+        MeshAnimation::new(
+            HashMap::from([
+                ("idle".to_string(), state("idle")),
+                ("walk".to_string(), state("walk")),
+                ("run".to_string(), state("run")),
+            ]),
+            "walk".to_string(),
+        ),
+    )
+}
+
+// The shared rate-scale rule counts position goals: a state an activity plays
+// under `patrol`, `moveToLastKnown` or `moveToAnchor` strides at its steered
+// speed on the host, as the brute's strolling `walk` does. Uncalibrated, that
+// rate is `speed` × base `moveSpeed` over base `moveSpeed`: 0.8, not the
+// authored 1.0 an unscaled state rests at.
+#[test]
+fn a_state_played_under_a_position_goal_rate_scales_with_its_steered_speed() {
+    for motion in [
+        MotionVerb::Patrol,
+        MotionVerb::MoveToLastKnown,
+        MotionVerb::MoveToAnchor,
+    ] {
+        let mut arena = Arena::new();
+        let enemy = arena.spawn_enemy(&position_goal_graph(motion), ENEMY_START);
+        {
+            let mut registry = arena.registry.borrow_mut();
+            let mut brain = registry
+                .get_component::<BrainComponent>(enemy)
+                .expect("enemy has a brain")
+                .clone();
+            brain.home_anchor = GOAL;
+            brain.last_known_target_pos = Some(GOAL);
+            registry.set_component(enemy, brain).unwrap();
+            registry.set_component(enemy, strolling_mesh()).unwrap();
+        }
+        for _ in 0..60 {
+            arena.tick();
+        }
+
+        let speed = arena.speed_xz(enemy);
+        assert_near(
+            speed,
+            STROLL * STROLL_MOVE_SPEED,
+            &format!("{motion:?}: cruising at its activity speed"),
+        );
+        let animation = arena
+            .registry
+            .borrow()
+            .get_component::<MeshComponent>(enemy)
+            .expect("enemy keeps its mesh")
+            .animation
+            .clone()
+            .expect("the mesh is animated");
+        assert_eq!(animation.current_state, "walk", "{motion:?}");
+        assert!(
+            (animation.rate - speed / STROLL_MOVE_SPEED).abs() <= 0.02,
+            "{motion:?}: `walk` strides at {} for a steered {speed} over base {STROLL_MOVE_SPEED}",
+            animation.rate
         );
     }
 }

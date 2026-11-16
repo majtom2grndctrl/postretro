@@ -134,6 +134,7 @@ fn steady_turn_pass_allocates_nothing(
         pool: AttackPoolId::Default,
         draws: kinds[slot % kinds.len()],
         until_cooldown: true,
+        granted_tick: 0,
     };
     let before: Vec<AttackTurnState> = (0..enemies.len())
         .map(|slot| {

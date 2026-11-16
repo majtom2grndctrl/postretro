@@ -1084,3 +1084,97 @@ fn a_cooldown_elapsing_during_a_ticks_evaluation_requests_and_is_granted_that_ti
     tick(&mut reg, &mut runtime);
     assert_eq!(state(&reg, enemy), hold(SLAM), "the row passes on N+1");
 }
+
+// Regression: a weapon burst outlasting its recover carried its turn into the
+// rest, where the queued row passed on it; the hold's mark then kept it across
+// every repeat, so it never ended or refreshed and a waiter on its token
+// starved. A carried turn opens no queued row: it ends in the rest once the
+// burst does, its refresh starts, and the waiter is granted ahead of the
+// brute's re-request.
+#[test]
+fn a_burst_outlasting_its_recover_ends_its_turn_in_the_rest_and_a_waiter_is_granted() {
+    // Three shots 160 ms apart outlast the release's and recover's 48 ms
+    // each; each shot's 16 ms cooldown elapses before the next tick's rows.
+    let descriptors = [burst_weapon("enemy.burst", 3, 160.0, 16.0)];
+    let shoot = AttackParams {
+        draws: Some(vec![token("melee")]),
+        ..weapon("enemy.burst")
+    };
+    let graph = queue_graph(
+        vec![queued(SLAM, always())],
+        vec![(SLAM, shoot)],
+        [0.0, 0.0],
+    );
+    let mut reg = EntityRegistry::new();
+    budgets(&mut reg, (1, 64.0), (1, 0.0));
+    let mut runtime = AiRuntime::new();
+    let pawn = spawn_player(&mut reg, player_spot());
+    let brute = spawn_resting(&mut reg, 0, &graph);
+    let waiter = spawn_at(&mut reg, 1, &hog_graph(SWEEP, vec![token("melee")]), "idle");
+
+    tick_with(&mut reg, &mut runtime, &descriptors);
+    assert_eq!(held(&reg, brute), vec![SLAM], "granted in the rest");
+    enter(&mut reg, waiter, "sweep_act");
+
+    struct Seen {
+        state: String,
+        brute_holds: bool,
+        waiter_holds: bool,
+        refreshing: u32,
+    }
+    let mut seen = Vec::new();
+    let mut shots = 0;
+    for _ in 0..80 {
+        let result = tick_with(&mut reg, &mut runtime, &descriptors);
+        shots += result.projectile_spawns.len();
+        seen.push(Seen {
+            state: state(&reg, brute),
+            brute_holds: !held(&reg, brute).is_empty(),
+            waiter_holds: !held(&reg, waiter).is_empty(),
+            refreshing: melee_refreshing(&runtime, pawn),
+        });
+    }
+    let states: Vec<&str> = seen.iter().map(|tick| tick.state.as_str()).collect();
+    assert_eq!(shots, 3, "one burst, never struck again: {states:?}");
+    let recovered = states
+        .iter()
+        .position(|state| *state == recover(SLAM))
+        .expect("fixture: the strike recovers");
+    let rested = recovered
+        + states[recovered..]
+            .iter()
+            .position(|state| *state == REST)
+            .expect("fixture: the strike lands in its rest");
+    assert!(
+        states[rested..].iter().all(|state| *state == REST),
+        "the carried turn never opens the queued row: {states:?}"
+    );
+    assert!(
+        seen[rested].brute_holds,
+        "fixture: the burst carries the turn into the rest"
+    );
+    let ended = rested
+        + seen[rested..]
+            .iter()
+            .position(|tick| !tick.brute_holds)
+            .expect("the carried turn ends in the rest");
+    assert_eq!(seen[ended].refreshing, 1, "its refresh starts");
+    assert!(
+        seen[..ended].iter().all(|tick| !tick.waiter_holds),
+        "the waiter waits while the burst holds the token"
+    );
+    let granted = seen
+        .iter()
+        .position(|tick| tick.waiter_holds)
+        .expect("the waiter on the token is granted");
+    assert!(granted >= ended);
+    assert!(
+        seen[ended..].iter().all(|tick| !tick.brute_holds),
+        "the waiter is granted ahead of the brute's re-request"
+    );
+    assert_eq!(
+        requested(&reg, brute).as_deref(),
+        Some(SLAM),
+        "still in line"
+    );
+}

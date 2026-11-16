@@ -18,6 +18,8 @@ mod dist;
 #[cfg(test)]
 mod environment_gates;
 #[cfg(test)]
+mod stance_gates;
+#[cfg(test)]
 mod surface_gates;
 
 fn main() {

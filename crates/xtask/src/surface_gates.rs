@@ -40,7 +40,7 @@ const RETIRED_FREE_VERBS: &[&str] = &["damage", "grantHealth", "grantAmmo", "add
 /// Directories the retired-spelling gate covers, relative to the workspace.
 const AUTHORED_ROOTS: &[&str] = &["content", "sdk", "docs", "context/lib"];
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     crate::workspace_root().expect("workspace root")
 }
 
@@ -51,7 +51,7 @@ fn is_text_file(path: &Path) -> bool {
 }
 
 /// Every text file under `root`, recursively, in a stable order.
-fn text_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn text_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
@@ -71,11 +71,11 @@ fn text_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn line_of(text: &str, byte: usize) -> usize {
+pub(crate) fn line_of(text: &str, byte: usize) -> usize {
     text[..byte].matches('\n').count() + 1
 }
 
-fn is_identifier_char(c: char) -> bool {
+pub(crate) fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
@@ -119,7 +119,7 @@ fn player_damage_descriptors(text: &str) -> Vec<usize> {
         .collect()
 }
 
-fn relative(root: &Path, path: &Path) -> String {
+pub(crate) fn relative(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .display()

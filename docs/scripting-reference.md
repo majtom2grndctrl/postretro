@@ -56,7 +56,7 @@ the manifest lacks any required field.
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer` and `defineAttackToken` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
+**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer`, `defineAttackToken`, `defineAttack` and `defineStance` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -1614,11 +1614,19 @@ stand-down, commonly through `brain.targetDistance`. The engine supplies no
 default acquisition or disengagement range.
 
 ```typescript
-import { brain, candidate, defineAttack, defineEntity, runtime } from "postretro";
+import { brain, candidate, defineAttack, defineEntity, defineStance, runtime } from "postretro";
 
-// An attack is a handle named by its binding; the behavior has every attack
-// its activities reference.
-const swing = defineAttack({ damage: 8, maxRange: 2, cooldownMs: 1200 });
+// A stance is the pose that warns of a strike; an attack begins in one. Each
+// is a handle named by its binding. The behavior has every attack its rows
+// strike.
+const raised = defineStance({ animation: "swing_windup" });
+const swing = defineAttack({
+  damage: 8,
+  maxRange: 2,
+  cooldownMs: 1200,
+  beginningStance: raised,
+  release: { animation: "swing" }, // fires at the clip's `hit` event
+});
 
 defineEntity({
   canonicalName: "grunt",
@@ -1629,7 +1637,9 @@ defineEntity({
       animations: {
         idle: { clip: "Idle", loop: true },
         walk: { clip: "Walking_A", loop: true },
-        swing: { clip: "Melee_Slice", loop: false, interrupt: "snap" },
+        // The start of `Melee_Slice` and the rest of it, cut with `--trim`.
+        swing_windup: { clip: "Melee_Slice_windup", loop: false },
+        swing: { clip: "Melee_Slice_strike", loop: false, interrupt: "snap" },
       },
       defaultState: "idle",
     },
@@ -1654,16 +1664,17 @@ defineEntity({
               "chaseTarget", // Required fallback.
             ],
             offense: {
-              initial: "windup",
+              initial: "close",
               activities: {
-                windup: { animation: "swing" },
-                commit: { animation: "swing", action: { attack: swing } },
-                recover: { animation: "swing" },
+                close: { animation: "walk" },
               },
               transitions: {
-                windup: [{ to: "commit", when: brain.timeInActivityMs.ge(250) }],
-                commit: [{ to: "recover", when: brain.timeInActivityMs.ge(150) }],
-                recover: [{ to: "windup", when: brain.timeInActivityMs.ge(500) }],
+                close: [{ to: raised, when: brain.targetDistance.le(2) }], // take the pose
+                // Rows out of the stance, keyed by its name.
+                raised: [
+                  { to: swing }, // strike once its turn comes
+                  { to: "close", when: brain.targetDistance.gt(3) },
+                ],
               },
             },
           },
@@ -1687,9 +1698,9 @@ defineEntity({
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `initial` | `string` | Activity entered at spawn and when the aggro gate closes. Must name root `activities`. |
+| `initial` | `string` \| `Stance` | Activity entered at spawn and when the aggro gate closes. Names root `activities`, or is a stance handle to start in its rest. |
 | `activities` | `{ [name]: Activity }` | Non-empty named activities. Raw JSON with duplicate keys is rejected. TypeScript reports duplicate object-literal keys (`ts1117`); JavaScript and Luau maps retain the last value before the descriptor bridge. |
-| `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity; `"*"` is graph-level scope. Every destination must name an activity at this level. |
+| `transitions` | `{ [sourceOrStar]: Transition[] }` | Ordered source-keyed rows. A source names an activity or a stance's rest; `"*"` is graph-level scope. Every destination is an activity at this level, a stance or an attack; see [Stances](#stances). |
 | `candidateFilter` | `RuntimeValue` (optional) | Boolean eligibility predicate evaluated once per candidate the engine offers during a ranking scan. It can exclude candidates but cannot rank them and is never checked against a retained target. Use `candidate.distance` here to bound **acquisition**; there is no authored descriptor range field for it. |
 | `retaliation` | `{ windowMs?, damageWeight?, recencyWeight? }` (optional) | Scalar tuning for the engine-owned retaliation preference, not authored ranking logic. `windowMs` defaults to `1500` ms, `damageWeight` to `1`, and `recencyWeight` to `0.001`; all are finite and non-negative. A zero or sub-tick `windowMs` disables retaliation accrual. |
 | `patrol` | `{ points, mode }` (optional) | Anchor-relative XZ route for `motion: "patrol"`. Required when an activity uses `"patrol"`. |
@@ -1724,14 +1735,47 @@ An activity is either a leaf or a composite:
 | `onEnter` | `string` (optional) | Named event fired on every activity entry, including initial descent, transition entry, and graph reseat. |
 | `facing` | `"target"` \| `"travel"` (optional) | Which way the enemy faces while this activity is active, including the motion its own `move` layer picks. Omitted, the motion's default applies. |
 | `reposition` | `{ arc?, minTravel? }` (optional) | Bounds for this activity's own `"reposition"` motion; see below. Only valid when `motion` is `"reposition"`. |
-| `attackTurn` | `Attack` (optional) | Marks the activity for one of the behavior's attacks. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a windup → commit → recover chain holds a single turn. An `action` with `at` marks its activity for its attack without this field. Checked at load: a mark for an attack an explicit `attacks` list leaves out, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
+| `attackTurn` | `Attack` (optional) | Marks the activity for one of the behavior's attacks. While any activity marked for that attack is active, the enemy holds one attack turn for it, so a chain of hand-written activities holds a single turn. An `action` with `at` marks its activity for its attack without this field, and a stance's strike marks itself. Checked at load: a mark for an attack an explicit `attacks` list leaves out, a mark inside a mark for another attack rejects, and so does an action under a mark that fires another attack. |
+| `sound` | `string` (optional) | Sound key played at the enemy when a leaf activity is entered. |
+| `speed` | `number` (optional) | Multiplier on the archetype's `moveSpeed` while this is the innermost active activity that sets one. An inner activity's `speed` overrides an outer one's; one without inherits it. Omitted everywhere, it is `1`. Scales only the enemy's own steered travel, never knockback. A steering activity's walk cycle follows the faster pace against its state's `travelSpeed`. Finite and `> 0`. |
 
-A `Transition` is `{ to: string, when?: RuntimeValue }`; a row without `when` is always enabled. It can target only an
-activity in its own envelope. Unknown sources or destinations, cross-boundary
-targets, empty activities, retired flat fields, a missing move fallback, and a
-composite with two nested graph layers are load errors.
+A `Transition` row picks the next activity:
 
-### Attack entries
+| Field | Type | Description |
+|-------|------|-------------|
+| `to` | `string` \| `Stance` \| `Attack` | An activity in the row's own envelope, a stance handle (take the pose), or an attack handle (strike from the stance it begins in). A string never names an activity lowering generates for a stance; see [Stances](#stances). |
+| `when` | `RuntimeValue` (optional) | Boolean guard. Omitted, the row is always enabled. |
+
+Unknown sources or destinations, cross-boundary targets, empty activities,
+retired flat fields, a missing move fallback, and a composite with two nested
+graph layers are load errors.
+
+### Attacks
+
+An attack is a handle. `defineAttack` declares one, and you pass the handle
+wherever the attack is meant: a row's `to`, `action: { attack }`,
+`attackTurn`, the behavior's `attacks` list, `attackTurnFree` and
+`attackTurnHeld`. No string names an attack, so TypeScript catches a typo when
+it compiles; a bare string where a handle belongs fails load, naming its key
+path.
+
+- **Names.** In TypeScript the binding names the attack:
+  `const slam = defineAttack({ ... })` declares `slam`
+  (see [Names from `const` bindings](#mod-entry-point)). Elsewhere, and always
+  in Luau, pass the name first: `local slam = defineAttack("slam", { ... })`.
+  A misspelled Luau global fails load, naming the global and the line, since
+  it would otherwise read `nil`.
+- **Declaration travels with the handle.** A behavior that references a handle
+  has the attack; nothing registers it separately. One handle may serve
+  several archetypes. Two handles of one name in one behavior load only when
+  they declare the same attack, as a re-`require` makes them.
+- **The `attacks` list.** Omitted, a behavior has the attacks its rows,
+  actions and marks reference. Present, `attacks: [jab, slam]` is
+  exhaustive: only listed attacks exist. A row to an unlisted attack is
+  dropped, with a log naming it, and so are the rows of any stance's rest no
+  row reaches any more. An action, mark or kept row's guard naming an
+  unlisted attack fails load. A variant can reuse its parent's graph with a
+  shorter list.
 
 `defineAttack` declares an attack in one of two mutually exclusive forms. Use
 the contact form for an immediate direct-impact attack:
@@ -1816,15 +1860,16 @@ leaves a position-goal state on arrival, its distance threshold must be **at
 least** that engine epsilon. A smaller threshold wedges: steering has already
 cleared at 0.5 m and the graph can never get closer enough to satisfy the guard.
 
-`{ attack }`, naming an attack handle, is the only action today. During its active firing leaf,
-it fires at most once on the first tick for which that attack's cooldown is
-ready, the target is in range, and the other applicable gates are open. Its
-firing latch stays armed until it fires, so temporarily closed gates can open
-later in the same dwell. Holding `commit` does not repeatedly fire it after it
-has fired. A later firing-leaf dwell can fire again only after cooldown permits
-it. A graph with no `attacks` entries never attacks. An action with `at` fires
-at a moment in its clip instead; see
-[Firing at a clip event](#firing-at-a-clip-event).
+`{ attack }`, naming an attack handle, is the only action today. During its
+active firing leaf, it fires at most once on the first tick for which that
+attack's cooldown is ready, the target is in range, and the other applicable
+gates are open. Its firing latch stays armed until it fires, so temporarily
+closed gates can open later in the same dwell. Staying in the activity does not
+fire it again after it has fired. A later firing-leaf dwell can fire again only
+after cooldown permits it. A graph that references no attack never attacks. An
+action with `at` fires at a moment in its clip instead; see
+[Firing at a clip event](#firing-at-a-clip-event). A stance's strike writes
+its own action; see [Stances](#stances).
 
 **Engagement** — the engine's "this brain is fighting" test — is a selected
 `"chaseTarget"`, `"strafe"` or `"reposition"` motion or any active action. This current-tick engagement
@@ -1849,8 +1894,9 @@ cycle follows the enemy's speed exactly as `X`'s does, against its own
 An attack can land on a moment in its clip instead of on entry. A clip carries
 named events, such as the `hit` where a fist connects; see
 [character-animation.md](character-animation.md) for adding them with
-`--event`. An activity's own
-action names one with `at`:
+`--event`. A stance's release fires at its clip's `hit` unasked (see
+[Stances](#stances)). For an attack without a stance, an activity's own action
+names the event with `at`:
 
 ```typescript
 import { attackTurnFree, brain, defineAttack } from "postretro";
@@ -1913,9 +1959,13 @@ These are the rules you cannot author a graph without.
    zero-ms phase is visible for at least one tick.
 3. **Restart on entry.** Re-entering a composite restarts nested graphs at their
    initials. Descendant timers and attack-fire counters reset before entry fire.
-4. **Guards run every eligible tick.** A commitment window is authored with
+4. **Guards run every eligible tick.** A hand-written window is authored with
    `brain.timeInActivityMs.ge(400)`. The timer belongs to the activity whose rows
-   are being evaluated, and the exit fires on the first eligible tick.
+   are being evaluated, and the exit fires on the first eligible tick. The rows
+   a stance generates also wait on the engine: a strike for its turn, a hold
+   for its hidden release time, a release for its moment. Every `"*"` and outer
+   row, and every row you write to an activity or stance, still runs every
+   tick.
 5. **The aggro gate skips evaluation.** When disarmed, it forces root `initial`
    and clears steering. Re-arming resumes ordinary evaluation.
 
@@ -1933,7 +1983,7 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.hasTarget` | `@brain.hasTarget` | `boolean` | Whether the enemy has a selected target this tick. |
 | `brain.targetVisible` | `@brain.targetVisible` | `boolean` | Engine's shared, debounced static-world LOS verdict for the selected target. `false` with no target; independent of range, cooldown, and facing. |
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
-| `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. |
+| `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. A stance's pose counts as one activity, so it keeps running from rest to hold and back. |
 | `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the active named attack cooldown; `0` when no action is active or the entry has elapsed. |
 | `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the think-stride ticks where the engine re-evaluates acquisition. Detection is time-sliced; conjoin this onto detection edges so they only fire on an acquisition tick. |
 | `brain.health` | `@brain.health` | `number` | The enemy's current hit points. |
@@ -1952,6 +2002,8 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.damageSourceKnown` | `@brain.damageSourceKnown` | `boolean` | Whether the most recent damaging hit supplied an attacker world position. Pair it with damage recency before treating shared last-known-position memory or bearing as belonging to that hit. |
 | `brain.hasAttackTurn` | `@brain.hasAttackTurn` | `boolean` | Whether the enemy holds an attack turn for any attack, as of the previous tick: it reads `true` from the tick after the grant. See [Attack turn reads](#attack-turn-reads) for `attackTurnHeld` and `attackTurnFree`. |
 | `brain.animationDone` | `@brain.animationDone` | `boolean` | Whether the animation the active activities play has played through: `true` from the tick after a non-looping clip reaches its end, so an event on the clip's last tick fires first. Always `false` on a looping animation, and `true` when the animation's clip did not load. It is one value for the whole enemy: parent and nested rows read the same answer, unlike `timeInActivityMs`. |
+| `brain.activityRoll` | `@brain.activityRoll` | `number` | A roll, uniform in [0, 1), drawn when the activity whose rows are being evaluated was entered and fixed until it is left. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own roll, and every row at one level reads the same value: rows guarded `brain.activityRoll.lt(0.3)`, then `.lt(0.6)`, then nothing split one draw three ways. A stance's pose keeps one roll from rest to hold. Only the host draws it, from a seed per placement, so a replay draws the same rolls. |
+| `brain.damageInActivity` | `@brain.damageInActivity` | `number` | Points drained from this enemy's defense layers and health since the activity whose rows are being evaluated was entered, from every damage source, `applyDamage` included. Scope-relative; resets to `0` on entry. A stance's pose keeps one sum from rest to hold. Suits a short activity: over a long chase it only grows. |
 
 Plus one open namespace: `state("name")` reads the per-entity state field `name`
 as a number (`@state.name`). Impact policies and reactions write these fields;
@@ -1961,7 +2013,9 @@ for authored reactions to drive behavior — an impact policy writes
 (any other target is a load error); an interrupt guarded on
 `runtime.ge(state("staggered"), 1)` picks it up on the next AI tick. Impact
 policies are a separate authoring surface from `components.behavior` — this file
-does not document them.
+does not document them. To stagger on damage taken, read
+`brain.damageInActivity` or give a stance a `breakOn` instead; it counts every
+hit, needs no policy and clears itself on entry.
 
 Reading any other name is a load error.
 
@@ -1999,6 +2053,332 @@ const transitions = {
   wait: [{ to: "fire", when: attackTurnFree(shoot).and(brain.targetVisible) }],
 };
 ```
+
+A row that strikes from a stance asks for its own turn, so these reads are for
+hand-written cycles.
+
+### Stances
+
+An enemy warns of a strike by taking a **stance**: a held pose. Several
+attacks may begin in one stance, so the pose tells the player what kind of
+threat is coming, while the exact strike, and when it lands, stay hidden. You
+declare stances and the attacks that begin in them; load turns each into
+activities, rows and engine gates. A stance with only an `animation`, and an
+attack with only its engine fields, a `beginningStance` and a `release`, make
+a fair cycle with no timing to measure.
+
+```typescript
+import { brain, defineAttack, defineStance } from "postretro";
+import { heavy, melee } from "./budget"; // the tokens declared above
+
+// Poses. Each is named by its binding: "overhead", "coil", "bellow".
+const overhead = defineStance({
+  animation: "smash_windup", // the held pose names the threat
+  sound: "brute/stance_overhead", // played once per entry of the pose
+  holdMs: [500, 1200], // release time drawn per strike, hidden from guards
+  breakOn: { damage: 25, to: "flinch" }, // rest and holds
+});
+const coil = defineStance({ animation: "swipe_windup" });
+const bellow = defineStance({ animation: "roar" });
+
+// Strikes. Two begin in `overhead`: same pose, different hit.
+const slam = defineAttack({
+  draws: [melee.with({ cost: 2 }), heavy],
+  damage: 14,
+  maxRange: 3.5,
+  cooldownMs: 1800,
+  beginningStance: overhead,
+  endingStance: coil, // lands coiled, ready to lunge
+  release: { animation: "smash_strike", at: "hit" }, // the default recover runs the clip out
+});
+const sweep = defineAttack({
+  draws: [melee],
+  damage: 8,
+  maxRange: 3.5,
+  cooldownMs: 1200,
+  beginningStance: overhead, // ends back in `overhead`
+  release: { animation: "swipe_strike" }, // fires at its clip's `hit` by default
+});
+const lunge = defineAttack({
+  draws: [melee],
+  damage: 10,
+  maxRange: 3.5,
+  cooldownMs: 1500,
+  beginningStance: coil,
+  release: { animation: "swipe_strike", at: "hit" },
+});
+const charge = defineAttack({
+  draws: [heavy],
+  damage: 18,
+  maxRange: 12,
+  cooldownMs: 4000,
+  beginningStance: bellow,
+  release: { animation: "run", motion: "chaseTarget", speed: 2, ms: 1500, at: false }, // hits on reach
+  recover: { animation: "idle", ms: 600 }, // required after a moving release
+});
+
+// The `offense` layer of an `engage` composite. The behavior has every attack
+// its rows strike.
+offense: {
+  initial: "approach",
+  activities: {
+    approach: { animation: "walk" },
+    flinch: { animation: "flinch", motion: "hold" },
+  },
+  transitions: {
+    approach: [
+      { to: overhead, when: brain.targetDistance.le(3.5) }, // take the pose
+      { to: bellow, when: brain.targetDistance.ge(8) },
+    ],
+    // Rows out of each rest. A row to an attack also waits for its turn and its range.
+    overhead: [
+      { to: slam, when: brain.activityRoll.lt(0.5) }, // one roll per entry of the pose
+      { to: sweep },
+      { to: "approach", when: brain.targetDistance.gt(4.5) },
+    ],
+    coil: [
+      { to: lunge },
+      { to: "approach", when: brain.timeInActivityMs.ge(800) },
+    ],
+    bellow: [
+      { to: charge },
+      { to: "approach", when: brain.timeInActivityMs.ge(1500) },
+    ],
+    flinch: [{ to: "approach", when: brain.timeInActivityMs.ge(450) }],
+  },
+},
+```
+
+Each `animation` names a state the archetype's mesh declares. Luau passes each
+name and writes guards with method calls:
+
+```lua
+local overhead = defineStance("overhead", {
+  animation = "smash_windup",
+  sound = "brute/stance_overhead",
+  holdMs = { 500, 1200 },
+  breakOn = { damage = 25, to = "flinch" },
+})
+local slam = defineAttack("slam", {
+  draws = { melee:with({ cost = 2 }), heavy },
+  damage = 14,
+  maxRange = 3.5,
+  cooldownMs = 1800,
+  beginningStance = overhead,
+  endingStance = coil,
+  release = { animation = "smash_strike", at = "hit" },
+})
+
+-- In `transitions`:
+overhead = {
+  { to = slam, when = brain.activityRoll:lt(0.5) },
+  { to = sweep },
+  { to = "approach", when = brain.targetDistance:gt(4.5) },
+},
+```
+
+#### Stance options
+
+| Option | Type | Default | Meaning |
+|--------|------|---------|---------|
+| `animation` | `string` | required | The state the pose holds. A non-looping windup cut with `--trim` holds its last frame. |
+| `sound` | `string` | none | Sound key played at the enemy each time it takes the pose. Moving between the rest and its holds plays nothing more. |
+| `holdMs` | `number` \| `[min, max]` | `[400, 1000]` | How long the pose holds before a strike releases, in milliseconds. Each strike draws its own time in the range. |
+| `breakOn` | `{ damage, to }` | none | Leaves the pose for the sibling activity `to` once `damage` points have landed in it. See [Stagger](#stagger). |
+
+#### Strike fields
+
+An attack that begins in a stance adds these to its engine fields:
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `beginningStance` | `Stance` | none | The pose the strike starts from. Requires `release`. |
+| `endingStance` | `Stance` | `beginningStance` | The pose it rests in once its recovery ends. A slam can land coiled, ready for a lunge. |
+| `release` | `{ animation, at?, ms?, motion?, speed? }` | required with `beginningStance` | The strike. |
+| `recover` | `{ animation, ms? }` | holds the release's state | The recovery after it. |
+
+- **`release.animation`** plays the strike's own state. It cannot be the
+  beginning stance's state: that clip's time would include the wait in line,
+  so the strike would whiff whenever the wait ran long.
+- **`release.at`** names the clip event the hit lands on. Omitted, it is
+  `hit` when the clip carries one, so a strike lands on contact unasked.
+  Otherwise, and with `at: false`, the release fires on the first tick from
+  its entry that its gates pass, silently, as a charge's contact does.
+- **A release lasts until its moment.** Its own rows wait until the moment
+  has fired or whiffed. With no moment it lasts until its clip plays through
+  once, one pass of a loop. `release.ms` only holds it longer; no `ms` makes a
+  strike miss.
+- **`release.motion`** is `hold` (the default), `chaseTarget`, `strafe` or
+  `reposition`, and `release.speed` multiplies `moveSpeed`. A moving release
+  needs a `recover`, since the default recovery holds the release's state and
+  its stride would play in place. Its stride follows its speed against the
+  state's `travelSpeed`. `release.at: false` with a fast `chaseTarget` makes a
+  charge that hits on reach. A contact attack's `maxRange` is both how far
+  out it waits in line and how far it hits, so a charge cannot start farther
+  out than it hits: the example's charge hits a target already within 12 m on
+  its first tick.
+- **`recover`** omitted holds the release's state until its clip plays
+  through or 600 ms pass, whichever comes first, so a looping release still
+  recovers. An authored `recover` lasts its `ms`; without one it leaves the
+  same way, on its own clip.
+
+Every activity a stance generates stands still (`motion: "hold"`), whatever
+its level's motion, except a release given a `motion`.
+
+#### Rows to stances and attacks
+
+- **`{ to: overhead }` takes the pose.** It enters the stance's **rest**, which
+  holds the pose and no attack turn. A level's `initial` may be a stance.
+- **Key the rest's rows by the stance's name,** as for any activity. A rest
+  needs a way out: a row of its own, or a `"*"` or outer-level row. Its
+  `breakOn` row does not count, since an enemy nobody shoots would hold the
+  pose forever.
+- **`{ to: slam }` strikes.** It is legal only in the rows of the rest of
+  `slam`'s `beginningStance`.
+- **A row to an attack waits in line.** It passes once the attack's turn is
+  held, the target is within the attack's `maxRange` (when it declares one),
+  the attack is off cooldown, and its `when` passes. While its `when`, range
+  and cooldown pass, the resting enemy asks for the turn and keeps the pose.
+  It asks for one attack at a time, the first such row in order, and keeps its
+  place in line when the request moves to another row or when it leaves the
+  rest and returns on the same target. A costly attack is never starved by
+  cheaper ones sharing its tokens. See
+  [Attack tokens and budgets](#attack-tokens-and-budgets).
+- **`when` is optional** on every row, not only these: omitted, the row is
+  always enabled.
+- A level gains only the rests its rows and `initial` reach, directly or as an
+  attack's `endingStance`, and the strikes their rows reach. A level that
+  targets no stance gains nothing.
+
+#### What a strike does
+
+Load expands each stance a level reaches, and each attack struck from it,
+into activities named for traces and debugging:
+
+| Activity | Name | What it does |
+|----------|------|--------------|
+| Rest | `<stance>` (`overhead`) | Holds the pose. Holds no turn; the enemy waits in line here. |
+| Hold | `<attack>_<stance>` (`slam_overhead`) | Holds the same pose, holding the strike's turn. Releases once the pose has lasted the strike's hidden release time. |
+| Release | `<attack>_release` (`slam_release`) | Plays the strike and fires at its moment. Committed: it has no break row. |
+| Recover | `<attack>_recover` (`slam_recover`) | Recovers, then enters the `endingStance`'s rest, where the turn ends. |
+
+Never name these in a string: a string `to` or `initial` naming one, and an
+authored activity sharing a name with one, fail load. Every chain lands in a
+rest, so no turn is held across a chain or a repeat.
+
+- **The release time is hidden.** Each hold draws its time from `holdMs` on
+  entry. The draw is separate from `brain.activityRoll`, and no guard reads it,
+  so branching on the roll in a rest never leaks which strike is coming, or
+  when. Only the host draws it.
+- **The tell follows its target.** If the target switches during a hold, the
+  hold asks for the turn against the new target and carries on once it is
+  granted. It returns to its rest only when the new target has no room or no
+  target remains.
+- **The release is committed.** Damage does not break it. The level's `"*"`
+  rows and outer levels' rows still leave it, before its own rows, as they do
+  every activity: a `"*"` row to a stance abandons a strike in progress, and
+  one that passes on the moment's tick wins, so nothing fires.
+- **The enemy keeps its target and aim** from the rest through the recovery,
+  as it does under an engaging activity, so a strike outside an `engage`
+  composite still lands.
+
+#### The pose
+
+A stance's rest and its holds are one activity to the engine. Moving between
+them restarts no clip, plays no second stance sound, and carries
+`brain.timeInActivityMs`, `brain.activityRoll` and `brain.damageInActivity`
+across. A hold releases once the pose, not the hold, has lasted its time, and
+`breakOn` counts every hit in the pose, so steady chip fire on a waiting enemy
+eventually breaks it. Entering the pose from outside starts all of that fresh.
+A `"*"` or outer row into the pose the enemy is already in is skipped, as a row
+to the current activity always is; the release and recover are outside the
+pose, so such a row leaves them.
+
+#### Stagger
+
+`breakOn: { damage, to }` adds a row to the rest and every hold, ahead of
+their other rows, that leaves for the sibling activity `to` once
+`brain.damageInActivity` in the pose reaches `damage`. It wins over a granted
+strike and a due release on the same tick. Damage taken in the flinch does not
+carry into the activity it resumes. The same guard staggers any short
+activity, such as an aim:
+`{ to: "flinch", when: brain.damageInActivity.ge(25) }`. Over a long chase the
+sum only grows, so keep it for short activities.
+
+An impact effect that switches the enemy's animation during a release or its
+recover is a flinch. It cancels any hit still pending, a weapon burst's
+remaining shots included. The enemy stops steering and plays the reaction
+clip through, for at most 600 ms counted from the first switch; a later
+flinch never extends it. It then enters its `endingStance`'s rest, playing the
+stance sound, and never replays the strike or enters its recover. `release.ms`
+no longer holds it, and `"*"` and outer rows still leave at once.
+
+#### Whiffs
+
+The queue makes a tell a promise: a strike never starts without its turn and
+never meets its own cooldown. The player can still make it miss. A release
+whiffs, firing nothing that entry, when at its moment:
+
+- **the target is out of range,** having stepped back past `maxRange`. A tell
+  that follows a new target checks no range, so it can carry on against a far
+  one and whiff;
+- **the target is out of sight,** or the enemy is not facing it;
+- **a moving release changed direction before its moment.** A moving enemy
+  plays its directional state (`run_left`, `run_backward`) and restarts its
+  clip on each change. A moment the clip has not reached within one pass of
+  the clip, counted since the release began, whiffs, and the release leaves.
+
+A named `at` the clip cannot time, because the event is missing or the clip
+did not load, warns once and resolves on the release's first tick: it fires if
+its gates pass then.
+
+#### The co-op floor
+
+A tell a remote player cannot see is no tell. The **co-op floor** is 400 ms:
+the 250 ms a client's view of an enemy can trail the host, which is the
+ceiling of its interpolation buffer, plus a 150 ms budget to read the pose and
+react. An omitted `holdMs` starts at it, `[400, 1000]`. An authored `holdMs`
+whose minimum is below it loads with one warning naming the stance. It is a
+default and a warning, not a guarantee.
+
+The floor leaves out network transit, which has no bound at load. On top of
+the delay it covers, a client sees a stance about half a round trip plus one
+snapshot late. Clients do not predict enemies. For players on slow links,
+hold tells longer than the floor.
+
+#### Stance and attack load errors
+
+Each of these fails load and names the key path:
+
+- a string, `nil`, or a handle of the wrong kind where an attack or stance
+  handle belongs, including the retired name-keyed `attacks` map; in Luau, a
+  misspelled global fails at its read, naming it;
+- two handles of one name that declare different things;
+- `beginningStance` without `release`; `release`, `recover` or
+  `endingStance` without `beginningStance`; a moving `release` without
+  `recover`;
+- a release whose `animation` is its beginning stance's state;
+- `release.at` that is not an event name (a letter or underscore, then
+  letters, digits and underscores) and not `false`;
+- `release.motion` other than `hold`, `chaseTarget`, `strafe` or
+  `reposition`; a `speed` of zero or below; a negative `ms`;
+- `holdMs` with a negative bound or a minimum above its maximum;
+  `breakOn.damage` of zero or below; `breakOn.to` naming no activity at the
+  stance's level, or one load generates; any non-finite value; an unknown key
+  on a stance, `breakOn`, `release` or `recover`;
+- a row to an attack anywhere but in its beginning stance's rest, or to an
+  attack with no `beginningStance`;
+- a rest with no way out; rows keyed by a stance that no row or `initial` at
+  that level reaches;
+- an activity, a string `to` or an `initial` that names an activity load
+  generates, or two stances and attacks whose generated names collide;
+- the engine-only fields `pose`, `queue`, `afterMoment`, `atDefault`,
+  `releaseAfter` and `staggerTo`;
+- the stance option `stance`, which is reserved for crouching enemies and
+  rejects until they are supported.
+
+`attackTurnFree` and `attackTurnHeld` given anything but an attack handle
+throw at the call. A row an `attacks` list drops logs one line naming it.
 
 ### Faction and hostility
 
@@ -2322,16 +2702,28 @@ methods with brackets, for example `a["and"](a, b)` and `a["not"](a)`.
 Bare `number` and `boolean` literals auto-wrap, exactly as elsewhere in
 `runtime.*`.
 
-### Worked example — a stagger interrupt with a commitment window
+### Worked example — a stance that staggers
 
 ```typescript
-import { brain, defineAttack, defineEntity, runtime, state } from "postretro";
+import { brain, defineAttack, defineEntity, defineStance } from "postretro";
 
 const DETECTION = 16;
 const REACH = 2;
 const LEASH = 50;
 
-const slam = defineAttack({ damage: 14, maxRange: REACH, cooldownMs: 1400 });
+// Heavy fire while the slam is raised breaks the pose into `flinch`.
+const raised = defineStance({
+  animation: "slam_windup",
+  holdMs: [600, 1100],
+  breakOn: { damage: 30, to: "flinch" },
+});
+const slam = defineAttack({
+  damage: 14,
+  maxRange: REACH,
+  cooldownMs: 1400,
+  beginningStance: raised,
+  release: { animation: "slam" },
+});
 
 defineEntity({
   canonicalName: "brute",
@@ -2342,7 +2734,8 @@ defineEntity({
       animations: {
         idle: { clip: "Idle", loop: true },
         walk: { clip: "Walk", loop: true, travelSpeed: 3 },
-        swing: { clip: "Slam", loop: false, interrupt: "snap" },
+        slam_windup: { clip: "Slam_windup", loop: false },
+        slam: { clip: "Slam_strike", loop: false, interrupt: "snap" },
         pain: { clip: "Hit_React", loop: false, interrupt: "snap" },
       },
       defaultState: "idle",
@@ -2361,39 +2754,39 @@ defineEntity({
               "chaseTarget",
             ],
             offense: {
-              initial: "windup",
+              initial: "close",
               activities: {
-                windup: { animation: "swing" },
-                commit: { animation: "swing", action: { attack: slam } },
-                recover: { animation: "swing" },
+                close: { animation: "walk" },
+                flinch: { animation: "pain", motion: "hold", onEnter: "bruteFlinched" },
               },
               transitions: {
-                windup: [{ to: "commit", when: brain.timeInActivityMs.ge(250) }],
-                commit: [{ to: "recover", when: brain.timeInActivityMs.ge(150) }],
-                recover: [{ to: "windup", when: brain.timeInActivityMs.ge(400) }],
+                close: [{ to: raised, when: brain.targetDistance.le(REACH) }],
+                raised: [
+                  { to: slam },
+                  { to: "close", when: brain.targetDistance.gt(REACH + 1) },
+                ],
+                flinch: [{ to: "close", when: brain.timeInActivityMs.ge(400) }],
               },
             },
           },
         },
-        flinch: { animation: "pain", motion: "hold", onEnter: "bruteFlinched" },
       },
       transitions: {
-        "*": [
-          { to: "idle", when: brain.hasTarget.not() },
-          { to: "flinch", when: state("staggered").ge(1) },
-        ],
+        "*": [{ to: "idle", when: brain.hasTarget.not() }],
         idle: [{ to: "engage", when: brain.acquisitionDue.and(brain.targetDistance.le(DETECTION)) }],
         engage: [{ to: "idle", when: brain.targetDistance.gt(LEASH) }],
-        flinch: [{ to: "engage", when: brain.timeInActivityMs.ge(400) }],
       },
     },
   },
 });
 ```
 
-`state("...")` fields latch — nothing clears them automatically. A real
-stagger policy must clear `staggered` after the flinch is consumed, or route the
-outer `"*"` row so it cannot repeatedly select `flinch`.
+`breakOn.to` names an activity in the stance's own level, so `flinch` sits
+beside `close` in the offense graph. The brute flinches once 30 points land
+while it rests or holds in `raised`, counted across the whole pose. Once the
+slam releases, damage alone no longer breaks it; an impact effect that
+switches its animation still does (see [Stagger](#stagger)). The flinch's own
+damage sum starts at 0, so it resumes cleanly after 400 ms.
 
 `onEnter: "bruteFlinched"` is received the same way any named event is:
 `defineReaction("bruteFlinched", { ... })` subscribes to it (see the

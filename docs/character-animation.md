@@ -44,7 +44,10 @@ Three options edit clips as the library is written, so a rebuild repeats them:
   source's hips start along the ground, because the engine keeps every clip's
   first and last hip position over the character. A windup that steps back
   therefore holds with its hips over the character, and its strike starts
-  there too.
+  there too. An enemy plays the pair as a stance and its strike: the stance's
+  `animation` plays the windup, and the attack's `release` plays the strike,
+  landing on its `hit` event. See
+  [Stances](scripting-reference.md#stances).
 - `--event punch:hit=620` names a moment in a clip: `hit`, 620 ms into `punch`.
   An enemy attack can fire on it. The clip stores it in its extras, in seconds:
 

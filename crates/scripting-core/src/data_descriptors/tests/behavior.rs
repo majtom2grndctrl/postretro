@@ -634,6 +634,82 @@ fn shipped_pose_fixture_is_a_recursive_graph_with_valid_mesh_animation_states() 
     );
 }
 
+// Doc1: `sdk/behaviors/reference` carries typed attacks and a shared stance
+// that load in both authorings, through the one lowering, to identical
+// descriptors: the exhaustive `attacks` list keeps both strikes, and each
+// strike gets its own hold in the shared pose.
+#[test]
+fn shipped_stance_reference_enemy_lowers_identically_in_both_authorings() {
+    let typescript = shipped_reference_descriptor_from_typescript(
+        REFERENCE_ENTITIES_TS_SRC,
+        "stanceReferenceEnemyEntity",
+        "sdk/behaviors/reference/entities.ts",
+    );
+    let luau = shipped_reference_descriptor_from_luau(
+        REFERENCE_ENTITIES_LUAU_SRC,
+        "stanceReferenceEnemyEntity",
+        "sdk/behaviors/reference/entities.luau",
+    );
+    assert_eq!(typescript, luau, "the two authorings lower alike");
+
+    let behavior = typescript
+        .behavior
+        .expect("the reference carries a behavior");
+    assert_eq!(
+        behavior.attacks.keys().collect::<Vec<_>>(),
+        ["chop", "thrust"],
+        "the listed attacks, by name"
+    );
+    let activities = &behavior.envelope.activities;
+    assert_eq!(
+        activities.keys().collect::<Vec<_>>(),
+        [
+            "approach",
+            "chop_guard",
+            "chop_recover",
+            "chop_release",
+            "guard",
+            "idle",
+            "stagger",
+            "thrust_guard",
+            "thrust_recover",
+            "thrust_release",
+        ]
+    );
+    for (hold, attack) in [("chop_guard", "chop"), ("thrust_guard", "thrust")] {
+        assert_eq!(activities[hold].pose.as_deref(), Some("guard"), "{hold}");
+        assert_eq!(
+            activities[hold].animation.as_deref(),
+            Some("guard"),
+            "{hold}"
+        );
+        assert_eq!(
+            activities[hold].attack_turn.as_deref(),
+            Some(attack),
+            "{hold}"
+        );
+    }
+    assert_eq!(activities["guard"].pose.as_deref(), Some("guard"));
+    assert_eq!(
+        activities["guard"].attack_turn, None,
+        "a rest holds no turn"
+    );
+    let rest_rows: Vec<(&str, Option<&str>)> = behavior.envelope.transitions["guard"]
+        .iter()
+        .map(|row| (row.to.as_str(), row.queue.as_deref()))
+        .collect();
+    assert_eq!(
+        rest_rows,
+        [
+            ("stagger", None),
+            ("chop_guard", Some("chop")),
+            ("thrust_guard", Some("thrust")),
+            ("approach", None),
+        ],
+        "the break row first, then the authored rows, strikes queued"
+    );
+}
+
 // Engaged motion surface (E10): `strafe`, `reposition`, `facing`, and
 // `attackTurn` marks, through both production VMs.
 

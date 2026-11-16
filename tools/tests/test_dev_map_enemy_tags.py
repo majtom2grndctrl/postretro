@@ -26,6 +26,7 @@ ENEMY_CLASSNAMES = {
     "faction_sentiment_resistance",
     "positional_sound_grunt",
     "pose_fixture_enemy",
+    "stance_reference_enemy",
 }
 ENEMY_TAG = "enemy"
 KVP = re.compile(r'^\s*"([^"]*)"\s+"([^"]*)"\s*$')

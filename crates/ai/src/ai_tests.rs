@@ -9511,7 +9511,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                 vec![
                     break_row(CROUCH_BREAK),
                     queued("leap_crouch", "leap", always()),
-                    edge("approach", target_beyond(LEAP_QUEUE_RANGE + 1.0)),
+                    edge("approach", target_beyond(LEAP_QUEUE_RANGE)),
                     edge("approach", in_activity_ms(CROUCH_WAIT_MS)),
                 ],
             ),

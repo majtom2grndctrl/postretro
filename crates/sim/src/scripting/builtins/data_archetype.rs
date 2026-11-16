@@ -3537,7 +3537,7 @@ mod tests {
         );
     }
 
-    // Task 12: the mesh seam host spawns and remote clients share starts a
+    // The mesh seam host spawns and remote clients share starts a
     // repeating release's loop, and its travel variants, at clip time 0, and
     // leaves every other loop on the drawn phase. Without a behavior, nothing.
     #[test]

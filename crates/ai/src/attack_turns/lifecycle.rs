@@ -86,6 +86,11 @@ pub(crate) fn arbitrate_attack_turns(
             .executing_attack(outcome.id)
             .map(|name| attack_index(&outcome.brain.graph, name));
         let graph_reseated = outcome.graph_reseated;
+        // One turn covers a repeating release's passes: once it has struck, a
+        // turn it lost (a target switch, a tick with no target) is not
+        // requested again, so the passes left whiff on the hard gate below
+        // rather than strike under a second turn.
+        let spent_release = crate::clip_clock::repeating_release_struck(&outcome.brain);
         let BrainComponent {
             attack_turns: turns,
             graph,
@@ -154,7 +159,7 @@ pub(crate) fn arbitrate_attack_turns(
             weapons.cancel_actor(outcome.id);
         }
 
-        let request = target.and_then(|target| {
+        let request = target.filter(|_| !spent_release).and_then(|target| {
             next_request(
                 turns,
                 graph,

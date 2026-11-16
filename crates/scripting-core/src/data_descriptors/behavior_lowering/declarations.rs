@@ -275,6 +275,19 @@ fn parse_strike(
             release.repeat
         )));
     }
+    // A recover on the release's own state would keep looping the strike
+    // without striking: the case a repeating release's recover exists to stop.
+    if release.repeat > 1
+        && recover
+            .as_ref()
+            .and_then(|recover| recover.animation.as_deref())
+            .is_some_and(|animation| animation == release.animation)
+    {
+        return Err(shape(format!(
+            "`{path}.recover.animation`: attack \"{name}\"'s release repeats {} passes on \"{}\", and its recover plays that same looping state, so it would keep looping the strike; give the recover its own animation",
+            release.repeat, release.animation
+        )));
+    }
     if catalog
         .stances
         .get(&beginning)
@@ -355,6 +368,15 @@ fn parse_release(value: &Value, path: &str, attack: &str) -> Result<Release, Des
     if repeat > 1 && matches!(at, At::OnEntry) {
         return Err(shape(format!(
             "`{path}.repeat`: attack \"{attack}\"'s release repeats {repeat} passes but fires on entry (`at: false`), which has no moment to strike at on each pass; name a clip event, or leave `at` out for `hit`"
+        )));
+    }
+    // A steering release flips travel variants as it moves, and each flip
+    // restarts the clip: passes would bunch up or whiff early.
+    if repeat > 1
+        && let Some(motion) = motion.as_deref().filter(|motion| *motion != "hold")
+    {
+        return Err(shape(format!(
+            "`{path}.repeat`: attack \"{attack}\"'s release repeats {repeat} passes but moves (`motion: \"{motion}\"`); a moving release restarts its clip on each change of direction, so its passes would not keep time. A repeating release is planted: leave `motion` out, or set it to \"hold\""
         )));
     }
     Ok(Release {

@@ -1408,7 +1408,7 @@ fn update_brain_animation_playback_rates(
         // `speedScale` on. The set is derived once per graph (foundation
         // `RateScaledStates`), so this reads a handful of names, never the
         // graph; the remote client derives the same set from the descriptor.
-        // Every other case rests at the authored rate (1.0).
+        // Every other state plays its fixed `playbackRate` (default 1).
         // Calibration is `measured_ground_speed / effective_travel_speed`, each
         // variant against its own clip's stride; a state with neither an
         // override nor a derived clip stride falls back to

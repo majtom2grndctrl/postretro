@@ -92,15 +92,20 @@ pub struct ClipClock {
     pub clip: Option<ClipFacts>,
 }
 
-/// A flinch playing out over a release or recover, in clip time since the
-/// first switch that started it.
+/// A flinch playing out over a release or recover, since the first switch
+/// that started it: the reaction's end in clip time, the cap in game time.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Stagger {
     /// Clip time since the first switch, in seconds.
     pub elapsed: f64,
-    /// When the route is taken, in seconds since the first switch: the
-    /// latest reaction's end, never past the cap counted from the first.
-    pub until: f64,
+    /// The latest reaction's end, in clip time since the first switch. `None`
+    /// for a loop or a clip that did not resolve, which only the cap ends.
+    pub until: Option<f64>,
+    /// Game time since the first switch, in seconds. The route is taken once
+    /// it reaches the default recovery duration, whatever rate the reaction
+    /// plays at, if the reaction has not ended first.
+    #[serde(default)]
+    pub game_elapsed: f64,
 }
 
 /// What the clock caches of the tracked state's resolved clip.
@@ -187,7 +192,8 @@ mod tests {
             release_moments: 2,
             stagger: Some(Stagger {
                 elapsed: 0.1,
-                until: 0.4,
+                until: Some(0.4),
+                game_elapsed: 0.05,
             }),
             clip: Some(ClipFacts {
                 duration: 2.0,

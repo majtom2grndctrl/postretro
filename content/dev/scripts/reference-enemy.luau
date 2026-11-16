@@ -24,6 +24,7 @@ local CHARGE_REACH = 2.5
 local CLOSE_STANDOFF = 1.5
 -- The leap's tell waits in line from this far out; its hit lands at slam range.
 local LEAP_QUEUE_RANGE = 15
+-- The leap steers at this multiple of `moveSpeed`. See the leap below.
 local LEAP_SPEED = 3.5
 -- The combo and the leap each hold their tell for exactly this long.
 local TELL_MS = 666
@@ -46,7 +47,7 @@ local BELLOW_WAIT_MS = 2500
 local OVERHEAD_LEAVE_RANGE = SLAM_RANGE + 1
 local COCK_LEAVE_RANGE = JAB_RANGE + 1
 local CROUCH_WAIT_MS = 3000
-local CROUCH_LEAVE_RANGE = LEAP_QUEUE_RANGE + 1
+local CROUCH_LEAVE_RANGE = LEAP_QUEUE_RANGE
 local COIL_MS = 500
 local FLINCH_MS = 700
 
@@ -57,7 +58,7 @@ local overhead = defineStance("overhead", {
   holdMs = { 500, 1100 },
   breakOn = { damage = 30, to = "flinch" },
 })
--- The slam's landing; no strike begins here.
+-- The slam's and the leap's landing pose; no strike begins here.
 local coil = defineStance("coil", { animation = "swipe_windup", sound = "fixtures/land" })
 local cock = defineStance("cock", {
   animation = "punch_windup",
@@ -303,6 +304,7 @@ M.referenceEnemyEntity = defineEntity({
                   { to = "approach", when = brain.targetDistance:gt(COCK_LEAVE_RANGE) },
                   { to = "approach", when = brain.timeInActivityMs:ge(COCK_WAIT_MS) },
                 },
+                -- Can show while the leap cools, then waits out CROUCH_WAIT_MS.
                 crouch = {
                   { to = leap },
                   { to = "approach", when = brain.targetDistance:gt(CROUCH_LEAVE_RANGE) },

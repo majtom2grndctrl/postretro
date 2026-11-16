@@ -1903,7 +1903,7 @@ cycle follows the enemy's speed exactly as `X`'s does, against its own
 state and on every state an activity plays while it chases, strafes,
 repositions or walks to a position. That rate is the enemy's speed over the
 state's `travelSpeed`, kept between 0.5x and 1.5x. Every other state plays at
-1x. Three optional fields on an animation state change this:
+1x unless it sets `playbackRate`. Three optional fields on an animation state change this:
 
 | Field | Type | Default | Effect |
 |-------|------|---------|--------|
@@ -1920,6 +1920,9 @@ moves, such as a leap whose `hit` must land when the body does. Use
 `playbackRate` to speed up or slow down a clip without re-exporting it. Clip
 moments follow the rate: at `playbackRate: 2.5`, a `hit` 400 ms into the clip
 lands 160 ms after the state starts, and a looping state strikes once per pass.
+A directional state (`run_left`, `run_right`, `run_backward`) takes each of
+these fields it leaves out from its base state (`run`), so it plays as the base
+does.
 
 ```ts
 animations: {
@@ -1970,7 +1973,7 @@ reads `brain.animationDone`.
 - **One chance per entry.** The attack fires on the tick the activity's clip
   reaches the event. Every usual gate applies on that tick: range, sight,
   facing, cooldown and the attack turn. A gate that fails is a miss, and nothing
-  fires later in that entry. Leaving before the moment fires nothing.
+  fires later in that entry. Leaving before the moment fires nothing. A stance release's `repeat` gives one chance per pass.
 - **The clip is the animation the activity plays.** Activities that share an
   animation state share its clip, so a second activity entered partway through
   meets the moment where the clip already is. Entering a non-looping clip that
@@ -2260,8 +2263,16 @@ An attack that begins in a stance adds these to its engine fields:
   release plays a looping state (`loop: true`), since a client replays each
   pass from the state alone; it cannot use `at: false`, which has no moment
   to strike at each pass, and it needs a `recover` with its own `animation`,
-  or the recover would keep looping the strike. A clip with no moment to
-  time, such as a defaulted `hit` the clip lacks, strikes once. Its loop
+  or the recover would keep looping the strike, so the recover's `animation`
+  cannot be the release's own. It stands still (`motion` left out or
+  `"hold"`): a moving release restarts its clip on each change of direction,
+  so its passes would not keep time. A clip with no moment to time, such as a
+  defaulted `hit` the clip lacks, strikes once, and a pass (the clip's length
+  over its `playbackRate`) shorter than one 1/60 s game tick lands at most one
+  hit a tick, the passes between whiffing; each warns once when the clips load. If
+  the enemy loses its turn after the first hit, because it switched targets
+  or lost its target, the passes left whiff rather than strike under a new
+  turn. Its loop
   starts at the clip's beginning on entry, on the host and every client,
   rather than at the enemy's own offset into the loop, so the first pass
   follows on from the held tell and strikes on that pass. `repeat` is a Luau
@@ -2381,7 +2392,7 @@ into activities named for traces and debugging:
 
 Never name these in a string: a string `to` or `initial` naming one, and an
 authored activity sharing a name with one, fail load. Every chain lands in a
-rest, so no turn is held across a chain or a repeat.
+rest, so no turn is held across a chain or a re-strike.
 
 - **The release time is hidden.** Each hold draws its time from `holdMs` on
   entry. The draw is separate from `brain.activityRoll`, and no guard reads it,
@@ -2425,7 +2436,8 @@ sum only grows, so keep it for short activities.
 An impact effect that switches the enemy's animation during a release or its
 recover is a flinch. It cancels any hit still pending, a weapon burst's
 remaining shots included. The enemy stops steering and plays the reaction
-clip through, for at most 600 ms counted from the first switch; a later
+clip through, for at most 600 ms of game time counted from the first switch,
+however fast the reaction plays; a later
 flinch never extends it. It then enters its `endingStance`'s rest, playing the
 stance sound, and never replays the strike or enters its recover. `release.ms`
 no longer holds it, and `"*"` and outer rows still leave at once.
@@ -2433,7 +2445,9 @@ no longer holds it, and `"*"` and outer rows still leave at once.
 #### Whiffs
 
 The queue makes a tell a promise: a strike never starts without its turn and
-never meets its own cooldown. The player can still make it miss. A release
+never meets its own cooldown. The player can still make it miss. A whiffed
+release still starts its attack's cooldown, as a hit would: the enemy
+committed, so it does not throw the same strike again at once. A release
 whiffs, firing nothing that entry, when at its moment:
 
 - **the target is out of range,** having stepped back past `maxRange`, or
@@ -2482,8 +2496,10 @@ Each of these fails load and names the key path:
 - `release.motion` other than `hold`, `chaseTarget`, `strafe` or
   `reposition`; a `speed` of zero or below; a negative `ms`;
 - `release.repeat` that is not a whole number from 1 to 8; a `repeat` above 1
-  with `at: false`, without a `recover.animation`, or on an animation state
-  that does not loop (naming the attack and the state);
+  with `at: false`, with a `motion` other than `hold`, without a
+  `recover.animation`, with a `recover.animation` naming the release's own
+  state, or on an animation state that does not loop (naming the attack and
+  the state);
 - `queueRange` below `maxRange`, non-finite, or beside `weapon`;
 - `holdMs` with a negative bound or a minimum above its maximum;
   `breakOn.damage` of zero or below; `breakOn.to` naming no activity at the
@@ -2715,9 +2731,9 @@ Only maps compiled with a current `prl-build` carry the door and lift data the
 fact reads. A map compiled before that reads as if its doors never gate a route.
 See [Movers](level_design.md#movers) for how doors and lifts affect enemies.
 
-### `maxRange`, `engagementRadius`, and `standoffDistance`
+### `maxRange`, `engagementRadius`, `standoffDistance`, and `queueRange`
 
-Three separate knobs that are easy to conflate, and a fourth for stances:
+Four separate knobs that are easy to conflate:
 
 - **A contact attack's `maxRange` gates its direct damage.** It is the distance
   within which a state selecting that entry actually lands a hit, checked every

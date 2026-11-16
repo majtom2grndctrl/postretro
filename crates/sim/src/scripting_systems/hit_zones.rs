@@ -4000,7 +4000,7 @@ mod tests {
         assert_eq!(unknown, vec!["head".to_string(), "leg".to_string()]);
     }
 
-    // Task 12: hit zones read the same loop phase as the renderer and the clip
+    // Hit zones read the same loop phase as the renderer and the clip
     // clock: 0 for a repeating release's state, the drawn phase otherwise.
     #[test]
     fn a_repeating_release_state_poses_at_phase_zero_and_other_loops_keep_theirs() {

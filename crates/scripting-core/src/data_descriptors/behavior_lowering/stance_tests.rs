@@ -1212,7 +1212,7 @@ fn an_authored_lowering_only_field_in_a_body_or_handle_rejects_load() {
     }
 }
 
-// Task 12: `repeat` lowers to the release's pass count beside its defaulted
+// `repeat` lowers to the release's pass count beside its defaulted
 // `hit` and its one moment-gated row, and nothing else changes; an authored
 // pass count is a lowering-only field.
 #[test]

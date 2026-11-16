@@ -2886,7 +2886,7 @@ impl ClientReplication {
     /// Apply the rate for one presented remote pose. Only an enemy whose current
     /// mesh state is one of the descriptor graph's rate-scaled states, or a
     /// directional variant of one, receives its displayed XZ speed; every other state
-    /// deliberately rests at rate 1. That speed includes knockback, which the
+    /// plays its fixed `playbackRate` (default 1). That speed includes knockback, which the
     /// host's steering-velocity rate excludes (sim
     /// `update_brain_animation_playback_rates`): a known divergence until
     /// enemies carry velocity on the wire.

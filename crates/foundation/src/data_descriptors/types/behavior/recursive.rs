@@ -2130,7 +2130,7 @@ mod tests {
         );
     }
 
-    // Task 12: a release's lowered pass count loads on a stance release,
+    // A release's lowered pass count loads on a stance release,
     // round-trips, and rejects out of its range or off a timed release.
     #[test]
     fn release_passes_load_on_a_timed_release_and_reject_elsewhere_with_their_path() {
@@ -2185,7 +2185,7 @@ mod tests {
         );
     }
 
-    // Task 12: `queueRange` is a contact attack's, at least its `maxRange`,
+    // `queueRange` is a contact attack's, at least its `maxRange`,
     // and a weapon attack rejects it as it rejects `maxRange`. Omitted, the
     // queue distance is `maxRange`; combat slots still derive from `maxRange`.
     #[test]
@@ -2251,7 +2251,7 @@ mod tests {
         }
     }
 
-    // Task 12: the repeating-release states come from activities with
+    // The repeating-release states come from activities with
     // `passes` above 1 only, each named once.
     #[test]
     fn repeating_release_states_name_only_a_repeating_releases_animation() {

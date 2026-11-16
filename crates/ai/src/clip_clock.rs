@@ -14,6 +14,7 @@ use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::ActionVerb;
 use postretro_foundation::stance_defaults::DEFAULT_RECOVERY_MS;
 
+use super::attack_turns::attack_index;
 use super::graph_eval::animation_for_path;
 use super::{LocomotionIntent, launch, travel_variants};
 use crate::agent_steering;
@@ -73,11 +74,11 @@ impl Moment {
 /// advancing. While a dropped enemy's redraw is pending the clock holds; a
 /// foreign switch drops the redraw, so the flinch stays on screen.
 ///
-/// A flinch already playing over a release or recover advances first, at the
-/// rate presentation drew it; a foreign switch then starts one, or moves a
-/// playing one's end to the new reaction's (see [`stagger`]). A reaction
-/// state is not one the graph rate-scales (no activity steers on it), so it
-/// draws at 1 and the flinch's time, the cap included, runs in game time.
+/// A flinch already playing over a release or recover advances first: its
+/// clip time at the rate presentation drew it, its cap's clock by `dt`. A
+/// foreign switch then starts one, or moves a playing one's end to the new
+/// reaction's (see [`stagger`]). A reaction state with a `playbackRate` ends
+/// its clip sooner or later in game time, but the cap stays game time.
 pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, tick_dt: f32) {
     let mesh = source
         .registry
@@ -86,7 +87,9 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
         .and_then(|mesh| mesh.animation.as_ref());
     if let Some(stagger) = brain.clip_clock.stagger.as_mut() {
         let rate = mesh.map_or(1.0, |animation| f64::from(animation.rate));
-        stagger.elapsed += f64::from(tick_dt.max(0.0)) * rate;
+        let dt = f64::from(tick_dt.max(0.0));
+        stagger.elapsed += dt * rate;
+        stagger.game_elapsed += dt;
     }
     if let Some(animation) = mesh {
         let switches = animation.switches.get();
@@ -327,6 +330,39 @@ pub(super) fn strike_limit(brain: &BrainComponent, moment: Moment) -> u32 {
     release_gate(brain).map_or(1, |depth| release_passes(brain, depth))
 }
 
+/// The leaf's stance release resolved without striking and no flinch
+/// staggered it: every moment whiffed, or a release with no moment played its
+/// passes without reaching its target. Its depth and attack (an index into
+/// the graph's attacks). Leaving it is the whiff that starts the attack's
+/// cooldown (`compute`).
+pub(super) fn whiffed_release(brain: &BrainComponent) -> Option<(usize, u16)> {
+    let clock = &brain.clip_clock;
+    if !clock.release_resolved || clock.stagger.is_some() {
+        return None;
+    }
+    let depth = release_gate(brain)?;
+    if brain.activity_attack_count(depth)? > 0 {
+        return None;
+    }
+    let (_, activity) = brain.activity_at_depth(depth)?;
+    let Some(ActionVerb::Attack { name, .. }) = activity.action.as_ref() else {
+        return None;
+    };
+    Some((depth, attack_index(&brain.graph, name)?))
+}
+
+/// The leaf is a repeating stance release that has struck: one turn covers
+/// its passes, so once it loses that turn (a target switch, a tick with no
+/// target) it requests no other, and the passes left whiff on the hard gate.
+pub(crate) fn repeating_release_struck(brain: &BrainComponent) -> bool {
+    release_gate(brain).is_some_and(|depth| {
+        release_passes(brain, depth) > 1
+            && brain
+                .activity_attack_count(depth)
+                .is_some_and(|strikes| strikes > 0)
+    })
+}
+
 /// The pass count (`passes`) of the release at `depth`: 1 unless it repeats.
 fn release_passes(brain: &BrainComponent, depth: usize) -> u32 {
     brain
@@ -390,10 +426,11 @@ fn played_passes(clock: &ClipClock, passes: u32) -> bool {
 
 /// Start or extend a flinch: a switch the brain did not make, while an
 /// activity on the path routes flinches (`staggerTo`). The reaction now on
-/// the mesh plays through, timed from its resolved clip's duration; a loop,
-/// or a clip that did not resolve, takes the cap. The cap, the default
-/// recovery duration, counts from the first switch, so a later flinch can
-/// move the end to its own reaction's but never past it.
+/// the mesh plays through, timed in clip time from its resolved clip's
+/// duration; a loop, or a clip that did not resolve, takes the cap. The cap,
+/// the default recovery duration, runs in game time from the first switch,
+/// so a later flinch can move the end to its own reaction's but never past
+/// it.
 ///
 /// The compute pass reads this before transitions, so a switch landing before
 /// the AI pass on the tick a release is entered starts nothing: the path is
@@ -402,13 +439,11 @@ fn stagger(brain: &mut BrainComponent, source: &ClipSource<'_>, reaction_state: 
     if !routes_flinches(brain) {
         return;
     }
-    let cap = f64::from(DEFAULT_RECOVERY_MS) / 1000.0;
     let reaction = read_clip(source, reaction_state, None)
         .filter(|read| !read.looping)
-        .and_then(|read| read.duration)
-        .map_or(cap, f64::from);
+        .and_then(|read| read.duration);
     let stagger = brain.clip_clock.stagger.get_or_insert(Stagger::default());
-    stagger.until = (stagger.elapsed + reaction).min(cap);
+    stagger.until = reaction.map(|reaction| stagger.elapsed + f64::from(reaction));
 }
 
 /// An activity on the path routes an impact flinch (`staggerTo`).
@@ -420,11 +455,16 @@ pub(super) fn routes_flinches(brain: &BrainComponent) -> bool {
     })
 }
 
-/// The flinch has played out: its route is taken on this evaluation.
+/// The flinch has played out: its reaction's clip ended, or the cap passed
+/// in game time. Its route is taken on this evaluation.
 pub(super) fn stagger_due(clock: &ClipClock) -> bool {
-    clock
-        .stagger
-        .is_some_and(|stagger| stagger.elapsed + CLIP_TIME_SLACK >= stagger.until)
+    let cap = f64::from(DEFAULT_RECOVERY_MS) / 1000.0;
+    clock.stagger.is_some_and(|stagger| {
+        stagger
+            .until
+            .is_some_and(|until| stagger.elapsed + CLIP_TIME_SLACK >= until)
+            || stagger.game_elapsed + CLIP_TIME_SLACK >= cap
+    })
 }
 
 /// The brain's own switch drew the tracked state again after the mesh had left
@@ -614,16 +654,22 @@ pub(super) fn clips_bound(
 /// activity whose own action fires `at` an event, in its own state and every
 /// travel variant of it the mesh can draw. The attack then fires as without
 /// `at`. A state the mesh does not declare is spawn validation's warning.
+///
+/// Then each repeating release ([`warn_repeating_releases`]), against a tick
+/// of `tick_dt` seconds.
 pub(super) fn warn_unclipped_moments(
     graph: &postretro_foundation::BehaviorGraphDescriptor,
     registry: &EntityRegistry,
     clips: &HitZoneStore,
     entity: EntityId,
+    tick_dt: f32,
     warned: &mut std::collections::HashSet<String>,
 ) {
     let mut timed = Vec::new();
     collect_timed_activities(&graph.envelope, &mut timed);
-    if timed.is_empty() {
+    let mut repeating = Vec::new();
+    collect_repeating_releases(&graph.envelope, &mut repeating);
+    if timed.is_empty() && repeating.is_empty() {
         return;
     }
     let mesh = registry.get_component::<MeshComponent>(entity).ok();
@@ -663,6 +709,114 @@ pub(super) fn warn_unclipped_moments(
                      once per entity class and state.",
                     clip = declared.clip,
                 );
+            }
+        }
+    }
+    if let Some((mesh, animation)) = states {
+        warn_repeating_releases(&repeating, class, mesh, animation, clips, tick_dt, warned);
+    }
+}
+
+/// Prefix of the warn-once keys for a repeating release that cannot strike
+/// once per pass, keyed by entity class and attack.
+const REPEATING_RELEASE_WARNING: &str = "repeat:";
+
+/// Warn once per entity class and attack for a repeating release
+/// (`passes > 1`) that cannot strike once per pass: its moment, named or the
+/// defaulted `hit`, cannot be timed on its state's clip, so it strikes once;
+/// or a pass (`clip duration / playbackRate`) is shorter than a tick, so the
+/// clock reaches one moment a tick and the passes in between whiff. A planted
+/// release draws only its base state, at its fixed rate.
+fn warn_repeating_releases(
+    repeating: &[RepeatingRelease<'_>],
+    class: &str,
+    mesh: &MeshComponent,
+    animation: &postretro_entities::components::mesh::MeshAnimation,
+    clips: &HitZoneStore,
+    tick_dt: f32,
+    warned: &mut std::collections::HashSet<String>,
+) {
+    for release in repeating {
+        let Some(declared) = animation.states.get(release.state) else {
+            continue;
+        };
+        let clip = clips
+            .get_by_name(&mesh.model)
+            .and_then(|model| model.state_clip(declared.clip_index, &declared.clip));
+        let (attack, state, passes) = (release.attack, release.state, release.passes);
+        let untimed = match (clip, release.event) {
+            (None, _) => Some("did not resolve"),
+            (Some(clip), Some(event)) if clip.event_time(event).is_none() => {
+                Some("has no such event")
+            }
+            _ => None,
+        };
+        if let Some(problem) = untimed {
+            if warned.insert(format!(
+                "{REPEATING_RELEASE_WARNING}{class}:{attack}:untimed"
+            )) {
+                log::warn!(
+                    "[AI] `{class}` attack `{attack}`: its release repeats {passes} passes on \
+                     state `{state}`, but clip `{clip}` {problem}, so its moment `{event}` cannot \
+                     be timed and the release strikes once, not once per pass. Warned once per \
+                     entity class and attack.",
+                    clip = declared.clip,
+                    event = release.event.unwrap_or_default(),
+                );
+            }
+            continue;
+        }
+        let Some(clip) = clip else { continue };
+        let rate = declared.playback_rate();
+        let pass = clip.duration / rate;
+        if pass < tick_dt
+            && warned.insert(format!("{REPEATING_RELEASE_WARNING}{class}:{attack}:short"))
+        {
+            log::warn!(
+                "[AI] `{class}` attack `{attack}`: its release repeats {passes} passes on state \
+                 `{state}`, but a pass lasts {pass_ms:.1} ms (clip `{clip}`, {duration_ms:.1} ms, \
+                 at playbackRate {rate}), shorter than one {tick_ms:.1} ms tick, so it strikes \
+                 at most once a tick and the passes in between whiff. Warned once per entity \
+                 class and attack.",
+                clip = declared.clip,
+                pass_ms = pass * 1000.0,
+                duration_ms = clip.duration * 1000.0,
+                tick_ms = tick_dt * 1000.0,
+            );
+        }
+    }
+}
+
+/// A repeating stance release: its attack, state, pass count and moment.
+struct RepeatingRelease<'a> {
+    attack: &'a str,
+    state: &'a str,
+    passes: u32,
+    /// The clip event it strikes at, named or the defaulted `hit`.
+    event: Option<&'a str>,
+}
+
+/// Every activity, at any depth, that repeats its passes (`passes > 1`).
+fn collect_repeating_releases<'a>(
+    envelope: &'a postretro_foundation::BehaviorGraphEnvelope,
+    repeating: &mut Vec<RepeatingRelease<'a>>,
+) {
+    for activity in envelope.activities.values() {
+        if let (Some(passes @ 2..), Some(ActionVerb::Attack { name, at, .. }), Some(state)) = (
+            activity.passes,
+            activity.action.as_ref(),
+            activity.animation.as_deref(),
+        ) {
+            repeating.push(RepeatingRelease {
+                attack: name,
+                state,
+                passes,
+                event: at.as_deref(),
+            });
+        }
+        for layer in activity.layers.values() {
+            if let postretro_foundation::BehaviorLayerDescriptor::Graph(child) = layer {
+                collect_repeating_releases(child, repeating);
             }
         }
     }

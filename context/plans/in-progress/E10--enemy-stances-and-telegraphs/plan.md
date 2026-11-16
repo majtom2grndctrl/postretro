@@ -209,6 +209,19 @@ After the review loop the owner ruled on the charge stride and added two brute a
 
 **Round 3** (1 reviewer on the round-2 fix diff): no must-fix. Fixed a misleading message when a level that opens on a stance misspells `activities`, a clippy complex-type lint, a missing-vs-empty handle name message, single-precision values printed in messages, and a doc comment. The loop stops here: round 3 found only message-level issues.
 
+**Round 4** (owner additions, Tasks 11–14; 2 tracers, a contract verifier and an adversarial tester (opus), hygiene and drift (sonnet)): no must-fix. Fixed:
+- A whiffed stance release now starts its attack's cooldown on the tick it is left, so a leap that misses at range cannot re-queue at once. A flinch stagger is exempt. No Acceptance row says a whiff leaves the attack ready.
+- Lowering rejects `repeat > 1` with a steering `motion`. A variant restart reopened the latch, bunching hits.
+- Lowering rejects a repeating release whose recover names its own state.
+- A repeating release that has struck requests no new turn, so a target switch whiffs the passes left.
+- One-time warnings for a repeating release whose clip cannot time its moment (it strikes once) and for passes shorter than a tick.
+- The flinch cap runs in game time whatever the reaction's `playbackRate`.
+- A travel variant inherits unset rate fields from its base state (resolved in `MeshDescriptor::build`).
+- Content: the crouch leaves at its 15 m queue range.
+- Drift: a stale tell count, task labels in comments, three docs sentences, and §7c's "decided, not yet built" label.
+
+Left: the crouch tell can show while the leap cools (no guard fact reads one attack's cooldown); the zero-phase set is derived at mesh materialize, so a reload that adds `repeat` takes effect on the next spawn (documented); a recover's own mark can still request a turn after a release (as round 1 left). Lib suites after the fixes: ai 511, entities 329, scripting-core 1115, foundation 219, sim 2007, netcode 1034, all passing; the full gate runs after the merge from `origin/main`.
+
 **Final gate** (on 40fb77d, plus round 3's scripting-core message fixes): fmt clean; clippy `--workspace --all-targets --features postretro/dev-tools -D warnings` clean (scripting-core re-run after round 3); workspace tests 16,279 passed, 0 failed (`--no-fail-fast --features postretro/dev-tools`); scripting-core 1,106 passed after round 3; `cargo check --workspace --release` clean; `crate-graph --check` up to date.
 
 ## Trial notes

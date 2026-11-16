@@ -204,12 +204,15 @@ impl BrainPrograms {
     }
 
     /// Check each newly bound entity's clip-timed attacks once its clips bind
-    /// (its model is loaded), warning for a clip that cannot time one. An
-    /// entity whose model has not loaded yet is checked on a later tick.
+    /// (its model is loaded), warning for a clip that cannot time one, and
+    /// for a repeating release that cannot strike once per pass at a tick of
+    /// `tick_dt` seconds. An entity whose model has not loaded yet is checked
+    /// on a later tick.
     pub(crate) fn warn_unclipped_moments(
         &mut self,
         registry: &EntityRegistry,
         clips: &crate::scripting_systems::hit_zones::HitZoneStore,
+        tick_dt: f32,
         warned: &mut HashSet<String>,
     ) {
         for (&entity, entry) in &mut self.entries {
@@ -222,6 +225,7 @@ impl BrainPrograms {
                 registry,
                 clips,
                 entity,
+                tick_dt,
                 warned,
             );
         }

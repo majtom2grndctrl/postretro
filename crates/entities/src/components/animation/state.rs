@@ -73,7 +73,7 @@ pub struct AnimationState {
     pub max_playback_rate: Option<f32>,
     /// Whether the stride rule may scale this state's playback rate
     /// (`scaleWithSpeed` on the wire, default `true`). `false` plays the state
-    /// at 1x however its activity moves, so an airborne clip keeps its hit
+    /// at `playbackRate` (default 1) however its activity moves, so an airborne clip keeps its hit
     /// time while the enemy steers.
     #[serde(
         rename = "scaleWithSpeed",

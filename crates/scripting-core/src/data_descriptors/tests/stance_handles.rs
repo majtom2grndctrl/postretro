@@ -349,7 +349,7 @@ const JS_COMBO: &str = r#", queueRange: 6, release: { animation: "jab_quick", re
 // `repeat` is a Luau keyword, so a Luau table spells the key `["repeat"]`.
 const LUA_COMBO: &str = r#", queueRange = 6, release = { animation = "jab_quick", ["repeat"] = 3 }, recover = { animation = "idle" }"#;
 
-// Task 12: a release's `repeat` and an attack's `queueRange` load alike in
+// A release's `repeat` and an attack's `queueRange` load alike in
 // both runtimes: the release carries its pass count, the attack its queue
 // distance, and `maxRange` stays the hit distance.
 #[test]
@@ -434,6 +434,47 @@ fn a_malformed_repeat_or_queue_range_rejects_load_in_both_runtimes() {
             "repeats 3 passes on a looping state",
         ],
     );
+    for motion in ["chaseTarget", "strafe", "reposition"] {
+        let moves = format!("repeats 3 passes but moves (`motion: \"{motion}\"`)");
+        assert_rejects_in_both(
+            &format!("repeat while moving ({motion})"),
+            &Brute {
+                slam: &format!(
+                    r#", release: {{ animation: "jab_quick", motion: "{motion}", repeat: 3 }}, recover: {{ animation: "idle" }}"#
+                ),
+                ..JS_BRUTE
+            },
+            &Brute {
+                slam: &format!(
+                    r#", release = {{ animation = "jab_quick", motion = "{motion}", ["repeat"] = 3 }}, recover = {{ animation = "idle" }}"#
+                ),
+                ..LUA_BRUTE
+            },
+            &[release, &moves, "A repeating release is planted"],
+        );
+    }
+    // `motion: "hold"` is the default, and a repeating release may name it.
+    let js_mesh = jab_mesh_js(true);
+    js_loaded(&Brute {
+        slam: r#", release: { animation: "jab_quick", motion: "hold", repeat: 3 }, recover: { animation: "idle" }"#,
+        mesh: &js_mesh,
+        ..JS_BRUTE
+    });
+    assert_rejects_in_both(
+        "repeat recovering on the release's own state",
+        &Brute {
+            slam: r#", release: { animation: "jab_quick", repeat: 3 }, recover: { animation: "jab_quick" }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", release = { animation = "jab_quick", ["repeat"] = 3 }, recover = { animation = "jab_quick" }"#,
+            ..LUA_BRUTE
+        },
+        &[
+            "`components.behavior.transitions.overhead[0].to.recover.animation`",
+            r#"repeats 3 passes on "jab_quick", and its recover plays that same looping state"#,
+        ],
+    );
     assert_rejects_in_both(
         "queue range under the reach",
         &Brute {
@@ -450,7 +491,7 @@ fn a_malformed_repeat_or_queue_range_rejects_load_in_both_runtimes() {
     );
 }
 
-// Task 12: a repeating release must play a looping state, checked where the
+// A repeating release must play a looping state, checked where the
 // mesh and the lowered behavior meet: the entity readers.
 #[test]
 fn a_repeating_release_on_a_one_shot_state_rejects_load_in_both_runtimes() {

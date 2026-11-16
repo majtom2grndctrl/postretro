@@ -1087,7 +1087,7 @@ mod tests {
         );
     }
 
-    // Task 12: a remote enemy's mesh derives its zero-phase loops from the
+    // A remote enemy's mesh derives its zero-phase loops from the
     // shared descriptor's graph, as the host's does: the client draws a
     // repeating release's state from clip time 0 on entry, while its other
     // loops keep the drawn phase. Nothing about it crosses the wire.

@@ -532,7 +532,7 @@ where
     turns.sync_pools(attack_turns::running_attack_pools(registry));
     programs.sync(registry, descriptors, descriptor_generation, warned);
     if let Some(clips) = clips {
-        programs.warn_unclipped_moments(registry, clips, warned);
+        programs.warn_unclipped_moments(registry, clips, tick_dt, warned);
     }
     weapons.sync(registry, programs, |actor| {
         host.is_quiescent(registry, actor)

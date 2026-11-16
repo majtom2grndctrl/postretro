@@ -288,7 +288,7 @@ fn timer_tick(ms: f32) -> usize {
     tick
 }
 
-/// The ticks a flinch lasts at most: the default recovery duration in clip
+/// The ticks a flinch lasts at most: the default recovery duration in game
 /// time, counted from the first switch.
 fn stagger_cap() -> usize {
     ticks(DEFAULT_RECOVERY_MS / 1000.0)
@@ -953,6 +953,33 @@ fn a_later_flinch_never_extends_the_stagger_past_the_cap_from_the_first() {
     );
     assert_eq!(first_in(&log, COIL), Some(cap_ends), "steady flinches");
     assert!(hit_ticks(&log).is_empty());
+}
+
+// The flinch's cap runs in game time. A reaction state played at another rate
+// ends its clip in clip time, but the default recovery caps it at 600 ms of
+// game time from the first switch, whatever the rate: at 1.25x the 900 ms
+// clip would end at 720 ms and the cap ends it; at 2x it ends at 450 ms.
+// Regression: the cap ran in clip time, so a faster reaction cut it short.
+#[test]
+fn the_flinch_cap_runs_in_game_time_whatever_the_reactions_rate() {
+    let strike = Strike::default();
+    for (rate, ends) in [(1.25, 10 + stagger_cap()), (2.0, 10 + ticks(0.45))] {
+        let log = run_flinched(
+            &strike,
+            vec![strike_clip()],
+            RELEASE,
+            90,
+            |scene, enemy, tick| {
+                if tick == 10 {
+                    scene.switch(enemy, LONG_REACTION);
+                } else if tick > 10 && enemy_animation(&scene.reg, enemy) == LONG_REACTION {
+                    scene.set_rate(enemy, rate);
+                }
+            },
+        );
+        assert_eq!(first_in(&log, COIL), Some(ends), "the reaction at {rate}x");
+        assert!(hit_ticks(&log).is_empty());
+    }
 }
 
 // S22 / P55(b): a level `"*"` row passing during the reaction leaves at once;

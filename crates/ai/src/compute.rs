@@ -340,6 +340,9 @@ pub(super) fn evaluate(
             }
         };
         let selected_distance = selected_target.map(|(_, distance, _)| distance);
+        // Read before transitions: a stance release that resolved without
+        // striking, left on this tick, starts its attack's cooldown below.
+        let whiffed_release = clip_clock::whiffed_release(&brain);
         let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
         let (transitioned, resolved, steering, queued_attack) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
@@ -651,6 +654,32 @@ pub(super) fn evaluate(
                 cooldown_ms,
                 effect: outcome,
             });
+        }
+        // The enemy committed: a stance release left having struck nothing,
+        // every moment whiffed, starts its attack's cooldown as a hit would,
+        // so a whiffed leap is not queued again at once. A release a flinch
+        // staggered is not a whiff. Set after this tick's proposal, which the
+        // entered path formed.
+        if let Some((depth, attack)) = whiffed_release
+            && entry_depth.is_some_and(|entry| entry <= depth)
+            && let Some((name, cooldown_ms)) = attack_turns::attack_name(&brain.graph, attack)
+                .and_then(|name| {
+                    let params = brain.graph.attacks.get(name)?;
+                    let cooldown_ms = if params.weapon.is_some() {
+                        programs
+                            .with_entry_scope(snap.id, |bound, _| {
+                                bound
+                                    .resolved_projectile_attack(name)
+                                    .map(|resolved| resolved.cooldown_ms())
+                            })
+                            .flatten()?
+                    } else {
+                        params.cooldown_ms?
+                    };
+                    Some((name.to_string(), cooldown_ms))
+                })
+        {
+            brain.attack_cooldown_remaining_ms.insert(name, cooldown_ms);
         }
 
         let state_changed = graph_reseated || transitioned || entry_depth.is_some();

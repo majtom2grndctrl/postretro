@@ -141,7 +141,10 @@ pub struct MeshAnimation {
     /// drawn phase: a repeating stance release's (`foundation`'s
     /// `repeating_release_states`), with their travel variants. Derived from
     /// the descriptor graph when the mesh is materialized, on host and client
-    /// alike, so it is runtime-only and never replicated.
+    /// alike, so it is runtime-only and never replicated. Matched by state
+    /// name and built only at mesh materialize: a behavior hot reload or a
+    /// serde restore does not rebuild it, so a reload that adds or removes a
+    /// release's `repeat` takes effect on the next spawn.
     #[serde(skip, default)]
     pub zero_phase_states: ZeroPhaseStates,
 }

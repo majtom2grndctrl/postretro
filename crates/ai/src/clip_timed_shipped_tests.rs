@@ -259,6 +259,8 @@ struct BruteRun {
     steering: Vec<f32>,
     distance: Vec<f32>,
     fired: Vec<usize>,
+    /// The recorded attack's cooldown left after each tick, in milliseconds.
+    cooldowns: Vec<f32>,
     hits: Vec<(usize, f32)>,
     /// Each mesh state whose clip carries `hit`: the hit's clip time and the
     /// clip's length, in seconds.
@@ -411,6 +413,7 @@ fn brute_run(
         if shipped.cooldown(brute, attack) > cooldown {
             run.fired.push(tick);
         }
+        run.cooldowns.push(shipped.cooldown(brute, attack));
         let lost = hp - player_hp(&shipped.reg, shipped.player);
         if lost > 0.0 {
             run.hits.push((tick, lost));
@@ -523,12 +526,19 @@ fn shipped_brute_charge_lands_on_reach_once_or_recovers_with_no_hit() {
     );
 
     // Out of reach for the whole charge, though on the floor's navmesh: no
-    // hit, and the recover never fires.
+    // hit, and the recover never fires. The whiffed charge still starts its
+    // cooldown as it leaves the release, and only then.
     let fled = charge_run(|shipped, brute| Some(shipped.away_from(brute, start, 20.0)));
     let recover = fled.entered("charge_recover");
     assert!(
-        fled.fired.is_empty(),
+        fled.hits.is_empty(),
         "never reached, never hit: {:?}",
+        fled.paths
+    );
+    assert_eq!(
+        fled.fired,
+        vec![recover],
+        "the whiff starts the cooldown on leaving the release: {:?}",
         fled.paths
     );
     assert!(
@@ -665,14 +675,14 @@ fn shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_666_ms_hold() {
 }
 
 /// The shipped brute's leap from `crouch` with the player `distance` away
-/// along +X. With `sidestep`, the player steps 8 m along +Z one second into
-/// the release, 200 ms before the hit.
-fn leap_run(distance: f32, sidestep: bool) -> BruteRun {
+/// along +X, run for `seconds`. With `sidestep`, the player steps 8 m along
+/// +Z one second into the release, 200 ms before the hit.
+fn leap_run(distance: f32, sidestep: bool, seconds: f32) -> BruteRun {
     brute_run(
         "crouch",
         "leap",
         Vec3::new(distance, 0.0, 0.0),
-        6.0,
+        seconds,
         move |shipped, _, paths| {
             let release = entry_tick(paths, "leap_release", 0)?;
             (sidestep && paths.len() == release + (1.0 / DT) as usize).then(|| {
@@ -706,7 +716,7 @@ impl BruteRun {
 #[test]
 fn shipped_brute_leap_queues_from_afar_closes_and_slams_at_the_clip_hit() {
     for distance in [12.0, 15.0] {
-        let run = leap_run(distance, false);
+        let run = leap_run(distance, false, 6.0);
         let hold = run.entered("leap_crouch");
         assert!(
             (run.distance[hold] - distance).abs() <= 0.5,
@@ -765,10 +775,13 @@ fn shipped_brute_leap_queues_from_afar_closes_and_slams_at_the_clip_hit() {
 
 // A target that sidesteps 8 m during the leap is out of slam range at the
 // clip's `hit`: the leap whiffs, deals nothing, and still recovers and rests
-// coiled.
+// coiled. The enemy committed, so the whiff starts the leap's 6000 ms
+// cooldown as it leaves the release, and it does not leap again until that
+// has run out.
 #[test]
 fn shipped_brute_leap_whiffs_when_the_target_sidesteps_out_of_slam_range() {
-    let run = leap_run(12.0, true);
+    const LEAP_COOLDOWN_MS: f32 = 6000.0;
+    let run = leap_run(12.0, true, 12.0);
     let release = run.entered("leap_release");
     let recover = run.entered("leap_recover");
     let (hit, _) = run.moments["leap_strike"];
@@ -779,16 +792,43 @@ fn shipped_brute_leap_whiffs_when_the_target_sidesteps_out_of_slam_range() {
         run.distance[moment]
     );
     assert!(
-        run.hits_in(release, recover).is_empty() && run.fired.is_empty(),
-        "a whiff deals nothing: {:?} {:?}",
-        run.hits,
-        run.fired
+        run.hits_in(release, recover).is_empty(),
+        "a whiff deals nothing: {:?}",
+        run.hits
     );
     assert!(recover > moment, "the release still ends at its moment");
     assert!(
         entry_tick(&run.paths, "coil", recover).is_some(),
         "it rests coiled: {:?}",
         &run.paths[recover..]
+    );
+    assert_eq!(
+        run.fired.first(),
+        Some(&recover),
+        "the whiff starts the cooldown on leaving the release, not before: {:?}",
+        run.fired
+    );
+    assert_eq!(
+        run.cooldowns[recover], LEAP_COOLDOWN_MS,
+        "the leap's full cooldown"
+    );
+    let ready = recover + (LEAP_COOLDOWN_MS / 1000.0 / DT).floor() as usize;
+    assert!(
+        run.cooldowns.len() > ready + 60,
+        "fixture: the run outlasts the cooldown"
+    );
+    if let Some(again) = entry_tick(&run.paths, "leap_release", recover) {
+        assert!(
+            again > ready,
+            "no second leap until the cooldown has run out: tick {again}, ready at {ready}"
+        );
+    }
+    assert!(
+        run.paths[recover..ready]
+            .iter()
+            .all(|path| !path.ends_with("/leap_crouch") && !path.ends_with("/leap_release")),
+        "the leap neither tells nor releases while it cools down: {:?}",
+        &run.paths[recover..ready]
     );
 }
 

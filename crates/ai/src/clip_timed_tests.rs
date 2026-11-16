@@ -1723,7 +1723,7 @@ fn clip_clock_steady_state_allocates_nothing() {
     scene
         .runtime
         .programs
-        .warn_unclipped_moments(&scene.reg, &scene.clips, &mut warned);
+        .warn_unclipped_moments(&scene.reg, &scene.clips, DT, &mut warned);
     let allocs = snapshot.allocs_since();
     drop(clock);
     assert!(!done);

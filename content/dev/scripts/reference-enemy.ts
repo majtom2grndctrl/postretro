@@ -68,7 +68,7 @@ const BELLOW_WAIT_MS = 2500;
 const OVERHEAD_LEAVE_RANGE = SLAM_RANGE + 1;
 const COCK_LEAVE_RANGE = JAB_RANGE + 1;
 const CROUCH_WAIT_MS = 3000;
-const CROUCH_LEAVE_RANGE = LEAP_QUEUE_RANGE + 1;
+const CROUCH_LEAVE_RANGE = LEAP_QUEUE_RANGE;
 // The slam lands coiled and catches its breath before the next tell.
 const COIL_MS = 500;
 const FLINCH_MS = 700;
@@ -82,8 +82,7 @@ const overhead = defineStance({
   holdMs: [500, 1100],
   breakOn: { damage: 30, to: "flinch" },
 });
-// The slam's landing. No strike begins here: the brute's four strikes fill
-// three tells, the crouch serving two.
+// The slam's and the leap's landing pose; no strike begins here.
 const coil = defineStance({ animation: "swipe_windup", sound: "fixtures/land" });
 const cock = defineStance({
   animation: "punch_windup",
@@ -369,6 +368,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
                   { to: "approach", when: brain.targetDistance.gt(COCK_LEAVE_RANGE) },
                   { to: "approach", when: brain.timeInActivityMs.ge(COCK_WAIT_MS) },
                 ],
+                // Can show while the leap cools, then waits out CROUCH_WAIT_MS.
                 crouch: [
                   { to: leap },
                   { to: "approach", when: brain.targetDistance.gt(CROUCH_LEAVE_RANGE) },

@@ -3282,7 +3282,7 @@ export type Stance = { kind: "stance", name: string } & StanceOptions
 --- an optional `motion` and `speed` multiplier replacing the planted hold, and
 --- `["repeat"]` (a Luau keyword, so the key is quoted): how many passes of its
 --- clip it plays back to back, striking at `at` on each, a whole number from
---- 1 to 8 (default 1). A repeating release plays a looping state, never fires
+--- 1 to 8 (default 1). A repeating release plays a looping state, stands still, never fires
 --- on entry, and needs a `recover` with its own animation; one turn and one
 --- cooldown cover every pass.
 export type AttackRelease = {

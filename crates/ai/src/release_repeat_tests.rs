@@ -201,13 +201,18 @@ fn a_flinch_after_the_first_pass_cancels_the_passes_left() {
 
 // `queueRange` lets a tell wait in line and request its turn from out past
 // the attack's reach; `maxRange` still bounds the hit. Out of reach at the
-// moment the strike whiffs, and the release still leaves; back in reach by
-// the moment it lands. Without `queueRange` the same tell never queues.
+// moment the strike whiffs, and the release still leaves, starting its
+// cooldown as a hit would; back in reach by the moment it lands. Without
+// `queueRange` the same tell never queues.
 #[test]
 fn a_tell_queues_at_its_queue_range_but_strikes_only_within_its_reach() {
     const FAR: f32 = 4.0;
+    const TICKS: usize = 120;
     let run_tell = |queue_range: Option<f32>, close_in_at: Option<usize>| {
-        let mut strike = Strike::default();
+        let mut strike = Strike {
+            attack: contact_attack(COOLDOWN_MS),
+            ..Strike::default()
+        };
         strike.attack.queue_range = queue_range;
         let mut graph = strike.graph();
         graph.envelope.transitions.insert(
@@ -222,7 +227,7 @@ fn a_tell_queues_at_its_queue_range_but_strikes_only_within_its_reach() {
         toughen(&mut scene, enemy);
         place_player(&mut scene, FAR);
         let mut entered_release = None;
-        let log = run(&mut scene, enemy, 120, |scene, tick| {
+        let log = run(&mut scene, enemy, TICKS, |scene, tick| {
             if entered_release.is_none() && scene.state(enemy) == RELEASE {
                 entered_release = Some(tick - 1);
             }
@@ -250,19 +255,21 @@ fn a_tell_queues_at_its_queue_range_but_strikes_only_within_its_reach() {
         hit_ticks(&whiffed).is_empty(),
         "out of reach at its moment, it whiffs"
     );
+    let recover = release + LEAVES;
     assert_eq!(
         first_in(&whiffed, RECOVER),
-        Some(release + LEAVES),
+        Some(recover),
         "the whiffed release still resolves and leaves"
     );
+    let left = brain
+        .attack_cooldown_remaining_ms
+        .get(SLAM)
+        .copied()
+        .unwrap_or(0.0);
+    let expected = COOLDOWN_MS - (TICKS - 1 - recover) as f32 * DT * 1000.0;
     assert!(
-        brain
-            .attack_cooldown_remaining_ms
-            .get(SLAM)
-            .copied()
-            .unwrap_or(0.0)
-            <= 0.0,
-        "a whiff starts no cooldown"
+        (left - expected).abs() <= 0.5,
+        "the whiff started the cooldown as it left the release: {left} ms left, {expected} expected"
     );
 
     let (landed, _) = run_tell(Some(6.0), Some(MOMENT - 5));
@@ -293,4 +300,106 @@ fn a_timed_release_out_of_reach_at_its_moment_whiffs_and_still_resolves() {
         "a whiff, and no late hit: {log:?}"
     );
     assert_eq!(first_in(&log, RECOVER), Some(LEAVES));
+}
+
+// One turn covers a repeating release. A target switch after the first hit
+// ends that turn, and the release requests no other: the passes left whiff
+// against the new target, in reach though it is, and no second turn is
+// granted while the release lasts.
+#[test]
+fn a_target_switch_after_the_first_hit_whiffs_the_passes_left_under_no_new_turn() {
+    let (mut scene, enemy) = combo_scene(0);
+    let original = scene.pawn;
+    let other = spawn_player(&mut scene.reg, player_spot() + Vec3::new(0.0, 0.0, 0.3));
+    let resolves = passes_played_tick(PASSES, RATE);
+    let first = pass_ticks(0.0, RATE, resolves + 1)[0];
+    let mut other_hits = Vec::new();
+    let mut grants = BTreeSet::new();
+    for tick in 0..=resolves + 1 {
+        if tick == first + 1 {
+            assert!(
+                player_hp(&scene.reg, original) < 100.0,
+                "fixture: the first jab lands on the first target"
+            );
+            scene.reg.despawn(original).unwrap();
+        }
+        pose_rate(&mut scene, enemy);
+        let hp = player_hp(&scene.reg, other);
+        scene.tick();
+        if player_hp(&scene.reg, other) < hp {
+            other_hits.push(tick);
+        }
+        if scene.state(enemy) == RELEASE {
+            grants.extend(
+                scene
+                    .brain(enemy)
+                    .attack_turns
+                    .held()
+                    .map(|turn| turn.granted_tick),
+            );
+        }
+    }
+    assert_eq!(
+        enemy_acquired_target(&scene.reg, enemy),
+        Some(other),
+        "fixture: the enemy switched to the second target"
+    );
+    assert!(
+        other_hits.is_empty(),
+        "the passes left whiff: {other_hits:?}"
+    );
+    assert_eq!(
+        grants.len(),
+        1,
+        "one grant across the release, none after the switch: {grants:?}"
+    );
+}
+
+/// An enemy seated in a three-pass release of `action` on `spec`, ticked
+/// once so its clips bind and are checked.
+fn bind_repeating_release(spec: ClipSpec, action: ActionVerb) {
+    let strike = Strike { action, ..combo() };
+    let mut scene = Scene::new(vec![spec]);
+    let enemy = scene.spawn(0, &strike.graph(), RELEASE);
+    toughen(&mut scene, enemy);
+    scene.tick();
+    scene.tick();
+}
+
+// A repeating release whose moment its clip cannot time strikes once, not
+// once per pass, whether the moment is named or the defaulted `hit`: it warns
+// once per entity class and attack when its clips bind.
+#[test]
+fn a_repeating_release_its_clip_cannot_time_warns_that_it_strikes_once() {
+    let untimed =
+        "`brute` attack `slam`: its release repeats 3 passes on state `jab_quick`, but clip";
+    let capture = LogCapture::start();
+    for action in [timed(SLAM, "hit"), defaulted_hit()] {
+        bind_repeating_release(looping(JAB_QUICK, JAB_PASS, &[]), action);
+        capture.assert_logged_once(Level::Warn, untimed);
+        capture.assert_logged_once(Level::Warn, "strikes once, not once per pass");
+        capture.clear();
+    }
+    bind_repeating_release(jab_loop(), timed(SLAM, "hit"));
+    capture.assert_not_logged(Level::Warn, untimed);
+}
+
+// A repeating release whose pass (its clip over its `playbackRate`) is
+// shorter than a tick can reach only one moment a tick: it warns once.
+#[test]
+fn a_repeating_release_with_a_pass_shorter_than_a_tick_warns() {
+    let short = "shorter than one 16.7 ms tick";
+    let capture = LogCapture::start();
+    bind_repeating_release(
+        looping(JAB_QUICK, 0.01, &[("hit", 0.005)]),
+        timed(SLAM, "hit"),
+    );
+    capture.assert_logged_once(Level::Warn, short);
+    capture.assert_logged_once(
+        Level::Warn,
+        "`brute` attack `slam`: its release repeats 3 passes",
+    );
+    capture.clear();
+    bind_repeating_release(jab_loop(), timed(SLAM, "hit"));
+    capture.assert_not_logged(Level::Warn, short);
 }

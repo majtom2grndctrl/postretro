@@ -573,8 +573,12 @@ fn flipping_scene(strike: &Strike) -> (Scene, EntityId) {
 /// Travel along +Z or -Z while facing the player along +X: the right- or
 /// left-hand variant, flipping every half second from tick 0.
 fn flip_every_half_second(scene: &mut Scene, enemy: EntityId, tick: usize) {
-    if tick % 30 == 0 {
-        let direction = if (tick / 30) % 2 == 0 { 1.0 } else { -1.0 };
+    if tick.is_multiple_of(30) {
+        let direction = if (tick / 30).is_multiple_of(2) {
+            1.0
+        } else {
+            -1.0
+        };
         scene.set_agent(enemy, |agent| {
             agent.velocity = Vec3::new(0.0, 0.0, 2.0 * direction)
         });

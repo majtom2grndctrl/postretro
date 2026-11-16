@@ -3978,7 +3978,7 @@ fn assert_activity_roll_positive_anchors(run: &SimRun) {
         first[0].1, first[1].1,
         "two same-descriptor enemies draw differently"
     );
-    for role_index in 0..2 {
+    for (role_index, (role, _)) in first.iter().enumerate() {
         let mut root_rolls = run
             .events
             .iter()
@@ -3987,8 +3987,7 @@ fn assert_activity_roll_positive_anchors(run: &SimRun) {
         root_rolls.dedup();
         assert!(
             root_rolls.len() >= 10,
-            "{:?} re-enters and redraws across the run: {} root rolls",
-            first[role_index].0,
+            "{role:?} re-enters and redraws across the run: {} root rolls",
             root_rolls.len()
         );
         for bits in &root_rolls {
@@ -4028,7 +4027,7 @@ fn assert_hold_release_positive_anchors(run: &SimRun) {
         draws[0].1, draws[1].1,
         "two same-descriptor enemies entering holds on one tick draw differently"
     );
-    for role_index in 0..2 {
+    for (role_index, (role, _)) in draws.iter().enumerate() {
         let mut role_draws = run
             .events
             .iter()
@@ -4038,8 +4037,7 @@ fn assert_hold_release_positive_anchors(run: &SimRun) {
         role_draws.dedup();
         assert!(
             role_draws.len() >= 5,
-            "{:?} re-enters its hold and redraws: {} draws",
-            draws[role_index].0,
+            "{role:?} re-enters its hold and redraws: {} draws",
             role_draws.len()
         );
         let [min, max] = HOLD_RELEASE_RANGE;

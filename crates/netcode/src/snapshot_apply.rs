@@ -136,7 +136,7 @@ pub(super) fn materialize_remote_entities(
                 });
                 // No scaled state the mesh declares: no walk reference, so this
                 // client leaves the enemy's playback rate alone.
-                (!scaled_states.is_empty()).then(|| client::RemoteEnemyWalkPlayback {
+                (!scaled_states.is_empty()).then_some(client::RemoteEnemyWalkPlayback {
                     move_speed: graph.move_speed,
                     scaled_states,
                 })

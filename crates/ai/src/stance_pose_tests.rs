@@ -1019,7 +1019,7 @@ fn a_root_strike_beside_a_chase_keeps_its_target_through_a_rerank_and_a_tick_out
 
     // Nearer, but by less than the switch margin, and never behind the wall.
     let second = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 1.2));
-    assert!(1.5 - 1.2 < TARGET_SWITCH_HYSTERESIS_DISTANCE);
+    const { assert!(1.5 - 1.2 < TARGET_SWITCH_HYSTERESIS_DISTANCE) };
     let mut released = false;
     for tick in 0..12 {
         let world = if tick == 0 { &wall } else { &open };

@@ -423,7 +423,7 @@ fn a_rerank_inside_the_margin_between_grant_and_hold_keeps_the_target_and_the_gr
     assert_eq!(held_on(&reg, enemy, SLAM), vec![first], "granted on N");
 
     let second = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 1.2));
-    assert!(1.5 - 1.2 < TARGET_SWITCH_HYSTERESIS_DISTANCE);
+    const { assert!(1.5 - 1.2 < TARGET_SWITCH_HYSTERESIS_DISTANCE) };
     tick(&mut reg, &mut runtime);
     assert_eq!(enemy_acquired_target(&reg, enemy), Some(first));
     assert_eq!(state(&reg, enemy), hold(SLAM), "the hold is entered");

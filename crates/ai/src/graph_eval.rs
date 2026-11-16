@@ -24,7 +24,7 @@ type SelectorLayer<'a> = (
 /// Evaluate each active envelope outer-to-inner. At a level, `"*"` rows run
 /// before the active activity's own rows. A winning edge seats its target and
 /// complete initial descent immediately, then ends this pass so an entered
-//// node cannot evaluate its own row until the following tick.
+/// node cannot evaluate its own row until the following tick.
 #[cfg(test)]
 pub(super) fn select_transition_path(
     bound: &BrainEntityPrograms,

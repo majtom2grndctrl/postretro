@@ -184,7 +184,8 @@ fn a_row_to_an_unlisted_attack_drops_with_one_log_and_its_guard_goes_with_it() {
 #[test]
 fn anything_but_an_attack_handle_rejects_load_with_a_pathed_error() {
     let stance = json!({ "kind": "stance", "name": "overhead" });
-    let cases: Vec<(Box<dyn Fn(&mut Value)>, &str, &str)> = vec![
+    type Mutation = Box<dyn Fn(&mut Value)>;
+    let cases: Vec<(Mutation, &str, &str)> = vec![
         (
             Box::new(|b| b["attacks"] = json!(["jab"])),
             "`components.behavior.attacks[0]`",

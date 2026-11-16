@@ -33,7 +33,7 @@ The brief was claimed on `main` as `2f1e71af3`. Decisions and Acceptance remain 
 
 ## AC-to-proof
 
-Baseline = `f5bb5d5c8` plus Task 1's harness instrumentation and Task 0's tools (no format change), built as branch `lightmap-compact-storage-baseline`. See Corrections.
+Baseline = commit `65aa15e0d` on this branch: `f5bb5d5c8` plus Task 0's tools and Task 1's harness instruments, with no format or render change, so no separate baseline branch is needed. GPU baseline uses the `f5bb5d5c8` profiling binary (render code unchanged). See Corrections.
 
 | AC | Proof | Status |
 |---|---|---|

@@ -98,7 +98,7 @@ Commits: one per completed task, each carrying its `plan.md` row update. Sequent
 - **Frame thread admit:** no payload copies (AC 16); no per-frame allocation added.
 - **Issuer:** read only; decode never runs on it.
 - **Decode pool:** bounded by the in-hand cap at decoded size; mandatory work first.
-- **Forward/vertex shader:** one extra varying and one extra table word read per vertex; per-fragment clamp per plane. Measured by M3; any GPU regression past baseline + 25% stops for the owner.
+- **Forward/vertex shader:** one extra varying and one extra table word read per vertex; per-fragment clamp per plane. Measured and reported by M3, not gated (owner ruling, measure-not-gate).
 - **Bake:** pack time reported (M1); zstd-7 adds about 0.9 s on showcase per research.
 
 ## Owner rulings (2026-11-16)
@@ -107,3 +107,5 @@ Commits: one per completed task, each carrying its `plan.md` row update. Sequent
 - **Showcase density:** the map's worldspawn `_lightmap_density` is `0.1`, below the owner's quality bar. A/B bakes set it to **0.0125 m** in the frozen scratchpad copy (`.map` sha256 `8f40118e…`). The owner is also trying 0.05 m and finds it tentatively better than expected; a 0.05 m bake is a secondary report point, not a gate.
 - **Baseline GPU batch (2026-11-15/16, at the map's 0.1 m):** Metal System Trace, since this Mac's AMD 5300M has no timestamp queries and Tracy carries CPU zones only. Showcase GPU busy 30.6–31.8 ms, forward 27.8–29.4 ms at 4K; VRAM paging 1.8–6.6 ms. Data and rerun script in the session scratchpad `baseline/`. The 0.0125 m batch is re-recorded in Task 1.
 - **Showcase at 0.0125 m, baseline compiler `f5bb5d5c8` (2026-11-16):** 53 min cold bake at `-j 6` (3,189 s wall, 4.0 GB peak RSS); file 3,465.9 MiB. Id 22 2,113 MiB, id 42 894 MiB, id 50 277 MiB, id 51 73 MiB. Id-58 lightmap pool bound **2,404 MiB** (warning against the 384 MiB budget). This is the A/B showcase.
+- **Measure, not gate (2026-11-16):** frame time, GPU time, load time and the 0.0125 m showcase's streaming behavior (for example the slow first frames at its spawn pose) are measured and reported, not gates. They don't block a task or the landing. The brief's correctness and comparison rows (late blocks, payload identity, decode ordering) keep their stated proof.
+- **Map layout is a factor (2026-11-16):** the showcase joins two very large rooms with a short straight hallway, so both rooms' lightmaps tend to be resident together. A layout change (an L-shaped hallway, or medium rooms between large ones) would likely cut its VRAM. The owner's goal is still that the engine handles that layout. This brief is one part of a larger strategy for big playable spaces, not the whole of it. The M1/M3 report should say how much of the pool bound comes from the two big rooms being co-resident, as input to that strategy.

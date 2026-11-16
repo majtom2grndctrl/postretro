@@ -91,6 +91,7 @@ Commits: one per completed task, each carrying its `plan.md` row update. Sequent
 - **Direction coverage:** odd origins are common today (16 of 24 charts on `animated-layer-spill`), so most baseline direction comparisons are counted skips. AC 6's cross-layout comparison carries the direction proof.
 - **Smoke fixture:** `sh-streaming-hinted-door.prl` streams no lightmap (20 B id 22, no id 42/58). Harness smoke uses `occlusion-test.map` baked to the scratchpad.
 - **Late-block definition:** `late_blocks` = after-spawn block-frames of drawn blocks not resident after the frame's last drain (deferred + left behind); spawn-step misses are `late_blocks_spawn`. SH late chunks are visible-miss episodes; SH is not preloaded, so `sh_late_spawn` holds most.
+- **Task 2 design:** `task2-design.md` beside this plan (seams with file:line, SMB9 record, demand, stamp, block table, shader, tests per AC, sub-step order). Two clarifications it records: the block-table word0 already holds both plane addresses, so word1 carries only per-plane extents; and a block whose owned charts would not pack smaller than the block keeps an identity layout (whole-block extent, zero offsets), so the mask pool never grows.
 - **Test threads:** cargo `-j` does not cap test threads; add `-- --test-threads=4` while the owner is at the machine.
 
 ## Hot paths and constraints

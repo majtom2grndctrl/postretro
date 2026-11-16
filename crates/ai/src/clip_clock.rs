@@ -1,13 +1,18 @@
 // Enemy clip clock: game-time clip time for the drawn animation state, the
-// clip-timed attack's once-per-entry moment, and `brain.animationDone`.
-// See: context/lib/entity_model.md §7c (Clip-timed attacks)
+// clip-timed attack's once-per-entry moment, `brain.animationDone`, and a
+// stance release's exit: its moment gate and the flinch that staggers it.
+// See: context/lib/entity_model.md §7c (Clip-timed attacks; Stances and
+//      attacks, Release exit)
 
 use std::sync::Arc;
 
-use postretro_entities::components::brain::{BrainComponent, ClipClock, ClipFacts, TravelVariant};
+use postretro_entities::components::brain::{
+    BrainComponent, ClipClock, ClipFacts, Stagger, TravelVariant,
+};
 use postretro_entities::components::mesh::MeshComponent;
 use postretro_entities::{EntityId, EntityRegistry};
 use postretro_foundation::ActionVerb;
+use postretro_foundation::stance_defaults::DEFAULT_RECOVERY_MS;
 
 use super::graph_eval::animation_for_path;
 use super::{LocomotionIntent, launch, travel_variants};
@@ -66,12 +71,20 @@ impl Moment {
 /// A clock tracking nothing binds to the drawn state instead, without
 /// advancing. While a dropped enemy's redraw is pending the clock holds; a
 /// foreign switch drops the redraw, so the flinch stays on screen.
+///
+/// A flinch already playing over a release or recover advances first, at the
+/// rate presentation drew it; a foreign switch then starts one, or moves a
+/// playing one's end to the new reaction's (see [`stagger`]).
 pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, tick_dt: f32) {
     let mesh = source
         .registry
         .get_component::<MeshComponent>(source.id)
         .ok()
         .and_then(|mesh| mesh.animation.as_ref());
+    if let Some(stagger) = brain.clip_clock.stagger.as_mut() {
+        let rate = mesh.map_or(1.0, |animation| f64::from(animation.rate));
+        stagger.elapsed += f64::from(tick_dt.max(0.0)) * rate;
+    }
     if let Some(animation) = mesh {
         let switches = animation.switches.get();
         let foreign = match brain.clip_clock.mesh_switches {
@@ -90,6 +103,7 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
             // switch back onto the tracked state later still restarts the
             // clock (`redrawn`).
             brain.clip_clock.redraw = false;
+            stagger(brain, source, &animation.current_state);
         }
         brain.clip_clock.mesh_switches = Some(switches);
     }
@@ -113,7 +127,10 @@ pub(super) fn begin_tick(brain: &mut BrainComponent, source: &ClipSource<'_>, ti
     if !std::mem::take(&mut clock.late_restart) {
         clock.previous_time = clock.time;
     }
-    clock.time += f64::from(tick_dt.max(0.0)) * rate;
+    let advance = f64::from(tick_dt.max(0.0)) * rate;
+    clock.time += advance;
+    // Summed across restarts: a variant switch restarts `time`, never this.
+    clock.release_elapsed += advance;
     if clock.clip.is_none() {
         clock.clip = clip_facts(source, state_name(clock));
         if clock.unphased
@@ -221,20 +238,44 @@ pub(super) fn settle(
         brain.clip_clock.moment_open = false;
     }
     sync_drawn_state(brain, source, travel_variant);
+    let gate = release_gate(brain);
 
     let Some(owner) = owner else {
+        // No moment: the release lasts one pass of its clip.
+        if gate.is_some() {
+            resolve_on_pass(&mut brain.clip_clock);
+        }
         return Moment::Untimed;
     };
     let timing = event_timing(brain, source, owner);
+    let defaulted = brain
+        .activity_at_depth(owner)
+        .and_then(|(_, activity)| activity.action.as_ref())
+        .is_some_and(|ActionVerb::Attack { at_default, .. }| *at_default);
+    let gated = gate == Some(owner);
     let clock = &mut brain.clip_clock;
     let Some((event, facts)) = timing else {
         // A clip that cannot time the moment fires as without `at`, unless
         // this entry already spent a moment a clip timed.
-        return if clock.moment_timed && !clock.moment_open {
+        let moment = if clock.moment_timed && !clock.moment_open {
             Moment::Pending
         } else {
             Moment::Untimed
         };
+        if gated && defaulted {
+            // A defaulted `hit` the clip lacks is no moment at all: the
+            // attack fires on its first passing tick while the release
+            // lasts its clip.
+            resolve_on_pass(clock);
+        } else if gated {
+            // A named moment its clip cannot time resolves on this, the
+            // release's entry tick: the attack fires now if its gates pass,
+            // and nothing fires later in the entry.
+            clock.moment_timed = true;
+            clock.moment_open = false;
+            clock.release_resolved = true;
+        }
+        return moment;
     };
     if clock.redraw {
         // The clock holds the pre-pickup clip time until the redraw restarts
@@ -242,12 +283,92 @@ pub(super) fn settle(
         return Moment::Pending;
     }
     clock.moment_timed = true;
-    if clock.moment_open && reached(clock.previous_time, clock.time, f64::from(event), facts) {
-        clock.moment_open = false;
-        Moment::Reached
-    } else {
-        Moment::Pending
+    let moment =
+        if clock.moment_open && reached(clock.previous_time, clock.time, f64::from(event), facts) {
+            clock.moment_open = false;
+            Moment::Reached
+        } else {
+            Moment::Pending
+        };
+    if gated {
+        // Every moment resolves: one unreached within a pass of its clip
+        // since entry is a whiff, as a montage ending without its hit frame.
+        if clock.moment_open && played_one_pass(clock) {
+            clock.moment_open = false;
+        }
+        clock.release_resolved = !clock.moment_open;
     }
+    moment
+}
+
+/// The depth of the path's leaf when its own rows wait on its moment
+/// (`afterMoment`): a stance release. Only a leaf's rows may carry the gate,
+/// so the leaf is the one place to look.
+fn release_gate(brain: &BrainComponent) -> Option<usize> {
+    let depth = brain.active_depth().checked_sub(1)?;
+    let (name, _) = brain.activity_at_depth(depth)?;
+    brain
+        .envelope_at_depth(depth)?
+        .transitions
+        .get(name)?
+        .iter()
+        .any(|row| row.after_moment)
+        .then_some(depth)
+}
+
+/// Resolve a release with no moment once its clip has played one pass since
+/// entry, in clip time summed across variant restarts. A clip that did not
+/// resolve, or no drawn state, counts as played through, as
+/// `animationDone` reads it.
+fn resolve_on_pass(clock: &mut ClipClock) {
+    if played_one_pass(clock) {
+        clock.release_resolved = true;
+    }
+}
+
+fn played_one_pass(clock: &ClipClock) -> bool {
+    clock
+        .clip
+        .is_none_or(|facts| clock.release_elapsed + CLIP_TIME_SLACK >= f64::from(facts.duration))
+}
+
+/// Start or extend a flinch: a switch the brain did not make, while an
+/// activity on the path routes flinches (`staggerTo`). The reaction now on
+/// the mesh plays through, timed from its resolved clip's duration; a loop,
+/// or a clip that did not resolve, takes the cap. The cap, the default
+/// recovery duration, counts from the first switch, so a later flinch can
+/// move the end to its own reaction's but never past it.
+///
+/// The compute pass reads this before transitions, so a switch landing before
+/// the AI pass on the tick a release is entered starts nothing: the path is
+/// still the hold's.
+fn stagger(brain: &mut BrainComponent, source: &ClipSource<'_>, reaction_state: &str) {
+    if !routes_flinches(brain) {
+        return;
+    }
+    let cap = f64::from(DEFAULT_RECOVERY_MS) / 1000.0;
+    let reaction = read_clip(source, reaction_state, None)
+        .filter(|read| !read.looping)
+        .and_then(|read| read.duration)
+        .map_or(cap, f64::from);
+    let stagger = brain.clip_clock.stagger.get_or_insert(Stagger::default());
+    stagger.until = (stagger.elapsed + reaction).min(cap);
+}
+
+/// An activity on the path routes an impact flinch (`staggerTo`).
+pub(super) fn routes_flinches(brain: &BrainComponent) -> bool {
+    (0..brain.active_depth()).any(|depth| {
+        brain
+            .activity_at_depth(depth)
+            .is_some_and(|(_, activity)| activity.stagger_to.is_some())
+    })
+}
+
+/// The flinch has played out: its route is taken on this evaluation.
+pub(super) fn stagger_due(clock: &ClipClock) -> bool {
+    clock
+        .stagger
+        .is_some_and(|stagger| stagger.elapsed + CLIP_TIME_SLACK >= stagger.until)
 }
 
 /// The brain's own switch drew the tracked state again after the mesh had left
@@ -491,9 +612,13 @@ fn collect_timed_activities<'a>(
     timed: &mut Vec<(&'a str, &'a str)>,
 ) {
     for activity in envelope.activities.values() {
+        // A defaulted `at` (a stance release's `hit`) binds silently: a clip
+        // without it fires as `at: false` by design.
         if let (
             Some(ActionVerb::Attack {
-                at: Some(event), ..
+                at: Some(event),
+                at_default: false,
+                ..
             }),
             Some(state),
         ) = (activity.action.as_ref(), activity.animation.as_deref())

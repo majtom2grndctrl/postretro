@@ -1117,6 +1117,7 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
         [ActionVerb::Attack {
             name: "attack".to_string(),
             at: None,
+            at_default: false,
         }],
         "`ActionVerb::all()` must retain its representative named payload"
     );

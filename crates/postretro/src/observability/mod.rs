@@ -355,12 +355,14 @@ mod tests {
                             "idle".to_string(),
                             BehaviorActivityDescriptor {
                                 pose: None,
+                                stagger_to: None,
                                 sound: None,
                                 animation: Some("idle".to_string()),
                                 motion: Some(MotionVerb::Hold),
                                 action: Some(ActionVerb::Attack {
                                     name: "attack".to_string(),
                                     at: None,
+                                    at_default: false,
                                 }),
                                 on_enter: None,
                                 facing: None,

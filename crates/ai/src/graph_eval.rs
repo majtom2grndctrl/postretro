@@ -13,6 +13,7 @@ use postretro_foundation::{
 
 use super::brain_programs::{BoundLayer, BrainEntityPrograms};
 use super::brain_scope::{BrainScope, ScopeRelativeValues};
+use super::clip_clock;
 use super::engine_floor::SteeringIntent;
 
 type SelectorLayer<'a> = (
@@ -93,18 +94,25 @@ pub(super) fn select_transitions(
         // A `"*"` row into the pose the enemy already holds is skipped like a
         // row to the current activity; the level's own rows between a rest
         // and its holds still pass. A release row also waits out the pose's
-        // drawn release time, and a queued row its attack's turn.
+        // drawn release time, a queued row its attack's turn, and a
+        // release's own rows its moment.
         let wildcard_rows = RowSelection {
             envelope,
             current_name,
             current_pose: current.pose.as_deref(),
             release_due: brain.hold_release_due(depth),
+            moment_resolved: brain.clip_clock.release_resolved,
             queue: QueueGate { brain: &*brain },
         };
         let local_rows = RowSelection {
             current_pose: None,
             ..wildcard_rows
         };
+        // A flinch over a release or recover closes the activity's own rows
+        // (its `ms` no longer holds it, and it never reaches its recover):
+        // once the reaction plays out, the flinch route is taken instead. The
+        // level's `"*"` rows, like every ancestor's, still leave at once.
+        let staggered = current.stagger_to.is_some() && brain.clip_clock.stagger.is_some();
         let mut level_queued = None;
         if let Some(target) = first_enabled_target(
             wildcard,
@@ -114,13 +122,20 @@ pub(super) fn select_transitions(
             &mut level_queued,
         )
         .or_else(|| {
-            first_enabled_target(
-                local,
-                &bound_activity.rows,
-                local_rows,
-                scope,
-                &mut level_queued,
-            )
+            if staggered {
+                current
+                    .stagger_to
+                    .as_deref()
+                    .filter(|_| clip_clock::stagger_due(&brain.clip_clock))
+            } else {
+                first_enabled_target(
+                    local,
+                    &bound_activity.rows,
+                    local_rows,
+                    scope,
+                    &mut level_queued,
+                )
+            }
         }) && let Some(target_index) = envelope.activities.keys().position(|name| name == target)
         {
             return TransitionPass {
@@ -158,18 +173,24 @@ struct RowSelection<'e> {
     current_pose: Option<&'e str>,
     /// The current activity has lasted its drawn release time.
     release_due: bool,
+    /// The current release's moment resolved, or its clip played one pass,
+    /// on an earlier evaluation: its `afterMoment` rows may pass.
+    moment_resolved: bool,
     queue: QueueGate<'e>,
 }
 
 impl RowSelection<'_> {
     /// A row the walk passes over without evaluating its guard: one to the
-    /// current activity, one into the pose being skipped, or a release row
-    /// before its time.
+    /// current activity, one into the pose being skipped, a hold's release
+    /// row before its time, or a release's own row before its moment.
     fn skips(&self, row: &postretro_foundation::GuardedRow) -> bool {
         if row.to == self.current_name {
             return true;
         }
         if row.release_after.is_some() && !self.release_due {
+            return true;
+        }
+        if row.after_moment && !self.moment_resolved {
             return true;
         }
         self.current_pose.is_some_and(|pose| {
@@ -602,6 +623,7 @@ mod statechart_tests {
     ) -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
             pose: None,
+            stagger_to: None,
             sound: None,
             animation: Some(animation.to_string()),
             motion,
@@ -649,6 +671,7 @@ mod statechart_tests {
                         Some(ActionVerb::Attack {
                             name: "slam".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                         BTreeMap::new(),
                     ),
@@ -664,6 +687,7 @@ mod statechart_tests {
                     vec![GuardedRow {
                         release_after: None,
                         queue: None,
+                        after_moment: false,
                         to: "commit".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -673,6 +697,7 @@ mod statechart_tests {
                     vec![GuardedRow {
                         release_after: None,
                         queue: None,
+                        after_moment: false,
                         to: "recover".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -720,6 +745,7 @@ mod statechart_tests {
                         vec![GuardedRow {
                             release_after: None,
                             queue: None,
+                            after_moment: false,
                             to: "rest".to_string(),
                             when: constant(true),
                         }],
@@ -902,7 +928,8 @@ mod statechart_tests {
             action_for_path(&programs, &mut scope, &brain),
             Some(&ActionVerb::Attack {
                 name: "slam".to_string(),
-                at: None
+                at: None,
+                at_default: false
             }),
             "AC7/AC17: the active offense leaf supplies the one edge-fired action"
         );
@@ -965,6 +992,7 @@ mod statechart_tests {
                         action: Some(ActionVerb::Attack {
                             name: "slam".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                     },
                 )]),
@@ -1015,6 +1043,7 @@ mod statechart_tests {
         GuardedRow {
             release_after: None,
             queue: None,
+            after_moment: false,
             to: to.to_string(),
             when,
         }
@@ -1282,6 +1311,7 @@ mod statechart_tests {
                         action: Some(ActionVerb::Attack {
                             name: "slam".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                     },
                 )]),

@@ -110,6 +110,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -126,12 +127,14 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                     "attack".to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: Some(ActionVerb::Attack {
                             name: "claw".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                         on_enter: None,
                         facing: None,
@@ -147,6 +150,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                 vec![GuardedRow {
                     release_after: None,
                     queue: None,
+                    after_moment: false,
                     to: "attack".to_string(),
                     when: IrNode::Le {
                         a: Box::new(IrNode::Input {

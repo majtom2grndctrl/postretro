@@ -37,7 +37,7 @@ pub use attack_turns::{
     AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
     MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
 };
-pub use clip_clock::{ClipClock, ClipFacts, note_replaced_mesh};
+pub use clip_clock::{ClipClock, ClipFacts, Stagger, note_replaced_mesh};
 
 /// Maximum number of distinct damagers remembered by one brain. Entries age to
 /// the shared damage-recency sentinel and remain until this bounded ledger must
@@ -775,6 +775,11 @@ impl BrainComponent {
         // A pose move announces nothing of its own, but keeps an entry this
         // pass already owes (a reseat earlier in the tick).
         let emit_event = self.entry_event_pending || (emit_event && !pose_move);
+        // Every entry leaves the activity a release gate or a flinch belonged
+        // to: the entered one starts its own.
+        self.clip_clock.release_elapsed = 0.0;
+        self.clip_clock.release_resolved = false;
+        self.clip_clock.stagger = None;
         self.entry_pending = false;
         self.entry_event_pending = false;
         self.active_activity_path_len = depth;
@@ -1263,6 +1268,7 @@ mod tests {
                         "rest".to_string(),
                         BehaviorActivityDescriptor {
                             pose: None,
+                            stagger_to: None,
                             sound: None,
                             animation: Some("idle".to_string()),
                             motion: Some(MotionVerb::Hold),
@@ -1279,6 +1285,7 @@ mod tests {
                         "charge".to_string(),
                         BehaviorActivityDescriptor {
                             pose: None,
+                            stagger_to: None,
                             sound: None,
                             animation: Some("walk".to_string()),
                             motion: Some(MotionVerb::ChaseTarget),
@@ -1297,6 +1304,7 @@ mod tests {
                     vec![GuardedRow {
                         release_after: None,
                         queue: None,
+                        after_moment: false,
                         to: "charge".to_string(),
                         when: IrNode::Le {
                             a: Box::new(IrNode::Input {

@@ -508,6 +508,7 @@ fn idle_brain() -> BrainComponent {
                 "idle".to_string(),
                 BehaviorActivityDescriptor {
                     pose: None,
+                    stagger_to: None,
                     sound: None,
                     animation: None,
                     motion: Some(MotionVerb::Hold),

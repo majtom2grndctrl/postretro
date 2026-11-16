@@ -171,6 +171,7 @@ pub(super) fn timed(attack: &str, event: &str) -> ActionVerb {
     ActionVerb::Attack {
         name: attack.to_string(),
         at: Some(event.to_string()),
+        at_default: false,
     }
 }
 
@@ -178,6 +179,7 @@ pub(super) fn untimed(attack: &str) -> ActionVerb {
     ActionVerb::Attack {
         name: attack.to_string(),
         at: None,
+        at_default: false,
     }
 }
 

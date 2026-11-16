@@ -31,6 +31,7 @@ fn hold(name: &str) -> (String, BehaviorActivityDescriptor) {
         name.to_string(),
         BehaviorActivityDescriptor {
             pose: None,
+            stagger_to: None,
             sound: None,
             animation: None,
             motion: Some(MotionVerb::Hold),
@@ -68,6 +69,7 @@ fn graph(activities: &[&str], rows: &[(&str, &str, f32)]) -> BehaviorGraphDescri
             .push(GuardedRow {
                 release_after: None,
                 queue: None,
+                after_moment: false,
                 to: to.to_string(),
                 when: damage_at_least(*points),
             });

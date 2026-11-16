@@ -9,6 +9,9 @@ mod fixtures;
 #[path = "clip_timed_shipped_tests.rs"]
 mod shipped;
 
+#[path = "release_exit_tests.rs"]
+mod release_exit;
+
 use super::*;
 use crate::alloc_probe::AllocSnapshot;
 use crate::attack_turns::{AttackBudgets, BudgetTable, TokenBudget, attack_index};

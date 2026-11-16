@@ -126,6 +126,7 @@ mod tests {
     fn reposition_leaf(motion: MotionVerb, params: RepositionParams) -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
             pose: None,
+            stagger_to: None,
             animation: Some("run".to_string()),
             motion: Some(motion),
             action: None,

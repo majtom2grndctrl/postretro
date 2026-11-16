@@ -805,6 +805,7 @@ fn retaliation_graph() -> BehaviorGraphDescriptor {
                 "engaged".into(),
                 BehaviorActivityDescriptor {
                     pose: None,
+                    stagger_to: None,
                     sound: None,
                     animation: None,
                     motion: Some(MotionVerb::ChaseTarget),

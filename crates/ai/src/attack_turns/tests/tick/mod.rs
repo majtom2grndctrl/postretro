@@ -153,6 +153,7 @@ fn striking(attack: &str) -> BehaviorActivityDescriptor {
         Some(ActionVerb::Attack {
             name: attack.to_string(),
             at: None,
+            at_default: false,
         }),
     )
 }

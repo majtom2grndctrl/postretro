@@ -166,6 +166,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
     assert!(movement.iter().any(|event| event.address == "jumped"));
     let activity = |on_enter| BehaviorActivityDescriptor {
         pose: None,
+        stagger_to: None,
         sound: None,
         animation: None,
         motion: Some(MotionVerb::Hold),
@@ -180,6 +181,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
     let edge = |to: &str| GuardedRow {
         release_after: None,
         queue: None,
+        after_moment: false,
         to: to.into(),
         when: IrNode::Const {
             value: IrValue::Bool(true),

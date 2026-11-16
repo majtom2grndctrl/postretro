@@ -152,7 +152,7 @@ fn test_graph_with(detection_range: f32, aggro_range: f32) -> BehaviorGraphDescr
                 authored_state(
                     "attack",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
+                    Some(ActionVerb::attack("attack")),
                 ),
             ),
             (
@@ -4578,7 +4578,7 @@ fn attacks_fired_in_activity_rotates_on_the_tick_after_a_successful_entry_fire()
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
+                    Some(ActionVerb::attack("attack")),
                 ),
             ),
             (
@@ -7133,6 +7133,7 @@ fn authored_state(
 ) -> BehaviorActivityDescriptor {
     BehaviorActivityDescriptor {
         pose: None,
+        stagger_to: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(motion),
@@ -7150,6 +7151,7 @@ fn edge(to: &str, when: IrNode) -> GuardedRow {
     GuardedRow {
         release_after: None,
         queue: None,
+        after_moment: false,
         to: to.to_string(),
         when,
     }
@@ -7605,6 +7607,7 @@ fn pursuit_graph() -> BehaviorGraphDescriptor {
         Some(ActionVerb::Attack {
             name: "attack".to_string(),
             at: None,
+            at_default: false,
         }),
     );
     strike.on_enter = Some("gruntSwings".to_string());
@@ -8306,6 +8309,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 "first".to_string(),
                 BehaviorActivityDescriptor {
                     pose: None,
+                    stagger_to: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
@@ -8322,6 +8326,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
                 "second".to_string(),
                 BehaviorActivityDescriptor {
                     pose: None,
+                    stagger_to: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: None,
@@ -8352,6 +8357,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             action: Some(ActionVerb::Attack {
                 name: "attack".to_string(),
                 at: None,
+                at_default: false,
             }),
         })]);
     let graph = test_behavior_graph!({
@@ -8360,6 +8366,7 @@ fn an_immediate_child_transition_preserves_a_fresh_parent_selector_action_once()
             "engage".to_string(),
             BehaviorActivityDescriptor {
                 pose: None,
+                stagger_to: None,
                 sound: None,
                 animation: Some("idle".to_string()),
                 motion: None,
@@ -9000,7 +9007,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack_jab",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack { name: "jab".to_string(), at: None }),
+                    Some(ActionVerb::attack("jab")),
                 ),
             ),
             (
@@ -9008,7 +9015,7 @@ fn legacy_reference_behavior_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack_slam",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
+                    Some(ActionVerb::attack("slam")),
                 ),
             ),
             (
@@ -9164,6 +9171,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     layers: BTreeMap<String, BehaviorLayerDescriptor>| {
         BehaviorActivityDescriptor {
             pose: None,
+            stagger_to: None,
             sound: None,
             animation: animation.map(str::to_string),
             motion: None,
@@ -9171,6 +9179,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             action: action.map(|attack| ActionVerb::Attack {
                 name: attack.to_string(),
                 at: Some("hit".to_string()),
+                at_default: false,
             }),
             on_enter: None,
             facing: None,
@@ -9319,6 +9328,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                     "engage".to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some("walk".to_string()),
                         motion: None,
@@ -10441,7 +10451,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_jab",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack { name: "jab".to_string(), at: None }),
+                    Some(ActionVerb::attack("jab")),
                 ),
             ),
             (
@@ -10449,7 +10459,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_slam",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
+                    Some(ActionVerb::attack("slam")),
                 ),
             ),
             (
@@ -10469,7 +10479,7 @@ fn attack_cooldown_fact_uses_the_pretransition_attack_and_zero_for_nonattack_sta
                 authored_state(
                     "attack_slam",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack { name: "slam".to_string(), at: None }),
+                    Some(ActionVerb::attack("slam")),
                 ),
             ),
         ]),
@@ -10978,7 +10988,7 @@ fn standing_attack_graph() -> BehaviorGraphDescriptor {
             authored_state(
                 "attack",
                 MotionVerb::Hold,
-                Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
+                Some(ActionVerb::attack("attack")),
             ),
         )]),
         transitions: BTreeMap::new(),
@@ -11141,6 +11151,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
                     Some(ActionVerb::Attack {
                         name: "shoot".to_string(),
                         at: None,
+                        at_default: false,
                     }),
                 ),
             ),
@@ -11162,6 +11173,7 @@ fn committed_aim_graph(aim_ms: f32, fire_ms: f32) -> BehaviorGraphDescriptor {
             "engage".to_string(),
             BehaviorActivityDescriptor {
                 pose: None,
+                stagger_to: None,
                 sound: None,
                 animation: Some("idle_aiming".to_string()),
                 motion: None,
@@ -12391,7 +12403,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
+                    Some(ActionVerb::attack("attack")),
                 ),
             ),
             (
@@ -12399,7 +12411,7 @@ fn retained_target_survives_los_loss_and_fire_grace_then_holds() {
                 authored_state(
                     "attack",
                     MotionVerb::Hold,
-                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
+                    Some(ActionVerb::attack("attack")),
                 ),
             ),
         ]),
@@ -12840,7 +12852,7 @@ fn retreat_patrol_graph() -> BehaviorGraphDescriptor {
                 authored_state(
                     "attack",
                     MotionVerb::ChaseTarget,
-                    Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
+                    Some(ActionVerb::attack("attack")),
                 ),
             ),
             (
@@ -13008,6 +13020,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
             .action = Some(ActionVerb::Attack {
             name: "attack".to_string(),
             at: None,
+            at_default: false,
         });
         graph.attacks.insert(
             "attack".to_string(),
@@ -13042,6 +13055,7 @@ fn position_goal_states_stay_non_engaged_for_unvalidated_graphs() {
         .action = Some(ActionVerb::Attack {
         name: "attack".to_string(),
         at: None,
+        at_default: false,
     });
     assert!(matches!(
         chase.envelope.activities["position"].action,
@@ -13059,6 +13073,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
             "composite".to_string(),
             BehaviorActivityDescriptor {
                 pose: None,
+                stagger_to: None,
                 sound: None,
                 animation: Some("locomotion".to_string()),
                 motion: None,
@@ -13081,7 +13096,7 @@ fn composite_move_to_last_known_suppresses_target_slot_and_action_at_runtime() {
                             BehaviorSelectorRow {
                                 when: None,
                                 motion: None,
-                                action: Some(ActionVerb::Attack { name: "attack".to_string(), at: None }),
+                                action: Some(ActionVerb::attack("attack")),
                             },
                         )]),
                     ),

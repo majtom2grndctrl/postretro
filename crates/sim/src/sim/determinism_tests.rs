@@ -1338,6 +1338,7 @@ const HOLD_RELEASE_RANGE: [f32; 2] = [32.0, 480.0];
 fn hold_enemy_graph() -> BehaviorGraphDescriptor {
     let leaf = |pose: Option<&str>| BehaviorActivityDescriptor {
         pose: pose.map(str::to_string),
+        stagger_to: None,
         sound: None,
         animation: Some("idle".to_string()),
         motion: Some(MotionVerb::Hold),
@@ -1352,6 +1353,7 @@ fn hold_enemy_graph() -> BehaviorGraphDescriptor {
     let after = |to: &str, ms: f32| GuardedRow {
         release_after: None,
         queue: None,
+        after_moment: false,
         to: to.to_string(),
         when: IrNode::Ge {
             a: Box::new(IrNode::Input {
@@ -1424,6 +1426,7 @@ fn roll_enemy_graph() -> BehaviorGraphDescriptor {
     fn leaf() -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
             pose: None,
+            stagger_to: None,
             sound: None,
             animation: Some("idle".to_string()),
             motion: None,
@@ -1442,6 +1445,7 @@ fn roll_enemy_graph() -> BehaviorGraphDescriptor {
             vec![GuardedRow {
                 release_after: None,
                 queue: None,
+                after_moment: false,
                 to: to.to_string(),
                 when: rolled_dwell(base, span),
             }],
@@ -1873,6 +1877,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -1889,6 +1894,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     ALERT_STATE.to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some(locomotion_animation.to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
@@ -1905,12 +1911,14 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     ATTACK_STATE.to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: Some(ActionVerb::Attack {
                             name: "attack".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                         on_enter: None,
                         facing: None,
@@ -1924,6 +1932,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                     "death".to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some("death".to_string()),
                         motion: Some(MotionVerb::Freeze),
@@ -2729,6 +2738,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
             "walk".to_string(),
             BehaviorActivityDescriptor {
                 pose: None,
+                stagger_to: None,
                 sound: None,
                 animation: Some("walk".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
@@ -4898,6 +4908,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
     let mut graph = enemy_graph(0.0, "locomotion");
     let activity = |animation: &str, action| BehaviorActivityDescriptor {
         pose: None,
+        stagger_to: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(MotionVerb::Hold),
@@ -4914,6 +4925,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
         Some(ActionVerb::Attack {
             name: "attack".to_string(),
             at: Some("hit".to_string()),
+            at_default: false,
         }),
     );
     // The mark descriptor load implies for an `at` action.
@@ -4934,6 +4946,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
                 vec![postretro_foundation::GuardedRow {
                     release_after: None,
                     queue: None,
+                    after_moment: false,
                     to: "rest".to_string(),
                     when: input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
                 }],
@@ -4943,6 +4956,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
                 vec![postretro_foundation::GuardedRow {
                     release_after: None,
                     queue: None,
+                    after_moment: false,
                     to: "jab".to_string(),
                     when: IrNode::Ge {
                         a: Box::new(input(postretro_foundation::BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),

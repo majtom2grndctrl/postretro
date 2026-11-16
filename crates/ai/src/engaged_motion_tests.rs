@@ -220,6 +220,7 @@ fn strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass() {
                 Some(ActionVerb::Attack {
                     name: "shoot".to_string(),
                     at: None,
+                    at_default: false,
                 }),
             ),
         )],
@@ -551,6 +552,7 @@ fn reposition_graph(params: Option<RepositionParams>) -> BehaviorGraphDescriptor
                     Some(ActionVerb::Attack {
                         name: "shoot".to_string(),
                         at: None,
+                        at_default: false,
                     }),
                 ),
             ),
@@ -1292,6 +1294,7 @@ fn actionless_engaged_slot_verbs_yield_to_rest_animation_at_standstill() {
                         Some(ActionVerb::Attack {
                             name: "shoot".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                     ),
                 ),

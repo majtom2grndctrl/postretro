@@ -173,6 +173,7 @@ fn stance_graph(
                         Some(ActionVerb::Attack {
                             name: SLAM.to_string(),
                             at: None,
+                            at_default: false,
                         }),
                     ),
                     SLAM,

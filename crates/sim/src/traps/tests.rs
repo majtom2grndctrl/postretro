@@ -718,6 +718,7 @@ fn enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
                 "idle".to_string(),
                 postretro_foundation::BehaviorActivityDescriptor {
                     pose: None,
+                    stagger_to: None,
                     sound: None,
                     animation: None,
                     motion: Some(postretro_foundation::MotionVerb::Hold),

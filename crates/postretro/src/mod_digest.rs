@@ -492,6 +492,7 @@ pub(crate) mod tests {
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),

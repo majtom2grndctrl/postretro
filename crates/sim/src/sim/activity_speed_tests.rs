@@ -37,6 +37,7 @@ const PLAYER_POSITION: Vec3 = Vec3::new(62.0, 1.21, 32.0);
 fn leaf(animation: &str, motion: MotionVerb, speed: Option<f32>) -> BehaviorActivityDescriptor {
     BehaviorActivityDescriptor {
         pose: None,
+        stagger_to: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(motion),
@@ -59,6 +60,7 @@ fn after(to: &str, ms: f32) -> GuardedRow {
     GuardedRow {
         release_after: None,
         queue: None,
+        after_moment: false,
         to: to.to_string(),
         when: IrNode::Ge {
             a: Box::new(IrNode::Input {
@@ -403,6 +405,7 @@ fn an_inner_activity_speed_overrides_the_outer_one_and_an_unset_one_inherits_it(
     );
     let engage = BehaviorActivityDescriptor {
         pose: None,
+        stagger_to: None,
         sound: None,
         animation: None,
         motion: None,

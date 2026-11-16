@@ -110,6 +110,7 @@ impl Fixture {
                         "idle".into(),
                         postretro_foundation::BehaviorActivityDescriptor {
                             pose: None,
+                            stagger_to: None,
                             sound: None,
                             animation: None,
                             motion: Some(postretro_foundation::MotionVerb::Hold),

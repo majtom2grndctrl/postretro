@@ -277,6 +277,7 @@ fn enemy(registry: &mut EntityRegistry, at: Vec3) -> EntityId {
                 "watch".into(),
                 BehaviorActivityDescriptor {
                     pose: None,
+                    stagger_to: None,
                     sound: None,
                     animation: None,
                     // An engaging activity keeps its acquired target; speed 0

@@ -66,10 +66,36 @@ pub struct ClipClock {
     /// foreign switch first (a flinch) drops the request.
     #[serde(default)]
     pub redraw: bool,
+    /// Clip time advanced since the active path's last entry, summed across
+    /// the restarts a travel-variant switch makes, never game time: a slowed
+    /// stride counts slower. A stance release's one pass of its clip reads it.
+    #[serde(default)]
+    pub release_elapsed: f64,
+    /// The entered release's moment resolved (fired, whiffed or cancelled),
+    /// or with no moment its clip played one pass: its `afterMoment` rows
+    /// open on the next evaluation. Cleared by every entry.
+    #[serde(default)]
+    pub release_resolved: bool,
+    /// An impact flinch during an activity with a flinch route (`staggerTo`):
+    /// its reaction plays out before the enemy takes the route. Cleared by
+    /// every entry.
+    #[serde(default)]
+    pub stagger: Option<Stagger>,
     /// The tracked state's resolved clip, cached on first use. `None` when not
     /// yet looked up or when the clip did not resolve, which is looked up again.
     #[serde(skip)]
     pub clip: Option<ClipFacts>,
+}
+
+/// A flinch playing out over a release or recover, in clip time since the
+/// first switch that started it.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Stagger {
+    /// Clip time since the first switch, in seconds.
+    pub elapsed: f64,
+    /// When the route is taken, in seconds since the first switch: the
+    /// latest reaction's end, never past the cap counted from the first.
+    pub until: f64,
 }
 
 /// What the clock caches of the tracked state's resolved clip.
@@ -106,6 +132,9 @@ impl PartialEq for ClipClock {
             && self.late_restart == other.late_restart
             && self.mesh_switches == other.mesh_switches
             && self.redraw == other.redraw
+            && self.release_elapsed == other.release_elapsed
+            && self.release_resolved == other.release_resolved
+            && self.stagger == other.stagger
     }
 }
 
@@ -133,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clip_clock_serializes_its_clock_latch_and_switch_count_but_not_its_clip_cache() {
+    fn clip_clock_serializes_its_clock_latch_gate_and_switch_count_but_not_its_clip_cache() {
         let clock = ClipClock {
             state: Some(Arc::from("walk_left")),
             time: 1.25,
@@ -144,6 +173,12 @@ mod tests {
             late_restart: true,
             mesh_switches: Some(7),
             redraw: true,
+            release_elapsed: 0.5,
+            release_resolved: true,
+            stagger: Some(Stagger {
+                elapsed: 0.1,
+                until: 0.4,
+            }),
             clip: Some(ClipFacts {
                 duration: 2.0,
                 looping: true,
@@ -163,6 +198,10 @@ mod tests {
                 .expect("a clock saved before the count was kept loads");
         assert_eq!(old.mesh_switches, None, "and binds to the mesh's count");
         assert!(!old.redraw && !old.late_restart);
+        assert!(
+            !old.release_resolved && old.stagger.is_none(),
+            "a clock saved before the release exit holds no gate and no flinch"
+        );
     }
 
     #[test]

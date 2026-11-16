@@ -53,6 +53,17 @@ pub struct GuardedRow {
     /// while all but the turn pass, the resting enemy requests the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<String>,
+    /// A stance release's own row, written only by lowering: the row stays
+    /// closed until the entry's moment resolves (fired, whiffed or
+    /// cancelled), or with no moment until the activity's clip has played
+    /// one pass, and opens on the evaluation after that. Its `when` (an `ms`
+    /// guard, say) may only hold it longer.
+    #[serde(
+        default,
+        rename = "afterMoment",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub after_moment: bool,
 }
 
 /// The guard an authored row without `when` reads.
@@ -115,6 +126,12 @@ pub struct BehaviorActivityDescriptor {
     /// clip (`entity_model.md` §7c, Stances and attacks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pose: Option<String>,
+    /// A stance release's or recover's flinch route, written only by
+    /// lowering: the sibling rest an impact flinch during this activity ends
+    /// in, once its reaction clip plays out (`entity_model.md` §7c, Stances
+    /// and attacks, Release exit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stagger_to: Option<String>,
     #[serde(default)]
     pub layers: BTreeMap<String, BehaviorLayerDescriptor>,
 }
@@ -472,6 +489,20 @@ fn validate_envelope(
             validate_queue(source, row, attacks, &row_path)?;
         }
         validate_release_rows(source, rows, &format!("{path}.transitions.{source}"))?;
+        validate_moment_rows(
+            source,
+            rows,
+            envelope.activities.get(source),
+            &format!("{path}.transitions.{source}"),
+        )?;
+    }
+    for (name, activity) in &envelope.activities {
+        validate_stagger_to(
+            name,
+            activity,
+            envelope,
+            &format!("{path}.activities.{name}"),
+        )?;
     }
 
     envelope
@@ -530,6 +561,63 @@ fn validate_release_rows(
                 reason: format!("`{row_path}` minimum {min} exceeds its maximum {max}"),
             });
         }
+    }
+    Ok(())
+}
+
+/// A release's moment-gated row (`afterMoment`) sits on a leaf's own rows:
+/// the gate reads the clip that leaf draws, and the `"*"` rows belong to no
+/// activity.
+fn validate_moment_rows(
+    source: &str,
+    rows: &[GuardedRow],
+    activity: Option<&BehaviorActivityDescriptor>,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(index) = rows.iter().position(|row| row.after_moment) else {
+        return Ok(());
+    };
+    let row_path = format!("{path}[{index}].afterMoment");
+    if source == "*" {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{row_path}` belongs to a release's own rows; a `*` row has no moment to wait on"
+            ),
+        });
+    }
+    if activity.is_some_and(|activity| !activity.layers.is_empty()) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{row_path}` belongs to a leaf's rows; `{source}` is a composite and draws no clip of its own"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A flinch route (`staggerTo`) is a leaf's, and names another activity at
+/// its own level.
+fn validate_stagger_to(
+    name: &str,
+    activity: &BehaviorActivityDescriptor,
+    envelope: &BehaviorGraphEnvelope,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(target) = activity.stagger_to.as_deref() else {
+        return Ok(());
+    };
+    let field = format!("{path}.staggerTo");
+    if !activity.layers.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` belongs to a leaf activity"),
+        });
+    }
+    if target == name || !envelope.activities.contains_key(target) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` (\"{target}\") must name another activity declared at this level"
+            ),
+        });
     }
     Ok(())
 }
@@ -1162,10 +1250,7 @@ mod tests {
             engagement_radius: Some(2.0),
             move_speed: 1.0,
         };
-        let action = ActionVerb::Attack {
-            name: "slam".to_string(),
-            at: None,
-        };
+        let action = ActionVerb::attack("slam");
 
         assert_eq!(graph.engagement_radius_for_action(Some(&action)), 3.0);
         assert_eq!(graph.standoff_distance_for_action(Some(&action)), 3.0);
@@ -1693,6 +1778,7 @@ mod tests {
                 to: "flinch".to_string(),
                 release_after: Some([0.0, 1.0]),
                 queue: None,
+                after_moment: false,
             }],
         );
         let error = graph.validate().expect_err("a `*` release row rejects");
@@ -1762,6 +1848,7 @@ mod tests {
                 to: "slam_overhead".to_string(),
                 release_after: None,
                 queue: Some("slam".to_string()),
+                after_moment: false,
             }],
         );
         let error = graph.validate().expect_err("a `*` queued row rejects");
@@ -1770,6 +1857,130 @@ mod tests {
                 .to_string()
                 .contains("components.behavior.transitions.*[0].queue"),
             "{error}"
+        );
+    }
+
+    /// The lowered shape of a strike's release and recover: the release fires
+    /// `slam` at a defaulted `hit` and its own rows wait on the moment (one
+    /// holding for an `ms` guard as well); both route a flinch to `coil`.
+    fn lowered_release() -> serde_json::Value {
+        serde_json::json!({
+            "initial": "coil",
+            "moveSpeed": 3.0,
+            "attacks": { "slam": { "damage": 14.0, "maxRange": 3.5, "cooldownMs": 1800.0 } },
+            "activities": {
+                "coil": { "animation": "swipe_windup", "motion": "hold", "pose": "coil" },
+                "slam_release": {
+                    "animation": "smash_strike", "motion": "hold", "attackTurn": "slam",
+                    "action": { "attack": "slam", "at": "hit", "atDefault": true },
+                    "staggerTo": "coil"
+                },
+                "slam_recover": {
+                    "animation": "smash_strike", "motion": "hold", "attackTurn": "slam",
+                    "staggerTo": "coil"
+                }
+            },
+            "transitions": {
+                "slam_release": [
+                    { "to": "slam_recover", "afterMoment": true,
+                      "when": { "op": "ge",
+                        "a": { "op": "input", "name": "@brain.timeInActivityMs" },
+                        "b": { "op": "const", "value": 900.0 } } }
+                ],
+                "slam_recover": [{ "to": "coil" }]
+            }
+        })
+    }
+
+    // Task 6: the runtime descriptor accepts the release exit's lowering-only
+    // `afterMoment`, `atDefault` and `staggerTo`, and serializes none of them
+    // when absent, so descriptors without stances keep their shape.
+    #[test]
+    fn lowered_release_exit_fields_deserialize_validate_and_round_trip() {
+        let graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered_release()).expect("the lowered release deserializes");
+        let graph = graph.validate().expect("the lowered release validates");
+        let release = &graph.envelope.activities["slam_release"];
+        assert_eq!(release.stagger_to.as_deref(), Some("coil"));
+        assert_eq!(
+            release.action,
+            Some(ActionVerb::Attack {
+                name: "slam".to_string(),
+                at: Some("hit".to_string()),
+                at_default: true,
+            })
+        );
+        assert!(graph.envelope.transitions["slam_release"][0].after_moment);
+        assert!(!graph.envelope.transitions["slam_recover"][0].after_moment);
+
+        let json = serde_json::to_value(&graph).expect("the graph serializes");
+        assert_eq!(
+            json["transitions"]["slam_release"][0]["afterMoment"],
+            serde_json::json!(true)
+        );
+        assert!(
+            json["transitions"]["slam_recover"][0]
+                .get("afterMoment")
+                .is_none()
+        );
+        assert_eq!(json["activities"]["slam_recover"]["staggerTo"], "coil");
+        assert!(json["activities"]["coil"].get("staggerTo").is_none());
+        let reparsed: BehaviorGraphDescriptor =
+            serde_json::from_value(json).expect("the serialized graph parses");
+        assert_eq!(reparsed.validate().expect("and loads"), graph);
+    }
+
+    // A moment gate belongs to a leaf's own rows, and a flinch route names
+    // another activity at its leaf's own level.
+    #[test]
+    fn moment_rows_and_stagger_routes_reject_malformed_shapes_with_their_path() {
+        let reject = |edit: &dyn Fn(&mut serde_json::Value), path: &str| {
+            let mut json = lowered_release();
+            edit(&mut json);
+            let error = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+                .unwrap()
+                .validate()
+                .expect_err("the malformed shape rejects")
+                .to_string();
+            assert!(error.contains(path), "{path}: {error}");
+        };
+        reject(
+            &|json| {
+                json["transitions"]["*"] =
+                    serde_json::json!([{ "to": "coil", "afterMoment": true }])
+            },
+            "components.behavior.transitions.*[0].afterMoment",
+        );
+        reject(
+            &|json| {
+                json["activities"]["shell"] = serde_json::json!({ "layers": { "inner": {
+                    "initial": "a",
+                    "activities": { "a": { "animation": "idle" } },
+                    "transitions": {}
+                } } });
+                json["transitions"]["shell"] =
+                    serde_json::json!([{ "to": "coil", "afterMoment": true }]);
+            },
+            "components.behavior.transitions.shell[0].afterMoment",
+        );
+        for target in ["slam_release", "nowhere"] {
+            reject(
+                &|json| json["activities"]["slam_release"]["staggerTo"] = serde_json::json!(target),
+                "components.behavior.activities.slam_release.staggerTo",
+            );
+        }
+        reject(
+            &|json| {
+                json["activities"]["shell"] = serde_json::json!({
+                    "staggerTo": "coil",
+                    "layers": { "inner": {
+                        "initial": "a",
+                        "activities": { "a": { "animation": "idle" } },
+                        "transitions": {}
+                    } }
+                });
+            },
+            "components.behavior.activities.shell.staggerTo",
         );
     }
 }

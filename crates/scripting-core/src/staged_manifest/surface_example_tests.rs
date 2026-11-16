@@ -383,6 +383,7 @@ fn clip_timed_surface_example_lowers_identically_in_both_runtimes() {
         Some(ActionVerb::Attack {
             name: "jab".to_string(),
             at: Some("hit".to_string()),
+            at_default: false,
         })
     );
     assert_eq!(

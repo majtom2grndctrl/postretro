@@ -307,7 +307,8 @@ fn a_handle_authoring_loads_through_define_entity_and_a_bare_entity() {
             behavior.envelope.activities["engage"].action,
             Some(ActionVerb::Attack {
                 name: "slam".to_string(),
-                at: None
+                at: None,
+                at_default: false
             })
         );
     }
@@ -641,7 +642,8 @@ fn one_handle_serves_two_archetypes_by_name() {
             behavior.envelope.activities[activity].action,
             Some(ActionVerb::Attack {
                 name: "slam".to_string(),
-                at: None
+                at: None,
+                at_default: false
             })
         );
     }

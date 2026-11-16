@@ -72,6 +72,7 @@ mod tests {
     fn leaf() -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
             pose: None,
+            stagger_to: None,
             sound: None,
             animation: Some("idle".to_string()),
             motion: None,
@@ -100,6 +101,7 @@ mod tests {
                     vec![GuardedRow {
                         release_after: None,
                         queue: None,
+                        after_moment: false,
                         when: IrNode::Const {
                             value: IrValue::Bool(true),
                         },

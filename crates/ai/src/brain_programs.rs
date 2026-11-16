@@ -567,6 +567,7 @@ mod tests {
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
                         pose: None,
+                        stagger_to: None,
                         sound: None,
                         animation: None,
                         motion: None,

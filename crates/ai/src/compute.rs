@@ -16,7 +16,8 @@ pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32
 use super::brain_scope::BrainFacts;
 use super::engine_floor::SteeringIntent;
 use super::graph_eval::{
-    action_for_path, engages_active, engages_path, resolved_motion, select_transitions,
+    ResolvedMotion, action_for_path, engages_active, engages_path, resolved_motion,
+    select_transitions,
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
@@ -465,6 +466,20 @@ pub(super) fn evaluate(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
+            // A flinch over a release or recover plants the enemy for the
+            // rest of the activity, whatever its motion: a staggered charge
+            // stops where it was hit.
+            let (resolved, steering) = if brain.clip_clock.stagger.is_some() {
+                (
+                    resolved.map(|motion| ResolvedMotion {
+                        verb: MotionVerb::Hold,
+                        ..motion
+                    }),
+                    SteeringIntent::Clear,
+                )
+            } else {
+                (resolved, steering)
+            };
             (transitioned, resolved, steering, pass.queued)
         };
         let motion = resolved.map(|motion| motion.verb);
@@ -533,7 +548,8 @@ pub(super) fn evaluate(
         // spam against an already-dead or removal-committed pawn and prevents
         // damaging a different co-op pawn than the one this enemy chose.
         // A clip-timed attack proposes only on its moment's tick, its one
-        // chance per entry: a gate failing there is a whiff.
+        // chance per entry: a gate failing there is a whiff. A flinch over a
+        // release or recover fires nothing further that entry.
         let entry_depth = brain.take_entry_pending();
         let moment = clip_clock::settle(
             &mut brain,
@@ -544,6 +560,7 @@ pub(super) fn evaluate(
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && moment.allows_proposal()
+            && brain.clip_clock.stagger.is_none()
             && let (Some(target), Some(distance)) = (target, selected_distance)
             && brain.activity_attack_count(firing_leaf_depth) == Some(0)
             && selected_target_alive(registry, target.entity)

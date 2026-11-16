@@ -310,13 +310,16 @@ where
 
         // Existing executions advance even after the activity's first-fire
         // latch closes. Apply rechecks the selected target before the shared
-        // executor may debit or produce this tick's immutable shot.
+        // executor may debit or produce this tick's immutable shot. A flinch
+        // over a release or recover cancels a burst in flight: it fires
+        // nothing further that entry.
         let weapon_aim = outcome.weapon_aim.filter(|_| {
-            outcome.target.is_some_and(|target| {
-                !invalidated_entities.contains(&target.entity)
-                    && selected_target_alive(registry, target.entity)
-                    && !host.is_quiescent(registry, target.entity)
-            })
+            outcome.brain.clip_clock.stagger.is_none()
+                && outcome.target.is_some_and(|target| {
+                    !invalidated_entities.contains(&target.entity)
+                        && selected_target_alive(registry, target.entity)
+                        && !host.is_quiescent(registry, target.entity)
+                })
         });
         let fire = weapons.advance_actor(
             registry,
@@ -391,15 +394,26 @@ where
         // compute's check reads that switch as foreign and cancels the moment.
         let redraw = outcome.brain.clip_clock.redraw
             && mesh_switches(registry, outcome.id) == outcome.brain.clip_clock.mesh_switches;
+        // A flinch over a release or recover stays on screen until the enemy
+        // leaves the activity: the brain never draws the strike over it, not
+        // on a stop, a stride resuming or a travel variant changing. That
+        // holds for one an earlier slot's contact hit just switched in too,
+        // which the next compute reads as foreign and starts staggering on.
+        let flinch_shows = !outcome.state_changed
+            && (outcome.brain.clip_clock.stagger.is_some()
+                || (clip_clock::routes_flinches(&outcome.brain)
+                    && mesh_switches(registry, outcome.id)
+                        != outcome.brain.clip_clock.mesh_switches));
         let mut redraw_pending = false;
         let mut redrawn = false;
-        if should_switch_animation(
-            outcome.state_changed,
-            locomotion_intent.moving,
-            outcome.brain.locomotion_moving,
-        ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
-            || travel_variant != outcome.brain.presented_travel_variant
-            || redraw
+        if !flinch_shows
+            && (should_switch_animation(
+                outcome.state_changed,
+                locomotion_intent.moving,
+                outcome.brain.locomotion_moving,
+            ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
+                || travel_variant != outcome.brain.presented_travel_variant
+                || redraw)
         {
             // Only a variant the mesh declares is requested, so a missing
             // `X_left` plays `X` without warning.

@@ -52,7 +52,8 @@ impl MotionVerb {
 /// What an activity does besides moving. An attack name resolves against the
 /// root graph's `attacks` map, including from nested layers.
 ///
-/// Authored as `{ attack: NAME, at?: EVENT }`; unknown keys reject.
+/// Authored as `{ attack: NAME, at?: EVENT }`; unknown keys reject. Stance
+/// lowering may add `atDefault: true` beside `at`; authors never write it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "RawActionVerb", into = "RawActionVerb")]
 pub enum ActionVerb {
@@ -60,15 +61,38 @@ pub enum ActionVerb {
     /// the tick the activity's clip reaches it, once per entry, instead of on
     /// entry. Only an activity's own action may carry it, and it implies the
     /// attack's turn mark (`entity_model.md` §7c, Clip-timed attacks).
-    Attack { name: String, at: Option<String> },
+    ///
+    /// `at_default` marks an `at` that stance lowering filled in (a release's
+    /// omitted `at` defaults to `hit`): a clip without the event binds
+    /// silently and fires as without `at` (Stances and attacks, Release exit).
+    Attack {
+        name: String,
+        at: Option<String>,
+        at_default: bool,
+    },
 }
 
 impl ActionVerb {
     pub fn all() -> [ActionVerb; 1] {
-        [ActionVerb::Attack {
-            name: "attack".to_string(),
+        [ActionVerb::attack("attack")]
+    }
+
+    /// Fire `name` on entry: no clip event.
+    pub fn attack(name: &str) -> ActionVerb {
+        ActionVerb::Attack {
+            name: name.to_string(),
             at: None,
-        }]
+            at_default: false,
+        }
+    }
+
+    /// Fire `name` at clip event `event`, as authored.
+    pub fn attack_at(name: &str, event: &str) -> ActionVerb {
+        ActionVerb::Attack {
+            name: name.to_string(),
+            at: Some(event.to_string()),
+            at_default: false,
+        }
     }
 }
 
@@ -80,6 +104,12 @@ struct RawActionVerb {
     attack: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     at: Option<String>,
+    #[serde(default, rename = "atDefault", skip_serializing_if = "is_false")]
+    at_default: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl From<RawActionVerb> for ActionVerb {
@@ -87,14 +117,23 @@ impl From<RawActionVerb> for ActionVerb {
         ActionVerb::Attack {
             name: raw.attack,
             at: raw.at,
+            at_default: raw.at_default,
         }
     }
 }
 
 impl From<ActionVerb> for RawActionVerb {
     fn from(action: ActionVerb) -> Self {
-        let ActionVerb::Attack { name, at } = action;
-        RawActionVerb { attack: name, at }
+        let ActionVerb::Attack {
+            name,
+            at,
+            at_default,
+        } = action;
+        RawActionVerb {
+            attack: name,
+            at,
+            at_default,
+        }
     }
 }
 
@@ -208,6 +247,7 @@ mod activity_motion;
 mod attack_turn_marks;
 mod clip_timed_actions;
 mod recursive;
+pub mod stance_defaults;
 
 pub use activity_motion::{
     COMBAT_RING_STEP_DEG, DEFAULT_REPOSITION_ARC_DEG, FacingPolicy, RepositionParams,

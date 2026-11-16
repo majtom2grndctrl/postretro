@@ -41,12 +41,14 @@ fn paced_graph(state: &str, speed: f32, attacks: bool) -> BehaviorGraphDescripto
             "pace".to_string(),
             BehaviorActivityDescriptor {
                 pose: None,
+                stagger_to: None,
                 sound: None,
                 animation: Some(state.to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
                 action: attacks.then(|| ActionVerb::Attack {
                     name: "attack".to_string(),
                     at: None,
+                    at_default: false,
                 }),
                 on_enter: None,
                 facing: None,
@@ -519,6 +521,7 @@ fn a_charging_attack_activity_strides_against_its_own_travel_speed_on_host_and_c
 fn pose_graph(state: &str) -> BehaviorGraphDescriptor {
     let posed = || BehaviorActivityDescriptor {
         pose: Some("overhead".to_string()),
+        stagger_to: None,
         sound: None,
         animation: Some(state.to_string()),
         motion: Some(MotionVerb::Hold),
@@ -533,6 +536,7 @@ fn pose_graph(state: &str) -> BehaviorGraphDescriptor {
     let after = |to: &str, ms: f32| GuardedRow {
         release_after: None,
         queue: None,
+        after_moment: false,
         to: to.to_string(),
         when: IrNode::Ge {
             a: Box::new(IrNode::Input {

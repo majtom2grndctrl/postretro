@@ -765,12 +765,14 @@ mod tests {
             "slam".to_string(),
             BehaviorActivityDescriptor {
                 pose: None,
+                stagger_to: None,
                 sound: None,
                 animation: Some("attack".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
                 action: Some(ActionVerb::Attack {
                     name: "slam".to_string(),
                     at: None,
+                    at_default: false,
                 }),
                 on_enter: None,
                 facing: None,

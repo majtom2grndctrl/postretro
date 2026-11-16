@@ -1359,6 +1359,8 @@ export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, o
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+--- An engine catalog list: row tables 1..capacity, row `i` holding the refs of slot row `i - 1`. Each row's `present` says whether it holds anything. Render rows with `forEach` from `"postretro/ui"`.
+export type StateList<Row> = { [number]: Row }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
 --- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
 --- event's player (`on.player`), or a side of an assist pair expression
@@ -1854,6 +1856,8 @@ export type LocalStateHandle<T> = {
 declare function createLocalState(init: { [string]: any }): { scope: any, cells: any }
 --- `Switch(cell, map)` (M13 G2) — expand a string-valued cell's `map` of `value -> subtree` into an array, injecting `visibleWhen = cell:is(key)` onto each subtree in LEXICOGRAPHICALLY-SORTED key order (byte-identical TS/Luau). Splice the result into a container's `children`.
 declare function Switch(cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }): {WidgetDescriptor}
+--- `forEach(list, function(row, i) ... end)` — unroll a widget once per row of an engine list up to its capacity; a row shows only while its `present` flag and any `visibleWhen` it declares hold; authored ids get the suffix `.<slot row>` and same-row references follow. `i` counts from 1.
+declare function forEach<Row>(list: StateList<Row>, build: (row: Row, i: number) -> WidgetDescriptor): {WidgetDescriptor}
 --- State-helper namespace (state helpers are namespaced; reactions stay bare).
 declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } }
 

@@ -1841,6 +1841,12 @@ export type GameStateRefs = {
     levelName: ComputedRef<string>,
     progress: ComputedRef<number>,
   },
+  occupancy: {
+    tag: (self: any, key: string) -> {
+      occupiedCount: ComputedRef<number>,
+      occupants: ComputedRef<number>,
+    },
+  },
   options: {
     crouchMode: Ref<"hold" | "toggle">,
     fogQuality: Ref<"low" | "medium" | "high">,
@@ -1904,6 +1910,19 @@ export type GameStateRefs = {
     hostAddress: ComputedRef<string>,
     hosting: ComputedRef<boolean>,
     openSeats: ComputedRef<number>,
+    playerCounts: {
+      connected: ComputedRef<number>,
+      down: ComputedRef<number>,
+      inPlay: ComputedRef<number>,
+      loading: ComputedRef<number>,
+      reconnecting: ComputedRef<number>,
+    },
+    players: StateList<{
+      present: ComputedRef<boolean>,
+      name: ComputedRef<string>,
+      status: ComputedRef<"loading" | "inPlay" | "down" | "reconnecting">,
+      isLocal: ComputedRef<boolean>,
+    }>,
   },
   ui: {
     textEntry: Ref<string>,
@@ -3107,6 +3126,8 @@ export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, o
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+--- An engine catalog list: row tables 1..capacity, row `i` holding the refs of slot row `i - 1`. Each row's `present` says whether it holds anything. Render rows with `forEach` from `"postretro/ui"`.
+export type StateList<Row> = { [number]: Row }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
 --- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
 --- event's player (`on.player`), or a side of an assist pair expression
@@ -3870,6 +3891,8 @@ export type PostretroUiModule = {
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
   --- Expand a string cell into sorted visible subtrees keyed by cell value.
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
+  --- Unroll a widget once per row of an engine list; rows show while present.
+  forEach: <Row>(list: StateList<Row>, build: (row: Row, i: number) -> WidgetDescriptor) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
   --- Build a state-crossing watcher: either a numeric threshold or a Bool predicate over live store slots, a fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A predicate already true at registration only arms; it must return false, then true, to fire.

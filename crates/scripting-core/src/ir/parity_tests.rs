@@ -2050,5 +2050,8 @@ mod assist_source_sdk;
 #[path = "presentation_overlay_sdk_tests.rs"]
 mod presentation_overlay_sdk;
 
+#[path = "for_each_sdk_tests.rs"]
+mod for_each_sdk;
+
 #[path = "session_membership_sdk_tests.rs"]
 mod session_membership_sdk;

@@ -181,6 +181,7 @@ fn root_type_outputs_do_not_expose_ui_authoring_helpers() {
         "stateCompare",
         "createLocalState",
         "Switch",
+        "forEach",
         "defineTheme",
         "onStateCrossing",
         "playSound",

@@ -345,3 +345,152 @@ fn a_host_without_a_pawn_never_steps_a_seated_joiner_with_host_input() {
         "an unstepped joiner's life-state clock still advances"
     );
 }
+
+fn depleted_health() -> HealthComponent {
+    let mut health = HealthComponent::from_descriptor(&postretro_entities::HealthDescriptor {
+        max: 100.0,
+        ..Default::default()
+    });
+    health.current = 0.0;
+    health
+}
+
+// P16: a joiner's pawn is in play from the tick it spawns, before its first
+// command arrives. Session player status reads this capture.
+#[test]
+fn joiner_counts_in_play_from_spawn_before_first_command() {
+    let mut fixture = Fixture::new();
+    let joiner = fixture.joiner(Vec3::ZERO);
+    let events = fixture.tick(&[(7, joiner)]);
+    assert!(events.trigger_stage_pawns.captured.contains(&joiner));
+    assert!(events.trigger_stage_pawns.counted.contains(&joiner));
+    let host = fixture.registry.borrow().local_player_pawn().unwrap();
+    assert!(events.trigger_stage_pawns.counted.contains(&host));
+    assert_eq!(events.trigger_stage_pawns.captured.len(), 2);
+}
+
+// P17: client pawns count by the effective rule. An undeclared pawn at zero
+// health is captured but not counted; one with no health component counts; a
+// declared pawn counts by its state's `occupancy` capability.
+#[test]
+fn trigger_stage_pawns_count_client_pawns_by_the_effective_rule() {
+    let mut fixture = Fixture::without_host_pawn();
+    let dead = fixture.joiner(Vec3::ZERO);
+    let no_health = fixture.joiner(Vec3::new(10.0, 0.0, 0.0));
+    let declared_down = fixture.joiner(Vec3::new(20.0, 0.0, 0.0));
+    let declared_occupying = fixture.joiner(Vec3::new(30.0, 0.0, 0.0));
+    {
+        let mut registry = fixture.registry.borrow_mut();
+        registry.set_component(dead, depleted_health()).unwrap();
+        for (pawn, occupancy) in [(declared_down, false), (declared_occupying, true)] {
+            registry.set_component(pawn, depleted_health()).unwrap();
+            let mut movement = registry
+                .get_component::<PlayerMovementComponent>(pawn)
+                .cloned()
+                .unwrap();
+            postretro_foundation::enter_life_state(
+                &mut movement,
+                0,
+                &postretro_foundation::LifeStateProfile {
+                    occupancy,
+                    ..Default::default()
+                },
+                0,
+            );
+            registry.set_component(pawn, movement).unwrap();
+        }
+    }
+    let events = fixture.tick(&[
+        (1, dead),
+        (2, no_health),
+        (3, declared_down),
+        (4, declared_occupying),
+    ]);
+    let pawns = &events.trigger_stage_pawns;
+    for pawn in [dead, no_health, declared_down, declared_occupying] {
+        assert!(pawns.captured.contains(&pawn));
+    }
+    assert!(!pawns.counted.contains(&dead));
+    assert!(pawns.counted.contains(&no_health));
+    assert!(!pawns.counted.contains(&declared_down));
+    assert!(pawns.counted.contains(&declared_occupying));
+}
+
+// O3 and S4's occupant half: occupancy is physical membership filtered by the
+// capture. A disarmed or latched plate still counts its occupant, a `use`
+// volume (what a `switch` compiles to) counts a player standing in it without
+// a press, and an undeclared pawn at zero health occupies nothing.
+#[test]
+fn occupied_volumes_ignore_arm_and_latch_and_count_use_volumes() {
+    let mut fixture = Fixture::without_host_pawn();
+    let plate = fixture.plate(Vec3::ZERO);
+    let switch = {
+        let at = Vec3::new(10.0, 0.0, 0.0);
+        let trigger = {
+            let mut registry = fixture.registry.borrow_mut();
+            let trigger = registry.spawn(Transform {
+                position: at,
+                ..Transform::default()
+            });
+            let component = TriggerVolumeComponent::new(
+                TriggerActivation::Use,
+                String::new(),
+                "press".into(),
+                String::new(),
+                TriggerCommand::Start,
+                TriggerFireMode::Multiple,
+                0.0,
+                true,
+            );
+            registry.set_component(trigger, component).unwrap();
+            trigger
+        };
+        fixture
+            .bridge
+            .insert_for_test(trigger, at - Vec3::splat(2.0), at + Vec3::splat(2.0));
+        trigger
+    };
+    let on_plate = fixture.joiner(Vec3::ZERO);
+    let at_switch = fixture.joiner(Vec3::new(10.0, 0.0, 0.0));
+    let present = [(1, on_plate), (2, at_switch)];
+
+    let events = fixture.tick(&present);
+    assert_eq!(
+        events.trigger_stage_pawns.occupied_volumes,
+        vec![(plate, vec![on_plate]), (switch, vec![at_switch])]
+    );
+
+    for mutate in [
+        |volume: &mut TriggerVolumeComponent| volume.armed = false,
+        |volume: &mut TriggerVolumeComponent| volume.latched = true,
+    ] {
+        {
+            let mut registry = fixture.registry.borrow_mut();
+            let mut volume = registry
+                .get_component::<TriggerVolumeComponent>(plate)
+                .cloned()
+                .unwrap();
+            mutate(&mut volume);
+            registry.set_component(plate, volume).unwrap();
+        }
+        let events = fixture.tick(&present);
+        assert!(
+            events
+                .trigger_stage_pawns
+                .occupied_volumes
+                .contains(&(plate, vec![on_plate]))
+        );
+    }
+
+    fixture
+        .registry
+        .borrow_mut()
+        .set_component(on_plate, depleted_health())
+        .unwrap();
+    let events = fixture.tick(&present);
+    assert_eq!(
+        events.trigger_stage_pawns.occupied_volumes,
+        vec![(switch, vec![at_switch])],
+        "a dead undeclared pawn stays a physical member but occupies nothing"
+    );
+}

@@ -60,6 +60,7 @@ pub mod traps;
 pub mod trigger_bindings;
 pub mod trigger_commands;
 pub mod trigger_direct_commands;
+mod trigger_occupants;
 pub mod trigger_pools;
 pub mod trigger_system;
 pub mod weapon;

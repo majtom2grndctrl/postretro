@@ -173,7 +173,7 @@ pub enum NetEndpoint {
         applied_movement_tuning_generation: u64,
         next_switch_declaration_id: u32,
         pending_switch_declarations: VecDeque<PendingSwitchDeclaration>,
-        /// Latest status-only roster received from the host. This survives level
+        /// Latest roster received from the host. This survives level
         /// changes with the endpoint and feeds the client-local UI projection.
         session_status: ClientSessionStatus,
         /// The latest spawn-pose hint. Session state: the level-scoped reset
@@ -182,11 +182,12 @@ pub enum NetEndpoint {
     },
 }
 
-/// Client-owned view of the latest status-only session roster.
+/// Client-owned view of the latest session roster.
 ///
-/// The wire shape deliberately contains no player claims or display names. The
-/// client retains it as one value so `session_id`, own seat, open-seat count, and
-/// seat connectivity cannot drift across separate presentation fields.
+/// The wire shape carries each seat's display name and status but never a
+/// claim's player id. The client retains it as one value so `session_id`, own
+/// seat, open-seat count and the seats' rows cannot drift across separate
+/// presentation fields.
 #[derive(Debug, Default)]
 pub struct ClientSessionStatus {
     roster: Option<SessionRosterMessage>,
@@ -202,8 +203,16 @@ impl ClientSessionStatus {
     }
 
     #[must_use]
-    pub(crate) fn open_seats(&self) -> Option<u32> {
+    pub fn open_seats(&self) -> Option<u32> {
         self.roster.as_ref().map(|roster| roster.open_seats)
+    }
+
+    /// The latest roster's seats, in seat order; empty before the first.
+    #[must_use]
+    pub fn entries(&self) -> &[postretro_net::wire::RosterEntry] {
+        self.roster
+            .as_ref()
+            .map_or(&[], |roster| roster.entries.as_slice())
     }
 
     #[must_use]
@@ -1131,6 +1140,8 @@ mod tests {
             entries: vec![postretro_net::wire::RosterEntry {
                 seat: 3,
                 connected: true,
+                name: String::new(),
+                status: 0,
             }],
         };
 

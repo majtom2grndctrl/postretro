@@ -92,6 +92,7 @@ pub mod luau;
 pub mod luau_prelude;
 pub mod luau_require;
 pub mod luau_virtual_modules;
+pub mod occupancy_references;
 pub mod player_event_scope;
 pub mod player_slots;
 pub mod primitive_adapters;

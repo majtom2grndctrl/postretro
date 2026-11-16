@@ -455,6 +455,9 @@ pub struct TickEvents {
     /// most one per target. Each carries the target's life state and elapsed
     /// at record for the player-event pass's re-check.
     pub assist_completions: Vec<assist::AssistCompletion>,
+    /// This tick's Triggers-stage player pawns, captured before any trigger
+    /// reaction or damage. The host derives session player status from it.
+    pub trigger_stage_pawns: player_life::TriggerStagePawns,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
     /// keeping the detailed sequence out of non-test builds avoids a hot-path
     /// diagnostic allocation.
@@ -800,6 +803,7 @@ where
     let mut trigger_command_fires = Vec::new();
     let stage_capabilities =
         player_life::TriggerStageCapabilities::capture(&registry.borrow(), &players);
+    let mut trigger_stage_pawns = stage_capabilities.stage_pawns();
     if let Some(trigger_context) = trigger_context {
         let canonical_player_pawns = &stage_capabilities.pawns;
         let alive_players = &stage_capabilities.occupants;
@@ -915,6 +919,11 @@ where
                     },
                 );
         }
+        // Occupancy after the trigger stage settles, from the same capture
+        // the stage counted with: a player killed later this tick still
+        // occupies for it, and leaves on the next.
+        trigger_stage_pawns.occupied_volumes =
+            trigger_context.system.counted_volumes(&stage_capabilities);
     }
     let touch_events = {
         let mut registry = registry.borrow_mut();
@@ -1194,6 +1203,7 @@ where
         trigger_residuals,
         trigger_exit_fires,
         assist_completions,
+        trigger_stage_pawns,
         #[cfg(test)]
         trigger_fires,
         #[cfg(test)]

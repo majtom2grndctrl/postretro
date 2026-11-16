@@ -11,13 +11,15 @@
 // socket that mixamo_to_gltf.py tagged on the skeleton, with its grip-relative
 // orientation re-tuned for this skeleton bake so the barrel points forward.
 //
-// In a fight it takes turns with its squad on the `ranged` token: it strafes
-// around its target while it waits, fires a three-shot burst when a turn is
-// free, then runs to a flanking slot before it waits again.
+// In a fight it takes turns with its squad on the `ranged` token. It opens by
+// strafing around its target, firing a three-shot burst when a turn is free,
+// then running to a flanking slot. Each reposition's roll picks the next
+// cycle: strafe and fire again, or stop and aim, a stance whose release is the
+// same burst. Enough damage during the aim staggers it.
 //
 // Map-placeable via `"classname" "limitator"`.
 
-import { attackTurnFree, brain, defineAttack, defineEntity } from "postretro";
+import { attackTurnFree, brain, defineAttack, defineEntity, defineStance } from "postretro";
 import { ranged } from "./attack-tokens";
 
 // Ranged-combat tuning. Unlike the melee `reference_enemy`, the limitator wants
@@ -71,14 +73,47 @@ const BURST_MS = 600;
 const MOVE_MS = 1500;
 // A burst whose turn went to a squadmate asking on the same tick gives up.
 const TURN_LOST_MS = 100;
+// Each reposition rolls once on entry: below this share it strafes and fires
+// next, else it stops and aims.
+const STRAFE_SHARE = 0.5;
+// The aim: the rifle shouldered on `idle_aiming` for a hidden time drawn from
+// AIM_HOLD_MS (the pose's whole time, its wait in line included), above the
+// 400 ms co-op floor, then the burst. Enough damage while it aims breaks it
+// into a flinch; an aim kept waiting in line gives up and strafes.
+const AIM_HOLD_MS: [number, number] = [500, 900];
+const AIM_BREAK_DAMAGE = 25;
+const AIM_WAIT_MS = 2000;
+// The aimed burst leaves its release the tick after its first shot, on the
+// rifle's `kick`; its recover keeps the turn and the firing loop through the
+// other two shots, 16 ticks after the first, with two ticks to spare.
+const AIMED_RECOVER_MS = 300;
+// After an aimed burst the rifle stays up a beat before the reposition.
+const SETTLE_MS = 250;
+// `hit_reaction` plays 433 ms; the flinch holds its last frame briefly.
+const FLINCH_MS = 500;
+
+// Stop and aim: the shouldered rifle names the threat, not its timing.
+const aim = defineStance({
+  animation: "idle_aiming",
+  holdMs: AIM_HOLD_MS,
+  breakOn: { damage: AIM_BREAK_DAMAGE, to: "flinch" },
+});
+// The aimed burst lands here, not back in `aim`, whose rest would strike again.
+const settle = defineStance({ animation: "idle_aiming" });
 
 // The weapon owns damage, reach, and cooldown; this attack keeps only AI
 // positioning and its draw. Its 12 m reach covers the fire band (entered
 // inside FIRE_RANGE and held to BREAK_RANGE) with a small safety margin.
+// `burst` fires it by hand while strafing; struck from `aim`, its release is
+// the same burst on `firing_rifle`'s `kick`.
 const shoot = defineAttack({
   draws: [ranged],
   weapon: "enemy_rifle_burst",
   standoffDistance: STANDOFF_DISTANCE,
+  beginningStance: aim,
+  endingStance: settle,
+  release: { animation: "shoot", at: "kick" },
+  recover: { animation: "shoot", ms: AIMED_RECOVER_MS },
 });
 
 export const limitatorEntity = defineEntity({
@@ -154,13 +189,11 @@ export const limitatorEntity = defineEntity({
         // upside-down and into the chest. Needs a steady-hand reload clip (or a
         // skinned weapon) before it can drive a reload beat.
         reload: { clip: "reloading", loop: false, crossfadeMs: 150 },
-        // Flinch clip is available but NOT wired: an impact-policy `playAnim`
-        // only switches the state, it does not auto-recover, and the engine's
-        // only recovery path (`is_downed_for_recovery`) applies solely at zero
-        // HP with a pending revive. So a non-lethal flinch freezes on its last
-        // frame whenever the enemy then goes idle (target lost / player dead),
-        // which reads as a broken pose. Re-wiring needs an engine-side
-        // "stagger N ms then resume" impact effect.
+        // The aim's break plays this from the graph's `flinch` activity,
+        // which leaves on its own timer, or on any outer row (target lost),
+        // whose activity sets the next state. It is never an impact-policy
+        // `playAnim`: that only switches the state and never recovers, so it
+        // froze on its last frame once the enemy went idle.
         hit_reaction: {
           clip: "hit_reaction",
           loop: false,
@@ -223,12 +256,15 @@ export const limitatorEntity = defineEntity({
                   attackTurn: shoot,
                 },
                 // Fire, then relocate: a slot to the side of where it fired.
+                // Its roll picks the next cycle.
                 move: {
                   animation: "run",
                   motion: "reposition",
                   facing: "travel",
                   reposition: { arc: [60, 120] },
                 },
+                // The aim's break.
+                flinch: { animation: "hit_reaction", motion: "hold" },
               },
               transitions: {
                 close: [
@@ -263,7 +299,25 @@ export const limitatorEntity = defineEntity({
                   { to: "close", when: brain.targetVisible.not() },
                   { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
                 ],
-                move: [{ to: "wait", when: brain.timeInActivityMs.ge(MOVE_MS) }],
+                move: [
+                  {
+                    to: "wait",
+                    when: brain.timeInActivityMs
+                      .ge(MOVE_MS)
+                      .and(brain.activityRoll.lt(STRAFE_SHARE)),
+                  },
+                  { to: aim, when: brain.timeInActivityMs.ge(MOVE_MS) },
+                ],
+                // Rows out of the aim's rest. The row to `shoot` also waits
+                // for its `ranged` turn and the rifle's recovery.
+                aim: [
+                  { to: "close", when: brain.targetVisible.not() },
+                  { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
+                  { to: shoot },
+                  { to: "wait", when: brain.timeInActivityMs.ge(AIM_WAIT_MS) },
+                ],
+                settle: [{ to: "move", when: brain.timeInActivityMs.ge(SETTLE_MS) }],
+                flinch: [{ to: "move", when: brain.timeInActivityMs.ge(FLINCH_MS) }],
               },
             },
           },

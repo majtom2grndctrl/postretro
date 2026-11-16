@@ -648,3 +648,310 @@ fn shipped_limitator_burst_re_entered_through_wait_after_a_fire_fires_at_the_rif
         "the re-entered burst fires at its `kick`, not a cooldown whiff: {shots:?}"
     );
 }
+
+impl Shipped {
+    /// Seat `enemy`'s offense level, at depth 1, in `activity`.
+    fn seat_offense(&mut self, enemy: EntityId, activity: &str) {
+        let mut brain = self
+            .reg
+            .get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .clone();
+        let BehaviorLayerDescriptor::Graph(offense) =
+            &brain.graph.envelope.activities["engage"].layers["offense"]
+        else {
+            panic!("the offense is a graph");
+        };
+        let index = offense
+            .activities
+            .keys()
+            .position(|name| name == activity)
+            .unwrap_or_else(|| panic!("the offense declares `{activity}`"));
+        assert!(brain.enter_activity_at(1, index));
+        self.reg.set_component(enemy, brain).unwrap();
+    }
+
+    /// The animation state `enemy`'s mesh plays.
+    fn anim_state(&self, enemy: EntityId) -> String {
+        self.reg
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .as_ref()
+            .unwrap()
+            .current_state
+            .clone()
+    }
+}
+
+/// One aimed strike from the limitator's `aim`: every tick's path and turn,
+/// the ticks a shot left the rifle, and the release's moment tick.
+#[derive(Debug)]
+struct AimedStrike {
+    paths: Vec<String>,
+    turns: Vec<bool>,
+    shots: Vec<usize>,
+    moment: usize,
+}
+
+impl AimedStrike {
+    fn entered(&self, leaf: &str) -> usize {
+        entry_tick(&self.paths, leaf, 0)
+            .unwrap_or_else(|| panic!("the limitator enters `{leaf}`: {:?}", self.paths))
+    }
+}
+
+/// Seat `enemy` in its `aim` rest as it starts strafing, and tick until its
+/// strike settles.
+fn aimed_strike(shipped: &mut Shipped, enemy: EntityId) -> AimedStrike {
+    let kick = loop_moment_tick(enemy, shipped.clip(enemy, "shoot"), "kick");
+    let (mut paths, mut turns, mut shots) = (Vec::new(), Vec::new(), Vec::new());
+    let mut seated = false;
+    for tick in 0..(6.0 / DT) as usize {
+        if !seated && shipped.path(enemy).ends_with("/wait") {
+            shipped.seat_offense(enemy, "aim");
+            seated = true;
+        }
+        let result = shipped.tick();
+        shots.extend((!result.projectile_spawns.is_empty()).then_some(tick));
+        paths.push(shipped.path(enemy));
+        turns.push(shipped.holds_turn(enemy));
+        if paths[tick].ends_with("/settle") {
+            let release = entry_tick(&paths, "shoot_release", 0).expect("the aim releases");
+            return AimedStrike {
+                paths,
+                turns,
+                shots,
+                moment: release + kick,
+            };
+        }
+    }
+    panic!("the aimed strike settles within 6 s: {paths:?}, shots: {shots:?}");
+}
+
+// K2: the limitator's lowered `shoot` release fires its first shot as
+// `firing_rifle` reaches `kick` from the enemy's drawn phase and leaves on the
+// evaluation after it; its recover keeps the turn and the firing loop while
+// the burst's other two shots land, then it settles. At every drawn phase,
+// with no missing-event warning once its clips bind. `rifle_trooper` and
+// `rifle_warrior` lower the same graph.
+#[test]
+fn shipped_limitator_aimed_shoot_fires_at_the_kick_and_lands_its_burst_at_every_phase() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let manifest = dev_manifest();
+    let behavior = |name: &str| descriptor(&manifest, name).behavior.clone();
+    assert_eq!(behavior("rifle_trooper"), behavior("limitator"));
+    assert_eq!(behavior("rifle_warrior"), behavior("limitator"));
+
+    let mut waits = std::collections::BTreeSet::new();
+    let mut pass_ticks = 0;
+    for fillers in 0..24 {
+        let (mut shipped, limitator) = rifle_scene(manifest.clone(), "limitator", fillers);
+        let clip = shipped.clip(limitator, "shoot");
+        assert_eq!(
+            clip.name, "firing_rifle",
+            "fixture: the release plays the rifle loop"
+        );
+        pass_ticks = (clip.duration / DT).floor() as usize;
+        let strike = aimed_strike(&mut shipped, limitator);
+        let hold = strike.entered("shoot_aim");
+        let release = strike.entered("shoot_release");
+        let recover = strike.entered("shoot_recover");
+        let settled = strike.entered("settle");
+        assert_eq!(
+            strike.shots.first().copied(),
+            Some(strike.moment),
+            "the first shot fires at the loop's next `kick` from the drawn phase: {strike:?}"
+        );
+        assert_eq!(
+            recover,
+            strike.moment + 1,
+            "the release leaves on the evaluation after its moment: {strike:?}"
+        );
+        assert!(
+            strike.paths[release..recover]
+                .iter()
+                .all(|path| path.ends_with("/shoot_release")),
+            "{strike:?}"
+        );
+        assert_eq!(strike.shots.len(), 3, "the whole burst fires: {strike:?}");
+        assert!(
+            strike.shots[1..]
+                .iter()
+                .all(|&shot| strike.paths[shot].ends_with("/shoot_recover")),
+            "the recover holds through the burst's other shots: {strike:?}"
+        );
+        assert!(
+            settled > strike.shots[2],
+            "the strike settles after its third shot: {strike:?}"
+        );
+        assert!(
+            strike.turns[hold..settled].iter().all(|&held| held) && !strike.turns[settled],
+            "the turn is held from the hold through the burst and ends in `settle`: {strike:?}"
+        );
+        waits.insert(strike.moment - release);
+    }
+    assert!(
+        waits.len() >= 6 && waits.iter().any(|&wait| wait + 2 >= pass_ticks),
+        "fixture: the sweep draws phases across the {pass_ticks}-tick pass, \
+         a near-full wait for the kick included: {waits:?}"
+    );
+    let missing: Vec<_> = capture
+        .records()
+        .into_iter()
+        .filter(|record| {
+            record.level <= log::Level::Warn && record.message.contains("cannot time it")
+        })
+        .collect();
+    assert!(missing.is_empty(), "no missing-event warning: {missing:#?}");
+}
+
+// D5: 15 damage in the limitator's aim and 15 more in its hold break the
+// pose's 25 into `flinch`, which plays `hit_reaction` and fires nothing. The
+// flinch resumes on its timer into the reposition, whose activity sets the
+// next state, so the one-shot reaction never freezes on its last frame. A
+// flinch whose target is lost leaves the same way, for `idle`.
+#[test]
+fn shipped_limitator_heavy_fire_during_its_aim_flinches_it_and_it_resumes_on_its_timer() {
+    for lose_target in [false, true] {
+        let (mut shipped, limitator) = rifle_scene(dev_manifest(), "limitator", 0);
+        let (mut seated, mut flinched, mut left) = (None, None, None);
+        let (mut paths, mut shots) = (Vec::new(), Vec::new());
+        for tick in 0..(6.0 / DT) as usize {
+            if seated.is_none() && shipped.path(limitator).ends_with("/wait") {
+                shipped.seat_offense(limitator, "aim");
+                seated = Some(tick);
+            }
+            if seated.is_some_and(|seat| tick == seat + 1 || tick == seat + 10) {
+                crate::ai_tests::stance_pose::hit(&mut shipped.reg, limitator, 15.0);
+            }
+            if lose_target && flinched.is_some_and(|at| tick == at + 5) {
+                shipped.reg.despawn(shipped.player).unwrap();
+            }
+            let result = shipped.tick();
+            shots.extend((!result.projectile_spawns.is_empty()).then_some(tick));
+            let path = shipped.path(limitator);
+            if flinched.is_none() && path.ends_with("/flinch") {
+                flinched = Some(tick);
+                assert_eq!(
+                    shipped.anim_state(limitator),
+                    "hit_reaction",
+                    "the flinch plays the reaction"
+                );
+                assert!(!shipped.holds_turn(limitator), "the break ends the turn");
+            }
+            let in_flinch = path.ends_with("/flinch");
+            paths.push(path);
+            if flinched.is_some() && !in_flinch {
+                left = Some((tick, shipped.anim_state(limitator)));
+                break;
+            }
+        }
+        let seat = seated.expect("the limitator strafes");
+        let at = flinched.unwrap_or_else(|| panic!("the aim breaks into `flinch`: {paths:?}"));
+        let (left, state) = left.unwrap_or_else(|| panic!("the flinch ends: {paths:?}"));
+        assert!(
+            paths[seat + 9].ends_with("/shoot_aim"),
+            "fixture: the second hit lands in the hold: {paths:?}"
+        );
+        assert_eq!(
+            at,
+            seat + 10,
+            "the pose's summed damage breaks it on its first evaluation at 25: {paths:?}"
+        );
+        assert!(shots.is_empty(), "a broken aim fires nothing: {shots:?}");
+        if lose_target {
+            assert_eq!(left, at + 5, "losing its target leaves at once: {paths:?}");
+            assert_eq!(paths[left], "idle", "{paths:?}");
+            assert_eq!(state, "idle", "the idle activity sets its state");
+        } else {
+            // Time in activity counts from the tick after entry, and f32
+            // ticks may fall a hair short of 500: within two ticks of it.
+            let ms = (left - at) as f32 * DT * 1000.0;
+            assert!(
+                (500.0..500.0 + 2000.0 * DT).contains(&ms),
+                "the flinch resumes on its 500 ms timer: {ms} ms, {paths:?}"
+            );
+            assert!(paths[left].ends_with("/move"), "{paths:?}");
+            assert_eq!(state, "run", "the reposition sets its state");
+        }
+    }
+}
+
+// D5: within one engagement, each reposition's roll picks the next cycle:
+// below 0.5 the limitator strafes and fires, else it stops and aims. Both
+// branches come up, and each cycle's burst lands.
+#[test]
+fn shipped_limitator_reposition_roll_picks_strafe_and_fire_or_stop_and_aim() {
+    let (mut shipped, limitator) = rifle_scene(dev_manifest(), "limitator", 0);
+    let (mut paths, mut shots, mut rolls) = (Vec::<String>::new(), Vec::new(), Vec::new());
+    for tick in 0..(45.0 / DT) as usize {
+        let result = shipped.tick();
+        shots.extend((!result.projectile_spawns.is_empty()).then_some(tick));
+        let path = shipped.path(limitator);
+        let entered = tick == 0 || !paths[tick - 1].ends_with("/move");
+        if path.ends_with("/move") && entered {
+            let brain = shipped
+                .reg
+                .get_component::<BrainComponent>(limitator)
+                .unwrap();
+            let roll = brain.activity_roll(1).expect("the offense level is active");
+            rolls.push((tick, roll));
+        }
+        paths.push(path);
+    }
+    let engaged = paths
+        .iter()
+        .position(|path| path.starts_with("engage/"))
+        .expect("the limitator engages");
+    assert!(
+        paths[engaged..]
+            .iter()
+            .all(|path| path.starts_with("engage/")),
+        "one engagement throughout: {paths:?}"
+    );
+
+    // Every reposition but the last opens a whole cycle, ending at the next.
+    let mut branches = Vec::new();
+    for pair in rolls.windows(2) {
+        let ((entered, roll), (next, _)) = (pair[0], pair[1]);
+        let left = (entered..next)
+            .find(|&tick| !paths[tick].ends_with("/move"))
+            .expect("the reposition ends");
+        let leaf = paths[left].rsplit('/').next().unwrap();
+        let strafes = roll < 0.5;
+        assert_eq!(
+            leaf,
+            if strafes { "wait" } else { "aim" },
+            "the reposition entered on tick {entered} rolled {roll}: {:?}",
+            &paths[entered..next]
+        );
+        let release = if strafes { "/burst" } else { "/shoot_release" };
+        assert!(
+            paths[left..next].iter().any(|path| path.ends_with(release)),
+            "the cycle reaches its `{release}`: {:?}",
+            &paths[left..next]
+        );
+        let fired = shots
+            .iter()
+            .filter(|&&shot| (left..next).contains(&shot))
+            .count();
+        assert_eq!(
+            fired,
+            3,
+            "the cycle's burst lands: {:?}",
+            &paths[left..next]
+        );
+        branches.push(strafes);
+    }
+    assert!(
+        branches.len() >= 6,
+        "fixture: enough whole cycles: {branches:?}"
+    );
+    assert!(
+        branches.windows(2).any(|pair| pair[0] != pair[1])
+            && branches.contains(&true)
+            && branches.contains(&false),
+        "consecutive cycles take both branches: {branches:?}"
+    );
+}

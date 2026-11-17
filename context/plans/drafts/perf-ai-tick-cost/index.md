@@ -5,89 +5,89 @@ Brief · compact · Epic 10 (AI at scale: exact cost cuts) · reads: `context/li
 **Sequence:** the particle pool (`done/perf-particle-sim-cost`) has landed. This brief lands before `drafts/E10--ai-tick-scheduling`, which relies on its sub-stages, its budgets and its same-target-same-tick contract.
 
 ## Problem
-Developer-observed defect. In a converged fight, AI cost grows faster than the crowd. The combat-movement stress row (`replan_stress_row`) measured a median AI tick of 1.0, 2.9 and 8.2 ms for 32, 64 and 128 chasers, which is about n^1.6. A callgrind profile at 64 and 128 chasers (`research.md`) splits it into two causes.
-- **Target scan, n².** Every enemy scans every pawn every tick, its peers included. `targeting::target_candidates` walks every `PlayerMovement` and `Brain` holder for `target_offers`. On acquisition-due ticks (stride 1 inside 12 m, so almost every tick in a fight), `select_target_with_attacker_ledger` replays the walk and refreshes a `CandidateScope` for each candidate. Each refresh resolves hostility through `FactionRegistry::relationship`, which hashes string keys. This is half the tick at 128.
-- **Combat positioning repeats target-side work.** Every enemy on the same target scores the same ring positions through `select_combat_positions_batch`. Grounding (two `NavGraph::region_at` scans plus a static capsule cast), the docked-mover test, the slot-to-target line of sight and the target-side route depend only on the target and the position, yet run once per enemy. Clearance against other agents (`dynamic_placement_is_clear`) scans every agent for every candidate. This is the other half of the tick, and the larger share at 64.
+Developer-observed defect. In a converged fight, AI cost grows faster than the crowd (`replan_stress_row`; baseline under Acceptance, profile in `research.md`). The profile splits it into two causes of about equal size.
+- **Target scan is n².** Every enemy walks every pawn, its peers included, every tick (`targeting::target_candidates`), and on acquisition-due ticks refreshes a candidate scope for each one, reading each pawn's faction from a string-keyed map.
+- **Combat positioning repeats placement work per enemy.** Every enemy on one target scores the same ring positions (`select_combat_positions_batch`). Grounding, the docked-mover test and the target-side route depend only on the target and the position, yet run once per enemy, and clearance scans every agent for every candidate.
 
 Two shapes outside the fight compound it.
-- `NavGraph::region_at` and `resolve_region_at` scan every nav region. Steering's replan gates resolve two points per moving agent per tick through them (`admit_replans`), so steering cost is O(agents × regions): 4,326 regions on `stress-env-volumes`.
+- `NavGraph::region_at` and `resolve_region_at` scan every nav region. Steering's replan gates and positioning's grounding call them per agent per tick, so steering cost is O(agents × regions).
 - The candidate walk is O(registry slots), not O(pawns). With particles gone from the registry this no longer dominates, but projectiles, props and crates still stride the walk.
 
 The need is anticipated for content: no shipped map fights at these counts today. The owner asked for the capacity (roadmap Epic 10, AI at scale).
 
 When done:
 - Per-enemy targeting cost tracks the hostile pawns it must inspect, not every pawn, and does not depend on registry size.
-- Target-side positioning work runs once per target and position per batch, not once per enemy.
+- Target-side placement work runs once per target and position per batch, not once per enemy.
 - Point-to-region lookup does not scan the navmesh.
 - Every enemy selects the same target, and claims the same combat slot, on the same tick as today.
 
 ## Decisions
 - **Target candidates come from a faction-first pawn index, built once per AI pass.**
-  - Pawns are player-movement holders plus brain holders, bucketed by faction once per pass. Hostility resolves once per evaluating faction and bucket, from the pass's live sentiment, so no per-pair relationship lookup remains.
+  - Pawns are player-movement holders plus brain holders, bucketed by faction once per pass. Each pawn's faction is read once per pass, and hostility resolves once per evaluating faction and bucket from the pass's live sentiment.
   - The think stride is priced from the nearest pawn in the evaluating enemy's hostile buckets only.
-  - On due ticks the enemy walks hostile pawns in (distance, group, slot) order, group being today's movement-holders-first scan order, and stops at the first that passes candidacy and line of sight. Retaliation is checked directly against the ≤ 8 recent-attacker ledger entries (`RECENT_ATTACKER_LEDGER_CAPACITY`): `targeting::retaliation_preference` admits only a candidate with an attacker record.
-  - A due tick therefore inspects hostile pawns up to the first eligible one, plus ledger attackers, not the full candidate set.
-  - A grid inside a faction bucket is added only once that bucket is large, as an internal refinement with identical results.
-  - Engine-floor semantics in `entity_model.md` §7c are untouched: ranking, hysteresis, retaliation admission and latch, the candidacy predicate and the raw-distance stride price.
-- **Combat positioning shares target-side work within a batch.**
-  - Per batch, each (target, generated position, capsule placement) is grounded and tested once: grounding, the docked-mover test, slot-to-target line of sight and the target-side route check. Each enemy still runs its own route from its position and its own clearance test.
-  - The rotated reposition ring shares the same cache wherever its generated positions coincide; it needs no ring of its own.
-  - Clearance against other agents reads a per-batch spatial bucket of agent positions, with the same spacing rule, claimant exclusion and non-finite handling.
+  - On due ticks the enemy walks hostile pawns in (distance, group, slot) order, group being today's movement-holders-first scan order, and stops at the first that passes candidacy and line of sight. Retaliation is checked against the brain's recent-attacker ledger: `targeting::retaliation_preference` admits only a candidate with an attacker record.
+  - Engine-floor semantics in `entity_model.md` §7c are untouched: ranking, hysteresis, retaliation admission and latch, the candidacy predicate and the raw-distance stride price. §7c's "evaluated once per offered candidate" becomes "at most once, in ranking order", amended at promotion.
+- **Combat positioning shares target-side placement work within a batch.**
+  - Per batch, each (target, generated position, capsule placement) is grounded, tested against docked movers and checked for a tactically direct target route once. Slot-to-target line of sight stays per enemy, because it casts from each enemy's own eye offset. Each enemy also runs its own route and its own clearance test.
+  - Clearance against other agents uses an exact per-batch proximity query, with the same spacing rule, claimant exclusion and non-finite handling.
   - Assignment order, hysteresis and the proposal loop are unchanged, so every enemy claims the same slot on the same tick.
-- **`entity_model.md` §9 gains two named exceptions** to "Spatial partitioning for entity-entity queries (octree, grid)": the AI target-candidate index (faction-bucketed, exact) and the per-batch combat-positioning clearance bucket. Every other entity-entity query, steering separation included, stays unindexed. Amended at promotion.
-- **No cell-visibility broad phase in target selection.** `plans/done/E10--enemy-mp-target-selection` reserved the selection seam for one if enemy counts made selection hot. Rejected: the stride is priced on raw distance, which visibility cannot answer, and line of sight measures about 0% of AI cost. Perception-driven detail levels belong to `E10--ai-tick-scheduling`, which never chooses targets.
+- **`entity_model.md` §9 gains two named exceptions** to "Spatial partitioning for entity-entity queries (octree, grid)": the AI target-candidate index (faction-bucketed, exact) and the exact per-batch proximity query for combat-slot clearance. Every other entity-entity query, steering separation included, stays unindexed. Amended at promotion.
+- **No cell-visibility broad phase in target selection.** `plans/done/E10--enemy-mp-target-selection` reserved the selection seam for one if enemy counts made selection hot. Rejected: the stride is priced on raw distance, which visibility cannot answer, and line of sight measures about 0% of AI cost.
 - **Nav point-to-region lookup is indexed at load.**
-  - `NavGraph` builds a cell → candidate-regions index over its existing grid when constructed.
-  - `region_at` and the snapping `resolve_region_at` return exactly what the linear scans return, including stacked floors, the equal-band lower-index tie and off-mesh snap within tolerance.
+  - `region_at` and the snapping `resolve_region_at` return exactly what the linear scans return, including stacked floors, both tie rules and off-mesh snap within tolerance, without visiting every region.
   - No PRL format change. A load-time build keeps the bake cache untouched and is reversible.
-- **AI cost gets sub-stages.**
-  - `sim_ai` gains sub-stages for targeting, combat positioning, perception, graph evaluation, and apply with slots and turns, on the existing `SimStage` set.
-  - `sim_steering` keeps its `sim_steer_agents`, `sim_steer_pose` and `sim_steer_movers` split. Labels follow `rendering_pipeline.md` §12.
+- **AI cost gets sub-stages.** `sim_ai` gains sub-stages for targeting, combat positioning, perception, graph evaluation, and apply with slots and turns, on the existing `SimStage` set. Labels follow `rendering_pipeline.md` §12.
 - **Budgets live on the headless stress row.** `replan_stress_row` is the measurement: deterministic counts, no window, and it runs on any machine. The windowed `stress-env-volumes` row stays for steering, where the nav index is the change.
-- **Landing order:** the nav index first (it waits on nothing), then the pawn index and positioning cache in either order. The registry occupancy index stays its own later brief.
 - **Non-goals.**
   - Registry occupancy index, a later brief justified by non-particle populations. Registry storage shape: `drafts/registry-column-storage`.
-  - Decide and act rates, detail tiers and perception: `E10--ai-tick-scheduling`.
-  - The shared replan budget's throughput (4 per tick; the fair wait reaches about 0.4 s at 128 chasers). Scaling it changes paths, positions and later targets, so it would break this brief's identical-results rule. `E10--ai-tick-scheduling` owns it (owner, 2026-11-17).
-  - Steering separation (`agent_steering::separation`), the same pairwise shape as positioning clearance. Steering grew about linearly to 128 chasers in the profile, so it is not measured hot, and an exact bucket must keep separation's snapshot-order summation. If it turns hot, it can share the clearance bucket under that constraint.
-  - Time-slicing perception or LOS: measured at about 0% of AI cost, and it would change reaction latency.
-  - Changing think-stride bands, ring shape or slot scoring.
+  - Decide and act rates, detail tiers and perception: `E10--ai-tick-scheduling`, which never chooses targets.
+  - The shared replan budget's throughput. Scaling it changes paths, positions and later targets, so it would break this brief's identical-results rule. `E10--ai-tick-scheduling` owns it (owner, 2026-11-17).
+  - Steering separation: not measured hot (`research.md` §Adjacent work).
+  - Time-slicing perception or LOS: it changes reaction latency.
   - Parallel AI (`ai_pathfinding_mt_readiness.md`): the cost is repeated and pairwise work, not compute.
 
 ## Acceptance
 ### Automated
-- [ ] Target selection matches a brute-force reference across randomized scenes, on the selected target, the retaliation latch, the stride-pricing distance and the order among equal-distance candidates. The scenes cover:
+- [ ] Target selection matches a brute-force reference across randomized scenes, on the selected target, the retaliation latch, the stride-pricing distance and the order among equal-distance candidates. Today's scan stays as a test-only reference. The scenes cover:
   - one and several player pawns;
   - peer brains, and several factions with asymmetric sentiment;
   - a retained target, including a hysteresis tie;
   - a hostile ledger attacker, and a non-hostile pawn admitted only by retaliation over tolerance;
   - a candidacy predicate or failed line of sight rejecting the nearest several hostile pawns;
   - the evaluating enemy excluded;
-  - zero candidates, and zero hostile buckets.
-- [ ] In a converged horde (one faction around one player), a due-tick selection evaluates candidacy and line of sight for no pawn beyond the first eligible hostile, plus ledger attackers.
-- [ ] Per-enemy targeting cost for 64 brains does not change when the registry also holds 60,000 non-pawn entities, within a stated bench threshold. Only the once-per-pass index build may grow.
-- [ ] Batched combat positioning matches the uncached batch on every assignment (slot, score terms, generation index, incumbency) across randomized scenes: several targets, shared and distinct targets, chase and rotated rings, an incumbent inside and outside the switch margin, scarce slots, a candidate blocked by a peer at exactly the spacing, a docked mover over a slot, and a non-finite peer position.
-- [ ] In a wave of N enemies on one target, the target-side tests run once per generated position per batch, not N times.
-- [ ] Indexed region lookup equals the linear scan for every nav grid cell centre and for randomized points, including stacked floors at one XZ, equal floor-band distances, points just inside and just outside the snap tolerance, and points beyond the grid.
-- [ ] Same results over a run: the stress row's chase and strafe waves at 32, 64 and 128 produce identical per-tick targets and slot claims before and after the pawn index and the positioning cache.
-- [ ] With CPU timing on, the AI sub-stages appear under `sim_ai` and the steering sub-stages under `sim_steering`, each no larger than its parent. With timing off, none report.
+  - zero candidates, and zero hostile buckets;
+  - a quiescent brain (zero health, or despawn queued) that stays a candidate; an inventory-owned pawn; a pawn holding both player movement and a brain; a pawn with no transform; a pawn with no faction state; a pawn at a non-finite position;
+  - pawns with a non-index faction value (NaN, 0.5), and -0.0 beside 0.0;
+  - a ledger attacker that is not a pawn, despawned, or inventory-owned; a ledger attacker that is the retained target or the evaluating enemy; two over-tolerance ledger attackers with equal rank, recorded in the reverse of scan order.
+- [ ] Across two consecutive AI ticks where the first tick's apply changes pawns, the second tick still matches the reference (P1).
+- [ ] With several hostile pawns and a larger allied horde, a due-tick selection refreshes candidate facts for no allied pawn that lacks an attacker record, and for no hostile pawn farther than the first eligible one. Line of sight runs only for pawns that pass candidacy up to that one, plus ledger attackers. Counted at the candidate-refresh seam, the refresh count is the same with 0 and with 128 allied peers.
+- [ ] With 64 brains and 0 versus 60,000 non-pawn entities, every enemy selects the same target, and per-enemy targeting reads no registry column. Only the once-per-pass index build walks the registry, counted at the index build.
+- [ ] Batched combat positioning matches the uncached batch, kept as a test-only reference, on every assignment (slot, score terms, generation index, incumbency) across randomized scenes: several targets, shared and distinct targets, chase and rotated rings, an incumbent inside and outside the switch margin, scarce slots, a candidate blocked by a peer at exactly the spacing, a docked mover over a slot, a non-finite peer position, two enemies with different eye offsets on one target where a low obstruction blocks a slot for only one of them, and positions that coincide across two standoffs with different generation indices.
+- [ ] In a chase wave sharing one target and standoff, grounding, the docked-mover test and the target-side route each run once per distinct candidate position per batch, counted at the scoring seam. The count is the same for 1 and for 16 enemies.
+- [ ] Indexed region lookup equals the linear scan for every nav grid cell centre and for randomized points, including stacked floors at one XZ, equal floor-band distances, points just inside and just outside the snap tolerance, points beyond the grid, points exactly on region min and max edges under a non-integral origin and a cell size other than 1 m, equal-XZ-distance snap ties between two regions, non-finite points, and a region rect reaching past the grid dimensions.
+- [ ] On a grid of 4,000 or more regions, a lookup examines only the candidate regions near the point, never every region (P3).
+- [ ] Same results over a run: the stress row's chase, strafe and strafe+hits infight waves at 32, 64 and 128 produce identical per-tick targets, retaliation latches and slot claims before and after the pawn index and the positioning cache (P2).
+- [ ] With CPU timing on and an engaged enemy, the targeting, combat-positioning, perception, graph-evaluation and apply sub-stages each report under `sim_ai`, and the steering sub-stages under `sim_steering`, each no larger than its parent. Combat positioning reports absent on a tick with no engaged enemy. With timing off, none report.
 - [ ] Existing AI, steering, positioning and nav suites pass unchanged.
 ### Manual
-- [ ] **Stress row**, release, on the owner's Windows desktop, pinned per `testing_guide.md` §Resource bounds (`cargo test -p postretro-ai --release --lib -- --ignored replan_stress_row --nocapture --test-threads=1`):
-  - **Baseline (2026-11-10, same desktop):** median AI tick, chase 1.05 / 3.05 / 8.8 ms and strafe 0.58 / 1.43 / 4.0 ms at 32 / 64 / 128.
-  - **Target:** 64 chasers ≤ 1.0 ms median AI tick, and per-enemy cost at 128 at most 1.2× its cost at 64, for chase and strafe. 128 is reported. Replan waits are reported and must match the baseline exactly.
-  - The row reports the sub-stages, so the remaining cost is attributed.
+- [ ] **Stress row**, release, on the owner's Windows desktop, pinned per `testing_guide.md` §Resource bounds (`cargo test -p postretro-ai --release --lib -- --ignored replan_stress_row --nocapture --test-threads=1`). A size names the wave; each run adds 8 late chasers, and per-agent cost divides by all agents (72 at the 64 wave).
+  - **Baseline (2026-11-10, same desktop):** median AI tick, chase 1.05 / 3.05 / 8.8 ms and strafe 0.58 / 1.43 / 4.0 ms at 32 / 64 / 128. Replan-wait lines are recorded per scenario and size at the pre-change commit.
+  - **Target:** the 64 wave ≤ 1.0 ms median AI tick, and median AI tick per agent at the 128 wave at most 1.2× that at the 64 wave, for chase and strafe. 128 is reported. Replan-wait lines match the recorded baseline exactly.
+  - Medians come from a timing-off run; sub-stages come from a second, timing-on run, so their scopes do not inflate the median.
+  - **Ceiling:** after landing, the measured medians plus 25% become the ceiling later briefs hold.
 - [ ] **Steering**, windowed: `stress-env-volumes.prl` recompiled from the committed map, mixed pose `114.60,2.44,-138.99,45,0`, release with dev-tools, at least five 120-frame windows after warmup, load average recorded. `sim_steer_agents` at 64 agents is re-measured before the nav index and must reach ≤ 0.8 ms/tick after it.
 
 ## Path
-- **Pawn index.** Seams: `targeting::target_candidates`, `target_offers` and `select_target_with_attacker_ledger`. Build beside the `EnemySnapshot` pass in `run_ai_tick_with_host`: `LiveFactionSentiment` is constructed once there and the registry is borrowed immutably through `compute::evaluate`, so a pre-built index stays exact. The faction leaf is `EntityStateComponent`'s `FACTION_STATE_FIELD`, 0.0 when absent. The retained-target path, `target_candidate`, stays an O(1) lookup.
-- **Early stop.** Today every candidate runs `CandidateScope::refresh`, the candidacy program and the perception callback. Confirm none has a side effect a skipped candidate would have produced. The latch needs the nearest eligible hostile, which is the walk's first hit.
-- **Positioning cache.** Seams: `select_combat_positions_batch`, `combat_candidates`, `rotated_ring::ring_candidates` and `scoring::score_candidate`. Split `score_candidate` into its target-side half (`grounded_candidate_position`, `overlaps_docked_mover`, `line_of_sight`, `has_tactically_direct_target_path`) and its agent-side half (`dynamic_placement_is_clear`, `find_path_from`). Key the cache on exact position bits, as `same_position_bits` already does. Check whether any target-side input differs per enemy (eye offset, target aim) before sharing it; if so, key on it too.
+- **Landing order:** the nav index first (it waits on nothing), then the pawn index and positioning cache in either order.
+- **Pawn index.** Seams: `targeting::target_candidates`, `target_offers`, `select_target_with_attacker_ledger` and `CandidateScope::refresh`, which should take the faction from the bucket rather than re-read it. Build beside the `EnemySnapshot` pass in `run_ai_tick_with_host`: `LiveFactionSentiment` is constructed once there and the registry is borrowed immutably through `compute::evaluate`, so a pre-built index stays exact. Do not reuse the snapshot pass's filter: it drops quiescent enemies, which stay candidates. Key buckets on exact faction bits. The retained-target path, `target_candidate`, stays an O(1) lookup.
+- **Early stop.** `CandidateScope::refresh`, the candidacy program and the perception callback were checked for side effects a skipped candidate would have produced; none found (`research.md`). The latch needs the nearest eligible hostile, which is the walk's first hit. A ledger attacker still passes the pawn, inventory, self and exclude filters, and equal retaliation ranks still break in scan order.
+- **Large buckets.** A grid inside a faction bucket can be added once that bucket is large, with identical results.
+- **Positioning cache.** Seams: `select_combat_positions_batch`, `combat_candidates`, `rotated_ring::ring_candidates` and `scoring::score_candidate`. Split `score_candidate` into its shared half (`grounded_candidate_position`, `overlaps_docked_mover`, `has_tactically_direct_target_path`) and its per-enemy half (`dynamic_placement_is_clear`, `line_of_sight`, `find_path_from`). Key the cache on exact position bits, as `same_position_bits` already does. Rotated rings follow each enemy's bearing, so they share little (`research.md`).
 - **Rival:** one all-pawn XZ grid returning the full candidate set in distance order. Faction-first wins because hostile buckets are usually small and the due-tick walk stops early; a grid can still live inside a large bucket.
-- **Nav.** Seams are `NavGraph::region_at`, `resolve_region_at` and `region_snap_tolerance`. Regions carry world XZ rects over a 1 m grid. Positioning's grounding also calls `region_at`, so the index helps both. Also consider caching the planned destination's region on the agent when the plan is built, so `destination_topology_changed` resolves one point per tick, not two.
-- **Stages.** The AI crate receives `SimStage` scopes through `AiTickInputs`, because sim owns the tick's stage set. The stress row reads the same scopes.
-- **First slice:** the nav index, then the brute-force and uncached-batch equivalence tests before each cache.
+- **Nav.** Seams are `NavGraph::region_at`, `resolve_region_at` and `region_snap_tolerance`. A cell → candidate-regions index over the existing grid is the expected shape. Also consider caching the planned destination's region on the agent when the plan is built, so `destination_topology_changed` resolves one point per tick, not two.
+- **Stages.** The AI crate receives `SimStage` scopes through `AiTickInputs`, because sim owns the tick's stage set. The stress row needs harness work to read them.
+- **First slice:** the nav index, then the brute-force and uncached-batch equivalence tests and the P2 digest before each cache.
 - `sim/src/sim/mod.rs`, `agent_steering.rs` and `combat_positioning.rs` are past 800 lines. Extend them in place, or split first in a behaviour-preserving commit.
 
 ## Open questions
-- Where the pawn index lives (AI crate versus sim), the bucket size at which a bucket gains a grid, and the clearance bucket's cell size. — **delegated**
+- Where the pawn index lives (AI crate versus sim), the bucket size at which a bucket gains a grid, and the clearance query's cell size. — **delegated**

@@ -21,8 +21,10 @@ Findings that inform the brief but do not decide it. The 2026-10-05 snapshot pre
 | Rest (slots, turns, apply) | ~0.09 ms | ~0.16 ms | ~1.8× | ~1 |
 | Steering `agent_steering::tick_impl` (separate) | 0.32 G instr. | 0.64 G instr. | 1.98× | ~1.07 |
 
-- Acquisition is due on about 96% of evaluations (stride 1 inside 12 m), so the full selection walk runs almost every tick. It refreshes a `CandidateScope` for about 71 candidates at 64 and 135 at 128; each refresh does two `FactionRegistry::relationship` lookups hashing `&str` keys with SipHash (`hash_one::<&str>` is 8.75% of all instructions at 128).
+- Acquisition is due on about 96% of evaluations (stride 1 inside 12 m), so the full selection walk runs almost every tick. It refreshes a `CandidateScope` for about 71 candidates at 64 and 135 at 128; each refresh resolves hostility (`hash_one::<&str>` is 8.75% of all instructions at 128). Review (2026-11-17) located that hashing: it is the per-candidate faction-leaf read from `EntityStateComponent`'s string-keyed map, in `target_offers` and again in `CandidateScope::refresh`. `FactionRegistry::relationship` and the live overlay binary-search integer pairs; the profile's attribution to `relationship` is inclusive of inlined callers. The index reads each pawn's faction once per pass, and refresh takes it from the bucket.
 - Positioning's per-call cost is flat (`score_candidate` 11.8k → 12.7k instructions); calls grow faster than agents (194k → 440k per run), mostly `capsule_static_placement_center` from grounding. From source: grounding, the docked-mover test, slot line of sight and the target-side route depend only on target and position, yet run per enemy; `dynamic_placement_is_clear` scans every agent per candidate.
+- Rotated rings (strafe, reposition) are built on each enemy's own bearing from the target (`engaged_motion`), so their slots almost never share position bits with another enemy's. The positioning cache is exact for them but saves little. The strafe wave was not profiled: its split is unmeasured, so the strafe target rests on the pawn index and the clearance query.
+- Slot line of sight casts from each enemy's own eye offset (`compute.rs` → `CombatQuery::enemy_eye_offset`; `perception` derives it from the archetype's hitbox, and `(p + k) − p` rounds per position), so it cannot be shared between enemies.
 - `resolve_combat_slots` and attack-turn arbitration are under 0.1%. `LiveFactionSentiment::sentiment` itself is 0.09%; the cost sits in `relationship`.
 - Caveats: instruction counts are not time, so the ms split is proportional (total instruction growth 2.78× matches wall-clock 2.80×). The profile includes 60 warm-up ticks the row's timer excludes. Confidence high on which terms grow, moderate on exact shares.
 
@@ -127,7 +129,7 @@ General engine practice, not re-verified against sources this session.
 - **Uniform grid / spatial hash for proximity queries** (Detour crowd `dtProximityGrid`, most crowd and boids systems). It is rebuilt each tick from pawn positions. A ring search in order of distance returns the exact nearest result.
 - **Grid or BV-tree point-to-polygon lookup on a navmesh** (Detour `findNearestPoly` uses a per-tile BV tree). A navmesh that is already grid-rasterised maps directly to a cell → region list.
 - **Time-sliced or budgeted perception and LOS** (Unreal AI Perception's per-frame sense budget). This does not apply: LOS is about 0% of measured cost. It also changes reaction latency, which is a behaviour change.
-- **Parallel AI** (`ai_pathfinding_mt_readiness.md`). This does not apply: the measured cost is a cache-hostile registry walk, not compute, and the registry is single-threaded by contract.
+- **Parallel AI** (`ai_pathfinding_mt_readiness.md`). This does not apply: the 2026-11-17 profile puts the cost in repeated target-side work and pairwise scans, not compute, and the registry is single-threaded by contract.
 
 ## Faction-first pawn index
 
@@ -153,5 +155,18 @@ A per-kind occupancy index lands last, as its own brief, not here:
 
 - `plans/done/E10--enemy-mp-target-selection`, `E10--enemy-aggro-model` and `E10--combat-perception-facts` define the selection semantics this brief must preserve: candidate order, hysteresis, retaliation and the stride price.
 - `plans/done/perf-billboard-emitter`'s "columnar / batched registry mutation API" non-goal covered that plan's Slice 4 only. It is not a project rule. The storage mismatch is `drafts/registry-column-storage`'s.
-- `drafts/perf-particle-sim-cost` removes particles from the registry. That removes this fixture's slot inflation, but not the O(slots) shape.
-- `entity_model.md` §9 lists "Spatial partitioning for entity-entity queries (octree, grid)" as a non-goal. The pawn index is a named exception, amended at promotion.
+- `done/perf-particle-sim-cost` removed particles from the registry. That removed this fixture's slot inflation, but not the O(slots) shape.
+- `entity_model.md` §9 lists "Spatial partitioning for entity-entity queries (octree, grid)" as a non-goal. The pawn index and the per-batch clearance query are named exceptions, amended at promotion.
+- Steering separation (`agent_steering::separation`) has the same pairwise shape as positioning clearance but grew about linearly to 128 chasers (2026-11-17 profile). An exact bucket must keep separation's snapshot-order summation; if it turns hot, it can share the clearance query.
+
+## Early stop: side effects checked (review, 2026-11-17)
+
+`CandidateScope::refresh` writes only a scratch scope nothing else reads; the candidacy program's `eval_value` takes the scope by shared reference; `raw_target_perception` is pure; the LOS grace table is touched only for the final selection. Skipping candidates past the first eligible hostile loses no side effect.
+
+## Ordering pins
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Two consecutive AI ticks. Tick 1's apply changes a pawn's faction state, writes a sentiment override, despawns a pawn, and spawns one into the reused slot. | The index is built at the start of tick 2's pass, after tick 1's apply. | Tick 2's selection, latch and stride distance equal the brute-force reference. An index kept across passes and rebuilt only when dirty fails. |
+| P2 | Stress wave at 32 / 64 / 128 for chase, strafe and strafe+hits infight. | A per-tick digest of (enemy, target, retaliation latch, slot bits) is recorded at the pre-change commit and checked in; each change replays it. | Equal digests on every tick. Ignore-gated release run (the row is minutes long in debug). |
+| P3 | Region lookup on a grid of 4,000 or more regions, counting regions examined per `region_at` or `resolve_region_at`. | Index built once at `NavGraph` construction. | No more than the candidate lists of the cells within snap tolerance, never the full region count. A linear fallback fails. |

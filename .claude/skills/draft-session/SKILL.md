@@ -19,6 +19,8 @@ Run the conversation that precedes an artifact. The session ends in a handoff bl
 
 **Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When the destination is clear, decide the full shape and build it in strides. Small increments earn their cost only where the path is genuinely uncertain; the session's job is to resolve that uncertainty up front. When the work lays a foundation, its first consumer ships in the same unit of work — the consumer proves the foundation and keeps it from landing as a stub nothing exercises.
 
+**Scale to the genre, not to today's content.** Size capacity for what games built on PostRetro take for granted — horde counts, large arenas, co-op — not for the maps that exist now. A designer's ambitious idea should just work, with no engine tuning. Never gate a table-stakes capability on measuring today's content. Build it at the target scale, with a stress fixture at that scale as its proof. Measurement confirms the design; it never decides whether to build.
+
 **Work as an orchestrator.** After a baseline read, dispatch bounded, read-only research agents — one question each, returning claim, symbol, and confidence. Keep your own context for decisions. Never delegate a product or architectural decision: a delegated answer is a report, and it grounds no one.
 
 **Do not delegate task decomposition, line-level verification, or a map of the whole tree.** Each is the executor's job. Pre-doing it is how a conversation turns into a plan nobody asked for.

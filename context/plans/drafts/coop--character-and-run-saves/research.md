@@ -73,3 +73,5 @@ Read at acd5eae8. Facts by symbol; the executor re-verifies.
 | P8 | Client character writes | Every client character write takes the loadout the host last sent, else the joined one, never the boot file's | A periodic save after a level-start message keeps that message's loadout |
 | P9 | Migration completion | The file whose presence ends migration is written last | A crash after an earlier migration write migrates again at next boot |
 | P10 | Deleting the selection | A delete on the selected index sets that selection to `-1` and stores it | A restart after deleting the selected run shows run `-1` |
+| P11 | Continue arriving at a checkpoint | Continue's level load writes the run and character but keeps the run's checkpoint; only a later level start or checkpoint replaces it | A second Continue with no save point between arrives at the same checkpoint |
+| P12 | Deleting the selected character | The delete empties seat 0's carry before any later install reads it | A later `loadLevel` with no selection spawns empty and writes no character file |

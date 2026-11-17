@@ -129,3 +129,15 @@ Left, with reasons:
 - A boot `--connect` does not remember its address: `--connect` is a developer path.
 - `enqueue_dev_level_cycle_target` queues a played level under the menu. It is dev-tools only.
 - The fixture reuses `frontend.host` as a reaction name, as the brief's Scripting surface example does.
+
+Round 2: one opus re-review of the round-1 fixes. It confirmed them and found three more, fixed with a test each:
+- A host level change cleared a `ModDigest` hold, and the host never resends an unchanged cause, so `modDiffers` was lost. A level change now clears only level-scoped holds (`wait_reason_names_each_hold`).
+- A password field abandoned at admission stopped being tracked, so typing after it stayed in `ui.textEntry`. The field now stays tracked with no target, and its commit or cancel discards the entry (`an_open_password_field_cannot_restore_a_consumed_password`).
+- An unload kept a queued press even when it led to a played level, where the press is refused. The press now survives only while the frontend menu is up (`an_unload_away_from_the_frontend_drops_a_queued_press`).
+
+## Trial notes
+
+- Preflight deviation: clippy ran in the main target directory rather than `target/preflight-clippy`, to stay inside the session's disk allowance.
+- Clippy's one warning is the pre-existing unused `postretro-net` dependency in `combat-model`, outside this brief.
+- Loopback tests pump lag-proxied endpoints, so the exchange helpers sleep 1 ms per round; closing relay clients need `step_closing`, bounded.
+- The text-entry approach changed from the brief's path: the engine copies `ui.textEntry` into the field's slot on commit (see Corrections). It needs owner sign-off.

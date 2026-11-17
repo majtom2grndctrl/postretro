@@ -441,11 +441,23 @@ export function accessibilityAction(field: string, op: string): string {
  * field bound to it reflects typing on either input path. Pass the result as the
  * descriptor of `defineReaction("name", openTextEntry(...))` and reference that
  * reaction from a `button`'s `onPress`.
+ *
+ * The optional `target` is a writable String slot the entry is for, so one
+ * screen can hold several fields. The keyboard opens with `ui.textEntry` set
+ * to the target's text; committing copies `ui.textEntry` into the target and
+ * empties it, and cancelling empties it and leaves the target as it was.
+ * `onCommit` then sees the target as entered.
  */
 export function openTextEntry(
   onCommit?: string,
+  target?: Ref<string>,
 ): import("../data_script").SystemReactionStep {
-  return showDialog(KEYBOARD_TREE, onCommit);
+  const step = showDialog(KEYBOARD_TREE, onCommit);
+  if (target === undefined) return step;
+  return {
+    ...step,
+    args: { ...step.args, commitTarget: stateSlot(target, "openTextEntry") },
+  };
 }
 
 /**

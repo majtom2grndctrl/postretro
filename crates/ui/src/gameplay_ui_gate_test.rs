@@ -73,6 +73,7 @@ fn text(content: &str, font_size: f32) -> Widget {
         focus_neighbors: Default::default(),
         visible_when: None,
         role: None,
+        mask: false,
     })
 }
 

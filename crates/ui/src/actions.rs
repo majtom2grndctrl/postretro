@@ -138,6 +138,24 @@ mod tests {
         }
     }
 
+    // AC U6: session entry is a reaction verb (`hostSession`, `joinSession`),
+    // never a reserved `ui.*` action: mods own the menus.
+    #[test]
+    fn reserved_ui_actions_name_no_host_or_join_action() {
+        let source = include_str!("actions.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        for literal in production.split('"').skip(1).step_by(2) {
+            if !literal.starts_with("ui.") {
+                continue;
+            }
+            let lowered = literal.to_ascii_lowercase();
+            assert!(
+                !lowered.contains("host") && !lowered.contains("join"),
+                "reserved action `{literal}` enters a session"
+            );
+        }
+    }
+
     #[test]
     fn accessibility_field_actions_parse_op_and_field() {
         assert_eq!(

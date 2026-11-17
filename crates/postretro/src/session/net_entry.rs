@@ -276,6 +276,28 @@ mod tests {
         );
     }
 
+    /// AC U7: the networking contract describes gate 1 as the id comparison
+    /// it is under `Unsecure`, admission as an access decision once a
+    /// password can gate it, and runtime entry as built.
+    #[test]
+    fn networking_contract_drops_the_stale_entry_and_handshake_claims() {
+        let doc = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../context/lib/networking.md"),
+        )
+        .unwrap();
+        for stale in [
+            "encrypted netcode handshake",
+            "at the encryption layer",
+            "not a trust decision",
+            "needs a relaunch",
+            "Runtime entry (decided, not yet built)",
+            "Session password (decided, not yet built)",
+        ] {
+            assert!(!doc.contains(stale), "networking.md still says `{stale}`");
+        }
+    }
+
     /// Endpoint construction has one production caller: boot flags and
     /// in-app entry both reach it through [`enter_role`].
     #[test]

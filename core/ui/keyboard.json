@@ -230,6 +230,18 @@
       },
       {
         "kind": "button",
+        "id": "key_dot",
+        "label": ".",
+        "onPress": "kbAppend_dot"
+      },
+      {
+        "kind": "button",
+        "id": "key_colon",
+        "label": ":",
+        "onPress": "kbAppend_colon"
+      },
+      {
+        "kind": "button",
         "id": "key_space",
         "label": "SPACE",
         "onPress": "kbAppend_space"

@@ -233,6 +233,7 @@ mod tests {
                     focus_neighbors: Default::default(),
                     visible_when: None,
                     role: None,
+                    mask: false,
                 })],
             }),
         )

@@ -136,6 +136,31 @@ mod tests {
         );
     }
 
+    // AC U2: the keyboard types an address: `.` and `:` keys reference the
+    // dot and colon append reactions.
+    #[test]
+    fn keyboard_has_dot_and_colon_keys_for_addresses() {
+        let tree = load_from_disk();
+        let Widget::Grid(grid) = &tree.root else {
+            panic!("keyboard root is a grid");
+        };
+        for (id, label, on_press) in [
+            ("key_dot", ".", "kbAppend_dot"),
+            ("key_colon", ":", "kbAppend_colon"),
+        ] {
+            let key = grid
+                .children
+                .iter()
+                .find_map(|w| match w {
+                    Widget::Button(b) if b.id == id => Some(b),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("keyboard has `{id}`"));
+            assert_eq!(key.label.as_deref(), Some(label));
+            assert_eq!(key.on_press, on_press);
+        }
+    }
+
     #[test]
     fn deleting_a_key_still_deserializes_with_no_rust_change() {
         // AC 6: editing the layout JSON (here: dropping one key) still parses

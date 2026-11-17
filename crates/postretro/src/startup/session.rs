@@ -396,6 +396,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         active_level_host_named: false,
         level_stopped_by_session_end: false,
         pending_entry: None,
+        text_entry_field: None,
         join_facts: Default::default(),
         in_app_host_port: crate::netcode::DEFAULT_HOST_PORT,
         client_left_in_control_drain: false,

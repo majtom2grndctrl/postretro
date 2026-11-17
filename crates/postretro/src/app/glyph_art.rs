@@ -246,6 +246,7 @@ fn resolved_widget(
             style_ranges: None,
             visible_when: glyph.visible_when.clone(),
             role: None,
+            mask: false,
         }),
         None => Widget::Spacer(SpacerWidget {
             flex_grow: 0.0,

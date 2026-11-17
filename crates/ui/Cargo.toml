@@ -15,6 +15,8 @@ bytemuck.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 log.workspace = true
+# A masked Text draws one `*` per grapheme, not per byte or char.
+unicode-segmentation = "1"
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true

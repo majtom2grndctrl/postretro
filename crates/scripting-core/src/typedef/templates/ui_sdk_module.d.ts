@@ -182,7 +182,7 @@ declare module "postretro/ui" {
   export function present(template: PresentationTemplate, value: NumberValue): Effect;
 
   /** Props for `Text`. `content` is the fallback/display string; `fontSize` is a finite logical-px number defaulting to 12; `color` is an RGBA tuple or color token defaulting to white. `bind` may replace rendered content from state; `styleRanges` recolors by normalized value. */
-  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole };
+  export type TextProps = { content: LocalizedText; fontSize?: number; color?: WidgetColor; font?: FontToken; bind?: TextBindProp; styleRanges?: StyleRangesProp; id?: string; focusNeighbors?: FocusNeighborsProp; visibleWhen?: Predicate; role?: WidgetRole; mask?: boolean };
   /** Build a `text` widget descriptor. Pure: returns data retained by Rust after manifest/setup load. */
   export function Text(props: TextProps): WidgetDescriptor;
   /** Props for `Panel`. `fill` is required RGBA/token color; `border` is optional 9-slice data; `bind` may replace fill from a numeric RGBA state value. */
@@ -325,8 +325,8 @@ declare module "postretro/ui" {
   /** The reserved `onPress` action for one accessibility field. Toggles `cycle`; numeric fields `increase` or `decrease`. */
   export function accessibilityAction<F extends AccessibilityToggleField>(field: F, op: "cycle"): `ui.accessibility.cycle.${F}`;
   export function accessibilityAction<F extends AccessibilityNumericField, O extends "increase" | "decrease">(field: F, op: O): `ui.accessibility.${O}.${F}`;
-  /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. */
-  export function openTextEntry(onCommit?: string | null): SystemReactionStep;
+  /** Open the engine keyboard modal. Optional `onCommit` names a reaction fired when text entry commits. Optional `target` is the writable String slot the entry is for: the keyboard opens with its text, and commit copies the entry into it. */
+  export function openTextEntry(onCommit?: string | null, target?: Ref<string>): SystemReactionStep;
   /** Push a menu tree by registry name. Unknown tree names warn and no-op. */
   export function openMenu(tree: string): SystemReactionStep;
   /** Pop the active modal. Empty stack warns and no-ops. */

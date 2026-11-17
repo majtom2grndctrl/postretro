@@ -18,6 +18,7 @@ use super::super::descriptor::{
 use super::super::style_ranges::StyleEffectState;
 use super::super::theme::UiTheme;
 
+use super::draw::mask_text;
 use super::node_context::{NodeContext, NumberPresentation, RingScalar, ValueText};
 use super::style::{
     build_node_style_ranges, container_base_style, resolve_border, resolve_color, resolve_font,
@@ -79,6 +80,7 @@ pub fn build_node(
             font,
             bind,
             style_ranges,
+            mask,
             // `id`/`focus_neighbors` are read by the focus-rect export, not the
             // draw build — the draw walk ignores them.
             ..
@@ -93,7 +95,12 @@ pub fn build_node(
                 .new_leaf_with_context(
                     Style::default(),
                     NodeContext::Text {
-                        content: content.clone(),
+                        content: if *mask {
+                            mask_text(content)
+                        } else {
+                            content.clone()
+                        },
+                        mask: *mask,
                         font_size: *font_size,
                         // Resolve the color token (or literal) against the theme;
                         // an unknown token degrades to opaque magenta + one warn.
@@ -239,6 +246,7 @@ fn build_button(
                 // The label-text rendering and `labelledBy` resolution are a later
                 // task; for now an absent inline label renders empty.
                 content: button.label.clone().unwrap_or_default(),
+                mask: false,
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
                 color: INTERACTIVE_LABEL_COLOR,
                 family: resolve_font(&None, theme),
@@ -354,6 +362,7 @@ fn build_slider(
             Style::default(),
             NodeContext::Text {
                 content: slider.label.clone().unwrap_or_default(),
+                mask: false,
                 font_size: INTERACTIVE_LABEL_FONT_SIZE,
                 color: INTERACTIVE_LABEL_COLOR,
                 family: resolve_font(&None, theme),

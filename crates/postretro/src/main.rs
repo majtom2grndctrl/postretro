@@ -1255,6 +1255,10 @@ pub(crate) struct App {
     /// unload or an ended host's close, with what it captured when pressed.
     pending_entry: Option<startup::lifecycle::session_entry::PendingEntry>,
 
+    /// The field an open text-entry tree commits into, and the modal depth
+    /// it opened at.
+    text_entry_field: Option<app::ui_actions::TextEntryField>,
+
     /// What this client has learned of the session it joined: admission, the
     /// latest hold, and the address and password its join captured.
     join_facts: startup::lifecycle::session_entry::JoinFacts,
@@ -3809,7 +3813,11 @@ impl App {
                             .start(amplitude, duration_ms, frequency);
                     }
                 }
-                SystemReactionCommand::PushTree { tree, on_commit } => {
+                SystemReactionCommand::PushTree {
+                    tree,
+                    on_commit,
+                    commit_target,
+                } => {
                     // Resolve the registered tree by name onto the modal stack.
                     // An unknown name warns and is a no-op (no panic). The carried
                     // `on_commit` rides the stack entry; the App fires it from the
@@ -3819,8 +3827,13 @@ impl App {
                     if tree == options::OPTIONS_MENU_TREE_NAME {
                         self.seed_options_menu_slots();
                     }
-                    if let Some(session) = self.session.as_mut() {
+                    let pushed = self.session.as_mut().is_some_and(|session| {
+                        let before = session.modal_stack.len();
                         session.modal_stack.push_named(&tree, on_commit);
+                        session.modal_stack.len() > before
+                    });
+                    if pushed && let Some(slot) = commit_target {
+                        self.open_text_entry_field(slot);
                     }
                 }
                 SystemReactionCommand::LoadLevel {

@@ -291,6 +291,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
         queue.push(SystemReactionCommand::PushTree {
             tree: parsed.tree,
             on_commit: parsed.on_commit,
+            commit_target: parsed.commit_target,
         });
         Ok(())
     });
@@ -303,6 +304,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             tree: parsed.tree,
             // A menu carries no commit payload; the alias never sets `on_commit`.
             on_commit: None,
+            commit_target: None,
         });
         Ok(())
     });
@@ -549,6 +551,9 @@ struct ShowDialogArgs {
     tree: String,
     #[serde(default)]
     on_commit: Option<String>,
+    /// `openTextEntry`'s field slot.
+    #[serde(default)]
+    commit_target: Option<String>,
 }
 
 #[derive(serde::Deserialize)]

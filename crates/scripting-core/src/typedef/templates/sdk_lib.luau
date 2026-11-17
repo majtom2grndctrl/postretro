@@ -1255,8 +1255,10 @@ declare QUIT_TO_MENU_ACTION: "ui.quitToMenu"
 --- `onCommit` (omitted when nil) names a reaction fired on commit (the on-screen
 --- `done` key or hardware Enter); `nav.cancel` closes without firing it. The same
 --- `ui.textEntry` slot also receives the hardware-keyboard path's edits. Wraps
---- `showDialog("keyboard", onCommit)`. Pure: returns a `SystemReactionStep`.
-declare function openTextEntry(onCommit: string?): SystemReactionStep
+--- `showDialog("keyboard", onCommit)`. The optional `target` is a writable
+--- String slot the entry is for: the keyboard opens with its text and commit
+--- copies the entry into it. Pure: returns a `SystemReactionStep`.
+declare function openTextEntry(onCommit: string?, target: Ref<string>?): SystemReactionStep
 
 --- System reaction: push the menu UI tree `tree` onto the modal stack. A
 --- v1 alias of `showDialog` (identical push behavior) without `onCommit`.
@@ -1705,7 +1707,7 @@ export type ReactionHandleRef = { name: string }
 export type WidgetDescriptor = { [string]: any }
 
 --- Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white.
-export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: FontToken?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
+export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: FontToken?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole?, mask: boolean? }
 --- A `text` leaf. An optional `bind` resolves the rendered string from a store slot; `styleRanges` recolors by value.
 declare function Text(props: TextProps): WidgetDescriptor
 

@@ -10,6 +10,7 @@ import {
   defineMapCatalog,
   defineMod,
   defineReaction,
+  getGameState,
   type ModMapEntry,
 } from "postretro";
 import {
@@ -18,6 +19,7 @@ import {
   Text,
   Tree,
   VStack,
+  bindState,
   defineUiTree,
   endSession,
   hostSession,
@@ -26,7 +28,10 @@ import {
   loadLevel,
   restartLevel,
   returnToFrontend,
+  stateEquals,
 } from "postretro/ui";
+
+const { session } = getGameState();
 
 const mapCatalog = defineMapCatalog([
   {
@@ -115,6 +120,9 @@ const levelSelect = defineUiTree({
           label: "Leave Game",
           onPress: leave,
         }),
+        // A password field and a refusal notice.
+        Text({ content: "", mask: true, bind: bindState(session.password) }),
+        Text({ content: "WRONG PASSWORD", visibleWhen: stateEquals(session.endCause, "refusedPassword") }),
       ],
     ),
   ),

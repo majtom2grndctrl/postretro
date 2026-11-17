@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::Layout;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::super::descriptor::{BarMax, BindSource, Border, PanelBind, SliderBind, TextBind};
 use super::super::layout::Anchor;
@@ -548,6 +549,12 @@ pub fn anchor_fractions(anchor: Anchor) -> (f32, f32) {
         Anchor::Bottom => (0.5, 1.0),
         Anchor::BottomRight => (1.0, 1.0),
     }
+}
+
+/// A masked Text's drawn form: one `*` per grapheme of `text`, empty for empty
+/// text. ASCII renders in every bundled typeface.
+pub fn mask_text(text: &str) -> String {
+    "*".repeat(text.graphemes(true).count())
 }
 
 /// Resolve a bound text node's drawn string from the frame's slot snapshot.

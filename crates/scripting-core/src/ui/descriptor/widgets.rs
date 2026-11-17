@@ -107,6 +107,11 @@ pub struct TextWidget {
     /// Optional a11y role override (M13 G2). Absent uses the kind's implicit role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
+    /// Draw one `*` per grapheme of the resolved content in its place: a
+    /// password field. A masked Text never exposes its content to a screen
+    /// reader (`ui.md` §4.2). Absent (false) keeps the old wire form.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mask: bool,
 }
 
 /// State binding for a `text` widget. The bind source is either a `{ slot }`

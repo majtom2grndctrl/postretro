@@ -48,6 +48,7 @@ fn scoped_local_tree(scope_id: &str, cell: &str) -> AnchoredTree {
                 focus_neighbors: Default::default(),
                 visible_when: None,
                 role: None,
+                mask: false,
             })],
         }),
     )
@@ -195,6 +196,7 @@ fn local_bind_with_no_enclosing_scope_degrades_to_literal_and_warns_at_build() {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
     );
 

@@ -3462,7 +3462,7 @@ export type ReactionHandleRef = { name: string }
 export type WidgetDescriptor = { [string]: any }
 
 --- Props for `Text`. `content` is `LocalizedText`. `fontSize` defaults to 12; `color` to opaque white.
-export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: FontToken?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
+export type TextProps = { content: LocalizedText, fontSize: number?, color: WidgetColor?, font: FontToken?, bind: TextBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole?, mask: boolean? }
 
 --- Props for `Panel`. `bind` is a `PanelBindProp` (color slot).
 export type PanelProps = { fill: WidgetColor, border: BorderProp?, bind: PanelBindProp?, styleRanges: StyleRangesProp?, id: string?, focusNeighbors: FocusNeighborsProp?, visibleWhen: Predicate?, role: WidgetRole? }
@@ -3937,8 +3937,8 @@ export type PostretroUiModule = {
   setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,
   --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.
   adjustSentiment: (from: string, to: string, delta: number) -> SystemReactionStep,
-  --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits.
-  openTextEntry: (onCommit: string?) -> SystemReactionStep,
+  --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits. Optional `target` is the writable String slot the entry is for: the keyboard opens with its text, and commit copies the entry into it.
+  openTextEntry: (onCommit: string?, target: Ref<string>?) -> SystemReactionStep,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",

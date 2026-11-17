@@ -102,6 +102,13 @@ table.insert(children, UI.Button({
   label = "Leave Game",
   onPress = leave,
 }))
+-- A password field and a refusal notice.
+local session = Postretro.getGameState().session
+table.insert(children, UI.Text({ content = "", mask = true, bind = UI.bindState(session.password) }))
+table.insert(children, UI.Text({
+  content = "WRONG PASSWORD",
+  visibleWhen = UI.stateEquals(session.endCause, "refusedPassword"),
+}))
 
 local levelSelect = UI.defineUiTree({
   name = "frontend.levelSelect.fixture",

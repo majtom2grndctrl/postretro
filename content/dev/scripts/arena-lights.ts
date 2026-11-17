@@ -199,6 +199,9 @@ export function setupLevel(_ctx: unknown) {
     reactions.push(defineReaction(`kbAppend_${ch}`, appendText(textEntry, ch)));
   }
   reactions.push(defineReaction("kbAppend_space", appendText(textEntry, " ")));
+  // Address punctuation: an IPv4 address and its port.
+  reactions.push(defineReaction("kbAppend_dot", appendText(textEntry, ".")));
+  reactions.push(defineReaction("kbAppend_colon", appendText(textEntry, ":")));
   reactions.push(defineReaction("kbBackspace", backspaceText(textEntry)));
 
   const crossings = [

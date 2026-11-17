@@ -1912,3 +1912,189 @@ fn a_waiting_join_answers_with_the_password_it_captured() {
         "answered with `p`"
     );
 }
+
+/// Install the shipped dev frontend's menus, its reactions and the engine
+/// keyboard into `app`, as mod init does. Returns each menu tree as JSON.
+fn install_dev_frontend(app: &mut App) -> Vec<(String, serde_json::Value)> {
+    use postretro_level_format::data_script::DataScriptSection;
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../content/dev/scripts/frontend-menu.ts");
+    let dir = tempfile::tempdir().unwrap();
+    let entry = dir.path().join("session-menus.ts");
+    std::fs::write(
+        &entry,
+        format!(
+            "{}\nexport function setupLevel() {{ return {{ uiTrees: [frontendMenu, hostMenu, joinMenu], reactions: frontendReactions }}; }}\n",
+            include_str!("../../../../content/dev/scripts/frontend-menu.ts")
+        ),
+    )
+    .unwrap();
+    let session = app.session.as_mut().unwrap();
+    let manifest = session.scripting.script_runtime.run_data_script(
+        &DataScriptSection {
+            compiled_bytes: postretro_script_compiler::bundle_entry(&entry)
+                .expect("the shipped frontend menu bundles")
+                .into_bytes(),
+            source_path: entry.to_string_lossy().into_owned(),
+        },
+        source.parent().unwrap(),
+    );
+    let trees: Vec<(String, serde_json::Value)> = manifest
+        .ui_trees
+        .iter()
+        .map(|tree| (tree.name.clone(), serde_json::to_value(&tree.tree).unwrap()))
+        .collect();
+    session
+        .modal_stack
+        .register_script_trees(manifest.ui_trees, postretro_ui::modal_stack::ScopeTier::Mod);
+    session
+        .scripting
+        .script_ctx
+        .data_registry
+        .borrow_mut()
+        .populate_level(manifest.reactions, manifest.crossings, &[]);
+    crate::scripting::reactions::system_commands::register_system_reaction_primitives(
+        &mut session.scripting.system_registry,
+    );
+    let keyboard: postretro_ui::descriptor::AnchoredTree =
+        serde_json::from_str(include_str!("../../../../core/ui/keyboard.json")).unwrap();
+    session.modal_stack.registry_mut().register(
+        postretro_ui::keyboard_asset::KEYBOARD_TREE_NAME,
+        keyboard,
+        postretro_ui::modal_stack::ScopeTier::Engine,
+        false,
+    );
+    trees
+}
+
+/// Fire the menu reaction `name`, as its button's press does, then drain.
+fn press(app: &mut App, name: &str) {
+    {
+        let session = app.session.as_ref().unwrap();
+        let ctx = &session.scripting.script_ctx;
+        let chained = crate::fire_named_event_with_sequences(
+            name,
+            &ctx.data_registry.borrow(),
+            &session.scripting.sequence_registry,
+            &session.scripting.reaction_registry,
+            &session.scripting.system_registry,
+            ctx,
+            None,
+        );
+        assert!(chained.is_empty(), "{name} chains nothing");
+    }
+    app.dispatch_system_commands();
+}
+
+/// Every `visibleWhen` predicate in `tree` that names `slot`, as JSON text.
+fn predicates_naming(tree: &serde_json::Value, slot: &str, out: &mut Vec<String>) {
+    match tree {
+        serde_json::Value::Object(map) => {
+            if let Some(predicate) = map.get("visibleWhen") {
+                let text = predicate.to_string();
+                if text.contains(slot) {
+                    out.push(text);
+                }
+            }
+            map.values()
+                .for_each(|value| predicates_naming(value, slot, out));
+        }
+        serde_json::Value::Array(items) => {
+            items
+                .iter()
+                .for_each(|item| predicates_naming(item, slot, out));
+        }
+        _ => {}
+    }
+}
+
+// AC U8: the dev title menu, where an ended client lands, and the Join menu
+// each show a notice for every end-cause value the engine publishes.
+#[test]
+fn the_dev_frontend_shows_a_notice_for_every_end_cause() {
+    let mut view = entering_engine(spawn_points(3));
+    let trees = install_dev_frontend(&mut view.app);
+    for menu in ["frontend.menuTree", "frontend.join"] {
+        let (_, tree) = trees
+            .iter()
+            .find(|(name, _)| name == menu)
+            .unwrap_or_else(|| panic!("the dev frontend registers `{menu}`"));
+        let mut predicates = Vec::new();
+        predicates_naming(tree, "session.endCause", &mut predicates);
+        for cause in EndCause::ALL {
+            assert!(
+                predicates
+                    .iter()
+                    .any(|predicate| predicate.contains(&format!("\"{}\"", cause.as_str()))),
+                "`{menu}` shows no notice for `{}`: {predicates:?}",
+                cause.as_str()
+            );
+        }
+    }
+}
+
+// The Join menu's fields: the keyboard opens seeded with the field's text,
+// commit copies the entry into the field, cancel leaves it, and both empty
+// `ui.textEntry`. The password never stays in `ui.textEntry`.
+#[test]
+fn a_menu_text_field_commits_into_its_own_slot() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    write_text(&mut view.app, "session.joinAddress", "10.0.0.");
+    let text_entry = |app: &App| slot(app, "ui.textEntry");
+    let typed = |app: &mut App, text: &str| {
+        app.session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .system_commands
+            .edit_text(
+                "ui.textEntry".to_string(),
+                postretro_entities::reactions::system_commands::TextEditCommand::Append(
+                    text.to_string(),
+                ),
+            );
+    };
+
+    press(&mut view.app, "frontend.editJoinAddress");
+    assert_eq!(
+        text_entry(&view.app),
+        Some(SlotValue::String("10.0.0.".to_string())),
+        "the keyboard opens with the field's text"
+    );
+    typed(&mut view.app, "2:30000");
+    view.app.commit_text_entry();
+    assert_eq!(
+        slot(&view.app, "session.joinAddress"),
+        Some(SlotValue::String("10.0.0.2:30000".to_string()))
+    );
+    assert_eq!(
+        text_entry(&view.app),
+        Some(SlotValue::String(String::new()))
+    );
+
+    press(&mut view.app, "frontend.editPassword");
+    typed(&mut view.app, "hunter2");
+    view.app.cancel_text_entry();
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String(String::new())),
+        "cancel leaves the field as it was"
+    );
+    assert_eq!(
+        text_entry(&view.app),
+        Some(SlotValue::String(String::new()))
+    );
+    press(&mut view.app, "frontend.editPassword");
+    typed(&mut view.app, "hunter2");
+    view.app.commit_text_entry();
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String("hunter2".to_string()))
+    );
+    assert_eq!(
+        text_entry(&view.app),
+        Some(SlotValue::String(String::new()))
+    );
+}

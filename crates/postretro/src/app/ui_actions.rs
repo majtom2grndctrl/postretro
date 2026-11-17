@@ -3,6 +3,7 @@
 // See: context/lib/ui.md §4
 
 use crate::*;
+use postretro_entities::reactions::system_commands::TextEditCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UiButtonAction {
@@ -123,6 +124,17 @@ pub(crate) struct PendingSliderStep {
     step: f32,
     min: f32,
     max: f32,
+}
+
+/// The slot both text-entry input paths edit.
+const TEXT_ENTRY_SLOT: &str = "ui.textEntry";
+
+/// The field an open text-entry tree commits into (`openTextEntry`'s target),
+/// with the modal depth its tree opened at.
+#[derive(Debug, Clone)]
+pub(crate) struct TextEntryField {
+    depth: usize,
+    slot: String,
 }
 
 impl App {
@@ -487,6 +499,7 @@ impl App {
     /// The `on_commit` reaction reads the bound slot's value (the entered text); the
     /// reaction fires synchronously here so it observes the slot as last edited.
     pub(crate) fn commit_text_entry(&mut self) {
+        self.commit_text_entry_field();
         let on_commit = self
             .session
             .as_ref()
@@ -524,8 +537,83 @@ impl App {
     /// WITHOUT firing `on_commit`. Edits already applied to the bound slot are
     /// discarded simply by the opener not acting on them — there is no rollback.
     pub(crate) fn cancel_text_entry(&mut self) {
+        if self.take_text_entry_field().is_some() {
+            self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
+        }
         if let Some(session) = self.session.as_mut() {
             session.modal_stack.pop();
+        }
+    }
+
+    /// A text-entry tree opened for `slot` (`openTextEntry`'s target): both
+    /// input paths edit `ui.textEntry`, seeded with the field's current text.
+    pub(crate) fn open_text_entry_field(&mut self, slot: String) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let depth = session.modal_stack.len();
+        let current = match session
+            .scripting
+            .script_ctx
+            .slot_table
+            .borrow()
+            .get(&slot)
+            .and_then(|record| record.value.clone())
+        {
+            Some(postretro_entities::slot_table::SlotValue::String(text)) => text,
+            _ => String::new(),
+        };
+        self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
+        if !current.is_empty() {
+            self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Append(current));
+        }
+        self.text_entry_field = Some(TextEntryField { depth, slot });
+    }
+
+    /// On commit, the entered text moves into the field's slot and leaves
+    /// `ui.textEntry`, through the readonly gate a reaction's text edit takes.
+    fn commit_text_entry_field(&mut self) {
+        let Some(field) = self.take_text_entry_field() else {
+            return;
+        };
+        let entered = self.session.as_ref().map_or_else(String::new, |session| {
+            match session
+                .scripting
+                .script_ctx
+                .slot_table
+                .borrow()
+                .get(TEXT_ENTRY_SLOT)
+                .and_then(|record| record.value.clone())
+            {
+                Some(postretro_entities::slot_table::SlotValue::String(text)) => text,
+                _ => String::new(),
+            }
+        });
+        self.edit_text_slot(&field.slot, TextEditCommand::Clear);
+        if !entered.is_empty() {
+            self.edit_text_slot(&field.slot, TextEditCommand::Append(entered));
+        }
+        self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
+    }
+
+    /// The open field, if the top tree is the one that opened it. A field
+    /// whose tree closed some other way is dropped.
+    fn take_text_entry_field(&mut self) -> Option<TextEntryField> {
+        let field = self.text_entry_field.take()?;
+        let depth = self
+            .session
+            .as_ref()
+            .map_or(0, |session| session.modal_stack.len());
+        (field.depth == depth).then_some(field)
+    }
+
+    fn edit_text_slot(&self, slot: &str, edit: TextEditCommand) {
+        if let Some(session) = self.session.as_ref() {
+            session
+                .scripting
+                .script_ctx
+                .system_commands
+                .edit_text(slot.to_string(), edit);
         }
     }
 

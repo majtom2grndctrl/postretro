@@ -1114,6 +1114,7 @@ fn tweened_health_layer(rig: &mut Rig, now: f64, snap: bool) -> UiDrawData {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,

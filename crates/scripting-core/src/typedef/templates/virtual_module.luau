@@ -121,8 +121,8 @@ export type PostretroUiModule = {
   setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,
   --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.
   adjustSentiment: (from: string, to: string, delta: number) -> SystemReactionStep,
-  --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits.
-  openTextEntry: (onCommit: string?) -> SystemReactionStep,
+  --- Open the engine keyboard modal. Optional `onCommit` fires when text entry commits. Optional `target` is the writable String slot the entry is for: the keyboard opens with its text, and commit copies the entry into it.
+  openTextEntry: (onCommit: string?, target: Ref<string>?) -> SystemReactionStep,
   KEYBOARD_TREE: "keyboard",
   CLOSE_DIALOG_ACTION: "ui.closeDialog",
   EXIT_TO_DESKTOP_ACTION: "ui.exitToDesktop",

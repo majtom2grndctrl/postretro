@@ -25,6 +25,7 @@ fn text_layer(content: &str, offset: [f32; 2]) -> postretro_ui::UiTreeEntry {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,

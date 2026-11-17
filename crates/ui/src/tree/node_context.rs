@@ -96,6 +96,9 @@ pub enum NodeContext {
         /// draw step both select the same registered face. See `resolve_font`.
         family: String,
         bind: Option<TextBind>,
+        /// Draw one `*` per grapheme of the resolved string in its place.
+        /// `content` and `last_resolved` already hold the masked form.
+        mask: bool,
         /// Optional presentation-only numeric map. Used by Slider's synthesized
         /// value readout; ordinary Text nodes leave it absent.
         number_presentation: Option<NumberPresentation>,

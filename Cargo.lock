@@ -4865,6 +4865,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "unicode-segmentation",
 ]
 
 [[package]]

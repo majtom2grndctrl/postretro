@@ -596,6 +596,7 @@ fn show_dialog_dispatch_enqueues_push_tree_with_on_commit() {
         vec![SystemReactionCommand::PushTree {
             tree: "pauseMenu".to_string(),
             on_commit: Some("resumeGame".to_string()),
+            commit_target: None,
         }]
     );
 }
@@ -613,6 +614,7 @@ fn show_dialog_defaults_absent_on_commit_to_none() {
         vec![SystemReactionCommand::PushTree {
             tree: "hint".to_string(),
             on_commit: None,
+            commit_target: None,
         }]
     );
 }
@@ -632,6 +634,7 @@ fn open_menu_dispatch_enqueues_push_tree_without_on_commit() {
         vec![SystemReactionCommand::PushTree {
             tree: "mainMenu".to_string(),
             on_commit: None,
+            commit_target: None,
         }]
     );
 }

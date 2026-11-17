@@ -45,7 +45,7 @@ mod tests;
 // Re-exports so external `tree::X` references keep resolving after the split.
 pub use draw::{
     FocusAxis, FocusGroup, FocusKind, FocusRect, FocusRectList, FocusRectOwner, NodeInteraction,
-    RepeatPolicy, UiClipSpan, UiDrawData, UiPaintOp, intersect_rects,
+    RepeatPolicy, UiClipSpan, UiDrawData, UiPaintOp, intersect_rects, mask_text,
 };
 pub use scroll::{ScrollInput, WHEEL_LINE_SCROLL};
 // `FocusNeighbors` is consumed only from `#[cfg(test)]` modules elsewhere in the

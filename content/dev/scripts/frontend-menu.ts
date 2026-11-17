@@ -23,8 +23,11 @@ import {
   displayModeAction,
   defineUiTree,
   getGameState,
+  hostSession,
+  joinSession,
   loadLevel,
   openMenu,
+  openTextEntry,
   stateEquals,
   ui,
   updateState,
@@ -236,6 +239,158 @@ export const askExit = defineReaction("dev.askExit", openMenu(EXIT_CONFIRM_NAME)
 export const askQuit = defineReaction("dev.askQuit", openMenu(QUIT_CONFIRM_NAME));
 
 const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_NAME));
+
+// --- Host and Join ---------------------------------------------------------
+// The engine owns entry, admission and the session facts; these menus only
+// show them. Each end cause, connection phase and wait reason is data the
+// engine publishes; the wording is the mod's.
+
+const HOST_MENU_NAME = "frontend.host";
+const JOIN_MENU_NAME = "frontend.join";
+const { session } = getGameState();
+
+/// The notice for each `session.endCause` value: why the last session or
+/// attempt ended.
+export const END_CAUSE_NOTICES = {
+  sessionEnded: "THE HOST ENDED THE SESSION",
+  hostLost: "LOST CONNECTION TO THE HOST",
+  connectFailed: "COULD NOT CONNECT TO THE HOST",
+  refusedMod: "THE HOST RUNS A DIFFERENT MOD",
+  refusedPassword: "WRONG PASSWORD",
+  badAddress: "ENTER AN IPV4 ADDRESS, PORT OPTIONAL",
+  hostFailed: "COULD NOT START HOSTING",
+} as const;
+
+function endCauseNotices(): WidgetDescriptor[] {
+  return Object.entries(END_CAUSE_NOTICES).map(([cause, notice]) =>
+    Text({
+      content: notice,
+      fontSize: 14,
+      color: COLOR_ACCENT,
+      visibleWhen: stateEquals(session.endCause, cause),
+    }),
+  );
+}
+
+/// What a join is doing now: dialing, or waiting and why.
+function connectionNotices(): WidgetDescriptor[] {
+  const waiting = (reason: string, content: string) =>
+    Text({
+      content,
+      fontSize: 14,
+      color: COLOR_MUTED,
+      visibleWhen: stateEquals(session.waitReason, reason),
+    });
+  return [
+    Text({
+      content: "CONNECTING...",
+      fontSize: 14,
+      color: COLOR_MUTED,
+      visibleWhen: stateEquals(session.connection, "connecting"),
+    }),
+    waiting("host", "WAITING FOR THE HOST"),
+    waiting("modDiffers", "WAITING: UPDATE YOUR MOD TO MATCH THE HOST"),
+    waiting("levelDiffers", "WAITING: YOU NEED THE HOST'S MAP"),
+  ];
+}
+
+/// A labelled field the on-screen or hardware keyboard edits.
+function textField(id: string, label: string, editReaction: string, value: WidgetDescriptor) {
+  return HStack({ gap: 10, align: "center" }, [
+    Button({ id, label, onPress: editReaction }),
+    value,
+  ]);
+}
+
+const editPassword = defineReaction(
+  "frontend.editPassword",
+  openTextEntry(undefined, session.password),
+);
+const editJoinAddress = defineReaction(
+  "frontend.editJoinAddress",
+  openTextEntry(undefined, session.joinAddress),
+);
+// Host and Join buttons. Each reads session.password; joinSession also reads
+// session.joinAddress.
+const host = defineReaction("frontend.hostSession", hostSession());
+const join = defineReaction("frontend.joinSession", joinSession());
+const openHost = defineReaction("frontend.openHost", openMenu(HOST_MENU_NAME));
+const openJoin = defineReaction("frontend.openJoin", openMenu(JOIN_MENU_NAME));
+
+function passwordField(id: string) {
+  return textField(
+    id,
+    "PASSWORD",
+    editPassword.name,
+    Text({ content: "", fontSize: 14, mask: true, bind: bindState(session.password) }),
+  );
+}
+
+function sessionMenu(name: string, title: string, initialFocus: string, rows: WidgetDescriptor[]) {
+  return defineUiTree({
+    name,
+    tree: Tree(
+      {
+        anchor: "center",
+        offset: [0, 0],
+        captureMode: "capture",
+        initialFocus,
+        accessibleName: title,
+        role: "group",
+      },
+      VStack(
+        {
+          gap: 12,
+          padding: 24,
+          align: "stretch",
+          fill: COLOR_PANEL,
+          focus: { policy: "linear", wrap: true },
+        },
+        [
+          Text({ content: title, fontSize: 24, color: COLOR_ACCENT }),
+          ...rows,
+          Button({ id: `${initialFocus}Back`, label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
+          promptRow(),
+        ],
+      ),
+    ),
+  });
+}
+
+export const hostMenu = sessionMenu(HOST_MENU_NAME, "HOST A GAME", "hostPassword", [
+  passwordField("hostPassword"),
+  Button({ id: "hostStart", label: "START HOSTING", onPress: host }),
+  Text({
+    content: "",
+    fontSize: 14,
+    color: COLOR_MUTED,
+    bind: bindState(session.hostAddress, { format: "PLAYERS JOIN AT {}" }),
+    visibleWhen: stateEquals(session.hosting, true),
+  }),
+  ...endCauseNotices(),
+]);
+
+export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinAddress", [
+  textField(
+    "joinAddress",
+    "ADDRESS",
+    editJoinAddress.name,
+    Text({ content: "", fontSize: 14, bind: bindState(session.joinAddress) }),
+  ),
+  passwordField("joinPassword"),
+  Button({ id: "joinStart", label: "JOIN", onPress: join }),
+  ...connectionNotices(),
+  ...endCauseNotices(),
+]);
+
+const sessionReactions: NamedReactionDescriptor[] = [
+  editPassword,
+  editJoinAddress,
+  host,
+  join,
+  openHost,
+  openJoin,
+];
 /** Opens the tabbed options screen; the pause menu opens it too. */
 export const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
 
@@ -261,6 +416,8 @@ export const frontendMenu = defineUiTree({
       [
         Text({ content: "POSTRETRO", fontSize: 36, color: COLOR_ACCENT }),
         Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
+        Button({ id: "frontendHost", label: "HOST", onPress: openHost }),
+        Button({ id: "frontendJoin", label: "JOIN", onPress: openJoin }),
         Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
         Button({ id: "frontendExit", label: "EXIT", onPress: askExit }),
         Text({
@@ -270,6 +427,10 @@ export const frontendMenu = defineUiTree({
           bind: bindState(getGameState().session.hostAddress, { format: "HOSTING ON {}" }),
           visibleWhen: stateEquals(getGameState().session.hosting, true),
         }),
+        // A client lands here when its session ends: say why, and while a
+        // waiting press runs, what it is doing.
+        ...connectionNotices(),
+        ...endCauseNotices(),
       ],
     ),
   ),
@@ -844,6 +1005,7 @@ export const optionsMenu = defineUiTree({
 
 export const frontendReactions: NamedReactionDescriptor[] = [
   openPlay,
+  ...sessionReactions,
   openOptions,
   askExit,
   askQuit,

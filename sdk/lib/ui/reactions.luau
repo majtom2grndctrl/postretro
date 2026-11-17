@@ -368,8 +368,18 @@ end
 --- fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel`
 --- (Escape / B) closes without firing it. The same `ui.textEntry` slot also
 --- receives the hardware-keyboard path's edits.
-function UiReactionsSdk.openTextEntry(onCommit: string?): SystemReactionStep
-  return UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
+---
+--- The optional `target` is a writable String slot the entry is for, so one
+--- screen can hold several fields. The keyboard opens with `ui.textEntry` set
+--- to the target's text; committing copies `ui.textEntry` into the target and
+--- empties it, and cancelling empties it and leaves the target as it was.
+function UiReactionsSdk.openTextEntry(onCommit: string?, target: any?): SystemReactionStep
+  local step = UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
+  if target == nil then
+    return step
+  end
+  step.args.commitTarget = stateSlot(target, "openTextEntry")
+  return step
 end
 
 --- Push a menu UI tree onto the modal stack. Pure: returns a system reaction

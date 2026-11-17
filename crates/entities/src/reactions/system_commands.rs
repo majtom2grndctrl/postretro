@@ -50,6 +50,12 @@ pub enum SystemReactionCommand {
     PushTree {
         tree: String,
         on_commit: Option<String>,
+        /// A text-entry tree's field: the writable String slot that receives
+        /// the entered text when the player commits. The entry edits
+        /// `ui.textEntry` on both input paths; the engine seeds it from this
+        /// slot when the tree opens, copies it here on commit, and clears it
+        /// on commit and on cancel.
+        commit_target: Option<String>,
     },
     LoadLevel {
         map: String,

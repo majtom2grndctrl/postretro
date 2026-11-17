@@ -418,6 +418,7 @@ fn collect_node(
             predicate_bind,
             predicate_scope,
             value_text,
+            mask,
             ..
         }) => {
             // A bound text node resolves its drawn string from the slot
@@ -440,14 +441,21 @@ fn collect_node(
             let resolved = match (tween, last_resolved, value_text) {
                 (Some(_), Some(displayed), _) | (_, Some(displayed), Some(_)) => displayed.clone(),
                 (_, None, Some(_)) => content.clone(),
-                _ => resolve_text(
-                    bind.as_ref(),
-                    bind_scope.as_deref(),
-                    content,
-                    slot_values,
-                    cell_values,
-                    number_presentation.as_ref(),
-                ),
+                _ => {
+                    let resolved = resolve_text(
+                        bind.as_ref(),
+                        bind_scope.as_deref(),
+                        content,
+                        slot_values,
+                        cell_values,
+                        number_presentation.as_ref(),
+                    );
+                    if *mask {
+                        super::draw::mask_text(&resolved)
+                    } else {
+                        resolved
+                    }
+                }
             };
             // styleRanges overrides the run's color: the bound
             // value (the eased tween display when a tween is active, else the

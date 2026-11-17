@@ -366,21 +366,26 @@ impl App {
     }
 
     /// [`Self::discard_pending_system_commands`] at a level unload, keeping
-    /// any queued `hostSession` or `joinSession`: a press belongs to the next
-    /// session, not the level leaving. A session end that lands in the frame
-    /// its reaction fired stops that frame before the drain, so the press
-    /// meets this unload still queued.
+    /// any queued `hostSession` or `joinSession` while the frontend menu is
+    /// up: a press made there belongs to the next session, not the level
+    /// leaving. A session end that lands in the frame its reaction fired stops
+    /// that frame before the drain, so the press meets this unload still
+    /// queued. Without the menu, the unload leads to a played level, where the
+    /// press would only be refused, so it goes with the rest.
     fn discard_level_system_commands(&mut self) {
+        let keep_presses = self.frontend_menu_is_present();
         let Some(session) = self.session.as_ref() else {
             return;
         };
         let queue = &session.scripting.script_ctx.system_commands;
         for (_, command) in queue.take_ordered() {
-            if matches!(
-                command,
-                postretro_entities::SystemReactionCommand::HostSession { .. }
-                    | postretro_entities::SystemReactionCommand::JoinSession { .. }
-            ) {
+            if keep_presses
+                && matches!(
+                    command,
+                    postretro_entities::SystemReactionCommand::HostSession { .. }
+                        | postretro_entities::SystemReactionCommand::JoinSession { .. }
+                )
+            {
                 queue.push(command);
             }
         }

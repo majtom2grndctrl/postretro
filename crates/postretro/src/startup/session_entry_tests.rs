@@ -1554,6 +1554,24 @@ fn wait_reason_names_each_hold() {
         ],
     );
     assert_eq!(wait_reason_of(&view.app), "host");
+
+    // A mod mismatch outlives a host map change: the host does not resend an
+    // unchanged cause, so the relevel keeps it.
+    let mut view = joining(&relay, &points);
+    drain(
+        &mut view,
+        vec![
+            holding(HoldingCause::ModDigest {
+                expected: digest,
+                received: [2; 32],
+            }),
+            ServerControlMessage::Relevel {
+                catalog_id: LEVEL.to_string(),
+                level_life: 9,
+            },
+        ],
+    );
+    assert_eq!(wait_reason_of(&view.app), "modDiffers");
 }
 
 // AC F8 (P20): the password clears when hosting starts, when a join is
@@ -2190,7 +2208,7 @@ fn a_field_closed_another_way_is_dropped_with_its_text() {
 }
 
 // Admission consumes the password; an open PASSWORD field cannot write the
-// consumed value back.
+// consumed value, or anything typed after, back.
 #[test]
 fn an_open_password_field_cannot_restore_a_consumed_password() {
     let points = spawn_points(3);
@@ -2199,6 +2217,7 @@ fn an_open_password_field_cannot_restore_a_consumed_password() {
     let _ = install_dev_frontend(&mut view.app);
     press(&mut view.app, "frontend.editPassword");
     drain(&mut view, vec![holding(HoldingCause::HostLevelAbsent)]);
+    press(&mut view.app, "kbAppend_x");
     view.app.commit_text_entry();
     assert_eq!(
         slot(&view.app, "session.password"),
@@ -2231,6 +2250,39 @@ fn a_join_queued_in_the_frame_the_host_ends_survives_the_unload() {
 
     assert_eq!(view.app.session_role(), SessionRole::Client, "the join ran");
     let _ = follow_into_level(&mut second, &mut view);
+}
+
+// A press kept through an unload only while the frontend menu is up: an
+// unload that leads to a played level drops it with the level's queue.
+#[test]
+fn an_unload_away_from_the_frontend_drops_a_queued_press() {
+    let mut view = single_player_at_menu(spawn_points(3));
+    let ctx = script_ctx_of(&view.app);
+    ctx.system_commands.push(join_verb());
+    view.app
+        .session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .clear_pushed();
+    assert!(!view.app.frontend_menu_is_present());
+    view.app.unload_level();
+    assert!(
+        ctx.system_commands.take_ordered().is_empty(),
+        "the press left with the level"
+    );
+
+    // With the menu up, the same unload keeps it.
+    let mut view = single_player_at_menu(spawn_points(3));
+    let ctx = script_ctx_of(&view.app);
+    assert!(view.app.frontend_menu_is_present());
+    ctx.system_commands.push(join_verb());
+    view.app.unload_level();
+    assert_eq!(
+        ctx.system_commands.take_ordered().len(),
+        1,
+        "the press stays"
+    );
 }
 
 // Drift guard: the catalog's `session.endCause` values are the engine's end

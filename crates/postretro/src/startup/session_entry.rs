@@ -381,9 +381,13 @@ impl App {
                         .iter()
                         .any(|entry| entry.id == *catalog_id)
                 });
-                // A new host level: the hold the old one earned is stale.
+                // A new host level: a hold the old level earned is stale. A
+                // mod hold is not level-scoped, and the host does not resend
+                // an unchanged cause, so it stays.
                 self.join_facts.host_level_missing = !known;
-                self.join_facts.hold = None;
+                if !matches!(self.join_facts.hold, Some(HoldingCause::ModDigest { .. })) {
+                    self.join_facts.hold = None;
+                }
                 self.note_client_admitted();
                 self.publish_wait_reason();
             }

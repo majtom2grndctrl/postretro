@@ -43,7 +43,7 @@ impl App {
         self.boot_destination = None;
         self.end_loading_screen();
         // A waiting host or join press waited on an unload or close this
-        // reset no longer tracks: it ends, and the menu says so.
+        // reset no longer tracks: it ends, and the player presses again.
         self.cancel_pending_entry("a suspend");
         // The renderer holding the UI images is gone; upload them again to the
         // resumed one.

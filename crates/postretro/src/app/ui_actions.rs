@@ -130,11 +130,13 @@ pub(crate) struct PendingSliderStep {
 const TEXT_ENTRY_SLOT: &str = "ui.textEntry";
 
 /// The field an open text-entry tree commits into (`openTextEntry`'s target),
-/// with the push of the tree that opened for it.
+/// with the push of the tree that opened for it. `slot` is `None` once the
+/// engine consumed the target: the tree stays tracked so its commit or cancel
+/// empties `ui.textEntry` without writing anything back.
 #[derive(Debug, Clone)]
 pub(crate) struct TextEntryField {
     instance: postretro_ui::modal_stack::ModalInstance,
-    slot: String,
+    slot: Option<String>,
 }
 
 impl App {
@@ -575,7 +577,10 @@ impl App {
         if !current.is_empty() {
             self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Append(current));
         }
-        self.text_entry_field = Some(TextEntryField { instance, slot });
+        self.text_entry_field = Some(TextEntryField {
+            instance,
+            slot: Some(slot),
+        });
     }
 
     /// Drop a field whose tree closed some other way (`closeDialog`, a
@@ -596,14 +601,16 @@ impl App {
     }
 
     /// The engine consumed `slot` (a password): an open field for it must not
-    /// write the consumed value back on commit, and its entry is emptied.
+    /// write the consumed value, or anything typed after, back on commit. The
+    /// field stays tracked with no target, so its tree's close still empties
+    /// `ui.textEntry`; the entry is emptied now too.
     pub(crate) fn abandon_text_entry_field_for(&mut self, slot: &str) {
-        if self
+        if let Some(field) = self
             .text_entry_field
-            .as_ref()
-            .is_some_and(|field| field.slot == slot)
+            .as_mut()
+            .filter(|field| field.slot.as_deref() == Some(slot))
         {
-            self.text_entry_field = None;
+            field.slot = None;
             self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
         }
     }
@@ -612,6 +619,11 @@ impl App {
     /// `ui.textEntry`, through the readonly gate a reaction's text edit takes.
     fn commit_text_entry_field(&mut self) {
         let Some(field) = self.take_text_entry_field() else {
+            return;
+        };
+        let Some(slot) = field.slot else {
+            // The target was consumed: discard what was typed.
+            self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
             return;
         };
         let entered = self.session.as_ref().map_or_else(String::new, |session| {
@@ -627,9 +639,9 @@ impl App {
                 _ => String::new(),
             }
         });
-        self.edit_text_slot(&field.slot, TextEditCommand::Clear);
+        self.edit_text_slot(&slot, TextEditCommand::Clear);
         if !entered.is_empty() {
-            self.edit_text_slot(&field.slot, TextEditCommand::Append(entered));
+            self.edit_text_slot(&slot, TextEditCommand::Append(entered));
         }
         self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
     }

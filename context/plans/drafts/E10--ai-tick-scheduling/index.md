@@ -14,18 +14,20 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
   | Tier | Who | Target acquisition | Decide: guards, move and action selectors, combat-slot choice | Acting: steering along the chosen route or slot, separation, route following, clip time and moments, attacks, facing and aim, hit reactions |
   |---|---|---|---|---|
   | Engaged | has a target, perceived or not | 15 Hz | 15 Hz | every 60 Hz tick |
-  | Idle | perceived, no target | 1 Hz | 15 Hz | every 60 Hz tick |
-  | Dormant | unperceived, no target | every 2 s | every 2 s | whole tick at 2 Hz |
+  | Idle | perceived, no target | 15 Hz, through the notice meter | 15 Hz | every 60 Hz tick |
+  | Dormant | unperceived, no target, not `alwaysActive` | every 2 s, through the notice meter | every 2 s | whole tick at 2 Hz |
 
-  - Every rate is a constant expected to be retuned on better test maps. Acquisition and decide rates set reaction feel as well as cost; the idle tier's 1 Hz acquisition is the slow first notice, while its guards run at 15 Hz so a patrol pause or a clip's end never freezes in view, so a retune for cost is also a feel change (owner: a slow first notice reads as fair; perfect reflexes do not).
+  - Every rate is a constant expected to be retuned on better test maps. Decide rates set reaction feel as well as cost, so a retune for cost is also a feel change. Per-NPC decide rates are not authored: one fast archetype in a horde would break the staggered pools (owner dropped `thinkIntervalMs`); how fast an NPC notices is authored through the notice meter instead.
   - **Tactical range.** An engaged NPC whose target's XZ distance is beyond its `tacticalRange` acquires on every third decide, and under every engaged motion verb (chase, strafe, reposition) routes toward its target instead of choosing a combat slot. It chooses a slot once its target is 10 m inside the range, so the line does not flap. A slot around a target that far away is stale before the NPC arrives, and choosing one costs a long route search per candidate slot. `tacticalRange` is an optional behavior-root field in metres, default 100, authored per archetype (owner); the engine keeps the behavior beyond it, the author moves the line. A value below the archetype's largest attack standoff plus 10 m is raised to that and warned at load and on every hot reload that commits it, so a reload never fails over it (owner).
   - Decides and dormant steps are staggered by a mixing hash of each NPC's identity (map placement, or spawner and spawn count), which does not depend on spawn order or frame split, so assignment replays identically in co-op and replays. Spawns with no map identity (synthetic placements, spawners without an ordinal) keep the registry index, replay-stable only under a fixed spawn order. Balance across phases is statistical, not exact; exact balance would need phases that depend on which other NPCs exist.
   - Amends `entity_model.md` §7c: guards, move and action selectors and combat-slot choice evaluate on decide ticks, engine-gated rows (a hold's release, a release's exit, `animationDone`) included, so those land up to one decide interval later than at 60 Hz (owner: about 67 ms at 15 Hz, imperceptible). Steering follows the chosen slot every tick; a strafer re-aims each decide. A queued attack grant opens its row at the NPC's first decide after the grant. Route following within an activity (a patrol cursor, a return to anchor) is acting and advances every tick. The clip accumulator and moment check stay on every tick for perceived and engaged NPCs; a dormant NPC's 2 Hz step resolves each moment inside it once.
+- **An NPC without a target notices through a meter.** Each NPC keeps an awareness value from 0 to 1 per candidate it could acquire, for the nearest few (bounded as the attacker ledger is, 8). On each acquisition check, awareness of a candidate that passes candidacy and line of sight rises by elapsed time over `notice.fillMs`; one that fails drains by elapsed time over `notice.drainMs`. The NPC acquires the first candidate to reach 1, by today's ranking among those that do. In co-op, each player has their own meter, so a hidden player is not spotted because a teammate was. Damage and retaliation skip the meter, and an NPC with a target ranks and switches targets as today, without it. `notice` is an optional behavior-root block; `fillMs` defaults to 1000 (the slow first notice the owner wanted) and `drainMs` to 2000, and a value shorter than one decide interval acts as one interval. Guards read the leading value as `brain.awareness`. Light, stance, movement and distance modifiers, investigate states and client HUD replication of the meter are a later stealth brief; this shape is the one they extend (owner).
+- **`alwaysActive` keeps an NPC out of the dormant tier.** An optional behavior-root boolean, also settable per placed entity with the map key `always_active`, the placement winning. Such an NPC runs as idle or engaged whether or not it is perceived, so an unseen escort, race or scripted walker reaches triggers on time. It costs full rate for those NPCs only.
 - **Visible NPCs keep acting at 60 Hz.** A lower acting rate measured too small a saving for its cost (`spike-visible-rates.md`). Presentation, hit tests, snapshots and the client interpolation delay are unchanged.
 - **Mover carry and pushes reach a dormant NPC every tick.** Carry and displacement run each tick for a dormant NPC, in a pass apart from its 2 Hz sweep, so it stays planted on a moving lift or platform. Amends `movement.md` §6's single call order and its source-text gate for dormant NPCs.
-- **Perceivable means inside some player's id-51 set.** The engine locates the cell of every player pawn in play or down, host and clients alike, and unions the `CellResidencySet` (id 51) cells reachable from those cells within an AI lead. An NPC is perceivable when its cell is in that union. The union is AI policy. The step under it, player pawn → cell → id-51 set, is engine-owned, keyed per client, and recorded as the intended input for network relevance and combat VFX culling. A gap that shows is fixed by refining id 51, never by a PVS bake (owner).
+- **Perceivable means inside some player's id-51 set.** The engine locates the cell of every player pawn in play or down, host and clients alike, and unions the `CellResidencySet` (id 51) cells reachable from those cells within an AI lead. The lead has an engine default the executor picks and reports; a map overrides it with the worldspawn key `_ai_wake_lead` (metres). An NPC is perceivable when its cell is in that union. The union is AI policy. The step under it, player pawn → cell → id-51 set, is engine-owned, keyed per client, and recorded as the intended input for network relevance and combat VFX culling. A gap that shows is fixed by refining id 51, never by a PVS bake (owner).
   - Owner choice over a new sightline bake. id 51 is sampled, so a cell it misses can still be drawn; an NPC there that acquires a player moves up after its next decide. One that cannot acquire the player (another faction, aggro gate closed, candidacy rejects) may step at 2 Hz in view; accepted as rare.
-  - id 51 is streaming-owned; the AI lead is its own constant, never streaming's runtime L, so streaming retuning never moves AI detail. It cannot exceed id 51's baked maximum lead. Doors are not applied: closed doors only widen the set, the safe direction.
+  - id 51 is streaming-owned; the AI lead is its own constant, never streaming's runtime L, so streaming retuning never moves AI detail. A lead, default or authored, above id 51's baked maximum is capped to it, with a warning for an authored one. Doors are not applied: closed doors only widen the set, the safe direction.
   - Armed ghost links couple their cells, per `networking.md` "Ghosts constrain future relevance": a perceived cell's linked cells join the union.
   - A level with no id 51, or a tick with no pawn in play or down, runs every NPC perceivable.
   - Monster closets get no special case. A closet NPC stays dormant until it enters the play field; waking at the reveal or after a teleport reads as fair disorientation (owner).
@@ -35,7 +37,7 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
 - **Replan tiers outrank detail level.** The shared per-tick replan budget keeps its tier order (blocked route, then drift, then staleness) and its blocked-route wait bound for every NPC; within a replan tier, a paced NPC (a leap in flight) goes first, as today, then higher NPC tiers.
 - **Perception decides the tier, never targets.** Keeps `perf-ai-tick-cost`'s rejection of a visibility broad phase inside target selection.
 - **NPC is the umbrella term** for brain-bearing actors that are not player-controlled, enemies and allies alike (owner). This brief's rules apply to every NPC; the term lands in `entity_model.md`.
-- **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (an NPC's cell is re-located on every move, wherever it is cached), §7c (guards, selectors, slot choice and newly entered activities on decide ticks; strafe re-aiming each decide; the think stride becoming acquisition and decide pools plus `tacticalRange`; dormant steps for Pace, activity speed, release exit and "Clip time is game time"), `movement.md` §6, the substrate doc's no-cull rule and a note that the per-player id-51 step exists for its consumers, the roadmap's E15 Phase 4 and combat VFX culling entries pointing at that step without settling their miss tolerance; the no-PVS ground rule lands in `context/lib/`. Human-facing: `tacticalRange` in the SDK types (`postretro.d.ts`, `postretro.d.luau`) and `docs/scripting-reference.md`, plus `docs/scripting-reference.md` (guards "re-evaluated every tick", `acquisitionDue`'s think-stride ticks) and the guard doc comments in `sdk/lib/brain.ts` and `brain.luau` ("as of the previous tick", "true from the tick after").
+- **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (an NPC's cell is re-located on every move, wherever it is cached), §7c (guards, selectors, slot choice and newly entered activities on decide ticks; strafe re-aiming each decide; the think stride becoming acquisition and decide pools plus `tacticalRange`; dormant steps for Pace, activity speed, release exit and "Clip time is game time"), `movement.md` §6, the substrate doc's no-cull rule and a note that the per-player id-51 step exists for its consumers, the roadmap's E15 Phase 4 and combat VFX culling entries pointing at that step without settling their miss tolerance; the no-PVS ground rule lands in `context/lib/`. Human-facing: `tacticalRange`, `notice`, `alwaysActive` and `brain.awareness` in the SDK types (`postretro.d.ts`, `postretro.d.luau`) and `docs/scripting-reference.md`; `always_active` and `_ai_wake_lead` in `docs/level_design.md`; plus `docs/scripting-reference.md` (guards "re-evaluated every tick", `acquisitionDue`'s think-stride ticks) and the guard doc comments in `sdk/lib/brain.ts` and `brain.luau` ("as of the previous tick", "true from the tick after").
 - **Non-goals:**
   - Lower acting rates for perceived or engaged NPCs, and the host interpolation, drawn-pose hits and per-step snapshot wire they need: measured not worth it (`spike-visible-rates.md`); the design is kept in `research.md`.
   - Network relevance and combat VFX culling: later consumers of the per-player step, each deciding in its own brief whether id 51's sampling misses are tolerable for it (a miss here costs an NPC one decide; a missed entity in network relevance is never sent).
@@ -51,6 +53,8 @@ behavior: {
   moveSpeed: 3,
   engagementRadius: 4,
   tacticalRange: 60,      // optional, metres, default 100: beyond it the NPC heads for its target
+  notice: { fillMs: 300, drainMs: 4000 },  // optional: a sharp-eyed sentry that stays suspicious
+  alwaysActive: false,    // optional: true keeps it simulated at full rate when unseen
   activities: { /* ... */ },
   transitions: { /* ... */ },
 },
@@ -61,11 +65,20 @@ behavior = {
   moveSpeed = 3,
   engagementRadius = 4,
   tacticalRange = 60, -- optional, metres, default 100
+  notice = { fillMs = 300, drainMs = 4000 },
+  alwaysActive = false,
   activities = { --[[ ... ]] },
   transitions = { --[[ ... ]] },
 },
 ```
-Type doc: "Optional distance in metres to the current target inside which an engaged NPC fights tactically (picks a spot around its target, flanks, strafes, re-targets at full rate); beyond it the NPC heads straight for its target and re-targets a third as often. Must be finite and > 0. Defaults to 100. A value below the largest attack standoff plus 10 m is raised to that, with a warning."
+```ts
+// a guard reading the meter: turn to look while half aware, before the NPC acquires
+{ to: "lookAround", when: brain.awareness.ge(0.5) }
+```
+Map keys: `always_active` (0/1) on an NPC placement; `_ai_wake_lead` (metres) on `worldspawn`.
+
+Type docs: `notice`: "Optional. How quickly an NPC with no target notices a player or other candidate it may target: awareness rises while it can see them over `fillMs` (default 1000) and falls while it cannot over `drainMs` (default 2000); it targets them at full awareness. Each candidate has its own meter. Being hurt skips it." `brain.awareness`: "The NPC's highest awareness of any candidate, 0 to 1; 1 once it has a target." `alwaysActive`: "Optional. True keeps this NPC at full simulation rate while no player can perceive it. Defaults to false."
+`tacticalRange`: "Optional distance in metres to the current target inside which an engaged NPC fights tactically (picks a spot around its target, flanks, strafes, re-targets at full rate); beyond it the NPC heads straight for its target and re-targets a third as often. Must be finite and > 0. Defaults to 100. A value below the largest attack standoff plus 10 m is raised to that, with a warning."
 
 ## Acceptance
 
@@ -75,13 +88,19 @@ Timing on time:
 - [ ] While an NPC holding a turn skips its AI, its turn still counts against its pool on every skipped tick: no other NPC is granted that capacity and no refresh starts until the holder releases it; a turn that ends while it is not running is released on its next run, and a queued grant made while it is not running opens on its next run (P1).
 - [ ] A queued attack granted to an engaged NPC opens its row at that NPC's next decide, for every decide phase; no turn stays held with its row closed, and other NPCs waiting on that pool are granted no later than one decide interval after their 60 Hz tick, and none starves (P27).
 - [ ] A perceived idle NPC on a patrol route, or returning to its anchor, leaves each reached point on the tick it arrives, as at 60 Hz: it never stands at a point waiting for its next decide.
+- [ ] An idle NPC with `fillMs` 1000 that sees a player continuously acquires them on the first decide at or past 1 s, and on no earlier one; one that loses sight at 0.6 s and regains it 0.5 s later, with `drainMs` 2000, acquires at about 1.75 s (0.6 filled, 0.25 drained, 0.65 refilled); a non-finite or negative `fillMs` or `drainMs` rejects at load (P31).
+- [ ] With two players, an NPC that sees only one fills only that player's meter; the other player, stepping into view later, starts from zero (P31).
+- [ ] An idle NPC hurt by a player acquires by today's damage and retaliation rules on its next decide, whatever its meter; an NPC with a target switches targets by today's ranking without a meter.
+- [ ] `brain.awareness` reads the highest meter, 0 to 1, and 1 while the NPC has a target; a guard on `brain.awareness.ge(0.5)` fires before acquisition when sight lasts past half of `fillMs`.
+- [ ] An `alwaysActive` NPC, set on the archetype or by `always_active 1` on its placement, never enters the dormant tier; `always_active 0` on a placement overrides an archetype's true. An unseen `alwaysActive` walker crosses a trigger volume on the same tick as at 60 Hz.
+- [ ] A map with `_ai_wake_lead` uses it as the AI lead; one above the level's baked id-51 maximum is capped to it with a warning; a map without the key uses the engine default.
 - [ ] An NPC that leaves the AI set (held, quiescent or despawning) still returns holding nothing, requesting nothing, with no wait clock; only a scheduler skip keeps its turns (P2).
 
 Tiers and rates:
 - [ ] Each tier runs each part of an NPC at exactly its table rate; mover carry and push run every tick for dormant NPCs.
 - [ ] An allied NPC runs the same tiers and rates as an enemy.
 - [ ] With many NPCs, every staggered acquisition, decide and dormant step is identical across frame splits, reversed spawn order (for NPCs with a map identity), and host versus replay.
-- [ ] A perceived idle NPC's guards, including a patrol pause, a clip's `animationDone` exit and a release exit, run at 15 Hz while it acquires at 1 Hz.
+- [ ] A perceived idle NPC's guards, including a patrol pause, a clip's `animationDone` exit and a release exit, run at 15 Hz.
 - [ ] A reposition entered beyond its tactical range flanks within its arc once it chooses slots (P30).
 - [ ] An NPC with a 5 m and a 120 m attack and no `tacticalRange` runs its line at 130 m, with the warning, whichever attack is selected.
 - [ ] On the stress fixture, including NPCs from two spawners counting from zero, placements whose ordinals step by 4, and interleaved spawns, the busiest decide or dormant phase carries at most the per-phase mean plus 2√mean + 1, and no phase is empty at 64 NPCs or more (P15).
@@ -104,7 +123,7 @@ Perception and tier changes:
 - [ ] An NPC that moves up part way through a dormant step has its timers advanced by the time it had not run and moves exactly one ordinary step (P3).
 - [ ] One second after moving up part way through a dormant interval, an NPC's weapon resources, cooldowns, activity time, damage recency and attacker ledger read the same as an NPC that ran at 60 Hz throughout: no quantity is credited twice (P3, P11).
 - [ ] A dormant NPC that gains a target on its own dormant run moves exactly one ordinary step in that tick's steering, and from the next tick runs engaged (P21).
-- [ ] A dormant NPC acquires and decides on every fourth dormant run and on no other tick; a perceived idle NPC acquires once a second and decides at 15 Hz (P4).
+- [ ] A dormant NPC checks acquisition and decides on every fourth dormant run and on no other tick; a perceived idle NPC checks acquisition and decides at 15 Hz (P4).
 - [ ] A perceived idle NPC that is damaged, or whose aggro gate opens, acts on it at its next decide and runs engaged from then on.
 - [ ] An NPC moves down only after the hold; one oscillating across a set edge does not flap.
 - [ ] An unperceived NPC with a retained target stays engaged, and goes dormant only after losing its target and the hold.
@@ -137,6 +156,7 @@ Scale (reported per tier on `perf-ai-tick-cost`'s multi-arena row and the packed
 - Perception: `LevelWorld::locate_cell` per player pawn; id 51 stays loaded whatever the streaming mode. Re-locate an NPC's cell whenever its position changes, whatever moved it (P9).
 - First slice: a 2 Hz dormant NPC against `collide_and_slide` and a lift ride, and decide pools on the stress row. The spike's throwaway stride patch (`spike-visible-rates.diff`) saw no tunnelling at 2 Hz.
 - Pool key: registry slots follow spawn order through the free list, and the AI's per-tick index is a snapshot position, so neither works. `BehaviorDrawSalt` carries the identity, but only its hashed seed reaches the brain; store the salt word on the NPC at seeding and hash it for phase (a Fibonacci-style multiply spreads strided ordinals). Give the `Entity` fallback, also used by spawners with no map ordinal, an identity that does not follow spawn order.
+- Notice meter and `perf-ai-tick-cost`'s early stop: an NPC without a target walks hostile candidates past the first eligible one, up to the meter's bound, testing line of sight for each; the early stop still serves NPCs with a target. Store the meters beside the attacker ledger on the brain.
 - Queued grants: `graph_eval::granted_last_tick` compares `granted_tick + 1` with `seen_tick`; it becomes "granted since this NPC's last decide".
 - Tests pinning ticks: `determinism_tests.rs` (extend its role-keyed reversed-`SpawnOrder` rows, `role_activity_rolls` and `role_hold_releases`, to phase), the clip-timed jab's tick pin, `shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_2000_ms_hold`, `release_repeat_tests`, `release_exit_tests`, `activity_speed_tests`, many AI tests set the stride counter by hand, `headless_byte_identity.rs`.
 - Durations: store them as whole elapsed ticks, not floats, so replays and `headless_byte_identity.rs` stay byte-identical.
@@ -144,5 +164,5 @@ Scale (reported per tier on `perf-ai-tick-cost`'s multi-arena row and the packed
 - Weaker rival: decide pools plus rest-based sleep, as physics engines sleep resting bodies; it does not cover patrollers or fallers in empty arenas.
 
 ## Open questions
-- Moving-down hold length and the AI lead over id 51 — **delegated**: the executor picks and reports both with measurements on the multi-arena row.
+- Moving-down hold length and the default AI lead over id 51 — **delegated**: the executor picks and reports both with measurements on the multi-arena row.
 - Whether an NPC's cell is cached on the NPC or in a scheduler-side table — **delegated**.

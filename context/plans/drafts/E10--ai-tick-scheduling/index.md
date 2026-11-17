@@ -18,7 +18,7 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
   | Dormant | unperceived, no target | every 2 s | every 2 s | whole tick at 2 Hz |
 
   - Every rate is a constant expected to be retuned on better test maps. Acquisition and decide rates set reaction feel as well as cost; the idle tier's 1 Hz acquisition is the slow first notice, while its guards run at 15 Hz so a patrol pause or a clip's end never freezes in view, so a retune for cost is also a feel change (owner: a slow first notice reads as fair; perfect reflexes do not).
-  - **Far band.** An engaged NPC whose target's XZ distance is beyond the band acquires on every third decide, and under every engaged motion verb (chase, strafe, reposition) routes toward its target instead of choosing a combat slot. It chooses a slot once its target is 10 m inside the band, so the band does not flap. The band starts at 100 m, or 10 m beyond the largest attack standoff in the NPC's graph if that is farther, so it never moves with the selected attack. A slot around a target that far away is stale before the NPC arrives, and choosing one costs a long route search per candidate slot. The band is engine floor, like the think stride; no script authors it.
+  - **Tactical range.** An engaged NPC whose target's XZ distance is beyond its `tacticalRange` acquires on every third decide, and under every engaged motion verb (chase, strafe, reposition) routes toward its target instead of choosing a combat slot. It chooses a slot once its target is 10 m inside the range, so the line does not flap. A slot around a target that far away is stale before the NPC arrives, and choosing one costs a long route search per candidate slot. `tacticalRange` is an optional behavior-root field in metres, default 100, authored per archetype (owner); the engine keeps the behavior beyond it, the author moves the line. A value below the archetype's largest attack standoff plus 10 m is raised to that and warned at load and on every hot reload that commits it, so a reload never fails over it (owner).
   - Decides and dormant steps are staggered by a mixing hash of each NPC's identity (map placement, or spawner and spawn count), which does not depend on spawn order or frame split, so assignment replays identically in co-op and replays. Spawns with no map identity (synthetic placements, spawners without an ordinal) keep the registry index, replay-stable only under a fixed spawn order. Balance across phases is statistical, not exact; exact balance would need phases that depend on which other NPCs exist.
   - Amends `entity_model.md` §7c: guards, move and action selectors and combat-slot choice evaluate on decide ticks, engine-gated rows (a hold's release, a release's exit, `animationDone`) included, so those land up to one decide interval later than at 60 Hz (owner: about 67 ms at 15 Hz, imperceptible). Steering follows the chosen slot every tick; a strafer re-aims each decide. A queued attack grant opens its row at the NPC's first decide after the grant. Route following within an activity (a patrol cursor, a return to anchor) is acting and advances every tick. The clip accumulator and moment check stay on every tick for perceived and engaged NPCs; a dormant NPC's 2 Hz step resolves each moment inside it once.
 - **Visible NPCs keep acting at 60 Hz.** A lower acting rate measured too small a saving for its cost (`spike-visible-rates.md`). Presentation, hit tests, snapshots and the client interpolation delay are unchanged.
@@ -35,14 +35,37 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
 - **Replan tiers outrank detail level.** The shared per-tick replan budget keeps its tier order (blocked route, then drift, then staleness) and its blocked-route wait bound for every NPC; within a replan tier, a paced NPC (a leap in flight) goes first, as today, then higher NPC tiers.
 - **Perception decides the tier, never targets.** Keeps `perf-ai-tick-cost`'s rejection of a visibility broad phase inside target selection.
 - **NPC is the umbrella term** for brain-bearing actors that are not player-controlled, enemies and allies alike (owner). This brief's rules apply to every NPC; the term lands in `entity_model.md`.
-- **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (an NPC's cell is re-located on every move, wherever it is cached), §7c (guards, selectors, slot choice and newly entered activities on decide ticks; strafe re-aiming each decide; the think stride becoming acquisition and decide pools plus the far band; dormant steps for Pace, activity speed, release exit and "Clip time is game time"), `movement.md` §6, the substrate doc's no-cull rule and a note that the per-player id-51 step exists for its consumers, the roadmap's E15 Phase 4 and combat VFX culling entries pointing at that step without settling their miss tolerance; the no-PVS ground rule lands in `context/lib/`. Human-facing: `docs/scripting-reference.md` (guards "re-evaluated every tick", `acquisitionDue`'s think-stride ticks) and the guard doc comments in `sdk/lib/brain.ts` and `brain.luau` ("as of the previous tick", "true from the tick after").
+- **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (an NPC's cell is re-located on every move, wherever it is cached), §7c (guards, selectors, slot choice and newly entered activities on decide ticks; strafe re-aiming each decide; the think stride becoming acquisition and decide pools plus `tacticalRange`; dormant steps for Pace, activity speed, release exit and "Clip time is game time"), `movement.md` §6, the substrate doc's no-cull rule and a note that the per-player id-51 step exists for its consumers, the roadmap's E15 Phase 4 and combat VFX culling entries pointing at that step without settling their miss tolerance; the no-PVS ground rule lands in `context/lib/`. Human-facing: `tacticalRange` in the SDK types (`postretro.d.ts`, `postretro.d.luau`) and `docs/scripting-reference.md`, plus `docs/scripting-reference.md` (guards "re-evaluated every tick", `acquisitionDue`'s think-stride ticks) and the guard doc comments in `sdk/lib/brain.ts` and `brain.luau` ("as of the previous tick", "true from the tick after").
 - **Non-goals:**
   - Lower acting rates for perceived or engaged NPCs, and the host interpolation, drawn-pose hits and per-step snapshot wire they need: measured not worth it (`spike-visible-rates.md`); the design is kept in `research.md`.
   - Network relevance and combat VFX culling: later consumers of the per-player step, each deciding in its own brief whether id 51's sampling misses are tolerable for it (a miss here costs an NPC one decide; a missed entity in network relevance is never sent).
   - Projectiles: a projectile ticks at 60 Hz whoever fired it; tiers never step or steer projectiles.
   - A sightline PVS bake, a tighter id 46, or door-aware relevance. Owner ground rule: get runtime value from metadata the bake already produces (cells, portals, sampled visibility), even after its source such as the BSP is dropped, instead of adding a Quake-style PVS bake, historically the heaviest bake stage here and in Quake.
   - A hearing model or alert propagation between NPCs: NPCs wake as they do today, through damage, targets and the aggro gate.
-  - Route-query cost beyond the far band: `perf-ai-tick-cost` (exact cuts). Long-range routing over a coarser graph for very large maps: a later roadmap item.
+  - Route-query cost inside the tactical range: `perf-ai-tick-cost` (exact cuts). Long-range routing over a coarser graph for very large maps: a later roadmap item.
+
+### Scripting surface
+```ts
+behavior: {
+  initial: "idle",
+  moveSpeed: 3,
+  engagementRadius: 4,
+  tacticalRange: 60,      // optional, metres, default 100: beyond it the NPC heads for its target
+  activities: { /* ... */ },
+  transitions: { /* ... */ },
+},
+```
+```luau
+behavior = {
+  initial = "idle",
+  moveSpeed = 3,
+  engagementRadius = 4,
+  tacticalRange = 60, -- optional, metres, default 100
+  activities = { --[[ ... ]] },
+  transitions = { --[[ ... ]] },
+},
+```
+Type doc: "Optional distance in metres to the current target inside which an engaged NPC fights tactically (picks a spot around its target, flanks, strafes, re-targets at full rate); beyond it the NPC heads straight for its target and re-targets a third as often. Must be finite and > 0. Defaults to 100. A value below the largest attack standoff plus 10 m is raised to that, with a warning."
 
 ## Acceptance
 
@@ -59,11 +82,12 @@ Tiers and rates:
 - [ ] An allied NPC runs the same tiers and rates as an enemy.
 - [ ] With many NPCs, every staggered acquisition, decide and dormant step is identical across frame splits, reversed spawn order (for NPCs with a map identity), and host versus replay.
 - [ ] A perceived idle NPC's guards, including a patrol pause, a clip's `animationDone` exit and a release exit, run at 15 Hz while it acquires at 1 Hz.
-- [ ] A reposition entered in the far band flanks within its arc once it chooses slots (P30).
-- [ ] An NPC with a 5 m and a 120 m attack starts its far band at 130 m whichever attack is selected.
+- [ ] A reposition entered beyond its tactical range flanks within its arc once it chooses slots (P30).
+- [ ] An NPC with a 5 m and a 120 m attack and no `tacticalRange` runs its line at 130 m, with the warning, whichever attack is selected.
 - [ ] On the stress fixture, including NPCs from two spawners counting from zero, placements whose ordinals step by 4, and interleaved spawns, the busiest decide or dormant phase carries at most the per-phase mean plus 2√mean + 1, and no phase is empty at 64 NPCs or more (P15).
-- [ ] Target acquisition, counted at the candidate scan, runs only on decide ticks, and `@brain.acquisitionDue` is true on each of them; an engaged NPC in the far band acquires on every third, for every spawn tick relative to its phase (P5).
-- [ ] An engaged NPC in the far band claims no combat slot and routes toward its target under chase, strafe and reposition alike; none stands still for want of a slot. Its target coming 10 m inside the band, it chooses a slot at its next decide; a target stepping just past the band and back does not drop a held slot (P28). An NPC whose attack standoff is 120 m starts its band at 130 m. On the multi-arena row, far-band NPCs' AI cost per NPC is reported against an engaged NPC's inside the band.
+- [ ] Target acquisition, counted at the candidate scan, runs only on decide ticks, and `@brain.acquisitionDue` is true on each of them; an engaged NPC beyond its tactical range acquires on every third, for every spawn tick relative to its phase (P5).
+- [ ] An engaged NPC beyond its tactical range claims no combat slot and routes toward its target under chase, strafe and reposition alike; none stands still for want of a slot. Its target coming 10 m inside the range, it chooses a slot at its next decide; a target stepping just past the range and back does not drop a held slot (P28). With `tacticalRange` omitted the line is at 100 m; authored at 60, at 60 m. On the multi-arena row, NPCs beyond their range report AI cost per NPC against an engaged NPC's inside it.
+- [ ] `tacticalRange` rejects at load a non-finite or non-positive value, as other behavior fields do. A value below the largest attack standoff plus 10 m (30 m with a 45 m attack) runs at 55 m and warns, at load and on each hot reload that commits it; a reload that changes the value moves the line for live NPCs from their next decide, without dropping a held slot inside both lines. The Scripting surface example lowers identically in TypeScript and Luau.
 - [ ] Measured from its entry tick, the clip-timed jab, the brute's combo (three jabs 320 ms apart after a 2,000 ms hold) and a leap land no earlier than their 60 Hz ticks and at most one decide interval later, for every decide phase and frame split; clip moments themselves still resolve on the tick they fall.
 - [ ] A clip moment inside a dormant step resolves once, on that step, with its gates evaluated then; none is skipped or fired twice, except a repeating release whose passes inside one step whiff as they do inside one tick today.
 - [ ] A dormant NPC riding a lift or pushed by a door moves with it every tick, carried exactly once on a tick it also steps: carried, pushed or blocking, never embedded or dropped through (P29).

@@ -48,7 +48,7 @@ When done:
   - Decide and act rates, detail tiers and perception: `E10--ai-tick-scheduling`, which never chooses targets.
   - The shared replan budget's throughput. Scaling it changes paths, positions and later targets, so it would break this brief's identical-results rule. `E10--ai-tick-scheduling` owns it.
   - Steering separation: not measured hot (`research.md` §Adjacent work).
-  - Far-targeted enemies routing every candidate slot: `E10--ai-tick-scheduling`'s far band routes toward the target instead. This brief cuts each search's cost, not the number of searches.
+  - Far-targeted enemies routing every candidate slot: `E10--ai-tick-scheduling`'s tactical range (authored `tacticalRange`, default 100 m) routes them toward the target instead. This brief cuts each search's cost, not the number of searches.
   - Route-search pruning by a lower bound on path length: deferred (owner). After scratch lands, the multi-arena row's positioning sub-stage shows whether route search still dominates; if so, an addendum adds it. Its bound must survive rides, riders on lifts and clearance standoffs (`research.md`).
   - Time-slicing perception or LOS: it changes reaction latency.
   - Parallel AI (`ai_pathfinding_mt_readiness.md`): the cost is repeated and pairwise work, not compute.

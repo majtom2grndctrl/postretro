@@ -130,10 +130,10 @@ pub(crate) struct PendingSliderStep {
 const TEXT_ENTRY_SLOT: &str = "ui.textEntry";
 
 /// The field an open text-entry tree commits into (`openTextEntry`'s target),
-/// with the modal depth its tree opened at.
+/// with the push of the tree that opened for it.
 #[derive(Debug, Clone)]
 pub(crate) struct TextEntryField {
-    depth: usize,
+    instance: postretro_ui::modal_stack::ModalInstance,
     slot: String,
 }
 
@@ -401,13 +401,14 @@ impl App {
     /// - `Backspace` → a backspace edit against the target slot,
     /// - `nav.confirm` → commit: fire the opener's `on_commit`, then `PopTree`,
     /// - `nav.cancel` → cancel: `PopTree` only (edits stay in the slot; the opener
-    ///   simply does not act on them — no rollback).
+    ///   simply does not act on them — no rollback; a field-bound entry empties).
     ///
     /// Edits write the bound slot here, through the text-edit sink, at frame N+1's
     /// game-logic phase (the intents were captured on frame N) — the system's
     /// defining N→N+1 ordering. Commit and cancel act on the stack immediately at
     /// this game-logic phase; the seam reconciles next.
     pub(crate) fn resolve_text_entry_intents(&mut self, ui_intents: &[input::UiIntent]) -> bool {
+        self.reap_text_entry_field();
         let Some(target) = self.session.as_ref().and_then(|session| {
             session
                 .modal_stack
@@ -498,6 +499,9 @@ impl App {
     ///
     /// The `on_commit` reaction reads the bound slot's value (the entered text); the
     /// reaction fires synchronously here so it observes the slot as last edited.
+    /// A tree opened for a field (`openTextEntry`'s target) first moves the
+    /// entry into that field and empties `ui.textEntry`, so `on_commit` reads
+    /// the field.
     pub(crate) fn commit_text_entry(&mut self) {
         self.commit_text_entry_field();
         let on_commit = self
@@ -536,6 +540,8 @@ impl App {
     /// Cancel the open text-entry surface (M13 Text-Entry, Task 3): pop the tree
     /// WITHOUT firing `on_commit`. Edits already applied to the bound slot are
     /// discarded simply by the opener not acting on them — there is no rollback.
+    /// A tree opened for a field empties `ui.textEntry` and leaves the field as
+    /// it was.
     pub(crate) fn cancel_text_entry(&mut self) {
         if self.take_text_entry_field().is_some() {
             self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
@@ -551,7 +557,9 @@ impl App {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let depth = session.modal_stack.len();
+        let Some(instance) = session.modal_stack.active_instance() else {
+            return;
+        };
         let current = match session
             .scripting
             .script_ctx
@@ -567,7 +575,37 @@ impl App {
         if !current.is_empty() {
             self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Append(current));
         }
-        self.text_entry_field = Some(TextEntryField { depth, slot });
+        self.text_entry_field = Some(TextEntryField { instance, slot });
+    }
+
+    /// Drop a field whose tree closed some other way (`closeDialog`, a
+    /// cleared or replaced stack), and empty `ui.textEntry` with it, so
+    /// nothing typed for it lingers or reaches a later entry.
+    pub(crate) fn reap_text_entry_field(&mut self) {
+        let Some(field) = self.text_entry_field.as_ref() else {
+            return;
+        };
+        let open = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.modal_stack.contains_instance(field.instance));
+        if !open {
+            self.text_entry_field = None;
+            self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
+        }
+    }
+
+    /// The engine consumed `slot` (a password): an open field for it must not
+    /// write the consumed value back on commit, and its entry is emptied.
+    pub(crate) fn abandon_text_entry_field_for(&mut self, slot: &str) {
+        if self
+            .text_entry_field
+            .as_ref()
+            .is_some_and(|field| field.slot == slot)
+        {
+            self.text_entry_field = None;
+            self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
+        }
     }
 
     /// On commit, the entered text moves into the field's slot and leaves
@@ -596,15 +634,22 @@ impl App {
         self.edit_text_slot(TEXT_ENTRY_SLOT, TextEditCommand::Clear);
     }
 
-    /// The open field, if the top tree is the one that opened it. A field
-    /// whose tree closed some other way is dropped.
+    /// The open field, if the top tree is the push that opened it. A field
+    /// under another text-entry tree stays for that tree's turn.
     fn take_text_entry_field(&mut self) -> Option<TextEntryField> {
-        let field = self.text_entry_field.take()?;
-        let depth = self
+        let active = self
             .session
             .as_ref()
-            .map_or(0, |session| session.modal_stack.len());
-        (field.depth == depth).then_some(field)
+            .and_then(|session| session.modal_stack.active_instance());
+        if self
+            .text_entry_field
+            .as_ref()
+            .is_some_and(|field| Some(field.instance) == active)
+        {
+            self.text_entry_field.take()
+        } else {
+            None
+        }
     }
 
     fn edit_text_slot(&self, slot: &str, edit: TextEditCommand) {

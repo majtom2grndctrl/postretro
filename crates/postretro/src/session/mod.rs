@@ -675,8 +675,7 @@ impl Session {
         // Boot publishes the session facts in-app entry publishes.
         net_entry::publish_boot_facts(
             &scripting.script_ctx,
-            raw_args,
-            parsed.is_err(),
+            parsed.as_ref().err(),
             &net_role,
             &entry,
             player_options.last_join_address.as_deref(),

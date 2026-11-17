@@ -1908,7 +1908,7 @@ export type GameStateRefs = {
   },
   session: {
     connection: ComputedRef<"offline" | "connecting" | "waiting" | "playing">,
-    endCause: ComputedRef<string>,
+    endCause: ComputedRef<"" | "sessionEnded" | "hostLost" | "connectFailed" | "refusedMod" | "refusedPassword" | "badAddress" | "hostFailed">,
     hostAddress: ComputedRef<string>,
     hosting: ComputedRef<boolean>,
     joinAddress: Ref<string>,
@@ -1927,7 +1927,7 @@ export type GameStateRefs = {
       status: ComputedRef<"loading" | "inPlay" | "down" | "reconnecting">,
       isLocal: ComputedRef<boolean>,
     }>,
-    waitReason: ComputedRef<string>,
+    waitReason: ComputedRef<"" | "host" | "modDiffers" | "levelDiffers">,
   },
   ui: {
     textEntry: Ref<string>,

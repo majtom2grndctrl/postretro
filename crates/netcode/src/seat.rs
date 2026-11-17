@@ -41,7 +41,8 @@ pub fn clear_released_seat_slot_values(
 
 /// Time a disconnected remote seat remains reclaimable by its asserted player
 /// identity. The clock is driven once per render frame, including Frontend and
-/// Loading frames where the fixed simulation does not run.
+/// Loading frames where the fixed simulation does not run. Public so engine
+/// tests can land a proof on a hold's deadline poll.
 pub const HOLD_WINDOW: Duration = Duration::from_secs(30);
 
 /// One exhaustive binding site for every carried field.

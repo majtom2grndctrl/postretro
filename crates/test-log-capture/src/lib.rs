@@ -87,7 +87,7 @@ impl Log for TestLogger {
 static ORPHAN_WATCHES: Mutex<Vec<(u64, String, u64)>> = Mutex::new(Vec::new());
 static NEXT_ORPHAN_WATCH: AtomicU64 = AtomicU64::new(0);
 
-/// Counts uncaptured records, from any thread, whose message contains one
+/// Counts uncaptured records, from any thread, whose message or target contains one
 /// needle. The plain orphan count is process-wide and parallel tests share
 /// it; a needle unique to one test makes the count that test's own.
 pub struct OrphanWatch {

@@ -1909,7 +1909,7 @@ declare module "postretro" {
     };
     readonly session: {
       readonly connection: ComputedRef<"offline" | "connecting" | "waiting" | "playing">;
-      readonly endCause: ComputedRef<string>;
+      readonly endCause: ComputedRef<"" | "sessionEnded" | "hostLost" | "connectFailed" | "refusedMod" | "refusedPassword" | "badAddress" | "hostFailed">;
       readonly hostAddress: ComputedRef<string>;
       readonly hosting: ComputedRef<boolean>;
       readonly joinAddress: Ref<string>;
@@ -1928,7 +1928,7 @@ declare module "postretro" {
         readonly status: ComputedRef<"loading" | "inPlay" | "down" | "reconnecting">;
         readonly isLocal: ComputedRef<boolean>;
       }>;
-      readonly waitReason: ComputedRef<string>;
+      readonly waitReason: ComputedRef<"" | "host" | "modDiffers" | "levelDiffers">;
     };
     readonly ui: {
       readonly textEntry: Ref<string>;

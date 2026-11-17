@@ -106,7 +106,7 @@ pub fn text_widget_from_js<'js>(
         style_ranges: style_ranges_from_js(ctx, obj)?,
         visible_when: predicate_opt_from_js(obj, "visibleWhen")?,
         role: role_opt_from_js(obj)?,
-        mask: false,
+        mask: get_optional_bool_js(obj, "mask")?.unwrap_or(false),
     })
 }
 

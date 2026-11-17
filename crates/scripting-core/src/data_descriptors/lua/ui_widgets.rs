@@ -96,7 +96,7 @@ pub fn text_widget_from_lua(table: &Table) -> Result<TextWidget, DescriptorError
         style_ranges: style_ranges_from_lua(table)?,
         visible_when: predicate_opt_from_lua(table, "visibleWhen")?,
         role: role_opt_from_lua(table)?,
-        mask: false,
+        mask: get_optional_bool_lua(table, "mask")?.unwrap_or(false),
     })
 }
 

@@ -1260,7 +1260,8 @@ pub(crate) struct App {
     text_entry_field: Option<app::ui_actions::TextEntryField>,
 
     /// What this client has learned of the session it joined: admission, the
-    /// latest hold, and the address and password its join captured.
+    /// latest hold, whether its catalog lacks the host's level, and the
+    /// address its join dialed. The password goes to the endpoint, never here.
     join_facts: startup::lifecycle::session_entry::JoinFacts,
 
     /// The port an in-app host binds. Choosing one in-app is a non-goal:
@@ -3676,6 +3677,8 @@ impl App {
                 session.seat_table.as_ref(),
             );
         }
+        // A text-entry field whose tree closed since last frame goes first.
+        self.reap_text_entry_field();
         // Once a leave lands, the rest of this drain drops: the steps queued
         // after it, the `fire` targets they reach, and whatever else this
         // frame queued in the level the leave is unloading. Store writes and
@@ -3690,8 +3693,15 @@ impl App {
                     | SystemReactionCommand::JoinSession { .. }
             );
             if left_this_drain && !enters_next_session {
+                // A text edit can carry a password being typed: name its slot only.
+                let shown = match &command {
+                    SystemReactionCommand::AppendText { slot, .. } => {
+                        format!("AppendText {{ slot: {slot:?}, .. }}")
+                    }
+                    other => format!("{other:?}"),
+                };
                 log::debug!(
-                    "[Scripting] {command:?} dropped: this machine left its session earlier in this drain"
+                    "[Scripting] {shown} dropped: this machine left its session earlier in this drain"
                 );
                 continue;
             }

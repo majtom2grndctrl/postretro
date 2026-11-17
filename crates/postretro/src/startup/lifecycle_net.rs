@@ -314,7 +314,7 @@ impl App {
         // and the held level's loading screen ends with it.
         self.settle = None;
         self.end_loading_screen();
-        self.discard_pending_system_commands();
+        self.discard_level_system_commands();
         self.camera = Camera::new(Vec3::ZERO, 0.0, 0.0);
         self.frame_timing
             .push_state(InterpolableState::new(Vec3::ZERO));
@@ -362,6 +362,27 @@ impl App {
     pub(crate) fn discard_pending_system_commands(&mut self) {
         if let Some(session) = self.session.as_ref() {
             session.scripting.script_ctx.system_commands.discard_all();
+        }
+    }
+
+    /// [`Self::discard_pending_system_commands`] at a level unload, keeping
+    /// any queued `hostSession` or `joinSession`: a press belongs to the next
+    /// session, not the level leaving. A session end that lands in the frame
+    /// its reaction fired stops that frame before the drain, so the press
+    /// meets this unload still queued.
+    fn discard_level_system_commands(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let queue = &session.scripting.script_ctx.system_commands;
+        for (_, command) in queue.take_ordered() {
+            if matches!(
+                command,
+                postretro_entities::SystemReactionCommand::HostSession { .. }
+                    | postretro_entities::SystemReactionCommand::JoinSession { .. }
+            ) {
+                queue.push(command);
+            }
         }
     }
 

@@ -1034,12 +1034,23 @@ fn a_waiting_press_runs_with_what_it_captured_and_a_load_or_navigation_cancels_i
     let mut view = client_in_level(&mut first, &points, &second.address().to_string());
     run(&mut view.app, [leave_verb(), join_verb()]);
     assert!(view.app.pending_entry.is_some());
-    // Edits while it waits change nothing it runs with.
+    // Edits while it waits change nothing it runs with, nor what an
+    // admission remembers.
     write_text(&mut view.app, "session.joinAddress", "not an address");
     view.app.drain_level_requests();
     view.app.resume_pending_entry();
     assert_eq!(view.app.session_role(), SessionRole::Client);
     let _ = follow_into_level(&mut second, &mut view);
+    assert_eq!(
+        view.app
+            .session
+            .as_ref()
+            .unwrap()
+            .player_options
+            .last_join_address,
+        Some(second.address().to_string()),
+        "the admission remembers the address the press dialed"
+    );
 
     // A malformed address ends the press at once, never `connecting`.
     let mut view = entering_engine(points.clone());
@@ -1050,7 +1061,7 @@ fn a_waiting_press_runs_with_what_it_captured_and_a_load_or_navigation_cancels_i
     assert_eq!(take_published_connections(), []);
     assert_eq!(
         slot(&view.app, "session.endCause"),
-        Some(SlotValue::String("badAddress".to_string()))
+        Some(SlotValue::Enum("badAddress".to_string()))
     );
     assert_eq!(
         slot(&view.app, "session.password"),
@@ -1081,15 +1092,15 @@ use postretro_net::wire::{ClosingCause, DivergenceReason, HoldingCause, ServerCo
 
 fn end_cause(app: &App) -> String {
     match slot(app, "session.endCause") {
-        Some(SlotValue::String(cause)) => cause,
-        other => panic!("endCause is a string: {other:?}"),
+        Some(SlotValue::Enum(cause)) => cause,
+        other => panic!("endCause is an enum: {other:?}"),
     }
 }
 
 fn wait_reason_of(app: &App) -> String {
     match slot(app, "session.waitReason") {
-        Some(SlotValue::String(reason)) => reason,
-        other => panic!("waitReason is a string: {other:?}"),
+        Some(SlotValue::Enum(reason)) => reason,
+        other => panic!("waitReason is an enum: {other:?}"),
     }
 }
 
@@ -1269,6 +1280,8 @@ fn boot_and_own_endings_set_the_causes_entry_sets() {
         (argv(&["--connect", "not-an-address"]), "badAddress"),
         (argv(&["--connect", "[::1]:27015"]), "badAddress"),
         (argv(&["--host", "0"]), "hostFailed"),
+        // A bad `--password` is not a bad address.
+        (argv(&["--connect", "10.0.0.2", "--password"]), ""),
     ] {
         let app = test_app();
         let ctx = script_ctx_of(&app);
@@ -1280,8 +1293,7 @@ fn boot_and_own_endings_set_the_causes_entry_sets() {
         };
         crate::session::net_entry::publish_boot_facts(
             &ctx,
-            &args,
-            parsed.is_err(),
+            parsed.as_ref().err(),
             &NetRole::SinglePlayer,
             &entry,
             None,
@@ -1297,8 +1309,7 @@ fn boot_and_own_endings_set_the_causes_entry_sets() {
     };
     crate::session::net_entry::publish_boot_facts(
         &script_ctx_of(&app),
-        &argv(&["--host"]),
-        false,
+        None,
         &NetRole::Host { port: 27015 },
         &entry,
         None,
@@ -1520,8 +1531,29 @@ fn wait_reason_names_each_hold() {
         }],
     );
     assert_eq!(wait_reason_of(&view.app), "levelDiffers");
+    // The host unloads to load another level: it lacks nothing of ours.
+    drain(&mut view, vec![holding(HoldingCause::HostLevelAbsent)]);
+    assert_eq!(wait_reason_of(&view.app), "host");
     assert!(view.app.leave_session(LeaveCause::Own));
     assert_eq!(wait_reason_of(&view.app), "", "offline");
+
+    // A host map change: the client follows the relevel, and the mismatch
+    // of its old level against the new one reads as the host's move.
+    let mut view = joining(&relay, &points);
+    drain(
+        &mut view,
+        vec![
+            ServerControlMessage::Relevel {
+                catalog_id: LEVEL.to_string(),
+                level_life: 9,
+            },
+            holding(HoldingCause::LevelIdentity {
+                expected: "next".into(),
+                received: "previous".into(),
+            }),
+        ],
+    );
+    assert_eq!(wait_reason_of(&view.app), "host");
 }
 
 // AC F8 (P20): the password clears when hosting starts, when a join is
@@ -1623,8 +1655,7 @@ fn the_join_address_is_remembered_on_admission_and_seeds_the_next_boot() {
     let app = test_app();
     crate::session::net_entry::publish_boot_facts(
         &script_ctx_of(&app),
-        &["postretro".to_string()],
-        false,
+        None,
         &NetRole::SinglePlayer,
         &crate::session::net_entry::RoleEntry {
             endpoint: None,
@@ -2063,11 +2094,14 @@ fn a_menu_text_field_commits_into_its_own_slot() {
         Some(SlotValue::String("10.0.0.".to_string())),
         "the keyboard opens with the field's text"
     );
-    typed(&mut view.app, "2:30000");
+    // The on-screen keys the dev frontend registers type it.
+    for key in ["kbAppend_2", "kbAppend_colon", "kbAppend_3"] {
+        press(&mut view.app, key);
+    }
     view.app.commit_text_entry();
     assert_eq!(
         slot(&view.app, "session.joinAddress"),
-        Some(SlotValue::String("10.0.0.2:30000".to_string()))
+        Some(SlotValue::String("10.0.0.2:3".to_string()))
     );
     assert_eq!(
         text_entry(&view.app),
@@ -2096,5 +2130,125 @@ fn a_menu_text_field_commits_into_its_own_slot() {
     assert_eq!(
         text_entry(&view.app),
         Some(SlotValue::String(String::new()))
+    );
+}
+
+// Regression: with persistence unavailable a join skipped its rebase, so a
+// leave reset the world to its declared defaults.
+#[test]
+fn join_with_persistence_off_still_restores_the_world_at_join() {
+    let dir = tempfile::tempdir().unwrap();
+    let relay = host_in_level(&spawn_points(3));
+    let mut view = single_player_at_menu(spawn_points(3));
+    with_saves(&mut view, dir.path());
+    {
+        let session = view.app.session.as_mut().unwrap();
+        session.data_dir = None;
+        assert!(session.state_store_lifecycle.disable_persistence());
+    }
+    write_world(&view.app, 42.0);
+
+    assert!(view.app.join_from_frontend(relay.address()));
+    write_world(&view.app, 99.0);
+    assert!(view.app.leave_session(LeaveCause::Own));
+
+    assert_eq!(slot(&view.app, WORLD_SLOT), Some(SlotValue::Number(42.0)));
+}
+
+// A field whose keyboard closes some other way leaves nothing typed in
+// `ui.textEntry`, and a later keyboard opened without a target never copies
+// into the old field.
+#[test]
+fn a_field_closed_another_way_is_dropped_with_its_text() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    press(&mut view.app, "frontend.editPassword");
+    press(&mut view.app, "kbAppend_h");
+    view.app.session.as_mut().unwrap().modal_stack.pop();
+    run(&mut view.app, []);
+    assert_eq!(
+        slot(&view.app, "ui.textEntry"),
+        Some(SlotValue::String(String::new())),
+        "the typed text left with its keyboard"
+    );
+
+    run(
+        &mut view.app,
+        [SystemReactionCommand::PushTree {
+            tree: postretro_ui::keyboard_asset::KEYBOARD_TREE_NAME.to_string(),
+            on_commit: None,
+            commit_target: None,
+        }],
+    );
+    press(&mut view.app, "kbAppend_x");
+    view.app.commit_text_entry();
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String(String::new())),
+        "an untargeted entry never reaches the old field"
+    );
+}
+
+// Admission consumes the password; an open PASSWORD field cannot write the
+// consumed value back.
+#[test]
+fn an_open_password_field_cannot_restore_a_consumed_password() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let mut view = joining_with(&relay, &points, "p");
+    let _ = install_dev_frontend(&mut view.app);
+    press(&mut view.app, "frontend.editPassword");
+    drain(&mut view, vec![holding(HoldingCause::HostLevelAbsent)]);
+    view.app.commit_text_entry();
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String(String::new()))
+    );
+    assert_eq!(
+        slot(&view.app, "ui.textEntry"),
+        Some(SlotValue::String(String::new()))
+    );
+}
+
+// Regression: a `leaveSession(); joinSession()` reaction whose frame also
+// brought the host's end was dropped with the unloading level's queue.
+#[test]
+fn a_join_queued_in_the_frame_the_host_ends_survives_the_unload() {
+    let points = spawn_points(3);
+    let mut first = host_in_level(&points);
+    let mut second = host_in_level(&points);
+    let mut view = client_in_level(&mut first, &points, &second.address().to_string());
+    let ctx = script_ctx_of(&view.app);
+    ctx.system_commands.push(leave_verb());
+    ctx.system_commands.push(join_verb());
+
+    // The host's end arrives in the same frame; the frame stops before its
+    // command drain, and the next frame drains the unload first.
+    drain(&mut view, vec![closing(ClosingCause::SessionEnded)]);
+    assert_eq!(view.app.session_role(), SessionRole::SinglePlayer);
+    view.app.drain_level_requests();
+    view.app.dispatch_system_commands();
+
+    assert_eq!(view.app.session_role(), SessionRole::Client, "the join ran");
+    let _ = follow_into_level(&mut second, &mut view);
+}
+
+// Drift guard: the catalog's `session.endCause` values are the engine's end
+// causes, plus the empty value, in order.
+#[test]
+fn end_cause_catalog_values_match_the_engine_vocabulary() {
+    let mut expected = vec![""];
+    expected.extend(EndCause::ALL.iter().map(|cause| match cause {
+        EndCause::SessionEnded
+        | EndCause::HostLost
+        | EndCause::ConnectFailed
+        | EndCause::RefusedMod
+        | EndCause::RefusedPassword
+        | EndCause::BadAddress
+        | EndCause::HostFailed => cause.as_str(),
+    }));
+    assert_eq!(
+        postretro_entities::engine_state_catalog::SESSION_END_CAUSE_VALUES,
+        expected.as_slice()
     );
 }

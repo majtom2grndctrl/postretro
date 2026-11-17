@@ -35,6 +35,23 @@ pub enum EngineStateValueType<'a> {
     Array,
 }
 
+/// `session.waitReason`'s values: empty unless `session.connection` reads
+/// `waiting`. Append-only.
+pub const SESSION_WAIT_REASON_VALUES: &[&str] = &["", "host", "modDiffers", "levelDiffers"];
+
+/// `session.endCause`'s values: empty until a session or attempt ends, and
+/// again once the next one starts. Append-only.
+pub const SESSION_END_CAUSE_VALUES: &[&str] = &[
+    "",
+    "sessionEnded",
+    "hostLost",
+    "connectFailed",
+    "refusedMod",
+    "refusedPassword",
+    "badAddress",
+    "hostFailed",
+];
+
 /// `session.connection`'s values, in the order a join steps through them.
 pub const SESSION_CONNECTION_VALUES: &[&str] = &["offline", "connecting", "waiting", "playing"];
 
@@ -996,10 +1013,12 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     EngineStateCatalogEntry {
         wire_name: "session.waitReason",
         sdk_path: &["session", "waitReason"],
-        value_type: EngineStateValueType::String,
+        value_type: EngineStateValueType::Enum {
+            values: SESSION_WAIT_REASON_VALUES,
+        },
         // While `waiting`: `host`, `modDiffers` or `levelDiffers`; else empty.
         // Append-only data; content supplies the wording.
-        default: EngineStateDefault::String(""),
+        default: EngineStateDefault::Enum(""),
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,
@@ -1008,10 +1027,12 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     EngineStateCatalogEntry {
         wire_name: "session.endCause",
         sdk_path: &["session", "endCause"],
-        value_type: EngineStateValueType::String,
+        value_type: EngineStateValueType::Enum {
+            values: SESSION_END_CAUSE_VALUES,
+        },
         // Why the last session or attempt ended; empty until one does and
         // again once the next host or join starts. Append-only data.
-        default: EngineStateDefault::String(""),
+        default: EngineStateDefault::Enum(""),
         range: None,
         persist: false,
         capability: EngineStateCapability::Readonly,

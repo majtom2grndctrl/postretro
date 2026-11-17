@@ -62,7 +62,8 @@ pub(crate) enum EndCause {
 }
 
 impl EndCause {
-    /// Every value, for coverage checks over the vocabulary.
+    /// Every value, for coverage checks over the vocabulary. A drift test
+    /// holds it equal to the catalog's `SESSION_END_CAUSE_VALUES`.
     #[cfg(test)]
     pub(crate) const ALL: [EndCause; 7] = [
         Self::SessionEnded,
@@ -92,8 +93,15 @@ impl EndCause {
 /// player saw. Its `Debug` never shows the password.
 #[derive(Clone)]
 pub(crate) enum PendingEntry {
-    Host { password: String },
-    Join { addr: SocketAddr, password: String },
+    Host {
+        password: String,
+    },
+    Join {
+        addr: SocketAddr,
+        /// The address as the player typed it, remembered once admitted.
+        typed: String,
+        password: String,
+    },
 }
 
 impl std::fmt::Debug for PendingEntry {
@@ -122,16 +130,25 @@ pub(crate) struct JoinFacts {
 }
 
 /// `session.waitReason` for a hold. A host level this client lacks reads as
-/// `levelDiffers` whatever hold it shows.
-fn wait_reason(hold: Option<&HoldingCause>, host_level_missing: bool) -> &'static str {
+/// `levelDiffers` whatever hold it shows. While this client loads the level
+/// its host named (`following`), a level mismatch is the old level against
+/// the new one and reads as `host`: it clears when the load declares.
+fn wait_reason(
+    hold: Option<&HoldingCause>,
+    host_level_missing: bool,
+    following: bool,
+) -> &'static str {
     if host_level_missing {
         return "levelDiffers";
     }
     match hold {
         Some(HoldingCause::ModDigest { .. }) => "modDiffers",
-        Some(HoldingCause::LevelIdentity { .. } | HoldingCause::LevelDigest { .. }) => {
+        Some(HoldingCause::LevelIdentity { .. } | HoldingCause::LevelDigest { .. })
+            if !following =>
+        {
             "levelDiffers"
         }
+        Some(HoldingCause::LevelIdentity { .. } | HoldingCause::LevelDigest { .. }) => "host",
         Some(
             HoldingCause::HostLevelAbsent
             | HoldingCause::LevelAbsent { .. }
@@ -213,7 +230,11 @@ impl App {
             EntryVerb::Join => {
                 let text = self.read_session_string(JOIN_ADDRESS_SLOT);
                 match netcode::parse_join_address(&text) {
-                    Ok(addr) => PendingEntry::Join { addr, password },
+                    Ok(addr) => PendingEntry::Join {
+                        addr,
+                        typed: text.trim().to_string(),
+                        password,
+                    },
                     Err(err) => {
                         log::warn!("[Net] join refused: {err}");
                         self.publish_end_cause(Some(EndCause::BadAddress));
@@ -313,7 +334,7 @@ impl App {
                     // The hosted run's password is fixed now. Hosting
                     // consumes it; a failed build keeps it for a retry.
                     self.set_endpoint_password(&password);
-                    self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
+                    self.consume_password();
                 } else {
                     self.publish_end_cause(Some(EndCause::HostFailed));
                 }
@@ -321,15 +342,16 @@ impl App {
                 // `connecting` until now.
                 self.publish_connection(ConnectionPhase::Offline);
             }
-            PendingEntry::Join { addr, password } => {
+            PendingEntry::Join {
+                addr,
+                typed,
+                password,
+            } => {
                 self.join_facts = JoinFacts {
-                    address: self
-                        .read_session_string(JOIN_ADDRESS_SLOT)
-                        .trim()
-                        .to_string(),
+                    address: typed,
                     ..JoinFacts::default()
                 };
-                self.write_session_slot(WAIT_REASON_SLOT, SlotValue::String(String::new()));
+                self.write_session_slot(WAIT_REASON_SLOT, SlotValue::Enum(String::new()));
                 self.publish_connection(ConnectionPhase::Connecting);
                 if self.join_from_frontend(addr) {
                     // Set before the first poll: the challenge can arrive
@@ -359,11 +381,17 @@ impl App {
                         .iter()
                         .any(|entry| entry.id == *catalog_id)
                 });
+                // A new host level: the hold the old one earned is stale.
                 self.join_facts.host_level_missing = !known;
+                self.join_facts.hold = None;
                 self.note_client_admitted();
                 self.publish_wait_reason();
             }
             ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
+                // A host with no level installed lacks nothing of ours.
+                if matches!(cause, HoldingCause::HostLevelAbsent) {
+                    self.join_facts.host_level_missing = false;
+                }
                 self.join_facts.hold = Some(cause.clone());
                 self.note_client_admitted();
                 self.publish_connection(ConnectionPhase::Waiting);
@@ -383,7 +411,7 @@ impl App {
             return;
         }
         self.join_facts.admitted = true;
-        self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
+        self.consume_password();
         self.publish_connection(ConnectionPhase::Waiting);
         self.publish_wait_reason();
         let address = self.join_facts.address.clone();
@@ -439,16 +467,24 @@ impl App {
             == Some(SlotValue::Enum(
                 ConnectionPhase::Waiting.as_str().to_string(),
             ));
+        let following = self
+            .level_requests
+            .iter()
+            .any(|request| matches!(request, LevelRequest::HostLevel(_)))
+            || (self.level_load_in_flight()
+                && self.level_load.as_ref().is_some_and(|load| load.host_named));
         let reason = if waiting {
             wait_reason(
                 self.join_facts.hold.as_ref(),
                 self.join_facts.host_level_missing,
+                following,
             )
         } else {
             ""
         };
-        if self.read_session_string(WAIT_REASON_SLOT) != reason {
-            self.write_session_slot(WAIT_REASON_SLOT, SlotValue::String(reason.to_string()));
+        let value = SlotValue::Enum(reason.to_string());
+        if self.read_session_slot(WAIT_REASON_SLOT).as_ref() != Some(&value) {
+            self.write_session_slot(WAIT_REASON_SLOT, value);
         }
     }
 
@@ -461,10 +497,17 @@ impl App {
         self.publish_wait_reason();
         if let Some(cause) = end_cause {
             if cause == EndCause::RefusedPassword {
-                self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
+                self.consume_password();
             }
             self.publish_end_cause(Some(cause));
         }
+    }
+
+    /// A verb consumed the password: the slot empties, and an open field for
+    /// it cannot write it back.
+    fn consume_password(&mut self) {
+        self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
+        self.abandon_text_entry_field_for(PASSWORD_SLOT);
     }
 
     /// Hand the endpoint the password a press captured. It keeps only the
@@ -493,7 +536,7 @@ impl App {
     /// Publish `session.endCause`, or clear it with `None`.
     pub(crate) fn publish_end_cause(&mut self, cause: Option<EndCause>) {
         let value = cause.map(EndCause::as_str).unwrap_or_default();
-        self.write_session_slot(END_CAUSE_SLOT, SlotValue::String(value.to_string()));
+        self.write_session_slot(END_CAUSE_SLOT, SlotValue::Enum(value.to_string()));
     }
 
     fn read_session_slot(&self, slot: &str) -> Option<SlotValue> {
@@ -619,7 +662,9 @@ impl App {
         net_role: &netcode::NetRole,
         mint: netcode::SessionIdSource,
     ) -> Option<EntryFailure> {
-        let session = self.session.as_mut()?;
+        let Some(session) = self.session.as_mut() else {
+            return Some(EntryFailure::Endpoint);
+        };
         let entry = enter_role(
             net_role,
             session.player_options.player_id,

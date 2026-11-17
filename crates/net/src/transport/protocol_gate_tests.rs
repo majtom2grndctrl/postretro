@@ -139,7 +139,7 @@ fn poll_past_connect(mut poll: impl FnMut() -> bool) -> bool {
 }
 
 // A peer packing an earlier (app id, wire version) pair never completes the
-// encrypted netcode handshake with this build's host, while a matching client
+// netcode connect handshake with this build's host, while a matching client
 // on the same host and the same polls connects: refusal, not a silent link.
 #[test]
 fn netcode_handshake_refuses_stale_protocol_clients_and_connects_a_matching_one() {

@@ -448,6 +448,22 @@ impl std::fmt::Debug for NetConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetArgError(pub String);
 
+impl NetArgError {
+    /// The role flag whose value failed to parse, when the error names one:
+    /// `--connect` for an address, `--host` for a port. A conflict between
+    /// flags, or a bad `--password`, names none.
+    #[must_use]
+    pub fn failed_role_flag(&self) -> Option<&'static str> {
+        if self.0.starts_with("--connect") {
+            Some("--connect")
+        } else if self.0.contains("--host port") {
+            Some("--host")
+        } else {
+            None
+        }
+    }
+}
+
 impl std::fmt::Display for NetArgError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -460,9 +476,10 @@ impl std::fmt::Display for NetArgError {
 /// the existing `resolve_map_path` handling owns — this parser never consumes it):
 /// - `--host [port]` — listen server; bare `--host` uses [`DEFAULT_HOST_PORT`].
 /// - `--connect <ip[:port]>` — client; IPv4 with an optional port, as
-///   [`parse_join_address`] reads it.
-///   The host binds IPv4 only, so an IPv6 address could never reach it; it is
-///   refused here with a clear message rather than failing on the first send.
+///   [`parse_join_address`] reads it, which refuses IPv6 and hostnames with a
+///   clear message rather than failing on the first send.
+/// - `--password <text>` — the session password both roles use. It takes the
+///   next token unless that is a flag; an empty value is passwordless.
 ///
 /// Absent both flags, the role is [`NetRole::SinglePlayer`]. `--host` and
 /// `--connect` are mutually exclusive — supplying both is an error.
@@ -476,10 +493,12 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
         // passwordless session.
         let password_inline = arg.strip_prefix("--password=");
         if arg == "--password" || password_inline.is_some() {
+            // The next token unless it is a flag, an empty one included: the
+            // engine's map-path scan steps over the same token.
             let value = match password_inline {
                 Some(value) => value.to_string(),
                 None => iter
-                    .next()
+                    .next_if(|value| !value.starts_with("--"))
                     .cloned()
                     .ok_or_else(|| NetArgError("--password requires a value".into()))?,
             };
@@ -8456,6 +8475,7 @@ mod tests {
         assert_eq!(client.password.as_deref(), Some("p"));
         assert!(!format!("{client:?}").contains("\"p\""), "Debug hides it");
         assert!(parse_net_config(&argv(&["--password"])).is_err());
+        assert!(parse_net_config(&argv(&["--password", "--connect", "10.0.0.2"])).is_err());
         assert_eq!(parse_net_config(&argv(&[])).unwrap().password, None);
     }
 

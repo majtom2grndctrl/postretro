@@ -100,3 +100,32 @@ Automated rows run as `cargo test` loopback tests over real transports, as the l
 | 6 | **Password gate.** `crates/net` gains `blake3`. Wire variants appended, `PROTOCOL_ID` advanced. Per-pending-slot nonce, proof check in constant time, the 5 s bound, buffered pre-admission declarations, and interactions with reclaim and level change. `--password`. Client answers from the captured password, and the slot clears per P20. Leak-scan test. Proves P-a–P-n and the password half of F1 and F8. | integrating executor | 5 | done |
 | 7 | **UI.** `Text` `mask`, keyboard `.` and `:` keys, the text-field target approach (see Corrections), and dev frontend Host and Join submenus with phase, wait reason and per-end-cause notices. Proves U1–U3, U6, U8. The `crates/ui` mask and keyboard part may run as a worktree worker beside task 6. | integrating executor (mask and keyboard: optional worker) | 5 | done |
 | 8 | **Docs and gates.** `networking.md` §Two-gate, §Role model and §Session-state ledger corrections, plus the mask screen-reader rule in `ui.md` §4.2. Proves U7. The `scripting.md` §10.4 and `player_options.md` updates wait for landing. | integrating executor | 6, 7 | done |
+
+## Review
+
+Round 1: `/review-panel` with seven read-only reviewers over two slices. Five depth lenses on opus: join-flow tracer, host-and-saves tracer, password tracer, contract verifier and adversarial tester. Two hygiene/drift passes on sonnet. Fixed directly rather than through `/fix-review-findings`: the fixes cross `session_entry.rs`, `ui_actions.rs` and `main.rs`, and per-file agents would have collided.
+
+Fixed:
+- The JS and Luau widget bridges dropped `Text.mask`, so mod password fields drew in clear text. Both now read it, with a bridge test in both runtimes.
+- `resolve_map_path` took `--password`'s value as the boot map. It now steps over it under the same predicate `parse_net_config` uses, which no longer swallows a following flag.
+- A waiting join remembered the address in the slot when it ran, not the one it dialed. The press now captures the typed text.
+- The on-screen keyboard's `kbAppend_*` reactions lived in one level script. They are now mod-wide in the dev frontend, so the keyboard types at the frontend.
+- With persistence off, a join skipped its rebase. `StateStoreLifecycle::can_collect` now gates the snapshot, and only the write needs `can_save`.
+- A text-entry field now tracks the `ModalInstance` of its keyboard. It is dropped, with `ui.textEntry`, once that push closes any other way. A consumed password abandons an open field for it.
+- A level unload keeps queued `hostSession` and `joinSession`, so a press whose frame brought the host's end survives.
+- A suspend cancels a waiting press, and resume runs only in states that drain level requests.
+- A known relevel clears a stale hold and the missing-level flag, as does `HostLevelAbsent`. A level mismatch while following a host-named load reads `host`.
+- `session.waitReason` and `session.endCause` are enums with an empty value. A drift test holds the end causes equal to the catalog's.
+- Boot attributes a parse failure to the flag that failed (`NetArgError::failed_role_flag`) and shares the entry vocabulary.
+- The password paths in `crates/net` refuse instead of panicking. An unproven peer holds at most the latest declaration of each kind.
+- `enter_net_role` with no session reports a failure.
+- Doc drift: `scripting.md` §10.4 and the slot table, `ui.md` §3, `player_options.md` §2, the `join_facts`, text-entry, `parse_net_config`, `OrphanWatch` and `HOLD_WINDOW` docs, and the gate-test comment. Text edits are redacted in the post-leave drop log.
+
+Left, with reasons:
+- Tests cite acceptance IDs ("AC E2"). That is the repository's existing convention (for example `client_tests.rs` "AC 6"), and the IDs stay in this plan once it moves to `done/`.
+- A promotion followed by a hold in one update publishes only `waiting`. The participation markers are filtered inside `NetClient::drain_control`, and P23 pins the reverse order, which works.
+- A host RNG failure refuses with `ClosingCause::Password`. No cause fits better without a new wire variant, and the failure needs a broken OS RNG.
+- A failed join build leaves the frontend without its backdrop. It only follows an ephemeral-port bind failure.
+- A boot `--connect` does not remember its address: `--connect` is a developer path.
+- `enqueue_dev_level_cycle_target` queues a played level under the menu. It is dev-tools only.
+- The fixture reuses `frontend.host` as a reaction name, as the brief's Scripting surface example does.

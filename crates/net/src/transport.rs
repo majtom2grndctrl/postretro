@@ -637,9 +637,14 @@ impl NetServer {
                         let Some(challenge) = self.challenges.remove(&client_id) else {
                             continue;
                         };
-                        let key = self
-                            .password_key
-                            .expect("a challenge is issued only under a password");
+                        // A challenge is issued only under a password; a key
+                        // cleared since refuses rather than admitting.
+                        let Some(key) = self.password_key else {
+                            let cause = ClosingCause::Password;
+                            self.reject(client_id, cause.clone());
+                            outcomes.push(HandshakeOutcome::Rejected { client_id, cause });
+                            break;
+                        };
                         let expected =
                             blake3::Hash::from(wire::password_proof(&key, &challenge.nonce));
                         // `blake3::Hash` compares in constant time.
@@ -668,6 +673,12 @@ impl NetServer {
                     }
                     declaration => {
                         if let Some(challenge) = self.challenges.get_mut(&client_id) {
+                            // Only the latest of each kind reaches admission,
+                            // so an unproven peer holds at most three.
+                            let kind = std::mem::discriminant(&declaration);
+                            challenge
+                                .held
+                                .retain(|held| std::mem::discriminant(held) != kind);
                             challenge.held.push(declaration);
                             continue;
                         }
@@ -797,8 +808,10 @@ impl NetServer {
                 }
                 *declaration_moved = true;
             }
+            // The caller routes these two itself; a peer's bytes never reach
+            // here with one, and if a caller did, ignoring it is safe.
             ClientControlMessage::Admission { .. } | ClientControlMessage::PasswordProof { .. } => {
-                unreachable!("only declarations are applied")
+                log::debug!("[Net] client {client_id}: not a declaration; ignored");
             }
         }
     }

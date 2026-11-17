@@ -142,16 +142,19 @@ pub(crate) fn apply_cli_password(
 
 /// The session facts a boot publishes, as in-app entry does: the remembered
 /// address seeds `session.joinAddress`; a `--connect` endpoint reads
-/// `connecting`; a failed `--host` sets `hostFailed`, and a malformed
-/// `--connect` sets `badAddress`.
+/// `connecting`; a failed `--host` sets `hostFailed`, a malformed `--connect`
+/// sets `badAddress`, and a `--connect` whose endpoint failed sets
+/// `connectFailed`. `parse_error` names the flag that failed, if any.
 pub(crate) fn publish_boot_facts(
     script_ctx: &postretro_entities::ScriptCtx,
-    raw_args: &[String],
-    parse_failed: bool,
+    parse_error: Option<&netcode::NetArgError>,
     net_role: &netcode::NetRole,
     entry: &RoleEntry,
     remembered_address: Option<&str>,
 ) {
+    use crate::startup::lifecycle::session_entry::{
+        CONNECTION_SLOT, ConnectionPhase, END_CAUSE_SLOT, EndCause, JOIN_ADDRESS_SLOT,
+    };
     use postretro_entities::slot_table::SlotValue;
     let write = |slot: &str, value: SlotValue| {
         if let Err(err) =
@@ -161,30 +164,29 @@ pub(crate) fn publish_boot_facts(
         }
     };
     if let Some(address) = remembered_address {
-        write(
-            "session.joinAddress",
-            SlotValue::String(address.to_string()),
-        );
+        write(JOIN_ADDRESS_SLOT, SlotValue::String(address.to_string()));
     }
-    let flag = |name: &str| raw_args.iter().skip(1).any(|arg| arg.starts_with(name));
-    let end_cause = if parse_failed && flag("--connect") && !flag("--host") {
-        Some("badAddress")
-    } else if (parse_failed && flag("--host") && !flag("--connect"))
-        || (matches!(net_role, netcode::NetRole::Host { .. }) && entry.failure.is_some())
-    {
-        Some("hostFailed")
-    } else if matches!(net_role, netcode::NetRole::Connect { .. }) && entry.failure.is_some() {
-        Some("connectFailed")
-    } else {
-        None
+    let end_cause = match (
+        parse_error.and_then(netcode::NetArgError::failed_role_flag),
+        net_role,
+    ) {
+        (Some("--connect"), _) => Some(EndCause::BadAddress),
+        (Some(_), _) => Some(EndCause::HostFailed),
+        (None, netcode::NetRole::Host { .. }) if entry.failure.is_some() => {
+            Some(EndCause::HostFailed)
+        }
+        (None, netcode::NetRole::Connect { .. }) if entry.failure.is_some() => {
+            Some(EndCause::ConnectFailed)
+        }
+        _ => None,
     };
     if let Some(cause) = end_cause {
-        write("session.endCause", SlotValue::String(cause.to_string()));
+        write(END_CAUSE_SLOT, SlotValue::Enum(cause.as_str().to_string()));
     }
     if matches!(&entry.endpoint, Some(netcode::NetEndpoint::Client { .. })) {
         write(
-            "session.connection",
-            SlotValue::Enum("connecting".to_string()),
+            CONNECTION_SLOT,
+            SlotValue::Enum(ConnectionPhase::Connecting.as_str().to_string()),
         );
     }
 }

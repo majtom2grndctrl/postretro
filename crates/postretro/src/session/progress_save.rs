@@ -18,10 +18,12 @@ pub(crate) struct ProgressSave {
 /// Collect the world slots, faction sentiment and the local player's
 /// character, then write them to this mod's state file. Returns `None` when
 /// nothing may be collected yet: before declarations commit and the boot
-/// restore completes, a save could replace a valid file with defaults. Every
+/// restore completes, a snapshot holds defaults that could replace a valid
+/// file. With persistence unavailable the state is still collected, for the
+/// in-memory snapshot a join rebases on, and only the write is skipped. Every
 /// failure warns.
 pub(crate) fn save_world_and_character(session: &mut Session) -> Option<ProgressSave> {
-    if !session.state_store_lifecycle.can_save() {
+    if !session.state_store_lifecycle.can_collect() {
         return None;
     }
     let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() else {
@@ -67,6 +69,12 @@ pub(crate) fn save_world_and_character(session: &mut Session) -> Option<Progress
             log::warn!("[State] {warning}");
         }
         merge_per_owner_state(&mut collected.state, per_owner.per_owner);
+    }
+    if !session.state_store_lifecycle.can_save() {
+        // Persistence is off for this run; it warned when it turned off.
+        return Some(ProgressSave {
+            state: collected.state,
+        });
     }
     match state_path(session.data_dir.as_deref(), &mod_id) {
         Some(state_path) => match save_persisted_state(&state_path, &collected.state) {

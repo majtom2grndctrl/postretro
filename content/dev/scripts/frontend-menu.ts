@@ -7,6 +7,8 @@ import {
 import {
   Button,
   CLOSE_DIALOG_ACTION,
+  appendText,
+  backspaceText,
   EXIT_TO_DESKTOP_ACTION,
   Glyph,
   Grid,
@@ -383,7 +385,26 @@ export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinAddress"
   ...endCauseNotices(),
 ]);
 
+// Per-key named reactions the on-screen keyboard's buttons reference
+// (`onPress`): each appends its character to the writable engine slot
+// `ui.textEntry`, and backspace pops one grapheme. They are mod-wide, so the
+// keyboard types at the frontend and in every level. The keyboard JSON names
+// them, so editing the layout needs only matching names here. The `done` key
+// is not here: its `onPress` is the reserved `ui.commitTextEntry` sentinel.
+const { textEntry } = getGameState().ui;
+const keyboardReactions: NamedReactionDescriptor[] = [
+  ..."abcdefghijklmnopqrstuvwxyz0123456789"
+    .split("")
+    .map((ch) => defineReaction(`kbAppend_${ch}`, appendText(textEntry, ch))),
+  defineReaction("kbAppend_space", appendText(textEntry, " ")),
+  // Address punctuation: an IPv4 address and its port.
+  defineReaction("kbAppend_dot", appendText(textEntry, ".")),
+  defineReaction("kbAppend_colon", appendText(textEntry, ":")),
+  defineReaction("kbBackspace", backspaceText(textEntry)),
+];
+
 const sessionReactions: NamedReactionDescriptor[] = [
+  ...keyboardReactions,
   editPassword,
   editJoinAddress,
   host,

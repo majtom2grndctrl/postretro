@@ -31,7 +31,7 @@ Findings that inform the brief but do not decide it. The 2026-10-05 snapshot pre
 ## Replan budget (from `done/E10--enemy-combat-movement/plan.md` §Review loop)
 
 - The drift tier serves the longest waiter first (`AgentComponent::drift_wait_ticks`), which fixed a 6 s starvation at 128 strafers.
-- A chase wave whose demand always exceeds the budget waits about N/4 ticks for each replan: 24 ticks (0.4 s) at 128. `find_path` was about 0.5% of AI cost in the 2026-10-05 profile, so raising throughput is cheap next to the scans above.
+- A chase wave whose demand always exceeds the budget waits about N/4 ticks for each replan: 24 ticks (0.4 s) at 128. `find_path` was about 0.5% of AI cost in the 2026-10-05 profile; that holds on that fixture only, not on large graphs (below).
 
 ## Pre-pool measurement snapshot (2026-10-05)
 
@@ -171,3 +171,14 @@ A per-kind occupancy index lands last, as its own brief, not here:
 | P2 | Stress wave at 32 / 64 / 128 for chase, strafe and strafe+hits infight. | A per-tick digest of (enemy, target, retaliation latch, slot bits) is recorded at the pre-change commit and checked in; each change replays it. | Equal digests on every tick. Ignore-gated release run (the row is minutes long in debug). Record and replay on the same OS: platform `sin`/`cos` can differ in the last bit across platforms. |
 | P3 | Region lookup on a grid of 4,000 or more regions, finite points only (a NaN coordinate's exact answer spans a strip), counting regions examined per `region_at` or `resolve_region_at`. | Index built once at `NavGraph` construction. | No more than the candidate lists of the cells within snap tolerance, never the full region count. A linear fallback fails. |
 | P4 | A batch of 128 agents on one target, counting agents examined per clearance test. | Proximity query built once per batch from the batch's agent snapshots. | Only agents within the spacing radius's cells, never every agent. A linear fallback fails. |
+
+## Route query cost (spike, 2026-11-17)
+
+From `drafts/E10--ai-tick-scheduling/spike-visible-rates.md`, on a four-arena map of 4,216 regions and about 8.3k portals.
+- Each multi-region A* query allocates and fills `g_score` and `came_from` (one entry per node: each directed portal crossing and link end) and `rode_from` (one per link) before it searches. A same-region query skips A*.
+- One spread wave of 64 cost about 20 ms of AI per tick with the nav index in, 128 about 45 ms; 70% of instructions were allocation and zeroing. About 100 far-targeted enemies cost about 485 ms per tick at 500 placed, about 1.1 s for 218 at 1,000; 96% was route search, about a third of it zeroing.
+- The path length positioning scores is the walked XZ length of the returned points. It is not bounded below by the straight agent-to-slot distance: a ride truncates it at the boarding point, an agent on a lift it can ride gets a zero-length path, clearance repair can move endpoints to standoffs, and f32 sums can fall one ulp short. Any later pruning needs a bound that survives these.
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P5 | Route scratch reused across queries. | (a) Query 2 runs after query 1 returned at the goal with its frontier non-empty, and query 1 reached, through a portal, the boarding node that query 2 seeds directly from its start region. (b) The generation counter is one below wraparound before two queries. (c) One scratch serves a 4,000-region graph, then a 10-region graph, then the 4,000-region graph again. | Each query's path, cost and failure equal a fresh-allocation reference. A reset that clears `g_score` but not predecessor or ride state fails (a); one that does not clear on wrap fails (b). |

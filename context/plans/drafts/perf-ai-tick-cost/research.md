@@ -1,8 +1,39 @@
 # perf-ai-tick-cost — research
 
-Measured at 90c9b9687 plus the `sim_steer_*` sub-stages, since committed; source re-read at 2095e74c6. Findings that inform the brief but do not decide it.
+Findings that inform the brief but do not decide it. The 2026-10-05 snapshot predates the particle pool (`done/perf-particle-sim-cost`): its registry-size rows are history, its nav-scan finding still holds. The 2026-11-17 profile is the current cost picture. Source re-read at ee1e78dcd.
 
-## Measurement snapshot (2026-10-05)
+## Stress row profile (2026-11-17)
+
+**Setup.** Cloud container, 4 vCPU Intel Xeon @ 2.10 GHz, Linux, release with line tables. `replan_stress_row` (chase wave around a moving player, plus 8 later chasers) with a throwaway filter to run one size for 160 ticks, then `valgrind --tool=callgrind` and `callgrind_annotate --inclusive=yes`. The patch was reverted. The registry held 137 slots at 128 (wave, chasers, player): particles are out.
+
+**Baseline here** matches the owner's Windows desktop closely: chase median AI tick 1.02 / 2.94 / 8.24 ms and strafe 0.62 / 1.43 / 3.95 ms at 32 / 64 / 128.
+
+**Attribution (chase).** Inclusive instruction counts, converted to ms at the measured median. Agents go 72 → 136 (1.89×), so pure n² would grow 3.57×.
+
+| Bucket | 64 | 128 | Growth | Exponent |
+|---|---|---|---|---|
+| Whole AI tick | 2.91 ms | 8.14 ms | 2.78× | 1.6 |
+| `compute::evaluate` (targeting) | 1.20 ms (41%) | 4.05 ms (50%) | 3.36× | 1.9 |
+| ↳ `select_target_with_attacker_ledger` | 0.65 ms | 2.25 ms | 3.47× | 1.96 |
+| ↳ `target_offers` | 0.47 ms | 1.65 ms | 3.48× | 1.96 |
+| ↳ `FactionRegistry::relationship` (inside both) | 0.33 ms | 1.16 ms | 3.47× | 1.96 |
+| `select_combat_positions_batch` | 1.62 ms (56%) | 3.93 ms (48%) | 2.41× | 1.38 |
+| Rest (slots, turns, apply) | ~0.09 ms | ~0.16 ms | ~1.8× | ~1 |
+| Steering `agent_steering::tick_impl` (separate) | 0.32 G instr. | 0.64 G instr. | 1.98× | ~1.07 |
+
+- Acquisition is due on about 96% of evaluations (stride 1 inside 12 m), so the full selection walk runs almost every tick. It refreshes a `CandidateScope` for about 71 candidates at 64 and 135 at 128; each refresh does two `FactionRegistry::relationship` lookups hashing `&str` keys with SipHash (`hash_one::<&str>` is 8.75% of all instructions at 128).
+- Positioning's per-call cost is flat (`score_candidate` 11.8k → 12.7k instructions); calls grow faster than agents (194k → 440k per run), mostly `capsule_static_placement_center` from grounding. From source: grounding, the docked-mover test, slot line of sight and the target-side route depend only on target and position, yet run per enemy; `dynamic_placement_is_clear` scans every agent per candidate.
+- `resolve_combat_slots` and attack-turn arbitration are under 0.1%. `LiveFactionSentiment::sentiment` itself is 0.09%; the cost sits in `relationship`.
+- Caveats: instruction counts are not time, so the ms split is proportional (total instruction growth 2.78× matches wall-clock 2.80×). The profile includes 60 warm-up ticks the row's timer excludes. Confidence high on which terms grow, moderate on exact shares.
+
+## Replan budget (from `done/E10--enemy-combat-movement/plan.md` §Review loop)
+
+- The drift tier serves the longest waiter first (`AgentComponent::drift_wait_ticks`), which fixed a 6 s starvation at 128 strafers.
+- A chase wave whose demand always exceeds the budget waits about N/4 ticks for each replan: 24 ticks (0.4 s) at 128. `find_path` was about 0.5% of AI cost in the 2026-10-05 profile, so raising throughput is cheap next to the scans above.
+
+## Pre-pool measurement snapshot (2026-10-05)
+
+Measured at 90c9b9687 plus the `sim_steer_*` sub-stages, source read at 2095e74c6.
 
 **Setup.**
 - Machine: MacBook Pro, Intel i9-9980HK (8 cores / 16 threads), 32 GB, AMD Radeon Pro 5300M, Metal.

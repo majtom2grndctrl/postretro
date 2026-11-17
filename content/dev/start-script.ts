@@ -47,7 +47,12 @@ import { targetDummyEntity } from "./scripts/target-dummy";
 import { cyberpunkWarriorEntity } from "./scripts/cyberpunk-warrior";
 import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEnemyEntity } from "./scripts/reference-enemy";
-import { enemyRifleBurstEntity, enemyRifleEntity } from "./scripts/enemy-rifle";
+import { stanceSurfaceEntity } from "./scripts/stance-surface";
+import {
+  enemyRifleBurstEntity,
+  enemyRifleEntity,
+  enemyRifleLongEntity,
+} from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
 import { shadowHunterEntity } from "./scripts/shadow-hunter";
 import {
@@ -383,11 +388,15 @@ export default defineMod({
     cyberpunkWarriorEntity,
     sciFiTrooperEntity,
     referenceEnemyEntity,
+    // The Stances section of docs/scripting-reference.md as dev content: poses
+    // that telegraph a mix-up of strikes. `"classname" "stance_surface_brute"`; in no map.
+    stanceSurfaceEntity,
     // DEV FIXTURE: the damage-triangle playtest (scripts/damage-triangle.ts).
     shieldedEnemyEntity,
     arcRifleEntity,
     acidRifleEntity,
     enemyRifleEntity,
+    enemyRifleLongEntity,
     enemyRifleBurstEntity,
     limitatorEntity,
     // Fast melee skirmisher: `"classname" "shadow_hunter"`.

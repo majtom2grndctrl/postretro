@@ -23,6 +23,7 @@ mod facing;
 mod graph_eval;
 mod heading;
 mod launch;
+mod leap;
 mod perception;
 mod steering;
 mod targeting;
@@ -176,6 +177,12 @@ pub(crate) struct EnemyOutcome {
     pub(crate) target_aim: Option<Vec3>,
     pub(crate) brain: BrainComponent,
     steering: SteeringIntent,
+    /// A `leap` travelling to its spot: its `MoveTo` is paced to the clip
+    /// moment. `None` for any other steering.
+    leap: Option<leap::LeapTravel>,
+    /// A leap entered this tick whose spot no route query resolves, near it
+    /// or on its line back to the enemy: apply warns.
+    leap_spot_off_mesh: bool,
     /// `true` when the selected state is ENGAGED with the target — it chases it
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.
@@ -214,9 +221,16 @@ pub(crate) struct EnemyOutcome {
     /// The activity entered this tick, present only on the tick the brain
     /// entered it.
     entered: Option<EnteredActivity>,
+    /// The attack a standing rest's first open queued row waits on, by
+    /// attack index: the rest's request this tick, unless a mark outranks it.
+    queued_attack: Option<u16>,
     /// An unmarked turn granted this tick, by attack index. Released in apply
     /// unless that attack starts this tick.
     fresh_unmarked_grant: Option<u16>,
+    /// A flinch played over an activity routing flinches (`staggerTo`) as
+    /// this tick began, even one a transition this tick then left: apply
+    /// cancels the burst in flight.
+    flinched: bool,
 }
 
 /// An activity the brain entered this tick: its authored `on_enter` address,
@@ -525,7 +539,7 @@ where
     turns.sync_pools(attack_turns::running_attack_pools(registry));
     programs.sync(registry, descriptors, descriptor_generation, warned);
     if let Some(clips) = clips {
-        programs.warn_unclipped_moments(registry, clips, warned);
+        programs.warn_unclipped_moments(registry, clips, tick_dt, warned);
     }
     weapons.sync(registry, programs, |actor| {
         host.is_quiescent(registry, actor)

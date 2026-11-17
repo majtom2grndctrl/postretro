@@ -1,6 +1,8 @@
 // Data-context descriptors: Lua entity-descriptor converters.
 // See: context/lib/scripting.md
 
+use std::collections::HashSet;
+
 use super::super::*;
 
 /// Mirror of [`entity_descriptor_from_js`] for Luau tables. Shape:
@@ -169,10 +171,11 @@ pub fn entity_descriptor_from_lua(
                 let raw: LuaValue = components_table.get("behavior").map_err(lua_err)?;
                 if !matches!(raw, LuaValue::Nil) {
                     if let LuaValue::Table(behavior_table) = &raw {
-                        validate_optional_behavior_sound_keys_lua(behavior_table)?;
+                        validate_behavior_raw_fields_lua(behavior_table)?;
                     }
                     let mut json = conv::lua_to_json(raw).map_err(lua_err)?;
                     normalize_behavior_selectors(&mut json)?;
+                    lower_behavior(&mut json, canonical_name.as_deref())?;
                     validate_optional_knockback_object(&json, "components.behavior.knockback")?;
                     let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
                         .map_err(|e| DescriptorError::InvalidShape {
@@ -231,6 +234,7 @@ pub fn entity_descriptor_from_lua(
         health,
         behavior,
     };
+    descriptor.validate_across_components()?;
     Ok(descriptor)
 }
 
@@ -298,7 +302,7 @@ pub fn entity_faction_name_from_lua(value: LuaValue) -> Result<Option<String>, D
 /// Reject a supplied unsupported VM value (function, userdata, thread) for an
 /// optional presentation-only string field before Luau's generic JSON bridge
 /// can coerce it to `null` and serde mistakes it for an omitted key. Shared by
-/// the weapon-sound, attack-sound, and behavior-activity-sound guards.
+/// the weapon-sound, handle-sound, and behavior-activity-sound guards.
 pub(super) fn validate_optional_string_field_lua(
     table: &Table,
     field: &str,
@@ -316,34 +320,120 @@ pub(super) fn validate_optional_string_field_lua(
     })
 }
 
-/// Validate the behavior graph's presentation-only sound keys:
-/// `AttackParams.sound` (root-only) and
+/// Tables a raw-table walk has already checked, by identity. A handle shared
+/// across rows is checked once, and a cyclic table ends the walk instead of
+/// repeating it (the JSON bridge then rejects the cycle at its depth limit).
+type VisitedTables = HashSet<*const std::ffi::c_void>;
+
+/// Validate the behavior graph's raw Luau fields the JSON bridge would
+/// launder into `null`, read as omitted: every stance and attack handle's
+/// declaration, wherever the handle stands (the `attacks` list, an action, a
+/// mark, a row, `initial`, another handle), and
 /// `BehaviorActivityDescriptor.sound` (every envelope, root and nested
-/// layers). Walks the raw Luau tables directly, before the JSON bridge can
-/// launder a function/userdata/thread value into `null`.
-fn validate_optional_behavior_sound_keys_lua(behavior: &Table) -> Result<(), DescriptorError> {
-    if let LuaValue::Table(attacks) = behavior.get::<LuaValue>("attacks").map_err(lua_err)? {
-        for pair in attacks.pairs::<LuaValue, LuaValue>() {
-            let (name, entry) = pair.map_err(lua_err)?;
-            let LuaValue::Table(entry) = entry else {
-                continue;
-            };
-            validate_optional_string_field_lua(
-                &entry,
-                "sound",
-                &format!(
-                    "components.behavior.attacks.{}.sound",
-                    lua_key_to_string(&name)
-                ),
-            )?;
+/// layers). Walks the raw tables directly, before that bridge runs.
+fn validate_behavior_raw_fields_lua(behavior: &Table) -> Result<(), DescriptorError> {
+    validate_handle_fields_lua(
+        behavior,
+        "components.behavior",
+        0,
+        &mut VisitedTables::new(),
+    )?;
+    validate_activity_sound_keys_lua(behavior, "components.behavior", &mut VisitedTables::new())
+}
+
+/// Bounds the walk's recursion on deep nesting; the visited set stops cycles.
+/// Anything deeper fails the JSON bridge's own depth limit.
+const MAX_HANDLE_SEARCH_DEPTH: usize = 64;
+
+/// Check the declaration of every stance and attack handle reachable from
+/// `table`, naming the handle's path (sequence entries as `[index]`, from 0).
+fn validate_handle_fields_lua(
+    table: &Table,
+    path: &str,
+    depth: usize,
+    visited: &mut VisitedTables,
+) -> Result<(), DescriptorError> {
+    if depth > MAX_HANDLE_SEARCH_DEPTH || !visited.insert(table.to_pointer()) {
+        return Ok(());
+    }
+    match table.raw_get::<LuaValue>("kind").map_err(lua_err)? {
+        LuaValue::String(kind) if kind == "attack" => {
+            validate_handle_declaration_lua(table, path, &["release", "recover"])?;
+        }
+        LuaValue::String(kind) if kind == "stance" => {
+            validate_handle_declaration_lua(table, path, &["breakOn"])?;
+        }
+        _ => {}
+    }
+    for pair in table.pairs::<LuaValue, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        let LuaValue::Table(child) = value else {
+            continue;
+        };
+        let child_path = match key {
+            LuaValue::Integer(index) => format!("{path}[{}]", index - 1),
+            other => format!("{path}.{}", lua_key_to_string(&other)),
+        };
+        validate_handle_fields_lua(&child, &child_path, depth + 1, visited)?;
+    }
+    Ok(())
+}
+
+/// One handle's declaration and the option tables nested in it (`nested`).
+/// A function, userdata or thread value crosses the JSON bridge as `null`, so
+/// an optional field would silently read as omitted (a function `release.at`
+/// as the defaulted `hit`, a function `sound` as none); QuickJS rejects these.
+fn validate_handle_declaration_lua(
+    handle: &Table,
+    path: &str,
+    nested: &[&str],
+) -> Result<(), DescriptorError> {
+    validate_optional_string_field_lua(handle, "sound", &format!("{path}.sound"))?;
+    reject_vm_values_lua(handle, path)?;
+    for field in nested {
+        if let LuaValue::Table(options) = handle.raw_get::<LuaValue>(*field).map_err(lua_err)? {
+            reject_vm_values_lua(&options, &format!("{path}.{field}"))?;
         }
     }
-    validate_activity_sound_keys_lua(behavior, "components.behavior")
+    Ok(())
+}
+
+/// Reject any value among `table`'s own fields that the JSON bridge turns
+/// into `null`: a function, userdata, thread, vector or buffer.
+fn reject_vm_values_lua(table: &Table, path: &str) -> Result<(), DescriptorError> {
+    for pair in table.pairs::<LuaValue, LuaValue>() {
+        let (key, value) = pair.map_err(lua_err)?;
+        if !matches!(
+            value,
+            LuaValue::Nil
+                | LuaValue::Boolean(_)
+                | LuaValue::Integer(_)
+                | LuaValue::Number(_)
+                | LuaValue::String(_)
+                | LuaValue::Table(_)
+        ) {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{path}.{}` must be a string, number, boolean or table, got {}; the engine would read it as omitted",
+                    lua_key_to_string(&key),
+                    value.type_name()
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Recurses through one behavior envelope's `activities` map, then into every
 /// nested `layers` envelope, checking each activity's `sound` field.
-fn validate_activity_sound_keys_lua(envelope: &Table, path: &str) -> Result<(), DescriptorError> {
+fn validate_activity_sound_keys_lua(
+    envelope: &Table,
+    path: &str,
+    visited: &mut VisitedTables,
+) -> Result<(), DescriptorError> {
+    if !visited.insert(envelope.to_pointer()) {
+        return Ok(());
+    }
     let LuaValue::Table(activities) = envelope.get::<LuaValue>("activities").map_err(lua_err)?
     else {
         return Ok(());
@@ -364,6 +454,7 @@ fn validate_activity_sound_keys_lua(envelope: &Table, path: &str) -> Result<(), 
                 validate_activity_sound_keys_lua(
                     &layer,
                     &format!("{activity_path}.layers.{}", lua_key_to_string(&layer_name)),
+                    visited,
                 )?;
             }
         }
@@ -534,6 +625,11 @@ pub fn raw_animation_state_from_lua(
     // Optional per-state `travelSpeed` override, read raw here; positivity /
     // finiteness is validated in `MeshDescriptor::build`.
     let travel_speed = get_optional_f32_lua(table, "travelSpeed")?;
+    // Optional per-state rate policy, read raw; `maxPlaybackRate` and
+    // `playbackRate` bounds are validated in `MeshDescriptor::build`.
+    let max_playback_rate = get_optional_f32_lua(table, "maxPlaybackRate")?;
+    let scale_with_speed = get_optional_bool_lua(table, "scaleWithSpeed")?;
+    let playback_rate = get_optional_f32_lua(table, "playbackRate")?;
     let interrupt = if table.contains_key("interrupt").map_err(lua_err)? {
         let raw: LuaValue = table.get("interrupt").map_err(lua_err)?;
         match raw {
@@ -555,6 +651,9 @@ pub fn raw_animation_state_from_lua(
         crossfade_ms,
         interrupt,
         travel_speed,
+        max_playback_rate,
+        scale_with_speed,
+        playback_rate,
     })
 }
 

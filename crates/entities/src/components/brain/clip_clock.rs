@@ -66,10 +66,46 @@ pub struct ClipClock {
     /// foreign switch first (a flinch) drops the request.
     #[serde(default)]
     pub redraw: bool,
+    /// Clip time advanced since the active path's last entry, summed across
+    /// the restarts a travel-variant switch makes, never game time: a slowed
+    /// stride counts slower. A stance release's one pass of its clip reads it.
+    #[serde(default)]
+    pub release_elapsed: f64,
+    /// The entered release's moment resolved (fired, whiffed or cancelled),
+    /// or with no moment its clip played one pass; a repeating release's
+    /// moments all resolved and its passes played: its `afterMoment` rows
+    /// open on the next evaluation. Cleared by every entry.
+    #[serde(default)]
+    pub release_resolved: bool,
+    /// The entered release's moments resolved so far (fired or whiffed), one
+    /// per pass of a release that repeats (`passes`). Cleared by every entry.
+    #[serde(default)]
+    pub release_moments: u32,
+    /// An impact flinch during an activity with a flinch route (`staggerTo`):
+    /// its reaction plays out before the enemy takes the route. Cleared by
+    /// every entry.
+    #[serde(default)]
+    pub stagger: Option<Stagger>,
     /// The tracked state's resolved clip, cached on first use. `None` when not
     /// yet looked up or when the clip did not resolve, which is looked up again.
     #[serde(skip)]
     pub clip: Option<ClipFacts>,
+}
+
+/// A flinch playing out over a release or recover, since the first switch
+/// that started it: the reaction's end in clip time, the cap in game time.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Stagger {
+    /// Clip time since the first switch, in seconds.
+    pub elapsed: f64,
+    /// The latest reaction's end, in clip time since the first switch. `None`
+    /// for a loop or a clip that did not resolve, which only the cap ends.
+    pub until: Option<f64>,
+    /// Game time since the first switch, in seconds. The route is taken once
+    /// it reaches the default recovery duration, whatever rate the reaction
+    /// plays at, if the reaction has not ended first.
+    #[serde(default)]
+    pub game_elapsed: f64,
 }
 
 /// What the clock caches of the tracked state's resolved clip.
@@ -79,6 +115,9 @@ pub struct ClipFacts {
     pub duration: f32,
     /// The animation state loops its clip.
     pub looping: bool,
+    /// A loop that starts at clip time 0, not the drawn phase: a repeating
+    /// release's state (`MeshAnimation::loop_phase`).
+    pub zero_phase: bool,
 }
 
 impl ClipClock {
@@ -106,6 +145,10 @@ impl PartialEq for ClipClock {
             && self.late_restart == other.late_restart
             && self.mesh_switches == other.mesh_switches
             && self.redraw == other.redraw
+            && self.release_elapsed == other.release_elapsed
+            && self.release_resolved == other.release_resolved
+            && self.release_moments == other.release_moments
+            && self.stagger == other.stagger
     }
 }
 
@@ -133,7 +176,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clip_clock_serializes_its_clock_latch_and_switch_count_but_not_its_clip_cache() {
+    fn clip_clock_serializes_its_clock_latch_gate_and_switch_count_but_not_its_clip_cache() {
         let clock = ClipClock {
             state: Some(Arc::from("walk_left")),
             time: 1.25,
@@ -144,9 +187,18 @@ mod tests {
             late_restart: true,
             mesh_switches: Some(7),
             redraw: true,
+            release_elapsed: 0.5,
+            release_resolved: true,
+            release_moments: 2,
+            stagger: Some(Stagger {
+                elapsed: 0.1,
+                until: Some(0.4),
+                game_elapsed: 0.05,
+            }),
             clip: Some(ClipFacts {
                 duration: 2.0,
                 looping: true,
+                zero_phase: false,
             }),
         };
         let json = serde_json::to_value(&clock).expect("clip clock serializes");
@@ -163,6 +215,10 @@ mod tests {
                 .expect("a clock saved before the count was kept loads");
         assert_eq!(old.mesh_switches, None, "and binds to the mesh's count");
         assert!(!old.redraw && !old.late_restart);
+        assert!(
+            !old.release_resolved && old.release_moments == 0 && old.stagger.is_none(),
+            "a clock saved before the release exit holds no gate and no flinch"
+        );
     }
 
     #[test]

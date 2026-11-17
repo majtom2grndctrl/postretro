@@ -16,7 +16,8 @@ pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32
 use super::brain_scope::BrainFacts;
 use super::engine_floor::SteeringIntent;
 use super::graph_eval::{
-    action_for_path, engages_active, engages_path, resolved_motion, select_transition_path,
+    ResolvedMotion, action_for_path, engages_active, engages_path, resolved_motion,
+    select_transitions,
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
@@ -24,7 +25,7 @@ use super::targeting::{
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
-use super::{attack_turns, clip_clock, engaged_motion};
+use super::{attack_turns, clip_clock, engaged_motion, leap};
 use crate::nav::{NavStart, find_path_from};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_entities::components::agent::AgentComponent;
@@ -227,6 +228,10 @@ pub(super) fn evaluate(
             id: snap.id,
         };
         clip_clock::begin_tick(&mut brain, &clip_source, tick_dt);
+        // Read before transitions: a `"*"` or ancestor row, or the flinch
+        // route itself on a reaction already played out, can leave the
+        // flinched activity this tick and clear its stagger.
+        let flinched = brain.clip_clock.stagger.is_some();
         let mut animation_done = clip_clock::animation_done(&brain.clip_clock, &clip_source);
         // A path seated before this tick's rows run (a reseat) evaluates them
         // against the clip it is about to restart, not its predecessor's.
@@ -335,8 +340,13 @@ pub(super) fn evaluate(
             }
         };
         let selected_distance = selected_target.map(|(_, distance, _)| distance);
+        // Read before transitions: a stance release that resolved without
+        // striking, left on this tick, starts its attack's cooldown below.
+        let whiffed_release = clip_clock::whiffed_release(&brain);
         let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
-        let (transitioned, resolved, steering) = if !brain.aggro_armed {
+        // Set on a leap's entry whose spot found no walkable ground.
+        let mut leap_spot_off_mesh = false;
+        let (transitioned, resolved, steering, queued_attack) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
             // selection nor its guards, and standing down clears steering outright
@@ -348,7 +358,7 @@ pub(super) fn evaluate(
             } else {
                 false
             };
-            (transitioned, None, SteeringIntent::Clear)
+            (transitioned, None, SteeringIntent::Clear, None)
         } else {
             // The think stride is derived from the CURRENT player distance; the
             // gate fires when the per-enemy counter aligns with the band's
@@ -421,11 +431,17 @@ pub(super) fn evaluate(
                 })
                 .flatten()
                 .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
-            let transitioned = programs
+            // The pass also names the attack a standing rest's first open
+            // queued row waits on; arbitration turns it into this tick's
+            // request. A hold's release row reads its turn against the target
+            // selected now, as the turn facts do.
+            let selected = target.map(|target| target.entity);
+            let pass = programs
                 .with_entry_scope(snap.id, |bound, scope| {
-                    select_transition_path(bound, scope, &mut brain)
+                    select_transitions(bound, scope, &mut brain, selected)
                 })
-                .unwrap_or(false);
+                .unwrap_or_default();
+            let transitioned = pass.transitioned;
             // The entered path's selectors read the clip `settle` is about to
             // restart, not its predecessor's; a path back onto the tracked
             // state reads the clock's own value, which a reseat's rows did not.
@@ -461,7 +477,31 @@ pub(super) fn evaluate(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
-            (transitioned, resolved, steering)
+            // A leap travels to the spot it fixed on entry, never re-aiming.
+            let (steering, off_mesh) = leap::steer(
+                &mut brain,
+                resolved,
+                target,
+                snap.position,
+                steering,
+                nav_graph,
+            );
+            leap_spot_off_mesh = off_mesh;
+            // A flinch over a release or recover plants the enemy for the
+            // rest of the activity, whatever its motion: a staggered charge
+            // stops where it was hit.
+            let (resolved, steering) = if brain.clip_clock.stagger.is_some() {
+                (
+                    resolved.map(|motion| ResolvedMotion {
+                        verb: MotionVerb::Hold,
+                        ..motion
+                    }),
+                    SteeringIntent::Clear,
+                )
+            } else {
+                (resolved, steering)
+            };
+            (transitioned, resolved, steering, pass.queued)
         };
         let motion = resolved.map(|motion| motion.verb);
 
@@ -529,7 +569,8 @@ pub(super) fn evaluate(
         // spam against an already-dead or removal-committed pawn and prevents
         // damaging a different co-op pawn than the one this enemy chose.
         // A clip-timed attack proposes only on its moment's tick, its one
-        // chance per entry: a gate failing there is a whiff.
+        // chance per entry: a gate failing there is a whiff. A flinch over a
+        // release or recover fires nothing further that entry.
         let entry_depth = brain.take_entry_pending();
         let moment = clip_clock::settle(
             &mut brain,
@@ -537,11 +578,26 @@ pub(super) fn evaluate(
             entry_depth,
             tick_heading.travel_variant,
         );
+        // A leap arrives at its spot by the moment the clock now reads, and
+        // stands once the latch it steered on has closed.
+        let (steering, leap_travel) = leap::pace(&brain, &clip_source, motion, steering);
+        // A repeating release strikes once per pass at its moment, under one
+        // turn: a later pass ignores the cooldown its first hit started, and
+        // each hit restarts it, so it runs from the release's last hit.
+        let strike_limit = clip_clock::strike_limit(&brain, moment);
+        let leaf_strikes = brain
+            .active_depth()
+            .checked_sub(1)
+            .and_then(|depth| brain.activity_attack_count(depth));
+        let later_pass = strike_limit > 1 && leaf_strikes.is_some_and(|strikes| strikes > 0);
         let mut attack_outcome = None;
         if let Some(firing_leaf_depth) = brain.active_depth().checked_sub(1)
             && moment.allows_proposal()
+            && brain.clip_clock.stagger.is_none()
             && let (Some(target), Some(distance)) = (target, selected_distance)
-            && brain.activity_attack_count(firing_leaf_depth) == Some(0)
+            && brain
+                .activity_attack_count(firing_leaf_depth)
+                .is_some_and(|strikes| strikes < strike_limit)
             && selected_target_alive(registry, target.entity)
             && perception::fire_gate(target_perception)
             && tick_heading.within_attack_tolerance
@@ -551,12 +607,13 @@ pub(super) fn evaluate(
                     let ActionVerb::Attack { name, .. } = action;
                     let attack = brain.graph.attacks.get(name)?;
 
-                    if brain
-                        .attack_cooldown_remaining_ms
-                        .get(name)
-                        .copied()
-                        .unwrap_or(0.0)
-                        > 0.0
+                    if !later_pass
+                        && brain
+                            .attack_cooldown_remaining_ms
+                            .get(name)
+                            .copied()
+                            .unwrap_or(0.0)
+                            > 0.0
                     {
                         return None;
                     }
@@ -613,6 +670,32 @@ pub(super) fn evaluate(
                 effect: outcome,
             });
         }
+        // The enemy committed: a stance release left having struck nothing,
+        // every moment whiffed, starts its attack's cooldown as a hit would,
+        // so a whiffed leap is not queued again at once. A release a flinch
+        // staggered is not a whiff. Set after this tick's proposal, which the
+        // entered path formed.
+        if let Some((depth, attack)) = whiffed_release
+            && entry_depth.is_some_and(|entry| entry <= depth)
+            && let Some((name, cooldown_ms)) = attack_turns::attack_name(&brain.graph, attack)
+                .and_then(|name| {
+                    let params = brain.graph.attacks.get(name)?;
+                    let cooldown_ms = if params.weapon.is_some() {
+                        programs
+                            .with_entry_scope(snap.id, |bound, _| {
+                                bound
+                                    .resolved_projectile_attack(name)
+                                    .map(|resolved| resolved.cooldown_ms())
+                            })
+                            .flatten()?
+                    } else {
+                        params.cooldown_ms?
+                    };
+                    Some((name.to_string(), cooldown_ms))
+                })
+        {
+            brain.attack_cooldown_remaining_ms.insert(name, cooldown_ms);
+        }
 
         let state_changed = graph_reseated || transitioned || entry_depth.is_some();
         let announce_entry = brain.take_entry_event_pending() && entry_depth.is_some();
@@ -657,12 +740,16 @@ pub(super) fn evaluate(
             standoff_distance,
             entered,
             steering,
+            leap: leap_travel,
+            leap_spot_off_mesh,
             engaged,
             facing_direction: tick_heading.facing_direction,
             travel_variant: tick_heading.travel_variant,
             combat_slot: None,
             engaged_ring,
+            queued_attack,
             fresh_unmarked_grant: None,
+            flinched,
             brain,
         });
     }

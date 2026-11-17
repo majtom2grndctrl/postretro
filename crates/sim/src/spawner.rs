@@ -14,10 +14,11 @@ use std::rc::Rc;
 
 use glam::Vec3;
 use postretro_entities::components::brain::BrainComponent;
+use postretro_entities::components::map_ordinal::MapOrdinal;
 use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, ScriptCtx, Transform};
-use postretro_foundation::NavAgentParams;
+use postretro_foundation::{BehaviorDrawSalt, NavAgentParams, behavior_draw_seed};
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
@@ -50,6 +51,10 @@ pub struct SpawnContextState {
     /// Runtime-spawned mesh entities awaiting their already-built install-time
     /// clip table. Drained once by the host after attachment.
     pending_mesh_clip_resolves: Vec<EntityId>,
+    /// Enemies each spawner has released this level: the count half of a
+    /// runtime spawn's behavior draw salt. Level install resets it with the
+    /// rest of the per-level state, as a level's spawns restart.
+    spawn_counts: HashMap<EntityId, u32>,
     warned_capacity_exhaustion: bool,
     /// Connected clients keep their local spawner context for map preload, but
     /// must materialize runtime enemies only from host snapshots.
@@ -63,6 +68,7 @@ impl Default for SpawnContextState {
             agent_params: None,
             warned_zero_match_tags: HashSet::new(),
             pending_mesh_clip_resolves: Vec::new(),
+            spawn_counts: HashMap::new(),
             warned_capacity_exhaustion: false,
             // Outside a connected-client session, spawning is authoritative.
             can_materialize_runtime_spawns: true,
@@ -90,6 +96,7 @@ impl SpawnContext {
             agent_params,
             warned_zero_match_tags: HashSet::new(),
             pending_mesh_clip_resolves: Vec::new(),
+            spawn_counts: HashMap::new(),
             warned_capacity_exhaustion: false,
             can_materialize_runtime_spawns,
         };
@@ -136,6 +143,15 @@ impl SpawnContext {
 
     fn queue_mesh_clip_resolve(&self, id: EntityId) {
         self.state.borrow_mut().pending_mesh_clip_resolves.push(id);
+    }
+
+    /// Claim the next spawn count of `spawner` this level.
+    fn next_spawn_count(&self, spawner: EntityId) -> u32 {
+        let mut state = self.state.borrow_mut();
+        let count = state.spawn_counts.entry(spawner).or_insert(0);
+        let claimed = *count;
+        *count = count.saturating_add(1);
+        claimed
     }
 
     fn warn_zero_match_tag_once(&self, tag: &str) {
@@ -319,6 +335,17 @@ fn spawn_resolved_spawners(
         // The spawner carries a model frame (front `+Z`, up `+Y`), so its `+X`
         // is the front's left: copies fan out to the left of the map arrow.
         let fan_axis = spawner_transform.rotation * Vec3::X;
+        // The spawner's authored entity index salts its enemies' behavior
+        // draws, so same-descriptor spawns differ by spawner and spawn count
+        // and replay the same whatever else spawned first.
+        let spawner_ordinal = registry
+            .get_component::<MapOrdinal>(spawner_id)
+            .ok()
+            .map(|ordinal| ordinal.0);
+        let draw_descriptor = descriptor
+            .canonical_name
+            .as_deref()
+            .unwrap_or(&spawner.archetype_name);
         for index in 0..spawner.count {
             // The spawner origin authors the enemy's feet; copies fan out along
             // `fan_axis`. This feet position is the synthetic MapEntity
@@ -371,7 +398,18 @@ fn spawn_resolved_spawners(
             // declared attack only after descriptor attachment so a newly spawned
             // enemy cannot attack before remote interpolation's maximum delay
             // has elapsed and the remote presentation has had time to arrive.
+            //
+            // Reseed the draws on the spawner's salt: attach knew no placement
+            // for this synthetic entity. A spawner without a map ordinal keeps
+            // attach's registry-id fallback.
             if let Ok(mut brain) = registry.get_component::<BrainComponent>(enemy).cloned() {
+                let count = context.next_spawn_count(spawner_id);
+                if let Some(spawner) = spawner_ordinal {
+                    brain.seed_behavior_draws(behavior_draw_seed(
+                        draw_descriptor,
+                        BehaviorDrawSalt::Spawned { spawner, count },
+                    ));
+                }
                 let windup_ms = SPAWN_ATTACK_WINDUP_MS;
                 for attack_name in brain.graph.attacks.keys() {
                     brain
@@ -568,6 +606,49 @@ mod tests {
         player
     }
 
+    // R8 (P13): enemies one spawner releases on one tick read different rolls
+    // on their first evaluation, salted by the spawner's authored index and
+    // spawn count rather than registry ids.
+    #[test]
+    fn same_tick_spawns_draw_rolls_salted_by_spawner_placement_and_count() {
+        let rolls_after_two_fires = |unrelated_entities_first: usize| {
+            let mut registry = EntityRegistry::new();
+            for _ in 0..unrelated_entities_first {
+                registry.spawn(Transform::default());
+            }
+            let spawner = add_spawner(&mut registry, TAG, 2, true, Transform::default());
+            registry.set_component(spawner, MapOrdinal(12)).unwrap();
+            let context = context();
+            spawn_from_spawner_tag(&mut registry, TAG, &context);
+            spawn_from_spawner_tag(&mut registry, TAG, &context);
+            spawned(&registry)
+                .into_iter()
+                .map(|id| {
+                    registry
+                        .get_component::<BrainComponent>(id)
+                        .unwrap()
+                        .activity_roll(0)
+                        .expect("the initial activity is seated")
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let rolls = rolls_after_two_fires(0);
+        assert_eq!(rolls.len(), 4, "two fires of a count-2 spawner");
+        for (index, roll) in rolls.iter().enumerate() {
+            assert!((0.0..1.0).contains(roll));
+            assert!(
+                !rolls[index + 1..].contains(roll),
+                "every spawn draws its own roll: {rolls:?}"
+            );
+        }
+        assert_eq!(
+            rolls_after_two_fires(3),
+            rolls,
+            "shifted registry ids leave each spawn's roll unchanged"
+        );
+    }
+
     fn set_spawned_tags(registry: &mut EntityRegistry, spawner: EntityId, tags: &[&str]) {
         let mut component = registry
             .get_component::<SpawnerComponent>(spawner)
@@ -670,6 +751,7 @@ mod tests {
                 cooldown_ms: Some(0.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -683,17 +765,22 @@ mod tests {
         behavior.envelope.activities.insert(
             "slam".to_string(),
             BehaviorActivityDescriptor {
+                pose: None,
+                stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some("attack".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
                 action: Some(ActionVerb::Attack {
                     name: "slam".to_string(),
                     at: None,
+                    at_default: false,
                 }),
                 on_enter: None,
                 facing: None,
                 reposition: None,
                 attack_turn: None,
+                speed: None,
                 layers: Default::default(),
             },
         );

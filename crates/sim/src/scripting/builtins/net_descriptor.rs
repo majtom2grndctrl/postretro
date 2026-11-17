@@ -703,6 +703,9 @@ mod tests {
                     crossfade_ms: 150.0,
                     interrupt: InterruptPolicy::Smooth,
                     travel_speed: None,
+                    max_playback_rate: None,
+                    scale_with_speed: true,
+                    playback_rate: None,
                     clip_index: None,
                 },
             );
@@ -714,6 +717,9 @@ mod tests {
                     crossfade_ms: 0.0,
                     interrupt: InterruptPolicy::Snap,
                     travel_speed: None,
+                    max_playback_rate: None,
+                    scale_with_speed: true,
+                    playback_rate: None,
                     clip_index: None,
                 },
             );
@@ -819,6 +825,9 @@ mod tests {
                 activities: std::collections::BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -827,6 +836,7 @@ mod tests {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: std::collections::BTreeMap::new(),
                     },
                 )]),
@@ -1122,6 +1132,9 @@ mod tests {
                 activities: std::collections::BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -1130,6 +1143,7 @@ mod tests {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: std::collections::BTreeMap::new(),
                     },
                 )]),

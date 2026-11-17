@@ -173,7 +173,7 @@ fn js_graph(attack_extra: &str, activity_extra: &str) -> String {
     format!(
         r#"({{ components: {{ behavior: {{
             initial: "idle", moveSpeed: 3,
-            attacks: {{ bite: {{ damage: 10, maxRange: 2, cooldownMs: 800{attack_extra} }} }},
+            attacks: [{{ kind: "attack", name: "bite", damage: 10, maxRange: 2, cooldownMs: 800{attack_extra} }}],
             activities: {{
                 idle: {{ animation: "idle", motion: "hold" }},
                 alerted: {{ animation: "idle", motion: "hold"{activity_extra} }}
@@ -187,7 +187,7 @@ fn lua_graph(attack_extra: &str, activity_extra: &str) -> String {
     format!(
         r#"return {{ components = {{ behavior = {{
             initial = "idle", moveSpeed = 3,
-            attacks = {{ bite = {{ damage = 10, maxRange = 2, cooldownMs = 800{attack_extra} }} }},
+            attacks = {{ {{ kind = "attack", name = "bite", damage = 10, maxRange = 2, cooldownMs = 800{attack_extra} }} }},
             activities = {{
                 idle = {{ animation = "idle", motion = "hold" }},
                 alerted = {{ animation = "idle", motion = "hold"{activity_extra} }}
@@ -224,7 +224,7 @@ fn attack_and_activity_sounds_parse_identically_in_both_runtimes() {
 
 #[test]
 fn a_function_valued_attack_sound_is_rejected_in_luau() {
-    // Regression: `attacks.bite.sound = function() end` degraded to JSON
+    // Regression: an attack handle's `sound = function() end` degraded to JSON
     // null through Luau's generic bridge and read as an absent attack sound
     // instead of an authoring error, unlike QuickJS.
     let lua = eval_lua(
@@ -234,7 +234,7 @@ fn a_function_valued_attack_sound_is_rejected_in_luau() {
     .unwrap_err()
     .to_string();
     assert!(
-        lua.contains("components.behavior.attacks.bite.sound"),
+        lua.contains("components.behavior.attacks[0].sound"),
         "{lua}"
     );
     assert!(lua.contains("must be a string"), "{lua}");

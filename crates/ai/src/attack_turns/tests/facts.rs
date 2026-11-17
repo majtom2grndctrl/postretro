@@ -13,6 +13,7 @@ fn holding(target: EntityId, cost: u32) -> AttackTurnState {
         pool: AttackPoolId::Default,
         draws: draws(&[(MELEE, cost)]),
         until_cooldown: true,
+        granted_tick: 0,
     }));
     turns
 }

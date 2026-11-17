@@ -248,6 +248,9 @@ mod tests {
                 activities: std::collections::BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -256,6 +259,7 @@ mod tests {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: std::collections::BTreeMap::new(),
                     },
                 )]),

@@ -150,6 +150,9 @@ fn brain() -> BrainComponent {
             activities: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 BehaviorActivityDescriptor {
+                    pose: None,
+                    stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: Some(MotionVerb::Hold),
@@ -158,6 +161,7 @@ fn brain() -> BrainComponent {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),
@@ -317,6 +321,9 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             crossfade_ms: 150.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );
@@ -328,6 +335,9 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
             crossfade_ms: 50.0,
             interrupt: InterruptPolicy::Snap,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );
@@ -366,6 +376,9 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -374,23 +387,29 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: Default::default(),
                     },
                 ),
                 (
                     "attack".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: Some(ActionVerb::Attack {
                             name: "attack".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                         on_enter: None,
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: Default::default(),
                     },
                 ),
@@ -398,6 +417,9 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
             transitions: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 vec![GuardedRow {
+                    release_after: None,
+                    queue: None,
+                    after_moment: false,
                     to: "attack".to_string(),
                     when: IrNode::Le {
                         a: Box::new(IrNode::Input {
@@ -424,6 +446,7 @@ fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -461,6 +484,9 @@ fn prop_descriptor(class: &str) -> EntityTypeDescriptor {
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Snap,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );
@@ -1107,6 +1133,33 @@ fn spawn_windup_covers_interpolation_ceiling_without_equality_pin() {
             MAX_DELAY_MICROS,
         ),
         "raising gameplay windup above the interpolation ceiling remains valid"
+    );
+}
+
+/// Whether a stance's co-op floor still covers the remote interpolation
+/// ceiling: a tell shorter than the buffer can release before a remote player
+/// sees the pose.
+fn stance_floor_covers_interpolation_ceiling(floor_ms: f32, ceiling_micros: u64) -> bool {
+    floor_ms >= ceiling_micros as f32 / 1000.0
+}
+
+// F1: the stance floor lowering reads (`foundation`) stays at or above this
+// crate's interpolation clamp, and the guard trips once the clamp outgrows it.
+#[test]
+fn stance_hold_floor_covers_interpolation_ceiling_without_equality_pin() {
+    let floor_ms = postretro_foundation::stance_defaults::STANCE_HOLD_FLOOR_MS;
+    assert!(
+        stance_floor_covers_interpolation_ceiling(floor_ms, MAX_DELAY_MICROS),
+        "the stance floor ({floor_ms} ms) fell below the interpolation ceiling ({MAX_DELAY_MICROS} us)"
+    );
+    let ceiling_past_floor = (floor_ms * 1000.0) as u64 + 1;
+    assert!(
+        !stance_floor_covers_interpolation_ceiling(floor_ms, ceiling_past_floor),
+        "raising interpolation policy above the stance floor must trip the guard"
+    );
+    assert!(
+        stance_floor_covers_interpolation_ceiling(floor_ms + 1.0, MAX_DELAY_MICROS),
+        "raising the floor above the interpolation ceiling remains valid"
     );
 }
 
@@ -2158,3 +2211,6 @@ fn despawn_for_unmapped_network_id_is_a_clean_noop() {
 
 #[path = "descriptor_world_harness_tests.rs"]
 mod descriptor_world_harness_tests;
+
+#[path = "enemy_walk_rate_loopback_tests.rs"]
+mod enemy_walk_rate_loopback_tests;

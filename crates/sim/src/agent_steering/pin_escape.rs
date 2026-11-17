@@ -137,6 +137,8 @@ pub(super) fn escape_velocity(
         return None;
     }
     escape.ticks_left -= 1;
+    // The base speed, not the activity's: a walk out of a mover's course is
+    // engine safety, so a strolling activity never slows it into a crush.
     let speed = if dt > 0.0 {
         agent.move_speed.min(distance / dt)
     } else {

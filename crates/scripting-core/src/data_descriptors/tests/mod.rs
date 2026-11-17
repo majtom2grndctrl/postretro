@@ -35,6 +35,7 @@ mod presentation_overlay_drains;
 mod reactions;
 mod respawn_args;
 mod sounds;
+mod stance_handles;
 mod ui_bridge;
 mod ui_bridge_drains;
 

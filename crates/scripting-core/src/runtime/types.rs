@@ -899,6 +899,7 @@ mod guard_attack_turn_read_tests {
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 sound: None,
                 damage_type: None,
                 draws: None,

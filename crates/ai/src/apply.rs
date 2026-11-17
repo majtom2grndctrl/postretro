@@ -6,7 +6,7 @@ use super::attack_turns;
 use super::clip_clock;
 use super::engine_floor::SteeringIntent;
 use super::facing::{FACING_TURN_RATE, slewed_yaw_toward};
-use super::graph_eval::animation_for_path;
+use super::graph_eval::{animation_for_path, speed_for_path};
 use super::launch;
 use super::targeting::selected_target_alive;
 use super::travel_variants;
@@ -16,9 +16,11 @@ use super::{
 use crate::agent_steering;
 use crate::ai_host::AiHost;
 use crate::emission::entity_emitter;
+use crate::nav::distance_xz;
 use crate::sim::EnemyProjectilePresentationSpawn;
 use crate::weapon_controller::AiWeaponControllers;
 use glam::Quat;
+use postretro_entities::components::agent::ArrivalLeash;
 use postretro_entities::components::brain::{BrainComponent, TravelVariant};
 use postretro_entities::components::health::{DamageContext, DamageProducer};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
@@ -41,6 +43,62 @@ fn commit_attack_fire(
         .insert(attack_name, cooldown_ms);
     brain.record_successful_attack_fire();
     registry.set_component(actor, brain).is_ok()
+}
+
+/// Prefix of the warn-once key for a leap whose clip cannot time its moment,
+/// keyed by entity class and animation state.
+const LEAP_UNTIMED_WARNING: &str = "leap-untimed:";
+
+/// Prefix of the warn-once key for a leap spot with no walkable ground near
+/// it, keyed by entity class.
+const LEAP_SPOT_WARNING: &str = "leap-spot:";
+
+/// The name warnings give an enemy's class: its descriptor's, else its model.
+fn entity_class(
+    registry: &postretro_entities::EntityRegistry,
+    id: postretro_entities::EntityId,
+) -> String {
+    registry
+        .get_component::<postretro_entities::provenance::DescriptorProvenance>(id)
+        .map(|provenance| provenance.canonical_name.clone())
+        .ok()
+        .or_else(|| {
+            registry
+                .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
+                .ok()
+                .map(|mesh| mesh.model.clone())
+        })
+        .unwrap_or_else(|| "<unnamed>".to_string())
+}
+
+/// Diagnostic read of the steering surface: an agent that cannot route to the
+/// destination it was given AND holds no previous path to keep following is
+/// `blocked`. Surface it once per enemy so a genuinely unroutable target (a
+/// disconnected region, a spawn or leap spot far off the navmesh — near-wall
+/// positions are snap-resolved by pathfinding and never latch this) is
+/// visible without per-tick spam. The steering tick holds a pathless blocked
+/// agent in place and keeps retrying under its replan cooldown; this only
+/// reports. `going` names what the enemy was doing: "chasing", "leaping to".
+///
+/// `path_state` was snapshotted BEFORE this tick's destination write, so the
+/// verdict is the steering tick's answer about the destination the enemy was
+/// bound for LAST tick, not the one just written. Reading it after the write
+/// would not help — a destination write deliberately leaves the plan intact
+/// and `agent_steering::tick` owns the replan — so the message says which
+/// tick it is describing instead.
+fn warn_blocked(
+    path_state: Option<&agent_steering::AgentPathState>,
+    blocked_warned: &mut HashSet<postretro_entities::EntityId>,
+    id: postretro_entities::EntityId,
+    going: &str,
+) {
+    if path_state.is_some_and(|state| state.blocked) && blocked_warned.insert(id) {
+        log::warn!(
+            "[AI] enemy {id} entered this tick blocked: as of the last steering tick its \
+             agent had no path to the destination it was {going}, so it is holding \
+             position. Warned once per enemy."
+        );
+    }
 }
 
 /// Pass 3: mutate the registry from resolved enemy outcomes.
@@ -69,9 +127,18 @@ where
     // outcome can run damage or callbacks. A contact attack may mutate a later
     // outcome's brain through the damage chokepoint; publishing that later
     // snapshot after the hit would restore its stale pre-hit perception state.
+    // Each agent's steered speed follows the same published, post-transition
+    // path, so steering (after AI) moves under an activity's `speed` from the
+    // tick it is entered through the tick before it is left, and never under
+    // one entered and left in this pass.
     for outcome in &outcomes {
         if !registry.is_inventory_owned(outcome.id) {
             let _ = registry.set_component(outcome.id, outcome.brain.clone());
+            agent_steering::set_activity_speed(
+                registry,
+                outcome.id,
+                speed_for_path(&outcome.brain),
+            );
         }
     }
 
@@ -133,52 +200,75 @@ where
         };
 
         // Steering: chase sets the destination to a selected combat slot when
-        // one is available, otherwise to the raw target position. Fixed
-        // position goals write their resolved destination directly. Clear
-        // stands down; hold releases the agent on the tick it takes over and
-        // leaves it untouched thereafter.
+        // one is available, otherwise to the raw target position. A slot
+        // destination is leashed to the target: the agent arrives only once
+        // it stands no farther from the target than the slot does (never less
+        // than the standoff), so the slot's arrival band cannot park it
+        // outside the ring the standoff placed the slot on.
+        //
+        // A leap writes its spot paced to its clip moment. Other fixed
+        // position goals write their resolved destination directly.
+        //
+        // Clear stands down; hold releases the agent on the tick it takes
+        // over and leaves it untouched thereafter.
         // `set_destination`/`clear_destination` no-op when the enemy carries no
         // agent component.
+        if outcome.leap_spot_off_mesh {
+            let class = entity_class(registry, outcome.id);
+            if warned.insert(format!("{LEAP_SPOT_WARNING}{class}")) {
+                log::warn!(
+                    "[AI] `{class}` leap: no walkable ground near its landing spot or on                      the line back to it, so it has no route there and stands through the                      release. Warned once per entity class."
+                );
+            }
+        }
         match outcome.steering {
             SteeringIntent::Chase => {
                 if let Some(target) = outcome.target {
                     let destination = outcome.combat_slot.unwrap_or(target.position);
-                    agent_steering::set_destination(registry, outcome.id, destination);
-                    // Diagnostic read of the steering surface: an agent that
-                    // cannot route to the destination it was given AND holds no
-                    // previous path to keep following is `blocked`. Surface it
-                    // once per enemy so a genuinely unroutable target (a
-                    // disconnected region, or a spawn far off the navmesh —
-                    // near-wall positions are snap-resolved by pathfinding and
-                    // never latch this) is visible without per-tick spam. The
-                    // steering tick holds a pathless blocked agent in place and
-                    // keeps retrying under its replan cooldown; this only
-                    // reports.
-                    //
-                    // `path_state` was snapshotted BEFORE the `set_destination`
-                    // above, so the verdict is the steering tick's answer about
-                    // the destination this enemy was chasing LAST tick, not the
-                    // one just written. Reading it after the write would not
-                    // help — `set_destination` deliberately leaves the plan
-                    // intact and `agent_steering::tick` owns the replan — so the
-                    // message says which tick it is describing instead.
-                    if let Some(state) = path_state.as_ref()
-                        && state.blocked
-                        && blocked_warned.insert(outcome.id)
-                    {
-                        log::warn!(
-                            "[AI] enemy {} entered this tick blocked: as of the last \
-                                 steering tick its agent had no path to the destination it \
-                                 was chasing, so it is holding position. Warned once per \
-                                 enemy.",
-                            outcome.id
-                        );
-                    }
+                    let leash = outcome.combat_slot.map(|slot| ArrivalLeash {
+                        anchor: target.position,
+                        radius: outcome
+                            .standoff_distance
+                            .max(distance_xz(slot, target.position)),
+                    });
+                    agent_steering::set_destination_leashed(
+                        registry,
+                        outcome.id,
+                        destination,
+                        leash,
+                    );
+                    warn_blocked(path_state.as_ref(), blocked_warned, outcome.id, "chasing");
                 }
             }
-            SteeringIntent::MoveTo(goal) => {
-                agent_steering::set_destination(registry, outcome.id, goal);
-            }
+            SteeringIntent::MoveTo(goal) => match outcome.leap {
+                Some(leap) => {
+                    agent_steering::set_destination_paced(
+                        registry,
+                        outcome.id,
+                        goal,
+                        leap.arrive_in_s,
+                    );
+                    if leap.arrive_in_s.is_none() {
+                        let class = entity_class(registry, outcome.id);
+                        let state = outcome.brain.clip_clock.state.as_deref().unwrap_or("");
+                        if warned.insert(format!("{LEAP_UNTIMED_WARNING}{class}:{state}")) {
+                            log::warn!(
+                                "[AI] `{class}` leap on animation state `{state}`: its clip \
+                                 cannot time the attack's moment, so the leap cannot pace its \
+                                 arrival and flies at its top speed. Warned once per entity \
+                                 class and state."
+                            );
+                        }
+                    }
+                    warn_blocked(
+                        path_state.as_ref(),
+                        blocked_warned,
+                        outcome.id,
+                        "leaping to",
+                    );
+                }
+                None => agent_steering::set_destination(registry, outcome.id, goal),
+            },
             SteeringIntent::Clear => {
                 agent_steering::clear_destination(registry, outcome.id);
             }
@@ -301,7 +391,15 @@ where
 
         // Existing executions advance even after the activity's first-fire
         // latch closes. Apply rechecks the selected target before the shared
-        // executor may debit or produce this tick's immutable shot.
+        // executor may debit or produce this tick's immutable shot. A flinch
+        // over a release or recover cancels a burst in flight: it fires
+        // nothing further, though a `"*"` or ancestor row, or the flinch
+        // route on a reaction already played out, left the strike this tick.
+        // Cancelled before this tick's request, an attack the row entered
+        // still starts.
+        if outcome.flinched {
+            weapons.cancel_actor(outcome.id);
+        }
         let weapon_aim = outcome.weapon_aim.filter(|_| {
             outcome.target.is_some_and(|target| {
                 !invalidated_entities.contains(&target.entity)
@@ -382,15 +480,30 @@ where
         // compute's check reads that switch as foreign and cancels the moment.
         let redraw = outcome.brain.clip_clock.redraw
             && mesh_switches(registry, outcome.id) == outcome.brain.clip_clock.mesh_switches;
+        // A flinch over a release or recover stays on screen until the enemy
+        // leaves the activity: the brain never draws the strike over it, not
+        // on a stop, a stride resuming or a travel variant changing. That
+        // holds for one an earlier slot's contact hit just switched in too,
+        // which the next compute reads as foreign and starts staggering on.
+        // Not on an entry tick: there the entry's own switch draws over such
+        // a flinch, a recover's as any other's, and the next compute reads
+        // no foreign switch, so no stagger starts. That absorption is the
+        // same one a clip-timed attack's entry makes.
+        let flinch_shows = !outcome.state_changed
+            && (outcome.brain.clip_clock.stagger.is_some()
+                || (clip_clock::routes_flinches(&outcome.brain)
+                    && mesh_switches(registry, outcome.id)
+                        != outcome.brain.clip_clock.mesh_switches));
         let mut redraw_pending = false;
         let mut redrawn = false;
-        if should_switch_animation(
-            outcome.state_changed,
-            locomotion_intent.moving,
-            outcome.brain.locomotion_moving,
-        ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
-            || travel_variant != outcome.brain.presented_travel_variant
-            || redraw
+        if !flinch_shows
+            && (should_switch_animation(
+                outcome.state_changed,
+                locomotion_intent.moving,
+                outcome.brain.locomotion_moving,
+            ) || airborne_clip.is_some() != outcome.brain.launch.airborne_presented
+                || travel_variant != outcome.brain.presented_travel_variant
+                || redraw)
         {
             // Only a variant the mesh declares is requested, so a missing
             // `X_left` plays `X` without warning.

@@ -30,7 +30,7 @@ use postretro_entities::components::immersion::ImmersionComponent;
 use postretro_entities::components::inventory::{Inventory, WIELDABLE_SLOT_CAPACITY};
 use postretro_entities::components::light::{FalloffKind, LightComponent, LightKind};
 use postretro_entities::components::mesh::{
-    MeshAnimation, MeshComponent, capsule_center_to_feet_origin_offset,
+    MeshAnimation, MeshComponent, ZeroPhaseStates, capsule_center_to_feet_origin_offset,
 };
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::components::touchable::TouchableComponent;
@@ -40,7 +40,9 @@ use postretro_entities::provenance::{
     parse_bool,
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
-use postretro_foundation::{ARCHETYPE_TOLERANCE_STATE_FIELD, FACTION_STATE_FIELD};
+use postretro_foundation::{
+    ARCHETYPE_TOLERANCE_STATE_FIELD, BehaviorDrawSalt, FACTION_STATE_FIELD, behavior_draw_seed,
+};
 use postretro_foundation::{NavAgentParams, ProjectileBodyVisual};
 #[cfg(test)]
 use postretro_scripting_core::data_descriptors::WeaponResource;
@@ -578,6 +580,13 @@ pub(crate) fn attach_descriptor_components(
         {
             brain.aggro_armed = aggro_armed;
             brain.home_anchor = home_anchor;
+            brain.seed_behavior_draws(behavior_draw_seed(
+                descriptor
+                    .canonical_name
+                    .as_deref()
+                    .unwrap_or(&entity.classname),
+                placement_draw_salt(id, entity),
+            ));
             let _ = registry.set_component(id, brain);
         }
         let state = registry
@@ -634,6 +643,18 @@ pub(crate) fn attach_descriptor_components(
     }
 }
 
+/// The behavior draw salt a descriptor spawn knows at attach: its authored
+/// entity index. A runtime spawner reseeds its enemies with its own placement
+/// and spawn count after attach (`spawner.rs`). A synthetic placement with no
+/// map ordinal falls back to the entity's registry id, the nearest identity
+/// that is replay-stable under a fixed spawn order.
+fn placement_draw_salt(id: EntityId, entity: &MapEntity) -> BehaviorDrawSalt {
+    entity.map_ordinal.map_or(
+        BehaviorDrawSalt::Entity(id.to_raw()),
+        BehaviorDrawSalt::Placement,
+    )
+}
+
 /// Materialize the descriptor-owned mesh presentation shared by local spawns
 /// and connected-client remote enemies. Descriptor state maps already carry
 /// validated `travelSpeed` overrides; this seam also applies the shared
@@ -664,7 +685,13 @@ pub(crate) fn descriptor_mesh_component(
         Some(default_state) => MeshComponent::animated(
             mesh_desc.model.clone(),
             MeshAnimation::new(mesh_desc.animations.clone(), default_state.clone())
-                .with_speed_scale(mesh_desc.speed_scale()),
+                .with_speed_scale(mesh_desc.speed_scale())
+                .with_zero_phase_states(ZeroPhaseStates::of(
+                    descriptor
+                        .behavior
+                        .iter()
+                        .flat_map(postretro_foundation::repeating_release_states),
+                )),
         ),
         None => MeshComponent::stateless(mesh_desc.model.clone()),
     };
@@ -1062,7 +1089,7 @@ mod tests {
     // the netcode agreement test can reuse them without a private-helper reach
     // or a duplicate copy. See testing_guide.md §4.
     use super::super::data_archetype_test_fixtures::{
-        behavior_enemy_descriptor, mesh_descriptor, placement,
+        behavior_enemy_descriptor, mesh_descriptor, placement, repeating_release_graph,
     };
 
     fn light_descriptor(classname: &str, is_dynamic: bool) -> EntityTypeDescriptor {
@@ -3191,6 +3218,59 @@ mod tests {
         );
     }
 
+    // R8 (P13): two same-descriptor placements spawned on one tick read
+    // different rolls on their first evaluation. The roll is salted by the
+    // authored entity index, so reversing the placements' spawn order (which
+    // swaps their registry ids) leaves each placement's roll unchanged.
+    #[test]
+    fn same_descriptor_placements_draw_their_own_rolls_by_authored_index() {
+        use postretro_entities::components::brain::BrainComponent;
+        use postretro_entities::components::map_ordinal::MapOrdinal;
+
+        let rolls_by_ordinal = |ordinals: [u32; 2]| {
+            let placements = ordinals.map(|ordinal| {
+                let mut placement = placement("grunt", &[]);
+                placement.map_ordinal = Some(ordinal);
+                placement
+            });
+            let mut reg = EntityRegistry::new();
+            apply_data_archetype_dispatch(
+                &placements,
+                &[behavior_enemy_descriptor("grunt")],
+                &HashSet::new(),
+                &mut reg,
+                None,
+            );
+            let mut rolls = reg
+                .iter_with_kind(ComponentKind::Brain)
+                .map(|(id, _)| {
+                    let ordinal = reg.get_component::<MapOrdinal>(id).unwrap().0;
+                    let roll = reg
+                        .get_component::<BrainComponent>(id)
+                        .unwrap()
+                        .activity_roll(0)
+                        .expect("the initial activity is seated");
+                    (ordinal, roll)
+                })
+                .collect::<Vec<_>>();
+            rolls.sort_by_key(|(ordinal, _)| *ordinal);
+            rolls
+        };
+
+        let forward = rolls_by_ordinal([4, 9]);
+        assert_eq!(forward.len(), 2);
+        assert_ne!(
+            forward[0].1, forward[1].1,
+            "same-descriptor enemies spawned on one tick draw different rolls"
+        );
+        assert!(forward.iter().all(|(_, roll)| (0.0..1.0).contains(roll)));
+        assert_eq!(
+            rolls_by_ordinal([9, 4]),
+            forward,
+            "a reversed spawn order keeps each placement's roll"
+        );
+    }
+
     #[test]
     fn behavior_descriptor_spawn_seeds_the_authored_graph_on_the_brain() {
         // The authored graph is retained verbatim and the brain starts in its
@@ -3455,5 +3535,25 @@ mod tests {
             (transform.position + hitbox.offset - authored_hitbox_center).length() < 1.0e-5,
             "spawn-time transform normalization must preserve the authored world hitbox"
         );
+    }
+
+    // The mesh seam host spawns and remote clients share starts a
+    // repeating release's loop, and its travel variants, at clip time 0, and
+    // leaves every other loop on the drawn phase. Without a behavior, nothing.
+    #[test]
+    fn descriptor_mesh_starts_a_repeating_releases_loop_at_phase_zero() {
+        let mut descriptor = mesh_descriptor("brute", true);
+        descriptor.behavior = Some(repeating_release_graph("attack"));
+        let mesh = descriptor_mesh_component(&descriptor, None).expect("the mesh materializes");
+        let animation = mesh.animation.expect("animated");
+        for state in ["attack", "attack_left", "attack_backward"] {
+            assert_eq!(animation.loop_phase(state, 0.3), 0.0, "{state}");
+        }
+        assert_eq!(animation.loop_phase("idle", 0.3), 0.3);
+
+        let plain = descriptor_mesh_component(&mesh_descriptor("brute", true), None)
+            .and_then(|mesh| mesh.animation)
+            .expect("animated");
+        assert_eq!(plain.loop_phase("attack", 0.3), 0.3);
     }
 }

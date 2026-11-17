@@ -142,6 +142,7 @@ fn request_names_fire_step_attack_not_cooldown_seed_attack() {
                 action: Some(ActionVerb::Attack {
                     name: "jab".to_string(),
                     at: None,
+                    at_default: false,
                 }),
             }),
             BehaviorSelectorEntry::Row(BehaviorSelectorRow {
@@ -150,6 +151,7 @@ fn request_names_fire_step_attack_not_cooldown_seed_attack() {
                 action: Some(ActionVerb::Attack {
                     name: "slam".to_string(),
                     at: None,
+                    at_default: false,
                 }),
             }),
         ]),

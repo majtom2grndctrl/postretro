@@ -11,8 +11,22 @@ use super::{MeshAnimation, default_playback_rate};
 /// and remote sampling aligned.
 pub const RATE_MIN: f32 = 0.5;
 
-/// Highest locomotion playback-rate multiplier. See [`RATE_MIN`].
+/// Highest locomotion playback-rate multiplier by default. See [`RATE_MIN`].
+/// An animation state may raise its own ceiling with `maxPlaybackRate`
+/// ([`super::AnimationState::max_playback_rate`]); production content keeps
+/// this one, because legs flail past it.
 pub const RATE_MAX: f32 = 1.5;
+
+/// The rate an enemy's current animation state should play at: the stride
+/// rule's clamped ratio, or a fixed authored rate. See
+/// [`MeshAnimation::stride_playback_target`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlaybackRateTarget {
+    /// Speed-scaled: `raw_ratio` clamped to `RATE_MIN..=max_rate`.
+    Stride { raw_ratio: f32, max_rate: f32 },
+    /// The state's authored `playbackRate`, applied exactly.
+    Fixed(f32),
+}
 
 /// Ignore tiny rate changes so noisy motion samples do not rebase every tick.
 pub const RATE_CHANGE_EPSILON: f32 = 0.02;
@@ -58,24 +72,39 @@ impl MeshAnimation {
     /// Pending entries have no clock origin yet: retain the new rate but accrue
     /// nothing, so they still sample as just-entered until resolution.
     pub fn update_playback_rate(&mut self, raw_ratio: f32, now: f64) {
-        let rate = Self::normalized_playback_rate(raw_ratio);
-        if !self.playback_rate_needs_update(raw_ratio) {
+        self.update_playback_rate_capped(raw_ratio, RATE_MAX, now);
+    }
+
+    /// [`Self::update_playback_rate`] against a caller-chosen ceiling — the
+    /// active state's [`super::AnimationState::max_playback_rate`] on the enemy
+    /// stride paths. A ceiling below [`RATE_MAX`] or non-finite reads as
+    /// `RATE_MAX`, so a cap only ever raises the default.
+    pub fn update_playback_rate_capped(&mut self, raw_ratio: f32, max_rate: f32, now: f64) {
+        let rate = Self::normalized_playback_rate_capped(raw_ratio, max_rate);
+        if !self.playback_rate_needs_update_capped(raw_ratio, max_rate) {
             return;
         }
-
-        if let Some(rebase_time) = self.rebase_time {
-            self.rebase_elapsed += (now - rebase_time) * f64::from(self.rate);
-            self.rebase_time = Some(now);
-        }
-        self.rate = rate;
+        self.rebase_to_rate(rate, now);
     }
 
     /// Normalize a locomotion speed ratio through the one shared rate policy.
     /// Non-finite input rests at the authored playback rate instead of carrying
     /// an invalid value into animation sampling.
     pub fn normalized_playback_rate(raw_ratio: f32) -> f32 {
+        Self::normalized_playback_rate_capped(raw_ratio, RATE_MAX)
+    }
+
+    /// [`Self::normalized_playback_rate`] against a caller-chosen ceiling. The
+    /// floor stays [`RATE_MIN`]; a ceiling below [`RATE_MAX`] or non-finite
+    /// reads as `RATE_MAX` (descriptor validation already rejects both).
+    pub fn normalized_playback_rate_capped(raw_ratio: f32, max_rate: f32) -> f32 {
+        let max_rate = if max_rate.is_finite() {
+            max_rate.max(RATE_MAX)
+        } else {
+            RATE_MAX
+        };
         if raw_ratio.is_finite() {
-            raw_ratio.clamp(RATE_MIN, RATE_MAX)
+            raw_ratio.clamp(RATE_MIN, max_rate)
         } else {
             default_playback_rate()
         }
@@ -85,7 +114,77 @@ impl MeshAnimation {
     /// Producers use this read-only predicate to avoid cloning and writing an
     /// unchanged `MeshComponent` on steady-state simulation and client frames.
     pub fn playback_rate_needs_update(&self, raw_ratio: f32) -> bool {
-        (Self::normalized_playback_rate(raw_ratio) - self.rate).abs() > RATE_CHANGE_EPSILON
+        self.playback_rate_needs_update_capped(raw_ratio, RATE_MAX)
+    }
+
+    /// [`Self::playback_rate_needs_update`] against a caller-chosen ceiling.
+    pub fn playback_rate_needs_update_capped(&self, raw_ratio: f32, max_rate: f32) -> bool {
+        (Self::normalized_playback_rate_capped(raw_ratio, max_rate) - self.rate).abs()
+            > RATE_CHANGE_EPSILON
+    }
+
+    /// The playback rate the current state plays at this tick, given whether
+    /// the stride rule scales it and, if so, its raw speed ratio. The one
+    /// policy the enemy host and remote paths share; player locomotion keeps
+    /// the global cap and does not consult it.
+    ///
+    /// - A stride-scaled state (`stride_ratio` is `Some` and the state leaves
+    ///   `scaleWithSpeed` on) clamps the ratio to `RATE_MIN..=maxPlaybackRate`;
+    ///   its `playbackRate` is ignored.
+    /// - Any other state plays its fixed authored `playbackRate` (default 1),
+    ///   unbounded by the stride clamp.
+    ///
+    /// A current state missing from the map reads as the defaults.
+    pub fn stride_playback_target(&self, stride_ratio: Option<f32>) -> PlaybackRateTarget {
+        let state = self.states.get(&self.current_state);
+        let scales = state.is_none_or(|state| state.scale_with_speed);
+        match stride_ratio {
+            Some(raw_ratio) if scales => PlaybackRateTarget::Stride {
+                raw_ratio,
+                max_rate: state.map_or(RATE_MAX, super::AnimationState::max_playback_rate),
+            },
+            _ => PlaybackRateTarget::Fixed(state.map_or(
+                default_playback_rate(),
+                super::AnimationState::playback_rate,
+            )),
+        }
+    }
+
+    /// Whether applying `target` would change this timeline's rate. A stride
+    /// target uses the shared clamp and epsilon; a fixed target compares
+    /// exactly, so an authored rate lands precisely and then holds.
+    pub fn playback_rate_target_needs_update(&self, target: PlaybackRateTarget) -> bool {
+        match target {
+            PlaybackRateTarget::Stride {
+                raw_ratio,
+                max_rate,
+            } => self.playback_rate_needs_update_capped(raw_ratio, max_rate),
+            PlaybackRateTarget::Fixed(rate) => rate.is_finite() && rate > 0.0 && rate != self.rate,
+        }
+    }
+
+    /// Apply `target`, rebasing clip-local time like
+    /// [`Self::update_playback_rate`].
+    pub fn apply_playback_rate_target(&mut self, target: PlaybackRateTarget, now: f64) {
+        match target {
+            PlaybackRateTarget::Stride {
+                raw_ratio,
+                max_rate,
+            } => self.update_playback_rate_capped(raw_ratio, max_rate, now),
+            PlaybackRateTarget::Fixed(rate) => {
+                if self.playback_rate_target_needs_update(target) {
+                    self.rebase_to_rate(rate, now);
+                }
+            }
+        }
+    }
+
+    fn rebase_to_rate(&mut self, rate: f32, now: f64) {
+        if let Some(rebase_time) = self.rebase_time {
+            self.rebase_elapsed += (now - rebase_time) * f64::from(self.rate);
+            self.rebase_time = Some(now);
+        }
+        self.rate = rate;
     }
 
     /// Evaluate the current state's rebased clip-local elapsed time at the
@@ -266,5 +365,112 @@ mod tests {
         assert_eq!(back.previous_rate, 1.0);
         assert_eq!(back.rebase_time, None);
         assert_eq!(back.previous_rebase_time, None);
+    }
+
+    #[test]
+    fn default_state_policy_keeps_the_global_stride_clamp() {
+        let anim = two_state_animation();
+        assert_eq!(
+            anim.stride_playback_target(Some(3.0)),
+            PlaybackRateTarget::Stride {
+                raw_ratio: 3.0,
+                max_rate: RATE_MAX
+            }
+        );
+        assert_eq!(
+            anim.stride_playback_target(None),
+            PlaybackRateTarget::Fixed(1.0),
+            "an unscaled default state rests at 1x"
+        );
+    }
+
+    #[test]
+    fn raised_cap_bounds_only_its_own_state() {
+        let mut anim = two_state_animation();
+        anim.entered_at = Some(0.0);
+        anim.rebase_time = Some(0.0);
+        anim.states.get_mut("idle").unwrap().max_playback_rate = Some(3.0);
+
+        let target = anim.stride_playback_target(Some(2.7));
+        anim.apply_playback_rate_target(target, 0.0);
+        assert!((anim.rate - 2.7).abs() < 1e-6, "{}", anim.rate);
+        anim.apply_playback_rate_target(anim.stride_playback_target(Some(10.0)), 1.0);
+        assert!((anim.rate - 3.0).abs() < 1e-6, "clamps at the raised cap");
+        anim.apply_playback_rate_target(anim.stride_playback_target(Some(0.1)), 2.0);
+        assert!(
+            (anim.rate - RATE_MIN).abs() < 1e-6,
+            "the floor is unchanged"
+        );
+        // Continuity across the rebases: 1 s at 2.7, then 1 s at 3.0.
+        assert!((anim.scaled_elapsed(2.0) - 5.7).abs() < 1e-5);
+
+        // The other state, and the uncapped API, keep 1.5.
+        assert!((MeshAnimation::normalized_playback_rate(2.7) - RATE_MAX).abs() < 1e-6);
+        anim.current_state = "attack".into();
+        assert_eq!(
+            anim.stride_playback_target(Some(2.7)),
+            PlaybackRateTarget::Stride {
+                raw_ratio: 2.7,
+                max_rate: RATE_MAX
+            }
+        );
+    }
+
+    #[test]
+    fn capped_clamp_never_lowers_the_default_cap() {
+        for cap in [0.25, 1.0, f32::NAN, f32::INFINITY] {
+            assert!(
+                (MeshAnimation::normalized_playback_rate_capped(9.0, cap) - RATE_MAX).abs() < 1e-6,
+                "cap {cap} reads as RATE_MAX"
+            );
+        }
+    }
+
+    #[test]
+    fn scale_with_speed_false_plays_the_fixed_rate() {
+        let mut anim = two_state_animation();
+        let idle = anim.states.get_mut("idle").unwrap();
+        idle.scale_with_speed = false;
+        idle.max_playback_rate = Some(3.0);
+        assert_eq!(
+            anim.stride_playback_target(Some(2.7)),
+            PlaybackRateTarget::Fixed(1.0),
+            "an opted-out state ignores its stride ratio"
+        );
+        anim.states.get_mut("idle").unwrap().playback_rate = Some(2.5);
+        assert_eq!(
+            anim.stride_playback_target(Some(2.7)),
+            PlaybackRateTarget::Fixed(2.5)
+        );
+    }
+
+    #[test]
+    fn fixed_rate_is_exact_unclamped_and_ignored_while_stride_scaled() {
+        let mut anim = two_state_animation();
+        anim.entered_at = Some(0.0);
+        anim.rebase_time = Some(0.0);
+        anim.states.get_mut("idle").unwrap().playback_rate = Some(2.51);
+
+        // Stride-scaled: the rule decides, `playbackRate` is ignored.
+        assert_eq!(
+            anim.stride_playback_target(Some(1.0)),
+            PlaybackRateTarget::Stride {
+                raw_ratio: 1.0,
+                max_rate: RATE_MAX
+            }
+        );
+
+        // Unscaled: exactly the authored rate, past RATE_MAX, then it holds.
+        let target = anim.stride_playback_target(None);
+        assert!(anim.playback_rate_target_needs_update(target));
+        anim.apply_playback_rate_target(target, 1.0);
+        assert_eq!(anim.rate, 2.51);
+        assert!(!anim.playback_rate_target_needs_update(target));
+        assert!((anim.scaled_elapsed(2.0) - (1.0 + 2.51)).abs() < 1e-5);
+
+        // Below RATE_MIN too, with no epsilon swallowing a small change.
+        anim.states.get_mut("idle").unwrap().playback_rate = Some(0.25);
+        anim.apply_playback_rate_target(anim.stride_playback_target(None), 2.0);
+        assert_eq!(anim.rate, 0.25);
     }
 }

@@ -108,6 +108,9 @@ pub struct HeldTurn {
     /// Granted with no mark on the path: holds until the attack's cooldown
     /// ends. A marked grant holds while a mark for the attack is on the path.
     pub until_cooldown: bool,
+    /// The AI tick the turn was granted on. A rest's queued row passes on a
+    /// turn only on the evaluation after its grant.
+    pub granted_tick: u64,
 }
 
 /// The one turn an enemy asked for on its latest tick, while ungranted.
@@ -115,7 +118,8 @@ pub struct HeldTurn {
 pub struct TurnRequest {
     pub attack: u16,
     pub draws: ResolvedDraws,
-    /// Requested by a marked activity rather than a ready fire step.
+    /// Requested by a marked activity, or by a rest's queued row, which takes
+    /// a mark's lifetime, rather than by a ready fire step.
     pub marked: bool,
     pub target: EntityId,
     pub pool: AttackPoolId,

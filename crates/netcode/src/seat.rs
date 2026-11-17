@@ -98,6 +98,9 @@ pub struct SeatAdmission {
     pub reclaimed: bool,
 }
 
+/// Where a hosted run's session id comes from: the OS RNG in production.
+pub type SessionIdSource = fn(&mut [u8]) -> Result<(), getrandom::Error>;
+
 /// Durable host-local player identities for one running session.
 ///
 /// The table is intentionally above transport participation: a `Seat` is minted
@@ -188,6 +191,36 @@ impl SeatTable {
             status_dirty: false,
             last_roster_publish: None,
         }
+    }
+
+    /// Start a new hosted run on this ledger: a fresh session id from `fill`
+    /// and a fresh seat counter, so no seat id, claim or hold from an earlier
+    /// run carries over. Seat 0 keeps its carried state and pawn binding. The
+    /// id is drawn first; if `fill` fails the table is untouched. Entry runs
+    /// from single-player, which holds no remote seat.
+    pub fn remint_for_hosting(&mut self, fill: SessionIdSource) -> Result<(), getrandom::Error> {
+        let mut session_id = [0; 16];
+        fill(&mut session_id)?;
+        debug_assert_eq!(
+            self.seats(),
+            vec![Seat(0)],
+            "a hosted run starts from a single-player ledger"
+        );
+        self.session_id = SessionId(session_id);
+        self.next_seat = 1;
+        self.client_bindings.clear();
+        self.connect_claims.clear();
+        self.hold_deadlines.clear();
+        self.hold_order.clear();
+        self.next_hold_order = 0;
+        self.hold_clock = Duration::ZERO;
+        self.overflow_cursor = 0;
+        self.overflow_warned.clear();
+        self.roster_dirty = true;
+        self.statuses.clear();
+        self.status_dirty = false;
+        self.last_roster_publish = None;
+        Ok(())
     }
 
     #[must_use]
@@ -1456,6 +1489,50 @@ mod tests {
             None,
             "the previously closed id remains terminal"
         );
+    }
+
+    #[test]
+    fn remint_for_hosting_starts_a_fresh_run_keeping_seat_zero_carry() {
+        let mut seats = SeatTable::from_test_session_id([7; 16]);
+        let mut registry = EntityRegistry::new();
+        let pawn = registry.spawn(Transform::default());
+        registry.set_component(pawn, health(100.0, 37.5)).unwrap();
+        seats.bind_pawn(&mut registry, Seat(0), pawn);
+        seats.harvest_bound_pawns(&registry, &[]);
+        let joined = seats
+            .admit_or_reclaim(31, Some(claim([3; 16], "joiner")), false)
+            .unwrap()
+            .seat;
+        assert_eq!(joined, Seat(1));
+        let carried = seats.carried_state_for_test(Seat(0)).cloned();
+        assert!(carried.is_some(), "fixture: seat 0 carries state");
+        let _ = seats.release_remote_seats(&mut registry);
+
+        seats
+            .remint_for_hosting(|id| {
+                id.fill(9);
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(seats.session_id(), SessionId([9; 16]));
+        assert_eq!(seats.seats(), vec![Seat(0)]);
+        assert_eq!(seats.carried_state_for_test(Seat(0)).cloned(), carried);
+        assert_eq!(seats.pawn_bindings.get(&Seat(0)).copied(), Some(pawn));
+        let next = seats
+            .admit_or_reclaim(32, Some(claim([3; 16], "joiner")), false)
+            .unwrap()
+            .seat;
+        assert_eq!(next, Seat(1), "the next joiner takes a fresh session's first seat");
+    }
+
+    #[test]
+    fn failed_remint_leaves_the_ledger_untouched() {
+        let mut seats = SeatTable::from_test_session_id([7; 16]);
+        let failed = seats.remint_for_hosting(|_| Err(getrandom::Error::UNSUPPORTED));
+        assert!(failed.is_err());
+        assert_eq!(seats.session_id(), SessionId([7; 16]));
+        assert_eq!(seats.seats(), vec![Seat(0)]);
     }
 
     #[test]

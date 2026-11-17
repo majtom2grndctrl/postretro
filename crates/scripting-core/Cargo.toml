@@ -6,6 +6,10 @@ rust-version.workspace = true
 description = "VM-coupled scripting runtime substrate for Postretro"
 license.workspace = true
 
+[features]
+# Narrow seams for binary-owned tests. Production callers never enable this.
+test-support = []
+
 [dependencies]
 glam.workspace = true
 log.workspace = true

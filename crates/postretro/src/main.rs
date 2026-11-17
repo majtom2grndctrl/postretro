@@ -173,8 +173,7 @@ use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::state_persistence::{
-    apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
-    collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
+    apply_join_seed, collect_per_owner_state, collected_per_owner_only_state,
     overlay_client_local_per_owner_state, retain_saved_per_owner_state, save_persisted_state,
     state_path, sync_client_per_owner_projection,
 };
@@ -2542,74 +2541,8 @@ impl ApplicationHandler for App {
         // a valid state file with an empty or default-only snapshot. The leave
         // or end above made every role single-player, and a client's leave
         // restored its own world, so this save never writes a host's values.
-        let can_save = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.state_store_lifecycle.can_save());
-        if can_save {
-            let session = self
-                .session
-                .as_mut()
-                .expect("session installed at clean exit");
-            if let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() {
-                let mod_id = mod_id.to_owned();
-                let identity = session.scripting.script_runtime.store_identity().cloned();
-                let committed_store_slots = session
-                    .scripting
-                    .script_runtime
-                    .committed_store_slots()
-                    .clone();
-                let script_ctx = session.scripting.script_ctx.clone();
-                if let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) {
-                    let mut collected = collect_persisted_state(
-                        &script_ctx.slot_table.borrow(),
-                        identity.as_ref(),
-                        &committed_store_slots,
-                    );
-                    for warning in collected.warnings {
-                        log::warn!("[State] {warning}");
-                    }
-                    {
-                        let factions = script_ctx.data_registry.borrow();
-                        let faction_sentiment = script_ctx.faction_sentiment.borrow();
-                        for warning in collect_persisted_faction_sentiment(
-                            &mut collected.state,
-                            &faction_sentiment,
-                            &factions.factions,
-                        ) {
-                            log::warn!("[State] {warning}");
-                        }
-                    }
-                    if let Some(local_player_id) = session.player_options.player_id {
-                        let per_owner = collect_per_owner_state(
-                            &script_ctx.slot_table.borrow(),
-                            identity.as_ref(),
-                            &committed_store_slots,
-                            postretro_foundation::Seat(0),
-                            local_player_id,
-                        );
-                        for warning in per_owner.warnings {
-                            log::warn!("[State] {warning}");
-                        }
-                        merge_per_owner_state(&mut collected.state, per_owner.per_owner);
-                    }
-                    match save_persisted_state(&state_path, &collected.state) {
-                        Ok(()) => {
-                            log::info!("[State] saved persistent slots to {}", state_path.display())
-                        }
-                        Err(error) => log::warn!(
-                            "[State] failed to save persistent slots to {}: {error}",
-                            state_path.display()
-                        ),
-                    }
-                } else if session.state_store_lifecycle.disable_persistence() {
-                    log::warn!(
-                        "[State] platform data directory is unavailable; persistent state is disabled for this run"
-                    );
-                }
-            } else {
-                log::warn!("[State] no committed mod manifest; skipping persistent-state save");
-            }
+        if let Some(session) = self.session.as_mut() {
+            let _ = crate::session::progress_save::save_world_and_character(session);
         }
 
         // Release the level's sound registry at teardown too, mirroring the

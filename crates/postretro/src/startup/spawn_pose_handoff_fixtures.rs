@@ -23,7 +23,7 @@ use std::time::Duration;
 pub(super) use crate::spawn_pose::tests::{OfferOne, movement_descriptor, player_spawn};
 
 const STEP: Duration = Duration::from_millis(34);
-const MOD_ID: &str = "spawn-pose-handoff";
+pub(super) const MOD_ID: &str = "spawn-pose-handoff";
 pub(super) const LEVEL: &str = "spawn-arena";
 const PLAYER_CAPSULE_HALF_EXTENT: f32 = 0.4 + 0.8;
 
@@ -142,6 +142,29 @@ impl Relay {
         }
     }
 
+    /// A relay around an engine that entered hosting in-app, on the endpoint
+    /// that entry built: its own port, mod identity and digest. It starts at
+    /// its frontend, so its poll is the world-less one.
+    pub(super) fn adopt(app: App) -> Self {
+        let ctx = script_ctx(&app);
+        let mod_digest =
+            crate::mod_digest::mod_compatibility_digest_from_registry(&ctx.data_registry.borrow());
+        let Some(NetEndpoint::Host { server, .. }) =
+            app.session.as_ref().unwrap().net_endpoint.as_ref()
+        else {
+            panic!("the adopted engine hosts");
+        };
+        let port = server.local_addr()[0].port();
+        Self {
+            app,
+            clients: Vec::new(),
+            server_address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            mod_digest,
+            level_digest: [0; 32],
+            world_less: true,
+        }
+    }
+
     /// [`Self::host`] with `client_ids` connected and seated.
     pub(super) fn admitted(client_ids: &[u64]) -> Self {
         let mut relay = Self::host();
@@ -212,6 +235,11 @@ impl Relay {
             unreachable!()
         };
         server
+    }
+
+    /// The address an engine client dials to reach this host.
+    pub(super) fn address(&self) -> SocketAddr {
+        self.server_address
     }
 
     pub(super) fn participating(&self, client_id: u64) -> bool {

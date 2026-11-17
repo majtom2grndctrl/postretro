@@ -78,6 +78,11 @@ mod lifecycle_unload_tests;
 mod lifecycle_world_cpu;
 #[path = "lifecycle_world_handles.rs"]
 mod lifecycle_world_handles;
+#[path = "session_entry.rs"]
+mod session_entry;
+#[cfg(test)]
+#[path = "session_entry_tests.rs"]
+mod session_entry_tests;
 #[path = "session_membership.rs"]
 pub(crate) mod session_membership;
 #[cfg(test)]

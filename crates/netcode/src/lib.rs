@@ -282,7 +282,7 @@ pub use replication::{
     host_register_loaded_ghost_links, host_register_loaded_movers,
     host_register_loaded_teleporters, host_register_presentation_overrides,
 };
-pub use seat::{SeatTable, finish_host_poll};
+pub use seat::{SeatTable, SessionIdSource, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
 
 pub const PROJECTILE_CONTACT_DESPAWN_REASON: postretro_net::replication::DespawnReason = 1;

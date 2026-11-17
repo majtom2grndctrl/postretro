@@ -12,6 +12,9 @@ Brief read at 7ffced62. Since then only `crates/netcode/src/command_queue.rs` an
 - Path: "Settle how each field reaches its own slot" → `openTextEntry(onCommit?)` (sdk/lib/ui/reactions.ts) always pushes `core/ui/keyboard.json`, whose envelope fixes `text_entry_target: "ui.textEntry"`, and `resolve_text_entry_intents` edits only the active tree's target. Approved approach (owner approved the plan 2026-11-17 with this approach): `openTextEntry` gains an optional target slot that overrides the keyboard's `text_entry_target` for that push, so hardware keys and on-screen keys both write `session.joinAddress` or `session.password` directly. The password then never passes through `ui.textEntry`. This is an additive SDK parameter the boundary inventory does not list. The fallback needs no new surface: each field's `onCommit` copies `ui.textEntry` into its slot with `setState` and then `clearText`. The cost is that the password sits in `ui.textEntry` while it is typed.
 - Path: "a new ledger operation that keeps seat 0's carry" → confirmed. `SeatTable`'s `session_id` and `next_seat` are private, and `apply_role` keeps any existing table (`get_or_insert_with`). Planned: `SeatTable::remint_for_hosting() -> Result<(), getrandom::Error>`. It draws the new id first, and only on success resets the id, the counter, the hold state and the roster bookkeeping. It keeps `carried[Seat(0)]` and seat 0's pawn binding. On failure the table is untouched.
 
+- Test seam: E-row and S-row tests drive a real engine client against the relay host over loopback, as the spawn-view handoff brief did. Two `postretro-scripting-core` `test-support` seams stand in for mod init: committed mod identity and committed store identity. Dev builds relay both endpoints through lag proxies on their own threads, so these tests give each exchange 1 ms of wall time.
+- Plan: task 4 also declares the writable `session.joinAddress` and `session.password` slots, because the verbs read them. Task 5 adds the readonly facts.
+
 ## Delegated answers
 - Host-side bound on an unanswered challenge — **5 s** on the transport clock, measured from when the challenge was sent. One round trip is under 1 s even under the dev lag profile with loss, and 5 s sits well inside a seat hold. A proof drained in the poll where the bound elapses still admits (P22).
 - Remembered address field and options mapping — `PlayerOptions::last_join_address: Option<String>` (TOML key `last_join_address`, default absent). It seeds `session.joinAddress` at session build, and the engine writes it on admission. It is not an options-bridge menu option, because no menu edits it except the Join field itself.
@@ -22,23 +25,23 @@ Automated rows run as `cargo test` loopback tests over real transports, as the l
 
 | AC | Proof | Status |
 |---|---|---|
-| E1 SP at frontend hosts; slots publish; client waits; next level promotes it | `in_app_host_*` loopback test | achievable as stated |
-| E2 SP joins a host in a level, with and without a same-map backdrop; participates at hinted spawn | `in_app_join_*` loopback test, two variants | achievable as stated |
-| E3 Join during backdrop load cancels it; client-role install state and model prediction (P3) | loopback test, asserts install-time keyed state | achievable as stated |
-| E4 Host, end, join elsewhere, leave, host again in one process | loopback cycle test | achievable as stated |
-| E5 Re-host mints new session id and seat counter; seat 0 keeps carry (P15) | `SeatTable::remint_for_hosting` unit + loopback | achievable as stated |
+| E1 SP at frontend hosts; slots publish; client waits; next level promotes it | `in_app_host_holds_a_joiner_at_its_frontend_and_promotes_it_into_its_next_level` | proven |
+| E2 SP joins a host in a level, with and without a same-map backdrop; participates at hinted spawn | `in_app_join_from_the_frontend_participates_in_the_hosts_level_at_the_hinted_spawn` | proven |
+| E3 Join during backdrop load cancels it; client-role install state and model prediction (P3) | `in_app_join_cancels_a_backdrop_load_in_flight_and_installs_the_hosts_level_as_a_client` | proven |
+| E4 Host, end, join elsewhere, leave, host again in one process | `one_process_hosts_ends_joins_leaves_and_hosts_again` | proven |
+| E5 Re-host mints new session id and seat counter; seat 0 keeps carry (P15) | `remint_for_hosting_starts_a_fresh_run_keeping_seat_zero_carry`, `hosting_again_mints_a_new_run_and_its_first_joiner_takes_seat_one` | proven |
 | E6 Refusal matrix with no state change, each paired with a permitted case (P4) | table-driven test over role and load states | achievable as stated |
 | E7 Press during pending unload or close publishes `connecting`, runs after; second press refused (P5) | deferral test | achievable as stated |
-| E8 Failed mint at host entry: ledger untouched, SP, `hostFailed` | injected-entropy-failure test | achievable as stated |
+| E8 Failed mint at host entry: ledger untouched, SP, `hostFailed` | `failed_session_mint_at_host_entry_stays_single_player_with_its_ledger`, `failed_remint_leaves_the_ledger_untouched`; `hostFailed` with task 5 | partly proven |
 | E9 `hostSession`+`joinSession` and `joinSession`×2 in one reaction: first wins, one save and one endpoint (P1) | reaction-drain test | achievable as stated |
 | E10 `leaveSession` then `joinSession` defers to after unload; other steps still drop at debug (P2) | reaction-drain test with log capture | achievable as stated |
 | E11 Waiting press captures address and password; malformed never shows `connecting`; load or navigation cancels to `offline` (P16) | deferral test | achievable as stated |
-| E12 Boot `--host`/`--connect` role-bound state equals in-app entry | `RoleBoundState::observe` comparison | achievable as stated |
-| E13 One endpoint builder; no other non-test `NetEndpoint::from_role` call | grep gate test | achievable as stated |
-| S1 World and character slots on disk once join starts, before first connect packet | join-save ordering test | achievable as stated |
-| S2 Join then leave restores world-at-join; join seed carries character-at-join | loopback test | achievable as stated |
-| S3 Failed join save still rebases snapshot and warns | injected-write-failure test with log capture | achievable as stated |
-| S4 Join then leave: seat-0 carry equals a fresh SP ledger | loopback test | achievable as stated |
+| E12 Boot `--host`/`--connect` role-bound state equals in-app entry | `boot_flags_and_in_app_entry_derive_the_same_role_bound_state` | proven |
+| E13 One endpoint builder; no other non-test `NetEndpoint::from_role` call | `enter_role_is_the_only_production_endpoint_builder` | proven |
+| S1 World and character slots on disk once join starts, before first connect packet | `join_saves_world_and_character_before_its_first_connect_packet` | proven |
+| S2 Join then leave restores world-at-join; join seed carries character-at-join | `join_then_leave_restores_the_world_at_join_and_seeds_the_character_at_join` | proven |
+| S3 Failed join save still rebases snapshot and warns | `failed_join_save_still_rebases_the_restore_snapshot_and_warns` | proven |
+| S4 Join then leave: seat-0 carry equals a fresh SP ledger | `join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry` | proven |
 | P-a Right password admits | transport test | achievable as stated |
 | P-b Pre-proof parity, seed and reveal apply on admission; participates with join-seeded character (P6) | loopback test | achievable as stated |
 | P-c Distinct nonces; replayed proof refuses; stray proof changes nothing (P7) | transport test | achievable as stated |
@@ -79,9 +82,9 @@ Automated rows run as `cargo test` loopback tests over real transports, as the l
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | **Thin slice: runtime join.** Extract the role and endpoint build out of `Session::build` into one function (`session/net_entry.rs`): parse or accept a role, `from_role`, the lag seed, the seat ledger, `SessionRole`, the published address and `apply_role`. Boot calls it. Add `App::join_from_frontend(addr)` beside `startup/session_membership.rs`. It cancels a backdrop load, calls the builder, then `install_network_mod_content`. Loopback against a CLI-style host, with no password, saves or slots. Proves E2, E3, E13, and the boot half of E12. | integrating executor | — | |
-| 2 | **Runtime host.** `SeatTable::remint_for_hosting`; `App::host_from_frontend()` through the same builder, `hostFailed` on mint, bind or transport failure. Proves E1, E4, E5, E8, rest of E12. | integrating executor | 1 | |
-| 3 | **Join save seam.** Extract the clean-exit save in `main.rs` into one entry point. Join calls it before building the endpoint, then rebases `session.persisted_state` (and so the join seed) on what it wrote, warning on failure. Proves S1–S4. | integrating executor | 1 | |
+| 1 | **Thin slice: runtime join.** Extract the role and endpoint build out of `Session::build` into one function (`session/net_entry.rs`): parse or accept a role, `from_role`, the lag seed, the seat ledger, `SessionRole`, the published address and `apply_role`. Boot calls it. Add `App::join_from_frontend(addr)` beside `startup/session_membership.rs`. It cancels a backdrop load, calls the builder, then `install_network_mod_content`. Loopback against a CLI-style host, with no password, saves or slots. Proves E2, E3, E13, and the boot half of E12. | integrating executor | — | done |
+| 2 | **Runtime host.** `SeatTable::remint_for_hosting`; `App::host_from_frontend()` through the same builder, `hostFailed` on mint, bind or transport failure. Proves E1, E4, E5, E8, rest of E12. | integrating executor | 1 | done |
+| 3 | **Join save seam.** Extract the clean-exit save in `main.rs` into one entry point. Join calls it before building the endpoint, then rebases `session.persisted_state` (and so the join seed) on what it wrote, warning on failure. Proves S1–S4. | integrating executor | 1 | done |
 | 4 | **Verbs, refusals, deferral.** `SystemReactionKind::{HostSession, JoinSession}`, machine-local classification and catch-up ignore, the drain exemption after `leaveSession`, the one-press rule, and the pending-press state that captures address and password and is cancelled by load or navigation. SDK `hostSession()`/`joinSession()` in TS and Luau plus generated declarations. Proves E6, E7, E9–E11, U4, U5. | integrating executor | 2, 3 | |
 | 5 | **Session facts.** Catalog `session.joinAddress`, `password`, `connection`, `waitReason`, `endCause`. Shared address parser and `--connect` widening. End-cause publication on every path, boot included. Connection phase from holding notices and participation. `waitReason` from `HoldingCause`. `last_join_address` option. Proves F1–F9 except the password rows. | integrating executor | 4 | |
 | 6 | **Password gate.** `crates/net` gains `blake3`. Wire variants appended, `PROTOCOL_ID` advanced. Per-pending-slot nonce, proof check in constant time, the 5 s bound, buffered pre-admission declarations, and interactions with reclaim and level change. `--password`. Client answers from the captured password, and the slot clears per P20. Leak-scan test. Proves P-a–P-n and the password half of F1 and F8. | integrating executor | 5 | |

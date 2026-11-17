@@ -771,3 +771,17 @@ This harness shape fits measuring un-alerted versus engaged versus dormant cost.
   - `crates/level-format/src/cell_visibility.rs`
   - `crates/ai/src/replan_stress_tests.rs`
   - `tools/gen_stress_map.py`
+
+## Pending: fold in after `E10--enemy-stances-and-telegraphs` merges (2026-11-17)
+
+Read from branch `claude/enemy-stances-telegraphs-837003`, not yet on `main`. Apply when it merges, then run `/validate-plan` before promotion.
+
+- **Owner decision (2026-11-17): a leaping NPC steers at 30 Hz until it lands.** `leap::pace` rewrites `arrive_in_s` every tick from `clip_clock::seconds_to_moment`, and steering's `paced_speed` lands the NPC in whole steps. At the Engaged tier's 15 Hz steering it would land a step late and whiff. `admit_replans` already sorts the drift tier by `(paced, wait)`, so within a replan tier paced agents go first, ahead of NPC-tier order. Amend the replan Decision and P13.
+- **Pool key:** the branch adds `BehaviorDrawSalt::Placement(MapOrdinal)` and `Spawned{spawner, count}` (`spawner::next_spawn_count`). Derive phase from the salt word stored on the NPC, not the hashed `behavior_draws.seed`; replace the `Entity(id.to_raw())` fallback, which depends on spawn order. Extend the role-keyed reversed-`SpawnOrder` determinism rows (`role_activity_rolls`, `role_hold_releases`).
+- **New tick-counted timing to convert:** `HeldTurn::granted_tick` (`graph_eval::granted_last_tick` checks `granted_tick + 1 == seen_tick`): it passes on the NPC's next run after its grant. Already time-based: combo `hold_release_ms`, `Stagger` elapsed, release exits, whiff cooldown, leap `arrive_in_s`. Queued rows reuse `since_tick`.
+- **Clip clock:** restate "at most one moment a tick" and `warn_repeating_releases(…, tick_dt)` per 30 Hz step; the "none fired twice" row needs a repeating-release exception (several passes inside one step whiff). The tick pose honours `MeshAnimation::loop_phase` (zero phase for repeating releases). Clip time integrates `animation.rate`, which `playbackRate`/`maxPlaybackRate` can push to 2.5×.
+- **attack_turns:** P1 and P2 name the queued grant: a skipped run keeps a queued grant; it opens on the next run.
+- **Netcode:** `server_message_vocabulary_is_pinned_with_its_version_constants` moves with the per-step snapshot wire. Clients derive stride rate from displayed speed (`remote_enemy_stride_reference`), which fits interpolated presentation. Per-step stamps carry a repeating release's entry tick.
+- **Tests pinning ticks** to add: `shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_2000_ms_hold`, `release_repeat_tests`, `release_exit_tests`, `activity_speed_tests`, `enemy_walk_rate_loopback_tests`.
+- **`entity_model.md` §7c per-tick clauses** for the amendment list: leap "whole ticks left, recomputed every tick"; activity speed "governs steering from the tick … through the tick before"; release exit "at most one moment a tick"; and "Clip time is game time" still says Decision cadence keeps the accumulator on every tick.
+- **Nav:** `leap::walkable_spot` adds up to 512 `resolve_region_at` calls on leap entry; `perf-ai-tick-cost`'s index serves them.

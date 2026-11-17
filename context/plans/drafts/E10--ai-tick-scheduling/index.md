@@ -9,7 +9,8 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
 
 ## Decisions
 - **NPC timing runs on time, not tick counts.** Every tick-counted NPC window becomes a duration (inventory in `research.md`). An NPC keeps its attack turns across ticks it does not run. Behavior at 60 Hz is unchanged except where a decision here changes it.
-- **NPCs are capped at 30 Hz; players, movers, projectiles and player weapons keep the 60 Hz tick.** Player movement and prediction are tuned per 60 Hz tick and compared tick by tick; movers carry and push players; projectiles need fine sweeps to be dodged and to hit where drawn. Riders and pushes on NPCs are applied by the mover system every tick, whatever the NPC's rate.
+- **NPCs are capped at 30 Hz; players, movers, projectiles and player weapons keep the 60 Hz tick.** Player movement and prediction are tuned per 60 Hz tick and compared tick by tick; movers carry and push players; projectiles need fine sweeps to be dodged and to hit where drawn.
+- **Mover carry and pushes reach every NPC every tick.** Carry and displacement run each tick for every NPC, in a pass apart from its rate-limited sweep, so an NPC fighting on a moving platform or firing from a moving craft stays planted on it. A rider's tick pose interpolates in its mover's local frame and is placed by the mover's current pose, the rebasing `E17--mover-relative-rider-presentation` plans for players. Amends `movement.md` §6's single call order and its source-text gate for NPCs.
 - **Each part of an NPC runs at its tier's rate.** One per-NPC choice of tier, made on the host's fixed tick before the AI stage; it never reads the renderer, the host camera or frame timing.
 
   | Tier | Who | Decide | Steering, separation, target LOS, slot scoring, locomotion clip | Attacks, clip moments, facing and aim, hit reactions |
@@ -20,7 +21,7 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
   | Dormant | unperceived, no target | every 2 s | whole tick at 2 Hz | whole tick at 2 Hz |
 
   - Every rate and the close radius (about 5 m) are constants expected to be retuned on better test maps. Owner: a slow first notice reads as fair; perfect reflexes do not.
-  - An engaged NPC past today's 30 m band acquires on every third decide.
+  - An engaged NPC whose target is beyond 100 m acquires on every third decide.
   - NPC steps and the snapshot cadence count the same simulation tick, and each step's state is recorded and sent stamped with its own tick, catch-up frames included, so clients never miss an NPC state. 15 Hz and slower steps are staggered by a pure function of per-NPC data that does not depend on spawn order or frame split, so assignment replays identically.
   - Amends `entity_model.md` §7c: guards evaluate on decide ticks, and the clip accumulator and moment check advance per 30 Hz step, firing each moment once.
 - **Every damage check against or by an NPC uses its tick pose.** An NPC's tick pose is its root and skeletal pose interpolated between its last two steps at that tick, the skeleton posed from the NPC's own clip time, so it is deterministic and replays identically. Hitscan, projectile contact, splash, hit zones, and the NPC's own melee reach and muzzle and launch origins all test it; what a player sees is what they hit and what hits them. Physics (doors, crush, pins, separation) and NPC sight keep the simulated pose, where the NPC physically is. The host draws the tick pose between ticks, one step behind the simulation, as clients do. The client interpolation delay floor for NPCs covers one 15 Hz step plus jitter, so a client never runs out of the next sample. Locomotion clips read interpolated velocity.
@@ -31,11 +32,12 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
   - A level with no id 51, or a tick with no pawn in play or down, runs every NPC perceivable.
   - Monster closets get no special case. A closet NPC stays dormant until it enters the play field; waking at the reveal or after a teleport reads as fair disorientation (owner).
 - **Tier changes.** An NPC moves up on the tick it becomes perceivable or gains a target. Damage and an opened aggro gate move it up on the tick they land when that is before the AI stage, otherwise on the next tick, and reach its brain at its next run. Moving up credits the time it has not run to its timers; it moves one ordinary step, so it never jumps. Moving down waits a short hold so an NPC at a set's edge does not flap.
+- **A dead NPC leaves the tiers.** On death it becomes a body moved every tick at its live pose, blended from its tick pose over one step so it does not jump; a still-hittable corpse is hit at its live pose. Every tick is the rate ragdoll physics will need, and clients see the body through ordinary snapshots.
 - **The dormant tier never skips simulation.** Its whole tick runs with its step scaled. Diverges from `cell-visibility-substrate.md` "must NOT cull authoritative simulation" in letter, not intent: amended to permit a coarser authoritative tick and keep forbidding a skipped one.
 - **Replan tiers outrank detail level.** The shared per-tick replan budget keeps its tier order (blocked route, then drift, then staleness) and its blocked-route wait bound for every NPC; within a replan tier, higher NPC tiers go first.
 - **Perception decides the tier, never targets.** Keeps `perf-ai-tick-cost`'s rejection of a visibility broad phase inside target selection.
 - **NPC is the umbrella term** for brain-bearing actors that are not player-controlled, enemies and allies alike (owner). This brief's rules apply to every NPC; the term lands in `entity_model.md`.
-- **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (if an NPC's cell is stored on it), §7c (every every-tick clause), `networking.md` (NPC presentation and the host's drawn-pose hits), the substrate doc's no-cull rule and its consumer relation, roadmap E15 Phase 4 and combat VFX culling (id 51, not id 46); the no-PVS ground rule lands in `context/lib/`.
+- **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (if an NPC's cell is stored on it), §7c (every every-tick clause), `movement.md` §6, `networking.md` (NPC presentation and the host's drawn-pose hits), the substrate doc's no-cull rule and its consumer relation, roadmap E15 Phase 4 and combat VFX culling (id 51, not id 46); the no-PVS ground rule lands in `context/lib/`.
 - **Non-goals:**
   - Network relevance and combat VFX culling: later consumers of the per-player step.
   - A sightline PVS bake, a tighter id 46, or door-aware relevance. Owner ground rule: get runtime value from metadata the bake already produces (cells, portals, sampled visibility), even after its source such as the BSP is dropped, instead of adding a Quake-style PVS bake, historically the heaviest bake stage here and in Quake.
@@ -52,17 +54,19 @@ Timing on time:
 - [ ] After one second, an NPC's weapon resources, cooldowns, activity time, damage recency and attacker ledger read the same at 60 Hz and in every tier: each advances once per elapsed tick (P11).
 
 Tiers and rates:
-- [ ] Each tier runs each part of an NPC at exactly its table rate, and nothing in an NPC runs faster than 30 Hz.
+- [ ] Each tier runs each part of an NPC at exactly its table rate, and no NPC part runs faster than 30 Hz except mover carry and push.
 - [ ] Player movement, movers, projectiles and player weapons still run every 60 Hz tick.
 - [ ] Every NPC step reaches clients stamped with its own tick, including on catch-up frames that run several ticks; with many NPCs, every staggered assignment and step tick is identical across frame splits, reversed spawn order, and host versus replay.
 - [ ] On the stress fixture, including when NPCs spawn interleaved or at a regular stride, the number of NPCs stepping or deciding on any tick differs from the per-phase mean by at most one (P15).
-- [ ] `@brain.acquisitionDue` is true only on decide ticks; an engaged NPC past 30 m acquires on every third, for every spawn tick relative to its phase (P5).
+- [ ] `@brain.acquisitionDue` is true only on decide ticks; an engaged NPC whose target is beyond 100 m acquires on every third, for every spawn tick relative to its phase (P5).
 - [ ] The clip-timed jab's first damage lands at its clip moment, within one 30 Hz step, for every phase and frame split (P19).
 - [ ] A clip moment that falls inside a 30 Hz or dormant step resolves once, on that step, with its gates evaluated then; none is skipped or fired twice.
 - [ ] An NPC crossing the close radius changes steering rate on the next tick, without a jump in its drawn position.
 - [ ] An NPC whose XZ distance from its tick pose to its target's position at the tier choice equals the close radius is close; one just beyond it is engaged.
 - [ ] Tier assignment is identical on a headless host and on a listen host whose camera looks elsewhere.
 - [ ] An NPC riding a lift or pushed by a door moves with it every tick in every tier: carried, pushed or blocking, never embedded or dropped through (P10).
+- [ ] An NPC riding a platform moving at 10 m/s at 15 Hz or 2 Hz is drawn and hit standing on the platform on every tick, never lagging or sunk into it, and its shots leave from where it is drawn.
+- [ ] An NPC killed between steps shows no jump in drawn position as it becomes a corpse; the corpse then moves every tick, and a still-hittable corpse is hit where it is drawn.
 - [ ] A dormant NPC wandering, patrolling or falling never passes through a wall, floor or ledge it would stop at under 60 Hz.
 - [ ] A knocked-back NPC travels the same distance at 30, 15 and 2 Hz as at 60 Hz, within one step's travel, for every authored drag.
 

@@ -132,7 +132,8 @@ fn runtime_first_generation(
 // Pool sizing. The figures are worked by hand from the bound, the 5/4 margin,
 // the 16-layer floor and the shipped layer prices; the renderer's own counters
 // confirm them where an adapter exists. This level is smaller than the floor,
-// so any bound sizes it all-resident (the margin alone is pinned in
+// so any bound sizes it at its cap, the all-resident layers times the margin:
+// 5 × 5/4 rounds up to 7 and 4 × 5/4 is 5 (the margin alone is pinned in
 // `postretro-level-format`'s sizing tests). Spares count, and a pool with
 // nothing to hold has neither layers nor a spare.
 #[test]
@@ -142,25 +143,25 @@ fn walk_harness_first_generation_matches_runtime() {
     const MASK_LAYER: u64 = 4 * MIB;
     let cases = [
         (
-            "a small bound rises past its margin to the all-resident layers",
+            "a small bound rises past its margin to the cap",
             sized_level(LightmapPoolBoundSection {
                 worst_lightmap_layers: 3,
                 worst_mask_layers: 2,
             }),
             PerPool {
-                lightmap: (5, 6 * LIGHTMAP_LAYER),
-                mask: (4, 5 * MASK_LAYER),
+                lightmap: (7, 8 * LIGHTMAP_LAYER),
+                mask: (5, 6 * MASK_LAYER),
             },
         ),
         (
-            "at the all-resident layers",
+            "a bound at the all-resident layers",
             sized_level(LightmapPoolBoundSection {
                 worst_lightmap_layers: 5,
                 worst_mask_layers: 4,
             }),
             PerPool {
-                lightmap: (5, 6 * LIGHTMAP_LAYER),
-                mask: (4, 5 * MASK_LAYER),
+                lightmap: (7, 8 * LIGHTMAP_LAYER),
+                mask: (5, 6 * MASK_LAYER),
             },
         ),
     ];
@@ -180,14 +181,14 @@ fn walk_harness_first_generation_matches_runtime() {
     let world = no_masks.load();
     let harness = harness_first_generation(&world, DEFAULT_LEVERS);
     assert_eq!(harness.mask, (0, 0), "no id 42, no mask pool");
-    assert_eq!(harness.lightmap.0, 1);
+    assert_eq!(harness.lightmap.0, 2, "one all-resident layer times 5/4");
     if let Some(runtime) = runtime_first_generation(TEST, &no_masks) {
         assert_eq!(runtime, harness, "the renderer's allocation with no id 42");
     }
 }
 
 // A harness sets a pool's size directly: one pool's figure leaves the other on
-// id 58, and may stand past what the level needs all-resident.
+// id 58, and may stand past the first generation's cap.
 #[test]
 fn a_pool_size_sets_that_pools_first_generation_alone() {
     let level = sized_level(LightmapPoolBoundSection {
@@ -203,16 +204,16 @@ fn a_pool_size_sets_that_pools_first_generation_alone() {
         harness_first_generation(&world, levers).map(|(layers, _)| layers)
     };
     assert_eq!(
-        layers(Some(7), None),
+        layers(Some(8), None),
         PerPool {
-            lightmap: 7,
-            mask: 4
+            lightmap: 8,
+            mask: 5
         }
     );
     assert_eq!(
         layers(None, Some(9)),
         PerPool {
-            lightmap: 5,
+            lightmap: 7,
             mask: 9
         }
     );

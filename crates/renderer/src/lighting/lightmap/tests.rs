@@ -171,7 +171,8 @@ fn a_streamed_level_plans_its_pool_shape_without_payloads() {
     assert!(plan.with_shadowmask());
     assert_eq!(
         (plan.first_generation_layers, plan.max_array_layers),
-        (PerPool::both(1), 256)
+        (PerPool::both(2), 256),
+        "one all-resident layer, capped at 5/4 of it rounded up"
     );
 
     let sizing = StreamedPoolSizing {

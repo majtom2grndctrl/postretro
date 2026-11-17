@@ -357,7 +357,16 @@ fn first_generation_is_bound_plus_margin_floored_and_capped() {
         layers(16, 18),
         "a small bound rises to the floor"
     );
-    assert_eq!(sized(36, 44), layers(40, 48), "capped at all-resident");
+    assert_eq!(
+        sized(36, 44),
+        layers(45, 55),
+        "past all-resident, under the cap"
+    );
+    assert_eq!(
+        sized(44, 52),
+        layers(50, 60),
+        "capped at all-resident × 5/4"
+    );
     assert_eq!(
         sized(0, 0),
         layers(16, 16),
@@ -391,7 +400,7 @@ fn a_mask_pool_with_nothing_to_hold_has_no_layers() {
     };
     for masks in [None, Some(&absent)] {
         let layers = first_generation(&index, masks, sizing, 2048);
-        assert_eq!((layers.lightmap, layers.mask), (3, 0));
+        assert_eq!((layers.lightmap, layers.mask), (4, 0), "3 × 5/4 rounded up");
         let demand = PoolDemand::of_indices(&index, masks);
         let model = LightmapPoolModel::new(demand, LIGHTMAP_POOL_LAYER_EDGE, layers).unwrap();
         let mask = model.pool(PoolKind::Mask);
@@ -448,7 +457,7 @@ fn a_harness_figure_sets_one_pools_first_generation() {
 }
 
 // The identity recorded beside measurements must change with the sizing policy,
-// and name the first generation's floor.
+// and name the first generation's floor and cap.
 #[test]
 fn pool_policy_identity_changed_with_the_sizing_policy() {
     // Each retired identity as its quoted literal, split so this file does
@@ -456,6 +465,11 @@ fn pool_policy_identity_changed_with_the_sizing_policy() {
     let retired = [
         ["\"demand-sized growth headroom", "4/3\""].join(" "),
         ["\"bound-sized split pools,", "shared margin 5/4\""].join(" "),
+        [
+            "\"bound-sized split pools, shared margin 5/4,",
+            "first generation floored at 16 layers\"",
+        ]
+        .join(" "),
     ];
     for retired in retired {
         assert_ne!(format!("{POOL_POLICY_IDENTITY:?}"), retired);
@@ -469,6 +483,10 @@ fn pool_policy_identity_changed_with_the_sizing_policy() {
             "floored at {} layers",
             postretro_level_format::lightmap_pool::FIRST_GENERATION_FLOOR_LAYERS
         )),
+        "{POOL_POLICY_IDENTITY}"
+    );
+    assert!(
+        POOL_POLICY_IDENTITY.contains("capped at all-resident × 5/4"),
         "{POOL_POLICY_IDENTITY}"
     );
 }

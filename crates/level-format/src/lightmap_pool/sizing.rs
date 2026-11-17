@@ -26,23 +26,27 @@ pub const LIGHTMAP_POOL_MARGIN: PoolMargin = PoolMargin {
     denominator: 4,
 };
 
-/// The fewest layers a pool's first generation takes, short of what the level
-/// needs all-resident. A small level's bound leaves a margin of a layer or
-/// two, and its walks miss where a pool that held the whole level would not:
-/// campaign-test's far-point tour has 8 late blocks at its 10 margin layers
-/// and 3 at its 11 all-resident ones. Below this floor a pool holds every
-/// block at once, at most 17 × 6 + 17 × 4 = 170 MiB with the spares, well
-/// under the budget warning. Set by late blocks measured on camera walks,
-/// never by the budget (`context/lib/rendering_pipeline.md` §4, Pool size).
+/// The fewest layers a pool's first generation takes, short of its cap. A
+/// small level's bound leaves a margin of a layer or two, and its walks miss
+/// where a pool at the cap would not: campaign-test's completed far-point tour
+/// has 8 late blocks at its 10 margin layers and none at its 14 capped ones.
+/// Below this floor a pool takes its cap, at most 17 × 6 + 17 × 4 = 170 MiB
+/// with the spares, well under the budget warning. Set by late blocks measured
+/// on camera walks, never by the budget (`context/lib/rendering_pipeline.md`
+/// §4, Pool size).
 pub const FIRST_GENERATION_FLOOR_LAYERS: u32 = 16;
 
 /// One pool's first generation: its compiled `bound` times the margin, raised
 /// to [`FIRST_GENERATION_FLOOR_LAYERS`], capped at what the level needs
-/// `all_resident`. A pool with anything to hold therefore takes at least one
-/// layer even at a bound of 0, so band pairs can land: a level can hold data
-/// no camera cell mandates. A pool with nothing to hold has none. Shelf
-/// packing is not monotone, so a cell's set can pack worse than the whole
-/// level: the cap never drops the pool below the bound.
+/// `all_resident` times the same margin. The cap carries the margin because the
+/// all-resident count is a whole-level pack from empty that the runtime's
+/// incremental placement cannot reach: at exactly that count a pool fragments
+/// and refuses band pairs, and campaign-test's realtime far-point tour rises
+/// from 43 late blocks to 47. A pool with anything to hold therefore takes at
+/// least two layers even at a bound of 0, so band pairs can land: a level can
+/// hold data no camera cell mandates. A pool with nothing to hold has none.
+/// Shelf packing is not monotone, so a cell's set can pack worse than the
+/// whole level: the cap never drops the pool below the bound.
 pub fn first_generation_layers(bound: u32, all_resident: u32) -> u32 {
     if all_resident == 0 {
         return 0;
@@ -50,7 +54,7 @@ pub fn first_generation_layers(bound: u32, all_resident: u32) -> u32 {
     LIGHTMAP_POOL_MARGIN
         .of(bound)
         .max(FIRST_GENERATION_FLOOR_LAYERS)
-        .min(all_resident.max(bound))
+        .min(LIGHTMAP_POOL_MARGIN.of(all_resident).max(bound))
 }
 
 /// One mask pool layer: a BC5 plane at the pool edge.
@@ -90,8 +94,8 @@ mod tests {
 
     #[test]
     fn the_cap_never_drops_a_pool_below_its_bound() {
-        assert_eq!(first_generation_layers(12, 10), 12);
-        assert_eq!(first_generation_layers(8, 9), 9);
+        assert_eq!(first_generation_layers(20, 10), 20, "past the cap of 13");
+        assert_eq!(first_generation_layers(14, 11), 14, "at the cap of 14");
     }
 
     fn header(irradiance_format: u32, direction_texel_scale: u32) -> LightmapHeader {
@@ -111,22 +115,32 @@ mod tests {
     }
 
     #[test]
-    fn first_generation_stops_at_the_all_resident_layers() {
+    fn first_generation_stops_at_the_all_resident_layers_times_the_margin() {
         assert_eq!(
-            first_generation_layers(100, 113),
+            first_generation_layers(100, 90),
             113,
-            "125 stops at the cap"
+            "125 stops at the cap, 112.5 rounded up"
         );
-        assert_eq!(first_generation_layers(27, 30), 30);
-        assert_eq!(first_generation_layers(30, 30), 30);
+        assert_eq!(first_generation_layers(100, 113), 125, "under the cap");
+        assert_eq!(first_generation_layers(27, 24), 30);
+        assert_eq!(first_generation_layers(30, 30), 38);
     }
 
-    // A small bound's margin is a layer or two: the floor holds the level
-    // all-resident instead, and never past it.
+    // A small bound's margin is a layer or two: the floor raises the pool to
+    // its cap instead, and never past it.
     #[test]
-    fn first_generation_rises_to_the_floor_short_of_all_resident() {
+    fn first_generation_rises_to_the_floor_short_of_the_cap() {
         let floor = FIRST_GENERATION_FLOOR_LAYERS;
-        assert_eq!(first_generation_layers(8, 11), 11, "campaign-test: all 11");
+        assert_eq!(
+            first_generation_layers(8, 11),
+            14,
+            "campaign-test's lightmap pool: 11 × 5/4 rounded up"
+        );
+        assert_eq!(
+            first_generation_layers(7, 7),
+            9,
+            "campaign-test's mask pool: 8.75 rounds up"
+        );
         assert_eq!(
             first_generation_layers(8, 100),
             floor,
@@ -138,15 +152,16 @@ mod tests {
             17,
             "a margin past the floor stands"
         );
-        assert_eq!(first_generation_layers(floor, floor), floor);
+        assert_eq!(first_generation_layers(1, 12), 15, "a cap under the floor");
+        assert_eq!(first_generation_layers(1, 13), floor, "a cap past it");
     }
 
-    // A level can hold blocks no camera cell mandates: its pool still needs a
-    // layer for band pairs to land in.
+    // A level can hold blocks no camera cell mandates: its pool still needs
+    // room for band pairs to land in.
     #[test]
     fn first_generation_of_a_zero_bound_takes_the_floor_only_with_something_to_hold() {
-        assert_eq!(first_generation_layers(0, 5), 5);
-        assert_eq!(first_generation_layers(0, 1), 1);
+        assert_eq!(first_generation_layers(0, 5), 7);
+        assert_eq!(first_generation_layers(0, 1), 2);
         assert_eq!(
             first_generation_layers(0, 100),
             FIRST_GENERATION_FLOOR_LAYERS

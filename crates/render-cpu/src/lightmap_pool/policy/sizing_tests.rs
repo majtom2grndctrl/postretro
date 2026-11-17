@@ -78,12 +78,10 @@ impl Corridor {
 
     /// `camera`'s targets: its mandatory set, then a band one cell further.
     fn targets(&self, camera: u32) -> Vec<LightmapTarget> {
-        let mut targets: Vec<LightmapTarget> = Self::blocks_of(Self::cells_within(
-            Self::REACH + 1,
-            camera,
-        ))
-        .map(|block| band(block, 1))
-        .collect();
+        let mut targets: Vec<LightmapTarget> =
+            Self::blocks_of(Self::cells_within(Self::REACH + 1, camera))
+                .map(|block| band(block, 1))
+                .collect();
         for block in Self::mandatory(camera) {
             let at = targets.iter().position(|t| t.block == block).unwrap();
             targets[at] = mandatory(block);
@@ -118,7 +116,11 @@ fn walk_growths(corridor: &Corridor, seed: u64, steps: u32, h: &mut Harness) -> 
             .filter(|&block| !h.model.is_resident(block))
             .collect();
         let plan = h.drain(&set, &remove, &ready);
-        assert!(plan.deferred.is_empty(), "every pair places: {:?}", plan.deferred);
+        assert!(
+            plan.deferred.is_empty(),
+            "every pair places: {:?}",
+            plan.deferred
+        );
         growths += u32::from(plan.pools[POOL].growth.is_some());
         h.model.release_retirement(POOL);
         targets = next;
@@ -156,11 +158,23 @@ fn mixed_level(seed: u64, count: u32) -> Vec<(u32, u32)> {
     (0..count).map(|_| lcg.extent()).collect()
 }
 
-/// A pool at `extents`' all-resident layers, as a level whose worst cell is the
-/// whole of it sizes one.
+/// A pool at exactly `extents`' all-resident layers, with none of the margin
+/// the first generation's cap carries: the tightest pool the placement must
+/// still hold every mandatory block in.
 fn at_the_all_resident_cap(extents: &[(u32, u32)]) -> Harness {
     let all_resident = pack_layers(extents, 0..extents.len() as u32);
-    Harness::new(extents, first_generation_layers(all_resident, all_resident))
+    Harness::new(extents, all_resident)
+}
+
+// A level whose worst cell is the whole of it starts a margin past that pool.
+#[test]
+fn a_whole_level_bound_starts_a_margin_past_the_all_resident_layers() {
+    let mixed = mixed_level(0xca9, 120);
+    let all_resident = pack_layers(&mixed, 0..mixed.len() as u32);
+    assert_eq!(
+        first_generation_layers(all_resident, all_resident),
+        LIGHTMAP_POOL_MARGIN.of(all_resident)
+    );
 }
 
 fn assert_holds_every_block_without_growth(h: &Harness, extents: &[(u32, u32)], how: &str) {
@@ -169,7 +183,11 @@ fn assert_holds_every_block_without_growth(h: &Harness, extents: &[(u32, u32)], 
         extents.len(),
         "{how}: every block"
     );
-    assert_eq!(h.model.pool(POOL).texture_allocations(), 1, "{how}: no growth");
+    assert_eq!(
+        h.model.pool(POOL).texture_allocations(),
+        1,
+        "{how}: no growth"
+    );
     assert_disjoint_within_layers(&h.model);
 }
 
@@ -281,7 +299,12 @@ fn band_uses_every_layer_under_any_controller() {
     // A replacement controller's first batch starts from an empty pool whose
     // size stands, and every layer is open to it.
     let plan = h.model.plan_batch_from_empty(&band_batch(2, 0..LAYERS + 2));
-    assert_eq!(plan.installed.len(), LAYERS as usize + 2, "{:?}", plan.refused);
+    assert_eq!(
+        plan.installed.len(),
+        LAYERS as usize + 2,
+        "{:?}",
+        plan.refused
+    );
     assert!(plan.evicted.is_empty(), "{:?}", plan.evicted);
     h.execute();
     assert_eq!(top_layer(&h), Some(grown.to_layers - 1));
@@ -296,14 +319,21 @@ fn growth_reserves_demand_times_the_shared_margin() {
         let mut h = Harness::with_layer_limit(&vec![(64, 64); blocks as usize], 1, limit);
         let set: Vec<LightmapTarget> = (0..targeted).map(mandatory).collect();
         let plan = h.drain(&set, &[], &[0, 1]);
-        plan.pools[POOL].growth.expect("two full layers past one").to_layers
+        plan.pools[POOL]
+            .growth
+            .expect("two full layers past one")
+            .to_layers
     };
     let margin = LIGHTMAP_POOL_MARGIN.of(8);
     assert_eq!(margin, 10, "eight layers of demand, 5/4");
     assert_eq!(grow(16, 8, u32::MAX), margin, "demand times the margin");
     assert_eq!(grow(9, 8, u32::MAX), 9, "capped at all-resident");
     assert_eq!(grow(16, 8, 9), 9, "capped at the device limit");
-    assert_eq!(grow(16, 2, u32::MAX), 3, "rounded up, from the demand alone");
+    assert_eq!(
+        grow(16, 2, u32::MAX),
+        3,
+        "rounded up, from the demand alone"
+    );
 
     let growth = include_str!("growth.rs").to_lowercase();
     assert!(

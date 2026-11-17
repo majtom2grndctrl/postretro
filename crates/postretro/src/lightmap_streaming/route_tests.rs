@@ -9,6 +9,7 @@ use postretro_level_format::lightmap::LightmapBlockPayload;
 use postretro_level_loader::{LightmapBlockFileRanges, PrlLoadError};
 
 use super::*;
+use crate::lightmap_streaming::controller::LIGHTMAP_QUEUE_CAPACITY;
 use crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl;
 use crate::lightmap_streaming::source::{BlockSummary, ManifestBlockSource};
 use crate::lightmap_streaming::test_fixtures::{ReadLog, wait_until};
@@ -112,6 +113,7 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
             item_hash: [0; 32],
         },
         ranges: ReadRanges::one(range(block)),
+        raise_only: false,
     };
 
     // Block 4's read is held while blocks 0, 2 and 3 queue behind it. Block 1

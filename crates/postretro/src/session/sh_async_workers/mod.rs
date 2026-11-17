@@ -112,7 +112,8 @@ impl WorkerShared {
 pub(super) enum ShWorkerResult {
     Prepared(DecodedClusterShPayload),
     Failed(PrlLoadError),
-    /// The cluster left the target set before its read; nothing was read.
+    /// The cluster left the target set before its read or its decode;
+    /// nothing was decoded.
     Cancelled,
 }
 
@@ -365,7 +366,9 @@ impl ShAsyncWorkers {
 #[derive(Debug)]
 pub(crate) struct ShWorkerRetirement {
     handles: Vec<JoinHandle<()>>,
-    /// Keeps the exact opened PRL alive until every handle has joined.
+    /// Keeps the opened PRL alive until every handle has joined. Thread
+    /// safety does not rest on it: each route and decode job holds its own
+    /// `Arc` of the source it reads and decodes through.
     retained_manifest: Option<Arc<ShStreamManifest>>,
 }
 

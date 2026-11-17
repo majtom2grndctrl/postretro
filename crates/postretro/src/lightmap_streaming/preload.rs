@@ -14,9 +14,9 @@ use super::*;
 pub(crate) struct LightmapPreloadReads {
     /// Pairs read whole and placed in the batch.
     pub(crate) pairs: u32,
-    /// Their stored bytes, both halves.
+    /// Their decoded bytes, both halves: what the drain installs.
     pub(crate) bytes: u64,
-    /// Pairs whose read or split failed; they stay non-resident.
+    /// Pairs whose read, split or decode failed; they stay non-resident.
     pub(crate) failed: u32,
 }
 

@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use postretro_level_format::lightmap::LightmapBlockPayload;
 use postretro_level_loader::PrlLoadError;
 
-use super::controller::LIGHTMAP_QUEUE_CAPACITY;
+use super::controller::LIGHTMAP_COMPLETION_CAPACITY;
 use super::decode_job::LightmapDecodeJob;
 use super::source::LightmapBlockSource;
 use crate::streaming::decode_pool::DecodeQueue;
@@ -27,7 +27,8 @@ pub(crate) enum LightmapReadResult {
     Failed(PrlLoadError),
     /// Read whole, but a plane failed its decode; the pair is never uploaded.
     DecodeFailed(PrlLoadError),
-    /// The block left the target set before every range was read.
+    /// The block left the target set before every range was read, or
+    /// before its decode began.
     Cancelled,
 }
 
@@ -91,10 +92,16 @@ pub(crate) struct PendingLightmapRoute {
     completed: SyncSender<LightmapCompletion>,
 }
 
+/// Blocks raised to the mandatory tier after their read was delivered. A
+/// queued decode job reads its block's bit as its tier, so the pool takes it
+/// before every optional job. Each delivery clears its block's bit first.
+pub(super) type RaisedBlocks = TargetBitset;
+
 impl PendingLightmapRoute {
     /// The route over the level's decode pool.
     pub(crate) fn attach(self, decode: DecodeQueue) -> LightmapReadRoute {
         LightmapReadRoute {
+            raised: Arc::new(RaisedBlocks::new(self.source.block_count())),
             source: self.source,
             targets: self.targets,
             ledger: self.ledger,
@@ -110,21 +117,22 @@ impl PendingLightmapRoute {
 pub(crate) struct LightmapReadRoute {
     source: Arc<dyn LightmapBlockSource>,
     targets: Arc<TargetBitset>,
+    raised: Arc<RaisedBlocks>,
     ledger: Arc<LightmapRouteLedger>,
     completed: SyncSender<LightmapCompletion>,
     decode: DecodeQueue,
 }
 
 /// A pending route plus the frame side's completion receiver. The queue
-/// holds every completion the controller's submissions can produce (see
-/// [`LIGHTMAP_QUEUE_CAPACITY`]), so neither the issuer nor a decode thread
-/// ever waits on the frame.
+/// holds every completion the controller's permits can have outstanding (see
+/// [`LIGHTMAP_COMPLETION_CAPACITY`]), so neither the issuer nor a decode
+/// thread ever waits on the frame.
 pub(crate) fn lightmap_route(
     source: Arc<dyn LightmapBlockSource>,
     targets: Arc<TargetBitset>,
     ledger: Arc<LightmapRouteLedger>,
 ) -> (PendingLightmapRoute, Receiver<LightmapCompletion>) {
-    let (completed, receiver) = sync_channel(LIGHTMAP_QUEUE_CAPACITY);
+    let (completed, receiver) = sync_channel(LIGHTMAP_COMPLETION_CAPACITY);
     (
         PendingLightmapRoute {
             source,
@@ -176,8 +184,9 @@ impl ReadRoute for LightmapReadRoute {
     }
 
     /// A read pair is charged at its decoded size from here on, its stored
-    /// bytes released, and queued for decode at its request's tier. False
-    /// when the session or the decode pool is gone; the issuer then exits.
+    /// bytes released, and queued for decode at its request's tier, until a
+    /// later raise lifts it. False when the session or the decode pool is
+    /// gone; the issuer then exits.
     fn deliver(&self, request: ReadRequest, outcome: ReadOutcome) -> bool {
         match outcome {
             ReadOutcome::Read(parts) => {
@@ -191,19 +200,29 @@ impl ReadRoute for LightmapReadRoute {
                 let decoded = self.source.decoded_pair_bytes(request.key);
                 self.ledger.charge(decoded);
                 self.ledger.release(stored);
+                // A raise of an earlier read of this block is spent.
+                self.raised.set(request.key, false);
                 self.decode.submit(Box::new(LightmapDecodeJob {
                     request,
                     lightmap,
                     shadowmask,
                     charged_bytes: decoded,
                     source: Arc::clone(&self.source),
+                    targets: Arc::clone(&self.targets),
+                    raised: Arc::clone(&self.raised),
                     ledger: Arc::clone(&self.ledger),
-                    completed: self.completed.clone(),
+                    completed: Some(self.completed.clone()),
                 }))
             }
             ReadOutcome::Failed(error) => self.complete(request, LightmapReadResult::Failed(error)),
             ReadOutcome::Cancelled => self.complete(request, LightmapReadResult::Cancelled),
         }
+    }
+
+    /// The pair's decode, if still queued, is taken before every optional
+    /// job. One already decoding or delivered needs nothing.
+    fn raise_past_read(&self, key: u32) {
+        self.raised.set(key, true);
     }
 }
 

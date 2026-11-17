@@ -211,10 +211,10 @@ pub fn plan_static_pool(
 /// drain, so only the pool shape and each pool's first generation are settled
 /// here. Degrades to placeholder mode, logging once, when the device cannot
 /// hold a pool layer or one layer plus the spare, or when the mask planes do
-/// not fit the pool layer edge. A level whose every block at
-/// once would not fit the device still streams, since streaming holds only a
-/// subset: the pool model defers a pair rather than grow past the device's
-/// layers, in either pool.
+/// not fit the pool layer edge. A level whose every block at once would not
+/// fit the device still streams, since streaming holds only a subset: the
+/// pool model defers a pair rather than grow past the device's layers, in
+/// either pool.
 pub fn plan_streaming_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,

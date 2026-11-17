@@ -986,6 +986,7 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
                     item_hash: [0; 32],
                 },
                 ranges: ReadRanges::one(0..64),
+                raise_only: false,
             };
             let _ = completions.send(LightmapCompletion {
                 request,

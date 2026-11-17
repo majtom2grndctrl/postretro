@@ -1,9 +1,10 @@
 //! Coded pairs through the route and the decode pool: decoded-size charges,
-//! pre-split admission, corrupt blocks, and a raised pair's second decode.
+//! pre-split admission, corrupt blocks, raised and departed pairs, and the
+//! completion queue bound.
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -17,9 +18,10 @@ use crate::lightmap_streaming::route::{
 };
 use crate::lightmap_streaming::source::BlockSummary;
 use crate::lightmap_streaming::test_fixtures::*;
-use crate::streaming::decode_pool::DecodePool;
+use crate::streaming::decode_pool::{DecodeJob, DecodePool};
 use crate::streaming::issuer::{ReadIssuer, ReadRoutes};
 use crate::streaming::request::ReadRequest;
+use crate::streaming::target_bitset::TargetBitset;
 
 const RATIO: u64 = 4;
 
@@ -122,6 +124,8 @@ struct DecodeProbe {
     corrupt: Option<u32>,
     held: Option<u32>,
     decodes: Vec<AtomicUsize>,
+    /// Blocks in the order their decodes began.
+    order: Mutex<Vec<u32>>,
     gate: (Mutex<GateState>, Condvar),
 }
 
@@ -141,12 +145,17 @@ impl DecodeProbe {
             corrupt,
             held,
             decodes,
+            order: Mutex::default(),
             gate: Default::default(),
         })
     }
 
     fn decodes(&self, block: u32) -> usize {
         self.decodes[block as usize].load(Ordering::SeqCst)
+    }
+
+    fn order(&self) -> Vec<u32> {
+        self.order.lock().unwrap().clone()
     }
 
     fn wait_for_held_decode(&self) {
@@ -191,6 +200,7 @@ impl LightmapBlockSource for DecodeProbe {
         lightmap: Vec<u8>,
         shadowmask: Option<Vec<u8>>,
     ) -> Result<LightmapBlockPayload, PrlLoadError> {
+        self.order.lock().unwrap().push(block);
         let first = self.decodes[block as usize].fetch_add(1, Ordering::SeqCst) == 0;
         if self.held == Some(block) && first {
             let (state, changed) = &self.gate;
@@ -349,12 +359,13 @@ fn a_corrupt_pair_fails_its_decode_and_is_never_uploaded() {
     assert_eq!(ready, vec![0, 2], "the corrupt block is never uploaded");
 }
 
-// AC 21 / P4: a band pair raised to mandatory after its read was delivered,
-// while its first decode is still running, is read and decoded a second time
-// at the mandatory tier (at most twice), keeps one permit and one in-hand
-// charge, and its duplicate completion is released.
+// AC 21 / P4: a band pair raised to mandatory after its read was delivered
+// is never read or decoded again. The raise lifts its queued decode, which is
+// taken before the mandatory pairs read after it; the pair already decoding
+// finishes as it was. Each keeps one permit and one charge, and completes
+// once.
 #[test]
-fn a_pair_raised_while_decoding_decodes_at_most_twice_and_is_charged_once() {
+fn a_pair_raised_after_its_read_decodes_once_and_is_charged_once() {
     let mut rig = Rig::new(coded_corridor(64), corridor_set(), None);
     let batch = rig.portal(0, &[]).unwrap();
     rig.install_all(&batch, headroom(8));
@@ -367,44 +378,272 @@ fn a_pair_raised_while_decoding_decodes_at_most_twice_and_is_charged_once() {
     let pipeline = Pipeline::over(&rig, &source);
     pipeline.submit(std::mem::take(&mut rig.requests));
     source.wait_for_held_decode();
+    let decoded_pair = 2 * 64 * RATIO;
+    wait_until("both band pairs read and queued for decode", || {
+        pipeline.ledger.in_memory_bytes() == 2 * decoded_pair
+    });
     let in_hand = rig.controller.in_hand_bytes();
 
     // Camera 2 makes 3 and 4 mandatory while 3 decodes and 4 is queued.
     let batch = rig.portal(2, &[]).unwrap();
     rig.install_all(&batch, headroom(8));
-    let raised: Vec<(u32, ReadTier)> = rig
+    let raises: Vec<(u32, ReadTier)> = rig
         .requests
         .iter()
+        .filter(|request| request.raise_only)
         .map(|request| (request.key, request.tier))
-        .filter(|&(key, _)| key == 3 || key == 4)
         .collect();
     assert_eq!(
-        raised,
+        raises,
         vec![(3, ReadTier::Mandatory), (4, ReadTier::Mandatory)]
     );
-    let others = rig.requests.len() - raised.len();
+    let others = rig.requests.len() - raises.len();
+    assert!(others > 0, "camera 2 reads pairs of its own");
     pipeline.submit(std::mem::take(&mut rig.requests));
+    wait_until(
+        "camera 2's new pairs read and queued behind block 4",
+        || pipeline.ledger.in_memory_bytes() == (2 + others as u64) * decoded_pair,
+    );
     source.release();
 
-    pipeline.admit(&mut rig, 4 + others);
+    pipeline.admit(&mut rig, 2 + others);
+    assert_eq!((source.decodes(3), source.decodes(4)), (1, 1));
     assert_eq!(
-        source.decodes(3),
-        2,
-        "the raise reads and decodes once more"
+        source.order()[..2],
+        [3, 4],
+        "the raised queued pair decodes before the mandatory pairs read after it"
     );
-    assert!(source.decodes(4) <= 2);
-    assert_eq!(rig.controller.counters().duplicate_completions, 2);
+    assert_eq!(rig.controller.counters().duplicate_completions, 0);
+    assert!(
+        pipeline
+            .completions
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err(),
+        "no second completion"
+    );
     assert_eq!(
         rig.controller.in_hand_bytes() - in_hand,
-        others as u64 * 2 * 64 * RATIO,
+        others as u64 * decoded_pair,
         "the raised pairs keep their one charge; only camera 2's new reads add"
     );
-    assert_eq!(
-        pipeline.ledger.in_memory_bytes(),
-        0,
-        "every duplicate released"
-    );
+    assert_eq!(pipeline.ledger.in_memory_bytes(), 0);
     let batch = rig.portal(2, &[]).unwrap();
     let ready: Vec<u32> = batch.ready.iter().map(|prepared| prepared.block).collect();
     assert!(ready.contains(&3) && ready.contains(&4), "{ready:?}");
+}
+
+/// Camera 0's three mandatory pairs on the pipeline, block 0's decode held
+/// and blocks 1 and 2 read and queued behind it.
+fn three_pairs_queued_behind_a_held_decode() -> (Rig, Arc<DecodeProbe>, Pipeline) {
+    let mut rig = Rig::new(coded_corridor(64), corridor_set(), None);
+    let source = DecodeProbe::new(Arc::clone(&rig.source), None, Some(0));
+    let pipeline = Pipeline::over(&rig, &source);
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    assert_eq!(rig.requested_blocks(), vec![0, 1, 2]);
+    pipeline.submit(std::mem::take(&mut rig.requests));
+    source.wait_for_held_decode();
+    wait_until("every pair read and queued for decode", || {
+        pipeline.ledger.in_memory_bytes() == 3 * 2 * 64 * RATIO
+    });
+    (rig, source, pipeline)
+}
+
+// AC 22 / P7: a pair whose block leaves its targets while its decode is
+// queued is not decoded: it completes cancelled with no charge, and the
+// controller frees its permit and returns it to Absent.
+#[test]
+fn a_departed_pair_is_cancelled_without_decoding_and_its_charge_released() {
+    let (mut rig, source, pipeline) = three_pairs_queued_behind_a_held_decode();
+    // Camera 5's set holds none of blocks 0..=2.
+    rig.portal(5, &[]);
+    rig.requests.clear();
+    source.release();
+    let mut admitted = pipeline.admit(&mut rig, 3);
+    admitted.sort_unstable();
+    assert_eq!(
+        admitted,
+        vec![(0, 2 * 64 * RATIO), (1, 0), (2, 0)],
+        "the departed queued pairs complete uncharged"
+    );
+    assert_eq!((source.decodes(1), source.decodes(2)), (0, 0));
+    for block in 0..3 {
+        assert_eq!(rig.controller.phase(block), BlockPhase::Absent, "{block}");
+    }
+    assert_eq!(rig.controller.counters().cancelled_reads, 2);
+    assert_eq!(
+        rig.controller.counters().departed_reads,
+        1,
+        "block 0 decoded"
+    );
+    assert_eq!(pipeline.ledger.in_memory_bytes(), 0);
+}
+
+// P7: a block that leaves its targets and returns before its queued decode
+// runs still decodes and becomes ready.
+#[test]
+fn a_pair_whose_target_returned_before_its_decode_still_decodes() {
+    let (mut rig, source, pipeline) = three_pairs_queued_behind_a_held_decode();
+    for camera in [5, 0] {
+        let batch = rig.portal(camera, &[]).unwrap();
+        rig.install_all(&batch, headroom(8));
+    }
+    rig.requests.clear();
+    source.release();
+    pipeline.admit(&mut rig, 3);
+    assert_eq!((source.decodes(1), source.decodes(2)), (1, 1));
+    let batch = rig.portal(0, &[]).unwrap();
+    let ready: Vec<u32> = batch.ready.iter().map(|prepared| prepared.block).collect();
+    assert_eq!(ready, vec![0, 1, 2]);
+    assert_eq!(rig.controller.counters().cancelled_reads, 0);
+}
+
+/// Another resource's mandatory decode: reports when the pool runs it.
+struct OtherResourceJob(std::sync::mpsc::Sender<()>);
+
+impl DecodeJob for OtherResourceJob {
+    fn tier(&self) -> ReadTier {
+        ReadTier::Mandatory
+    }
+
+    fn run(&mut self, _: &AtomicBool) {
+        self.0.send(()).unwrap();
+    }
+
+    fn discard(self: Box<Self>) {}
+
+    fn panicked(self: Box<Self>, _: &AtomicBool) {}
+}
+
+/// An optional job: queued behind every mandatory and raised job.
+struct OptionalJob(OtherResourceJob);
+
+impl DecodeJob for OptionalJob {
+    fn tier(&self) -> ReadTier {
+        ReadTier::Optional
+    }
+
+    fn run(&mut self, retiring: &AtomicBool) {
+        self.0.run(retiring);
+    }
+
+    fn discard(self: Box<Self>) {}
+
+    fn panicked(self: Box<Self>, _: &AtomicBool) {}
+}
+
+// P3 with P7: a mandatory decode of the other resource queued behind
+// departed lightmap pairs on a one-thread pool waits for the running decode
+// only, never for theirs.
+#[test]
+fn a_mandatory_job_behind_departed_pairs_runs_without_waiting_for_their_decodes() {
+    let (mut rig, source, pipeline) = three_pairs_queued_behind_a_held_decode();
+    let (ran, other_ran) = std::sync::mpsc::channel();
+    let queue = pipeline.decode.as_ref().unwrap().queue();
+    assert!(queue.submit(Box::new(OtherResourceJob(ran))));
+    rig.portal(5, &[]);
+    rig.requests.clear();
+    source.release();
+    other_ran
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the other resource's decode runs");
+    assert_eq!(
+        source.order(),
+        vec![0],
+        "only the decode already running went first"
+    );
+    pipeline.admit(&mut rig, 3);
+    assert_eq!(pipeline.ledger.in_memory_bytes(), 0);
+}
+
+// The completion queue bound: every permit's read submitted and raised, with
+// nothing admitted, fits the completion queue. A raise never completes, so
+// the issuer and the decode thread finish every read and exit without
+// waiting on the frame.
+#[test]
+fn every_permit_read_and_raised_fits_the_completion_queue_undrained() {
+    let blocks = MAX_LIGHTMAP_PERMITS as u32;
+    let source = TestBlockSource::new(
+        (0..blocks)
+            .map(|block| BlockSpec::standard(block, block, 64, true).coded(RATIO))
+            .collect(),
+    );
+    let targets = Arc::new(TargetBitset::new(blocks));
+    targets.publish(&(0..blocks).collect());
+    let ledger = Arc::new(LightmapRouteLedger::default());
+    let (route, completions) = lightmap_route(
+        Arc::clone(&source) as Arc<dyn LightmapBlockSource>,
+        targets,
+        Arc::clone(&ledger),
+    );
+    let decode = DecodePool::spawn(1, LIGHTMAP_QUEUE_CAPACITY).unwrap();
+    let (issuer, handle) = ReadIssuer::spawn(
+        ReadRoutes::default().with(
+            StreamResource::LightmapBlock,
+            Box::new(route.attach(decode.queue())),
+        ),
+        LIGHTMAP_QUEUE_CAPACITY,
+    )
+    .unwrap();
+    let request = |block: u32, tier: ReadTier, raise_only: bool| {
+        let spec = source.spec(block);
+        ReadRequest {
+            resource: StreamResource::LightmapBlock,
+            key: block,
+            tier,
+            identity: crate::streaming::request::ReadIdentity {
+                generation: 1,
+                content_tag: [0; 32],
+                item_hash: [0; 32],
+            },
+            ranges: crate::streaming::request::ReadRanges::pair(
+                spec.lightmap.clone(),
+                spec.shadowmask.clone().unwrap(),
+            ),
+            raise_only,
+        }
+    };
+    for block in 0..blocks {
+        issuer
+            .submit(request(block, ReadTier::Optional, false))
+            .unwrap();
+    }
+    for block in 0..blocks {
+        issuer
+            .submit(request(block, ReadTier::Mandatory, true))
+            .unwrap();
+    }
+    let decoded_pair = 2 * 64 * RATIO;
+    wait_until("every read delivered to the decode pool", || {
+        ledger.in_memory_bytes() == u64::from(blocks) * decoded_pair
+    });
+    // Queued behind every pair's decode: it runs only once each has sent its
+    // completion.
+    let (ran, last_ran) = std::sync::mpsc::channel();
+    assert!(
+        decode
+            .queue()
+            .submit(Box::new(OptionalJob(OtherResourceJob(ran))))
+    );
+    last_ran
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the decode thread never waits on the undrained queue");
+    drop(issuer);
+    handle.join().unwrap();
+    drop(decode);
+    let mut delivered: Vec<u32> = completions
+        .try_iter()
+        .map(|completion| {
+            assert!(matches!(completion.result, LightmapReadResult::Decoded(_)));
+            ledger.release(completion.charged_bytes);
+            completion.request.key
+        })
+        .collect();
+    delivered.sort_unstable();
+    assert_eq!(
+        delivered,
+        (0..blocks).collect::<Vec<_>>(),
+        "one completion per read"
+    );
+    assert_eq!(ledger.in_memory_bytes(), 0);
 }

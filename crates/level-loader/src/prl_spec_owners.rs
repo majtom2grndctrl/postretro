@@ -41,17 +41,25 @@ pub(crate) fn build_vertex_spec_owners(
     let Some((face_owners, mask_offsets)) = face_owners else {
         return stream;
     };
-    debug_assert_eq!(
-        face_owners.len(),
-        mask_offsets.len(),
-        "id 42 parses one offset per owner entry"
-    );
     // The face that stamped each vertex (`UNSTAMPED` until one does), so a
     // second face can be compared against the entry already there. Id 42's face
     // count is a u32, so every face index fits.
     const UNSTAMPED: u32 = u32::MAX;
     let mut stamped_by = vec![UNSTAMPED; vertex_count];
-    let stamped = face_index_ranges(leaves, face_owners.len(), indices.len()).and_then(|ranges| {
+    // Id 42 parses one offset per owner entry; zipping lists of two lengths
+    // would hand faces past the shorter one nothing, silently.
+    let lengths_match = if face_owners.len() == mask_offsets.len() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} owner entries but {} mask offsets",
+            face_owners.len(),
+            mask_offsets.len()
+        ))
+    };
+    let stamped =
+        lengths_match.and_then(|()| face_index_ranges(leaves, face_owners.len(), indices.len()));
+    let stamped = stamped.and_then(|ranges| {
         let entries = face_owners
             .iter()
             .zip(mask_offsets)
@@ -377,6 +385,23 @@ mod tests {
         );
         assert!(
             errors[0].contains("no static non-SDF world specular"),
+            "{errors:?}"
+        );
+    }
+
+    // Owner entries and mask offsets of different counts never stamp: the
+    // stream empties by name, as any other mismatch does.
+    #[test]
+    fn owner_entries_and_mask_offsets_of_different_counts_empty_the_stream() {
+        let (vertex_count, indices) = three_faces();
+        let leaves = [leaf(0, 6), leaf(6, 3), leaf(9, 6)];
+        let capture = LogCapture::start();
+        let stream = stamp(vertex_count, &indices, &leaves, &OWNERS, &OFFSETS[..2]);
+        assert_eq!(stream, vec![EMPTY; vertex_count]);
+        let errors = loader_errors(&capture);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("3 owner entries but 2 mask offsets"),
             "{errors:?}"
         );
     }

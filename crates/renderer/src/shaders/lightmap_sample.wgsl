@@ -190,7 +190,9 @@ fn animated_block_uv(block_texel: vec2<f32>, block_id: u32) -> AnimatedBlockUv {
 // the mask block; the clamp to the plane's own half-texel rect (`extent`, the
 // packed mask word: the whole mask block for plane A, the plane-B sub-rect for
 // plane B) keeps bilinear taps inside the plane's own placement, never in a
-// neighbouring one.
+// neighbouring one. A face that owns only channels 0/1 lies outside the
+// plane-B sub-rect; its plane-B sample clamps into another chart and goes
+// unused, since the face owns no channel 2 or 3 to read it (pin P1).
 fn sample_shadowmask_plane(mask_texel: vec2<f32>, address: u32, extent: u32) -> vec2<f32> {
     return textureSampleLevel(
         shadowmask_atlas,

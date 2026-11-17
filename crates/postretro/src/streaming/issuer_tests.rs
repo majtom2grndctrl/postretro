@@ -47,6 +47,8 @@ struct Log {
     /// Reads starting at these offsets fail.
     failing: Mutex<BTreeSet<u64>>,
     charged: AtomicU64,
+    /// Raises handed to a route past their read.
+    raises: Mutex<Vec<(StreamResource, u32)>>,
 }
 
 impl Log {
@@ -144,6 +146,10 @@ impl ReadRoute for TestRoute {
             .push((self.resource, request.key, delivered));
         true
     }
+
+    fn raise_past_read(&self, key: u32) {
+        self.log.raises.lock().unwrap().push((self.resource, key));
+    }
 }
 
 /// One issuer serving both resources. Dropping it releases every held read
@@ -225,6 +231,7 @@ fn request(resource: StreamResource, key: u32, tier: ReadTier, ranges: ReadRange
             item_hash: [key as u8; 32],
         },
         ranges,
+        raise_only: false,
     }
 }
 
@@ -388,6 +395,44 @@ fn shared_issuer_absorbs_repeat_submissions_of_a_pending_key_into_one_read() {
         .filter(|(resource, _, _)| *resource == Lm)
         .collect();
     assert_eq!(block.len(), 1);
+}
+
+// AC 21 / P4 (issuer half): a raise is never read. While its request is
+// pending it lifts that request's tier; once the request has been delivered
+// the issuer hands the raise to the route, which completes nothing.
+#[test]
+fn a_raise_is_never_read_and_past_the_read_goes_to_the_route() {
+    let harness = Harness::new();
+    let raise = |request: ReadRequest| ReadRequest {
+        tier: M,
+        raise_only: true,
+        ..request
+    };
+    harness.behind_held_read(sh(0, M, 20), |harness| {
+        harness.submit(sh(1, O, 2));
+        harness.submit(block_pair(7, O, 4, 6));
+        harness.submit(raise(block_pair(7, O, 4, 6)));
+    });
+    harness.log.wait_for_deliveries(3);
+    assert_eq!(
+        harness.log.read_spans(),
+        vec![(Sh, at(20)), (Lm, at(4)), (Lm, at(6)), (Sh, at(2))],
+        "the pending pair is raised ahead of the optional chunk"
+    );
+    assert!(harness.log.raises.lock().unwrap().is_empty());
+
+    harness.submit(raise(block_pair(7, O, 4, 6)));
+    harness.submit(raise(sh(1, O, 2)));
+    harness
+        .log
+        .wait_until("both raises reach their routes", |log| {
+            log.raises.lock().unwrap().len() == 2
+        });
+    assert_eq!(*harness.log.raises.lock().unwrap(), vec![(Lm, 7), (Sh, 1)]);
+    // Nothing else is queued; give a stray read time to show.
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(harness.log.read_spans().len(), 4, "no raise is read");
+    assert_eq!(harness.log.deliveries().len(), 3, "no raise completes");
 }
 
 // Regression: cancel only set a flag, so an idle issuer blocked in its queue

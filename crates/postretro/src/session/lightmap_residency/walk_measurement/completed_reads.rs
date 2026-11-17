@@ -40,9 +40,8 @@ impl CompletionGate {
     /// Blocks until every read `session` has in flight is delivered, and
     /// forwards each for the next drain to admit. Call right before each
     /// drain: that drain admits everything forwarded, so the next call
-    /// starts from a clean queue. A tier raise's rare second completion for
-    /// one read owes nothing; it is forwarded whenever it arrives and the
-    /// controller drops it as a duplicate.
+    /// starts from a clean queue. A tier raise is never read and never
+    /// completes, so each read in flight owes exactly one completion.
     pub(super) fn await_in_flight(&mut self, session: &LightmapStreamingSession) {
         let controller = &session.controller;
         self.owed.clear();

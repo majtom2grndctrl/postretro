@@ -114,7 +114,10 @@ pub(crate) struct ReadIdentity {
 /// - A submission identical to a request still pending at the issuer (same
 ///   resource, key, and identity) is absorbed: no second read, no second
 ///   completion. It can only raise the pending request's tier. A submission
-///   the issuer has already completed is read again.
+///   the issuer has already completed is read again, unless it is a raise.
+/// - A raise is never read and never completes. It raises its pending
+///   request's tier, or, once that request has been read, hands the raise to
+///   the route (see `ReadRoute::raise_past_read`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReadRequest {
     pub(crate) resource: StreamResource,
@@ -123,6 +126,9 @@ pub(crate) struct ReadRequest {
     pub(crate) tier: ReadTier,
     pub(crate) identity: ReadIdentity,
     pub(crate) ranges: ReadRanges,
+    /// A tier raise of an item already submitted, not a read of its own: the
+    /// item completes once, through its original submission.
+    pub(crate) raise_only: bool,
 }
 
 impl ReadRequest {

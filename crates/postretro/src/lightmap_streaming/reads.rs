@@ -87,6 +87,7 @@ impl LightmapResidencyController {
                 tier: target.drain_class.tier(),
                 identity: self.identity(),
                 ranges: facts.ranges,
+                raise_only: false,
             })
             .map_err(LightmapResidencyError::Submit)?;
             let slot = &mut self.slots[block as usize];
@@ -123,10 +124,11 @@ impl LightmapResidencyController {
             <= self.pool[kind].band_headroom_texels
     }
 
-    /// A band read promoted in flight is still queued at the optional tier;
-    /// resubmitting it at the mandatory tier lets the issuer raise the
-    /// pending request's tier, so it is read before optional work. The
-    /// issuer absorbs the duplicate: one read, one completion.
+    /// A band read promoted in flight is still queued at the optional tier.
+    /// A raise at the mandatory tier lifts the pending read's tier at the
+    /// issuer, or, once it is read, its queued decode's, so either is taken
+    /// before optional work. A raise is never read: the pair still reads and
+    /// completes once.
     fn submit_tier_raises(
         &mut self,
         submit: &mut dyn FnMut(ReadRequest) -> Result<(), &'static str>,
@@ -149,6 +151,7 @@ impl LightmapResidencyController {
                 tier: ReadTier::Mandatory,
                 identity: self.identity(),
                 ranges: self.map.facts(block).ranges,
+                raise_only: true,
             })
             .map_err(LightmapResidencyError::Submit)?;
             self.slots[block as usize].read_tier = ReadTier::Mandatory;

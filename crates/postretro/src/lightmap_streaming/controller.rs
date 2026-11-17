@@ -55,15 +55,20 @@ mod threaded_tests;
 /// A permit covers one block pair from request until install, refusal, or
 /// discard.
 pub(crate) const MAX_LIGHTMAP_PERMITS: usize = 32;
-/// Issuer queue and completion queue slots for lightmap requests: a read per
-/// permit, and as many again for tier raises. A raise the issuer accepts
-/// while its pair is still pending joins that read. It is read, and
-/// completed, a second time only when its pair finished in the one physical
-/// read in progress as the raise was accepted. That duplicate reads at the
-/// mandatory tier, before every optional original, so duplicates never wait
-/// behind the band reads that could crowd them; and raises come only from
-/// band reads in flight, at most [`MAX_BAND_PERMITS`] at once.
+/// Issuer queue slots for lightmap submissions: a read per permit, and a
+/// tier raise per permit. A pair holds its permit from its read's submission
+/// until the frame admits its completion, and is raised at most once while in
+/// flight.
 pub(crate) const LIGHTMAP_QUEUE_CAPACITY: usize = 2 * MAX_LIGHTMAP_PERMITS;
+/// Completion queue slots: one per permit. A raise is never read and never
+/// completes; every read submission completes exactly once, and its pair holds
+/// a permit until the frame admits that completion. So the completions not
+/// yet admitted never outnumber the permits, and neither the issuer nor a
+/// decode thread ever waits on a full queue. The one release ahead of the
+/// completion, [`LightmapResidencyController::cancel_in_flight`], comes with a
+/// fresh queue when the session detaches from its issuer, and with no further
+/// reads when it declines.
+pub(crate) const LIGHTMAP_COMPLETION_CAPACITY: usize = MAX_LIGHTMAP_PERMITS;
 /// Pair bytes in hand (in flight, ready, or in a drain) before new requests
 /// wait: four drains' worth. The first request is always allowed, so one
 /// oversized pair still streams.
@@ -198,8 +203,8 @@ pub(crate) struct LightmapResidencyCounters {
     pub(crate) stale_completions: u64,
     /// Completions for a block with no read in flight; dropped.
     pub(crate) duplicate_completions: u64,
-    /// In-flight band reads resubmitted at the mandatory tier after their
-    /// block became mandatory or visible.
+    /// In-flight band reads raised to the mandatory tier after their block
+    /// became mandatory or visible.
     pub(crate) tier_raises: u64,
     /// Batches the renderer failed and rolled back.
     pub(crate) aborted_drains: u64,

@@ -19,12 +19,14 @@ use super::schedule::{RangeSlot, ReadPlan, plan_next_read, split_span};
 pub(crate) const READ_ISSUER_THREAD_NAME: &str = "sh-probe-read";
 
 /// One resource's side of the shared issuer: its target membership, its
-/// reader, its in-memory byte accounting, and where its bytes go. SH hands
-/// read bytes to its decode pool; lightmap blocks, which upload as stored,
-/// hand them straight to a completion queue.
+/// reader, its in-memory byte accounting, and where its bytes go. Both SH
+/// and lightmap routes queue each read item as a job on the level's decode
+/// pool, and complete cancellations and failures straight to their
+/// resource's completion queue.
 ///
 /// Every method runs on the issuer thread. An implementor must not block
-/// except in `read_span` and in `deliver`'s bounded queue send.
+/// except in `read_span` and in `deliver`'s bounded queue send, which its
+/// resource sizes so that it never waits.
 pub(crate) trait ReadRoute: Send {
     /// Whether the resource still targets `key`. Checked before every
     /// physical read; a request whose key fails it is cancelled whole.
@@ -44,6 +46,11 @@ pub(crate) trait ReadRoute: Send {
     /// Hands over a request's one outcome. False when the resource's
     /// receiver is gone; the issuer then exits.
     fn deliver(&self, request: ReadRequest, outcome: ReadOutcome) -> bool;
+    /// A raise of `key` to the mandatory tier arrived after its request was
+    /// read and delivered. A route whose items wait past the read (a queued
+    /// decode) raises the waiting item there; the default does nothing,
+    /// because the item is already on its way.
+    fn raise_past_read(&self, _key: u32) {}
 }
 
 /// One successful physical read, as its route's counters see it.
@@ -312,7 +319,8 @@ fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: 
     }
 }
 
-/// Queues one submission. An identical pending request absorbs it; a request
+/// Queues one submission. An identical pending request absorbs it; a raise
+/// with no pending request goes to its route and is never read; a request
 /// with nothing to read completes at once, unless its key has departed.
 fn accept(submitted: SubmittedRead, pending: &mut Vec<PendingRead>, routes: &ReadRoutes) -> bool {
     let request = submitted.request;
@@ -321,6 +329,13 @@ fn accept(submitted: SubmittedRead, pending: &mut Vec<PendingRead>, routes: &Rea
         .find(|read| read.request.same_item(&request))
     {
         existing.request.tier = existing.request.tier.min(request.tier);
+        return true;
+    }
+    if request.raise_only {
+        // Its original came first on the same queue and is no longer
+        // pending: it was read and delivered, or completed cancelled or
+        // failed.
+        routes.route(request.resource).raise_past_read(request.key);
         return true;
     }
     let mut read = PendingRead {

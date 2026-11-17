@@ -193,3 +193,42 @@ fn a_chunk_discarded_on_the_pool_releases_its_decoded_charge() {
     assert_eq!(drained.decoding.current_bytes, 0);
     assert_eq!(drained.ready.current_bytes, 0);
 }
+
+// P7 for SH: a chunk whose cluster leaves the targets while its decode is
+// queued is not decoded; it completes cancelled and releases its charge. One
+// that returns before its decode runs still decodes.
+#[test]
+fn a_departed_queued_chunk_completes_cancelled_without_its_decode() {
+    for returns in [false, true] {
+        let source = GatedDecodeSource::new(false);
+        let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();
+        workers.publish_targets(&[0, 1].into_iter().collect());
+        workers.submit(request_for(0)).unwrap();
+        source.wait_decoding();
+        workers.submit(request_for(1)).unwrap();
+        let deadline = Instant::now() + WAIT;
+        while phases(&workers).decoding.current_bytes != 2 * DECODED {
+            assert!(Instant::now() < deadline, "cluster 1 never queued");
+            std::thread::yield_now();
+        }
+        workers.publish_targets(&[0].into_iter().collect());
+        if returns {
+            workers.publish_targets(&[0, 1].into_iter().collect());
+        }
+        source.open();
+        let completions = [completion(&workers), completion(&workers)];
+        let second = completions
+            .iter()
+            .find(|completion| completion.request.cluster_id == 1)
+            .expect("cluster 1 completes");
+        match (&second.result, returns) {
+            (ShWorkerResult::Cancelled, false) => assert_eq!(second.ready_bytes, 0),
+            (ShWorkerResult::Prepared(_), true) => assert_eq!(second.ready_bytes, DECODED),
+            (other, _) => panic!("returns={returns}: unexpected {other:?}"),
+        }
+        let drained = phases(&workers);
+        assert_eq!(drained.decoding.current_bytes, 0);
+        assert_eq!(drained.ready.current_bytes, 0);
+        workers.stop();
+    }
+}

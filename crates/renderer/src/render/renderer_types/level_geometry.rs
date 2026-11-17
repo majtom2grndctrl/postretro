@@ -33,8 +33,9 @@ pub struct LevelGeometryLightmapStreaming {
 
 pub struct LevelGeometry<'a> {
     pub vertices: &'a [postretro_render_data::geometry::WorldVertex],
-    /// One owner entry per vertex: its face's id-42 owners, the forward
-    /// pass's second vertex buffer. Any length other than `vertices.len()`
+    /// One owner entry per vertex: its face's id-42 owners and the offset
+    /// from its lightmap texels to its mask texels, the forward pass's second
+    /// vertex buffer. Any length other than `vertices.len()`
     /// (a level without id 42 hands an all-empty stream; hand-built geometry
     /// may hand none) installs as all-empty: no static non-SDF specular.
     pub vertex_spec_owners: &'a [postretro_level_format::shadowmask_atlas::SpecOwnerVertex],

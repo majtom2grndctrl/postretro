@@ -29,6 +29,7 @@ pub(super) fn read_request(request: ShClusterRequest, range: Range<u64>) -> Read
             item_hash: request.chunk_hash,
         },
         ranges: ReadRanges::one(range),
+        raise_only: false,
     }
 }
 
@@ -132,7 +133,7 @@ impl ReadRoute for ShReadRoute {
                     decoded_bytes,
                     source: Arc::clone(&self.source),
                     shared: Arc::clone(&self.shared),
-                    completed: self.completed.clone(),
+                    completed: Some(self.completed.clone()),
                 }))
             }
             ReadOutcome::Failed(error) => self.complete(request, ShWorkerResult::Failed(error)),

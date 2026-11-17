@@ -14,6 +14,27 @@ Roadmap Epic 10, AI at scale (owner request 2026-11-10), from the E10 combat-mov
 - Rejected inputs: id 46 `perceivable` (portal connectivity only; true across a connected map); a new sightline PVS bake (compiler work, owner chose id 51); a runtime path radius (cannot tell a far vista from a far hidden room).
 
 
+## Ordering pins
+
+Acceptance rows cite these ids.
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Enemy holds an attack turn and skips its AI on a tick (coarse interval, or any tick it is not scheduled) | Arbitration on the skipped tick runs without the holder's outcome | The held turn still counts against its pool's capacity on every skipped tick; it is not reported departed and starts no refresh; no other enemy is granted that capacity until the holder releases it |
+| P2 | Enemy leaves the AI set (picked up, quiescent, queued despawn) versus enemy skipped by the scheduler | Both miss one or more AI ticks | Leaving the AI set still returns the enemy holding nothing, requesting nothing, with no wait clock; only a scheduler skip keeps turns |
+| P4 | Coarse tick lands on a tick that is not the enemy's decide-pool tick (2 Hz = 30 ticks is not a multiple of the 4-tick pool) | Coarse whole-tick run versus decide-pool gate | A coarse tick is a decide tick: acquisition runs, `@brain.acquisitionDue` is true, transitions evaluate, whatever the slot's pool phase |
+| P5 | Far-band enemy (12-tick stride, 200 ms) whose spawn tick is offset from its pool phase | Stride counter phase versus pool phase | It acquires on the first decide tick at or after each 200 ms interval, for every spawn offset modulo the pool; never "never due" |
+| P7 | Player teleports or respawns into a cell whose set covers coarse enemies, on tick N | Movement (teleport) runs before the scheduler | Those enemies run full detail on tick N |
+| P8 | Coarse enemy at the fastest authored `moveSpeed` walks toward a player's visible cells | Coarse step moves it 0.5 s of distance in one tick; scheduler reads its cell next tick | It is promoted while still in the AI lead, never first observed already inside a cell visible from a player's cell |
+| P9 | Enemy changes cell without steering moving it: spawned, slot reused the tick another enemy despawned, script-set position, mover push, knockback | Enemy cell cache updates "only when an enemy moves" | Its cell is located before the next scheduler read; a re-used slot inherits no cell, hold or coarse phase from its previous occupant |
+| P10 | Coarse enemy stands on a moving lift or in a closing door's sweep | Mover advances every tick; enemy steering runs every 30 ticks | Enemy ends on the same side of every mover surface as at 60 Hz: carried, pushed or blocking, never embedded or dropped through |
+| P11 | Enemy quantity advanced both in a whole-runtime prelude every tick and in the enemy's scaled step (weapon resources, turn clock) | Prelude every tick versus coarse step | Each quantity advances exactly once per elapsed tick |
+| P14 | Player arrives in the largest arena; every enemy there promotes on one tick | N promotions, N replans owed, on one tick | Fixed step does not spiral; replan backlog drains at the budget rate |
+| P15 | Enemies spawn interleaved or at a regular stride (archetype spawns a companion entity, wave spawns interleave) | Pool from per-enemy key | Per-tick decide count stays balanced across pool ticks |
+| P18 | Converted window shorter than one coarse step (LOS grace 50 ms, combat-slot hold) evaluated at 2 Hz | Window expiry inside a step | Expires on the first step at or past its duration, never on an earlier step |
+| P19 | Clip-timed jab entered on a decide tick at each pool phase | Entry on a decide tick; moment check every tick | First damage lands 17 ticks after the entry tick, for every pool phase and frame split |
+| P20 | Unperceived enemy has line of sight to a player whose set does not include the enemy's cell (id 51 is sampled) | Perception picks the rate; acquisition picks the target | It acquires that player on its next run, then promotes |
+
 ---
 
 ## Report: Sim LOD inventory A: per-tick work for one brain-bearing enemy

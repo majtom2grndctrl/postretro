@@ -544,11 +544,20 @@ drops it. Every refusal latch clears with a role change.
 
 Once a leave lands in the frame-end command drain, the rest of that drain drops
 at debug: the drain cannot tell which reaction queued a command, and what
-remains belongs to the level being unloaded. Store writes and grants have
-already applied at dispatch (§12, Body order). After a `wait`, a client landing
-drops the steps after a kept `leaveSession` at debug. What leave and end do to
-the connection: `networking.md` §Slot lifecycle; to a client's store and saves:
-§5.
+remains belongs to the level being unloaded. Session entry verbs are the one
+exception (below). Store writes and grants have already applied at dispatch
+(§12, Body order). After a `wait`, a client landing drops the steps after a kept
+`leaveSession` at debug. What leave and end do to the connection:
+`networking.md` §Slot lifecycle; to a client's store and saves: §5.
+
+**Session entry (decided, not yet built).** `hostSession()` and `joinSession()`
+enter a role from single-player at the frontend. They read `session.password`,
+and a join also reads `session.joinAddress`. In any other role or scene they are
+refused with a warning. A press made while a left level unloads or an ended host
+closes waits, then runs with what it captured when pressed. A later navigation
+or load cancels it. An entry verb after `leaveSession` in one reaction belongs
+to the next session, so it survives the drop and defers. Both are machine-local,
+and a late joiner skips them (`networking.md` §Role model).
 
 Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions

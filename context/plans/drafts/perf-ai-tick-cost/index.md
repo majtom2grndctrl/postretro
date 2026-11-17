@@ -13,14 +13,13 @@ Two shapes outside the fight compound it.
 - `NavGraph::region_at` and `resolve_region_at` scan every nav region. Steering's replan gates resolve two points per moving agent per tick through them (`admit_replans`), so steering cost is O(agents × regions): 4,326 regions on `stress-env-volumes`.
 - The candidate walk is O(registry slots), not O(pawns). With particles gone from the registry this no longer dominates, but projectiles, props and crates still stride the walk.
 
-The shared replan budget (`REPLAN_BUDGET_PER_TICK` = 4) also caps throughput. A chase wave whose demand always exceeds the budget waits about N/4 ticks for each replan, 0.4 s at 128, so a large crowd steers on stale routes.
+The need is anticipated for content: no shipped map fights at these counts today. The owner asked for the capacity (roadmap Epic 10, AI at scale).
 
 When done:
 - Per-enemy targeting cost tracks the hostile pawns it must inspect, not every pawn, and does not depend on registry size.
 - Target-side positioning work runs once per target and position per batch, not once per enemy.
 - Point-to-region lookup does not scan the navmesh.
-- Replan waits stay bounded as the crowd grows.
-- Every enemy selects the same target, and claims the same combat slot, on the same tick as today. Replans are the one intended change: they may happen sooner, never later.
+- Every enemy selects the same target, and claims the same combat slot, on the same tick as today.
 
 ## Decisions
 - **Target candidates come from a faction-first pawn index, built once per AI pass.**
@@ -35,12 +34,7 @@ When done:
   - The rotated reposition ring shares the same cache wherever its generated positions coincide; it needs no ring of its own.
   - Clearance against other agents reads a per-batch spatial bucket of agent positions, with the same spacing rule, claimant exclusion and non-finite handling.
   - Assignment order, hysteresis and the proposal loop are unchanged, so every enemy claims the same slot on the same tick.
-- **The replan budget scales with demand.**
-  - Each tick's budget is `max(REPLAN_BUDGET_PER_TICK, ⌈owed / REPLAN_FAIR_WAIT_TICKS⌉)`, where `owed` counts agents in any replan tier this tick. Gate, drift and staleness tiers and their order are unchanged, as is longest-waiter-first within the drift tier.
-  - `REPLAN_FAIR_WAIT_TICKS` starts at 6 (100 ms). Demand of 24 or fewer agents keeps today's budget of 4, so small fights replan exactly as today. It is an engine constant, retuned later, not authored.
-  - The gate tier's wait bound, ⌈N / budget⌉ admissible ticks, tightens with the larger budget and still holds.
-  - Owner choice (2026-11-17) over recording the ceiling unchanged. It breaks "same results as today" for replan timing only; targets and slots stay identical.
-- **`entity_model.md` §9 gains two named exceptions** to "Spatial partitioning for entity-entity queries (octree, grid)": the AI target-candidate index (faction-bucketed, exact) and the per-batch combat-positioning clearance bucket. Every other entity-entity query stays unindexed. Amended at promotion.
+- **`entity_model.md` §9 gains two named exceptions** to "Spatial partitioning for entity-entity queries (octree, grid)": the AI target-candidate index (faction-bucketed, exact) and the per-batch combat-positioning clearance bucket. Every other entity-entity query, steering separation included, stays unindexed. Amended at promotion.
 - **No cell-visibility broad phase in target selection.** `plans/done/E10--enemy-mp-target-selection` reserved the selection seam for one if enemy counts made selection hot. Rejected: the stride is priced on raw distance, which visibility cannot answer, and line of sight measures about 0% of AI cost. Perception-driven detail levels belong to `E10--ai-tick-scheduling`, which never chooses targets.
 - **Nav point-to-region lookup is indexed at load.**
   - `NavGraph` builds a cell → candidate-regions index over its existing grid when constructed.
@@ -50,10 +44,12 @@ When done:
   - `sim_ai` gains sub-stages for targeting, combat positioning, perception, graph evaluation, and apply with slots and turns, on the existing `SimStage` set.
   - `sim_steering` keeps its `sim_steer_agents`, `sim_steer_pose` and `sim_steer_movers` split. Labels follow `rendering_pipeline.md` §12.
 - **Budgets live on the headless stress row.** `replan_stress_row` is the measurement: deterministic counts, no window, and it runs on any machine. The windowed `stress-env-volumes` row stays for steering, where the nav index is the change.
-- **Landing order:** the nav index first (it waits on nothing), then the pawn index and positioning cache in either order, then the scaled replan budget, measured last so its cost lands on the cheaper tick. The registry occupancy index stays its own later brief.
+- **Landing order:** the nav index first (it waits on nothing), then the pawn index and positioning cache in either order. The registry occupancy index stays its own later brief.
 - **Non-goals.**
   - Registry occupancy index, a later brief justified by non-particle populations. Registry storage shape: `drafts/registry-column-storage`.
   - Decide and act rates, detail tiers and perception: `E10--ai-tick-scheduling`.
+  - The shared replan budget's throughput (4 per tick; the fair wait reaches about 0.4 s at 128 chasers). Scaling it changes paths, positions and later targets, so it would break this brief's identical-results rule. `E10--ai-tick-scheduling` owns it (owner, 2026-11-17).
+  - Steering separation (`agent_steering::separation`), the same pairwise shape as positioning clearance. Steering grew about linearly to 128 chasers in the profile, so it is not measured hot, and an exact bucket must keep separation's snapshot-order summation. If it turns hot, it can share the clearance bucket under that constraint.
   - Time-slicing perception or LOS: measured at about 0% of AI cost, and it would change reaction latency.
   - Changing think-stride bands, ring shape or slot scoring.
   - Parallel AI (`ai_pathfinding_mt_readiness.md`): the cost is repeated and pairwise work, not compute.
@@ -73,14 +69,13 @@ When done:
 - [ ] Batched combat positioning matches the uncached batch on every assignment (slot, score terms, generation index, incumbency) across randomized scenes: several targets, shared and distinct targets, chase and rotated rings, an incumbent inside and outside the switch margin, scarce slots, a candidate blocked by a peer at exactly the spacing, a docked mover over a slot, and a non-finite peer position.
 - [ ] In a wave of N enemies on one target, the target-side tests run once per generated position per batch, not N times.
 - [ ] Indexed region lookup equals the linear scan for every nav grid cell centre and for randomized points, including stacked floors at one XZ, equal floor-band distances, points just inside and just outside the snap tolerance, and points beyond the grid.
-- [ ] Replan budget, both sides: with 24 or fewer owed agents the budget is exactly 4 and admissions match today's tier order; with 128 owed chasers it admits ⌈128 / 6⌉ = 22 per tick, and the drift tier's fair-share wait is at most 6 ticks. The gate tier's ⌈N / budget⌉ bound holds while gates flip.
-- [ ] Same results over a run: the stress row's chase and strafe waves at 32, 64 and 128 produce identical per-tick targets and slot claims before and after the pawn index and the positioning cache. The budget change alters only replan timing.
+- [ ] Same results over a run: the stress row's chase and strafe waves at 32, 64 and 128 produce identical per-tick targets and slot claims before and after the pawn index and the positioning cache.
 - [ ] With CPU timing on, the AI sub-stages appear under `sim_ai` and the steering sub-stages under `sim_steering`, each no larger than its parent. With timing off, none report.
-- [ ] Existing AI, steering, positioning and nav suites pass. Tests that pin replan admission at today's budget pass unchanged; any that pin a wave above 24 owed agents are updated and named in the PR.
+- [ ] Existing AI, steering, positioning and nav suites pass unchanged.
 ### Manual
 - [ ] **Stress row**, release, on the owner's Windows desktop, pinned per `testing_guide.md` §Resource bounds (`cargo test -p postretro-ai --release --lib -- --ignored replan_stress_row --nocapture --test-threads=1`):
-  - **Baseline (2026-11-10, same desktop):** median AI tick, chase 1.05 / 3.05 / 8.8 ms and strafe 0.58 / 1.43 / 4.0 ms at 32 / 64 / 128. Fair-share replan wait about 24 ticks at 128 chasers.
-  - **Target:** 64 chasers ≤ 1.0 ms median AI tick, and per-enemy cost at 128 at most 1.2× its cost at 64, for chase and strafe. 128 is reported. Worst and fair-share replan waits reported at each size, with the scaled budget.
+  - **Baseline (2026-11-10, same desktop):** median AI tick, chase 1.05 / 3.05 / 8.8 ms and strafe 0.58 / 1.43 / 4.0 ms at 32 / 64 / 128.
+  - **Target:** 64 chasers ≤ 1.0 ms median AI tick, and per-enemy cost at 128 at most 1.2× its cost at 64, for chase and strafe. 128 is reported. Replan waits are reported and must match the baseline exactly.
   - The row reports the sub-stages, so the remaining cost is attributed.
 - [ ] **Steering**, windowed: `stress-env-volumes.prl` recompiled from the committed map, mixed pose `114.60,2.44,-138.99,45,0`, release with dev-tools, at least five 120-frame windows after warmup, load average recorded. `sim_steer_agents` at 64 agents is re-measured before the nav index and must reach ≤ 0.8 ms/tick after it.
 
@@ -88,7 +83,6 @@ When done:
 - **Pawn index.** Seams: `targeting::target_candidates`, `target_offers` and `select_target_with_attacker_ledger`. Build beside the `EnemySnapshot` pass in `run_ai_tick_with_host`: `LiveFactionSentiment` is constructed once there and the registry is borrowed immutably through `compute::evaluate`, so a pre-built index stays exact. The faction leaf is `EntityStateComponent`'s `FACTION_STATE_FIELD`, 0.0 when absent. The retained-target path, `target_candidate`, stays an O(1) lookup.
 - **Early stop.** Today every candidate runs `CandidateScope::refresh`, the candidacy program and the perception callback. Confirm none has a side effect a skipped candidate would have produced. The latch needs the nearest eligible hostile, which is the walk's first hit.
 - **Positioning cache.** Seams: `select_combat_positions_batch`, `combat_candidates`, `rotated_ring::ring_candidates` and `scoring::score_candidate`. Split `score_candidate` into its target-side half (`grounded_candidate_position`, `overlaps_docked_mover`, `line_of_sight`, `has_tactically_direct_target_path`) and its agent-side half (`dynamic_placement_is_clear`, `find_path_from`). Key the cache on exact position bits, as `same_position_bits` already does. Check whether any target-side input differs per enemy (eye offset, target aim) before sharing it; if so, key on it too.
-- **Replan budget.** Seam: `agent_steering::admit_replans` and `tick_diagnostics::REPLAN_BUDGET_PER_TICK`. `owed` is known after classification, before any tier is served.
 - **Rival:** one all-pawn XZ grid returning the full candidate set in distance order. Faction-first wins because hostile buckets are usually small and the due-tick walk stops early; a grid can still live inside a large bucket.
 - **Nav.** Seams are `NavGraph::region_at`, `resolve_region_at` and `region_snap_tolerance`. Regions carry world XZ rects over a 1 m grid. Positioning's grounding also calls `region_at`, so the index helps both. Also consider caching the planned destination's region on the agent when the plan is built, so `destination_topology_changed` resolves one point per tick, not two.
 - **Stages.** The AI crate receives `SimStage` scopes through `AiTickInputs`, because sim owns the tick's stage set. The stress row reads the same scopes.

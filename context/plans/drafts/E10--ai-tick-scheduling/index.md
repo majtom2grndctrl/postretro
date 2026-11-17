@@ -34,7 +34,8 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
 - **Tier changes.** An NPC moves up on the tick it becomes perceivable or gains a target. Damage and an opened aggro gate move it up on the tick they land when that is before the AI stage, otherwise on the next tick, and reach its brain at its next run. Moving up credits the time it has not run to its timers; it moves one ordinary step, so it never jumps. Moving down waits a short hold so an NPC at a set's edge does not flap.
 - **A dead NPC leaves the tiers.** On death it becomes a body whose motion starts from its tick pose and runs every tick, so its drawn body and its hits agree from the first tick, and ragdoll physics can later start from the same pose. Clients see the body through ordinary snapshots. A revived NPC rejoins the tiers on its revive tick at its corpse's live pose by the usual rules; time spent dead credits no timers.
 - **The dormant tier never skips simulation.** Its whole tick runs with its step scaled. Diverges from `cell-visibility-substrate.md` "must NOT cull authoritative simulation" in letter, not intent: amended to permit a coarser authoritative tick and keep forbidding a skipped one.
-- **Replan tiers outrank detail level.** The shared per-tick replan budget (scaled with demand by `perf-ai-tick-cost`) keeps its tier order (blocked route, then drift, then staleness) and its blocked-route wait bound for every NPC; within a replan tier, higher NPC tiers go first.
+- **The replan budget scales with demand.** Each tick's budget is `max(4, ⌈owed / fair wait⌉)`, owed counting NPCs in any replan tier, with the fair wait about 100 ms as a constant stored in whole ticks. Up to 24 owed, the budget stays 4. At 128 chasers the wait falls from about 0.4 s to 100 ms, and the route-query cost per tick grows with the crowd. Moved here from `perf-ai-tick-cost`, which keeps results identical (owner, 2026-11-17).
+- **Replan tiers outrank detail level.** The shared per-tick replan budget keeps its tier order (blocked route, then drift, then staleness) and its blocked-route wait bound for every NPC; within a replan tier, higher NPC tiers go first.
 - **Perception decides the tier, never targets.** Keeps `perf-ai-tick-cost`'s rejection of a visibility broad phase inside target selection.
 - **NPC is the umbrella term** for brain-bearing actors that are not player-controlled, enemies and allies alike (owner). This brief's rules apply to every NPC; the term lands in `entity_model.md`.
 - **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (if an NPC's cell is stored on it), §7c (every every-tick clause), `movement.md` §6, `networking.md` (NPC presentation, drawn-pose hits, and per-step NPC states in the snapshot wire), the substrate doc's no-cull rule and its consumer relation, roadmap E15 Phase 4 and combat VFX culling (id 51, not id 46); the no-PVS ground rule lands in `context/lib/`.
@@ -113,6 +114,7 @@ Perception and tier changes:
 - [ ] The AI lead never exceeds the loaded level's id-51 maximum lead; a level baked with a smaller maximum uses that maximum.
 - [ ] Changing streaming's runtime lead does not change which NPCs are dormant.
 - [ ] A dormant NPC whose route a closed door blocks is served within the blocked-route wait bound even while higher-tier NPCs fill the budget with drift and staleness replans; within one replan tier, every higher-tier request is served first (P13).
+- [ ] Replan budget, both sides: with 24 or fewer owed NPCs it is exactly 4; with 128 owed chasers it admits ⌈128 / 6⌉ = 22 per tick, the drift tier's fair wait is at most 6 ticks, and the gate tier's ⌈N / budget⌉ bound holds while gates flip.
 
 Scale (reported per tier on a `tools/gen_stress_map.py` multi-arena fixture, `sim_ai` and `sim_steer_agents` with the new sub-stages):
 - [ ] Quake/Doom class (about 64 engaged in view, about 500 placed across arenas): the fixed step never spirals and AI plus steering holds `perf-ai-tick-cost`'s budgets.
@@ -121,6 +123,7 @@ Scale (reported per tier on a `tools/gen_stress_map.py` multi-arena fixture, `si
 - [ ] Scale rows report the worst tick, the one carrying every 30 Hz part, as well as the mean, and the fixed step does not spiral on it.
 - [ ] A player teleporting into the most populated dormant arena moves every NPC there up on one tick without spiralling the fixed step; that tick's cost is reported (P14).
 - [ ] The perception union costs no per-tick allocation, and its cost per tick is reported against player and NPC counts.
+- [ ] Route queries per tick and their cost under the scaled replan budget, reported at 64 and 128 chasers on the stress row and on the multi-arena fixture's largest nav graph.
 
 ### Manual
 - [ ] Listen-host and co-op client playtest on the stress fixture: NPCs move smoothly at every tier; close melee does not feel soft; telegraphs read on time; NPCs arriving from out of view look natural.

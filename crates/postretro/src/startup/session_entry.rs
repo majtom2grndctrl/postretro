@@ -62,6 +62,8 @@ pub(crate) enum EndCause {
 }
 
 impl EndCause {
+    /// Every value, for coverage checks over the vocabulary.
+    #[cfg(test)]
     pub(crate) const ALL: [EndCause; 7] = [
         Self::SessionEnded,
         Self::HostLost,

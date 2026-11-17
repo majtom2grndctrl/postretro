@@ -48,25 +48,29 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
 ### Automated
 Timing on time:
 - [ ] Each converted window expires on the first step at or past its duration at 60, 30, 15 and 2 Hz, and never on an earlier step (P18).
-- [ ] An NPC that runs no AI on a tick keeps its attack turns; one whose turn ends while it is not running releases it on its next run.
-- [ ] While an NPC holding a turn skips its AI, its turn still counts against its pool on every skipped tick: no other NPC is granted that capacity, and no refresh starts, until the holder releases it (P1).
+- [ ] While an NPC holding a turn skips its AI, its turn still counts against its pool on every skipped tick: no other NPC is granted that capacity and no refresh starts until the holder releases it; a turn that ends while it is not running is released on its next run (P1).
 - [ ] An NPC that leaves the AI set (held, quiescent or despawning) still returns holding nothing, requesting nothing, with no wait clock; only a scheduler skip keeps its turns (P2).
-- [ ] After one second, an NPC's weapon resources, cooldowns, activity time, damage recency and attacker ledger read the same at 60 Hz and in every tier: each advances once per elapsed tick (P11).
 
 Tiers and rates:
-- [ ] Each tier runs each part of an NPC at exactly its table rate, and no NPC part runs faster than 30 Hz except mover carry and push.
+- [ ] Each tier runs each part of an NPC at exactly its table rate; only mover carry and push, tick-pose evaluation and corpse motion run every 60 Hz tick.
+- [ ] An allied NPC runs the same tiers, rates, tick pose and corpse rules as an enemy.
 - [ ] Player movement, movers, projectiles and player weapons still run every 60 Hz tick.
-- [ ] Every NPC step reaches clients stamped with its own tick, including on catch-up frames that run several ticks; with many NPCs, every staggered assignment and step tick is identical across frame splits, reversed spawn order, and host versus replay.
+- [ ] Every NPC step reaches clients stamped with its own tick, including on catch-up frames that run several ticks (P26); with many NPCs, every staggered assignment and step tick is identical across frame splits, reversed spawn order, and host versus replay.
 - [ ] On the stress fixture, including when NPCs spawn interleaved or at a regular stride, the number of NPCs stepping or deciding on any tick differs from the per-phase mean by at most one (P15).
 - [ ] `@brain.acquisitionDue` is true only on decide ticks; an engaged NPC whose target is beyond 100 m acquires on every third, for every spawn tick relative to its phase (P5).
 - [ ] The clip-timed jab's first damage lands at its clip moment, within one 30 Hz step, for every phase and frame split (P19).
 - [ ] A clip moment that falls inside a 30 Hz or dormant step resolves once, on that step, with its gates evaluated then; none is skipped or fired twice.
-- [ ] An NPC crossing the close radius changes steering rate on the next tick, without a jump in its drawn position.
+- [ ] An NPC crossing the close radius changes steering rate on the next tick.
 - [ ] An NPC whose XZ distance from its tick pose to its target's position at the tier choice equals the close radius is close; one just beyond it is engaged.
 - [ ] Tier assignment is identical on a headless host and on a listen host whose camera looks elsewhere.
 - [ ] An NPC riding a lift or pushed by a door moves with it every tick in every tier: carried, pushed or blocking, never embedded or dropped through (P10).
-- [ ] An NPC riding a platform moving at 10 m/s at 15 Hz or 2 Hz is drawn and hit standing on the platform on every tick, never lagging or sunk into it, and its shots leave from where it is drawn.
+- [ ] An NPC riding a platform moving at 10 m/s at 15 Hz or 2 Hz is drawn and hit standing on the platform on every tick, never lagging, leading or sunk into it; a standing rider's offset from the platform is unchanged across its step ticks, and its shots leave from where it is drawn.
+- [ ] An idle 15 Hz NPC riding a rotating mover is drawn and hit at its carried position on every tick, and its drawn yaw never turns with the mover.
+- [ ] An NPC that walks off a moving platform onto the floor, or from the floor onto it, within one 15 Hz or 2 Hz step shows no jump in its drawn or hit pose on any tick of that step (P25).
 - [ ] An NPC killed between steps shows no jump in drawn position as it becomes a corpse; the corpse then moves every tick, and a still-hittable corpse is hit where it is drawn.
+- [ ] An NPC killed on a tick it was due to step, by damage before the AI stage or after its step, becomes a corpse with no jump in drawn position and no step taken after death.
+- [ ] An NPC killed while riding a platform moving at 10 m/s, at 15 Hz or 2 Hz, is drawn on the platform through its change into a corpse, never lagging or sunk into it.
+- [ ] A still-hittable corpse's skeleton and hit zones, death clip included, are identical across frame splits and on replay; a headshot on a corpse lands where its head is drawn.
 - [ ] A dormant NPC wandering, patrolling or falling never passes through a wall, floor or ledge it would stop at under 60 Hz.
 - [ ] A knocked-back NPC travels the same distance at 30, 15 and 2 Hz as at 60 Hz, within one step's travel, for every authored drag.
 
@@ -80,7 +84,7 @@ Presentation:
 - [ ] Raising the NPC interpolation floor leaves remote player pawns, movers and projectiles at today's delay on the same link.
 - [ ] An NPC's melee reach and its muzzle and launch origins are measured from its tick pose.
 - [ ] Tick poses, skeleton and hit zones included, are identical across frame splits and on replay; a headshot on a 15 Hz NPC lands where its head is drawn.
-- [ ] Doors, crush, pins and separation act on an NPC's simulated pose, not its tick pose.
+- [ ] Doors, crush, pins, separation and NPC sight act on an NPC's simulated pose, not its tick pose: its target line of sight is cast from its simulated eye.
 - [ ] An NPC's locomotion clip does not flicker between walk and rest while it moves at a steady speed.
 
 Perception and tier changes:
@@ -89,7 +93,7 @@ Perception and tier changes:
 - [ ] An NPC moves up on the same tick it becomes perceivable or gains a target, including mid step; an aggro gate opened by a trigger-bound command moves it up that tick, and one opened by a named reaction moves it up for the next tick's AI stage.
 - [ ] Damage that lands before the AI stage (projectile impacts, remote hits ready at the input boundary) moves an NPC up that tick; damage during or after it (another NPC's attack, host hitscan, trap shots, remote hits awaiting that tick's fire authorization) moves it up for the next tick's AI stage (P6).
 - [ ] An NPC that moves up part way through a step has its timers advanced by the time it had not run and moves exactly one ordinary step (P3).
-- [ ] One second after moving up part way through a dormant interval, an NPC's weapon resources, cooldowns, activity time, damage recency and attacker ledger read the same as an NPC that ran at 60 Hz throughout: no quantity is credited twice (P3, P11).
+- [ ] One second after moving up part way through a dormant interval, an NPC's weapon resources, cooldowns, activity time, damage recency and attacker ledger read the same as an NPC that ran at 60 Hz throughout, in every tier and after moving up part way through a dormant interval: no quantity is credited twice (P3, P11).
 - [ ] A dormant NPC that gains a target on its own dormant run moves exactly one ordinary step in that tick's steering, and from the next tick runs in its new tier (P21).
 - [ ] A dormant NPC decides on every fourth dormant run and on no other tick; a perceived idle NPC decides once a second (P4).
 - [ ] A perceived idle NPC that is damaged, or whose aggro gate opens, acts on it at its next decide and runs engaged from then on.
@@ -120,7 +124,7 @@ Scale (reported per tier on a `tools/gen_stress_map.py` multi-arena fixture, `si
 
 ## Path
 - Seams: `crates/ai/src/engine_floor.rs` `think_stride_for_distance`; `targeting::acquisition_due` and `BrainComponent::think_stride_counter`; `attack_turns::lifecycle::admit` (`seen_tick`); `perception` `LOS_GRACE_TICKS`; `combat_slots` `COMBAT_SLOT_HOLD_TICKS`; `launch` `FALL_DELAY_TICKS`; `agent_steering` `REPLAN_STALENESS_TICKS`, the shared replan budget and separation. The fuller per-system inventory, with how each handles time, is in `research.md`.
-- Presentation: host NPCs draw through `EntityRegistry::snapshot_transforms` and `interpolated_transform` in `mesh_render`; clients through `RemoteInterpolationBuffer` (`MIN_DELAY_MICROS`). Unchanged NPCs are left out of snapshots, so a 15 Hz NPC appears in every second one.
+- Presentation: host NPCs draw through `EntityRegistry::snapshot_transforms` and `interpolated_transform` in `mesh_render`; clients through `RemoteInterpolationBuffer` (`MIN_DELAY_MICROS`). Snapshots today ingest and send once per frame under one tick stamp, and unchanged NPCs are left out.
 - Perception: `LevelWorld::locate_cell` per player pawn; id 51 stays loaded whatever the streaming mode. Re-locate an NPC's cell whenever its position changes, whatever moved it (P9).
 - First slice: a 15 Hz and a 2 Hz NPC against `collide_and_slide`, separation in a packed horde, and a lift ride. These are the riskiest assumptions.
 - Pool key: registry slots follow spawn order through the free list, and the AI's per-tick index is a snapshot position, so neither works; a map placement index for placed NPCs and spawner plus spawn sequence for spawned ones are candidates.

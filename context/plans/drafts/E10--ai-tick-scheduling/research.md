@@ -20,7 +20,7 @@ Acceptance rows cite these ids.
 
 | id | scenario | ordering | expected outcome |
 |---|---|---|---|
-| P1 | Enemy holds an attack turn and skips its AI on a tick (coarse interval, or any tick it is not scheduled) | Arbitration on the skipped tick runs without the holder's outcome | The held turn still counts against its pool's capacity on every skipped tick; it is not reported departed and starts no refresh; no other enemy is granted that capacity until the holder releases it |
+| P1 | Enemy holds an attack turn and skips its AI on a tick (coarse interval, or any tick it is not scheduled) | Arbitration on the skipped tick runs without the holder's outcome | The held turn still counts against its pool's capacity on every skipped tick; it is not reported departed and starts no refresh; no other enemy is granted that capacity until the holder releases it; a queued grant made while it is skipped opens on its next run |
 | P2 | Enemy leaves the AI set (picked up, quiescent, queued despawn) versus enemy skipped by the scheduler | Both miss one or more AI ticks | Leaving the AI set still returns the enemy holding nothing, requesting nothing, with no wait clock; only a scheduler skip keeps turns |
 | P3 | Coarse enemy promoted k ticks into its coarse interval (became perceivable, damaged, gained target, aggro opened) | Promotion tick versus the k ticks it has not run | Its timers advance by k ticks; it moves one ordinary tick on the promotion tick; no catch-up movement |
 | P4 | Dormant enemy runs its whole tick at 2 Hz and decides every two seconds; a perceived idle enemy decides at 1 Hz | Run versus decide phase | A dormant enemy decides on every fourth dormant run, whatever its phase or distance band; the far band applies only to engaged enemies |
@@ -31,7 +31,7 @@ Acceptance rows cite these ids.
 | P9 | Enemy changes cell without steering moving it: spawned, slot reused the tick another enemy despawned, script-set position, mover push, knockback | The scheduler reads a cached enemy cell; non-steering moves can leave it stale | Its cell is located before the next scheduler read; a re-used slot inherits no cell, hold or coarse phase from its previous occupant |
 | P10 | NPC stands on a moving lift or in a closing door's sweep at 15 Hz or 2 Hz | Mover advances every tick; carry and displacement run every tick apart from the NPC's sweep, which runs at its tier rate | NPC ends on the same side of every mover surface as at 60 Hz: carried exactly once per tick, pushed or blocking, never embedded or dropped through |
 | P11 | NPC quantity advanced both in a whole-runtime prelude every tick and in the enemy's scaled step (weapon resources, turn clock) | Prelude every tick versus coarse step | Each quantity advances exactly once per elapsed tick |
-| P13 | Dormant NPC owed a replan contends with higher-tier NPCs for the shared per-tick replan budget | Wait converted to time grows a whole step per run | Replan tier order holds for every NPC with the blocked-route wait bound; within a replan tier, close goes before engaged, engaged before idle, idle before dormant |
+| P13 | Dormant NPC owed a replan contends with higher-tier NPCs for the shared per-tick replan budget | Wait converted to time grows a whole step per run | Replan tier order holds for every NPC with the blocked-route wait bound; within a replan tier, a paced NPC (leap in flight) goes first, then close before engaged, engaged before idle, idle before dormant |
 | P14 | Player arrives in the largest arena; every enemy there promotes on one tick | N promotions, N replans owed, on one tick | Fixed step does not spiral; replan backlog drains at the budget rate |
 | P15 | Enemies spawn interleaved or at a regular stride (archetype spawns a companion entity, wave spawns interleave) | Pool from per-enemy key | Per-tick decide count stays balanced across pool ticks |
 | P17 | Tick with no pawn in play or down: before first spawn, every seat loading or reconnecting, headless without a pawn | Perceiver union is empty | Every NPC is perceived; a dead player's pawn still counts |
@@ -772,9 +772,9 @@ This harness shape fits measuring un-alerted versus engaged versus dormant cost.
   - `crates/ai/src/replan_stress_tests.rs`
   - `tools/gen_stress_map.py`
 
-## Pending: fold in after `E10--enemy-stances-and-telegraphs` merges (2026-11-17)
+## Stances and telegraphs follow-ups (folded in 2026-11-17)
 
-Read from branch `claude/enemy-stances-telegraphs-837003`, not yet on `main`. Apply when it merges, then run `/validate-plan` before promotion.
+Read from the stances branch before it merged, rechecked on `main` at 5dd62342e, and folded into the brief. Kept for the evidence:
 
 - **Owner decision (2026-11-17): a leaping NPC steers at 30 Hz until it lands.** `leap::pace` rewrites `arrive_in_s` every tick from `clip_clock::seconds_to_moment`, and steering's `paced_speed` lands the NPC in whole steps. At the Engaged tier's 15 Hz steering it would land a step late and whiff. `admit_replans` already sorts the drift tier by `(paced, wait)`, so within a replan tier paced agents go first, ahead of NPC-tier order. Amend the replan Decision and P13. The leap never course-corrects: `leap::steer` fixes `leap_spot` on entry and never re-aims, so a target that moves off the spot is missed (owner, 2026-11-17). The 30 Hz rule therefore serves arrival timing only, landing on the step that checks the moment, not tracking. It adds no per-step target read.
 - **Homing projectiles (future, not built):** projectiles stay at 60 Hz in this brief, so a later homing projectile can re-read its target every tick without a tier rule. Perception and tiers never steer projectiles.

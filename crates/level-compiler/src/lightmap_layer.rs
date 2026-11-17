@@ -115,7 +115,10 @@ pub const LAYER_FORMAT_VERSION: u32 = 14;
 ///
 /// v6: dilation and the direction reduction walk a transposed chart's
 /// texels in the chart's own order.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 6;
+///
+/// v7: id 22 v4, each plane stored coded; the entry holds the stored form and
+/// the key folds the codec identity.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 7;
 
 /// One analytically reached atlas texel from a single light.
 ///

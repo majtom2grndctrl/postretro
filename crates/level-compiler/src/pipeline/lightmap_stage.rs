@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use bvh::bvh::Bvh;
+use postretro_level_format::coded_plane::CodecIdentity;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
@@ -418,6 +419,7 @@ pub(crate) fn bake_fused_with_movers(
             penumbra_floor: config.penumbra_floor,
             embedded_emitters: &embedded_emitters,
         },
+        config.section_codec,
         stage_cache,
         shadowmask_control,
     )?;
@@ -480,6 +482,7 @@ pub(crate) fn bake_fused_with_movers(
             step_threshold,
             &prepared.cut_parents,
             crate::ray_traversal::TRACER_EPOCH,
+            CodecIdentity::current(config.section_codec),
         );
         CacheKey::new(
             "lightmap_section",
@@ -564,6 +567,7 @@ pub(crate) fn bake_fused_with_movers(
         let mut builder = lightmap_bake::BlockSectionBuilder::new(
             &prepared.layout,
             config.uncompressed_irradiance,
+            config.section_codec,
         );
         if let Some((lightmap, _)) = &chart_dump {
             builder.attach_chart_dump(LightmapCapture::new(

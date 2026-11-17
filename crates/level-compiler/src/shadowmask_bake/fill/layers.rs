@@ -1,4 +1,6 @@
 //! Layer close completes uncut faces and the cuts whose last sub-face arrives.
+use postretro_level_format::coded_plane::store_plane;
+
 use super::*;
 use crate::lightmap_bake::copy_unit_rect;
 use crate::shadowmask_bake::encode::encode_mask_block;
@@ -170,7 +172,8 @@ impl OwnershipFill<'_> {
             );
         }
         let (width, height) = layout.extent;
-        self.encoded[block_id] = encode_mask_block(&image, width, height, layout.plane_b);
+        self.encoded[block_id] = encode_mask_block(&image, width, height, layout.plane_b)
+            .map(|plane| store_plane(self.codec, plane));
         self.mask_extents[block_id] = layout.extents();
         #[cfg(test)]
         self.mask_snapshots

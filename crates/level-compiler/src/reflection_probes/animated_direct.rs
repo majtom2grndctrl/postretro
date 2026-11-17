@@ -189,6 +189,7 @@ mod tests {
             irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
             mode: LightmapMode::Shadowed,
             blocks: vec![LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: 0,
                 width: 8,
                 height: 8,

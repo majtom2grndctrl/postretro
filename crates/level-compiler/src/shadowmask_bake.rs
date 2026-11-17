@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use postretro_level_format::coded_plane::{BlockCodec, CodecIdentity};
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 use postretro_level_format::shadowmask_atlas::{
     SHADOWMASK_GROUP_COUNT, ShadowmaskAtlasSection, ShadowmaskOwnerBounds,
@@ -73,7 +74,10 @@ pub const SHADOWMASK_ATLAS_STAGE_ID: &str = "shadowmask_atlas";
 ///
 /// v11: a chart may be stored transposed; its mask chart is copied turned
 /// with it, and its padding dilates in the chart's own coordinates.
-pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 11;
+///
+/// v12: each present plane is stored coded; the entry holds the stored form
+/// and the key folds the codec identity.
+pub const SHADOWMASK_ATLAS_STAGE_VERSION: u32 = 12;
 
 /// The widest texture the two mask groups may span side by side: the pinned
 /// device texture dimension. The residency dry run prices its rival layouts
@@ -241,6 +245,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     layer_count: u32,
     shared: &SharedAtlas<'_>,
     scene: &EstimateScene<'_>,
+    codec: BlockCodec,
     cache: Option<&'a StageCache>,
     control: &'a BakeControl,
 ) -> Result<FusedShadowmaskPlan<'a>, ShadowmaskBakeError> {
@@ -279,6 +284,7 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
             layer_count,
             &estimate::estimate_params(scene.cut_parents),
             crate::ray_traversal::TRACER_EPOCH,
+            CodecIdentity::current(codec),
         );
         CacheKey::new(
             SHADOWMASK_ATLAS_STAGE_ID,
@@ -339,13 +345,16 @@ pub(crate) fn prepare_fused_shadowmask<'a>(
     };
     Ok(FusedShadowmaskPlan {
         outcome: None,
-        fill: Some(OwnershipFill::new(
-            shared,
-            layer_count,
-            scene.cut_parents,
-            cut_estimate.owners,
-            Some(control),
-        )),
+        fill: Some(
+            OwnershipFill::new(
+                shared,
+                layer_count,
+                scene.cut_parents,
+                cut_estimate.owners,
+                Some(control),
+            )
+            .with_codec(codec),
+        ),
         eligible_by_source,
         cache_write: cache.zip(section_key),
         control,

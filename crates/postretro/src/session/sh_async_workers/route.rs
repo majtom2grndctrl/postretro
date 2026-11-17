@@ -7,7 +7,8 @@ use std::sync::mpsc::SyncSender;
 
 use postretro_level_loader::PrlLoadError;
 
-use super::{DecodeJob, ShWorkerCompletion, ShWorkerResult, ShWorkerSource, WorkerShared};
+use super::decode_job::ShDecodeJob;
+use super::{ShWorkerCompletion, ShWorkerResult, ShWorkerSource, WorkerShared};
 use crate::sh_streaming::controller::ShClusterRequest;
 use crate::streaming::issuer::{ReadOutcome, ReadRecord, ReadRoute};
 use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, ReadTier, StreamResource};
@@ -41,8 +42,8 @@ fn cluster_request(request: ReadRequest) -> ShClusterRequest {
     }
 }
 
-/// Read bytes go to the decode pool; cancellations and failures complete
-/// directly, without a decode.
+/// Read bytes go to the level's decode pool at the request's tier;
+/// cancellations and failures complete directly, without a decode.
 pub(in crate::session) struct ShReadRoute {
     pub(super) source: Arc<dyn ShWorkerSource>,
     pub(super) shared: Arc<WorkerShared>,
@@ -104,10 +105,17 @@ impl ReadRoute for ShReadRoute {
             ReadOutcome::Read(parts) => {
                 // An SH request carries exactly one range.
                 let bytes = parts.into_iter().next().unwrap_or_default();
-                // Cancelled workers have taken the sender: SH's receiver is gone.
-                self.shared
-                    .decode_sender()
-                    .is_some_and(|decode| decode.send(DecodeJob { request, bytes }).is_ok())
+                // Cancelled workers have taken the queue: SH's receiver is
+                // gone. A retired pool discards the job, releasing its bytes.
+                self.shared.decode_queue().is_some_and(|decode| {
+                    decode.submit(Box::new(ShDecodeJob {
+                        request,
+                        bytes,
+                        source: Arc::clone(&self.source),
+                        shared: Arc::clone(&self.shared),
+                        completed: self.completed.clone(),
+                    }))
+                })
             }
             ReadOutcome::Failed(error) => self.complete(request, ShWorkerResult::Failed(error)),
             ReadOutcome::Cancelled => self.complete(request, ShWorkerResult::Cancelled),

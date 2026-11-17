@@ -94,6 +94,9 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
     targets.publish(&(0..manifest.block_count()).collect());
     let ledger = Arc::new(LightmapRouteLedger::default());
     let (route, completions) = lightmap_route(Arc::clone(&source), targets, Arc::clone(&ledger));
+    let decode =
+        crate::streaming::decode_pool::DecodePool::spawn(1, LIGHTMAP_QUEUE_CAPACITY).unwrap();
+    let route = route.attach(decode.queue());
     let (issuer, handle) = ReadIssuer::spawn(
         ReadRoutes::default().with(StreamResource::LightmapBlock, Box::new(route)),
         LIGHTMAP_QUEUE_CAPACITY,
@@ -123,8 +126,8 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
     let mut delivered = Vec::new();
     wait_until("four completions", || {
         while let Ok(completion) = completions.try_recv() {
-            assert!(matches!(completion.result, LightmapReadResult::Read { .. }));
-            ledger.release(completion.result.read_bytes());
+            assert!(matches!(completion.result, LightmapReadResult::Decoded(_)));
+            ledger.release(completion.charged_bytes);
             delivered.push(completion.request.key);
         }
         delivered.len() == 4

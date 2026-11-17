@@ -1203,6 +1203,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(cell, &(w, h))| LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: cell as u32,
                 width: w,
                 height: h,

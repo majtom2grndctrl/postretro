@@ -517,6 +517,7 @@ fn portal_lightmap_mover_fixture(name: &str) -> TempPrl {
         let (width, height) = (16u16, 16u16);
         let texels = usize::from(width) * usize::from(height);
         LightmapBlock {
+            codec: postretro_level_format::coded_plane::BlockCodec::Raw,
             cell_id,
             width,
             height,

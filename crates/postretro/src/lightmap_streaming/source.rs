@@ -8,8 +8,9 @@ use postretro_level_format::lightmap::LightmapBlockPayload;
 use postretro_level_format::lightmap_pool::PlanePresence;
 use postretro_level_loader::{LightmapBlockFileRanges, LightmapStreamManifest, PrlLoadError};
 
-/// One block's index facts: its owning cell, texel extent, stored planes and
-/// each plane's own extent (plane A the mask block, plane B its sub-rect).
+/// One block's index facts: its owning cell, texel extent, stored planes,
+/// each plane's own extent (plane A the mask block, plane B its sub-rect),
+/// and each half's decoded bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BlockSummary {
     pub(crate) cell_id: u32,
@@ -17,6 +18,9 @@ pub(crate) struct BlockSummary {
     pub(crate) height: u16,
     pub(crate) planes: PlanePresence,
     pub(crate) plane_extents: [(u16, u16); 2],
+    /// The id-22 half's then the id-42 half's bytes once decoded: what the
+    /// pair costs in hand and to upload, whatever its stored size.
+    pub(crate) decoded_bytes: [u64; 2],
 }
 
 /// A level's streamed lightmap blocks. Production reads the retained
@@ -28,8 +32,10 @@ pub(crate) struct BlockSummary {
 /// an error, may cover several byte-contiguous block ranges (across the
 /// id-22/42 boundary when the sections touch), and is called on the issuer
 /// thread, or by a synchronous preload that runs before the issuer starts;
-/// `payload_from_pair_bytes` rejects buffers whose lengths disagree with the
-/// block's ranges.
+/// `payload_from_pair_bytes` decodes a pair's stored bytes split per plane,
+/// rejects buffers whose lengths disagree with the block's ranges and fails
+/// on a plane that does not decode, and runs on the decode pool or a
+/// synchronous preload, never the issuer or the frame thread.
 pub(crate) trait LightmapBlockSource: Send + Sync {
     fn block_count(&self) -> u32;
     fn block_summary(&self, block: u32) -> Option<BlockSummary>;
@@ -45,6 +51,13 @@ pub(crate) trait LightmapBlockSource: Send + Sync {
     ) -> Result<LightmapBlockPayload, PrlLoadError>;
     /// The level's content identity for stale-completion checks.
     fn content_tag(&self) -> [u8; 32];
+
+    /// Both halves' decoded bytes: what a read pair is charged once it is
+    /// queued for decode.
+    fn decoded_pair_bytes(&self, block: u32) -> u64 {
+        self.block_summary(block)
+            .map_or(0, |summary| summary.decoded_bytes.iter().sum())
+    }
 
     /// One pair read synchronously on the calling thread: capture and tests,
     /// never the frame path or level install.
@@ -90,14 +103,15 @@ impl LightmapBlockSource for ManifestBlockSource {
 
     fn block_summary(&self, block: u32) -> Option<BlockSummary> {
         let record = self.manifest.lightmap_index().records.get(block as usize)?;
-        let (planes, plane_extents) =
+        let (planes, plane_extents, mask_bytes) =
             self.manifest
                 .shadowmask_index()
-                .map_or(([false; 2], [(0, 0); 2]), |index| {
+                .map_or(([false; 2], [(0, 0); 2], 0), |index| {
                     let planes = &index.records[block as usize];
                     (
                         [planes.group_a.len != 0, planes.group_b.len != 0],
                         [planes.extents.mask, planes.extents.plane_b],
+                        planes.decoded_bytes(),
                     )
                 });
         Some(BlockSummary {
@@ -106,6 +120,7 @@ impl LightmapBlockSource for ManifestBlockSource {
             height: record.height,
             planes,
             plane_extents,
+            decoded_bytes: [record.decoded_bytes(), mask_bytes],
         })
     }
 

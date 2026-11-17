@@ -3,7 +3,7 @@
 
 use super::ShadowmaskBlockRecord;
 use crate::lightmap::{
-    SectionByteRange, check_adjacent, check_after_previous_block, check_blob, invalid,
+    SectionByteRange, check_adjacent, check_after_previous_block, check_blob_range, invalid,
 };
 
 /// What a block's plane records are checked against.
@@ -27,9 +27,10 @@ pub(super) fn plane_range(cursor: &mut u64, plane: &[u8]) -> SectionByteRange {
     range
 }
 
-/// Refuses an absent plane that keeps an offset, a present plane whose length
-/// is not its extent's or whose range leaves the section blobs, and present
-/// planes that do not run on from the previous block's in record order.
+/// Refuses an absent plane that keeps an offset, a present plane whose stored
+/// range leaves the section blobs, and present planes that do not run on from
+/// the previous block's in record order. The record has checked each stored
+/// length against its codec.
 /// Returns where this block's planes end: `previous_end` for a block with none.
 pub(super) fn check_block_planes(
     block: usize,
@@ -38,14 +39,13 @@ pub(super) fn check_block_planes(
 ) -> crate::Result<u64> {
     let group_a = ("group A", record.group_a);
     let group_b = ("group B", record.group_b);
-    for (plane, (what, range)) in [group_a, group_b].into_iter().enumerate() {
+    for (what, range) in [group_a, group_b] {
         if range.len != 0 {
-            check_blob(
+            check_blob_range(
                 "shadowmask",
                 block,
                 what,
                 range,
-                record.extents.plane_len(plane),
                 bounds.index_len,
                 bounds.section_len,
             )?;

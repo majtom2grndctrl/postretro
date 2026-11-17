@@ -884,6 +884,7 @@ fn encoded_cut_seam(floor: bool) -> EncodedCutSeam {
             scale_regions: &[],
         },
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.1,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -897,6 +898,8 @@ fn encoded_cut_seam(floor: bool) -> EncodedCutSeam {
 
     let decoded: Vec<Vec<[f32; 3]>> = output
         .section
+        .decoded()
+        .unwrap()
         .blocks
         .iter()
         .map(|block| {

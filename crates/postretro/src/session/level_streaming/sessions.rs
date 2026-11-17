@@ -192,7 +192,7 @@ impl LevelStreaming {
             retirement.add_sh(workers);
         }
         if let Some(reads) = self.reads.take() {
-            retirement.add_issuer(reads.begin_retirement());
+            retirement.add_threads(reads.begin_retirement());
             if let Some(lightmap) = self.lightmap.as_mut() {
                 let completions = lightmap.detach_from_issuer();
                 retirement.drain_lightmap_completions(completions, Arc::clone(lightmap.ledger()));

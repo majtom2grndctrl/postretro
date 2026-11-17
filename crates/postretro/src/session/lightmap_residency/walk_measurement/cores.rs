@@ -3,13 +3,13 @@
 
 // macOS cannot pin a process to cores, so a "1-core" or "2-core" run sizes
 // every pool the walk uses as a machine with that many cores would: today the
-// SH decode pool, `(cores / 2).clamp(1, 3)`, through the one seam
+// level's shared decode pool, `(cores / 2).clamp(1, 3)`, through the one seam
 // `crate::parallelism`. The issuer is always one thread. The threads still
 // share this machine's cores, so CPU contention is not emulated; every run
 // says it was emulated.
 
 use crate::parallelism::{EmulatedCores, available_parallelism};
-use crate::session::sh_async_workers::decode_pool_size;
+use crate::streaming::decode_pool::decode_pool_size;
 
 const CORES_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_CORES";
 
@@ -79,7 +79,7 @@ impl Cores {
     /// What each pool the walk uses gets under this setting.
     pub(super) fn pools_line(self) -> String {
         format!(
-            "{}: 1 issuer thread, {} SH decode threads (when SH streams)",
+            "{}: 1 issuer thread, {} decode threads (shared by SH and lightmap)",
             self.label(),
             decode_pool_size(self.count()),
         )
@@ -100,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn emulation_sizes_the_sh_decode_pool_through_the_seam() {
+    fn emulation_sizes_the_shared_decode_pool_through_the_seam() {
         for (cores, decode_threads) in [(1, 1), (2, 1), (4, 2), (6, 3), (16, 3)] {
             let setting = Cores::Emulated(cores);
             let _guard = setting.apply();

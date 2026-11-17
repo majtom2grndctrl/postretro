@@ -25,6 +25,7 @@ struct ThreadedRig {
     completions: Receiver<LightmapCompletion>,
     issuer: Option<ReadIssuer>,
     handle: Option<JoinHandle<()>>,
+    decode: Option<crate::streaming::decode_pool::DecodePool>,
     drain: SharedDrain,
     /// Every drain's installed blocks, in order.
     batches: Vec<Vec<u32>>,
@@ -46,6 +47,9 @@ impl ThreadedRig {
             Arc::clone(controller.target_bitset()),
             Arc::clone(&ledger),
         );
+        let decode =
+            crate::streaming::decode_pool::DecodePool::spawn(1, MAX_LIGHTMAP_PERMITS).unwrap();
+        let route = route.attach(decode.queue());
         let (issuer, handle) = ReadIssuer::spawn(
             ReadRoutes::default().with(StreamResource::LightmapBlock, Box::new(route)),
             MAX_LIGHTMAP_PERMITS,
@@ -59,6 +63,7 @@ impl ThreadedRig {
             completions,
             issuer: Some(issuer),
             handle: Some(handle),
+            decode: Some(decode),
             drain: SharedDrain::default(),
             batches: Vec::new(),
         }
@@ -74,7 +79,7 @@ impl ThreadedRig {
             visible_cells: &visible,
         });
         while let Ok(completion) = self.completions.try_recv() {
-            let bytes = completion.result.read_bytes();
+            let bytes = completion.charged_bytes;
             self.controller.admit_completion(completion).unwrap();
             self.ledger.release(bytes);
         }
@@ -132,6 +137,7 @@ impl Drop for ThreadedRig {
         if let Some(handle) = self.handle.take() {
             handle.join().unwrap();
         }
+        drop(self.decode.take());
     }
 }
 

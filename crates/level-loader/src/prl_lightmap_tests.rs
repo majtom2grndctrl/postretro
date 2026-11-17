@@ -8,6 +8,7 @@ use crate::prl_load_test_fixtures::{
 };
 use crate::{LevelWorld, load_prl};
 use postretro_level_format::SectionBlob;
+use postretro_level_format::coded_plane::{BlockCodec, encode_plane};
 use postretro_level_format::geometry::{GeometrySection, Vertex};
 use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES,
@@ -30,6 +31,7 @@ fn lightmap_section(extents: &[(u16, u16)]) -> LightmapSection {
             .map(|(cell, &(width, height))| {
                 let texels = usize::from(width) * usize::from(height);
                 LightmapBlock {
+                    codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                     cell_id: cell as u32,
                     width,
                     height,
@@ -141,14 +143,21 @@ fn load_ok(sections: Vec<SectionBlob>, name: &str) -> LevelWorld {
 
 #[test]
 fn load_rejects_an_older_lightmap_section_version() {
-    let mut bytes = lightmap_section(&[(4, 4)]).to_bytes();
-    bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
-    let message = load_error(
-        vec![lightmap_blob(bytes)],
-        "postretro_test_lm_blocks_old_version.prl",
-    );
-    assert!(message.contains("Lightmap validation error"), "{message}");
-    assert!(message.contains("version: 2"), "{message}");
+    // v3 is the raw per-cell layout every level baked before coded planes.
+    for version in [2u32, 3] {
+        let mut bytes = lightmap_section(&[(4, 4)]).to_bytes();
+        bytes[0..4].copy_from_slice(&version.to_le_bytes());
+        let message = load_error(
+            vec![lightmap_blob(bytes)],
+            "postretro_test_lm_blocks_old_version.prl",
+        );
+        assert!(message.contains("Lightmap validation error"), "{message}");
+        assert!(
+            message.contains(&format!("version: {version}")),
+            "{message}"
+        );
+        assert!(message.contains("re-bake the level"), "{message}");
+    }
 }
 
 #[test]
@@ -258,7 +267,7 @@ fn load_rejects_a_block_larger_than_a_pool_layer() {
 fn load_rejects_a_nonzero_reserved_field_and_an_unknown_mask_codec() {
     let extents = [(4, 4)];
     let mut lightmap = lightmap_section(&extents).to_bytes();
-    let at = lightmap_record_at(0, 32);
+    let at = lightmap_record_at(0, 44);
     lightmap[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
     let message = load_error(
         vec![lightmap_blob(lightmap)],
@@ -271,7 +280,7 @@ fn load_rejects_a_nonzero_reserved_field_and_an_unknown_mask_codec() {
 
     let mut shadowmask = shadowmask_section(&extents).to_bytes();
     let at = shadowmask_record_at(24);
-    shadowmask[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+    shadowmask[at..at + 4].copy_from_slice(&2u32.to_le_bytes());
     let message = load_error(
         vec![
             lightmap_blob(lightmap_section(&extents).to_bytes()),
@@ -280,7 +289,7 @@ fn load_rejects_a_nonzero_reserved_field_and_an_unknown_mask_codec() {
         "postretro_test_lm_blocks_shadowmask_codec.prl",
     );
     assert!(
-        message.contains("shadowmask block 0 codec 1 is unknown"),
+        message.contains("shadowmask block 0 codec 2 is unknown"),
         "{message}"
     );
 }
@@ -367,6 +376,87 @@ fn level_with_one_lightmap_block_loads_a_one_entry_payload() {
     assert_eq!(payloads[0].irradiance, section.blocks[0].irradiance);
     assert_eq!(payloads[0].direction, section.blocks[0].direction);
     assert_eq!(payloads[0].shadowmask, None, "no id 42 in this level");
+}
+
+// ---- Coded planes decode on the loading thread ----
+
+/// `lightmap` and `shadowmask` with every stored plane coded as zstd frames.
+fn coded(
+    mut lightmap: LightmapSection,
+    mut shadowmask: ShadowmaskAtlasSection,
+) -> (LightmapSection, ShadowmaskAtlasSection) {
+    for block in &mut lightmap.blocks {
+        block.codec = BlockCodec::Zstd;
+        block.irradiance = encode_plane(BlockCodec::Zstd, &block.irradiance);
+        block.direction = encode_plane(BlockCodec::Zstd, &block.direction);
+    }
+    for (planes, codec) in shadowmask.blocks.iter_mut().zip(&mut shadowmask.codecs) {
+        *codec = BlockCodec::Zstd;
+        for plane in planes.iter_mut().filter(|plane| !plane.is_empty()) {
+            *plane = encode_plane(BlockCodec::Zstd, plane);
+        }
+    }
+    (lightmap, shadowmask)
+}
+
+#[test]
+fn an_all_resident_load_decodes_coded_planes_to_their_raw_payloads() {
+    let extents = [(8, 4), (16, 8)];
+    let (raw_lightmap, raw_shadowmask) = (lightmap_section(&extents), shadowmask_section(&extents));
+    let (lightmap, shadowmask) = coded(raw_lightmap.clone(), raw_shadowmask.clone());
+    assert!(lightmap.byte_len() < raw_lightmap.byte_len());
+    let world = load_ok(
+        vec![
+            lightmap_blob(lightmap.to_bytes()),
+            shadowmask_blob(shadowmask.to_bytes()),
+        ],
+        "postretro_test_lm_blocks_coded.prl",
+    );
+    let payloads = &world.gpu_lighting_payloads.blocks;
+    assert_eq!(payloads.len(), 2);
+    for (block, payload) in payloads.iter().enumerate() {
+        assert_eq!(payload.irradiance, raw_lightmap.blocks[block].irradiance);
+        assert_eq!(payload.direction, raw_lightmap.blocks[block].direction);
+        assert_eq!(
+            payload.shadowmask.as_ref(),
+            Some(&raw_shadowmask.blocks[block])
+        );
+    }
+}
+
+#[test]
+fn a_corrupt_coded_plane_fails_the_all_resident_load_by_name() {
+    let extents = [(8, 4), (16, 8)];
+    let (lightmap, shadowmask) = coded(lightmap_section(&extents), shadowmask_section(&extents));
+    let mut bytes = lightmap.to_bytes();
+    let direction = lightmap.index().records[1].direction;
+    let last = (direction.offset + u64::from(direction.len) - 1) as usize;
+    bytes[last] ^= 0x01;
+    let message = load_error(
+        vec![lightmap_blob(bytes), shadowmask_blob(shadowmask.to_bytes())],
+        "postretro_test_lm_blocks_coded_corrupt.prl",
+    );
+    assert!(message.contains("Lightmap validation error"), "{message}");
+    assert!(
+        message.contains("lightmap block 1 direction plane failed to decode"),
+        "{message}"
+    );
+
+    let mut bytes = shadowmask.to_bytes();
+    let group_a = shadowmask.index().records[0].group_a;
+    bytes[group_a.offset as usize + 8] ^= 0x01;
+    let message = load_error(
+        vec![lightmap_blob(lightmap.to_bytes()), shadowmask_blob(bytes)],
+        "postretro_test_lm_blocks_coded_corrupt_mask.prl",
+    );
+    assert!(
+        message.contains("ShadowmaskAtlas validation error"),
+        "{message}"
+    );
+    assert!(
+        message.contains("shadowmask block 0 group A plane failed to decode"),
+        "{message}"
+    );
 }
 
 // ---- Payload split ----

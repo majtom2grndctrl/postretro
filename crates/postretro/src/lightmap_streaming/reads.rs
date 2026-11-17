@@ -163,8 +163,13 @@ impl LightmapResidencyController {
     /// once.
     pub(super) fn set_room_reserved(&mut self, kind: PoolKind, item: u32, reserved: bool) {
         let block = kind.block_of(item);
-        // A plane takes its block's slot, so any half is one slot.
-        let texels = self.map.facts(block).texels.lightmap;
+        // A lightmap half takes its block's slot; a mask plane takes a slot
+        // at that plane's own extent.
+        let facts = self.map.facts(block);
+        let texels = match kind {
+            PoolKind::Lightmap => facts.texels.lightmap,
+            PoolKind::Mask => facts.mask_plane_texels[mask_item_plane(item)],
+        };
         let slot = &mut self.slots[block as usize];
         if slot.room_held.set(kind, item, reserved) && slot.charge == PairCharge::NeverRefused {
             if reserved {
@@ -244,15 +249,20 @@ impl LightmapResidencyController {
         self.request_order_stale = false;
     }
 
-    /// Admits one issuer completion. A completion from another generation,
-    /// for a block with no read in flight, or for a block that left demand is
-    /// dropped with its buffers. A read pair becomes ready only whole: the
-    /// issuer completes a request after both its ranges are read.
+    /// Admits one completion from the issuer or the decode pool. A completion
+    /// from another generation, for a block with no read in flight, or for a
+    /// block that left demand is dropped with its buffers. A pair becomes
+    /// ready only whole: the issuer completes a request after both its ranges
+    /// are read, and the pool after every plane decodes. The decoded payload
+    /// arrives split per plane and moves into the ready map: admission copies
+    /// no payload byte.
     pub(crate) fn admit_completion(
         &mut self,
         completion: LightmapCompletion,
     ) -> Result<(), LightmapResidencyError> {
-        let LightmapCompletion { request, result } = completion;
+        let LightmapCompletion {
+            request, result, ..
+        } = completion;
         let block = request.key;
         if request.resource != StreamResource::LightmapBlock
             || request.identity != self.identity()
@@ -266,12 +276,9 @@ impl LightmapResidencyController {
             return Ok(());
         }
         let targeted = self.slots[block as usize].target.is_some();
-        let (lightmap, shadowmask) = match result {
-            LightmapReadResult::Read {
-                lightmap,
-                shadowmask,
-            } if targeted => (lightmap, shadowmask),
-            LightmapReadResult::Read { .. } => {
+        let payload = match result {
+            LightmapReadResult::Decoded(payload) if targeted => payload,
+            LightmapReadResult::Decoded(_) => {
                 // Left demand while in flight: dropped here, released.
                 self.counters.departed_reads += 1;
                 self.release_in_hand(block);
@@ -291,31 +298,26 @@ impl LightmapResidencyController {
                 self.fail(block, targeted, "read", &error);
                 return Ok(());
             }
-        };
-        match self
-            .source
-            .payload_from_pair_bytes(block, lightmap, shadowmask)
-        {
-            Ok(payload) => {
-                // The pair keeps its permit and charges until the renderer
-                // installs or refuses it.
-                self.ready.insert(
-                    block,
-                    PreparedLightmapBlock {
-                        generation: self.generation,
-                        content_tag: self.content_tag,
-                        block,
-                        payload,
-                    },
-                );
-                self.slots[block as usize].phase = BlockPhase::Ready;
-            }
-            Err(error) => {
+            LightmapReadResult::DecodeFailed(error) => {
+                // A corrupt block is never uploaded: it fails like a read.
                 self.release_in_hand(block);
                 self.counters.failed_reads += 1;
-                self.fail(block, true, "payload split", &error);
+                self.fail(block, targeted, "decode", &error);
+                return Ok(());
             }
-        }
+        };
+        // The pair keeps its permit and charges until the renderer installs
+        // or refuses it.
+        self.ready.insert(
+            block,
+            PreparedLightmapBlock {
+                generation: self.generation,
+                content_tag: self.content_tag,
+                block,
+                payload,
+            },
+        );
+        self.slots[block as usize].phase = BlockPhase::Ready;
         Ok(())
     }
 

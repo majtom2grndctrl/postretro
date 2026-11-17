@@ -40,6 +40,7 @@ mod tests {
             mode: LightmapMode::Shadowed,
             blocks: (0..3)
                 .map(|cell_id| LightmapBlock {
+                    codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                     cell_id,
                     width: 16,
                     height: 16,

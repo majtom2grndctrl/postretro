@@ -21,10 +21,11 @@ use crate::lightmap_streaming::block_map::LevelBlockMap;
 use crate::lightmap_streaming::controller::{LightmapPreloadReads, LightmapResidencyController};
 use crate::lightmap_streaming::demand::DemandFrame;
 use crate::lightmap_streaming::route::{
-    LightmapCompletion, LightmapReadRoute, LightmapRouteLedger, lightmap_route,
+    LightmapCompletion, LightmapRouteLedger, PendingLightmapRoute, lightmap_route,
 };
 use crate::lightmap_streaming::source::{LightmapBlockSource, ManifestBlockSource};
 use crate::streaming::cluster_hints::ClusterHints;
+use crate::streaming::decode_pool::DecodeQueue;
 use crate::streaming::issuer::{ReadIssuer, ReadRoute};
 use crate::streaming::shared_drain::SharedDrain;
 
@@ -108,8 +109,9 @@ pub(crate) struct LightmapStreamingSession {
     controller: LightmapResidencyController,
     ledger: Arc<LightmapRouteLedger>,
     completions: Receiver<LightmapCompletion>,
-    /// Handed to the level-scope issuer when it spawns.
-    route: Option<LightmapReadRoute>,
+    /// Handed to the level-scope issuer, over its decode pool, when it
+    /// spawns.
+    route: Option<PendingLightmapRoute>,
     /// The latest batch, waiting for the renderer's lightmap drain. While it
     /// waits, the controller builds no further batch.
     awaiting_renderer: Option<LightmapDrainBatch>,
@@ -318,11 +320,20 @@ impl LightmapStreamingSession {
         self.controller.settled()
     }
 
-    /// The route for the level-scope issuer; `None` once taken.
-    pub(in crate::session) fn take_route(&mut self) -> Option<Box<dyn ReadRoute>> {
+    /// The route for the level-scope issuer, handing read pairs to the
+    /// level's decode pool through `decode`; `None` once taken.
+    pub(in crate::session) fn take_route(
+        &mut self,
+        decode: &DecodeQueue,
+    ) -> Option<Box<dyn ReadRoute>> {
         self.route
             .take()
-            .map(|route| Box::new(route) as Box<dyn ReadRoute>)
+            .map(|route| Box::new(route.attach(decode.clone())) as Box<dyn ReadRoute>)
+    }
+
+    /// Whether this session still waits for an issuer to read through.
+    pub(in crate::session) fn has_route(&self) -> bool {
+        self.route.is_some()
     }
 
     /// The level-scope issuer is being replaced while this session lives on
@@ -363,10 +374,10 @@ impl LightmapStreamingSession {
         loop {
             match self.completions.try_recv() {
                 Ok(completion) => {
-                    let read_bytes = completion.result.read_bytes();
+                    let charged_bytes = completion.charged_bytes;
                     let admitted = self.controller.admit_completion(completion);
                     // Consumed: kept as a ready payload or dropped.
-                    self.ledger.release(read_bytes);
+                    self.ledger.release(charged_bytes);
                     admitted?;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -468,7 +479,7 @@ impl LightmapStreamingSession {
     /// exact.
     pub(in crate::session) fn drain_declined_completions(&mut self) {
         while let Ok(completion) = self.completions.try_recv() {
-            self.ledger.release(completion.result.read_bytes());
+            self.ledger.release(completion.charged_bytes);
         }
     }
 

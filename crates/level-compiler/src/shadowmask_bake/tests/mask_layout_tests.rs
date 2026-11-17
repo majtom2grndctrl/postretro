@@ -92,6 +92,7 @@ fn a_block_with_no_owned_face_has_zero_extents_no_planes_no_placement() {
         irradiance_format: postretro_level_format::lightmap::IRRADIANCE_FORMAT_BC6H,
         mode: postretro_level_format::lightmap::LightmapMode::Shadowed,
         blocks: vec![postretro_level_format::lightmap::LightmapBlock {
+            codec: postretro_level_format::coded_plane::BlockCodec::Raw,
             cell_id: 0,
             width: 16,
             height: 8,
@@ -103,6 +104,7 @@ fn a_block_with_no_owned_face_has_zero_extents_no_planes_no_placement() {
         owners: vec![NO_FACE_OWNERS; 2],
         mask_offsets: vec![[0; 2]; 2],
         blocks: vec![[Vec::new(), Vec::new()]],
+        codecs: vec![postretro_level_format::coded_plane::BlockCodec::Zstd],
         extents: vec![layout.extents()],
     };
     let demand = PoolDemand::of_indices(&lightmap.index(), Some(&section.index()));

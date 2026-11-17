@@ -778,6 +778,7 @@ fn install_without_renderer_keeps_gpu_lighting_payloads_in_the_world() {
         irradiance_format: IRRADIANCE_FORMAT_RGBA16F,
         mode: LightmapMode::Shadowed,
         blocks: vec![LightmapBlock {
+            codec: postretro_level_format::coded_plane::BlockCodec::Raw,
             cell_id: 0,
             width: 4,
             height: 4,

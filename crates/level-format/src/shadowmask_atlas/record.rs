@@ -3,10 +3,8 @@
 // Governing context: context/lib/build_pipeline.md §PRL section IDs
 
 use super::{ShadowmaskBlockRecord, group_plane_len};
+use crate::coded_plane::BlockCodec;
 use crate::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, SectionByteRange, invalid, read_u32, read_u64};
-
-/// A plane stored as its BC5 bytes, with no lossless coding.
-pub const SHADOWMASK_CODEC_RAW: u32 = 0;
 
 /// One block record: group_a_offset u64, group_a_stored_len u32,
 /// group_b_offset u64, group_b_stored_len u32, codec u32, group_a_raw_len u32,
@@ -59,66 +57,61 @@ impl MaskExtents {
     }
 }
 
-/// A record as stored, before validation: its codec and raw lengths are only
-/// checked against the plane ranges and extents.
-pub(super) struct WireRecord {
-    pub record: ShadowmaskBlockRecord,
-    pub codec: u32,
-    pub raw_len: [u32; 2],
-}
-
-pub(super) fn read_record(data: &[u8], at: usize) -> WireRecord {
+/// Reads the record at `at`, refusing an unknown codec; [`check_record`]
+/// checks the rest.
+pub(super) fn read_record(
+    data: &[u8],
+    at: usize,
+    block: usize,
+) -> crate::Result<ShadowmaskBlockRecord> {
     let u16_at = |at: usize| u16::from_le_bytes([data[at], data[at + 1]]);
-    WireRecord {
-        record: ShadowmaskBlockRecord {
-            group_a: SectionByteRange {
-                offset: read_u64(data, at),
-                len: read_u32(data, at + 8),
-            },
-            group_b: SectionByteRange {
-                offset: read_u64(data, at + 12),
-                len: read_u32(data, at + 20),
-            },
-            extents: MaskExtents {
-                mask: (u16_at(at + 36), u16_at(at + 38)),
-                plane_b: (u16_at(at + 40), u16_at(at + 42)),
-            },
+    let raw_codec = read_u32(data, at + 24);
+    let codec = BlockCodec::from_u32(raw_codec).ok_or_else(|| {
+        invalid(format!(
+            "shadowmask block {block} codec {raw_codec} is unknown; this build reads 0 (stored \
+             raw) and 1 (zstd)"
+        ))
+    })?;
+    Ok(ShadowmaskBlockRecord {
+        group_a: SectionByteRange {
+            offset: read_u64(data, at),
+            len: read_u32(data, at + 8),
         },
-        codec: read_u32(data, at + 24),
+        group_b: SectionByteRange {
+            offset: read_u64(data, at + 12),
+            len: read_u32(data, at + 20),
+        },
+        codec,
         raw_len: [read_u32(data, at + 28), read_u32(data, at + 32)],
-    }
+        extents: MaskExtents {
+            mask: (u16_at(at + 36), u16_at(at + 38)),
+            plane_b: (u16_at(at + 40), u16_at(at + 42)),
+        },
+    })
 }
 
-/// Writes `record` stored raw: codec 0, each raw length its stored length.
 pub(super) fn write_record(out: &mut Vec<u8>, record: &ShadowmaskBlockRecord) {
     out.extend_from_slice(&record.group_a.offset.to_le_bytes());
     out.extend_from_slice(&record.group_a.len.to_le_bytes());
     out.extend_from_slice(&record.group_b.offset.to_le_bytes());
     out.extend_from_slice(&record.group_b.len.to_le_bytes());
-    out.extend_from_slice(&SHADOWMASK_CODEC_RAW.to_le_bytes());
-    out.extend_from_slice(&record.group_a.len.to_le_bytes());
-    out.extend_from_slice(&record.group_b.len.to_le_bytes());
+    out.extend_from_slice(&record.codec.as_u32().to_le_bytes());
+    out.extend_from_slice(&record.raw_len[0].to_le_bytes());
+    out.extend_from_slice(&record.raw_len[1].to_le_bytes());
     let MaskExtents { mask, plane_b } = record.extents;
     for edge in [mask.0, mask.1, plane_b.0, plane_b.1] {
         out.extend_from_slice(&edge.to_le_bytes());
     }
 }
 
-/// Refuses an unknown codec; an extent that is not a whole number of BC5
-/// blocks, exceeds a pool layer, or is zero on one axis only; a plane B not
-/// inside the mask block; a present plane with a zero extent; a raw length
-/// that is not its plane's at its extent, or nonzero for an absent plane; and
-/// a raw plane whose stored length differs from its raw length. The caller
-/// then checks the stored ranges.
-pub(super) fn check_record(block: usize, wire: &WireRecord) -> crate::Result<()> {
-    if wire.codec != SHADOWMASK_CODEC_RAW {
-        return Err(invalid(format!(
-            "shadowmask block {block} codec {} is unknown; this build reads codec {} (stored \
-             raw)",
-            wire.codec, SHADOWMASK_CODEC_RAW
-        )));
-    }
-    let extents = wire.record.extents;
+/// Refuses an extent that is not a whole number of BC5 blocks, exceeds a
+/// pool layer, or is zero on one axis only; a plane B not inside the mask
+/// block; a present plane with a zero extent; a raw length that is not its
+/// plane's at its extent, or nonzero for an absent plane; and a raw plane
+/// whose stored length differs from its raw length. The caller then checks
+/// the stored ranges.
+pub(super) fn check_record(block: usize, record: &ShadowmaskBlockRecord) -> crate::Result<()> {
+    let extents = record.extents;
     for (what, (width, height)) in [("mask", extents.mask), ("plane B", extents.plane_b)] {
         check_extent(block, what, width, height)?;
     }
@@ -128,12 +121,9 @@ pub(super) fn check_record(block: usize, wire: &WireRecord) -> crate::Result<()>
             extents.plane_b, extents.mask
         )));
     }
-    let ranges = [
-        ("group A", wire.record.group_a),
-        ("group B", wire.record.group_b),
-    ];
+    let ranges = [("group A", record.group_a), ("group B", record.group_b)];
     for (plane, (what, range)) in ranges.into_iter().enumerate() {
-        let raw_len = wire.raw_len[plane];
+        let raw_len = record.raw_len[plane];
         if range.len == 0 {
             if raw_len != 0 {
                 return Err(invalid(format!(
@@ -156,7 +146,7 @@ pub(super) fn check_record(block: usize, wire: &WireRecord) -> crate::Result<()>
                  {width}x{height} extent, expected {expected}"
             )));
         }
-        if range.len != raw_len {
+        if record.codec == BlockCodec::Raw && range.len != raw_len {
             return Err(invalid(format!(
                 "shadowmask block {block} {what} is stored raw in {} bytes, but its raw length \
                  is {raw_len}",

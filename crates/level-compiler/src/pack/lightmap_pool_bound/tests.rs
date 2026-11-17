@@ -64,6 +64,7 @@ fn lightmap(blocks: &[Block]) -> LightmapSection {
         blocks: blocks
             .iter()
             .map(|block| LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: block.cell,
                 width: block.extent.0,
                 height: block.extent.1,
@@ -827,6 +828,7 @@ fn pool_demand_from_the_section_equals_the_demand_of_its_parsed_indices() {
         owners: vec![NO_FACE_OWNERS; 2],
         mask_offsets: vec![[0; 2]; 2],
         blocks: vec![[plane(8, 8, 1), plane(4, 4, 2)], [Vec::new(), Vec::new()]],
+        codecs: vec![postretro_level_format::coded_plane::BlockCodec::Raw; 2],
         extents: vec![
             MaskExtents {
                 mask: (8, 8),

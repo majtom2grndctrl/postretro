@@ -274,6 +274,8 @@ fn block_index(extents: &[(u16, u16)]) -> LightmapBlockIndex {
                 height,
                 irradiance: none,
                 direction: none,
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
+                raw_len: [0; 2],
             })
             .collect(),
     }
@@ -291,6 +293,8 @@ fn mask_index(blocks: usize, both: usize) -> ShadowmaskBlockIndex {
                 group_a: plane(1),
                 group_b: plane(u32::from(block < both)),
                 extents: MaskExtents::whole_block(FULL_LAYER.0, FULL_LAYER.1),
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
+                raw_len: [1, u32::from(block < both)],
             })
             .collect(),
     }
@@ -374,6 +378,8 @@ fn a_mask_pool_with_nothing_to_hold_has_no_layers() {
                 group_a: SectionByteRange { offset: 0, len: 0 },
                 group_b: SectionByteRange { offset: 0, len: 0 },
                 extents: MaskExtents::NONE,
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
+                raw_len: [0; 2],
             };
             3
         ],

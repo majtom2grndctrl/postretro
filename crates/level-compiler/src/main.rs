@@ -422,6 +422,7 @@ fn lightmap_config(args: &Args, kvp_density: Option<f32>) -> lightmap_bake::Ligh
         uncompressed_irradiance: args.uncompressed_irradiance,
         direction_texel_scale: args.direction_texel_scale,
         penumbra_floor: args.penumbra_floor,
+        section_codec: args.section_codec,
     }
 }
 
@@ -857,6 +858,10 @@ pub struct Args {
     /// heuristic instead of keeping the smallest of all. A diagnostic that
     /// forces a second layout for A/B comparisons.
     pack_heuristic: Option<lightmap_bake::PackHeuristic>,
+    /// `--section-codec`: how ids 22 and 42 store each plane. `raw` is a
+    /// diagnostic that writes an uncoded build of the same layout, never the
+    /// default.
+    section_codec: postretro_level_format::coded_plane::BlockCodec,
 }
 
 impl Args {
@@ -917,6 +922,7 @@ fn help_text() -> String {
          --dump-chart-texels <DIR>  Diagnostic: write every chart's lightmap, shadow-mask and animated weight-map texels before BC encoding to <DIR>, for an A/B comparison; needs --no-cache or --release; the PRL is unchanged (default: off)\n    \
          --dump-chart-hashes <DIR>  As --dump-chart-texels, but only per-chart hashes: small enough for a large map, though a difference cannot be located to a texel (default: off)\n    \
          --pack-heuristic <NAME>    Diagnostic: pack every cell's lightmap blocks with one heuristic, one of {pack_heuristics}, instead of keeping the smallest of all (default: all)\n    \
+         --section-codec <zstd|raw> Diagnostic: store lightmap and shadow-mask planes raw instead of as checksummed zstd frames, for an uncoded A/B build of the same layout (default: zstd)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -1008,6 +1014,7 @@ where
     let mut sh_density_force_scale = None;
     let mut chart_dump: Option<chart_dump::ChartDumpConfig> = None;
     let mut pack_heuristic = None;
+    let mut section_codec = postretro_level_format::coded_plane::BlockCodec::default();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1252,6 +1259,14 @@ where
                         )
                     })?);
             }
+            "--section-codec" => {
+                use postretro_level_format::coded_plane::BlockCodec;
+                let name = flag_value(&mut args, "--section-codec")?;
+                section_codec = [BlockCodec::Zstd, BlockCodec::Raw]
+                    .into_iter()
+                    .find(|codec| codec.name() == name)
+                    .ok_or_else(|| anyhow::anyhow!("--section-codec must be zstd or raw"))?;
+            }
             _ if input.is_none() && !arg.starts_with('-') => {
                 input = Some(PathBuf::from(arg));
             }
@@ -1322,6 +1337,7 @@ where
         sh_density_force_scale,
         chart_dump,
         pack_heuristic,
+        section_codec,
     })
 }
 

@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::shadowmask_atlas::{
     FaceOwners, MaskExtents, MaskOffset, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS,
     ShadowmaskAtlasSection,
@@ -92,7 +93,9 @@ pub(super) struct OwnershipFill<'a> {
     next_layer: u32,
     carry: Vec<Option<RawFillBuffer>>,
     hold_until: Vec<u32>,
+    /// Each block's stored planes, coded by `codec` as each block closes.
     encoded: Vec<[Vec<u8>; 2]>,
+    codec: BlockCodec,
     /// Each block's mask extents, set when its mask block encodes.
     mask_extents: Vec<MaskExtents>,
     owners: Vec<FaceOwners>,
@@ -181,6 +184,7 @@ impl<'a> OwnershipFill<'a> {
                 cut_parents,
             ),
             encoded: vec![[Vec::new(), Vec::new()]; shared.layout.blocks.len()],
+            codec: BlockCodec::default(),
             mask_extents: vec![MaskExtents::NONE; shared.layout.blocks.len()],
             owners: vec![NO_FACE_OWNERS; shared.charts.len()],
             mask_offsets: vec![[0; 2]; shared.charts.len()],
@@ -203,6 +207,12 @@ impl<'a> OwnershipFill<'a> {
             control,
             chart_dump: None,
         }
+    }
+
+    /// Stores every plane under `codec` instead of the default zstd.
+    pub(super) fn with_codec(mut self, codec: BlockCodec) -> Self {
+        self.codec = codec;
+        self
     }
 
     /// Rank `light` on every face its partition lights, then write its mask
@@ -337,6 +347,7 @@ impl<'a> OwnershipFill<'a> {
             Some(ShadowmaskAtlasSection {
                 owners: self.owners,
                 mask_offsets: self.mask_offsets,
+                codecs: vec![self.codec; self.encoded.len()],
                 blocks: self.encoded,
                 extents: self.mask_extents,
             }),

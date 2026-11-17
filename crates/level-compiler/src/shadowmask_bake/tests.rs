@@ -1068,6 +1068,9 @@ fn the_memo_key_covers_spec_indices_promotion_faces_and_estimate_parameters() {
             2,
             estimate,
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     let base = [eligible(&light, 0, false)];
@@ -1093,9 +1096,50 @@ fn shadowmask_atlas_key_changes_with_tracer_epoch() {
             2,
             &[],
             tracer_epoch,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     assert_ne!(key(TRACER_EPOCH), key(TRACER_EPOCH + 1));
+}
+
+// AC 25: the memo key folds the codec identity, so a cached id 42 written by
+// another codec, zstd level or zstd library version is never reused.
+#[test]
+fn shadowmask_atlas_key_changes_with_codec_zstd_level_and_version() {
+    use postretro_level_format::coded_plane::{BlockCodec, CodecIdentity};
+    let light = light_over(0, 1.0);
+    let base = [eligible(&light, 0, false)];
+    let key = |codec| {
+        shadowmask_atlas_input_hash(
+            &base,
+            &|_, layer| [layer as u8; 32],
+            4,
+            8,
+            8,
+            2,
+            &[],
+            TRACER_EPOCH,
+            codec,
+        )
+    };
+    let current = CodecIdentity::current(BlockCodec::Zstd);
+    let reference = key(current);
+    assert_eq!(reference, key(current));
+    for other in [
+        CodecIdentity::current(BlockCodec::Raw),
+        CodecIdentity {
+            level: current.level + 1,
+            ..current
+        },
+        CodecIdentity {
+            zstd_version: current.zstd_version + 1,
+            ..current
+        },
+    ] {
+        assert_ne!(reference, key(other), "{other:?}");
+    }
 }
 
 // The raw fill lives only through the walk: one allocation, released before
@@ -1127,6 +1171,8 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
         1,
         &shared,
         &no_cut_scene.scene(),
+        // Raw, so the encode-residency figures below count BC5 bytes.
+        postretro_level_format::coded_plane::BlockCodec::Raw,
         Some(&cache),
         &control,
     )
@@ -1165,6 +1211,8 @@ fn the_raw_fill_is_released_before_the_memo_write_and_encode_scratch_stays_bound
         1,
         &shared,
         &no_cut_scene.scene(),
+        // Raw, so the encode-residency figures below count BC5 bytes.
+        postretro_level_format::coded_plane::BlockCodec::Raw,
         Some(&cache),
         &control,
     )

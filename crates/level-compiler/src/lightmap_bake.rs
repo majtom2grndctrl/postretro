@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 use bvh::bvh::Bvh;
 use glam::{Quat, Vec3};
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use rayon::prelude::*;
 
@@ -223,6 +224,11 @@ pub struct LightmapConfig {
     /// 4-probe early-out for every light; output equals the pre-floor bake.
     /// Default [`crate::texel_footprint::PENUMBRA_FLOOR_DEFAULT`].
     pub penumbra_floor: bool,
+    /// How ids 22 and 42 store each plane. Zstd unless `--section-codec raw`,
+    /// a diagnostic that writes an uncoded build of the same layout. Coding
+    /// runs at encode time, so the section memos hold the stored form; their
+    /// keys fold the codec's identity.
+    pub section_codec: BlockCodec,
 }
 
 /// Output of a lightmap bake pass. The animated weight-map baker consumes
@@ -431,6 +437,7 @@ pub fn bake_prepared_lightmap_controlled(
         area_sample_count,
         config.penumbra_floor,
         config.uncompressed_irradiance,
+        config.section_codec,
         control,
     );
 
@@ -468,6 +475,7 @@ fn bake_layered_section_controlled(
     area_sample_count: u32,
     penumbra_floor: bool,
     uncompressed_irradiance: bool,
+    section_codec: BlockCodec,
     control: &BakeControl,
 ) -> LightmapSection {
     debug_assert_eq!(charts.len(), placements.len());
@@ -482,7 +490,7 @@ fn bake_layered_section_controlled(
         penumbra_floor,
         control,
     );
-    let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance);
+    let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance, section_codec);
     for layer in 0..layer_count {
         // Keep the layer's full-resolution f32 buffers scoped to this block:
         // the plane drops once its blocks are encoded, bounding the

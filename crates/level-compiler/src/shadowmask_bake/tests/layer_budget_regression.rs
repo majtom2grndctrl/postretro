@@ -5,7 +5,8 @@ use super::*;
 // for `SMB8`, after these same rows passed with the old tag and every plane stored,
 // and again for `SMB9`, after `assert_masks_are_translations` showed every owned
 // chart's mask texels byte-equal to its lightmap-layout fill; owners and drop
-// reports kept their digests.
+// reports kept their digests. Coded planes are pinned decoded (stored raw), so
+// the digests hold the texels, not a zstd build's frames.
 fn expected_pin(label: &str) -> (&'static str, &'static str) {
     match label {
         "one-layer" => (
@@ -37,9 +38,12 @@ fn expected_pin(label: &str) -> (&'static str, &'static str) {
 }
 
 fn golden(label: &str, section: Option<ShadowmaskAtlasSection>, report: OwnerReport) {
-    let bytes = section
-        .as_ref()
-        .map_or_else(Vec::new, ShadowmaskAtlasSection::to_bytes);
+    let bytes = section.as_ref().map_or_else(Vec::new, |section| {
+        section
+            .decoded()
+            .expect("the bake's coded planes decode")
+            .to_bytes()
+    });
     let report_text = format!("{report:?}");
     let expected = expected_pin(label);
     println!(

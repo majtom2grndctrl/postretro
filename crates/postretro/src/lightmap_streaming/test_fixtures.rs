@@ -46,6 +46,23 @@ pub(crate) struct BlockSpec {
     pub(crate) lightmap: Range<u64>,
     pub(crate) shadowmask: Option<Range<u64>>,
     pub(crate) planes: PlanePresence,
+    /// Decoded bytes per stored byte: 1 for a pair stored raw, more for one
+    /// whose planes are coded. The test source "decodes" by repeating each
+    /// plane's bytes this many times.
+    pub(crate) decode_ratio: u64,
+    /// Each mask plane's extent; `None` makes it the lightmap block's.
+    pub(crate) mask_extents: Option<[(u16, u16); 2]>,
+}
+
+impl BlockSpec {
+    /// This block with its planes coded at `ratio` decoded bytes per stored
+    /// byte.
+    pub(crate) fn coded(self, ratio: u64) -> Self {
+        Self {
+            decode_ratio: ratio,
+            ..self
+        }
+    }
 }
 
 impl BlockSpec {
@@ -61,6 +78,8 @@ impl BlockSpec {
             lightmap: start..start + half_bytes,
             shadowmask: shadowmask.then(|| shadow_start..shadow_start + half_bytes),
             planes: [shadowmask; 2],
+            decode_ratio: 1,
+            mask_extents: None,
         }
     }
 }
@@ -69,6 +88,8 @@ impl BlockSpec {
 #[derive(Debug, Default)]
 pub(crate) struct ReadLog {
     pub(crate) reads: Mutex<Vec<(StreamResource, Range<u64>, ThreadId)>>,
+    /// Each lightmap pair decode: its block and the thread that ran it.
+    pub(crate) decodes: Mutex<Vec<(u32, ThreadId, Option<String>)>>,
     pub(crate) gate: ReadGate,
 }
 
@@ -137,16 +158,18 @@ impl TestBlockSource {
         &self.blocks[block as usize]
     }
 
-    /// The completion the issuer would deliver for `request`.
+    /// The completion the decode pool would deliver for `request`: the
+    /// pair read and decoded, charged at its decoded size.
     pub(crate) fn completion(&self, request: ReadRequest) -> LightmapCompletion {
         let lightmap = pattern(&request.ranges.get(0));
         let shadowmask = (request.ranges.len() > 1).then(|| pattern(&request.ranges.get(1)));
+        let payload = self
+            .payload_from_pair_bytes(request.key, lightmap, shadowmask)
+            .expect("a test pair splits");
         LightmapCompletion {
             request,
-            result: LightmapReadResult::Read {
-                lightmap,
-                shadowmask,
-            },
+            charged_bytes: self.decoded_pair_bytes(request.key),
+            result: LightmapReadResult::Decoded(payload),
         }
     }
 }
@@ -157,13 +180,21 @@ impl LightmapBlockSource for TestBlockSource {
     }
 
     fn block_summary(&self, block: u32) -> Option<BlockSummary> {
-        // Each test block's mask block is its lightmap block.
+        // A test block's mask block is its lightmap block unless it names
+        // its own plane extents.
         self.blocks.get(block as usize).map(|spec| BlockSummary {
             cell_id: spec.cell,
             width: spec.width,
             height: spec.height,
             planes: spec.planes,
-            plane_extents: [(spec.width, spec.height); 2],
+            plane_extents: spec.mask_extents.unwrap_or([(spec.width, spec.height); 2]),
+            decoded_bytes: [
+                (spec.lightmap.end - spec.lightmap.start) * spec.decode_ratio,
+                spec.shadowmask
+                    .as_ref()
+                    .map_or(0, |range| range.end - range.start)
+                    * spec.decode_ratio,
+            ],
         })
     }
 
@@ -187,14 +218,22 @@ impl LightmapBlockSource for TestBlockSource {
         Ok(pattern(&range))
     }
 
-    /// Splits each half at its midpoint: irradiance then direction, group A
-    /// then group B when the block stores both.
+    /// "Decodes" each half by repeating it `decode_ratio` times (a raw
+    /// block's buffers move through), then splits it at its midpoint:
+    /// irradiance then direction, group A then group B when the block stores
+    /// both.
     fn payload_from_pair_bytes(
         &self,
         block: u32,
-        mut lightmap: Vec<u8>,
+        lightmap: Vec<u8>,
         shadowmask: Option<Vec<u8>>,
     ) -> Result<LightmapBlockPayload, PrlLoadError> {
+        let thread = std::thread::current();
+        self.log.decodes.lock().unwrap().push((
+            block,
+            thread.id(),
+            thread.name().map(str::to_owned),
+        ));
         let spec = &self.blocks[block as usize];
         let len = |range: &Range<u64>| (range.end - range.start) as usize;
         let mismatch = || PrlLoadError::SectionValidation {
@@ -206,6 +245,12 @@ impl LightmapBlockSource for TestBlockSource {
         {
             return Err(mismatch());
         }
+        let decode = |stored: Vec<u8>| match spec.decode_ratio {
+            1 => stored,
+            ratio => stored.repeat(ratio as usize),
+        };
+        let mut lightmap = decode(lightmap);
+        let shadowmask = shadowmask.map(decode);
         let direction = lightmap.split_off(lightmap.len() / 2);
         Ok(LightmapBlockPayload {
             irradiance: lightmap,

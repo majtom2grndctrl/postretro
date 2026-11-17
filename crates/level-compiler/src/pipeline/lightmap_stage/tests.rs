@@ -158,6 +158,7 @@ fn test_args() -> Args {
 
 fn config(uncompressed_irradiance: bool) -> LightmapConfig {
     LightmapConfig {
+        section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
         lightmap_density: 0.25,
         area_sample_count: 4,
         uncompressed_irradiance,
@@ -388,7 +389,7 @@ fn assert_two_lights_own_a_face_in_block_one(lightmap: &[u8], bytes: &[u8]) {
     );
     let block = &lightmap.blocks[1];
     let texels = decode_block_channels(
-        &shadowmask.blocks[1],
+        &shadowmask.decode_block(1).expect("block 1's planes decode"),
         u32::from(block.width),
         u32::from(block.height),
     );
@@ -715,7 +716,7 @@ fn fused_stage_preserves_all_sdf_one_plane_fallback_on_cache_hit() {
     );
     assert_eq!(first.lightmap.section.blocks.len(), 1);
     assert!(
-        first.lightmap.section.blocks[0]
+        first.lightmap.section.decoded().unwrap().blocks[0]
             .direction
             .as_chunks::<2>()
             .0

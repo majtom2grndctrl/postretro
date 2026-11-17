@@ -159,6 +159,7 @@ pub(crate) fn block_fixture(
                 }
             }
             LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: block as u32,
                 width: width as u16,
                 height: height as u16,

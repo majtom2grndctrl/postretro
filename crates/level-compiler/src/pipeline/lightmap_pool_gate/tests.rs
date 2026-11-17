@@ -125,7 +125,11 @@ fn compiler_count_matches_renderer_on_id22_built_from_its_finalized_scale8_layou
         atlas_height: prepared.atlas_height,
         layer_count: 1,
     };
-    let mut builder = BlockSectionBuilder::new(&prepared.layout, true);
+    let mut builder = BlockSectionBuilder::new(
+        &prepared.layout,
+        true,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
+    );
     for layer in 0..prepared.layer_count {
         builder.push_layer(layer, &plane);
     }
@@ -161,6 +165,7 @@ fn mask_fixture(planes: &[usize]) -> (LightmapSection, ShadowmaskAtlasSection) {
         mode: LightmapMode::Shadowed,
         blocks: (0..planes.len() as u32)
             .map(|cell_id| LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id,
                 width: edge,
                 height: edge,

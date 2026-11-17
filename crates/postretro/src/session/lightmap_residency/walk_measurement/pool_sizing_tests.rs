@@ -52,6 +52,7 @@ fn layer_filling_lightmap() -> LightmapSection {
         mode: LightmapMode::Shadowed,
         blocks: (0..FIXTURE_CELLS)
             .map(|cell| LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: cell,
                 width: LAYER_FILLING_EXTENT,
                 height: LAYER_FILLING_EXTENT,

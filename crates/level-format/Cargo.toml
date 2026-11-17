@@ -19,6 +19,12 @@ thiserror.workspace = true
 bitflags.workspace = true
 blake3.workspace = true
 log.workspace = true
+# Checksummed zstd frames for the streamed lightmap and shadowmask planes
+# (`coded_plane`). Against this crate's dependency-light default: the compiler
+# encodes and every loader decodes through the one framing helper here, so the
+# codec cannot drift between writer and reader. See
+# context/lib/build_pipeline.md §PRL section IDs.
+zstd.workspace = true
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true

@@ -398,6 +398,7 @@ impl Scene {
         let lm_output = crate::lightmap_bake::bake_lightmap(
             &mut lm_ctx,
             &crate::lightmap_bake::LightmapConfig {
+                section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
                 lightmap_density: density,
                 area_sample_count: crate::lightmap_bake::DEFAULT_AREA_SAMPLE_COUNT,
                 direction_texel_scale: crate::lightmap_bake::DIRECTION_TEXEL_SCALE,

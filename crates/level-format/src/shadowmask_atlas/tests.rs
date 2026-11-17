@@ -1,5 +1,6 @@
 use super::*;
 use crate::SectionId;
+use crate::coded_plane::BlockCodec;
 use crate::lightmap::{
     IRRADIANCE_FORMAT_BC6H, LightmapBlock, LightmapMode, LightmapSection, read_u64,
 };
@@ -20,6 +21,7 @@ fn lightmap(extents: &[(u16, u16)]) -> LightmapSection {
                     cell_id: i as u32,
                     width: w,
                     height: h,
+                    codec: BlockCodec::Raw,
                     irradiance: vec![0; (w32 / 4 * h32 / 4 * 16) as usize],
                     direction: vec![0; (w32 / 2 * h32 / 2 * 2) as usize],
                 }
@@ -389,10 +391,10 @@ fn rejects_an_unknown_codec_and_a_raw_length_on_an_absent_plane() {
     let lm = lightmap(&[(8, 4)]);
     let good = with_absent(section_for(&lm, vec![NO_FACE_OWNERS]), &[(0, 1)]).to_bytes();
     let mut coded = good.clone();
-    coded[record_at(0) + 24..record_at(0) + 28].copy_from_slice(&1u32.to_le_bytes());
+    coded[record_at(0) + 24..record_at(0) + 28].copy_from_slice(&2u32.to_le_bytes());
     let message = error_message(parse(&coded, &lm, 1));
     assert!(
-        message.contains("shadowmask block 0 codec 1 is unknown"),
+        message.contains("shadowmask block 0 codec 2 is unknown"),
         "{message}"
     );
     let mut absent_raw = good;
@@ -506,29 +508,20 @@ fn absent_planes_store_no_blob_in_every_presence_combination() {
     let range = |offset, len| SectionByteRange { offset, len };
     let (stored, absent) = (plane as u32, range(0, 0));
     let extents = MaskExtents::whole_block(8, 4);
+    let record = |group_a: SectionByteRange, group_b: SectionByteRange| ShadowmaskBlockRecord {
+        group_a,
+        group_b,
+        codec: BlockCodec::Raw,
+        raw_len: [group_a.len, group_b.len],
+        extents,
+    };
     assert_eq!(
         index.records,
         [
-            ShadowmaskBlockRecord {
-                group_a: range(start, stored),
-                group_b: range(start + plane, stored),
-                extents,
-            },
-            ShadowmaskBlockRecord {
-                group_a: absent,
-                group_b: range(start + 2 * plane, stored),
-                extents,
-            },
-            ShadowmaskBlockRecord {
-                group_a: range(start + 3 * plane, stored),
-                group_b: absent,
-                extents,
-            },
-            ShadowmaskBlockRecord {
-                group_a: absent,
-                group_b: absent,
-                extents,
-            },
+            record(range(start, stored), range(start + plane, stored)),
+            record(absent, range(start + 2 * plane, stored)),
+            record(range(start + 3 * plane, stored), absent),
+            record(absent, absent),
         ]
     );
     assert_eq!(parse(&bytes, &lm, 1).unwrap(), section);
@@ -661,4 +654,74 @@ fn plane_order_follows_the_present_plane_when_group_a_is_absent() {
 fn section_id_is_pinned() {
     assert_eq!(SectionId::ShadowmaskAtlas as u32, 42);
     assert_eq!(SectionId::from_u32(42), Some(SectionId::ShadowmaskAtlas));
+}
+
+/// `section` with every block's present planes stored as zstd frames.
+fn coded(mut section: ShadowmaskAtlasSection) -> ShadowmaskAtlasSection {
+    for (planes, codec) in section.blocks.iter_mut().zip(&mut section.codecs) {
+        for plane in planes.iter_mut().filter(|plane| !plane.is_empty()) {
+            *plane = crate::coded_plane::encode_plane(BlockCodec::Zstd, plane);
+        }
+        *codec = BlockCodec::Zstd;
+    }
+    section
+}
+
+#[test]
+fn coded_planes_round_trip_stored_and_decode_to_their_bc5_bytes() {
+    let lm = lightmap(&[(16, 16), (8, 4), (16, 8)]);
+    let raw = with_absent(section_for(&lm, vec![NO_FACE_OWNERS]), &[(1, 0)]);
+    let section = coded(raw.clone());
+    let bytes = section.to_bytes();
+    let parsed = parse(&bytes, &lm, 1).unwrap();
+    assert_eq!(parsed, section);
+    let index = parsed.index();
+    for block in 0..3 {
+        let record = index.records[block];
+        assert_eq!(record.codec, BlockCodec::Zstd);
+        for plane in 0..2 {
+            let expected = raw.blocks[block][plane].len() as u32;
+            assert_eq!(
+                record.raw_len[plane], expected,
+                "block {block} plane {plane}"
+            );
+        }
+        assert_eq!(parsed.decode_block(block).unwrap(), raw.blocks[block]);
+        let stored = [
+            slice_range(&bytes, record.group_a).to_vec(),
+            slice_range(&bytes, record.group_b).to_vec(),
+        ];
+        assert_eq!(
+            index.decode_planes(block, stored).unwrap(),
+            raw.blocks[block]
+        );
+    }
+}
+
+#[test]
+fn a_flipped_byte_in_a_coded_mask_plane_fails_its_decode_by_name() {
+    let lm = lightmap(&[(16, 16)]);
+    let section = coded(section_for(&lm, vec![NO_FACE_OWNERS]));
+    let mut planes = section.blocks[0].clone();
+    let last = planes[1].len() - 1;
+    planes[1][last] ^= 0x10;
+    let message = error_message(section.index().decode_planes(0, planes));
+    assert!(
+        message.contains("shadowmask block 0 group B plane failed to decode"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_coded_planes_raw_length_must_still_match_its_extent() {
+    let lm = lightmap(&[(16, 16)]);
+    let mut bytes = coded(section_for(&lm, vec![NO_FACE_OWNERS])).to_bytes();
+    let at = record_at(0) + 28;
+    bytes[at..at + 4].copy_from_slice(&64u32.to_le_bytes());
+    let message = error_message(parse(&bytes, &lm, 1));
+    assert!(
+        message
+            .contains("shadowmask block 0 group A raw length 64 disagrees with its 16x16 extent"),
+        "{message}"
+    );
 }

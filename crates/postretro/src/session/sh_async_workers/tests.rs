@@ -182,13 +182,6 @@ fn assert_phases_drained(workers: &ShAsyncWorkers) {
 }
 
 #[test]
-fn decode_pool_size_is_half_the_cores_between_one_and_three() {
-    for (available, expected) in [(0, 1), (1, 1), (2, 1), (4, 2), (6, 3), (64, 3)] {
-        assert_eq!(decode_pool_size(available), expected, "{available} cores");
-    }
-}
-
-#[test]
 fn shuffled_submissions_read_mandatory_first_then_optional_each_ascending() {
     let far = 4 * COALESCE_MAX_GAP_BYTES;
     let ranges: Vec<_> = (0..8).map(|i| i * far..i * far + 64).collect();
@@ -414,7 +407,7 @@ fn decode_runs_on_a_pool_thread_never_the_issuer() {
     assert!(
         decode_threads
             .iter()
-            .all(|name| name.starts_with("sh-probe-decode-")),
+            .all(|name| name.starts_with(crate::streaming::decode_pool::DECODE_THREAD_NAME_PREFIX)),
         "{decode_threads:?}"
     );
     let test_thread = thread_name();
@@ -565,7 +558,11 @@ mod positional {
         let executions = Arc::new(AtomicUsize::new(0));
         let (_old_temp, old_source, gate) = gated_source(Arc::clone(&executions));
         let mut workers = ShAsyncWorkers::with_source(old_source, 2).unwrap();
-        assert_eq!(workers.handles.len(), 3, "one issuer plus two decoders");
+        assert_eq!(workers.handles.len(), 1, "one issuer");
+        assert!(
+            workers.own_decode.is_some(),
+            "and its own two-thread decode pool"
+        );
         all_targets(&workers);
         let old_request = |cluster_id| ShClusterRequest {
             generation: 1,

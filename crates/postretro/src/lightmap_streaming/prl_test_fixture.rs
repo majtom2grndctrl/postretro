@@ -265,6 +265,7 @@ fn lightmap() -> LightmapSection {
         mode: LightmapMode::Shadowed,
         blocks: (0..FIXTURE_CELLS)
             .map(|cell| LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: cell,
                 width,
                 height,

@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use glam::Vec3;
+use postretro_level_format::coded_plane::{BlockCodec, store_plane};
 use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F,
     IRRADIANCE_TEXEL_BYTES, LightmapBlock, LightmapMode, LightmapSection, encode_direction_oct,
@@ -17,13 +18,15 @@ use crate::chart_dump::capture::LightmapCapture;
 const BC_EDGE: u32 = 4;
 const BC_BLOCK_BYTES: usize = 16;
 
-/// Assembles a v3 section one bake layer at a time. Each layer is encoded
+/// Assembles a v4 section one bake layer at a time. Each layer is encoded
 /// whole, then every block on it is sliced out: BC6H is per 4×4 block and
 /// block origins are aligned, so a slice equals encoding the block alone.
-/// Only the current layer's encoded bytes and the finished blocks are held.
+/// Each sliced plane is coded at once, so only the current layer's encoded
+/// bytes and the finished blocks' stored planes are held.
 pub(crate) struct BlockSectionBuilder<'a> {
     layout: &'a BlockLayout,
     uncompressed_irradiance: bool,
+    codec: BlockCodec,
     blocks: Vec<Option<LightmapBlock>>,
     /// `--dump-chart-texels`: reads each layer's encoder input; `None` costs
     /// nothing.
@@ -31,10 +34,15 @@ pub(crate) struct BlockSectionBuilder<'a> {
 }
 
 impl<'a> BlockSectionBuilder<'a> {
-    pub(crate) fn new(layout: &'a BlockLayout, uncompressed_irradiance: bool) -> Self {
+    pub(crate) fn new(
+        layout: &'a BlockLayout,
+        uncompressed_irradiance: bool,
+        codec: BlockCodec,
+    ) -> Self {
         Self {
             layout,
             uncompressed_irradiance,
+            codec,
             blocks: vec![None; layout.blocks.len()],
             chart_dump: None,
         }
@@ -77,8 +85,9 @@ impl<'a> BlockSectionBuilder<'a> {
                 cell_id: block.cell_id,
                 width: u16::try_from(block.width).expect("blocks fit a pool layer"),
                 height: u16::try_from(block.height).expect("blocks fit a pool layer"),
-                irradiance,
-                direction,
+                codec: self.codec,
+                irradiance: store_plane(self.codec, irradiance),
+                direction: store_plane(self.codec, direction),
             });
         }
     }
@@ -138,9 +147,10 @@ impl CompositedAtlas {
         &self,
         layout: &BlockLayout,
         uncompressed_irradiance: bool,
+        codec: BlockCodec,
     ) -> LightmapSection {
         let plane = self.atlas_width as usize * self.atlas_height as usize;
-        let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance);
+        let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance, codec);
         for layer in 0..self.layer_count {
             let offset = layer as usize * plane;
             let single = CompositedAtlas {

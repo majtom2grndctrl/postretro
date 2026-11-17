@@ -31,6 +31,9 @@ mod reads;
 pub(crate) use preload::LightmapPreloadReads;
 use reads::PairCharge;
 #[cfg(test)]
+#[path = "decode_tests.rs"]
+mod decode_tests;
+#[cfg(test)]
 #[path = "multi_block_tests.rs"]
 mod multi_block_tests;
 #[cfg(test)]
@@ -92,7 +95,7 @@ pub(crate) enum BlockPhase {
     /// until each pool that refused it reports room for one more of its slots
     /// than it had at refusal.
     Refused,
-    /// The read, the payload split, or the renderer's install failed. Not
+    /// The read, the decode, or the renderer's install failed. Not
     /// retried until the block leaves demand and returns, and then only once.
     Failed,
 }
@@ -131,11 +134,17 @@ impl HeldRoom {
     /// What a pair in hand still takes from each pool's headroom: its slots
     /// with no room held.
     fn unheld_texels(self, facts: &BlockFacts) -> PerPool<u64> {
-        let slot = facts.texels.lightmap;
-        let held_planes = self.planes.iter().filter(|&&held| held).count() as u64;
+        let held_mask: u64 = (0..2)
+            .filter(|&plane| self.planes[plane])
+            .map(|plane| facts.mask_plane_texels[plane])
+            .sum();
         PerPool {
-            lightmap: if self.lightmap { 0 } else { slot },
-            mask: facts.texels.mask - held_planes * slot,
+            lightmap: if self.lightmap {
+                0
+            } else {
+                facts.texels.lightmap
+            },
+            mask: facts.texels.mask - held_mask,
         }
     }
 }

@@ -328,12 +328,20 @@ fn incremental_layer_fold_matches_monolithic_section_bytes() {
     };
     let warm_section = compose_section(&light_refs, &shared, &layer_bvh, &layer_prims, &layer_geo);
     assert_eq!(
-        mono_atlas.encode_section(&mono_prepared.layout, true),
+        mono_atlas.encode_section(
+            &mono_prepared.layout,
+            true,
+            postretro_level_format::coded_plane::BlockCodec::Raw
+        ),
         warm_section,
         "layer-major incremental warm fold must equal the cold monolith byte-for-byte"
     );
     assert_eq!(
-        mono_atlas.encode_section(&mono_prepared.layout, false),
+        mono_atlas.encode_section(
+            &mono_prepared.layout,
+            false,
+            postretro_level_format::coded_plane::BlockCodec::Raw
+        ),
         compose_section_with_format(
             &light_refs,
             &shared,
@@ -742,7 +750,7 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 #[test]
 fn sparse_cache_epochs_are_pinned() {
     assert_eq!(LAYER_FORMAT_VERSION, 14);
-    assert_eq!(LIGHTMAP_SECTION_VERSION, 6);
+    assert_eq!(LIGHTMAP_SECTION_VERSION, 7);
 }
 
 #[test]
@@ -1152,7 +1160,11 @@ fn all_sdf_fallback_encodes_every_block_uncovered() {
     uncovered.dilate();
     assert_eq!(
         warm_fallback,
-        uncovered.encode_section(shared.layout, true),
+        uncovered.encode_section(
+            shared.layout,
+            true,
+            postretro_level_format::coded_plane::BlockCodec::Raw
+        ),
         "all-Sdf warm fallback must encode every block from an uncovered plane"
     );
     assert_eq!(warm_fallback.blocks.len(), 2);
@@ -1401,6 +1413,9 @@ fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
             TEXEL_STEP_THRESHOLD,
             &[],
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     assert_ne!(section(true), section(false));
@@ -1463,6 +1478,9 @@ fn lightmap_section_key_changes_with_tracer_epoch() {
             TEXEL_STEP_THRESHOLD,
             &[],
             tracer_epoch,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     assert_ne!(section(TRACER_EPOCH), section(TRACER_EPOCH + 1));
@@ -1516,6 +1534,9 @@ fn section_key_folds_the_cut_map() {
             TEXEL_STEP_THRESHOLD,
             cut_parents,
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     let cut = CutParent {
@@ -2089,8 +2110,73 @@ fn section_key(
         TEXEL_STEP_THRESHOLD,
         &[],
         TRACER_EPOCH,
+        postretro_level_format::coded_plane::CodecIdentity::current(
+            postretro_level_format::coded_plane::BlockCodec::Zstd,
+        ),
     );
     CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
+}
+
+// AC 25: the section memo key folds the codec identity, so a cached id 22
+// written by another codec, zstd level or zstd library version is never
+// reused.
+#[test]
+fn section_key_changes_with_codec_zstd_level_and_version() {
+    use postretro_level_format::coded_plane::{BlockCodec, CodecIdentity};
+    let charts = [Chart {
+        origin: Vec3::ZERO,
+        u_axis: Vec3::X,
+        v_axis: Vec3::Z,
+        uv_min: [0.0, 0.0],
+        uv_extent: [1.0, 1.0],
+        normal: Vec3::Y,
+        width_texels: 5,
+        height_texels: 5,
+        leaf_index: 0,
+        window: None,
+    }];
+    let placements = [ChartPlacement {
+        x: 0,
+        y: 0,
+        layer: 0,
+        transposed: false,
+    }];
+    let shared = SharedAtlas {
+        charts: &charts,
+        placements: &placements,
+        atlas_width: 64,
+        atlas_height: 64,
+        layout: &BlockLayout::whole_layers(64, 64, &placements, 2),
+    };
+    let key = |codec| {
+        section_input_hash(
+            [[0x5a; 32]].into_iter(),
+            &shared,
+            DENSITY,
+            false,
+            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+            TEXEL_STEP_THRESHOLD,
+            &[],
+            TRACER_EPOCH,
+            codec,
+        )
+    };
+    let current = CodecIdentity::current(BlockCodec::Zstd);
+    let reference = key(current);
+    assert_eq!(reference, key(current));
+    for other in [
+        CodecIdentity::current(BlockCodec::Raw),
+        CodecIdentity {
+            level: current.level + 1,
+            ..current
+        },
+        CodecIdentity {
+            zstd_version: current.zstd_version + 1,
+            ..current
+        },
+    ] {
+        assert_ne!(reference, key(other), "{other:?}");
+    }
 }
 
 #[test]
@@ -2137,6 +2223,9 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             TEXEL_STEP_THRESHOLD,
             &[],
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         ),
     );
     let at_scale_one = CacheKey::new(
@@ -2151,6 +2240,9 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             TEXEL_STEP_THRESHOLD,
             &[],
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         ),
     );
     assert_ne!(
@@ -2243,8 +2335,11 @@ fn compose_section_with_format(
     uncompressed_irradiance: bool,
 ) -> LightmapSection {
     let control = BakeControl::unrestricted();
-    let mut builder =
-        crate::lightmap_bake::BlockSectionBuilder::new(shared.layout, uncompressed_irradiance);
+    let mut builder = crate::lightmap_bake::BlockSectionBuilder::new(
+        shared.layout,
+        uncompressed_irradiance,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
+    );
     for target_layer in 0..atlas_layer_count(shared) {
         let mut plane = if lights.is_empty() {
             empty_composite(shared.atlas_width, shared.atlas_height)

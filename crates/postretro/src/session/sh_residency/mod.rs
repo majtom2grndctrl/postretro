@@ -19,6 +19,7 @@ use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagno
 use crate::sh_streaming::controller::{ShLevelTopology, ShResidencyController, SyncReadResult};
 use crate::streaming::cell_demand::DemandFrame;
 use crate::streaming::cluster_hints::ClusterHints;
+use crate::streaming::decode_pool::DecodeQueue;
 use crate::streaming::issuer::ReadRoute;
 
 #[cfg(feature = "capture")]
@@ -165,16 +166,26 @@ impl ShStreamingSession {
         Ok(())
     }
 
-    /// The decode pool and SH's issuer route for the level-scope issuer, when
-    /// this async session has no workers yet. The workers join the session
-    /// once the owner has spawned the issuer ([`Self::attach_workers`]).
+    /// Whether this async session still needs its workers and route.
+    pub(in crate::session) fn wants_async_workers(&self) -> bool {
+        self.mode == ShStreamingMode::Async && self.workers.is_none()
+    }
+
+    /// SH's workers and issuer route for the level-scope issuer, decoding on
+    /// the level's pool through `decode`, when this async session has no
+    /// workers yet. The workers join the session once the owner has spawned
+    /// the issuer ([`Self::attach_workers`]).
     pub(in crate::session) fn prepare_async_workers(
         &self,
+        decode: &DecodeQueue,
     ) -> Result<Option<(ShAsyncWorkers, Box<dyn ReadRoute>)>> {
-        if self.mode != ShStreamingMode::Async || self.workers.is_some() {
+        if !self.wants_async_workers() {
             return Ok(None);
         }
-        Ok(Some(ShAsyncWorkers::prepare(self.manifest.clone())?))
+        Ok(Some(ShAsyncWorkers::prepare(
+            self.manifest.clone(),
+            decode.clone(),
+        )))
     }
 
     pub(in crate::session) fn attach_workers(&mut self, workers: ShAsyncWorkers) {

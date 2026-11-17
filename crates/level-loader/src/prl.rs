@@ -2633,6 +2633,7 @@ mod tests {
                 .map(|(cell, &(width, height))| {
                     let texels = usize::from(width) * usize::from(height);
                     LightmapBlock {
+                        codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                         cell_id: cell as u32,
                         width,
                         height,

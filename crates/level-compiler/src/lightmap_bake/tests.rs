@@ -189,6 +189,7 @@ fn bake_scale_region_fixture(regions: &[MapLightmapScaleRegion]) -> Vec<u8> {
     bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -226,6 +227,7 @@ fn empty_geometry_bakes_no_blocks() {
     let section = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -254,6 +256,7 @@ fn no_static_lights_bakes_no_blocks() {
     let section = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -374,6 +377,7 @@ fn single_static_light_produces_nonzero_irradiance() {
     let section = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             // Test reads per-texel bytes assuming the 8-byte RGBA16F stride;
@@ -385,7 +389,9 @@ fn single_static_light_produces_nonzero_irradiance() {
         },
     )
     .unwrap()
-    .section;
+    .section
+    .decoded()
+    .unwrap();
     assert!(!section.blocks.is_empty());
     for block in &section.blocks {
         assert_eq!(
@@ -439,6 +445,7 @@ fn sdf_typed_light_excluded_from_direct_lightmap() {
     let section = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             // See `single_static_light_produces_nonzero_irradiance`: this
@@ -489,6 +496,7 @@ fn is_dynamic_lights_skipped_by_bake() {
     let section = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: DEFAULT_TEXEL_DENSITY_METERS,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -522,6 +530,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     let section_static = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -551,6 +560,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     let section_dyn = bake_lightmap(
         &mut inputs_d,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -587,6 +597,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     let section_anim = bake_lightmap(
         &mut inputs_a,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -616,6 +627,7 @@ fn static_nonanimated_bakes_but_dynamic_and_animated_do_not() {
     let section_bo = bake_lightmap(
         &mut inputs_b,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -759,6 +771,7 @@ fn warm_and_cold_atlas_preparation_share_scale_regions() {
     let cold = bake_lightmap(
         &mut cold_inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -1197,7 +1210,11 @@ fn single_layer_reference_section(uncompressed_irradiance: bool) -> LightmapSect
         DEFAULT_AREA_SAMPLE_COUNT,
         PENUMBRA_FLOOR_DEFAULT,
     )
-    .encode_section(&prepared.layout, uncompressed_irradiance)
+    .encode_section(
+        &prepared.layout,
+        uncompressed_irradiance,
+        postretro_level_format::coded_plane::BlockCodec::Zstd,
+    )
 }
 
 fn single_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
@@ -1216,6 +1233,7 @@ fn single_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
     bake_lightmap_controlled(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -1260,7 +1278,11 @@ fn multi_layer_reference_section(uncompressed_irradiance: bool) -> LightmapSecti
         DEFAULT_AREA_SAMPLE_COUNT,
         PENUMBRA_FLOOR_DEFAULT,
     )
-    .encode_section(&prepared.layout, uncompressed_irradiance)
+    .encode_section(
+        &prepared.layout,
+        uncompressed_irradiance,
+        postretro_level_format::coded_plane::BlockCodec::Zstd,
+    )
 }
 
 fn multi_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
@@ -1282,6 +1304,7 @@ fn multi_layer_cold_section(uncompressed_irradiance: bool) -> LightmapSection {
     bake_lightmap_controlled(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -1488,6 +1511,7 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
         DEFAULT_AREA_SAMPLE_COUNT,
         PENUMBRA_FLOOR_DEFAULT,
         true,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
         &BakeControl::unrestricted(),
     );
     let reference = bake_monolithic_atlas(
@@ -1503,7 +1527,11 @@ fn layered_cold_encode_retains_degenerate_layer_blob() {
         DEFAULT_AREA_SAMPLE_COUNT,
         PENUMBRA_FLOOR_DEFAULT,
     )
-    .encode_section(&layout, true);
+    .encode_section(
+        &layout,
+        true,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
+    );
 
     assert_eq!(section.blocks.len(), 2);
     for block in &section.blocks {
@@ -1663,6 +1691,7 @@ fn lightmap_bake_produces_byte_identical_output_on_repeated_runs() {
         let out = bake_lightmap(
             &mut inputs,
             &LightmapConfig {
+                section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -1718,6 +1747,7 @@ fn two_bakes_decode_within_frozen_tolerance() {
         bake_lightmap(
             &mut inputs,
             &LightmapConfig {
+                section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
                 lightmap_density: 0.25,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -1884,6 +1914,7 @@ fn lightmap_uvs_in_zero_one_range_after_bake() {
     let _ = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -2054,6 +2085,7 @@ fn occluder_produces_dark_texel() {
     let section = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             // Reads per-texel bytes — request the RGBA16F debug bypass
@@ -2255,6 +2287,7 @@ fn shared_world_vertex_produces_two_distinct_records() {
     let _ = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.25,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -2741,9 +2774,11 @@ fn floor_irradiance_r(section: &LightmapSection) -> Vec<f32> {
         .collect()
 }
 
-/// Every block's irradiance blob, in block order.
+/// Every block's decoded irradiance blob, in block order.
 fn all_irradiance(section: &LightmapSection) -> Vec<u8> {
     section
+        .decoded()
+        .expect("the bake's coded planes decode")
         .blocks
         .iter()
         .flat_map(|block: &LightmapBlock| block.irradiance.iter().copied())
@@ -2790,6 +2825,7 @@ fn soft_sum_bakes_penumbra_gradient_not_hard_step() {
     let section = bake_lightmap(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.05,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             // `floor_irradiance_r` reads per-texel bytes from the
@@ -2844,6 +2880,7 @@ fn soft_sum_bake_is_byte_identical_on_repeat() {
         bake_lightmap(
             &mut inputs,
             &LightmapConfig {
+                section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
                 lightmap_density: 0.05,
                 area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
                 direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -2884,7 +2921,11 @@ fn direction_scale_one_emits_rg8_bytes() {
         transposed: false,
     }];
 
-    let section = atlas.encode_section(&BlockLayout::whole_layers(2, 2, &placements, 1), true);
+    let section = atlas.encode_section(
+        &BlockLayout::whole_layers(2, 2, &placements, 1),
+        true,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
+    );
     assert_eq!(section.direction_texel_scale, 1);
     assert_eq!(
         section.blocks[0].direction,
@@ -2892,7 +2933,11 @@ fn direction_scale_one_emits_rg8_bytes() {
         "factor 1 must encode only the octahedral channels"
     );
 
-    let coarse = atlas.encode_section(&BlockLayout::whole_layers(2, 2, &placements, 2), true);
+    let coarse = atlas.encode_section(
+        &BlockLayout::whole_layers(2, 2, &placements, 2),
+        true,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
+    );
     assert_eq!(coarse.direction_texel_scale, 2);
     assert_eq!(coarse.blocks[0].irradiance, section.blocks[0].irradiance);
     assert_eq!(
@@ -2964,7 +3009,11 @@ fn direction_reduction_keeps_array_layers_separate() {
         layer_count: 2,
     };
     let placements = [0, 1].map(|layer| ChartPlacement::at(0, 0, layer));
-    let section = atlas.encode_section(&BlockLayout::whole_layers(4, 2, &placements, 2), true);
+    let section = atlas.encode_section(
+        &BlockLayout::whole_layers(4, 2, &placements, 2),
+        true,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
+    );
     assert_eq!(section.blocks.len(), 2);
     for (block, expected) in section.blocks.iter().zip([Vec3::X, -Vec3::X]) {
         assert_eq!(block.direction.len(), 2 * 2);
@@ -3058,6 +3107,7 @@ fn penumbra_cell_bake(far_quad: bool) -> LightmapBakeOutput {
     bake_lightmap_controlled(
         &mut inputs,
         &LightmapConfig {
+            section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
             lightmap_density: 0.1,
             area_sample_count: DEFAULT_AREA_SAMPLE_COUNT,
             direction_texel_scale: DIRECTION_TEXEL_SCALE,
@@ -3087,6 +3137,7 @@ fn moved_and_renumbered_chart_bakes_identical_texels() {
     );
 
     let cell_block = |section: &LightmapSection| {
+        let section = section.decoded().unwrap();
         let blocks: Vec<_> = section.blocks.iter().filter(|b| b.cell_id == 1).collect();
         assert_eq!(blocks.len(), 1);
         blocks[0].clone()

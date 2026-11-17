@@ -87,6 +87,7 @@ pub(super) fn uniform_block(width: u16, height: u16, irradiance: f32) -> Lightma
         .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
         .collect();
     LightmapBlock {
+        codec: postretro_level_format::coded_plane::BlockCodec::Raw,
         cell_id: 0,
         width,
         height,

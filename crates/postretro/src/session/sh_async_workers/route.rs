@@ -106,16 +106,34 @@ impl ReadRoute for ShReadRoute {
                 // An SH request carries exactly one range.
                 let bytes = parts.into_iter().next().unwrap_or_default();
                 // Cancelled workers have taken the queue: SH's receiver is
-                // gone. A retired pool discards the job, releasing its bytes.
-                self.shared.decode_queue().is_some_and(|decode| {
-                    decode.submit(Box::new(ShDecodeJob {
-                        request,
-                        bytes,
-                        source: Arc::clone(&self.source),
-                        shared: Arc::clone(&self.shared),
-                        completed: self.completed.clone(),
-                    }))
-                })
+                // gone, and the read bytes drop here.
+                let Some(decode) = self.shared.decode_queue() else {
+                    self.release_read_bytes(bytes.len() as u64);
+                    return false;
+                };
+                // From here the chunk is charged at its decoded size, as a
+                // lightmap pair is; its stored bytes leave the encoded phase.
+                // A retired pool discards the job, releasing that charge.
+                let decoded_bytes = self.source.decoded_bytes(request.cluster_id);
+                {
+                    let mut phases = self.shared.phases.lock().expect("SH phase mutex poisoned");
+                    phases
+                        .encoded
+                        .remove(bytes.len() as u64, "encoded worker bytes")
+                        .expect("balanced encoded read");
+                    phases
+                        .decoding
+                        .add(decoded_bytes, "decoded worker bytes")
+                        .expect("validated decode bound");
+                }
+                decode.submit(Box::new(ShDecodeJob {
+                    request,
+                    bytes,
+                    decoded_bytes,
+                    source: Arc::clone(&self.source),
+                    shared: Arc::clone(&self.shared),
+                    completed: self.completed.clone(),
+                }))
             }
             ReadOutcome::Failed(error) => self.complete(request, ShWorkerResult::Failed(error)),
             ReadOutcome::Cancelled => self.complete(request, ShWorkerResult::Cancelled),

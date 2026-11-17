@@ -541,7 +541,11 @@ fn portal_lightmap_mover_fixture(name: &str) -> TempPrl {
     movers.movers[0].sealed_portal_ids = vec![0, 3];
     TempPrl(write_portal_prl_load_fixture(
         [
-            blob(SectionId::CellResidencySet, 1, residency.to_bytes()),
+            blob(
+                SectionId::CellResidencySet,
+                1,
+                residency.to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
+            ),
             blob(SectionId::Lightmap, 1, lightmap.to_bytes()),
             blob(
                 SectionId::LightmapPoolBound,

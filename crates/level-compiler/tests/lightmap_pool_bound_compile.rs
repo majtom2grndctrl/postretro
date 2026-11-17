@@ -162,6 +162,18 @@ fn id_58_is_byte_identical_warm_and_cold() {
 
     assert!(warm.contains("[cache] lightmap_section hit"), "{warm}");
     assert!(warm.contains("[cache] shadowmask_atlas hit"), "{warm}");
+    assert!(warm.contains("[cache] cell_residency_set hit"), "{warm}");
+    // The coded streamed sections: a warm build writes them byte-identical
+    // to a cold one (ids 22/42 from their memos, 50 and 51 coded at pack).
+    for id in [
+        SectionId::Lightmap,
+        SectionId::ShadowmaskAtlas,
+        SectionId::ClusterShPayloads,
+        SectionId::CellResidencySet,
+    ] {
+        let cold = section(&cold_prl, id).unwrap_or_else(|| panic!("{id:?} is emitted"));
+        assert_eq!(section(&warm_prl, id), Some(cold), "{id:?}");
+    }
     for output in [&cold, &warm] {
         // The mask floor's check runs after the bake, memo hit or not.
         assert!(

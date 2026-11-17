@@ -3,10 +3,12 @@
 // See: context/lib/build_pipeline.md §PRL section IDs, rendering_pipeline.md §4
 
 use crate::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
+use crate::coded_plane::{BlockCodec, decode_plane_from, store_plane};
 use crate::lightmap::{eof, invalid, read_u32};
 
-/// Section version. Load rejects any other.
-pub const CELL_RESIDENCY_SET_VERSION: u32 = 1;
+/// Section version. Load rejects any other. v2: the body is stored raw or as
+/// one checksummed zstd frame behind a codec and raw-length prefix.
+pub const CELL_RESIDENCY_SET_VERSION: u32 = 2;
 
 /// Default movement lead L in metres. Lives here so the compiler's bound and
 /// the runtime's demand cannot differ.
@@ -15,8 +17,10 @@ pub const DEFAULT_LEAD_METRES: u32 = 16;
 /// stored lead.
 pub const DEFAULT_LEAD: u32 = DEFAULT_LEAD_METRES * CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
 
-/// version, camera_cell_count, max_lead, entry_count.
-const HEADER_BYTES: usize = 16;
+/// version, codec, reserved, raw_len (u64).
+const PREFIX_BYTES: usize = 20;
+/// The body's camera_cell_count, max_lead, entry_count.
+const HEADER_BYTES: usize = 12;
 /// cell_id, lead.
 const ENTRY_BYTES: usize = 8;
 
@@ -40,6 +44,10 @@ pub struct ResidencyEntry {
 ///
 /// ```text
 ///   u32 version            (= CELL_RESIDENCY_SET_VERSION)
+///   u32 codec              (BlockCodec: 0 raw, 1 one zstd frame)
+///   u32 reserved           (0)
+///   u64 raw_len            (the body's decoded length)
+///   body, stored under `codec`:
 ///   u32 camera_cell_count  (= the level's cell count)
 ///   u32 max_lead           (fixed-point; every entry's lead <= it)
 ///   u32 entry_count
@@ -79,34 +87,46 @@ impl CellResidencySetSection {
         }
     }
 
-    pub fn byte_len(&self) -> usize {
+    /// The body's decoded length; what the section stores depends on its codec.
+    pub fn raw_len(&self) -> usize {
         HEADER_BYTES + self.offsets.len() * 4 + self.entries.len() * ENTRY_BYTES
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.byte_len());
-        out.extend_from_slice(&CELL_RESIDENCY_SET_VERSION.to_le_bytes());
-        out.extend_from_slice(&(self.camera_cell_count() as u32).to_le_bytes());
-        out.extend_from_slice(&self.max_lead.to_le_bytes());
-        out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+    /// The section as stored under `codec`. The compiler writes zstd; `raw` is
+    /// its uncoded diagnostic and the form its memo holds.
+    pub fn to_bytes(&self, codec: BlockCodec) -> Vec<u8> {
+        let mut body = Vec::with_capacity(self.raw_len());
+        body.extend_from_slice(&(self.camera_cell_count() as u32).to_le_bytes());
+        body.extend_from_slice(&self.max_lead.to_le_bytes());
+        body.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
         for offset in &self.offsets {
-            out.extend_from_slice(&offset.to_le_bytes());
+            body.extend_from_slice(&offset.to_le_bytes());
         }
         for entry in &self.entries {
-            out.extend_from_slice(&entry.cell_id.to_le_bytes());
-            out.extend_from_slice(&entry.lead.to_le_bytes());
+            body.extend_from_slice(&entry.cell_id.to_le_bytes());
+            body.extend_from_slice(&entry.lead.to_le_bytes());
         }
+        let raw_len = body.len() as u64;
+        let stored = store_plane(codec, body);
+        let mut out = Vec::with_capacity(PREFIX_BYTES + stored.len());
+        out.extend_from_slice(&CELL_RESIDENCY_SET_VERSION.to_le_bytes());
+        out.extend_from_slice(&codec.as_u32().to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&raw_len.to_le_bytes());
+        out.extend_from_slice(&stored);
         out
     }
 
     /// Parse and validate against the level's cell count. Rejects an other
-    /// version, a camera cell count that differs from `cell_count`, CSR
-    /// offsets that don't start at 0, decrease, or pass `entry_count`, an
-    /// entry naming a cell past `cell_count`, a lead past `max_lead`, and a
-    /// camera cell's range that is unsorted or repeats a cell.
+    /// version, an unknown codec, a body that fails to decode to its raw
+    /// length (a corrupt frame), a camera cell count that differs from
+    /// `cell_count`, CSR offsets that don't start at 0, decrease, or pass
+    /// `entry_count`, an entry naming a cell past `cell_count`, a lead past
+    /// `max_lead`, and a camera cell's range that is unsorted or repeats a
+    /// cell.
     pub fn from_bytes(data: &[u8], cell_count: usize) -> crate::Result<Self> {
-        if data.len() < HEADER_BYTES {
-            return Err(eof("cell residency set too short for header"));
+        if data.len() < 4 {
+            return Err(eof("cell residency set too short for its version"));
         }
         let version = read_u32(data, 0);
         if version != CELL_RESIDENCY_SET_VERSION {
@@ -114,9 +134,42 @@ impl CellResidencySetSection {
                 "unsupported cell residency set version: {version} (expected {CELL_RESIDENCY_SET_VERSION}); re-bake the level"
             )));
         }
-        let camera_cell_count = read_u32(data, 4) as usize;
-        let max_lead = read_u32(data, 8);
-        let entry_count = read_u32(data, 12) as usize;
+        if data.len() < PREFIX_BYTES {
+            return Err(eof("cell residency set too short for its prefix"));
+        }
+        let codec_word = read_u32(data, 4);
+        let codec = BlockCodec::from_u32(codec_word)
+            .ok_or_else(|| invalid(format!("cell residency set codec {codec_word} is unknown")))?;
+        if read_u32(data, 8) != 0 {
+            return Err(invalid("cell residency set reserved word is not 0"));
+        }
+        let raw_len = u64::from_le_bytes(data[12..20].try_into().expect("8-byte slice"));
+        // The largest body this cell count admits: every camera cell holding
+        // every cell. Checked before the decode allocates.
+        let max_raw_len = (cell_count as u64)
+            .checked_mul(cell_count as u64)
+            .and_then(|entries| entries.checked_mul(ENTRY_BYTES as u64))
+            .and_then(|entries| entries.checked_add((cell_count as u64 + 1) * 4))
+            .and_then(|len| len.checked_add(HEADER_BYTES as u64))
+            .ok_or_else(|| invalid("cell residency set length overflows"))?;
+        if raw_len < HEADER_BYTES as u64 || raw_len > max_raw_len {
+            return Err(invalid(format!(
+                "cell residency set raw length {raw_len} is outside {HEADER_BYTES}..={max_raw_len} for {cell_count} cells"
+            )));
+        }
+        let body = decode_plane_from(codec, &data[PREFIX_BYTES..], raw_len as usize)
+            .map_err(|reason| invalid(format!("cell residency set frame is corrupt: {reason}")))?;
+        Self::from_body(&body, cell_count)
+    }
+
+    /// Parse and validate a decoded body.
+    fn from_body(data: &[u8], cell_count: usize) -> crate::Result<Self> {
+        if data.len() < HEADER_BYTES {
+            return Err(eof("cell residency set too short for header"));
+        }
+        let camera_cell_count = read_u32(data, 0) as usize;
+        let max_lead = read_u32(data, 4);
+        let entry_count = read_u32(data, 8) as usize;
         if camera_cell_count != cell_count {
             return Err(invalid(format!(
                 "cell residency set covers {camera_cell_count} camera cells, level has {cell_count}"
@@ -222,23 +275,111 @@ mod tests {
         format!("{:?}", result.expect_err("expected a rejection"))
     }
 
+    /// The section as the default (zstd) bake writes it.
+    trait Coded {
+        fn coded(&self) -> Vec<u8>;
+    }
+
+    impl Coded for CellResidencySetSection {
+        fn coded(&self) -> Vec<u8> {
+            self.to_bytes(BlockCodec::Zstd)
+        }
+    }
+
     #[test]
-    fn residency_set_round_trips_with_empty_ranges() {
+    fn residency_set_round_trips_with_empty_ranges_under_both_codecs() {
         let section = sample();
-        let bytes = section.to_bytes();
-        assert_eq!(bytes.len(), section.byte_len());
-        let restored = CellResidencySetSection::from_bytes(&bytes, 3).unwrap();
-        assert_eq!(restored, section);
-        assert!(restored.entries_for(1).is_empty());
-        assert_eq!(restored.entries_for(0).len(), 3);
-        assert!(restored.entries_for(9).is_empty());
+        for codec in [BlockCodec::Raw, BlockCodec::Zstd] {
+            let bytes = section.to_bytes(codec);
+            assert_eq!(read_u32(&bytes, 4), codec.as_u32());
+            let raw_len = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
+            assert_eq!(raw_len, section.raw_len() as u64);
+            if codec == BlockCodec::Raw {
+                assert_eq!(bytes.len(), PREFIX_BYTES + section.raw_len());
+            }
+            let restored = CellResidencySetSection::from_bytes(&bytes, 3).unwrap();
+            assert_eq!(restored, section);
+            assert!(restored.entries_for(1).is_empty());
+            assert_eq!(restored.entries_for(0).len(), 3);
+            assert!(restored.entries_for(9).is_empty());
+        }
+        // Both codecs store one body: the coded frame decodes to the raw one.
+        let raw = section.to_bytes(BlockCodec::Raw);
+        let coded = section.to_bytes(BlockCodec::Zstd);
+        assert_eq!(
+            crate::coded_plane::decode_plane_from(
+                BlockCodec::Zstd,
+                &coded[PREFIX_BYTES..],
+                section.raw_len()
+            )
+            .unwrap(),
+            raw[PREFIX_BYTES..]
+        );
+    }
+
+    /// The v1 writer, kept to prove the old layout is refused: version, then
+    /// today's body, uncoded.
+    fn v1_bytes(section: &CellResidencySetSection) -> Vec<u8> {
+        let raw = section.to_bytes(BlockCodec::Raw);
+        let mut bytes = 1u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&raw[PREFIX_BYTES..]);
+        bytes
+    }
+
+    #[test]
+    fn a_v1_residency_set_is_refused_with_a_rebake_message() {
+        let error = message(CellResidencySetSection::from_bytes(&v1_bytes(&sample()), 3));
+        assert!(error.contains("version: 1"), "{error}");
+        assert!(error.contains("re-bake the level"), "{error}");
+    }
+
+    // A corrupt frame fails by name, and never yields a different section: a
+    // flipped byte anywhere in the frame, a short read, a raw length that
+    // disagrees with the frame, an unknown codec and a nonzero reserved word.
+    #[test]
+    fn a_corrupt_residency_frame_is_refused_by_name() {
+        let section = sample();
+        let coded = section.coded();
+        for at in PREFIX_BYTES..coded.len() {
+            let mut flipped = coded.clone();
+            flipped[at] ^= 0x01;
+            match CellResidencySetSection::from_bytes(&flipped, 3) {
+                Ok(decoded) => assert_eq!(decoded, section, "byte {at} decoded differently"),
+                Err(error) => assert!(
+                    format!("{error:?}").contains("cell residency set"),
+                    "byte {at}: {error:?}"
+                ),
+            }
+        }
+        let short = &coded[..coded.len() - 1];
+        assert!(
+            message(CellResidencySetSection::from_bytes(short, 3)).contains("frame is corrupt")
+        );
+
+        let mut longer = coded.clone();
+        longer[12..20].copy_from_slice(&(section.raw_len() as u64 + 8).to_le_bytes());
+        assert!(
+            message(CellResidencySetSection::from_bytes(&longer, 3)).contains("frame is corrupt")
+        );
+
+        let mut raw = section.to_bytes(BlockCodec::Raw);
+        raw[12..20].copy_from_slice(&(section.raw_len() as u64 - 8).to_le_bytes());
+        assert!(message(CellResidencySetSection::from_bytes(&raw, 3)).contains("frame is corrupt"));
+
+        let mut codec = coded.clone();
+        codec[4..8].copy_from_slice(&2u32.to_le_bytes());
+        assert!(message(CellResidencySetSection::from_bytes(&codec, 3)).contains("codec 2"));
+
+        let mut reserved = coded;
+        reserved[8] = 1;
+        assert!(message(CellResidencySetSection::from_bytes(&reserved, 3)).contains("reserved"));
     }
 
     #[test]
     fn residency_set_rejects_an_entry_past_the_cell_count() {
         let mut section = sample();
         section.entries[3] = entry(3, 0);
-        let error = message(CellResidencySetSection::from_bytes(&section.to_bytes(), 3));
+        let error = message(CellResidencySetSection::from_bytes(&section.coded(), 3));
         assert!(error.contains("past the cell count"), "{error}");
     }
 
@@ -246,16 +387,13 @@ mod tests {
     fn residency_set_rejects_decreasing_or_overlong_csr_offsets() {
         let mut decreasing = sample();
         decreasing.offsets = vec![0, 3, 2, 4];
-        let error = message(CellResidencySetSection::from_bytes(
-            &decreasing.to_bytes(),
-            3,
-        ));
+        let error = message(CellResidencySetSection::from_bytes(&decreasing.coded(), 3));
         assert!(error.contains("decrease"), "{error}");
 
         // Last offset past entry_count: hand-edit the final CSR word.
         let section = sample();
-        let mut bytes = section.to_bytes();
-        let last = HEADER_BYTES + 3 * 4;
+        let mut bytes = section.to_bytes(BlockCodec::Raw);
+        let last = PREFIX_BYTES + HEADER_BYTES + 3 * 4;
         bytes[last..last + 4].copy_from_slice(&5u32.to_le_bytes());
         let error = message(CellResidencySetSection::from_bytes(&bytes, 3));
         assert!(error.contains("entry_count"), "{error}");
@@ -263,32 +401,30 @@ mod tests {
 
     #[test]
     fn residency_set_rejects_other_versions_cell_counts_and_bad_ranges() {
-        let mut bytes = sample().to_bytes();
+        let mut bytes = sample().coded();
         bytes[0..4].copy_from_slice(&0u32.to_le_bytes());
         assert!(message(CellResidencySetSection::from_bytes(&bytes, 3)).contains("version"));
 
-        let bytes = sample().to_bytes();
+        let bytes = sample().coded();
         assert!(message(CellResidencySetSection::from_bytes(&bytes, 4)).contains("camera cells"));
 
         let mut unsorted = sample();
         unsorted.entries.swap(0, 2);
         assert!(
-            message(CellResidencySetSection::from_bytes(&unsorted.to_bytes(), 3))
+            message(CellResidencySetSection::from_bytes(&unsorted.coded(), 3))
                 .contains("not sorted")
         );
 
         let mut repeated = sample();
         repeated.entries[2] = entry(1, 5);
         assert!(
-            message(CellResidencySetSection::from_bytes(&repeated.to_bytes(), 3))
-                .contains("repeats")
+            message(CellResidencySetSection::from_bytes(&repeated.coded(), 3)).contains("repeats")
         );
 
         let mut far = sample();
         far.entries[2] = entry(2, far.max_lead + 1);
         assert!(
-            message(CellResidencySetSection::from_bytes(&far.to_bytes(), 3))
-                .contains("past max_lead")
+            message(CellResidencySetSection::from_bytes(&far.coded(), 3)).contains("past max_lead")
         );
     }
 

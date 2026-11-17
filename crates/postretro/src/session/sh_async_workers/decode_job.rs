@@ -12,14 +12,29 @@ use crate::sh_streaming::controller::ShClusterRequest;
 use crate::streaming::decode_pool::DecodeJob;
 use crate::streaming::request::ReadTier;
 
-/// Encoded bytes in hand, queued on the level's decode pool. Its bytes stay
-/// charged to the encoded phase until decode starts.
+/// A read chunk's stored bytes, queued on the level's decode pool. It is
+/// charged to the decoding phase at its decoded size from the moment it is
+/// queued; the job moves that charge to the ready phase when it delivers, and
+/// releases it when it fails, is discarded, or finds the pool retiring.
 pub(super) struct ShDecodeJob {
     pub(super) request: ShClusterRequest,
     pub(super) bytes: Vec<u8>,
+    pub(super) decoded_bytes: u64,
     pub(super) source: Arc<dyn ShWorkerSource>,
     pub(super) shared: Arc<WorkerShared>,
     pub(super) completed: SyncSender<ShWorkerCompletion>,
+}
+
+impl ShDecodeJob {
+    fn release_decoding(shared: &WorkerShared, decoded_bytes: u64) {
+        shared
+            .phases
+            .lock()
+            .expect("SH phase mutex poisoned")
+            .decoding
+            .remove(decoded_bytes, "decoded worker bytes")
+            .expect("balanced decode");
+    }
 }
 
 impl DecodeJob for ShDecodeJob {
@@ -36,29 +51,16 @@ impl DecodeJob for ShDecodeJob {
         if stopped() {
             return self.discard();
         }
-        let cluster_id = self.request.cluster_id;
-        let encoded_bytes = self.bytes.len() as u64;
-        let decoded_bytes = self.source.decoded_bytes(cluster_id);
-        {
-            let mut phases = self.shared.phases.lock().expect("SH phase mutex poisoned");
-            phases
-                .encoded
-                .remove(encoded_bytes, "encoded worker bytes")
-                .expect("balanced encoded read");
-            phases
-                .decoding
-                .add(decoded_bytes, "decoded worker bytes")
-                .expect("validated decode bound");
-        }
         let started = Instant::now();
         let ShDecodeJob {
             request,
             bytes,
+            decoded_bytes,
             source,
             shared,
             completed,
         } = *self;
-        let result = source.decode(cluster_id, bytes);
+        let result = source.decode(request.cluster_id, bytes);
         let elapsed = started.elapsed();
         shared
             .stats
@@ -66,13 +68,7 @@ impl DecodeJob for ShDecodeJob {
             .expect("SH stats mutex poisoned")
             .decode_latency
             .record(elapsed);
-        shared
-            .phases
-            .lock()
-            .expect("SH phase mutex poisoned")
-            .decoding
-            .remove(decoded_bytes, "decoded worker bytes")
-            .expect("balanced decode");
+        Self::release_decoding(&shared, decoded_bytes);
         if shared.cancelled() || retiring.load(Ordering::Acquire) {
             return;
         }
@@ -99,12 +95,6 @@ impl DecodeJob for ShDecodeJob {
     }
 
     fn discard(self: Box<Self>) {
-        self.shared
-            .phases
-            .lock()
-            .expect("SH phase mutex poisoned")
-            .encoded
-            .remove(self.bytes.len() as u64, "encoded worker bytes")
-            .expect("balanced encoded read");
+        Self::release_decoding(&self.shared, self.decoded_bytes);
     }
 }

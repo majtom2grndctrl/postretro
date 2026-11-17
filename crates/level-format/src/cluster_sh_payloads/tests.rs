@@ -1,5 +1,6 @@
 use super::*;
 use crate::cluster_directory::{ClusterRangeRecord, ClusterRecord, ClusterResourceRecord};
+use crate::coded_plane::BlockCodec;
 
 const BASE_PROBE: OctahedralShProbe = OctahedralShProbe {
     validity: 1,
@@ -174,7 +175,7 @@ fn encode_expected_chunk(cluster_id: u32, expected: &ExpectedChunk) -> Vec<u8> {
             _ => unreachable!(),
         }
     }
-    assert_eq!(chunk.len() as u64, expected.payload_len);
+    assert_eq!(chunk.len() as u64, expected.raw_len);
     chunk
 }
 
@@ -219,6 +220,156 @@ fn fixture() -> (
         }],
     };
     (section, chunk, directory, base, sources)
+}
+
+/// [`fixture`] with its one chunk stored under `codec`: the index records the
+/// stored length and the hash of the stored bytes. Also returns the raw chunk.
+fn coded_fixture(
+    codec: BlockCodec,
+) -> (
+    ClusterShPayloadsSection,
+    Vec<u8>,
+    Vec<u8>,
+    ClusterDirectorySection,
+    ClusterShPayloadsBaseMetadata<'static>,
+    Vec<ClusterShPayloadsSourceMetadata<'static>>,
+) {
+    let (mut section, raw, directory, base, sources) = fixture();
+    let stored = store_chunk(codec, raw.clone());
+    restamp(&mut section, &stored);
+    (section, stored, raw, directory, base, sources)
+}
+
+/// Points the fixture's one index record at `stored`, as a bake writing
+/// those bytes would.
+fn restamp(section: &mut ClusterShPayloadsSection, stored: &[u8]) {
+    section.header.payload_bytes = stored.len() as u64;
+    section.index[0].payload_len = stored.len() as u64;
+    section.index[0].hash = *blake3::hash(stored).as_bytes();
+}
+
+// AC 1 (format half): a coded chunk decodes to exactly the raw chunk a
+// `--section-codec raw` bake stores, codec word 0, through the validated
+// and the plan-free decode; the raw chunk moves through unchanged.
+#[test]
+fn coded_and_raw_chunks_decode_to_the_same_raw_form() {
+    let (_, raw, ..) = fixture();
+    assert!(raw.len() > 1024, "the fixture chunk compresses");
+    for codec in [BlockCodec::Raw, BlockCodec::Zstd] {
+        let (section, stored, raw, directory, base, sources) = coded_fixture(codec);
+        assert_eq!(read_u32(&stored, 12), codec.as_u32());
+        assert_eq!(stored[..12], raw[..12], "the header stays plain");
+        if codec == BlockCodec::Zstd {
+            assert!(
+                stored.len() < raw.len() / 4,
+                "{} of {}",
+                stored.len(),
+                raw.len()
+            );
+        } else {
+            assert_eq!(stored, raw);
+        }
+        let encoded = section.try_to_bytes(&stored).unwrap();
+        let parsed = ClusterShPayloadsSection::from_bytes(&encoded).unwrap();
+        assert_eq!(parsed.decode_stored_chunk(0, stored.clone()).unwrap(), raw);
+        let validated = parsed
+            .into_validated(inputs(&directory, base, &sources))
+            .unwrap();
+        assert_eq!(validated.decoded_chunk_len(0), raw.len() as u64);
+        let decoded = validated.decode_chunk(0, stored).unwrap();
+        assert_eq!(decoded.bytes, raw, "{codec:?}");
+        assert_eq!(decoded.blocks.len(), 3);
+    }
+}
+
+fn decode_error(
+    section: &ClusterShPayloadsSection,
+    stored: Vec<u8>,
+    directory: &ClusterDirectorySection,
+    base: ClusterShPayloadsBaseMetadata<'static>,
+    sources: &[ClusterShPayloadsSourceMetadata<'static>],
+) -> ClusterShPayloadsError {
+    section
+        .decode_chunk(0, stored, inputs(directory, base, sources))
+        .expect_err("a corrupt chunk is refused")
+}
+
+// Corrupt coded data fails by name and is never handed out as a different
+// payload: every single flipped frame byte (hash re-stamped, so the frame
+// itself is what fails), a truncated frame, an unknown codec, a raw chunk of
+// the wrong length, and a frame declaring another decoded size.
+#[test]
+fn a_corrupt_coded_chunk_is_refused_by_name() {
+    let (section, stored, raw, directory, base, sources) = coded_fixture(BlockCodec::Zstd);
+    let mut refused = 0;
+    for at in CLUSTER_SH_CHUNK_HEADER_SIZE..stored.len() {
+        let mut flipped = stored.clone();
+        flipped[at] ^= 0x10;
+        let mut section = section.clone();
+        restamp(&mut section, &flipped);
+        match section.decode_chunk(0, flipped, inputs(&directory, base, &sources)) {
+            Ok(decoded) => assert_eq!(decoded.bytes, raw, "byte {at} decoded differently"),
+            Err(ClusterShPayloadsError::ChunkDecodeFailed { cluster_id: 0, .. }) => refused += 1,
+            Err(other) => panic!("byte {at}: {other}"),
+        }
+    }
+    assert!(
+        refused * 100 >= (stored.len() - 16) * 95,
+        "{refused} refused"
+    );
+
+    let mut short = stored.clone();
+    short.pop();
+    let mut truncated = section.clone();
+    restamp(&mut truncated, &short);
+    let error = decode_error(&truncated, short, &directory, base, &sources);
+    assert!(
+        error
+            .to_string()
+            .starts_with("ClusterShPayloadsChunkDecodeFailed: cluster 0"),
+        "{error}"
+    );
+
+    let mut unknown = stored.clone();
+    unknown[12..16].copy_from_slice(&2u32.to_le_bytes());
+    let mut codec = section.clone();
+    restamp(&mut codec, &unknown);
+    let error = decode_error(&codec, unknown, &directory, base, &sources);
+    assert!(error.to_string().contains("codec 2 is unknown"), "{error}");
+
+    let mut long_raw = raw.clone();
+    long_raw.extend_from_slice(&[0; 8]);
+    let mut raw_section = section.clone();
+    restamp(&mut raw_section, &long_raw);
+    let error = decode_error(&raw_section, long_raw, &directory, base, &sources);
+    assert!(error.to_string().contains("raw chunk is"), "{error}");
+
+    let mut longer = raw.clone();
+    longer.extend_from_slice(&[0; 8]);
+    let other_size = store_chunk(BlockCodec::Zstd, longer);
+    let mut sized = section.clone();
+    restamp(&mut sized, &other_size);
+    let error = decode_error(&sized, other_size, &directory, base, &sources);
+    assert!(error.to_string().contains("decoded bytes"), "{error}");
+
+    // A short read against the index is refused before any decode.
+    let mut read_short = stored;
+    read_short.pop();
+    assert!(matches!(
+        decode_error(&section, read_short, &directory, base, &sources),
+        ClusterShPayloadsError::RangeOutOfBounds(_)
+    ));
+}
+
+#[test]
+fn startup_refuses_a_stored_length_shorter_than_a_chunk_header() {
+    let (mut section, stored, _, directory, base, sources) = coded_fixture(BlockCodec::Zstd);
+    let tiny = stored[..CLUSTER_SH_CHUNK_HEADER_SIZE - 1].to_vec();
+    restamp(&mut section, &tiny);
+    assert!(matches!(
+        section.validate_against(inputs(&directory, base, &sources)),
+        Err(ClusterShPayloadsError::InvalidData(_))
+    ));
 }
 
 #[test]
@@ -381,14 +532,14 @@ fn validated_multi_cluster_decode_uses_only_the_requested_plan() {
 
 #[test]
 fn decoder_names_a_previous_format_payload_section_and_the_fix() {
-    assert_eq!(CLUSTER_SH_PAYLOADS_VERSION, 2);
+    assert_eq!(CLUSTER_SH_PAYLOADS_VERSION, 3);
     let mut bytes = vec![0; CLUSTER_SH_PAYLOADS_HEADER_SIZE];
-    bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+    bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
     let error = ClusterShPayloadsSection::parse_header(&bytes).unwrap_err();
     assert_eq!(
         error,
         ClusterShPayloadsError::VersionMismatch {
-            version: 1,
+            version: 2,
             expected: CLUSTER_SH_PAYLOADS_VERSION
         }
     );

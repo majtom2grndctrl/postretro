@@ -2308,6 +2308,7 @@ fn run_after_parsing(
         cell_draw_index: cell_draw_index_section.as_ref(),
         cell_visibility: Some(&cell_visibility_section),
         cell_residency_set: cell_residency_set_section.as_ref(),
+        section_codec: args.section_codec,
         animated_direct_sh_delta_volumes: delta_sections.animated_direct.as_ref(),
         billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
         animated_billboard_direct_scatter_delta_volumes:

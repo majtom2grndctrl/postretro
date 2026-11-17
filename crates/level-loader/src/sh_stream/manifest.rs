@@ -101,6 +101,12 @@ impl ShStreamManifest {
         self.payloads.section()
     }
 
+    /// One cluster's decoded chunk length: what a decode of it allocates and
+    /// what its ready chunk holds. 0 for an empty or unknown cluster.
+    pub fn decoded_chunk_len(&self, cluster_id: u32) -> u64 {
+        self.payloads.decoded_chunk_len(cluster_id)
+    }
+
     /// Whether id 50 lists `section` as a source: where a streamed payload
     /// of that section is placed.
     pub fn carries_source(&self, section: SectionId) -> bool {
@@ -256,9 +262,10 @@ impl ShStreamManifest {
         Ok(start..end)
     }
 
-    /// Decode and verify the chunk against the validated manifest, including
-    /// its per-chunk BLAKE3. Ownership of the encoded vector moves into the
-    /// codec rather than being cloned for the renderer handoff.
+    /// Verify the stored chunk against the validated manifest, including its
+    /// per-chunk BLAKE3 over the stored bytes, and decode it to its raw form.
+    /// A raw chunk's vector moves through uncopied; a coded one decodes into
+    /// one new buffer.
     pub fn decode_encoded_cluster(
         &self,
         cluster_id: u32,

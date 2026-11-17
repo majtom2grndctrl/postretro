@@ -30,6 +30,7 @@ use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::cluster_directory::{
     CLUSTER_DIRECTORY_CONTAINER_VERSION, ClusterDirectoryValidationInputs,
 };
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
@@ -511,6 +512,7 @@ pub fn pack_and_write_portals_with_billboard_scatter(
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,
         None,
+        BlockCodec::default(),
     )
     .map(|_| ())
 }
@@ -578,6 +580,8 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         FinalizedShPack<'_>,
         &crate::cluster_directory_bake::ClusterDirectoryBake,
     )>,
+    // How ids 50 and 51 store their bytes (`--section-codec`).
+    section_codec: BlockCodec,
 ) -> anyhow::Result<PrlFootprint> {
     let texture_cache_keys_section = TextureCacheKeysSection {
         keys: geo_result
@@ -651,6 +655,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
             &cluster_bake.directory,
             finalized_sh,
             sources,
+            section_codec,
         )?),
         // The legacy public pack helper has no borrowed pre-BC6H source to
         // gather from. It remains behavior-compatible; the production pipeline
@@ -725,6 +730,7 @@ pub(crate) fn pack_and_write_portals_with_billboard_scatter_finalized(
         cell_draw_index: cell_draw_index_section,
         cell_visibility: cell_visibility_section,
         cell_residency_set: cell_residency_set_section,
+        section_codec,
         cluster_directory: &cluster_bake.directory,
         sh_mandatory_bound: sh_bound.entries,
         lightmap_pool_bound: lightmap_pool.section,

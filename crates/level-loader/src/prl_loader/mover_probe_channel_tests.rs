@@ -12,8 +12,8 @@ use crate::prl_loader::load_prl_with_streaming_mode_for_test;
 use crate::prl_loader::tests::sample_kinematic_section;
 use crate::sh_stream::ShStreamingMode;
 use crate::sh_stream_tests::{
-    write_stream_fixture_with_base, write_stream_fixture_with_mover_channel,
-    write_whole_load_fixture_with_base,
+    Id50Body, write_stream_fixture_with_base, write_stream_fixture_with_mover_channel,
+    write_stream_fixture_with_mover_channel_body, write_whole_load_fixture_with_base,
 };
 use crate::{FalloffModel, LightType, LoadedKinematicMover};
 
@@ -1329,6 +1329,37 @@ fn a_streamed_payload_loads_whole_under_off_equal_to_the_resident_load() {
             assert_eq!(payload.bounce_tiles, expected.bounce_tiles);
         }
     }
+}
+
+// A whole load reads every id-50 chunk for a streamed id-57 payload: coded
+// chunks load the same payload as raw ones, and a chunk whose frame fails
+// fails the level load by name (AC 4), as a chunk whose hash fails does.
+#[test]
+fn the_whole_load_mover_read_decodes_coded_chunks_and_fails_a_corrupt_one_by_name() {
+    let placed = placed(&fixture_section(), Streamed, Streamed);
+    let load = |body| {
+        let fixture = write_stream_fixture_with_mover_channel_body(
+            &placed,
+            vec![
+                blob(
+                    SectionId::KinematicGeometry,
+                    sample_kinematic_section().to_bytes(),
+                ),
+                blob(SectionId::MoverProbeChannel, placed.to_bytes()),
+            ],
+            body,
+        );
+        load_prl_with_streaming_mode_for_test(fixture.path.to_str().unwrap(), ShStreamingMode::Off)
+    };
+    let coded = load(Id50Body::Coded).expect("a coded id 50 loads whole");
+    assert_eq!(coded.mover_probe_channel(), Some(&placed));
+    let message = load(Id50Body::CorruptFrame)
+        .expect_err("a corrupt frame fails the whole load")
+        .to_string();
+    assert!(
+        message.contains("ClusterShPayloadsChunkDecodeFailed: cluster 0"),
+        "{message}"
+    );
 }
 
 /// On a real PRL: id 59's tiles plus id 57's

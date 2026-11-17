@@ -3,7 +3,10 @@
 
 use super::*;
 
-pub const CLUSTER_SH_PAYLOADS_VERSION: u32 = 2;
+/// Epoch 3: each chunk's header word 12 names its codec, and the rest of the
+/// chunk is stored raw or as one zstd frame (`payload_len` and the chunk hash
+/// count stored bytes).
+pub const CLUSTER_SH_PAYLOADS_VERSION: u32 = 3;
 pub const CLUSTER_SH_PAYLOADS_CONTAINER_VERSION: u16 = 1;
 pub const CLUSTER_SH_PAYLOADS_HEADER_SIZE: usize = 72;
 pub const CLUSTER_SH_PAYLOADS_SOURCE_RECORD_SIZE: usize = 16;
@@ -62,6 +65,8 @@ pub enum ClusterShPayloadsError {
     SizeOverflow(&'static str),
     #[error("ClusterShPayloadsHashMismatch: cluster {cluster_id}")]
     HashMismatch { cluster_id: u32 },
+    #[error("ClusterShPayloadsChunkDecodeFailed: cluster {cluster_id}: {reason}")]
+    ChunkDecodeFailed { cluster_id: u32, reason: String },
     #[error("ClusterShPayloadsAllocationFailed: {0}")]
     AllocationFailed(&'static str),
 }

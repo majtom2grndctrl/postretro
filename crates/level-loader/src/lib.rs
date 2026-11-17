@@ -40,6 +40,8 @@ mod prl_teleporters;
 #[cfg(feature = "load-prl")]
 mod sh_stream;
 #[cfg(all(test, feature = "load-prl"))]
+mod sh_stream_codec_tests;
+#[cfg(all(test, feature = "load-prl"))]
 mod sh_stream_tests;
 
 #[cfg(feature = "load-prl")]

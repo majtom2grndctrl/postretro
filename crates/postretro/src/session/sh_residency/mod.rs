@@ -25,6 +25,8 @@ use crate::streaming::issuer::ReadRoute;
 #[cfg(feature = "capture")]
 mod capture_summary;
 #[cfg(test)]
+mod corrupt_chunk_tests;
+#[cfg(test)]
 mod device_limit_tests;
 mod frame_drain;
 mod session_hooks;

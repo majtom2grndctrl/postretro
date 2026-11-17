@@ -5,6 +5,8 @@
 mod decode_job;
 #[cfg(test)]
 mod issuer_trace_tests;
+#[cfg(test)]
+mod ledger_tests;
 mod route;
 mod stats;
 #[cfg(test)]
@@ -35,6 +37,8 @@ pub(in crate::session) trait ShWorkerSource: Send + Sync {
     fn cluster_count(&self) -> u32;
     /// Absolute file range of one chunk; empty for a canonical empty cluster.
     fn chunk_file_range(&self, cluster_id: u32) -> Result<Range<u64>, PrlLoadError>;
+    /// A chunk's decoded length: its charge from the moment it is queued for
+    /// decode until the frame takes its completion.
     fn decoded_bytes(&self, cluster_id: u32) -> u64;
     /// One physical positional read. Must return exactly the span's length.
     fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError>;
@@ -59,11 +63,7 @@ impl ShWorkerSource for ManifestWorkerSource {
     }
 
     fn decoded_bytes(&self, cluster_id: u32) -> u64 {
-        self.manifest
-            .payloads()
-            .index
-            .get(cluster_id as usize)
-            .map_or(0, |index| index.decoded_bytes)
+        self.manifest.decoded_chunk_len(cluster_id)
     }
 
     fn read_file_span(&self, range: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {

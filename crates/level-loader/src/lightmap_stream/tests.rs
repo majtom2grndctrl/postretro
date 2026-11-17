@@ -116,7 +116,7 @@ fn lighting_blobs(
     if with_residency_set {
         blobs.push(blob(
             SectionId::CellResidencySet,
-            residency_set().to_bytes(),
+            residency_set().to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
         ));
         if !lightmap.blocks.is_empty() {
             blobs.push(blob(
@@ -279,7 +279,7 @@ fn a_level_without_id22_logs_no_lightmap_blocks_as_its_residency_reason() {
         "postretro_test_lm_stream_no_id22_reason.prl",
         vec![blob(
             SectionId::CellResidencySet,
-            residency_set().to_bytes(),
+            residency_set().to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
         )],
     );
     let capture = LogCapture::start();

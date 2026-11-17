@@ -162,7 +162,61 @@ pub fn decode_plane_from(
     }
 }
 
+/// [`decode_plane`] into `out`, whose length is the plane's raw length: a
+/// caller that frames the plane inside a larger buffer decodes it in place,
+/// with no copy. A raw plane is copied in.
+pub fn decode_plane_into(codec: BlockCodec, stored: &[u8], out: &mut [u8]) -> Result<(), String> {
+    match codec {
+        _ if stored.is_empty() && out.is_empty() => Ok(()),
+        BlockCodec::Raw => {
+            if stored.len() != out.len() {
+                return Err(format!(
+                    "raw plane is {} bytes, but its raw length is {}",
+                    stored.len(),
+                    out.len()
+                ));
+            }
+            out.copy_from_slice(stored);
+            Ok(())
+        }
+        BlockCodec::Zstd => decode_zstd_into(stored, out),
+    }
+}
+
 fn decode_zstd(stored: &[u8], raw_len: usize) -> Result<Vec<u8>, String> {
+    check_zstd_frame(stored, raw_len)?;
+    let decoded = with_decompressor(|decompressor| {
+        decompressor
+            .decompress(stored, raw_len)
+            .map_err(|error| format!("zstd frame failed to decode: {error}"))
+    })?;
+    if decoded.len() != raw_len {
+        return Err(format!(
+            "zstd frame decoded to {} bytes, but the plane's raw length is {raw_len}",
+            decoded.len()
+        ));
+    }
+    Ok(decoded)
+}
+
+fn decode_zstd_into(stored: &[u8], out: &mut [u8]) -> Result<(), String> {
+    let raw_len = out.len();
+    check_zstd_frame(stored, raw_len)?;
+    let written = with_decompressor(|decompressor| {
+        decompressor
+            .decompress_to_buffer(stored, out)
+            .map_err(|error| format!("zstd frame failed to decode: {error}"))
+    })?;
+    if written != raw_len {
+        return Err(format!(
+            "zstd frame decoded to {written} bytes, but the plane's raw length is {raw_len}"
+        ));
+    }
+    Ok(())
+}
+
+/// One frame exactly, recording a checksum and a content size of `raw_len`.
+fn check_zstd_frame(stored: &[u8], raw_len: usize) -> Result<(), String> {
     if stored.len() < 6 || u32::from_le_bytes(stored[..4].try_into().unwrap()) != ZSTD_MAGIC {
         return Err(format!(
             "zstd plane of {} bytes does not start with a zstd frame",
@@ -184,21 +238,22 @@ fn decode_zstd(stored: &[u8], raw_len: usize) -> Result<Vec<u8>, String> {
         Err(_) => return Err("zstd frame header is malformed".into()),
     }
     match zstd::zstd_safe::find_frame_compressed_size(stored) {
-        Ok(frame) if frame == stored.len() => {}
-        Ok(frame) => {
-            return Err(format!(
-                "zstd plane is {} bytes, but its frame ends at {frame}",
-                stored.len()
-            ));
-        }
-        Err(code) => {
-            return Err(format!(
-                "zstd frame is malformed: {}",
-                zstd::zstd_safe::get_error_name(code)
-            ));
-        }
+        Ok(frame) if frame == stored.len() => Ok(()),
+        Ok(frame) => Err(format!(
+            "zstd plane is {} bytes, but its frame ends at {frame}",
+            stored.len()
+        )),
+        Err(code) => Err(format!(
+            "zstd frame is malformed: {}",
+            zstd::zstd_safe::get_error_name(code)
+        )),
     }
-    let decoded = DECOMPRESSOR.with(|cell| {
+}
+
+fn with_decompressor<T>(
+    decode: impl FnOnce(&mut zstd::bulk::Decompressor<'static>) -> Result<T, String>,
+) -> Result<T, String> {
+    DECOMPRESSOR.with(|cell| {
         let mut slot = cell.borrow_mut();
         let decompressor = match slot.as_mut() {
             Some(decompressor) => decompressor,
@@ -207,17 +262,8 @@ fn decode_zstd(stored: &[u8], raw_len: usize) -> Result<Vec<u8>, String> {
                     .map_err(|error| format!("zstd decompressor: {error}"))?,
             ),
         };
-        decompressor
-            .decompress(stored, raw_len)
-            .map_err(|error| format!("zstd frame failed to decode: {error}"))
-    })?;
-    if decoded.len() != raw_len {
-        return Err(format!(
-            "zstd frame decoded to {} bytes, but the plane's raw length is {raw_len}",
-            decoded.len()
-        ));
-    }
-    Ok(decoded)
+        decode(decompressor)
+    })
 }
 
 #[cfg(test)]

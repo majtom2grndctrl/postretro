@@ -15,8 +15,9 @@ use postretro_level_format::cluster_directory::ClusterDirectorySection;
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, ClusterShPayloadsBaseMetadata, ClusterShPayloadsHeader,
     ClusterShPayloadsIndexRecord, ClusterShPayloadsSection, ClusterShPayloadsSourceRecord,
-    ClusterShPayloadsValidationInputs, source_metadata_from_sections,
+    ClusterShPayloadsValidationInputs, source_metadata_from_sections, store_chunk,
 };
+use postretro_level_format::coded_plane::BlockCodec;
 use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 
 use super::sh_mandatory_bound::ClusterStorageDemand;
@@ -84,11 +85,15 @@ impl ClusterPayloadSpool {
     }
 }
 
+/// Gathers every cluster's chunk, stores each under `codec` (one zstd frame
+/// per chunk by default) and spools it; the index records each chunk's stored
+/// length and the hash of its stored bytes.
 pub(super) fn build_cluster_payload_spool(
     output: &Path,
     directory: &ClusterDirectorySection,
     emission: FinalizedShEmissionView<'_>,
     sources: FinalizedShPackSources<'_>,
+    codec: BlockCodec,
 ) -> anyhow::Result<ClusterPayloadSpool> {
     let metadata_sources = source_metadata_from_sections(
         emission.octahedral,
@@ -126,8 +131,9 @@ pub(super) fn build_cluster_payload_spool(
             sources.direct,
             &mut shared_bytes,
         )?;
-        let chunk_len = u64::try_from(chunk.bytes.len())?;
-        spool.as_file_mut().write_all(&chunk.bytes)?;
+        let stored = store_chunk(codec, chunk.bytes);
+        let chunk_len = u64::try_from(stored.len())?;
+        spool.as_file_mut().write_all(&stored)?;
         index.push(ClusterShPayloadsIndexRecord {
             payload_offset: payload_len,
             payload_len: chunk_len,
@@ -136,7 +142,7 @@ pub(super) fn build_cluster_payload_spool(
             stored_tile_count: chunk.stored_tile_count,
             dense_patch_count: chunk.dense_patch_count,
             affinity_patch_count: chunk.affinity_patch_count,
-            hash: *blake3::hash(&chunk.bytes).as_bytes(),
+            hash: *blake3::hash(&stored).as_bytes(),
         });
         payload_len = payload_len
             .checked_add(chunk_len)
@@ -647,14 +653,18 @@ mod tests {
         }
     }
 
+    /// The id-50 section a fixture packs to, chunks stored raw: goldens pin
+    /// the raw form, which moves only with the format, never with the zstd
+    /// library.
     fn encoded_spool_bytes(
         output: &Path,
         directory: &ClusterDirectorySection,
         emission: FinalizedShEmissionView<'_>,
         sources: FinalizedShPackSources<'_>,
     ) -> Vec<u8> {
-        let spool = build_cluster_payload_spool(output, directory, emission, sources)
-            .expect("fixture must encode id 50");
+        let spool =
+            build_cluster_payload_spool(output, directory, emission, sources, BlockCodec::Raw)
+                .expect("fixture must encode id 50");
         let mut bytes = spool.section.metadata_bytes().unwrap();
         bytes.extend_from_slice(&std::fs::read(spool.spool.path()).unwrap());
         bytes
@@ -771,7 +781,7 @@ mod tests {
 
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
-            "c3679c171b6576428bba29cbda46df933791a6f057da9c1e12adcb57272d6cef"
+            "f1332472349433222e23dd6c1df09032e75a5e75da99e6f21f23d26607639771"
         );
     }
 
@@ -809,7 +819,7 @@ mod tests {
         assert_eq!(directory.clusters.len(), 2);
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
-            "9c96ac41a690012a1ed0636bce77aea60bea8ca8f02d7304937c4c87a009dd00"
+            "5f85a2fcd1caa64b0a282b65e691ee2ce936fa95658a4ee82891cf9162f64ed8"
         );
     }
 
@@ -880,6 +890,7 @@ mod tests {
             &directory,
             emission,
             sources,
+            BlockCodec::Zstd,
         )
         .unwrap();
         assert_eq!(base.try_to_bytes().unwrap(), base_before);
@@ -934,6 +945,7 @@ mod tests {
             &directory,
             emission,
             sources,
+            BlockCodec::Zstd,
         )
         .unwrap();
         let metadata_sources = source_metadata_from_sections(
@@ -1020,6 +1032,86 @@ mod tests {
         );
     }
 
+    // The spool stores each chunk under the build's codec: a zstd spool's
+    // chunks are smaller, their index records the stored length and the
+    // stored bytes' hash, and each decodes to exactly the raw spool's chunk.
+    #[test]
+    fn coded_and_raw_spools_decode_to_identical_chunks() {
+        let base = raw_octahedral_source();
+        let direct = raw_direct_source(&base);
+        let delta = raw_delta_source_for_light(7, 0x3c00);
+        let direct_delta = raw_direct_delta_source(0, 0x3555);
+        let animated_delta = raw_animated_direct_delta_source(11, 0x3666);
+        let selection = EntityShadowLightsSection {
+            light_indices: vec![99],
+        };
+        let directory = directory_with_shared_sparse_rows();
+        let emission = FinalizedShEmissionView::new(
+            &base,
+            Some(&direct),
+            Some(&delta),
+            Some(&selection),
+            Some(&direct_delta),
+            Some(&animated_delta),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let sources = FinalizedShPackSources::new(&base, Some(&direct)).unwrap();
+        let metadata_sources = source_metadata_from_sections(
+            &base,
+            Some(&direct),
+            Some(&delta),
+            Some(&direct_delta),
+            Some(&animated_delta),
+            None,
+        );
+        let inputs = ClusterShPayloadsValidationInputs {
+            directory: &directory,
+            base: ClusterShPayloadsBaseMetadata::from(&base),
+            sources: &metadata_sources,
+        };
+        let tempdir = tempfile::tempdir().unwrap();
+        let spool = |codec: BlockCodec| {
+            let spool = build_cluster_payload_spool(
+                &tempdir.path().join(format!("{}.prl", codec.name())),
+                &directory,
+                emission,
+                sources,
+                codec,
+            )
+            .unwrap();
+            let payload = std::fs::read(spool.spool.path()).unwrap();
+            (spool.section, payload)
+        };
+        let (raw_section, raw_payload) = spool(BlockCodec::Raw);
+        let (coded_section, coded_payload) = spool(BlockCodec::Zstd);
+        assert!(coded_payload.len() < raw_payload.len());
+        for cluster in 0..raw_section.index.len() as u32 {
+            let chunk = |section: &ClusterShPayloadsSection, payload: &[u8]| {
+                let range = section.payload_range(cluster).unwrap();
+                payload[range.start as usize..range.end as usize].to_vec()
+            };
+            let stored = chunk(&coded_section, &coded_payload);
+            let raw = chunk(&raw_section, &raw_payload);
+            let index = &coded_section.index[cluster as usize];
+            assert_eq!(index.payload_len, stored.len() as u64);
+            assert_eq!(&index.hash, blake3::hash(&stored).as_bytes());
+            assert_eq!(
+                index.decoded_bytes,
+                raw_section.index[cluster as usize].decoded_bytes
+            );
+            assert_eq!(
+                u32::from_le_bytes(stored[12..16].try_into().unwrap()),
+                BlockCodec::Zstd.as_u32()
+            );
+            let decoded = coded_section.decode_chunk(cluster, stored, inputs).unwrap();
+            assert_eq!(decoded.bytes, raw, "cluster {cluster}");
+            raw_section.decode_chunk(cluster, raw, inputs).unwrap();
+        }
+    }
+
     #[test]
     fn cluster_payload_preserves_scaled_l1_node_base_and_all_corner_cells() {
         let base = raw_scaled_l1_source();
@@ -1034,6 +1126,7 @@ mod tests {
             &directory,
             emission,
             sources,
+            BlockCodec::Zstd,
         )
         .unwrap();
         let metadata_sources = source_metadata_from_sections(&base, None, None, None, None, None);
@@ -1101,7 +1194,10 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let output = tempdir.path().join("fixture.prl");
         let before = std::fs::read_dir(tempdir.path()).unwrap().count();
-        assert!(build_cluster_payload_spool(&output, &directory, emission, sources).is_err());
+        assert!(
+            build_cluster_payload_spool(&output, &directory, emission, sources, BlockCodec::Zstd)
+                .is_err()
+        );
         let after = std::fs::read_dir(tempdir.path()).unwrap().count();
         assert_eq!(after, before, "failed id-50 emission must remove its spool");
     }
@@ -1116,7 +1212,9 @@ mod tests {
         let sources = FinalizedShPackSources::new(&base, None).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let output = tempdir.path().join("fixture.prl");
-        let spool = build_cluster_payload_spool(&output, &directory, emission, sources).unwrap();
+        let spool =
+            build_cluster_payload_spool(&output, &directory, emission, sources, BlockCodec::Zstd)
+                .unwrap();
         let spool_path = spool.spool.path().to_path_buf();
         let error = super::super::write_and_validate_sections(
             &output,
@@ -1173,7 +1271,9 @@ mod tests {
         let sources = FinalizedShPackSources::new(&raw_base, Some(&raw_direct)).unwrap();
         let tempdir = tempfile::tempdir().unwrap();
         let output = tempdir.path().join("fixture.prl");
-        let spool = build_cluster_payload_spool(&output, &directory, emission, sources).unwrap();
+        let spool =
+            build_cluster_payload_spool(&output, &directory, emission, sources, BlockCodec::Zstd)
+                .unwrap();
         super::super::write_and_validate_sections(
             &output,
             vec![
@@ -1276,6 +1376,7 @@ mod tests {
             &directory,
             emission,
             sources,
+            BlockCodec::Zstd,
         )
         .unwrap();
         let metadata_sources = source_metadata_from_sections(
@@ -1336,6 +1437,7 @@ mod tests {
             &directory,
             emission,
             sources,
+            BlockCodec::Zstd,
         )
         .unwrap();
         let metadata_sources = source_metadata_from_sections(&base, None, None, None, None, None);

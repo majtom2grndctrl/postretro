@@ -858,7 +858,8 @@ pub struct Args {
     /// heuristic instead of keeping the smallest of all. A diagnostic that
     /// forces a second layout for A/B comparisons.
     pack_heuristic: Option<lightmap_bake::PackHeuristic>,
-    /// `--section-codec`: how ids 22 and 42 store each plane. `raw` is a
+    /// `--section-codec`: how ids 22 and 42 store each plane, id 50 each
+    /// chunk and id 51 its body. `raw` is a
     /// diagnostic that writes an uncoded build of the same layout, never the
     /// default.
     section_codec: postretro_level_format::coded_plane::BlockCodec,
@@ -922,7 +923,7 @@ fn help_text() -> String {
          --dump-chart-texels <DIR>  Diagnostic: write every chart's lightmap, shadow-mask and animated weight-map texels before BC encoding to <DIR>, for an A/B comparison; needs --no-cache or --release; the PRL is unchanged (default: off)\n    \
          --dump-chart-hashes <DIR>  As --dump-chart-texels, but only per-chart hashes: small enough for a large map, though a difference cannot be located to a texel (default: off)\n    \
          --pack-heuristic <NAME>    Diagnostic: pack every cell's lightmap blocks with one heuristic, one of {pack_heuristics}, instead of keeping the smallest of all (default: all)\n    \
-         --section-codec <zstd|raw> Diagnostic: store lightmap and shadow-mask planes raw instead of as checksummed zstd frames, for an uncoded A/B build of the same layout (default: zstd)\n    \
+         --section-codec <zstd|raw> Diagnostic: store lightmap and shadow-mask planes, SH payload chunks and the cell residency set raw instead of as checksummed zstd frames, for an uncoded A/B build of the same layout (default: zstd)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,

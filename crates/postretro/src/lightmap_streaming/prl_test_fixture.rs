@@ -142,7 +142,11 @@ fn sections() -> Vec<SectionBlob> {
             1,
             EnvironmentVolumesSection::default().to_bytes(),
         ),
-        blob(SectionId::CellResidencySet, 1, residency_set().to_bytes()),
+        blob(
+            SectionId::CellResidencySet,
+            1,
+            residency_set().to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
+        ),
         blob(SectionId::Lightmap, 1, lightmap().to_bytes()),
         blob(
             SectionId::LightmapPoolBound,

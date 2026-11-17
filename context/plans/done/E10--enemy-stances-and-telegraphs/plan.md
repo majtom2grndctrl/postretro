@@ -1,7 +1,7 @@
 # E10--enemy-stances-and-telegraphs — plan of record
 
 mode: resumable
-status: review complete
+status: done
 read at: f5bb5d5
 feature branch: `claude/enemy-stances-telegraphs-837003`
 
@@ -141,14 +141,16 @@ Proposed test names are working names. Every row names its crate and module; the
 | C3 grep gate: no server message, version constants unchanged | surface gate test | achievable as stated | pass |
 | K1 brute slam/lunge/jab fire at `*_strike` `hit`; `punch_strike` carries `hit`; windup-pose test on recut library | `ai` `clip_timed_shipped_tests`; `model` `reference_enemy_strikes_start_on_their_windup_pose` | achievable as stated (needs the recut, Task 8) | pass |
 | K2 limitator `shoot` release fires at `kick` from drawn phase, leaves at every phase | `ai` `clip_timed_shipped_tests` | achievable as stated | pass |
-| M1 re-export reproduces library; moved cuts listed | owner, Windows + Blender | manual | build-verified: old and new commands re-export byte-identical libraries (Blender 5.2.3); owner playtest of moved cuts outstanding |
-| M2 jab and slam tells read and land on `movement-feel` | owner, in-engine | manual | outstanding (owner, in-engine) |
-| M3 brute stances read, mix-up unpredictable, heavy fire breaks, bellow reads as charge | owner, in-engine | manual | outstanding (owner, in-engine) |
-| M4 limitator branches and aim flinch | owner, in-engine | manual | outstanding (owner, in-engine) |
+| M1 re-export reproduces library; moved cuts listed | owner, Windows + Blender | manual | build-verified: old and new commands re-export byte-identical libraries (Blender 5.2.3); pass: owner playtest (2026-11-17) of the moved cuts |
+| M2 jab and slam tells read and land on `movement-feel` | owner, in-engine | manual | pass: owner playtest (2026-11-17) |
+| M3 brute stances read, mix-up unpredictable, heavy fire breaks, bellow reads as charge | owner, in-engine | manual | pass: owner playtest (2026-11-17) |
+| M4 limitator branches and aim flinch | owner, in-engine | manual | pass: owner playtest (2026-11-17), on the Limitator's later move set (Task 20) |
 | M5 co-op loopback hears stance sounds, sees stance before hit | owner, in-engine | manual (after the sounds brief) | outstanding until the sounds brief lands |
-| A1 (owner addition) charge plays planted | owner, in-engine | manual | outstanding: watch the bellow's charge for foot slide at about 2.7x |
-| A2 (owner addition) combo: 666 ms hold, then three jabs | `ai` shipped combo test; owner in-engine | automated + manual | automated pass; owner playtest outstanding (the loop wrap pops about 0.3 m / 40° at the hand) |
-| A3 (owner addition) leap: 666 ms crouch, leap from up to 15 m, slam at the hit, whiff on a sidestep, then cooldown | `ai` shipped leap tests; owner in-engine | automated + manual | automated pass; owner playtest outstanding (10.5 m/s is fast; the crouch can show while the leap cools) |
+| A1 (owner addition) charge plays planted | owner, in-engine | manual | pass: owner playtest (2026-11-17) |
+| A2 (owner addition) combo: drawn-fist hold, then three jabs | `ai` shipped combo test; owner in-engine | automated + manual | automated pass (2,000 ms hold since Task 16); pass: owner playtest (2026-11-17) |
+| A3 (owner addition) leap: 666 ms crouch, leap, slam at the hit, whiff on a sidestep, then cooldown | `ai` shipped leap tests; owner in-engine | automated + manual | automated pass (fixed-spot leap to 50 m since Task 18); pass: owner playtest (2026-11-17) |
+| A4 (playtest round) chasers rest inside their reach and never run in place | `sim` leash tests; `ai` shipped press test; owner in-engine | automated + manual | automated pass; pass: owner playtest (2026-11-17) |
+| A5 (playtest round) Limitator: far careful shot, panicked strafe spray | `ai` shipped Limitator tests; owner in-engine | automated + manual | automated pass; pass: owner playtest (2026-11-17) |
 | Doc1 `docs/` and `sdk/behaviors/reference` | review + `sdk/behaviors/reference` load test | achievable as stated | pass |
 
 ## Tasks

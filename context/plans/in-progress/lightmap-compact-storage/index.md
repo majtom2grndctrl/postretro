@@ -55,7 +55,7 @@ When done:
 ### Automated
 **Lossless storage**
 - [ ] Every coded plane, chunk and section decodes to bytes identical to its unencoded form, through the all-resident load, the streaming read and capture's synchronous preload, on showcase and campaign-test.
-- [ ] Load or read rejects each of these by name, never uploading the block: a single flipped byte in a frame, a short read, a declared raw length that disagrees with the extent, a stored length that breaks adjacency, and a decoded size that differs from the declared one.
+- [ ] Load or read rejects each of these by name, never uploading the block: a single flipped byte in a frame (unless it decodes to identical bytes; never a different payload), a short read, a declared raw length that disagrees with the extent, a stored length that breaks adjacency, and a decoded size that differs from the declared one.
 - [ ] A level baked at 17c2f1e fails to load with a re-bake message for each bumped section.
 - [ ] A corrupt id-51 frame fails the level load by name. A corrupt id-50 chunk takes the same path as a chunk whose hash fails today: async streaming marks it failed with one warning and one retry; a sync-proof read returns the error; the whole-load mover-probe read fails the level load by name.
 

@@ -8,10 +8,12 @@ use super::LightmapPoolModel;
 /// The pool sizing policy's identity, recorded by measurement files so a
 /// paired comparison never spans two policies. Change this string whenever
 /// any lightmap pool sizing rule changes: `LIGHTMAP_POOL_MARGIN`, the
-/// first-generation rule, the all-resident clamp in `growth_reserve_layers`,
-/// or the at-need extension in `pair.rs`. A record written under the old
-/// string then reads as a different policy instead of a silent mismatch.
-pub const POOL_POLICY_IDENTITY: &str = "bound-sized split pools, shared margin 5/4";
+/// first-generation rule and its `FIRST_GENERATION_FLOOR_LAYERS`, the
+/// all-resident clamp in `growth_reserve_layers`, or the at-need extension in
+/// `pair.rs`. A record written under the old string then reads as a different
+/// policy instead of a silent mismatch.
+pub const POOL_POLICY_IDENTITY: &str =
+    "bound-sized split pools, shared margin 5/4, first generation floored at 16 layers";
 
 /// How a growth is sized. `PerDrain` is the sizing demand sizing replaced,
 /// kept so tests can show the deferrals it caused.

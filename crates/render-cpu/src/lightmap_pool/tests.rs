@@ -324,9 +324,9 @@ fn first_generation(
 const FULL_LAYER: (u16, u16) = (2048, 2048);
 
 #[test]
-fn first_generation_is_bound_plus_margin_capped() {
-    let index = block_index(&[FULL_LAYER; 20]);
-    let masks = mask_index(20, 4);
+fn first_generation_is_bound_plus_margin_floored_and_capped() {
+    let index = block_index(&[FULL_LAYER; 40]);
+    let masks = mask_index(40, 8);
     let sized = |lightmap, mask| {
         let bound = PerPool { lightmap, mask };
         let sizing = StreamedPoolSizing::from_bound(bound);
@@ -348,15 +348,20 @@ fn first_generation_is_bound_plus_margin_capped() {
     };
     let layers = |lightmap, mask| PerPool { lightmap, mask };
 
-    // All-resident is 20 lightmap and 24 mask layers. Each pool's bound stands
+    // All-resident is 40 lightmap and 48 mask layers. Each pool's bound stands
     // alone: the pools' worst cells can differ.
-    assert_eq!(sized(8, 4), layers(10, 5), "bound times 5/4");
-    assert_eq!(sized(7, 13), layers(9, 17), "rounded up, each its own");
-    assert_eq!(sized(18, 21), layers(20, 24), "capped at all-resident");
+    assert_eq!(sized(16, 20), layers(20, 25), "bound times 5/4");
+    assert_eq!(sized(15, 21), layers(19, 27), "rounded up, each its own");
+    assert_eq!(
+        sized(8, 14),
+        layers(16, 18),
+        "a small bound rises to the floor"
+    );
+    assert_eq!(sized(36, 44), layers(40, 48), "capped at all-resident");
     assert_eq!(
         sized(0, 0),
-        layers(1, 1),
-        "a pool with data takes one layer"
+        layers(16, 16),
+        "a pool with data takes the floor"
     );
 }
 
@@ -410,12 +415,12 @@ fn all_resident_mask_layers_count_present_planes_only() {
 // a pool beside its spare.
 #[test]
 fn a_harness_figure_sets_one_pools_first_generation() {
-    let index = block_index(&[FULL_LAYER; 6]);
-    let masks = mask_index(6, 2);
+    let index = block_index(&[FULL_LAYER; 30]);
+    let masks = mask_index(30, 2);
     let sizing = |lightmap, mask| StreamedPoolSizing {
         bound: PerPool {
-            lightmap: 4,
-            mask: 4,
+            lightmap: 16,
+            mask: 16,
         },
         first_generation_override: PerPool { lightmap, mask },
     };
@@ -423,32 +428,47 @@ fn a_harness_figure_sets_one_pools_first_generation() {
         first_generation(&index, Some(&masks), sizing(lightmap, mask), device)
     };
     let layers = |lightmap, mask| PerPool { lightmap, mask };
-    assert_eq!(sized(None, None, 2048), layers(5, 5));
+    assert_eq!(sized(None, None, 2048), layers(20, 20));
     assert_eq!(
         sized(Some(2), None, 2048),
-        layers(2, 5),
+        layers(2, 20),
         "the lightmap pool alone"
     );
     assert_eq!(
         sized(None, Some(3), 2048),
-        layers(5, 3),
+        layers(20, 3),
         "the mask pool alone"
     );
     assert_eq!(sized(Some(9), Some(11), 2048), layers(9, 11));
     assert_eq!(
-        sized(Some(9), None, 8),
-        layers(7, 5),
+        sized(Some(40), None, 24),
+        layers(23, 20),
         "the spare fits the device"
     );
 }
 
-// The identity recorded beside measurements must change with the sizing policy.
+// The identity recorded beside measurements must change with the sizing policy,
+// and name the first generation's floor.
 #[test]
 fn pool_policy_identity_changed_with_the_sizing_policy() {
-    let retired = ["demand-sized growth headroom", "4/3"].join(" ");
-    assert_ne!(POOL_POLICY_IDENTITY, retired);
+    // Each retired identity as its quoted literal, split so this file does
+    // not hold it whole.
+    let retired = [
+        ["\"demand-sized growth headroom", "4/3\""].join(" "),
+        ["\"bound-sized split pools,", "shared margin 5/4\""].join(" "),
+    ];
+    for retired in retired {
+        assert_ne!(format!("{POOL_POLICY_IDENTITY:?}"), retired);
+        assert!(
+            !include_str!("policy/growth.rs").contains(&retired),
+            "the retired policy string {retired} survives in the source"
+        );
+    }
     assert!(
-        !include_str!("policy/growth.rs").contains(&retired),
-        "the retired policy string survives in the source"
+        POOL_POLICY_IDENTITY.contains(&format!(
+            "floored at {} layers",
+            postretro_level_format::lightmap_pool::FIRST_GENERATION_FLOOR_LAYERS
+        )),
+        "{POOL_POLICY_IDENTITY}"
     );
 }

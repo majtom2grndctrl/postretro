@@ -765,10 +765,11 @@ fn assert_summary_bytes(level: &BoundLevel, bound: &LightmapPoolBound, hand: u64
 
 #[test]
 fn summary_bytes_equal_first_generation_bytes() {
-    // Below the cap: 8 × 5/4 = 10 of 20 lightmap layers and, with both planes,
-    // 16 × 5/4 = 20 of 40 mask layers. Each pool adds its spare.
+    // Below the cap: 8 × 5/4 = 10 rises to the 16-layer floor of 20 lightmap
+    // layers and, with both planes, 16 × 5/4 = 20 of 40 mask layers stands
+    // past it. Each pool adds its spare.
     let level = full_block_level(20, 8, BOTH_PLANES);
-    assert_summary_bytes(&level, &level.resolve(), 11 * 6 + 21 * 4);
+    assert_summary_bytes(&level, &level.resolve(), 17 * 6 + 21 * 4);
 
     // At the cap: 10 × 5/4 rounds to 13, the whole level's 13 layers, and
     // plane A alone gives the mask pool the same figures. Spares stay.
@@ -780,7 +781,7 @@ fn summary_bytes_equal_first_generation_bytes() {
 
     // Id 42 with no present plane: no mask pool, so no mask spare either way.
     let level = full_block_level(20, 8, NO_PLANES);
-    assert_summary_bytes(&level, &level.resolve(), 11 * 6);
+    assert_summary_bytes(&level, &level.resolve(), 17 * 6);
     assert_summary_bytes(&level, &level.resolve_without_id_51(), 20 * 6);
 }
 

@@ -129,10 +129,12 @@ fn runtime_first_generation(
     }))
 }
 
-// Pool sizing. The figures are worked by hand from the bound, the 5/4 margin and the
-// shipped layer prices; the renderer's own counters confirm them where an
-// adapter exists. Spares count, and a pool with nothing to hold has neither
-// layers nor a spare.
+// Pool sizing. The figures are worked by hand from the bound, the 5/4 margin,
+// the 16-layer floor and the shipped layer prices; the renderer's own counters
+// confirm them where an adapter exists. This level is smaller than the floor,
+// so any bound sizes it all-resident (the margin alone is pinned in
+// `postretro-level-format`'s sizing tests). Spares count, and a pool with
+// nothing to hold has neither layers nor a spare.
 #[test]
 fn walk_harness_first_generation_matches_runtime() {
     const TEST: &str = "walk_harness_first_generation_matches_runtime";
@@ -140,14 +142,14 @@ fn walk_harness_first_generation_matches_runtime() {
     const MASK_LAYER: u64 = 4 * MIB;
     let cases = [
         (
-            "below the all-resident layers",
+            "a small bound rises past its margin to the all-resident layers",
             sized_level(LightmapPoolBoundSection {
                 worst_lightmap_layers: 3,
                 worst_mask_layers: 2,
             }),
             PerPool {
-                lightmap: (4, 5 * LIGHTMAP_LAYER),
-                mask: (3, 4 * MASK_LAYER),
+                lightmap: (5, 6 * LIGHTMAP_LAYER),
+                mask: (4, 5 * MASK_LAYER),
             },
         ),
         (
@@ -204,13 +206,13 @@ fn a_pool_size_sets_that_pools_first_generation_alone() {
         layers(Some(7), None),
         PerPool {
             lightmap: 7,
-            mask: 3
+            mask: 4
         }
     );
     assert_eq!(
         layers(None, Some(9)),
         PerPool {
-            lightmap: 4,
+            lightmap: 5,
             mask: 9
         }
     );

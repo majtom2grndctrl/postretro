@@ -26,11 +26,22 @@ pub const LIGHTMAP_POOL_MARGIN: PoolMargin = PoolMargin {
     denominator: 4,
 };
 
-/// One pool's first generation: its compiled `bound` times the margin, capped
-/// at what the level needs `all_resident`. A pool with anything to hold takes
-/// at least one layer even at a bound of 0, so band pairs can land: a level
-/// can hold data no camera cell mandates. A pool with nothing to hold has none.
-/// Shelf packing is not monotone, so a cell's set can pack worse than the whole
+/// The fewest layers a pool's first generation takes, short of what the level
+/// needs all-resident. A small level's bound leaves a margin of a layer or
+/// two, and its walks miss where a pool that held the whole level would not:
+/// campaign-test's far-point tour has 8 late blocks at its 10 margin layers
+/// and 3 at its 11 all-resident ones. Below this floor a pool holds every
+/// block at once, at most 17 × 6 + 17 × 4 = 170 MiB with the spares, well
+/// under the budget warning. Set by late blocks measured on camera walks,
+/// never by the budget (`context/lib/rendering_pipeline.md` §4, Pool size).
+pub const FIRST_GENERATION_FLOOR_LAYERS: u32 = 16;
+
+/// One pool's first generation: its compiled `bound` times the margin, raised
+/// to [`FIRST_GENERATION_FLOOR_LAYERS`], capped at what the level needs
+/// `all_resident`. A pool with anything to hold therefore takes at least one
+/// layer even at a bound of 0, so band pairs can land: a level can hold data
+/// no camera cell mandates. A pool with nothing to hold has none. Shelf
+/// packing is not monotone, so a cell's set can pack worse than the whole
 /// level: the cap never drops the pool below the bound.
 pub fn first_generation_layers(bound: u32, all_resident: u32) -> u32 {
     if all_resident == 0 {
@@ -38,8 +49,8 @@ pub fn first_generation_layers(bound: u32, all_resident: u32) -> u32 {
     }
     LIGHTMAP_POOL_MARGIN
         .of(bound)
+        .max(FIRST_GENERATION_FLOOR_LAYERS)
         .min(all_resident.max(bound))
-        .max(1)
 }
 
 /// One mask pool layer: a BC5 plane at the pool edge.
@@ -94,28 +105,52 @@ mod tests {
 
     #[test]
     fn first_generation_applies_the_margin_rounded_up() {
-        assert_eq!(first_generation_layers(8, 100), 10, "exact");
-        assert_eq!(first_generation_layers(27, 100), 34, "33.75 rounds up");
-        assert_eq!(first_generation_layers(1, 100), 2, "1.25 rounds up");
+        assert_eq!(first_generation_layers(80, 1000), 100, "exact");
+        assert_eq!(first_generation_layers(181, 1000), 227, "226.25 rounds up");
+        assert_eq!(first_generation_layers(74, 1000), 93, "92.5 rounds up");
     }
 
     #[test]
     fn first_generation_stops_at_the_all_resident_layers() {
         assert_eq!(
-            first_generation_layers(10, 13),
-            13,
-            "12.5 rounds up to the cap"
+            first_generation_layers(100, 113),
+            113,
+            "125 stops at the cap"
         );
         assert_eq!(first_generation_layers(27, 30), 30);
         assert_eq!(first_generation_layers(30, 30), 30);
     }
 
+    // A small bound's margin is a layer or two: the floor holds the level
+    // all-resident instead, and never past it.
+    #[test]
+    fn first_generation_rises_to_the_floor_short_of_all_resident() {
+        let floor = FIRST_GENERATION_FLOOR_LAYERS;
+        assert_eq!(first_generation_layers(8, 11), 11, "campaign-test: all 11");
+        assert_eq!(
+            first_generation_layers(8, 100),
+            floor,
+            "10 rises to the floor"
+        );
+        assert_eq!(first_generation_layers(1, 100), floor);
+        assert_eq!(
+            first_generation_layers(13, 100),
+            17,
+            "a margin past the floor stands"
+        );
+        assert_eq!(first_generation_layers(floor, floor), floor);
+    }
+
     // A level can hold blocks no camera cell mandates: its pool still needs a
     // layer for band pairs to land in.
     #[test]
-    fn first_generation_floors_a_zero_bound_at_one_layer_only_with_something_to_hold() {
-        assert_eq!(first_generation_layers(0, 5), 1);
+    fn first_generation_of_a_zero_bound_takes_the_floor_only_with_something_to_hold() {
+        assert_eq!(first_generation_layers(0, 5), 5);
         assert_eq!(first_generation_layers(0, 1), 1);
+        assert_eq!(
+            first_generation_layers(0, 100),
+            FIRST_GENERATION_FLOOR_LAYERS
+        );
         assert_eq!(first_generation_layers(0, 0), 0);
         assert_eq!(first_generation_layers(3, 0), 0, "nothing to hold");
     }

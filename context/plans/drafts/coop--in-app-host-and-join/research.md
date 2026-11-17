@@ -36,3 +36,17 @@ Read at 7ffced62. Facts that inform the brief but decide nothing on their own.
 - Reserved `ui.*` actions (crates/ui/src/actions.rs) include no host or join action.
 - The existing session slots are `hosting`, `hostAddress`, `openSeats` and `playerCounts.*`, all readonly. The dev frontend already shows `HOSTING ON {}`.
 - `PlayerOptions` has no address field.
+
+## Ordering pins
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | `hostSession()` then `joinSession()` in one reaction; `joinSession()` twice in one reaction | Both drain in one frame-end drain, in authored order | The first verb takes effect inside the drain. The second sees the new role and is refused with a warning: no second save or endpoint, no `endCause` clear, no password consumed. |
+| P2 | On a client, one reaction fires `leaveSession()` then `joinSession()` | Leave lands in the frame-end drain; the join comes later in the same drain | The client leaves. The join drops at debug with no warning, save or endpoint; `endCause` stays empty. A second press joins. |
+| P3 | A frontend backdrop load of map M is in flight; `joinSession()`; the host plays M | Backdrop dispatch with single-player inputs → role becomes client → relevel names M while the load is in flight | The host's level installs with client-role install state and model prediction, as a load dispatched after the join would. No single-player-dispatched product serves as the host's level. |
+| P6 | Password host; client with the right password | Admission, Parity, JoinSeed and Revealed arrive in one batch → challenge sent → proof arrives at least one round trip later → admit | Admission at proof resends the installed relevel and evaluates the stored parity and reveal. The buffered join seed applies at participation. The client re-declares nothing. |
+| P7 | N clients pending on one password host; a proof captured on one connection and replayed on another; a proof with no challenge outstanding | Challenges go out per slot; proofs arrive in any order | Each pending slot gets its own nonce. A replayed proof refuses with `refusedPassword`. A proof with no challenge outstanding changes no slot state. |
+| P9 | Password host; client on the wrong mod with a wrong password | Admission arrives → mod check | Refused with `refusedMod`. No challenge is sent. |
+| P10 | Hosting with password p; `session.password` written to q mid-run | Write → next client's challenge | Proofs from p still admit and proofs from q refuse, until the next hosting. |
+| P11 | Host refuses, and the transport disconnect lands in the same client update | Control drain → connection-end check | `endCause` is the refusal's value, never `hostLost` or `connectFailed`. |
+| P15 | Host admits a joiner, ends at its frontend, its closing transport drops, then it hosts again with no session between | End (ledger kept with seat 0) → host | The second hosting publishes a new session id. Its first joiner gets the first remote seat id. Seat 0 keeps its carried state. |

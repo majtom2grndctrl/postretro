@@ -63,11 +63,16 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "hostSes
 ### Automated
 **Entry**
 - [ ] A single-player machine at the frontend hosts. `session.hosting` and `session.hostAddress` publish, a client connects and waits, and the host's next level promotes it.
-- [ ] A single-player machine at the frontend, with and without a backdrop installed, joins a host already in a level. It ends participating in that level with its pawn at the hinted spawn.
+- [ ] A single-player machine at the frontend, with no backdrop and with a backdrop of the host's map installed, joins a host already in a level. It ends participating in that level with its pawn at the hinted spawn.
+- [ ] A join started while a backdrop of the host's map is still loading ends participating in the host's level, with client-role install state and model prediction (P3).
 - [ ] Host, end, join elsewhere, leave, host again: all in one process, with no relaunch.
+- [ ] Host, admit a joiner, end, host again with no session between: the session id differs, the next joiner gets the seat id a fresh session gives, and seat 0 keeps its carried state (P15).
 - [ ] The second hosting publishes a session id different from the first, and its first joiner gets a seat id as a fresh session would, while seat 0 keeps its carried state.
-- [ ] Entry is refused with a warning, and no state changes, in each case: a played level installed, already hosting, already a client, a closing transport still draining, and a local-only seat ledger. Each refused case is paired with one that is permitted.
+- [ ] Entry is refused with a warning, and no state changes (role, endpoint, seat ledger, `session.password`, `session.endCause`, `session.connection`, and no save is written), in each case: a played level installed, already hosting, already a client, a closing transport still draining, and a local-only seat ledger. Each refused case is paired with one that is permitted.
+- [ ] One reaction firing `hostSession()` then `joinSession()`, and one firing `joinSession()` twice: the first verb takes effect, the second is refused, and exactly one join save and one endpoint result (P1).
+- [ ] On a client, `leaveSession()` then `joinSession()` in one reaction leaves, and the join drops without a warning, a save or an endpoint (P2).
 - [ ] Boot `--host` and `--connect` produce the same role-bound state as in-app entry. The same compared fields match.
+- [ ] One function builds an endpoint from a role, and boot and in-app entry both call it. No other non-test call of `NetEndpoint::from_role` exists. Grep gate.
 
 **Saves**
 - [ ] A world slot and a character slot written in single-player after boot are on disk once a join starts, and before its first connect packet.
@@ -76,15 +81,19 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "hostSes
 
 **Password**
 - [ ] The right password admits.
+- [ ] A client admitted by password, whose parity, join seed and reveal reached the host before its proof, participates in the host's level with its join-seeded character (P6).
+- [ ] Two clients pending on one host receive different nonces, and a proof replayed from one connection onto another refuses with `refusedPassword` (P7).
+- [ ] A client on the wrong mod is refused with `refusedMod` and receives no challenge, whatever its password (P9).
+- [ ] Writing `session.password` on a live host changes which proof admits only at the next hosting (P10).
 - [ ] A wrong password and an empty answer each refuse with `refusedPassword`, and the client lands at its frontend.
-- [ ] A host with no password admits both a client with no password and a client with one.
+- [ ] A host with no password (an empty slot) sends no challenge and admits both a client with no password and a client with one.
 - [ ] No password byte appears in any sent datagram, store slot, save file or log line. The test scans captured bytes for the password.
 - [ ] A client refused for its password applies no parity, join seed or reveal to the host.
-- [ ] `--password` on the CLI behaves as the slot does on each side.
+- [ ] `--host --password p` admits a client answering `p` and refuses one answering `q`. `--connect --password p` is admitted by a host holding `p`.
 - [ ] Wire round-trip and protocol-id tests cover the new variants, and the protocol id has advanced.
 
 **Facts**
-- [ ] Each end cause publishes on its own path. `badAddress` is checked against a malformed address and an IPv6 address, while an address without a port dials the default.
+- [ ] Each end cause publishes on its own path, including a refusal whose cause arrives in the same update as the disconnect (P11). `badAddress` is checked against a malformed address, an IPv6 address and a hostname, none of which opens a socket, while an address without a port dials the default.
 - [ ] `session.connection` steps `offline` → `connecting` → `connected` → `offline`.
 - [ ] `session.endCause` clears when the next attempt starts, and a client's own leave sets none.
 - [ ] `session.password` empties once a verb consumes it.
@@ -94,6 +103,10 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "hostSes
 - [ ] `mask: true` draws one `*` per grapheme and an empty string for empty content.
 - [ ] The on-screen keyboard types `.` and `:`.
 - [ ] The Scripting surface example builds in a `content/dev` script.
+- [ ] A late joiner's catch-up ignores `hostSession` and `joinSession` steps without a warning, as it ignores `leaveSession`.
+- [ ] `UI.hostSession()` and `UI.joinSession()` in a Luau script produce the same steps as the TypeScript calls.
+- [ ] The reserved `ui.*` actions gain no host or join action. Grep gate.
+- [ ] The dev frontend shows a notice for every end-cause value. The test derives the list from the end-cause enum.
 
 ### Manual
 - [ ] Two machines on a LAN: host from the dev menu with a password, then join from the other by gamepad on the on-screen keyboard, and again by hardware keyboard.

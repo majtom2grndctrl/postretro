@@ -11,11 +11,14 @@
 // socket that mixamo_to_gltf.py tagged on the skeleton, with its grip-relative
 // orientation re-tuned for this skeleton bake so the barrel points forward.
 //
-// In a fight it takes turns with its squad on the `ranged` token. It opens by
-// strafing around its target, firing a three-shot burst when a turn is free,
-// then running to a flanking slot. Each reposition's roll picks the next
-// cycle: strafe and fire again, or stop and aim, a stance whose release is the
-// same burst. Enough damage during the aim staggers it.
+// In a fight it takes turns with its squad on the `ranged` token. Running a
+// far target down, it stops now and then to sight the rifle and fire one
+// careful long shot, then runs on. Within strafing range it panics: it strafes
+// around its target, throws the rifle up when a turn is free and sprays a
+// three-shot burst, then runs to a flanking slot. Each reposition's roll picks
+// the next cycle: strafe and spray again, or stop and aim, a longer stance
+// whose release is the same three-shot burst. Enough damage during the far
+// sight or the aim staggers it.
 //
 // Map-placeable via `"classname" "limitator"`.
 
@@ -26,7 +29,8 @@ import { ranged } from "./attack-tokens";
 // to hold a firing standoff rather than close to contact.
 const DETECTION_RANGE = 50;
 // Firing threshold: at or inside this distance, with a clear sightline, the
-// enemy stops running the target down and starts its strafe-and-burst cycle.
+// enemy stops running the target down and starts its panicked strafe-and-spray
+// cycle.
 // Kept well below DETECTION_RANGE so there is a wide band (FIRE..DETECTION) in
 // which he actively runs the target down — otherwise, engaging already-in-range,
 // he never visibly chases.
@@ -44,50 +48,69 @@ const STANDOFF_DISTANCE = 6;
 const LEASH_RANGE = 70;
 const RETURN_ARRIVAL_EPSILON = 1;
 
-// Firing rhythm: strafe at least WAIT_MS, then burst when a `ranged` turn is
-// free. The burst activity holds the turn and fires at `firing_rifle`'s `kick`,
-// so its first shot waits for the loop's next kick from where the clip is
-// drawn: up to one 267 ms pass. BURST_MS covers that pass plus the weapon's
-// three shots (240 ms, 267 ms on whole 60 Hz ticks), with a few ticks to
-// spare, so none spills into `move`; a burst whose shot missed its kick leaves
-// on the same timer. Then reposition to a slot 60-120 degrees around the
-// target from where it fired, for MOVE_MS.
-// Each shot commits the rifle's recovery as the attack's cooldown, and a
-// started burst finishes its three shots even when the activity leaves on the
-// tick after the first (its target slipping out of sight or range sends it to
-// `close`). So the rifle is ready 16 + 60 = 76 ticks after a burst's first
-// shot. Every route back into `burst` runs through `wait`, so WAIT_MS alone
-// covers that: a re-entered burst's kick comes at least 1 + 77 = 78 ticks
-// after the previous burst's first shot, with the rifle ready.
+// Every shot leaves on `firing_rifle`'s `kick`, the loop's recoil at its
+// start, so a strike's first shot waits for the loop's next kick from where
+// the clip is drawn: up to one 267 ms pass after its pose releases.
 // No reload beat — the available reload clip
 // is a crouching animation that swings the right hand through a wide arc, which
 // tips the rigidly-mounted rifle upside-down and into the chest. A reload that
 // reads correctly needs a clip that keeps the gun hand steady, or a weapon
 // animated as a skinned part rather than a rigid socket attachment.
-// `enemy_rifle_burst`'s `recoveryMs`, restarted by each shot, and the span of
-// its three shots on whole 60 Hz ticks; `wait` must cover both.
+
+// The far long shot. Running the target down beyond FIRE_RANGE, with it in
+// sight within LONG_RANGE and a `ranged` turn free, he stops and sights the
+// rifle (`sight`, shouldered on `idle_aiming`) for a hidden time drawn from
+// SIGHT_HOLD_MS, then fires one `enemy_rifle_long` shot, which reaches 20 m.
+// Only after RUN_MS in `close` does he stop: `close` restarts on every entry,
+// so he visibly runs before each stop, the first included. That is his
+// pacing, not the shot's cooldown, which is the weapon's 750 ms recovery and
+// long spent by the time RUN_MS has run again. A stop comes about every 4 s:
+// the sight, up to a pass waiting for the kick, the shot's recover, the
+// settle, then RUN_MS of running.
+const LONG_RANGE = 20;
+const RUN_MS = 2000;
+const SIGHT_HOLD_MS: [number, number] = [1000, 1333];
+// A sight kept waiting in line this long gives up and runs on.
+const SIGHT_WAIT_MS = 2000;
+// The long shot's release leaves the tick after its shot; its recover plays
+// the recoil out on the firing loop, ending short of the loop's next kick
+// 267 ms on, so no second recoil plays without a shot.
+const LONG_SHOT_RECOVER_MS = 200;
+
+// The panicked spray: strafe at least WAIT_MS, then, when a `ranged` turn is
+// free, throw the rifle up (`panic`) for exactly PANIC_HOLD_MS and fire
+// `enemy_rifle_burst`'s three shots. Then settle and reposition to a slot
+// 60-120 degrees around the target from where it fired, for MOVE_MS.
+// The burst rifle's `recoveryMs`, restarted by each shot, and the span of its
+// three shots on whole 60 Hz ticks: the rifle is ready that long after a
+// burst's first shot. The aim's burst fires the same rifle. Every route into
+// `panic` runs through `wait`, entered after any earlier burst's first shot,
+// so WAIT_MS alone covers both: the spray never waits in line on a cooling
+// rifle.
 const RIFLE_RECOVERY_MS = 1000;
 const RIFLE_BURST_SPAN_MS = 267;
 const WAIT_MS = RIFLE_RECOVERY_MS + RIFLE_BURST_SPAN_MS;
-const BURST_MS = 600;
+const PANIC_HOLD_MS = 500;
+// A panic kept waiting in line this long gives up and strafes on.
+const PANIC_WAIT_MS = 1000;
 const MOVE_MS = 1500;
-// A burst whose turn went to a squadmate asking on the same tick gives up.
-const TURN_LOST_MS = 100;
-// Each reposition rolls once on entry: below this share it strafes and fires
+// Each reposition rolls once on entry: below this share it strafes and sprays
 // next, else it stops and aims.
 const STRAFE_SHARE = 0.5;
 // The aim: the rifle shouldered on `idle_aiming` for a hidden time drawn from
 // AIM_HOLD_MS (the pose's whole time, its wait in line included), at or above
-// the co-op floor, then the burst. Enough damage while it aims breaks it
-// into a flinch; an aim kept waiting in line gives up and strafes.
+// the co-op floor, then the burst. Enough damage while it aims, or sights
+// from afar, breaks it into a flinch; an aim kept waiting in line gives up
+// and strafes.
 const AIM_HOLD_MS: [number, number] = [500, 900];
 const AIM_BREAK_DAMAGE = 25;
 const AIM_WAIT_MS = 2000;
-// The aimed burst leaves its release the tick after its first shot, on the
-// rifle's `kick`; its recover keeps the turn and the firing loop through the
-// other two shots, 16 ticks after the first, with two ticks to spare.
-const AIMED_RECOVER_MS = 300;
-// After an aimed burst the rifle stays up a beat before the reposition.
+// A burst, the aim's or the panicked spray, leaves its release the tick after
+// its first shot, on the rifle's `kick`; its recover keeps the turn and the
+// firing loop through the other two shots, 16 ticks after the first, with two
+// ticks to spare.
+const BURST_RECOVER_MS = 300;
+// After each aimed strike the rifle stays up a beat before he moves on.
 const SETTLE_MS = 250;
 // `hit_reaction` plays 433 ms; the flinch holds its last frame briefly.
 const FLINCH_MS = 500;
@@ -98,14 +121,24 @@ const aim = defineStance({
   holdMs: AIM_HOLD_MS,
   breakOn: { damage: AIM_BREAK_DAMAGE, to: "flinch" },
 });
-// The aimed burst lands here, not back in `aim`, whose rest would strike again.
+// The strafe's panicked aim, held a fixed half second.
+const panic = defineStance({ animation: "idle_aiming", holdMs: PANIC_HOLD_MS });
+// The aim's burst and the spray land here, not back in their tells, whose
+// rests would strike again.
 const settle = defineStance({ animation: "idle_aiming" });
+// The far aim, taken from the run.
+const sight = defineStance({
+  animation: "idle_aiming",
+  holdMs: SIGHT_HOLD_MS,
+  breakOn: { damage: AIM_BREAK_DAMAGE, to: "flinch" },
+});
+// The long shot lands here, then runs on.
+const steady = defineStance({ animation: "idle_aiming" });
 
-// The weapon owns damage, reach, and cooldown; this attack keeps only AI
-// positioning and its draw. Its 12 m reach covers the fire band (entered
-// inside FIRE_RANGE and held to BREAK_RANGE) with a small safety margin.
-// `burst` fires it by hand while strafing; struck from `aim`, its release is
-// the same burst on `firing_rifle`'s `kick`.
+// Each weapon owns damage, reach, and cooldown; these attacks keep only AI
+// positioning and their draw. Every release fires on `firing_rifle`'s `kick`.
+// The burst rifle's 12 m reach covers the fire band (entered inside
+// FIRE_RANGE and held to BREAK_RANGE) with a small safety margin.
 const shoot = defineAttack({
   draws: [ranged],
   weapon: "enemy_rifle_burst",
@@ -113,7 +146,27 @@ const shoot = defineAttack({
   beginningStance: aim,
   endingStance: settle,
   release: { animation: "shoot", at: "kick" },
-  recover: { animation: "shoot", ms: AIMED_RECOVER_MS },
+  recover: { animation: "shoot", ms: BURST_RECOVER_MS },
+});
+const spray = defineAttack({
+  draws: [ranged],
+  weapon: "enemy_rifle_burst",
+  standoffDistance: STANDOFF_DISTANCE,
+  beginningStance: panic,
+  endingStance: settle,
+  release: { animation: "shoot", at: "kick" },
+  recover: { animation: "shoot", ms: BURST_RECOVER_MS },
+});
+// The long rifle reaches LONG_RANGE, so a target that held still through the
+// sight is in reach at the kick; one that stepped past it is missed.
+const longshot = defineAttack({
+  draws: [ranged],
+  weapon: "enemy_rifle_long",
+  standoffDistance: STANDOFF_DISTANCE,
+  beginningStance: sight,
+  endingStance: steady,
+  release: { animation: "shoot", at: "kick" },
+  recover: { animation: "shoot", ms: LONG_SHOT_RECOVER_MS },
 });
 
 export const limitatorEntity = defineEntity({
@@ -178,7 +231,8 @@ export const limitatorEntity = defineEntity({
           travelSpeed: 4,
         },
         // Attack pose (Basic Shooter Pack): a fast recoil kick, looped through
-        // the burst. Its `kick` event marks the recoil, at the clip's start.
+        // each burst and the long shot's recover. Its `kick` event marks the
+        // recoil, at the clip's start.
         shoot: {
           clip: "firing_rifle",
           loop: true,
@@ -189,7 +243,7 @@ export const limitatorEntity = defineEntity({
         // upside-down and into the chest. Needs a steady-hand reload clip (or a
         // skinned weapon) before it can drive a reload beat.
         reload: { clip: "reloading", loop: false, crossfadeMs: 150 },
-        // The aim's break plays this from the graph's `flinch` activity,
+        // A sight's or aim's break plays this from the graph's `flinch` activity,
         // which leaves on its own timer, or on any outer row (target lost),
         // whose activity sets the next state. It is never an impact-policy
         // `playAnim`: that only switches the state and never recovers, so it
@@ -231,7 +285,8 @@ export const limitatorEntity = defineEntity({
           animation: "walk",
           layers: {
             // Only `close` takes its motion from here: run the target down
-            // until it is inside FIRE_RANGE with a clear sightline.
+            // until it is inside FIRE_RANGE with a clear sightline. Every
+            // stance, the far sight taken from `close` included, stands still.
             move: [
               {
                 when: brain.targetDistance
@@ -247,14 +302,6 @@ export const limitatorEntity = defineEntity({
                 close: { animation: "run" },
                 // Strafe around the target, facing it, while a squadmate shoots.
                 wait: { animation: "walk", motion: "strafe" },
-                // Holds the `ranged` turn for the whole burst, which starts on
-                // the clip's recoil kick.
-                burst: {
-                  animation: "shoot",
-                  motion: "hold",
-                  action: { attack: shoot, at: "kick" },
-                  attackTurn: shoot,
-                },
                 // Fire, then relocate: a slot to the side of where it fired.
                 // Its roll picks the next cycle.
                 move: {
@@ -263,16 +310,28 @@ export const limitatorEntity = defineEntity({
                   facing: "travel",
                   reposition: { arc: [60, 120] },
                 },
-                // The aim's break.
+                // The break of a sight or an aim.
                 flinch: { animation: "hit_reaction", motion: "hold" },
               },
               transitions: {
+                // In range, the strafe. Short of it, after RUN_MS of
+                // running, the far sight; its range rows keep a target inside
+                // FIRE_RANGE from ever starting it.
                 close: [
                   {
                     to: "wait",
                     when: brain.targetDistance
                       .le(FIRE_RANGE)
                       .and(brain.targetVisible),
+                  },
+                  {
+                    to: sight,
+                    when: brain.timeInActivityMs
+                      .ge(RUN_MS)
+                      .and(brain.targetVisible)
+                      .and(brain.targetDistance.gt(FIRE_RANGE))
+                      .and(brain.targetDistance.le(LONG_RANGE))
+                      .and(attackTurnFree(longshot)),
                   },
                 ],
                 // Losing the sightline or the range returns to `close`, after
@@ -282,23 +341,36 @@ export const limitatorEntity = defineEntity({
                   { to: "close", when: brain.targetVisible.not() },
                   { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
                   {
-                    to: "burst",
+                    to: panic,
                     when: brain.timeInActivityMs
                       .ge(WAIT_MS)
-                      .and(attackTurnFree(shoot)),
+                      .and(attackTurnFree(spray)),
                   },
                 ],
-                burst: [
-                  { to: "move", when: brain.timeInActivityMs.ge(BURST_MS) },
-                  {
-                    to: "wait",
-                    when: brain.hasAttackTurn
-                      .not()
-                      .and(brain.timeInActivityMs.ge(TURN_LOST_MS)),
-                  },
+                // Rows out of the panic's rest. Once its turn is granted the
+                // hold releases as the pose reaches PANIC_HOLD_MS, and the
+                // burst follows at the next kick.
+                panic: [
                   { to: "close", when: brain.targetVisible.not() },
                   { to: "close", when: brain.targetDistance.gt(BREAK_RANGE) },
+                  { to: spray },
+                  { to: "wait", when: brain.timeInActivityMs.ge(PANIC_WAIT_MS) },
                 ],
+                // Rows out of the sight's rest, where he waits in line: a
+                // target lost, past the long shot's reach, or come inside
+                // FIRE_RANGE sends him back to `close`, whose first row then
+                // starts the strafe. Once the turn is granted the hold has no
+                // range rows, so a target that walks inside FIRE_RANGE
+                // mid-sight still takes the long shot, which reaches it;
+                // `steady` then hands him to `close` and the strafe.
+                sight: [
+                  { to: "close", when: brain.targetVisible.not() },
+                  { to: "close", when: brain.targetDistance.gt(LONG_RANGE) },
+                  { to: "close", when: brain.targetDistance.le(FIRE_RANGE) },
+                  { to: longshot },
+                  { to: "close", when: brain.timeInActivityMs.ge(SIGHT_WAIT_MS) },
+                ],
+                steady: [{ to: "close", when: brain.timeInActivityMs.ge(SETTLE_MS) }],
                 move: [
                   {
                     to: "wait",
@@ -317,7 +389,17 @@ export const limitatorEntity = defineEntity({
                   { to: "wait", when: brain.timeInActivityMs.ge(AIM_WAIT_MS) },
                 ],
                 settle: [{ to: "move", when: brain.timeInActivityMs.ge(SETTLE_MS) }],
-                flinch: [{ to: "move", when: brain.timeInActivityMs.ge(FLINCH_MS) }],
+                // A flinch past BREAK_RANGE, a far sight's, runs the target
+                // down again; one in range repositions.
+                flinch: [
+                  {
+                    to: "close",
+                    when: brain.timeInActivityMs
+                      .ge(FLINCH_MS)
+                      .and(brain.targetDistance.gt(BREAK_RANGE)),
+                  },
+                  { to: "move", when: brain.timeInActivityMs.ge(FLINCH_MS) },
+                ],
               },
             },
           },

@@ -48,7 +48,11 @@ import { cyberpunkWarriorEntity } from "./scripts/cyberpunk-warrior";
 import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEnemyEntity } from "./scripts/reference-enemy";
 import { stanceSurfaceEntity } from "./scripts/stance-surface";
-import { enemyRifleBurstEntity, enemyRifleEntity } from "./scripts/enemy-rifle";
+import {
+  enemyRifleBurstEntity,
+  enemyRifleEntity,
+  enemyRifleLongEntity,
+} from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
 import { shadowHunterEntity } from "./scripts/shadow-hunter";
 import {
@@ -392,6 +396,7 @@ export default defineMod({
     arcRifleEntity,
     acidRifleEntity,
     enemyRifleEntity,
+    enemyRifleLongEntity,
     enemyRifleBurstEntity,
     limitatorEntity,
     // Fast melee skirmisher: `"classname" "shadow_hunter"`.

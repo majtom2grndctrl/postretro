@@ -172,6 +172,15 @@ fn holds(reg: &EntityRegistry, enemy: EntityId, attack: &str) -> bool {
     held(reg, enemy).iter().any(|name| name == attack)
 }
 
+/// The rifle enemies' attacks that draw `ranged`: the aimed burst, the
+/// strafe's panicked spray and the far long shot.
+const RIFLE_ATTACKS: [&str; 3] = ["shoot", "spray", "longshot"];
+
+/// Whether `enemy` holds a `ranged` turn for any of its rifle attacks.
+fn holds_rifle_turn(reg: &EntityRegistry, enemy: EntityId) -> bool {
+    RIFLE_ATTACKS.iter().any(|attack| holds(reg, enemy, attack))
+}
+
 // The dev mod declares the Scripting surface's tokens and `arena` profile.
 #[test]
 fn dev_mod_declares_the_surface_attack_tokens_and_arena_profile() {
@@ -208,7 +217,7 @@ fn dev_mod_declares_the_surface_attack_tokens_and_arena_profile() {
 // combo's 2,000 ms drawn fist can stand in line before a brute's first slam),
 // never within 4 s of each other, and while one slams the other is granted
 // a one-`melee` strike (its jab, lunge or combo), the third `melee`. Three shipped rifle troopers on one player never hold more than
-// two `ranged` turns at once, and each fires a burst and then repositions.
+// two `ranged` turns at once, and each fires and then repositions.
 #[test]
 fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     let manifest = dev_manifest();
@@ -278,16 +287,16 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
         })
         .collect();
     let mut most_ranged = 0;
-    let mut bursts = [0_u32; 3];
+    let mut fires = [0_u32; 3];
     let mut repositioned = [false; 3];
     let mut was_holding = [false; 3];
     for _ in 0..ticks {
         tick_with_clips(&mut reg, &mut runtime, &manifest.entities, &clips);
         let mut ranged = 0;
         for (index, &trooper) in troopers.iter().enumerate() {
-            let shooting = holds(&reg, trooper, "shoot");
+            let shooting = holds_rifle_turn(&reg, trooper);
             ranged += usize::from(shooting);
-            bursts[index] += u32::from(shooting && !was_holding[index]);
+            fires[index] += u32::from(shooting && !was_holding[index]);
             was_holding[index] = shooting;
             repositioned[index] |= enemy_state_path(&reg, trooper) == "engage/offense/move";
         }
@@ -299,12 +308,12 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     }
     assert_eq!(most_ranged, 2, "the troopers fill the `ranged` allowance");
     assert!(
-        bursts.iter().all(|&count| count >= 2),
-        "every trooper takes turns firing: {bursts:?}"
+        fires.iter().all(|&count| count >= 2),
+        "every trooper takes turns firing: {fires:?}"
     );
     assert!(
         repositioned.iter().all(|&moved| moved),
-        "every trooper enters its reposition after a burst"
+        "every trooper enters its reposition after it fires"
     );
 }
 
@@ -351,7 +360,7 @@ fn arena_start_runs_tagged_guards_under_the_arena_profile() {
         let shooting = |group: &[EntityId]| {
             group
                 .iter()
-                .filter(|&&trooper| holds(&reg, trooper, "shoot"))
+                .filter(|&&trooper| holds_rifle_turn(&reg, trooper))
                 .count()
         };
         for &guard in &guards {

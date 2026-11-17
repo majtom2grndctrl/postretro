@@ -187,14 +187,31 @@ pub struct AgentComponent {
     /// anywhere inside the destination's arrival band.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrival_leash: Option<ArrivalLeash>,
+    /// Set once a leashed arrival has held: the leash then lets go only
+    /// beyond its radius plus one arrival band, so a neighbour's shove past
+    /// the radius does not flip the agent back to moving. Host-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub leash_settled: bool,
+    /// The destination a leash was dropped for: stuck recovery fired while
+    /// the leash held the agent short, so it cannot get closer, and the
+    /// destination's arrival band alone decides until the destination moves
+    /// on. Host-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leash_waived_at: Option<Vec3>,
     /// Seconds from this tick's steering until the agent should stand on
     /// `destination`: a `leap`'s time to its clip moment, rewritten by the AI
     /// pass every tick it sets one. Steering paces the agent to cover the
     /// path left in the whole ticks left, never above [`Self::steered_speed`],
-    /// and skips arrival easing, so it lands on time and holds. `None` steers
+    /// with no arrival easing and no arrival band: it arrives only on the
+    /// destination itself, which its last paced step lands on. `None` steers
     /// at the steered speed. Host-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrive_in_s: Option<f32>,
+    /// The destination is a `leap`'s spot, with or without a deadline: its
+    /// steered speed is a cap that may be many times its stride, so crowding
+    /// and stuck recovery push it at its base `move_speed`. Host-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paced: bool,
     /// The destination the current `path` was planned for. The steering tick
     /// replans when the live `destination` drifts beyond a threshold from THIS
     /// position (cumulative drift-from-the-plan, not the per-call delta), so a
@@ -309,7 +326,10 @@ impl AgentComponent {
             waypoint_cursor: 0,
             destination: None,
             arrival_leash: None,
+            leash_settled: false,
+            leash_waived_at: None,
             arrive_in_s: None,
+            paced: false,
             planned_destination: None,
             replan_cooldown_ticks: 0,
             arrived: false,

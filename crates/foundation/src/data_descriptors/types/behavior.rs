@@ -27,8 +27,9 @@ pub enum MotionVerb {
     /// Engaged: claim a combat slot at least one spacing from the entry slot,
     /// within the activity's `reposition` bounds.
     Reposition,
-    /// Engaged: fix a landing spot on entry, the activity's standoff short of
-    /// where the target stands then, and travel to it so as to arrive by the
+    /// Engaged: fix a landing spot on entry (or on the first tick with a
+    /// target), the attack's standoff short of where the target stands then,
+    /// and travel to it so as to arrive by the
     /// activity's own clip moment (`action.at`), recomputing the pace each
     /// tick from the distance and time left, never faster than the activity's
     /// `speed`. It never re-aims: a target that moves off the spot is missed
@@ -300,7 +301,8 @@ pub use recursive::*;
 /// Whether an activity represents locomotion rather than an action-bearing
 /// combat phase. An engaged verb that moves without acting (`chaseTarget`,
 /// `strafe`, `reposition`) is locomotion: its animation is a travel cycle, so
-/// it yields to the rest animation at a standstill.
+/// it yields to the rest animation at a standstill. `leap` always acts, so
+/// never qualifies.
 pub fn is_locomotion_activity(activity: &BehaviorActivityDescriptor) -> bool {
     matches!(
         activity.motion,

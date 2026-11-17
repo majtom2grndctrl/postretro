@@ -83,6 +83,11 @@ const LEASH_PRESS_SPEED_FRACTION: f32 = 0.25;
 /// placed exactly on the leash still satisfies it after float rounding.
 const LEASH_TOLERANCE: f32 = 0.01;
 
+/// How near its destination a paced agent ([`AgentComponent::arrive_in_s`])
+/// counts as arrived, in world units: on the spot, give or take float
+/// rounding. Its last paced step lands there, so it needs no arrival band.
+const PACED_ARRIVAL_TOLERANCE: f32 = 0.01;
+
 /// Tight collision-scale acceptance band for a mandatory clearance vertex: two
 /// skins, one for the collision-tangent target and one for the fixed-tick landing
 /// slop. Landing THIS band means the agent is essentially on the vertex, and on
@@ -285,12 +290,14 @@ pub fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3
     write_destination(registry, agent, pos, None, None);
 }
 
-/// [`set_destination`] with a deadline: the agent should stand on `pos`
-/// `arrive_in_s` seconds from this tick's steering. Steering paces it to
-/// cover the path left in the whole ticks left, never above its steered
-/// speed, and skips arrival easing, so it lands on time and holds there.
-/// `None`, or a non-finite deadline, steers at the steered speed. A `leap`
-/// rewrites it every tick (`entity_model.md` §7c, Engaged motion).
+/// [`set_destination`] for a `leap`, with a deadline: the agent should stand
+/// on `pos` `arrive_in_s` seconds from this tick's steering. Steering paces
+/// it to cover the path left in the whole ticks left, never above its
+/// steered speed, with no arrival easing or arrival band, so it lands on
+/// `pos` on time and holds there. `None`, or a non-finite deadline, steers
+/// at the steered speed with the ordinary arrival. Either way crowding and
+/// stuck recovery push it at its base speed ([`AgentComponent::paced`]). A
+/// `leap` rewrites it every tick (`entity_model.md` §7c, Engaged motion).
 pub fn set_destination_paced(
     registry: &mut EntityRegistry,
     agent: EntityId,
@@ -302,7 +309,7 @@ pub fn set_destination_paced(
         agent,
         pos,
         None,
-        arrive_in_s.filter(|seconds| seconds.is_finite()),
+        Some(arrive_in_s.filter(|seconds| seconds.is_finite())),
     );
 }
 
@@ -322,12 +329,13 @@ pub fn set_destination_leashed(
     write_destination(registry, agent, pos, leash, None);
 }
 
+/// `pace` is `Some(deadline)` for a leap's spot, `None` for anything else.
 fn write_destination(
     registry: &mut EntityRegistry,
     agent: EntityId,
     pos: Vec3,
     leash: Option<ArrivalLeash>,
-    arrive_in_s: Option<f32>,
+    pace: Option<Option<f32>>,
 ) {
     if !pos.is_finite() {
         return;
@@ -341,8 +349,21 @@ fn write_destination(
     // sole place the path is rebuilt.
     let mut updated = component.clone();
     updated.destination = Some(pos);
+    if leash.is_none() {
+        updated.leash_settled = false;
+    }
+    // A leash dropped for a destination it could not be met at returns once
+    // the destination moves on, as a replan would.
+    if leash.is_none()
+        || updated
+            .leash_waived_at
+            .is_some_and(|waived| distance_xz(waived, pos) > REPLAN_DEST_THRESHOLD)
+    {
+        updated.leash_waived_at = None;
+    }
     updated.arrival_leash = leash;
-    updated.arrive_in_s = arrive_in_s;
+    updated.arrive_in_s = pace.flatten();
+    updated.paced = pace.is_some();
     let _ = registry.set_component(agent, updated);
 }
 
@@ -356,7 +377,10 @@ pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     let mut updated = component.clone();
     updated.destination = None;
     updated.arrival_leash = None;
+    updated.leash_settled = false;
+    updated.leash_waived_at = None;
     updated.arrive_in_s = None;
+    updated.paced = false;
     updated.planned_destination = None;
     updated.path.clear();
     updated.path_crossings.clear();
@@ -839,6 +863,15 @@ fn tick_impl(
                 // window keeps the existing path (see the replan block), so
                 // the window keeps running on live steering intent — no
                 // separate latch is needed to survive a failed forced replan.
+                //
+                // An agent its leash held short inside the arrival band
+                // cannot get closer (the navmesh and the collision world
+                // disagree near the destination), and replanning to the same
+                // destination would press it there again: the band alone
+                // decides its arrival until the destination moves on.
+                if held_short_by_leash(&agent, position, arrival_radius) {
+                    agent.leash_waived_at = agent.destination;
+                }
                 agent.planned_destination = None;
                 agent.unstick_window_remaining = UNSTICK_WINDOW;
                 agent.stuck_ticks = 0;
@@ -1017,6 +1050,8 @@ fn move_without_path(
 ///    destination has drifted more than [`REPLAN_DEST_THRESHOLD`] (XZ) from the
 ///    position the plan was built for, it resolves to different nav topology,
 ///    or a blocked agent's destination now shares its start region. Served
+///    agents bound for a leap's spot first ([`AgentComponent::paced`]: each
+///    tick it waits without a route loses a tick of flight at its cap), then
 ///    longest waiting first: descending `drift_wait_ticks`, slot order within
 ///    one. Without that, a crowd whose demand fills the budget every tick (a
 ///    strafing wave re-aims constantly) served the same low slots each tick
@@ -1053,7 +1088,7 @@ fn admit_replans(
     // decremented exactly as the apply loop will, so both passes see the same
     // verdict.
     let mut gate_driven: Vec<(u64, EntityId)> = Vec::new();
-    let mut drift_driven: Vec<(u32, usize, EntityId)> = Vec::new();
+    let mut drift_driven: Vec<(bool, u32, usize, EntityId)> = Vec::new();
     let mut staleness_only: Vec<EntityId> = Vec::new();
     let world = mover_link::RideWorld {
         gate,
@@ -1089,7 +1124,7 @@ fn admit_replans(
         if gate_change_owes_replan(agent, current.position, nav_graph, gate) {
             gate_driven.push((agent.gate_generation, current.id));
         } else if drifted {
-            drift_driven.push((agent.drift_wait_ticks, index, current.id));
+            drift_driven.push((agent.paced, agent.drift_wait_ticks, index, current.id));
         } else if cooldown_elapsed {
             staleness_only.push(current.id);
         }
@@ -1103,11 +1138,12 @@ fn admit_replans(
         .take(budget)
         .map(|(_, id)| id)
         .collect();
-    // Longest waiting first, slot order within a wait (the sort is stable).
-    drift_driven.sort_by_key(|&(wait, _, _)| std::cmp::Reverse(wait));
+    // A leap's spot first, then longest waiting, slot order within a wait
+    // (the sort is stable).
+    drift_driven.sort_by_key(|&(paced, wait, _, _)| std::cmp::Reverse((paced, wait)));
     let remaining = budget - admitted.len();
     let mut drift_waiting = vec![false; snapshot.len()];
-    for (rank, &(_, index, id)) in drift_driven.iter().enumerate() {
+    for (rank, &(_, _, index, id)) in drift_driven.iter().enumerate() {
         if rank < remaining {
             admitted.push(id);
         } else {
@@ -1306,6 +1342,7 @@ fn goal_speed(
     let target = agent.path[agent.waypoint_cursor.min(agent.path.len() - 1)];
     let is_final = agent.waypoint_cursor + 1 >= agent.path.len();
     let final_distance = distance_xz(position, target);
+    let pace = paced_speed(agent, position, dt);
     // Intermediate mandatory clearance vertices are traversed at full
     // steered speed: they are corner-offset waypoints a chasing agent must round,
     // not points it must settle onto. The cursor advances via
@@ -1318,27 +1355,35 @@ fn goal_speed(
     // speed. (The stuck-suppression gate in `update_stuck_ticks` still treats
     // this window defensively: a fast turn can show legitimately small forward
     // progress while the heading swings, so suppression there stays correct.)
-    if is_final {
-        // A leash holds the arrival until the agent also stands within it:
-        // inside the band it presses on toward the destination, which lies
-        // within the leash, at no less than the press floor.
-        // A destination outside its own leash (a route snapped off the
-        // requested point) cannot satisfy it, so the band alone decides.
-        let held_by_leash = agent.arrival_leash.is_some_and(|leash| {
-            let reach = leash.radius + LEASH_TOLERANCE;
-            distance_xz(position, leash.anchor) > reach
-                && distance_xz(target, leash.anchor) <= reach
-        });
-        if final_distance <= arrival_radius && !held_by_leash {
+    if !is_final {
+        agent.leash_settled = false;
+    } else if let Some(pace) = pace {
+        // A paced agent arrives on its destination itself, never a band
+        // short of it: its pace already brings its last step onto the
+        // destination by the deadline, and it eases by that pace alone, so
+        // band arrival or easing here would land it early and short.
+        if final_distance <= PACED_ARRIVAL_TOLERANCE {
             agent.arrived = true;
             return 0.0;
         }
         agent.arrived = false;
-        // A paced agent eases by its pace alone: easing here too would land
-        // it late.
-        if let Some(pace) = paced_speed(agent, position, dt) {
-            return pace;
+        return pace;
+    } else {
+        // A leash holds the arrival until the agent also stands within it:
+        // inside the band it presses on toward the destination, which lies
+        // within the leash, at no less than the press floor.
+        //
+        // Once a leashed arrival has held, the leash lets go only an arrival
+        // band beyond its radius, so a neighbour's shove does not flip it
+        // back to moving (see [`leash_holds`]).
+        let held_by_leash = leash_holds(agent, position, target, arrival_radius);
+        if final_distance <= arrival_radius && !held_by_leash {
+            agent.arrived = true;
+            agent.leash_settled = agent.arrival_leash.is_some();
+            return 0.0;
         }
+        agent.arrived = false;
+        agent.leash_settled = false;
         if final_distance < slowdown_radius {
             let eased = agent.steered_speed() * (final_distance / slowdown_radius).clamp(0.0, 1.0);
             if held_by_leash {
@@ -1347,7 +1392,50 @@ fn goal_speed(
             return eased;
         }
     }
-    paced_speed(agent, position, dt).unwrap_or_else(|| agent.steered_speed())
+    pace.unwrap_or_else(|| agent.steered_speed())
+}
+
+/// Whether `agent`'s [`ArrivalLeash`] holds it short of arriving at the final
+/// waypoint `target` from `position`: it stands beyond the leash, and the
+/// waypoint lies within it.
+///
+/// Settled ([`AgentComponent::leash_settled`]), the agent may stand up to an
+/// arrival band beyond the radius before the leash holds it again.
+///
+/// A final waypoint outside the leash cannot satisfy it, so the arrival band
+/// alone decides: a route the planner snapped off the requested point, or a
+/// stale route still planned for where a moving slot stood. A stale route is
+/// replanned once the destination drifts (half a metre) or its plan goes
+/// stale (half a second), and the leash holds again on the new route.
+///
+/// A leash waived for this destination ([`AgentComponent::leash_waived_at`])
+/// never holds.
+fn leash_holds(agent: &AgentComponent, position: Vec3, target: Vec3, arrival_radius: f32) -> bool {
+    if agent.leash_waived_at.is_some() {
+        return false;
+    }
+    agent.arrival_leash.is_some_and(|leash| {
+        let slack = if agent.leash_settled {
+            arrival_radius
+        } else {
+            LEASH_TOLERANCE
+        };
+        distance_xz(position, leash.anchor) > leash.radius + slack
+            && distance_xz(target, leash.anchor) <= leash.radius + LEASH_TOLERANCE
+    })
+}
+
+/// Whether `agent` stands inside its final arrival band with its leash
+/// holding it short: the press [`goal_speed`] floors at
+/// [`LEASH_PRESS_SPEED_FRACTION`].
+fn held_short_by_leash(agent: &AgentComponent, position: Vec3, arrival_radius: f32) -> bool {
+    let Some(&target) = agent.path.last() else {
+        return false;
+    };
+    agent.waypoint_cursor + 1 >= agent.path.len()
+        && agent.arrive_in_s.is_none()
+        && distance_xz(position, target) <= arrival_radius
+        && leash_holds(agent, position, target, arrival_radius)
 }
 
 /// A paced agent's speed: the path it has left over the whole ticks left
@@ -1669,10 +1757,10 @@ fn separation(current: &AgentSnapshot, agent: &AgentComponent, snapshot: &[Agent
 }
 
 /// The speed crowding and stuck recovery push an agent at: its steered speed,
-/// or its base speed while paced, whose steered speed is only a cap that may
-/// be many times its stride.
+/// or its base speed bound for a leap's spot, deadline or not, whose steered
+/// speed is only a cap that may be many times its stride.
 fn shove_speed(agent: &AgentComponent) -> f32 {
-    if agent.arrive_in_s.is_some() {
+    if agent.paced {
         agent.move_speed
     } else {
         agent.steered_speed()

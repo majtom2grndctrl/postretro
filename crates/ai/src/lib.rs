@@ -177,9 +177,12 @@ pub(crate) struct EnemyOutcome {
     pub(crate) target_aim: Option<Vec3>,
     pub(crate) brain: BrainComponent,
     steering: SteeringIntent,
-    /// A `leap`'s seconds to its clip moment, the deadline its `MoveTo`
-    /// arrives by; `None` for any other steering.
-    arrive_in_s: Option<f32>,
+    /// A `leap` travelling to its spot: its `MoveTo` is paced to the clip
+    /// moment. `None` for any other steering.
+    leap: Option<leap::LeapTravel>,
+    /// A leap entered this tick whose spot no route query resolves, near it
+    /// or on its line back to the enemy: apply warns.
+    leap_spot_off_mesh: bool,
     /// `true` when the selected state is ENGAGED with the target — it chases it
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.

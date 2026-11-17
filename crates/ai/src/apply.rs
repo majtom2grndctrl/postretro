@@ -45,6 +45,62 @@ fn commit_attack_fire(
     registry.set_component(actor, brain).is_ok()
 }
 
+/// Prefix of the warn-once key for a leap whose clip cannot time its moment,
+/// keyed by entity class and animation state.
+const LEAP_UNTIMED_WARNING: &str = "leap-untimed:";
+
+/// Prefix of the warn-once key for a leap spot with no walkable ground near
+/// it, keyed by entity class.
+const LEAP_SPOT_WARNING: &str = "leap-spot:";
+
+/// The name warnings give an enemy's class: its descriptor's, else its model.
+fn entity_class(
+    registry: &postretro_entities::EntityRegistry,
+    id: postretro_entities::EntityId,
+) -> String {
+    registry
+        .get_component::<postretro_entities::provenance::DescriptorProvenance>(id)
+        .map(|provenance| provenance.canonical_name.clone())
+        .ok()
+        .or_else(|| {
+            registry
+                .get_component::<postretro_entities::components::mesh::MeshComponent>(id)
+                .ok()
+                .map(|mesh| mesh.model.clone())
+        })
+        .unwrap_or_else(|| "<unnamed>".to_string())
+}
+
+/// Diagnostic read of the steering surface: an agent that cannot route to the
+/// destination it was given AND holds no previous path to keep following is
+/// `blocked`. Surface it once per enemy so a genuinely unroutable target (a
+/// disconnected region, a spawn or leap spot far off the navmesh — near-wall
+/// positions are snap-resolved by pathfinding and never latch this) is
+/// visible without per-tick spam. The steering tick holds a pathless blocked
+/// agent in place and keeps retrying under its replan cooldown; this only
+/// reports. `going` names what the enemy was doing: "chasing", "leaping to".
+///
+/// `path_state` was snapshotted BEFORE this tick's destination write, so the
+/// verdict is the steering tick's answer about the destination the enemy was
+/// bound for LAST tick, not the one just written. Reading it after the write
+/// would not help — a destination write deliberately leaves the plan intact
+/// and `agent_steering::tick` owns the replan — so the message says which
+/// tick it is describing instead.
+fn warn_blocked(
+    path_state: Option<&agent_steering::AgentPathState>,
+    blocked_warned: &mut HashSet<postretro_entities::EntityId>,
+    id: postretro_entities::EntityId,
+    going: &str,
+) {
+    if path_state.is_some_and(|state| state.blocked) && blocked_warned.insert(id) {
+        log::warn!(
+            "[AI] enemy {id} entered this tick blocked: as of the last steering tick its \
+             agent had no path to the destination it was {going}, so it is holding \
+             position. Warned once per enemy."
+        );
+    }
+}
+
 /// Pass 3: mutate the registry from resolved enemy outcomes.
 #[allow(clippy::too_many_arguments)] // orchestration keeps each apply-stage input explicit.
 pub(super) fn apply_outcomes<H>(
@@ -148,12 +204,23 @@ where
         // destination is leashed to the target: the agent arrives only once
         // it stands no farther from the target than the slot does (never less
         // than the standoff), so the slot's arrival band cannot park it
-        // outside the ring the standoff placed the slot on. Fixed
-        // position goals write their resolved destination directly. Clear
-        // stands down; hold releases the agent on the tick it takes over and
-        // leaves it untouched thereafter.
+        // outside the ring the standoff placed the slot on.
+        //
+        // A leap writes its spot paced to its clip moment. Other fixed
+        // position goals write their resolved destination directly.
+        //
+        // Clear stands down; hold releases the agent on the tick it takes
+        // over and leaves it untouched thereafter.
         // `set_destination`/`clear_destination` no-op when the enemy carries no
         // agent component.
+        if outcome.leap_spot_off_mesh {
+            let class = entity_class(registry, outcome.id);
+            if warned.insert(format!("{LEAP_SPOT_WARNING}{class}")) {
+                log::warn!(
+                    "[AI] `{class}` leap: no walkable ground near its landing spot or on                      the line back to it, so it has no route there and stands through the                      release. Warned once per entity class."
+                );
+            }
+        }
         match outcome.steering {
             SteeringIntent::Chase => {
                 if let Some(target) = outcome.target {
@@ -170,46 +237,38 @@ where
                         destination,
                         leash,
                     );
-                    // Diagnostic read of the steering surface: an agent that
-                    // cannot route to the destination it was given AND holds no
-                    // previous path to keep following is `blocked`. Surface it
-                    // once per enemy so a genuinely unroutable target (a
-                    // disconnected region, or a spawn far off the navmesh —
-                    // near-wall positions are snap-resolved by pathfinding and
-                    // never latch this) is visible without per-tick spam. The
-                    // steering tick holds a pathless blocked agent in place and
-                    // keeps retrying under its replan cooldown; this only
-                    // reports.
-                    //
-                    // `path_state` was snapshotted BEFORE the `set_destination`
-                    // above, so the verdict is the steering tick's answer about
-                    // the destination this enemy was chasing LAST tick, not the
-                    // one just written. Reading it after the write would not
-                    // help — `set_destination` deliberately leaves the plan
-                    // intact and `agent_steering::tick` owns the replan — so the
-                    // message says which tick it is describing instead.
-                    if let Some(state) = path_state.as_ref()
-                        && state.blocked
-                        && blocked_warned.insert(outcome.id)
-                    {
-                        log::warn!(
-                            "[AI] enemy {} entered this tick blocked: as of the last \
-                                 steering tick its agent had no path to the destination it \
-                                 was chasing, so it is holding position. Warned once per \
-                                 enemy.",
-                            outcome.id
-                        );
-                    }
+                    warn_blocked(path_state.as_ref(), blocked_warned, outcome.id, "chasing");
                 }
             }
-            SteeringIntent::MoveTo(goal) => {
-                agent_steering::set_destination_paced(
-                    registry,
-                    outcome.id,
-                    goal,
-                    outcome.arrive_in_s,
-                );
-            }
+            SteeringIntent::MoveTo(goal) => match outcome.leap {
+                Some(leap) => {
+                    agent_steering::set_destination_paced(
+                        registry,
+                        outcome.id,
+                        goal,
+                        leap.arrive_in_s,
+                    );
+                    if leap.arrive_in_s.is_none() {
+                        let class = entity_class(registry, outcome.id);
+                        let state = outcome.brain.clip_clock.state.as_deref().unwrap_or("");
+                        if warned.insert(format!("{LEAP_UNTIMED_WARNING}{class}:{state}")) {
+                            log::warn!(
+                                "[AI] `{class}` leap on animation state `{state}`: its clip \
+                                 cannot time the attack's moment, so the leap cannot pace its \
+                                 arrival and flies at its top speed. Warned once per entity \
+                                 class and state."
+                            );
+                        }
+                    }
+                    warn_blocked(
+                        path_state.as_ref(),
+                        blocked_warned,
+                        outcome.id,
+                        "leaping to",
+                    );
+                }
+                None => agent_steering::set_destination(registry, outcome.id, goal),
+            },
             SteeringIntent::Clear => {
                 agent_steering::clear_destination(registry, outcome.id);
             }

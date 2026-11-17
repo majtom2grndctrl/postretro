@@ -45,7 +45,10 @@ local BELLOW_FROM = 0.85
 local FLURRY_FROM = 0.65
 -- `press`'s fresh roll, about `approach`'s shares: 0.75 and up the roar, 0.4
 -- to 0.75 the drawn fist, else the cocked fist. Held short of jab reach this
--- long, it takes the crouch, whose strikes reach farther than the jab.
+-- long, it takes the crouch, whose strikes reach farther than the jab. A
+-- target holding at 3.5 to 4.5 m keeps the brute chasing in `press` on a
+-- roll below the roar's: the leaping crouch is rolled only from `approach`,
+-- which it returns to beyond 4.5 m.
 local PRESS_BELLOW_FROM = 0.75
 local PRESS_FLURRY_FROM = 0.4
 local PRESS_STALL_MS = 3000

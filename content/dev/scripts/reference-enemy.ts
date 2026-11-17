@@ -67,7 +67,10 @@ const FLURRY_FROM = 0.65;
 // charge reach, 0.4 to 0.75 the combo's drawn fist at jab reach, else the
 // cocked fist there. Held short of jab reach this long (a crowd, a ledge) it
 // takes the crouch, whose slam and lunge reach where the jab does not, so no
-// roll leaves the brute running in place inside slam range.
+// roll leaves the brute running in place inside slam range. A target holding
+// at 3.5 to 4.5 m, beyond slam range but short of `press`'s way back out,
+// keeps the brute chasing in `press` on a roll below the roar's: the leaping
+// crouch is rolled only from `approach`, which it returns to beyond 4.5 m.
 const PRESS_BELLOW_FROM = 0.75;
 const PRESS_FLURRY_FROM = 0.4;
 const PRESS_STALL_MS = 3000;
@@ -194,8 +197,10 @@ const combo = defineAttack({
 // in, never faster than `speed` times `moveSpeed`. It slams only if the target
 // is then in slam range; one that moved off the spot is missed. It waits in
 // line from 50 m. At `speed: 14` its cap is 42 m/s, reached in an eighth of a
-// second, which covers about 48 m by the hit: a target holding still anywhere
-// in the 50 m queue is slammed. It stands up on `idle`, then lands coiled.
+// second, which covers about 48 m by the hit. From the edge of the 50 m queue
+// it lands about 0.4 m short of its spot, still within slam range, so a
+// target holding still anywhere in the queue is slammed, once steering finds
+// the leap a route on its takeoff tick (a leap takes the first replan slots). It stands up on `idle`, then lands coiled.
 const leap = defineAttack({
   draws: [melee.with({ cost: 2 }), heavy],
   damage: 18,

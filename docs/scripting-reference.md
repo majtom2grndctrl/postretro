@@ -1883,7 +1883,7 @@ action with `at` fires at a moment in its clip instead; see
 its own action; see [Stances](#stances).
 
 **Engagement** — the engine's "this brain is fighting" test — is a selected
-`"chaseTarget"`, `"strafe"` or `"reposition"` motion or any active action. This current-tick engagement
+`"chaseTarget"`, `"strafe"`, `"reposition"` or `"leap"` motion or any active action. This current-tick engagement
 controls combat-slot participation and target facing. Target retention follows
 active-path engagement capability, so it continues through a committed,
 actionless selector-held phase. Idle, patrol, and position-goal paths drop a
@@ -2333,18 +2333,26 @@ and the hit lands at its moment only within `maxRange`:
 - On takeoff the leap picks a **landing spot**: `standoffDistance` short of
   where the target stands, on the line between them. It does not re-aim
   after that. A target that moves off the spot is missed at the moment, and
-  the leap still ends.
+  the leap still ends. A spot over a drop, off the walkable floor, moves to
+  the nearest walkable ground on that line, toward the target first. If the
+  line has none, the leap warns once and stands.
 - It flies there to **land at the moment** (`at`, by default `hit`). Each
   tick it sets its speed from the path left and the time left, so a near and
   a far leap both land on time, and a tick lost to a corner is made up. It
   follows the level's walkable route to the spot.
-- `release.speed` is its **top speed**, times `moveSpeed`. A spot too far to
+- `release.speed` is its **top speed**, times `moveSpeed`. Omitted, it is
+  the nearest enclosing activity's `speed`, else 1×. A spot too far to
   reach by the moment at that speed is not reached, and the strike misses.
-  Reach is about `speed × moveSpeed × (moment − 0.06 s)`.
+  Reach is about `speed × moveSpeed × (moment − 0.05 s)`: from a standstill
+  it takes about 1/8 s to reach top speed.
 - It lands early only if it reaches the spot first, and then stands there
-  until the moment. After the moment it stands.
+  until the moment. From the moment on it stands, even short of its spot.
+- Crowding and getting unstuck push a leaper at its `moveSpeed`, not its
+  top speed.
 - A leap needs a moment to land by: it rejects `at: false` and a `repeat`
-  above 1. If its clip lacks the event, it flies at its top speed.
+  above 1. If its clip lacks the defaulted `hit`, it flies at its top speed
+  and warns once. If its clip lacks an event named by `at`, the moment
+  resolves on the release's first tick, so the leap stands.
 
 Play the airborne clip on a state that does not rate-scale, so its hit keeps
 its time however fast the leap moves:

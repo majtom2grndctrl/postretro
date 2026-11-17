@@ -3504,6 +3504,7 @@ fn paced_run(
             .unwrap()
             .clone();
         agent.arrive_in_s = Some(deadline_s - tick_index as f32 * DT);
+        agent.paced = true;
         registry.set_component(id, agent).unwrap();
         tick(
             registry,
@@ -3519,20 +3520,28 @@ fn paced_run(
 
 // A paced agent covers its path in the ticks it is given, whatever the
 // length, and holds once there: a short and a long leap both stand on their
-// spot on the deadline's tick and not well before it, under a cap neither
-// needs.
+// spot itself on the deadline's tick, not an arrival band short of it and
+// not well before it, under a cap neither needs, and never pass it.
 #[test]
 fn paced_agent_lands_on_its_destination_at_its_deadline_whatever_the_distance() {
     let world = lane_world(None);
-    let arrival_radius = ARRIVAL_RADIUS_FACTOR * agent_params().radius;
     for goal_x in [5.0, 40.0] {
         let mut registry = EntityRegistry::new();
         let id = lane_leaper(&mut registry, 14.0, goal_x);
         let xs = paced_run(&mut registry, &world, id, 72.0 * DT, 80);
         let landed = xs[71];
         assert!(
-            (goal_x - landed).abs() <= arrival_radius,
+            (goal_x - landed).abs() <= PACED_ARRIVAL_TOLERANCE,
             "goal {goal_x}: stands on its spot at the deadline, got x {landed}"
+        );
+        assert!(
+            xs[70] < goal_x - 0.5 * goal_x / 72.0,
+            "goal {goal_x}: still a tick's pace short a tick before, got x {}",
+            xs[70]
+        );
+        assert!(
+            xs.iter().all(|x| *x <= goal_x + PACED_ARRIVAL_TOLERANCE),
+            "goal {goal_x}: never passes its spot: {xs:?}"
         );
         assert!(
             goal_x - xs[59] > 0.1 * goal_x,
@@ -3615,5 +3624,146 @@ fn top_speed_leap_does_not_pass_through_a_thin_wall() {
     assert!(
         slid < 3.0,
         "recovery slides a paced agent along the wall at its base speed: {slid} m"
+    );
+}
+
+/// Spawn the canonical agent at `(x, z)` on a manual path straight to `slot`,
+/// leashed to `anchor` at `radius`.
+fn leashed_chaser(
+    registry: &mut EntityRegistry,
+    from: (f32, f32),
+    slot: Vec3,
+    anchor: Vec3,
+    radius: f32,
+) -> EntityId {
+    let params = agent_params();
+    let id = spawn_agent(registry, from.0, from.1, &params);
+    set_manual_path(
+        registry,
+        id,
+        vec![Vec3::new(from.0, rest_y(&params), from.1), slot],
+    );
+    let mut agent = registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .clone();
+    agent.arrival_leash = Some(ArrivalLeash { anchor, radius });
+    registry.set_component(id, agent).unwrap();
+    id
+}
+
+fn arrived(registry: &EntityRegistry, id: EntityId) -> bool {
+    registry
+        .get_component::<AgentComponent>(id)
+        .unwrap()
+        .arrived
+}
+
+// Two chasers on adjacent slots of one ring, near enough that crowding pushes
+// them apart once they arrive. The shove carries each a little past its
+// leash; a settled leash lets go only an arrival band beyond its radius, so
+// both stay arrived instead of flipping between arrived and moving (and
+// their run and rest clips with it).
+#[test]
+fn chasers_on_adjacent_leashed_slots_stay_arrived_under_crowding() {
+    let world = lane_world(None);
+    let y = rest_y(&agent_params());
+    let anchor = Vec3::new(20.0, y, 0.0);
+    let radius = 1.5;
+    // Slots 0.4 m apart on the ring's near side, well inside the crowding
+    // band (2.5 radii, 0.875 m).
+    let half_angle = (0.2_f32 / radius).asin();
+    let slot =
+        |sign: f32| anchor + Vec3::new(-half_angle.cos(), 0.0, sign * half_angle.sin()) * radius;
+    let mut registry = EntityRegistry::new();
+    let chasers = [
+        leashed_chaser(&mut registry, (10.0, -2.0), slot(-1.0), anchor, radius),
+        leashed_chaser(&mut registry, (10.0, 2.0), slot(1.0), anchor, radius),
+    ];
+    let step = |registry: &mut EntityRegistry| {
+        tick(
+            registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+    };
+    let mut settled = None;
+    for tick_index in 0..600 {
+        step(&mut registry);
+        if chasers.iter().all(|id| arrived(&registry, *id)) {
+            settled = Some(tick_index);
+            break;
+        }
+    }
+    assert!(settled.is_some(), "both chasers arrive at their slots");
+    let mut flips = Vec::new();
+    for tick_index in 0..240 {
+        step(&mut registry);
+        for (index, id) in chasers.iter().enumerate() {
+            if !arrived(&registry, *id) {
+                flips.push((tick_index, index));
+            }
+        }
+    }
+    let apart = distance_xz(
+        agent_position(&registry, chasers[0]),
+        agent_position(&registry, chasers[1]),
+    );
+    assert!(
+        apart > 0.4 + 0.05,
+        "fixture: crowding pushed the chasers apart: {apart} m"
+    );
+    assert!(
+        flips.is_empty(),
+        "settled chasers stay arrived under crowding: {flips:?}"
+    );
+}
+
+// A leash dead end: the slot lies within the leash, but a wall the route
+// never reckoned with keeps the chaser out of the leash's reach. It presses
+// inside the slot's arrival band until stuck recovery fires; the leash then
+// lets go for that slot and the band alone decides, so the chaser arrives
+// instead of pressing at the wall forever.
+#[test]
+fn a_chaser_its_leash_holds_against_a_wall_arrives_after_stuck_recovery() {
+    let wall_x = 10.0;
+    let world = lane_world(Some(wall_x));
+    let y = rest_y(&agent_params());
+    // The leash wants the chaser within 1.2 m of x = 11, so x >= 9.8; the
+    // wall stops its centre near x = 9.65, inside the slot's band.
+    let anchor = Vec3::new(11.0, y, 0.0);
+    let slot = Vec3::new(9.8, y, 0.0);
+    let mut registry = EntityRegistry::new();
+    let id = leashed_chaser(&mut registry, (4.0, 0.0), slot, anchor, 1.2);
+    let mut arrived_at = None;
+    for tick_index in 0..600 {
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+        if arrived(&registry, id) {
+            arrived_at = Some(tick_index);
+            break;
+        }
+    }
+    let agent = registry.get_component::<AgentComponent>(id).unwrap();
+    assert!(
+        arrived_at.is_some(),
+        "the chaser arrives once recovery gives up on the leash: {:?}, {agent:?}",
+        agent_position(&registry, id)
+    );
+    assert_eq!(
+        agent.leash_waived_at,
+        Some(slot),
+        "the leash is waived for this slot"
+    );
+    assert!(
+        agent_position(&registry, id).x < wall_x,
+        "the chaser stays on its side of the wall"
     );
 }

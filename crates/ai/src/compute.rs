@@ -344,6 +344,8 @@ pub(super) fn evaluate(
         // striking, left on this tick, starts its attack's cooldown below.
         let whiffed_release = clip_clock::whiffed_release(&brain);
         let mut prior_standoff_distance = brain.graph.standoff_distance_for_action(None);
+        // Set on a leap's entry whose spot found no walkable ground.
+        let mut leap_spot_off_mesh = false;
         let (transitioned, resolved, steering, queued_attack) = if !brain.aggro_armed {
             // THE AGGRO GATE, and the only thing that suppresses evaluation. Its
             // v1 disengage policy is hold: a closed brain consults neither target
@@ -476,7 +478,15 @@ pub(super) fn evaluate(
                 (steering, _) => steering,
             };
             // A leap travels to the spot it fixed on entry, never re-aiming.
-            let steering = leap::steer(&mut brain, resolved, target, snap.position, steering);
+            let (steering, off_mesh) = leap::steer(
+                &mut brain,
+                resolved,
+                target,
+                snap.position,
+                steering,
+                nav_graph,
+            );
+            leap_spot_off_mesh = off_mesh;
             // A flinch over a release or recover plants the enemy for the
             // rest of the activity, whatever its motion: a staggered charge
             // stops where it was hit.
@@ -568,14 +578,12 @@ pub(super) fn evaluate(
             entry_depth,
             tick_heading.travel_variant,
         );
+        // A leap arrives at its spot by the moment the clock now reads, and
+        // stands once the latch it steered on has closed.
+        let (steering, leap_travel) = leap::pace(&brain, &clip_source, motion, steering);
         // A repeating release strikes once per pass at its moment, under one
         // turn: a later pass ignores the cooldown its first hit started, and
         // each hit restarts it, so it runs from the release's last hit.
-        // A leap arrives at its spot by the moment the clock now reads.
-        let arrive_in_s = (matches!(steering, SteeringIntent::MoveTo(_))
-            && motion == Some(MotionVerb::Leap))
-        .then(|| clip_clock::seconds_to_moment(&brain, &clip_source))
-        .flatten();
         let strike_limit = clip_clock::strike_limit(&brain, moment);
         let leaf_strikes = brain
             .active_depth()
@@ -732,7 +740,8 @@ pub(super) fn evaluate(
             standoff_distance,
             entered,
             steering,
-            arrive_in_s,
+            leap: leap_travel,
+            leap_spot_off_mesh,
             engaged,
             facing_direction: tick_heading.facing_direction,
             travel_variant: tick_heading.travel_variant,

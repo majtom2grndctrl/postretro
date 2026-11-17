@@ -705,8 +705,9 @@ fn shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_2000_ms_hold() {
 const LEAP_TOP_SPEED: f32 = 14.0 * 3.0;
 /// The leap's `standoffDistance`: its spot lies this far short of the target.
 const LEAP_STANDOFF: f32 = 1.5;
-/// How near its spot an agent stops: 1.5 capsule radii (0.35 m).
-const LEAP_ARRIVAL_BAND: f32 = 1.5 * 0.35;
+/// How near its spot a paced leap stands as its hit lands: on the spot, give
+/// or take float rounding. A paced agent has no arrival band.
+const LEAP_LANDING_TOLERANCE: f32 = 0.02;
 
 /// The shipped brute's leap from `crouch` on `manifest`, run for `seconds`.
 /// The player starts 10 m off along +X, inside the brute's 16 m detection,
@@ -784,15 +785,13 @@ impl BruteRun {
     }
 }
 
-// The leap, near and far (owner addition, playtest round): from 5 m, and from
+// The leap, near and far: from 5 m, and from
 // the edge of its 50 m queue, the brute takes `crouch` and its tell waits in
 // line there (`queueRange: 50`), holds exactly 666 ms, then leaps. On takeoff
 // it fixes its landing spot 1.5 m short of the target, then flies there paced
 // to land on the clip's `hit` while `leap_strike` plays at 1x, and slams
 // once, for 18. Its pace follows the distance: a crawl for the short leap,
-// its 42 m/s cap for the long one, never above it. Replaces the 12 m and 15 m
-// cases of the fixed-speed `chaseTarget` leap, which steered at 3.5x and
-// could not reach beyond about 12 m.
+// its 42 m/s cap for the long one, never above it.
 #[test]
 fn shipped_brute_leap_lands_on_its_spot_at_the_clip_hit_from_near_and_far() {
     let mut tops = Vec::new();
@@ -823,12 +822,28 @@ fn shipped_brute_leap_lands_on_its_spot_at_the_clip_hit_from_near_and_far() {
             distance_xz(spot, expected) <= 1.0e-3,
             "the spot is the standoff short of the target at takeoff: {spot} vs {expected}"
         );
-        assert!(
-            distance_xz(run.positions[moment - 1], spot) <= LEAP_ARRIVAL_BAND + 0.05,
-            "from {distance} m it stands on its spot as the hit lands: {} m off",
-            distance_xz(run.positions[moment - 1], spot)
-        );
+        // Its reach by the hit: steering gains 8 top speeds a second from a
+        // standstill, then holds the cap, over the ticks from takeoff up to
+        // the hit's. A paced leap within reach lands on its spot; one beyond
+        // it (the far leap) flies at its cap and falls short by the rest.
         let flight = distance_xz(run.positions[release - 1], spot);
+        let gain = 8.0 * LEAP_TOP_SPEED * DT;
+        let reach: f32 = (1..=moment - release)
+            .map(|tick| (tick as f32 * gain).min(LEAP_TOP_SPEED) * DT)
+            .sum();
+        let shortfall = (flight - reach).max(0.0);
+        let off = distance_xz(run.positions[moment - 1], spot);
+        assert!(
+            (off - shortfall).abs() <= LEAP_LANDING_TOLERANCE,
+            "from {distance} m it stands {shortfall} m short of its spot ({flight} m to fly, \
+             {reach} m reach) as the hit lands: {off} m off"
+        );
+        if distance < 10.0 {
+            assert_eq!(
+                shortfall, 0.0,
+                "fixture: the near leap is paced, not capped"
+            );
+        }
         let halfway = distance_xz(run.positions[release + (moment - release) / 2], spot);
         assert!(
             (0.25 * flight..0.75 * flight).contains(&halfway),
@@ -882,8 +897,6 @@ fn shipped_brute_leap_lands_on_its_spot_at_the_clip_hit_from_near_and_far() {
 // on takeoff, and whiffs, deals nothing, and still recovers and rests coiled.
 // The enemy committed, so the whiff starts the leap's 6000 ms cooldown as it
 // leaves the release, and it does not leap again until that has run out.
-// Updated for the fixed spot: the `chaseTarget` leap steered after the
-// target, and whiffed only because 10.5 m/s could not keep up.
 #[test]
 fn shipped_brute_leap_lands_on_its_spot_and_whiffs_when_the_target_sidesteps() {
     const LEAP_COOLDOWN_MS: f32 = 6000.0;
@@ -898,7 +911,7 @@ fn shipped_brute_leap_lands_on_its_spot_and_whiffs_when_the_target_sidesteps() {
         "the spot is fixed from the target's position at takeoff"
     );
     assert!(
-        distance_xz(run.positions[moment - 1], spot) <= LEAP_ARRIVAL_BAND + 0.05,
+        distance_xz(run.positions[moment - 1], spot) <= LEAP_LANDING_TOLERANCE,
         "it lands on the spot it fixed, not after the target: {} m off",
         distance_xz(run.positions[moment - 1], spot)
     );
@@ -1005,7 +1018,18 @@ fn shipped_brute_leap_capped_below_its_distance_falls_short_and_whiffs() {
 /// A shipped rifle enemy six meters from the player, with `fillers` entities
 /// spawned first so its id, and so its drawn phase, differs.
 fn rifle_scene(manifest: ModManifestResult, name: &str, fillers: usize) -> (Shipped, EntityId) {
-    let mut shipped = Shipped::new(manifest, Vec3::new(6.0, 0.0, 0.0));
+    rifle_scene_at(manifest, name, fillers, Vec3::new(6.0, 0.0, 0.0))
+}
+
+/// A shipped rifle enemy at the origin with the player at `player_at`, with
+/// `fillers` entities spawned first so its id, and so its drawn phase, differs.
+fn rifle_scene_at(
+    manifest: ModManifestResult,
+    name: &str,
+    fillers: usize,
+    player_at: Vec3,
+) -> (Shipped, EntityId) {
+    let mut shipped = Shipped::new(manifest, player_at);
     for _ in 0..fillers {
         shipped.reg.spawn(Transform::default());
     }
@@ -1013,205 +1037,9 @@ fn rifle_scene(manifest: ModManifestResult, name: &str, fillers: usize) -> (Ship
     (shipped, enemy)
 }
 
-/// One `burst` entry: its entry and exit ticks, the path it left to, its
-/// moment tick, the ticks a shot left the rifle, and whether it held an
-/// attack turn on entry and after leaving.
-#[derive(Debug)]
-struct Burst {
-    entered: usize,
-    left: usize,
-    left_to: String,
-    moment: usize,
-    shots: Vec<usize>,
-    turn_on_entry: bool,
-    turn_after: bool,
-}
-
-/// Tick until `enemy`'s first `burst` entry has left, calling `before` ahead
-/// of each tick.
-fn first_burst(
-    shipped: &mut Shipped,
-    enemy: EntityId,
-    mut before: impl FnMut(&mut Shipped, &str),
-) -> Burst {
-    let kick = loop_moment_tick(enemy, shipped.clip(enemy, "shoot"), "kick");
-    let (mut entered, mut shots, mut turn_on_entry) = (None, Vec::new(), false);
-    for tick in 0..(6.0 / DT) as usize {
-        let path = shipped.path(enemy);
-        before(shipped, &path);
-        let result = shipped.tick();
-        shots.extend((!result.projectile_spawns.is_empty()).then_some(tick));
-        let path = shipped.path(enemy);
-        match entered {
-            None if path.ends_with("/burst") => {
-                entered = Some(tick);
-                turn_on_entry = shipped.holds_turn(enemy);
-            }
-            Some(entered) if !path.ends_with("/burst") => {
-                return Burst {
-                    entered,
-                    left: tick,
-                    left_to: path,
-                    moment: entered + kick,
-                    shots,
-                    turn_on_entry,
-                    turn_after: shipped.holds_turn(enemy),
-                };
-            }
-            _ => {}
-        }
-    }
-    panic!("the burst ends within 6 s; entered: {entered:?}, shots: {shots:?}");
-}
-
-// The limitator's first burst shot leaves on `firing_rifle`'s `kick`,
-// the loop's first pass of it from the enemy's drawn phase.
-#[test]
-fn shipped_limitator_first_burst_shot_fires_at_the_rifle_kick() {
-    let (mut shipped, limitator) = rifle_scene(dev_manifest(), "limitator", 0);
-    let clip = shipped.clip(limitator, "shoot");
-    assert_eq!(
-        clip.name, "firing_rifle",
-        "fixture: the burst plays the rifle loop"
-    );
-    assert!(
-        clip.event_time("kick").is_some(),
-        "`firing_rifle` carries its `kick`"
-    );
-    let burst = first_burst(&mut shipped, limitator, |_, _| {});
-    assert_eq!(
-        burst.shots.first().copied(),
-        Some(burst.moment),
-        "the first shot fires at the loop's next `kick` from the drawn phase: {burst:?}"
-    );
-}
-
-// A limitator whose `shoot` misses its `kick` (its rifle still
-// recovering at the moment) fires nothing that entry, even once the rifle is
-// ready, then leaves `burst` on its timer and frees its `ranged` turn.
-#[test]
-fn shipped_limitator_whiffing_its_kick_leaves_burst_and_frees_its_turn() {
-    let (mut shipped, limitator) = rifle_scene(dev_manifest(), "limitator", 0);
-    let pass = shipped.clip(limitator, "shoot").duration;
-    // Recovering through the first pass from any phase, and ready well before
-    // the burst's timer ends.
-    let recovering_ms = (pass + 2.0 * DT) * 1000.0;
-    let burst = first_burst(&mut shipped, limitator, |shipped, path| {
-        if path.ends_with("/wait") {
-            let mut brain = shipped
-                .reg
-                .get_component::<BrainComponent>(limitator)
-                .unwrap()
-                .clone();
-            brain
-                .attack_cooldown_remaining_ms
-                .insert("shoot".to_string(), recovering_ms);
-            shipped.reg.set_component(limitator, brain).unwrap();
-        }
-    });
-    assert!(
-        recovering_ms < (burst.left - burst.entered - 1) as f32 * DT * 1000.0,
-        "fixture: the rifle is ready for the rest of the entry: {burst:?}"
-    );
-    assert_eq!(
-        burst.shots,
-        Vec::<usize>::new(),
-        "the whiffed burst fires nothing"
-    );
-    assert!(
-        burst.left_to.ends_with("/move"),
-        "it leaves `burst` for its reposition: {burst:?}"
-    );
-    assert!(
-        burst.turn_on_entry && !burst.turn_after,
-        "it holds its `ranged` turn from entry, and leaving frees it: {burst:?}"
-    );
-}
-
-// At every drawn phase, a limitator that fires leaves `burst` after its
-// third shot. `rifle_trooper` and `rifle_warrior` run the same graph.
-#[test]
-fn shipped_limitator_leaves_burst_after_its_third_shot_at_every_phase() {
-    let manifest = dev_manifest();
-    let behavior = |name: &str| descriptor(&manifest, name).behavior.clone();
-    assert_eq!(behavior("rifle_trooper"), behavior("limitator"));
-    assert_eq!(behavior("rifle_warrior"), behavior("limitator"));
-
-    let mut waits = std::collections::BTreeSet::new();
-    let mut pass_ticks = 0;
-    for fillers in 0..24 {
-        let (mut shipped, limitator) = rifle_scene(manifest.clone(), "limitator", fillers);
-        pass_ticks = (shipped.clip(limitator, "shoot").duration / DT).floor() as usize;
-        let burst = first_burst(&mut shipped, limitator, |_, _| {});
-        assert_eq!(
-            burst.shots.len(),
-            3,
-            "a three-shot burst inside the entry: {burst:?}"
-        );
-        assert_eq!(burst.shots[0], burst.moment, "{burst:?}");
-        assert!(
-            burst.left > burst.shots[2],
-            "it leaves after its third shot: {burst:?}"
-        );
-        assert!(burst.left_to.ends_with("/move"), "{burst:?}");
-        assert!(
-            burst.turn_on_entry && !burst.turn_after,
-            "it holds its turn through the burst and frees it: {burst:?}"
-        );
-        waits.insert(burst.moment - burst.entered);
-    }
-    assert!(
-        waits.len() >= 6 && waits.iter().any(|&wait| wait + 2 >= pass_ticks),
-        "fixture: the sweep draws phases across the {pass_ticks}-tick pass, \
-         a near-full wait for the kick included: {waits:?}"
-    );
-}
-
-// A limitator whose target slips past `BREAK_RANGE` the tick after its first
-// shot leaves `burst` for `close`, and back in range re-enters `burst` the
-// short way, through `wait` rather than its reposition. That burst still
-// fires at its `kick`: `wait` spends the rifle's recovery.
-#[test]
-fn shipped_limitator_burst_re_entered_through_wait_after_a_fire_fires_at_the_rifle_kick() {
-    let near = Vec3::new(6.0, 0.0, 0.0);
-    let (mut shipped, limitator) = rifle_scene(dev_manifest(), "limitator", 0);
-    let kick = loop_moment_tick(limitator, shipped.clip(limitator, "shoot"), "kick");
-
-    let (mut paths, mut shots) = (Vec::new(), Vec::<usize>::new());
-    for tick in 0..(6.0 / DT) as usize {
-        // Past the break range, inside the rifle's, for the one tick after
-        // the first shot. The strafe has moved the limitator off its spawn.
-        let stepped_out = shots.first().is_some_and(|&fired| fired + 1 == tick);
-        let at = if stepped_out {
-            shipped.away_from(limitator, near, 10.0)
-        } else {
-            near
-        };
-        shipped.place_player(at);
-        let result = shipped.tick();
-        if !result.projectile_spawns.is_empty() {
-            shots.push(tick);
-        }
-        paths.push(shipped.path(limitator));
-    }
-
-    let fired = *shots.first().expect("the first burst fires");
-    assert!(
-        paths[fired].ends_with("/burst") && paths[fired + 1].ends_with("/close"),
-        "stepping past the break range ends the burst the tick after its first shot: {paths:?}"
-    );
-    let reentered = entry_tick(&paths, "burst", fired + 1).expect("the limitator bursts again");
-    assert!(
-        paths[fired + 1..reentered]
-            .iter()
-            .all(|path| !path.ends_with("/move")),
-        "fixture: it comes back through `wait`, not its reposition: {paths:?}"
-    );
-    assert_eq!(
-        shots.iter().copied().find(|&shot| shot >= reentered),
-        Some(reentered + kick),
-        "the re-entered burst fires at its `kick`, not a cooldown whiff: {shots:?}"
-    );
+/// Milliseconds in `ticks` 60 Hz ticks.
+fn ticks_ms(ticks: usize) -> f32 {
+    ticks as f32 * DT * 1000.0
 }
 
 impl Shipped {
@@ -1249,13 +1077,15 @@ impl Shipped {
     }
 }
 
-/// One aimed strike from the limitator's `aim`: every tick's path and turn,
-/// the ticks a shot left the rifle, and the release's moment tick.
+/// One aimed strike from the limitator: every tick's path and turn, the ticks
+/// a shot left the rifle and the weapon each shot came from, and the release's
+/// moment tick.
 #[derive(Debug)]
 struct AimedStrike {
     paths: Vec<String>,
     turns: Vec<bool>,
     shots: Vec<usize>,
+    weapons: Vec<String>,
     moment: usize,
 }
 
@@ -1266,32 +1096,228 @@ impl AimedStrike {
     }
 }
 
-/// Seat `enemy` in its `aim` rest as it starts strafing, and tick until its
-/// strike settles.
-fn aimed_strike(shipped: &mut Shipped, enemy: EntityId) -> AimedStrike {
+/// Tick until `enemy`'s `attack` strike, released, lands in its `ending`
+/// stance's rest, calling `before` ahead of each tick.
+fn rifle_strike(
+    shipped: &mut Shipped,
+    enemy: EntityId,
+    attack: &str,
+    ending: &str,
+    mut before: impl FnMut(&mut Shipped),
+) -> AimedStrike {
     let kick = loop_moment_tick(enemy, shipped.clip(enemy, "shoot"), "kick");
-    let (mut paths, mut turns, mut shots) = (Vec::new(), Vec::new(), Vec::new());
-    let mut seated = false;
-    for tick in 0..(6.0 / DT) as usize {
-        if !seated && shipped.path(enemy).ends_with("/wait") {
-            shipped.seat_offense(enemy, "aim");
-            seated = true;
-        }
+    let release_leaf = format!("{attack}_release");
+    let ending_suffix = format!("/{ending}");
+    let (mut paths, mut turns) = (Vec::new(), Vec::new());
+    let (mut shots, mut weapons) = (Vec::new(), Vec::new());
+    for tick in 0..(10.0 / DT) as usize {
+        before(shipped);
         let result = shipped.tick();
-        shots.extend((!result.projectile_spawns.is_empty()).then_some(tick));
+        for spawn in &result.projectile_spawns {
+            shots.push(tick);
+            weapons.push(spawn.descriptor_class.clone());
+        }
         paths.push(shipped.path(enemy));
         turns.push(shipped.holds_turn(enemy));
-        if paths[tick].ends_with("/settle") {
-            let release = entry_tick(&paths, "shoot_release", 0).expect("the aim releases");
+        if paths[tick].ends_with(&ending_suffix)
+            && let Some(release) = entry_tick(&paths, &release_leaf, 0)
+        {
             return AimedStrike {
                 paths,
                 turns,
                 shots,
+                weapons,
                 moment: release + kick,
             };
         }
     }
-    panic!("the aimed strike settles within 6 s: {paths:?}, shots: {shots:?}");
+    panic!("the `{attack}` strike reaches `{ending}` within 10 s: {paths:?}, shots: {shots:?}");
+}
+
+/// Seat `enemy` in its `aim` rest as it starts strafing, and tick until its
+/// strike settles.
+fn aimed_strike(shipped: &mut Shipped, enemy: EntityId) -> AimedStrike {
+    let mut seated = false;
+    rifle_strike(shipped, enemy, "shoot", "settle", |shipped| {
+        if !seated && shipped.path(enemy).ends_with("/wait") {
+            shipped.seat_offense(enemy, "aim");
+            seated = true;
+        }
+    })
+}
+
+// The strafe's panicked spray: having strafed at least `WAIT_MS` (1,267 ms,
+// the burst rifle's recovery and shot span), the limitator takes `panic`,
+// throws the rifle up exactly 500 ms, then `spray` fires `enemy_rifle_burst`'s
+// three shots, the first at `firing_rifle`'s next `kick` from the drawn phase.
+// The release leaves on the evaluation after; its recover keeps the turn and
+// the firing loop through the other two shots, then it settles and
+// repositions. At every drawn phase; `rifle_trooper` and `rifle_warrior` run
+// the same graph.
+#[test]
+fn shipped_limitator_panicked_strafe_aims_500_ms_then_sprays_three_shots_at_every_phase() {
+    const WAIT_MS: f32 = 1267.0;
+    const PANIC_HOLD_MS: f32 = 500.0;
+    let manifest = dev_manifest();
+    let behavior = |name: &str| descriptor(&manifest, name).behavior.clone();
+    assert_eq!(behavior("rifle_trooper"), behavior("limitator"));
+    assert_eq!(behavior("rifle_warrior"), behavior("limitator"));
+
+    let mut waits = std::collections::BTreeSet::new();
+    let mut pass_ticks = 0;
+    for fillers in 0..24 {
+        let (mut shipped, limitator) = rifle_scene(manifest.clone(), "limitator", fillers);
+        pass_ticks = (shipped.clip(limitator, "shoot").duration / DT).floor() as usize;
+        let strike = rifle_strike(&mut shipped, limitator, "spray", "settle", |_| {});
+        let strafed = strike.entered("wait");
+        let panic = strike.entered("panic");
+        let hold = strike.entered("spray_panic");
+        let release = strike.entered("spray_release");
+        let recover = strike.entered("spray_recover");
+        let settled = strike.entered("settle");
+        assert!(
+            ticks_ms(panic - strafed) >= WAIT_MS,
+            "it strafes at least {WAIT_MS} ms first: {strike:?}"
+        );
+        // Time in activity counts from the tick after entry, and f32 ticks
+        // may fall a hair short: within two ticks of it.
+        let held = ticks_ms(release - panic);
+        assert!(
+            (PANIC_HOLD_MS..PANIC_HOLD_MS + 2000.0 * DT).contains(&held),
+            "the panic holds {PANIC_HOLD_MS} ms: {held} ms, {strike:?}"
+        );
+        assert_eq!(
+            strike.shots.first().copied(),
+            Some(strike.moment),
+            "the first shot fires at the loop's next `kick` from the drawn phase: {strike:?}"
+        );
+        assert_eq!(strike.shots.len(), 3, "the whole burst fires: {strike:?}");
+        assert!(
+            strike
+                .weapons
+                .iter()
+                .all(|weapon| weapon == "enemy_rifle_burst"),
+            "the spray fires the burst rifle: {strike:?}"
+        );
+        assert_eq!(
+            recover,
+            strike.moment + 1,
+            "the release leaves on the evaluation after its moment: {strike:?}"
+        );
+        assert!(
+            strike.shots[1..]
+                .iter()
+                .all(|&shot| strike.paths[shot].ends_with("/spray_recover")),
+            "the recover holds through the burst's other shots: {strike:?}"
+        );
+        assert!(
+            settled > strike.shots[2],
+            "it settles after its third shot: {strike:?}"
+        );
+        assert!(
+            strike.turns[hold..settled].iter().all(|&held| held) && !strike.turns[settled],
+            "the turn is held from the hold through the burst and ends in `settle`: {strike:?}"
+        );
+        let mut repositioned = false;
+        for _ in 0..(1.0 / DT) as usize {
+            shipped.tick();
+            if shipped.path(limitator).ends_with("/move") {
+                repositioned = true;
+                break;
+            }
+        }
+        assert!(repositioned, "it repositions after settling");
+        waits.insert(strike.moment - release);
+    }
+    assert!(
+        waits.len() >= 6 && waits.iter().any(|&wait| wait + 2 >= pass_ticks),
+        "fixture: the sweep draws phases across the {pass_ticks}-tick pass, \
+         a near-full wait for the kick included: {waits:?}"
+    );
+}
+
+// The careful long shot: a target 15 m off, past the fire range and inside
+// the long range, is run down for `RUN_MS` (2,000 ms) of `close`. Then the
+// limitator takes `sight`, holds the rifle shouldered a drawn 1,000-1,333 ms,
+// and `longshot` fires one `enemy_rifle_long` shot at the loop's next `kick`.
+// Its recover plays the recoil out and lands in `steady` before the loop's
+// next kick, and `steady` hands it back to `close`. Its turn holds from the
+// hold to `steady`. With no navigation it never closes the gap, so it never
+// strafes.
+#[test]
+fn shipped_limitator_far_sight_holds_1000_to_1333_ms_then_fires_one_long_shot() {
+    const RUN_MS: f32 = 2000.0;
+    const SIGHT_HOLD_MS: [f32; 2] = [1000.0, 1333.0];
+    // `enemy_rifle_long`'s `recoveryMs`, the shot's cooldown.
+    const LONG_RIFLE_RECOVERY_MS: f32 = 750.0;
+    let manifest = dev_manifest();
+    for fillers in 0..8 {
+        let (mut shipped, limitator) = rifle_scene_at(
+            manifest.clone(),
+            "limitator",
+            fillers,
+            Vec3::new(15.0, 0.0, 0.0),
+        );
+        let pass_ticks = (shipped.clip(limitator, "shoot").duration / DT).floor() as usize;
+        let strike = rifle_strike(&mut shipped, limitator, "longshot", "steady", |_| {});
+        let closing = strike.entered("close");
+        let sight = strike.entered("sight");
+        let hold = strike.entered("longshot_sight");
+        let release = strike.entered("longshot_release");
+        let recover = strike.entered("longshot_recover");
+        let steady = strike.entered("steady");
+        assert!(
+            strike.paths.iter().all(|path| !path.ends_with("/wait")),
+            "a target past the fire range is never strafed: {strike:?}"
+        );
+        let ran = ticks_ms(sight - closing);
+        assert!(
+            (RUN_MS..RUN_MS + 2000.0 * DT).contains(&ran),
+            "it runs {RUN_MS} ms before it stops to sight: {ran} ms, {strike:?}"
+        );
+        let held = ticks_ms(release - sight);
+        assert!(
+            (SIGHT_HOLD_MS[0]..SIGHT_HOLD_MS[1] + 2000.0 * DT).contains(&held),
+            "the sight holds a drawn 1,000-1,333 ms: {held} ms, {strike:?}"
+        );
+        assert_eq!(
+            strike.shots,
+            vec![strike.moment],
+            "one shot, at the loop's next `kick` from the drawn phase: {strike:?}"
+        );
+        assert_eq!(
+            strike.weapons,
+            vec!["enemy_rifle_long".to_string()],
+            "{strike:?}"
+        );
+        assert_eq!(
+            recover,
+            strike.moment + 1,
+            "the release leaves on the evaluation after its moment: {strike:?}"
+        );
+        assert!(
+            steady < strike.moment + pass_ticks,
+            "the recover lands in `steady` before the loop's next kick: {strike:?}"
+        );
+        assert!(
+            strike.turns[hold..steady].iter().all(|&held| held) && !strike.turns[steady],
+            "the turn is held from the hold through the shot and ends in `steady`: {strike:?}"
+        );
+        let cooldown = shipped.cooldown(limitator, "longshot");
+        assert!(
+            cooldown > 0.0 && cooldown < LONG_RIFLE_RECOVERY_MS,
+            "the shot starts the long rifle's recovery: {cooldown} ms"
+        );
+        let mut ran_on = false;
+        for _ in 0..(1.0 / DT) as usize {
+            shipped.tick();
+            if shipped.path(limitator).ends_with("/close") {
+                ran_on = true;
+                break;
+            }
+        }
+        assert!(ran_on, "`steady` hands it back to `close`");
+    }
 }
 
 // K2: the limitator's lowered `shoot` release fires its first shot as
@@ -1444,8 +1470,9 @@ fn shipped_limitator_heavy_fire_during_its_aim_flinches_it_and_it_resumes_on_its
 }
 
 // D5: within one engagement, each reposition's roll picks the next cycle:
-// below 0.5 the limitator strafes and fires, else it stops and aims. Both
-// branches come up, and each cycle's burst lands.
+// below 0.5 the limitator strafes and sprays a panicked burst, else it stops
+// and aims and fires the same burst. Both branches come up, and each cycle's
+// burst lands. A target inside the fire range never draws the far sight.
 #[test]
 fn shipped_limitator_reposition_roll_picks_strafe_and_fire_or_stop_and_aim() {
     let (mut shipped, limitator) = rifle_scene(dev_manifest(), "limitator", 0);
@@ -1475,6 +1502,12 @@ fn shipped_limitator_reposition_roll_picks_strafe_and_fire_or_stop_and_aim() {
             .all(|path| path.starts_with("engage/")),
         "one engagement throughout: {paths:?}"
     );
+    assert!(
+        paths
+            .iter()
+            .all(|path| !path.ends_with("/sight") && !path.contains("longshot")),
+        "a target inside the fire range never draws the far sight: {paths:?}"
+    );
 
     // Every reposition but the last opens a whole cycle, ending at the next.
     let mut branches = Vec::new();
@@ -1491,7 +1524,11 @@ fn shipped_limitator_reposition_roll_picks_strafe_and_fire_or_stop_and_aim() {
             "the reposition entered on tick {entered} rolled {roll}: {:?}",
             &paths[entered..next]
         );
-        let release = if strafes { "/burst" } else { "/shoot_release" };
+        let release = if strafes {
+            "/spray_release"
+        } else {
+            "/shoot_release"
+        };
         assert!(
             paths[left..next].iter().any(|path| path.ends_with(release)),
             "the cycle reaches its `{release}`: {:?}",
@@ -1576,4 +1613,58 @@ fn shipped_brute_held_past_jab_reach_on_a_mid_roll_reaches_a_tell() {
         pressing_states.iter().skip(1).all(|state| state == "idle"),
         "a stopped press plays rest: {pressing_states:?}"
     );
+}
+
+/// The dev mod's manifest with the brute's leap release capped at `speed`
+/// times its `moveSpeed`.
+fn capped_leap_manifest(speed: f32) -> ModManifestResult {
+    let mut manifest = dev_manifest();
+    let brute = manifest
+        .entities
+        .iter_mut()
+        .find(|entity| entity.canonical_name.as_deref() == Some("reference_enemy"))
+        .expect("the dev mod ships the brute");
+    let behavior = brute.behavior.as_mut().expect("the brute behaves");
+    let BehaviorLayerDescriptor::Graph(offense) = behavior
+        .envelope
+        .activities
+        .get_mut("engage")
+        .and_then(|engage| engage.layers.get_mut("offense"))
+        .expect("the brute's offense")
+    else {
+        panic!("the offense is a graph");
+    };
+    let leap = offense
+        .activities
+        .get_mut("leap_release")
+        .expect("the leap's release");
+    assert_eq!(leap.motion, Some(postretro_foundation::MotionVerb::Leap));
+    leap.speed = Some(speed);
+    manifest
+}
+
+// A leap that falls short stands from its moment's tick: once the moment has
+// passed it has nothing to arrive by, so it does not lurch on toward its spot
+// at its cap after the hit, through the rest of the release.
+#[test]
+fn shipped_brute_leap_that_falls_short_stands_from_its_moment() {
+    let run = leap_run_in(capped_leap_manifest(4.0), 30.0, false, 6.0);
+    let release = run.entered("leap_release");
+    let recover = run.entered("leap_recover");
+    let (hit, _) = run.moments["leap_strike"];
+    let moment = release + one_shot_moment_tick(hit);
+    assert!(recover > moment, "fixture: the release outlasts its moment");
+    assert!(
+        run.speed[moment - 1] > 10.0,
+        "fixture: still flying at its cap a tick before the hit: {} m/s",
+        run.speed[moment - 1]
+    );
+    let landed = run.positions[moment - 1];
+    for tick in moment..recover {
+        assert!(
+            distance_xz(run.positions[tick], landed) <= 1.0e-4,
+            "tick {tick}: the leap stands after its moment, {} m on from where it fell short",
+            distance_xz(run.positions[tick], landed)
+        );
+    }
 }

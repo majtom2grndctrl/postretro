@@ -592,4 +592,20 @@ fn a_leaping_release_loads_and_rejects_with_its_path_in_both_runtimes() {
         },
         &["`components.behavior.transitions.overhead[0].to.recover` is missing"],
     );
+    // A `recover` present but naming no animation is rejected the same way.
+    assert_rejects_in_both(
+        "leap with a recover without animation",
+        &Brute {
+            slam: r#", release: { animation: "smash_strike", motion: "leap" }, recover: { ms: 600 }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", release = { animation = "smash_strike", motion = "leap" }, recover = { ms = 600 }"#,
+            ..LUA_BRUTE
+        },
+        &[
+            "`components.behavior.transitions.overhead[0].to.recover.animation` is missing",
+            "release moves",
+        ],
+    );
 }

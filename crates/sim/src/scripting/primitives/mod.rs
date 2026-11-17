@@ -646,7 +646,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .variant(
             "leap",
-            "Engaged: fix a landing spot on entry, the attack's standoff short of where the target stands then, and travel there to arrive by the activity's own clip moment, pacing each tick by the path and time left, never faster than the activity's `speed`; then stand. Never re-aims, so a target that moves off the spot is missed. A leaf's own motion beside an attack with `at`; not a selector's.",
+            "Engaged: fix a landing spot on entry (or on the first tick with a target), the attack's standoff short of where the target stands then, and travel there to arrive by the activity's own clip moment, pacing each tick by the path and time left, never faster than the activity's `speed`; then stand. Never re-aims, so a target that moves off the spot is missed. A leaf's own motion beside an attack with `at`; not a selector's.",
         )
         .finish();
     registry

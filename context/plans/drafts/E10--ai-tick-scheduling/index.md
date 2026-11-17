@@ -21,9 +21,9 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
 
   - Every rate and the close radius (about 5 m) are constants expected to be retuned on better test maps. Owner: a slow first notice reads as fair; perfect reflexes do not.
   - An engaged NPC past today's 30 m band acquires on every third decide.
-  - 30 Hz steps fall on snapshot ticks, so clients see every NPC state. 15 Hz and slower steps are staggered by a pure function of per-NPC data that does not depend on spawn order or frame split, so assignment replays identically.
+  - NPC steps and the snapshot cadence count the same simulation tick, and each step's state is recorded and sent stamped with its own tick, catch-up frames included, so clients never miss an NPC state. 15 Hz and slower steps are staggered by a pure function of per-NPC data that does not depend on spawn order or frame split, so assignment replays identically.
   - Amends `entity_model.md` §7c: guards evaluate on decide ticks, and the clip accumulator and moment check advance per 30 Hz step, firing each moment once.
-- **Every gameplay check against an NPC uses its tick pose.** An NPC's tick pose is its pose interpolated between its last two steps at that tick, so it is deterministic and replays identically. Hitscan, projectile contact, splash, and the NPC's own melee reach and muzzle and launch origins all test it; what a player sees is what they hit and what hits them. The host draws the tick pose between ticks, one step behind the simulation, as clients do. The client interpolation delay floor for NPCs covers one 15 Hz step plus jitter, so a client never runs out of the next sample. Locomotion clips read interpolated velocity.
+- **Every damage check against or by an NPC uses its tick pose.** An NPC's tick pose is its root and skeletal pose interpolated between its last two steps at that tick, the skeleton posed from the NPC's own clip time, so it is deterministic and replays identically. Hitscan, projectile contact, splash, hit zones, and the NPC's own melee reach and muzzle and launch origins all test it; what a player sees is what they hit and what hits them. Physics (doors, crush, pins, separation) and NPC sight keep the simulated pose, where the NPC physically is. The host draws the tick pose between ticks, one step behind the simulation, as clients do. The client interpolation delay floor for NPCs covers one 15 Hz step plus jitter, so a client never runs out of the next sample. Locomotion clips read interpolated velocity.
 - **Perceivable means inside some player's id-51 set.** The engine locates the cell of every player pawn in play or down, host and clients alike, and unions the `CellResidencySet` (id 51) cells reachable from those cells within an AI lead. An NPC is perceivable when its cell is in that union. The union is AI policy. The step under it, player pawn → cell → id-51 set, is engine-owned and the intended input for network relevance and combat VFX culling, keyed per client. Those consumers accept id 51's sampling; a gap that shows is fixed by refining id 51, never by a PVS bake (owner). Diverges from `cell-visibility-substrate.md`, which names id 46 and zero false negatives for them; amended at promotion.
   - Owner choice over a new sightline bake. id 51 is sampled, so a cell it misses can still be drawn; an NPC there that acquires a player promotes after its next decide. One that cannot acquire the player (another faction, aggro gate closed, candidacy rejects) may step at 2 Hz in view; accepted as rare.
   - id 51 is streaming-owned; the AI lead is its own constant, never streaming's runtime L, so streaming retuning never moves AI detail. It cannot exceed id 51's baked maximum lead. Doors are not applied: closed doors only widen the set, the safe direction.
@@ -54,7 +54,7 @@ Timing on time:
 Tiers and rates:
 - [ ] Each tier runs each part of an NPC at exactly its table rate, and nothing in an NPC runs faster than 30 Hz.
 - [ ] Player movement, movers, projectiles and player weapons still run every 60 Hz tick.
-- [ ] 30 Hz steps land on snapshot ticks; with many NPCs, every staggered assignment and step tick is identical across frame splits, reversed spawn order, and host versus replay.
+- [ ] Every NPC step reaches clients stamped with its own tick, including on catch-up frames that run several ticks; with many NPCs, every staggered assignment and step tick is identical across frame splits, reversed spawn order, and host versus replay.
 - [ ] On the stress fixture, including when NPCs spawn interleaved or at a regular stride, the number of NPCs stepping or deciding on any tick differs from the per-phase mean by at most one (P15).
 - [ ] `@brain.acquisitionDue` is true only on decide ticks; an engaged NPC past 30 m acquires on every third, for every spawn tick relative to its phase (P5).
 - [ ] The clip-timed jab's first damage lands at its clip moment, within one 30 Hz step, for every phase and frame split (P19).
@@ -75,7 +75,8 @@ Presentation:
 - [ ] On the host, an NPC's mesh draw, portal cull, ghost-link draw, attached lights and sound anchors all use its tick pose; a running 15 Hz NPC is never culled while its drawn pose is in view, and its sounds and lights do not lead its body.
 - [ ] Raising the NPC interpolation floor leaves remote player pawns, movers and projectiles at today's delay on the same link.
 - [ ] An NPC's melee reach and its muzzle and launch origins are measured from its tick pose.
-- [ ] Tick poses are identical across frame splits and on replay.
+- [ ] Tick poses, skeleton and hit zones included, are identical across frame splits and on replay; a headshot on a 15 Hz NPC lands where its head is drawn.
+- [ ] Doors, crush, pins and separation act on an NPC's simulated pose, not its tick pose.
 - [ ] An NPC's locomotion clip does not flicker between walk and rest while it moves at a steady speed.
 
 Perception and tier changes:

@@ -530,6 +530,34 @@ export function endSession(): import("../data_script").SystemReactionStep {
 }
 
 /**
+ * Host a co-op session from the frontend. Pure — returns a system reaction (a
+ * body on its own or a step in a sequence or array body), no FFI. A
+ * single-player machine at its frontend starts a new hosted run, protected by
+ * `session.password` when it is not empty, and stands at its frontend with
+ * joiners waiting until it starts a level. Pressed while a left level unloads
+ * or an ended host's connections close, it waits for them, publishing
+ * `session.connection` `connecting`. Anywhere else, in another role or with a
+ * press already waiting, it warns and changes nothing. Machine-local.
+ */
+export function hostSession(): import("../data_script").SystemReactionStep {
+  return { primitive: "hostSession", args: {} };
+}
+
+/**
+ * Join the co-op host at `session.joinAddress` (an IPv4 address, port
+ * optional) from the frontend, answering its password from `session.password`.
+ * Pure — returns a system reaction (a body on its own or a step in a sequence
+ * or array body), no FFI. It saves the world and character first, then
+ * connects; `session.connection`, `session.waitReason` and `session.endCause`
+ * say how it goes. It waits and refuses as `hostSession()` does, and after a
+ * `leaveSession()` in the same reaction it joins once the left level unloads.
+ * Machine-local.
+ */
+export function joinSession(): import("../data_script").SystemReactionStep {
+  return { primitive: "joinSession", args: {} };
+}
+
+/**
  * Set the live sentiment from faction `from` toward faction `to` at the
  * frame-end game-logic drain. This replaces only that directional pair's live
  * value; it never changes the authored baseline. Negative values degrade the

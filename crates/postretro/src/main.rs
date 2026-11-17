@@ -250,6 +250,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             log::debug!("[Net] {control:?} dropped: the session already ended");
             continue;
         }
+        app.observe_client_control(&control);
         match control {
             ServerControlMessage::Relevel {
                 catalog_id,
@@ -268,7 +269,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     "[Net] incompatible host: host runs mod {expected} ({expected_version}), this client runs {received} ({received_version}); relaunch with --mod <folder>, where content/<folder> declares mod id {expected}"
                 );
                 app.client_left_in_control_drain =
-                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused);
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused(
+                        startup::lifecycle::session_entry::EndCause::RefusedMod,
+                    ));
             }
             ServerControlMessage::Divergence(DivergenceReason::Closing(
                 ClosingCause::SessionEnded,
@@ -282,8 +285,12 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     "[Net] incompatible host: {}",
                     DivergenceReason::Closing(cause)
                 );
+                // A different engine build reads as a failed connect: naming
+                // a version mismatch is its own roadmap item.
                 app.client_left_in_control_drain =
-                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused);
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused(
+                        startup::lifecycle::session_entry::EndCause::ConnectFailed,
+                    ));
             }
             ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
                 if cause.is_revealed_hold() {
@@ -423,6 +430,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     // that drain brought waits for the next one.
     app.end_reveal_frame_spawn_pose_hold();
     app.client_left_in_control_drain = false;
+    // Participation is read once the batch has drained: a hold then a
+    // re-promotion in one update publishes `waiting`, then `playing`.
+    app.publish_client_participation();
     // A connection that ended without a cause in this drain (a lost host,
     // or a connect whose attempts all failed) takes the leave path too.
     app.follow_client_connection_end();
@@ -1231,6 +1241,18 @@ pub(crate) struct App {
     /// frame returns before them, until the leave's queued unload drains.
     /// Cleared by `unload_level`.
     level_stopped_by_session_end: bool,
+
+    /// A `hostSession` or `joinSession` press waiting for a left level's
+    /// unload or an ended host's close, with what it captured when pressed.
+    pending_entry: Option<startup::lifecycle::session_entry::PendingEntry>,
+
+    /// What this client has learned of the session it joined: admission, the
+    /// latest hold, and the address and password its join captured.
+    join_facts: startup::lifecycle::session_entry::JoinFacts,
+
+    /// The port an in-app host binds. Choosing one in-app is a non-goal:
+    /// `--host <port>` covers it.
+    in_app_host_port: u16,
 
     /// A connected client has participated on this connection, so the host
     /// has sent it a character. Cleared by the leave.
@@ -3159,6 +3181,7 @@ impl App {
     /// `returnToFrontend` verb reaches it only in single-player; a leave and
     /// `ui.quitToMenu` reach it through their own membership change.
     fn navigate_to_frontend(&mut self) {
+        self.cancel_pending_entry("navigation");
         self.present_frontend_menu();
         let requests = self
             .session
@@ -3646,7 +3669,14 @@ impl App {
         // grants applied at dispatch, ahead of the leave.
         let mut left_this_drain = false;
         for command in script_ctx.system_commands.take() {
-            if left_this_drain {
+            // A host or join press belongs to the next session, not the world
+            // being left: it survives the leave and waits for the unload.
+            let enters_next_session = matches!(
+                command,
+                SystemReactionCommand::HostSession { .. }
+                    | SystemReactionCommand::JoinSession { .. }
+            );
+            if left_this_drain && !enters_next_session {
                 log::debug!(
                     "[Scripting] {command:?} dropped: this machine left its session earlier in this drain"
                 );
@@ -3820,6 +3850,14 @@ impl App {
                     dispatch_source,
                     origin,
                 } => self.run_end_session_verb(dispatch_source, origin),
+                SystemReactionCommand::HostSession {
+                    dispatch_source,
+                    origin,
+                } => self.run_host_session_verb(dispatch_source, origin),
+                SystemReactionCommand::JoinSession {
+                    dispatch_source,
+                    origin,
+                } => self.run_join_session_verb(dispatch_source, origin),
                 SystemReactionCommand::PopTree => {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.pop();

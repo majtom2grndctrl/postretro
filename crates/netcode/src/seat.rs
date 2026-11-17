@@ -1523,7 +1523,11 @@ mod tests {
             .admit_or_reclaim(32, Some(claim([3; 16], "joiner")), false)
             .unwrap()
             .seat;
-        assert_eq!(next, Seat(1), "the next joiner takes a fresh session's first seat");
+        assert_eq!(
+            next,
+            Seat(1),
+            "the next joiner takes a fresh session's first seat"
+        );
     }
 
     #[test]

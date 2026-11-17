@@ -1908,9 +1908,13 @@ declare module "postretro" {
       readonly vignette: ComputedRef<ReadonlyArray<number>>;
     };
     readonly session: {
+      readonly connection: ComputedRef<"offline" | "connecting" | "waiting" | "playing">;
+      readonly endCause: ComputedRef<string>;
       readonly hostAddress: ComputedRef<string>;
       readonly hosting: ComputedRef<boolean>;
+      readonly joinAddress: Ref<string>;
       readonly openSeats: ComputedRef<number>;
+      readonly password: Ref<string>;
       readonly playerCounts: {
         readonly connected: ComputedRef<number>;
         readonly down: ComputedRef<number>;
@@ -1924,6 +1928,7 @@ declare module "postretro" {
         readonly status: ComputedRef<"loading" | "inPlay" | "down" | "reconnecting">;
         readonly isLocal: ComputedRef<boolean>;
       }>;
+      readonly waitReason: ComputedRef<string>;
     };
     readonly ui: {
       readonly textEntry: Ref<string>;
@@ -3522,6 +3527,10 @@ declare module "postretro/ui" {
   export function leaveSession(): SystemReactionStep;
   /** End the co-op session. Membership only, never navigates: a host closes every client's connection and stays in its level as single-player; a connected client refuses it (it leaves with `leaveSession()`); single-player ignores it. */
   export function endSession(): SystemReactionStep;
+  /** Host a co-op session from the frontend: a single-player machine at its frontend starts a new hosted run, protected by `session.password` when it is not empty. Pressed while a left level unloads or an ended host's connections close, it waits (`session.connection` reads `connecting`); anywhere else, in another role or with a press already waiting, it warns and changes nothing. Machine-local. */
+  export function hostSession(): SystemReactionStep;
+  /** Join the co-op host at `session.joinAddress` (IPv4, port optional) from the frontend, answering its password from `session.password`. Saves the world and character first; `session.connection`, `session.waitReason` and `session.endCause` say how it goes. Waits and refuses as `hostSession()` does. Machine-local. */
+  export function joinSession(): SystemReactionStep;
   /** Set the live sentiment from `from` toward `to` at frame end. The pair is directional and baseline content remains immutable. Negative values degrade the relationship; positive values bond it. Unknown faction names warn and no-op. */
   export function setSentiment(from: string, to: string, value: number): SystemReactionStep;
   /** Add `delta` to the current live sentiment from `from` toward `to` at frame end (or its authored baseline when unchanged). The pair is directional. Negative deltas degrade the relationship; positive deltas bond it. Unknown faction names warn and no-op. */

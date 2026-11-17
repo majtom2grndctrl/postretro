@@ -20,6 +20,8 @@ import {
   VStack,
   defineUiTree,
   endSession,
+  hostSession,
+  joinSession,
   leaveSession,
   loadLevel,
   restartLevel,
@@ -70,6 +72,10 @@ const backToFrontend = defineReaction("frontend.returnToFrontend", returnToFront
 export const leave = defineReaction("pause.leaveSession", leaveSession());
 // A run's end on a map-end crossing: every role runs the same steps.
 export const runEnd = defineReaction("run.end", [endSession(), returnToFrontend()]);
+// Host and Join buttons. Each reads session.password; joinSession also reads
+// session.joinAddress.
+export const host = defineReaction("frontend.host", hostSession());
+export const join = defineReaction("frontend.join", joinSession());
 
 const levelSelect = defineUiTree({
   name: "frontend.levelSelect.fixture",
@@ -134,6 +140,8 @@ export default defineMod({
     backToFrontend,
     leave,
     runEnd,
+    host,
+    join,
     ...mapCatalog.map((entry) =>
       defineReaction(`frontend.catalog.${entry.id}`, loadLevel(entry.id)),
     ),

@@ -2,19 +2,19 @@
 //! hosts over a real loopback transport, built on the path boot flags take.
 //! See: context/lib/networking.md §Role model (Runtime entry)
 
+use super::lifecycle_test_fixtures::test_app;
+use super::session_membership::LeaveCause;
 use super::spawn_pose_handoff_fixtures::{LEVEL, MOD_ID, Relay, spawn_points};
 use super::spawn_pose_stand_in_fixtures::ClientView;
-use super::lifecycle_test_fixtures::test_app;
 use super::*;
-use super::session_membership::LeaveCause;
 use crate::netcode::{NetEndpoint, NetRole};
 use crate::session::net_entry::enter_role;
 use crate::session::role_state::{RoleBoundState, SessionRole, apply_role};
+use crate::startup::{BootState, LevelRequest};
 use postretro_entities::slot_table::SlotValue;
 use postretro_foundation::Seat;
 use postretro_net::slots::SlotState;
 use postretro_net::wire::SessionId;
-use crate::startup::{BootState, LevelRequest};
 use postretro_net::wire::SpawnPoseHint;
 use postretro_sim::scripting::map_entity::MapEntity;
 
@@ -107,7 +107,9 @@ fn follow_into_level(relay: &mut Relay, view: &mut ClientView) -> (u64, SpawnPos
         joined_client_id(relay).is_some_and(|id| relay.pawn(id).is_some())
     });
     let id = joined_client_id(relay).unwrap();
-    let hint = view.stored_hint().expect("the host hinted the client's spawn");
+    let hint = view
+        .stored_hint()
+        .expect("the host hinted the client's spawn");
     (id, hint)
 }
 
@@ -158,11 +160,17 @@ fn in_app_join_cancels_a_backdrop_load_in_flight_and_installs_the_hosts_level_as
     let mut view = single_player_at_menu(points);
     view.app.populate_frontend();
     view.app.drain_level_requests();
-    assert!(view.app.level_load_in_flight(), "fixture: the backdrop loads");
+    assert!(
+        view.app.level_load_in_flight(),
+        "fixture: the backdrop loads"
+    );
     assert!(!view.app.level_load.as_ref().unwrap().host_named);
 
     assert!(view.app.join_from_frontend(relay.address()));
-    assert!(!view.app.level_load_in_flight(), "the backdrop load is cancelled");
+    assert!(
+        !view.app.level_load_in_flight(),
+        "the backdrop load is cancelled"
+    );
     assert!(view.app.level_load.is_none());
     assert!(view.app.level_requests.is_empty());
     assert_eq!(view.app.boot_state, BootState::Frontend);
@@ -183,7 +191,9 @@ fn in_app_join_cancels_a_backdrop_load_in_flight_and_installs_the_hosts_level_as
     exchange_until(&mut relay, &mut view, |relay, _| {
         joined_client_id(relay).is_some_and(|id| relay.participating(id))
     });
-    let declared = view.declared_reveal().expect("the client declared its reveal");
+    let declared = view
+        .declared_reveal()
+        .expect("the client declared its reveal");
     assert_eq!(declared.level_life, relay.server().installed_level_life());
     assert_client_role(&view);
 }
@@ -194,7 +204,12 @@ fn in_app_join_off_the_frontend_is_refused_and_changes_nothing() {
     let points = spawn_points(3);
     let relay = host_in_level(&points);
     let mut view = single_player_at_menu(points);
-    view.app.session.as_mut().unwrap().modal_stack.clear_pushed();
+    view.app
+        .session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .clear_pushed();
     assert!(!view.app.at_frontend());
     assert!(!view.app.join_from_frontend(relay.address()));
     assert_eq!(view.app.session_role(), SessionRole::SinglePlayer);
@@ -226,7 +241,13 @@ fn session_id(app: &App) -> SessionId {
 /// Pump an ended host's closing transport until it drops.
 fn close_out(app: &mut App) {
     for _ in 0..200 {
-        if app.session.as_ref().unwrap().closing_host_transport.is_none() {
+        if app
+            .session
+            .as_ref()
+            .unwrap()
+            .closing_host_transport
+            .is_none()
+        {
             return;
         }
         app.pump_closing_host_transport(std::time::Duration::from_millis(34));
@@ -263,11 +284,23 @@ fn in_app_host_holds_a_joiner_at_its_frontend_and_promotes_it_into_its_next_leve
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let id = joined_client_id(&mut relay).unwrap();
-    assert!(!relay.participating(id), "the joiner waits at the host's frontend");
-    assert!(view.app.level_requests.is_empty(), "the host names no level");
+    assert!(
+        !relay.participating(id),
+        "the joiner waits at the host's frontend"
+    );
+    assert!(
+        view.app.level_requests.is_empty(),
+        "the host names no level"
+    );
 
     // The host starts a level: its menu clears and the level installs.
-    relay.app.session.as_mut().unwrap().modal_stack.clear_pushed();
+    relay
+        .app
+        .session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .clear_pushed();
     relay.world_less = false;
     relay.install(points);
     relay.host_reveal();
@@ -297,7 +330,10 @@ fn one_process_hosts_ends_joins_leaves_and_hosts_again() {
     assert!(view.app.leave_session(LeaveCause::Own));
     assert_eq!(view.app.session_role(), SessionRole::SinglePlayer);
     view.app.drain_level_requests();
-    assert!(view.app.at_frontend(), "the left level unloaded under the menu");
+    assert!(
+        view.app.at_frontend(),
+        "the left level unloaded under the menu"
+    );
 
     assert!(view.app.host_from_frontend(0));
     assert_eq!(view.app.session_role(), SessionRole::Host);
@@ -331,7 +367,11 @@ fn hosting_again_mints_a_new_run_and_its_first_joiner_takes_seat_one() {
     assert_eq!(relay.seats().seats(), vec![Seat(0)]);
     assert_eq!(relay.seats().carried_state(Seat(0)).cloned(), carried);
     relay.admit(&[22]);
-    assert_eq!(relay.seat(22), Some(Seat(1)), "seat ids restart with the run");
+    assert_eq!(
+        relay.seat(22),
+        Some(Seat(1)),
+        "seat ids restart with the run"
+    );
 }
 
 // AC E8: a failed session-id mint leaves the ledger, the role and the
@@ -443,11 +483,18 @@ fn with_saves(view: &mut ClientView, data_dir: &std::path::Path) {
     ledger
         .slots
         .insert(CHARACTER_SLOT.to_string(), "k-xp".to_string());
-    session.scripting.script_runtime.commit_store_identity_for_test(
-        ledger,
-        [WORLD_SLOT.to_string(), CHARACTER_SLOT.to_string()].into(),
+    session
+        .scripting
+        .script_runtime
+        .commit_store_identity_for_test(
+            ledger,
+            [WORLD_SLOT.to_string(), CHARACTER_SLOT.to_string()].into(),
+        );
+    assert!(
+        session
+            .state_store_lifecycle
+            .should_restore_after_mod_init(true)
     );
-    assert!(session.state_store_lifecycle.should_restore_after_mod_init(true));
     session.state_store_lifecycle.mark_restore_completed();
     let boot = crate::session::progress_save::save_world_and_character(session)
         .expect("fixture: saves are allowed");
@@ -478,10 +525,8 @@ fn saved_file(app: &App) -> std::path::PathBuf {
 }
 
 fn character_in(state: Option<&crate::scripting::state_persistence::PersistedState>) -> f64 {
-    let seed = crate::scripting::state_persistence::join_seed_from_persisted_state(
-        state,
-        Some(PLAYER_ID),
-    );
+    let seed =
+        crate::scripting::state_persistence::join_seed_from_persisted_state(state, Some(PLAYER_ID));
     match seed.get("k-xp") {
         Some(postretro_net::wire::JoinSeedValue::Number(value)) => *value,
         other => panic!("the character slot rides the join seed: {other:?}"),
@@ -578,7 +623,10 @@ fn join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry() {
         let seats = session.seat_table.as_mut().unwrap();
         seats.bind_pawn(&mut registry, Seat(0), pawn);
         seats.harvest_bound_pawns(&registry, &[]);
-        assert!(seats.carried_state(Seat(0)).is_some(), "fixture: seat 0 carries");
+        assert!(
+            seats.carried_state(Seat(0)).is_some(),
+            "fixture: seat 0 carries"
+        );
     }
 
     assert!(view.app.join_from_frontend(relay.address()));
@@ -589,5 +637,1006 @@ fn join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry() {
     assert_eq!(
         session.seat_table.as_ref().unwrap().carried_state(Seat(0)),
         fresh.carried_state(Seat(0))
+    );
+}
+
+use super::session_entry::{ConnectionPhase, take_published_connections};
+use postretro_entities::{FireOrigin, MachineSource, SystemReactionCommand};
+
+fn own() -> FireOrigin {
+    FireOrigin::EveryMachine(MachineSource::OwnState)
+}
+
+fn host_verb() -> SystemReactionCommand {
+    host_from("named:menu.host")
+}
+
+fn join_verb() -> SystemReactionCommand {
+    join_from("named:menu.join")
+}
+
+/// A press from its own firing source: refusals warn once per source.
+fn host_from(source: &str) -> SystemReactionCommand {
+    SystemReactionCommand::HostSession {
+        dispatch_source: source.to_string(),
+        origin: own(),
+    }
+}
+
+fn join_from(source: &str) -> SystemReactionCommand {
+    SystemReactionCommand::JoinSession {
+        dispatch_source: source.to_string(),
+        origin: own(),
+    }
+}
+
+fn leave_verb() -> SystemReactionCommand {
+    SystemReactionCommand::LeaveSession {
+        dispatch_source: "named:menu.leave".to_string(),
+        origin: own(),
+    }
+}
+
+/// One reaction's steps, drained as the frame drains them.
+fn run(app: &mut App, commands: impl IntoIterator<Item = SystemReactionCommand>) {
+    let ctx = script_ctx_of(app);
+    for command in commands {
+        ctx.system_commands.push(command);
+    }
+    app.dispatch_system_commands();
+}
+
+fn write_text(app: &mut App, slot: &str, text: &str) {
+    app.write_session_slot(slot, SlotValue::String(text.to_string()));
+}
+
+fn connection(app: &App) -> Option<SlotValue> {
+    slot(app, "session.connection")
+}
+
+fn connection_is(app: &App, phase: &str) -> bool {
+    connection(app) == Some(SlotValue::Enum(phase.to_string()))
+}
+
+/// A single-player engine at its menu that hosts in-app on an OS-chosen
+/// port, so parallel tests never collide.
+fn entering_engine(points: Vec<MapEntity>) -> ClientView {
+    let mut view = single_player_at_menu(points);
+    view.app.in_app_host_port = 0;
+    view
+}
+
+/// What a refused press must leave as it was.
+#[derive(Debug, PartialEq)]
+struct EntryFacts {
+    role: SessionRole,
+    session_id: Option<SessionId>,
+    password: Option<SlotValue>,
+    end_cause: Option<SlotValue>,
+    connection: Option<SlotValue>,
+    saved: Option<Vec<u8>>,
+}
+
+fn entry_facts(app: &App) -> EntryFacts {
+    let session = app.session.as_ref().unwrap();
+    EntryFacts {
+        role: app.session_role(),
+        session_id: session
+            .seat_table
+            .as_ref()
+            .map(|seats| seats.session_id_for_test()),
+        password: slot(app, "session.password"),
+        end_cause: slot(app, "session.endCause"),
+        connection: connection(app),
+        saved: crate::scripting::state_persistence::state_path(session.data_dir.as_deref(), MOD_ID)
+            .and_then(|path| std::fs::read(path).ok()),
+    }
+}
+
+/// A single-player engine with saves, a password, a stale end cause, an
+/// address to dial, and unsaved world progress a join would write.
+fn primed_engine(points: Vec<MapEntity>, dir: &std::path::Path, address: &str) -> ClientView {
+    let mut view = entering_engine(points);
+    with_saves(&mut view, dir);
+    write_world(&view.app, 42.0);
+    write_text(&mut view.app, "session.password", "hunter2");
+    write_text(&mut view.app, "session.joinAddress", address);
+    view.app
+        .publish_end_cause(Some(super::session_entry::EndCause::ConnectFailed));
+    view
+}
+
+#[track_caller]
+fn assert_refused_without_change(view: &mut ClientView, verb: SystemReactionCommand, case: &str) {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let before = entry_facts(&view.app);
+    let endpoint_before = view.app.session.as_ref().unwrap().net_endpoint.is_some();
+    let waiting_before = format!("{:?}", view.app.pending_entry);
+    run(&mut view.app, [verb]);
+    assert_eq!(entry_facts(&view.app), before, "{case}: nothing changes");
+    assert_eq!(
+        view.app.session.as_ref().unwrap().net_endpoint.is_some(),
+        endpoint_before,
+        "{case}: no endpoint"
+    );
+    assert_eq!(
+        format!("{:?}", view.app.pending_entry),
+        waiting_before,
+        "{case}: no press starts waiting, and a waiting one stays"
+    );
+    capture.assert_logged(log::Level::Warn, "ignored");
+}
+
+// AC E6 (P4): entry is refused with a warning, changing nothing, with a
+// played level installed, a played load queued or in flight, on a host and
+// on a client; each refused case has a permitted neighbour.
+#[test]
+fn entry_off_the_frontend_or_outside_single_player_is_refused_without_change() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let address = relay.address().to_string();
+
+    // A played level installed, with no menu and then under the frontend
+    // menu before its unload is queued.
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &address);
+    view.app
+        .session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .clear_pushed();
+    view.app
+        .enqueue_level_request(LevelRequest::Load(crate::startup::LevelSource::Catalog(
+            LEVEL.to_string(),
+        )));
+    view.install();
+    assert!(
+        view.app
+            .session
+            .as_ref()
+            .unwrap()
+            .session_players
+            .session_level()
+    );
+    assert_refused_without_change(
+        &mut view,
+        host_from("named:played-level-host"),
+        "played level, host",
+    );
+    assert_refused_without_change(
+        &mut view,
+        join_from("named:played-level-join"),
+        "played level, join",
+    );
+    view.app.present_frontend_menu();
+    assert_refused_without_change(
+        &mut view,
+        host_from("named:played-level-under-the-menu"),
+        "played level under the menu",
+    );
+
+    // Its neighbour: a backdrop installed under the frontend menu hosts.
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &address);
+    view.app.populate_frontend();
+    view.install();
+    run(&mut view.app, [host_verb()]);
+    assert_eq!(
+        view.app.session_role(),
+        SessionRole::Host,
+        "backdrop installed: hosts"
+    );
+
+    // On a host and on a client, the second press changes nothing.
+    assert_refused_without_change(
+        &mut view,
+        host_from("named:already-hosting"),
+        "already hosting",
+    );
+    assert_refused_without_change(&mut view, join_from("named:hosting-join"), "hosting, join");
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = primed_engine(points.clone(), dir.path(), &address);
+    run(&mut client.app, [join_verb()]);
+    assert_eq!(client.app.session_role(), SessionRole::Client);
+    assert_refused_without_change(
+        &mut client,
+        join_from("named:already-a-client"),
+        "already a client",
+    );
+    assert_refused_without_change(&mut client, host_from("named:client-host"), "client, host");
+
+    // A played load queued, then in flight: `loadLevel` clears the menu.
+    // Its neighbour, a backdrop load in flight under the menu, joins.
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &address);
+    view.app
+        .session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .clear_pushed();
+    view.app
+        .enqueue_level_request(LevelRequest::Load(crate::startup::LevelSource::Catalog(
+            LEVEL.to_string(),
+        )));
+    assert_refused_without_change(
+        &mut view,
+        join_from("named:played-load-queued"),
+        "played load queued",
+    );
+    view.app.drain_level_requests();
+    assert!(view.app.level_load_in_flight());
+    assert_refused_without_change(
+        &mut view,
+        host_from("named:played-load-in-flight"),
+        "played load in flight",
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points, dir.path(), &address);
+    view.app.populate_frontend();
+    view.app.drain_level_requests();
+    assert!(view.app.level_load_in_flight(), "fixture: backdrop loading");
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(
+        view.app.session_role(),
+        SessionRole::Client,
+        "backdrop loading: joins"
+    );
+}
+
+/// A client of `relay` in its level, whose next press joins `rejoin`.
+fn client_in_level(relay: &mut Relay, points: &[MapEntity], rejoin: &str) -> ClientView {
+    let mut view = entering_engine(points.to_vec());
+    write_text(
+        &mut view.app,
+        "session.joinAddress",
+        &relay.address().to_string(),
+    );
+    run(&mut view.app, [join_verb()]);
+    let _ = follow_into_level(relay, &mut view);
+    write_text(&mut view.app, "session.joinAddress", rejoin);
+    view
+}
+
+// AC E7 (P5) and E10 (P2): a join after a leave in one reaction waits for
+// the left level's unload, publishing `connecting`, then joins; a second
+// press meanwhile is refused; any other step after the leave still drops at
+// debug.
+#[test]
+fn join_after_a_leave_waits_for_the_unload_then_joins() {
+    let points = spawn_points(3);
+    let mut first = host_in_level(&points);
+    let mut second = host_in_level(&points);
+    let mut view = client_in_level(&mut first, &points, &second.address().to_string());
+    let _ = take_published_connections();
+
+    let capture = postretro_test_log_capture::LogCapture::start();
+    run(
+        &mut view.app,
+        [leave_verb(), SystemReactionCommand::PopTree, join_verb()],
+    );
+    assert_eq!(
+        view.app.session_role(),
+        SessionRole::SinglePlayer,
+        "it left"
+    );
+    assert!(view.app.pending_entry.is_some(), "the join waits");
+    assert!(connection_is(&view.app, "connecting"));
+    capture.assert_logged(log::Level::Debug, "PopTree dropped");
+    drop(capture);
+    assert_refused_without_change(
+        &mut view,
+        host_from("named:a-press-while-one-waits"),
+        "a press while one waits",
+    );
+
+    view.app.drain_level_requests();
+    view.app.resume_pending_entry();
+    assert_eq!(
+        view.app.session_role(),
+        SessionRole::Client,
+        "joined after the unload"
+    );
+    assert!(view.app.pending_entry.is_none());
+    let _ = follow_into_level(&mut second, &mut view);
+}
+
+// AC E7 (P5): a host press after its own `endSession` waits for the close,
+// then hosts.
+#[test]
+fn host_after_an_end_waits_for_the_close_then_hosts() {
+    let mut view = entering_engine(spawn_points(3));
+    run(&mut view.app, [host_verb()]);
+    let first_run = session_id(&view.app);
+    let _ = take_published_connections();
+    let ended = SystemReactionCommand::EndSession {
+        dispatch_source: "named:menu.end".to_string(),
+        origin: own(),
+    };
+    // A client keeps the close open, so the press must wait for it.
+    let mut relay = Relay::adopt(view.app);
+    relay.admit(&[61]);
+    run(&mut relay.app, [ended, host_verb()]);
+    assert!(
+        relay.app.pending_entry.is_some(),
+        "the host press waits for the close"
+    );
+    assert!(connection_is(&relay.app, "connecting"));
+    relay.app.resume_pending_entry();
+    assert!(
+        relay.app.pending_entry.is_some(),
+        "still closing: it still waits"
+    );
+
+    for _ in 0..16 {
+        if !relay.step_closing() {
+            break;
+        }
+    }
+    close_out(&mut relay.app);
+    relay.app.resume_pending_entry();
+    assert_eq!(relay.app.session_role(), SessionRole::Host);
+    assert_ne!(session_id(&relay.app), first_run);
+    assert_eq!(
+        take_published_connections(),
+        [ConnectionPhase::Connecting, ConnectionPhase::Offline],
+        "P18: a deferred host steps offline, connecting, offline"
+    );
+}
+
+// AC E9 (P1): two entry verbs in one reaction: the first takes effect, the
+// second is refused, with one endpoint and at most one join save.
+#[test]
+fn two_entry_verbs_in_one_reaction_take_the_first_and_refuse_the_second() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let address = relay.address().to_string();
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &address);
+    let saved_before = std::fs::read(saved_file(&view.app)).unwrap();
+    let capture = postretro_test_log_capture::LogCapture::start();
+    run(&mut view.app, [host_verb(), join_verb()]);
+    assert_eq!(view.app.session_role(), SessionRole::Host);
+    capture.assert_logged(
+        log::Level::Warn,
+        "joinSession from `named:menu.join` ignored",
+    );
+    assert_eq!(
+        std::fs::read(saved_file(&view.app)).unwrap(),
+        saved_before,
+        "the refused join wrote no save"
+    );
+    drop(capture);
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points, dir.path(), &address);
+    let capture = postretro_test_log_capture::LogCapture::start();
+    run(&mut view.app, [join_verb(), join_verb()]);
+    assert_eq!(view.app.session_role(), SessionRole::Client);
+    capture.assert_logged_once(log::Level::Info, "saved persistent slots");
+    capture.assert_logged(
+        log::Level::Warn,
+        "joinSession from `named:menu.join` ignored",
+    );
+}
+
+// AC E11 (P16): a waiting press runs with what it captured; a malformed
+// address never shows `connecting`; a later load or navigation cancels a
+// waiting press and publishes `offline`.
+#[test]
+fn a_waiting_press_runs_with_what_it_captured_and_a_load_or_navigation_cancels_it() {
+    let points = spawn_points(3);
+    let mut first = host_in_level(&points);
+    let mut second = host_in_level(&points);
+    let mut view = client_in_level(&mut first, &points, &second.address().to_string());
+    run(&mut view.app, [leave_verb(), join_verb()]);
+    assert!(view.app.pending_entry.is_some());
+    // Edits while it waits change nothing it runs with.
+    write_text(&mut view.app, "session.joinAddress", "not an address");
+    view.app.drain_level_requests();
+    view.app.resume_pending_entry();
+    assert_eq!(view.app.session_role(), SessionRole::Client);
+    let _ = follow_into_level(&mut second, &mut view);
+
+    // A malformed address ends the press at once, never `connecting`.
+    let mut view = entering_engine(points.clone());
+    write_text(&mut view.app, "session.password", "kept");
+    write_text(&mut view.app, "session.joinAddress", "example.com");
+    let _ = take_published_connections();
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(take_published_connections(), []);
+    assert_eq!(
+        slot(&view.app, "session.endCause"),
+        Some(SlotValue::String("badAddress".to_string()))
+    );
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String("kept".to_string()))
+    );
+    assert_eq!(view.app.session_role(), SessionRole::SinglePlayer);
+
+    // A level load, then a navigation, cancel a waiting press.
+    for cancel in ["load", "navigation"] {
+        let mut first = host_in_level(&points);
+        let rejoin = first.address().to_string();
+        let mut view = client_in_level(&mut first, &points, &rejoin);
+        run(&mut view.app, [leave_verb(), join_verb()]);
+        assert!(view.app.pending_entry.is_some());
+        match cancel {
+            "load" => view.app.enqueue_level_request(LevelRequest::Load(
+                crate::startup::LevelSource::Catalog(LEVEL.to_string()),
+            )),
+            _ => view.app.navigate_to_frontend(),
+        }
+        assert!(view.app.pending_entry.is_none(), "{cancel} cancels it");
+        assert!(connection_is(&view.app, "offline"), "{cancel}: offline");
+    }
+}
+
+use super::session_entry::EndCause;
+use postretro_net::wire::{ClosingCause, DivergenceReason, HoldingCause, ServerControlMessage};
+
+fn end_cause(app: &App) -> String {
+    match slot(app, "session.endCause") {
+        Some(SlotValue::String(cause)) => cause,
+        other => panic!("endCause is a string: {other:?}"),
+    }
+}
+
+fn wait_reason_of(app: &App) -> String {
+    match slot(app, "session.waitReason") {
+        Some(SlotValue::String(reason)) => reason,
+        other => panic!("waitReason is a string: {other:?}"),
+    }
+}
+
+/// An engine that pressed Join toward `relay` and is dialing it.
+fn joining(relay: &Relay, points: &[MapEntity]) -> ClientView {
+    let mut view = entering_engine(points.to_vec());
+    write_text(
+        &mut view.app,
+        "session.joinAddress",
+        &relay.address().to_string(),
+    );
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(view.app.session_role(), SessionRole::Client);
+    view
+}
+
+/// One client frame's Control drain, as its poll runs it.
+fn drain(view: &mut ClientView, messages: Vec<ServerControlMessage>) {
+    crate::client_drain_control(&mut view.app, messages);
+}
+
+fn closing(cause: ClosingCause) -> ServerControlMessage {
+    ServerControlMessage::Divergence(DivergenceReason::Closing(cause))
+}
+
+fn holding(cause: HoldingCause) -> ServerControlMessage {
+    ServerControlMessage::Divergence(DivergenceReason::Holding(cause))
+}
+
+// AC F1 (P11), F6 (P17): each ending publishes its own cause, and every
+// ending before admission but an explicit refusal reads `connectFailed`.
+#[test]
+fn each_ending_publishes_its_own_end_cause() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let protocol = ClosingCause::Protocol {
+        expected: postretro_net::handshake::protocol_version(),
+        received: postretro_net::handshake::protocol_version(),
+    };
+    let mod_id = ClosingCause::ModId {
+        expected: "a".into(),
+        received: "b".into(),
+        expected_version: "1".into(),
+        received_version: "1".into(),
+    };
+    let admission = holding(HoldingCause::HostLevelAbsent);
+    let cases: Vec<(&str, Vec<ServerControlMessage>, &str)> = vec![
+        (
+            "ended after admission",
+            vec![admission.clone(), closing(ClosingCause::SessionEnded)],
+            "sessionEnded",
+        ),
+        (
+            "ended before admission",
+            vec![closing(ClosingCause::SessionEnded)],
+            "connectFailed",
+        ),
+        ("wrong mod", vec![closing(mod_id)], "refusedMod"),
+        ("other build", vec![closing(protocol)], "connectFailed"),
+    ];
+    for (case, messages, expected) in cases {
+        let mut view = joining(&relay, &points);
+        assert_eq!(end_cause(&view.app), "", "{case}: the attempt cleared it");
+        drain(&mut view, messages);
+        assert_eq!(view.app.session_role(), SessionRole::SinglePlayer, "{case}");
+        assert_eq!(end_cause(&view.app), expected, "{case}");
+        assert!(connection_is(&view.app, "offline"), "{case}");
+    }
+    for (case, cause, admitted, expected) in [
+        (
+            "lost after admission",
+            LeaveCause::LostHost,
+            true,
+            "hostLost",
+        ),
+        (
+            "lost before admission",
+            LeaveCause::LostHost,
+            false,
+            "connectFailed",
+        ),
+        (
+            "never connected",
+            LeaveCause::NeverConnected,
+            false,
+            "connectFailed",
+        ),
+    ] {
+        let mut view = joining(&relay, &points);
+        if admitted {
+            drain(&mut view, vec![admission.clone()]);
+        }
+        assert!(view.app.leave_session(cause));
+        assert_eq!(end_cause(&view.app), expected, "{case}");
+    }
+    // A client's own leave sets none, and the next attempt clears the last.
+    let mut view = joining(&relay, &points);
+    drain(&mut view, vec![closing(ClosingCause::SessionEnded)]);
+    assert_eq!(end_cause(&view.app), "connectFailed");
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(end_cause(&view.app), "", "the next attempt clears it");
+    assert!(view.app.leave_session(LeaveCause::Own));
+    assert_eq!(end_cause(&view.app), "", "an own leave sets none");
+}
+
+// AC F1: a client on another mod is refused over the real transport, and the
+// cause that arrives with the disconnect still publishes.
+#[test]
+fn a_wrong_mod_join_publishes_refused_mod_over_the_transport() {
+    let points = spawn_points(3);
+    let mut relay = host_in_level(&points);
+    let mut view = entering_engine(points);
+    view.app
+        .session
+        .as_mut()
+        .unwrap()
+        .scripting
+        .script_runtime
+        .commit_mod_identity_for_test("another.mod", "1");
+    write_text(
+        &mut view.app,
+        "session.joinAddress",
+        &relay.address().to_string(),
+    );
+    run(&mut view.app, [join_verb()]);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        view.app.session_role() == SessionRole::SinglePlayer
+    });
+    assert_eq!(end_cause(&view.app), "refusedMod");
+}
+
+// AC F1, F2 (P13): a malformed, IPv6 or hostname address opens no socket,
+// writes no save, never leaves `offline` and keeps the password.
+#[test]
+fn a_bad_address_opens_no_socket_writes_no_save_and_keeps_the_password() {
+    for address in ["1.2.3", "[::1]:27015", "::1", "host.example"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut view = primed_engine(spawn_points(3), dir.path(), address);
+        let saved = std::fs::read(saved_file(&view.app)).unwrap();
+        let _ = take_published_connections();
+        run(&mut view.app, [join_verb()]);
+        assert!(
+            view.app.session.as_ref().unwrap().net_endpoint.is_none(),
+            "{address}"
+        );
+        assert_eq!(
+            std::fs::read(saved_file(&view.app)).unwrap(),
+            saved,
+            "{address}"
+        );
+        assert_eq!(take_published_connections(), [], "{address}");
+        assert_eq!(end_cause(&view.app), "badAddress", "{address}");
+        assert_eq!(
+            slot(&view.app, "session.password"),
+            Some(SlotValue::String("hunter2".to_string())),
+            "{address}"
+        );
+    }
+}
+
+// AC F3 (P14): a host's own `endSession` sets no end cause; a failed boot
+// `--host` sets `hostFailed`, and a malformed `--connect` sets `badAddress`.
+#[test]
+fn boot_and_own_endings_set_the_causes_entry_sets() {
+    let mut view = entering_engine(spawn_points(3));
+    run(&mut view.app, [host_verb()]);
+    view.app.end_session();
+    assert_eq!(end_cause(&view.app), "");
+
+    let argv = |args: &[&str]| -> Vec<String> {
+        std::iter::once("postretro")
+            .chain(args.iter().copied())
+            .map(str::to_string)
+            .collect()
+    };
+    for (args, expected) in [
+        (argv(&["--connect", "not-an-address"]), "badAddress"),
+        (argv(&["--connect", "[::1]:27015"]), "badAddress"),
+        (argv(&["--host", "0"]), "hostFailed"),
+    ] {
+        let app = test_app();
+        let ctx = script_ctx_of(&app);
+        let parsed = crate::netcode::parse_net_config(&args);
+        let entry = crate::session::net_entry::RoleEntry {
+            endpoint: None,
+            failure: None,
+            released: Vec::new(),
+        };
+        crate::session::net_entry::publish_boot_facts(
+            &ctx,
+            &args,
+            parsed.is_err(),
+            &NetRole::SinglePlayer,
+            &entry,
+            None,
+        );
+        assert_eq!(end_cause(&app), expected, "{args:?}");
+    }
+    // A `--host` whose bind failed.
+    let app = test_app();
+    let entry = crate::session::net_entry::RoleEntry {
+        endpoint: None,
+        failure: Some(crate::session::net_entry::EntryFailure::Endpoint(
+            "bind".into(),
+        )),
+        released: Vec::new(),
+    };
+    crate::session::net_entry::publish_boot_facts(
+        &script_ctx_of(&app),
+        &argv(&["--host"]),
+        false,
+        &NetRole::Host { port: 27015 },
+        &entry,
+        None,
+    );
+    assert_eq!(end_cause(&app), "hostFailed");
+}
+
+// AC F4 (P23): every published `session.connection` value through an
+// in-app host's frontend, its first level, a level change and a leave.
+#[test]
+fn connection_steps_through_waiting_and_playing_and_back_to_offline() {
+    let points = spawn_points(3);
+    let mut host = entering_engine(points.clone());
+    assert!(host.app.host_from_frontend(0));
+    let mut relay = Relay::adopt(host.app);
+    let mut view = entering_engine(points.clone());
+    let _ = take_published_connections();
+    write_text(
+        &mut view.app,
+        "session.joinAddress",
+        &relay.address().to_string(),
+    );
+    run(&mut view.app, [join_verb()]);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        connection_is(&view.app, "waiting")
+    });
+    assert_eq!(
+        wait_reason_of(&view.app),
+        "host",
+        "the host is at its frontend"
+    );
+
+    relay
+        .app
+        .session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .clear_pushed();
+    relay.world_less = false;
+    relay.install(points.clone());
+    relay.host_reveal();
+    let _ = follow_into_level(&mut relay, &mut view);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        connection_is(&view.app, "playing")
+    });
+    assert_eq!(wait_reason_of(&view.app), "");
+
+    // The host restarts its level: the client waits, follows and plays.
+    relay.unload();
+    relay.install(points.clone());
+    relay.host_reveal();
+    exchange_until(&mut relay, &mut view, |_, view| {
+        connection_is(&view.app, "waiting")
+    });
+    let _ = follow_into_level(&mut relay, &mut view);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        connection_is(&view.app, "playing")
+    });
+
+    // A hold and its re-promotion reach the client in one update: both
+    // values publish, in order.
+    relay.server().set_mod_digest(Some([0xEE; 32]));
+    for _ in 0..4 {
+        relay.step();
+    }
+    relay.restore_mod_digest();
+    for _ in 0..4 {
+        relay.step();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    view.app.net_poll_and_apply(FRAME_SECONDS);
+    assert!(connection_is(&view.app, "playing"));
+
+    assert!(view.app.leave_session(LeaveCause::Own));
+    use ConnectionPhase::*;
+    assert_eq!(
+        take_published_connections(),
+        [
+            Connecting, Waiting, Playing, Waiting, Playing, Waiting, Playing, Offline
+        ]
+    );
+}
+
+// AC F4 (P23): a refused attempt never shows `waiting`; an admission and a
+// session-ended cause in one update show it once, then `offline`.
+#[test]
+fn a_refused_attempt_never_waits_and_an_admission_ended_in_one_update_waits_once() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let mut view = joining(&relay, &points);
+    let _ = take_published_connections();
+    drain(
+        &mut view,
+        vec![closing(ClosingCause::ModId {
+            expected: "a".into(),
+            received: "b".into(),
+            expected_version: "1".into(),
+            received_version: "1".into(),
+        })],
+    );
+    assert_eq!(take_published_connections(), [ConnectionPhase::Offline]);
+
+    let mut view = joining(&relay, &points);
+    let _ = take_published_connections();
+    drain(
+        &mut view,
+        vec![
+            holding(HoldingCause::HostLevelAbsent),
+            closing(ClosingCause::SessionEnded),
+        ],
+    );
+    assert_eq!(
+        take_published_connections(),
+        [ConnectionPhase::Waiting, ConnectionPhase::Offline]
+    );
+    assert_eq!(end_cause(&view.app), "sessionEnded");
+}
+
+// AC F5 (P18): an undeferred host press never leaves `offline`, and a
+// deferred one whose build fails ends `offline` with `hostFailed`.
+#[test]
+fn host_presses_publish_offline_and_a_failed_build_publishes_host_failed() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = take_published_connections();
+    run(&mut view.app, [host_verb()]);
+    assert_eq!(view.app.session_role(), SessionRole::Host);
+    assert_eq!(take_published_connections(), []);
+
+    // A port another socket holds: the build fails after the press waited.
+    let busy = std::net::UdpSocket::bind(("0.0.0.0", 0)).unwrap();
+    let mut view = entering_engine(spawn_points(3));
+    run(&mut view.app, [host_verb()]);
+    let mut relay = Relay::adopt(view.app);
+    relay.admit(&[71]);
+    relay.app.in_app_host_port = busy.local_addr().unwrap().port();
+    let ended = SystemReactionCommand::EndSession {
+        dispatch_source: "named:menu.end".to_string(),
+        origin: own(),
+    };
+    let _ = take_published_connections();
+    run(&mut relay.app, [ended, host_verb()]);
+    for _ in 0..16 {
+        if !relay.step_closing() {
+            break;
+        }
+    }
+    close_out(&mut relay.app);
+    relay.app.resume_pending_entry();
+    assert_eq!(relay.app.session_role(), SessionRole::SinglePlayer);
+    assert_eq!(end_cause(&relay.app), "hostFailed");
+    assert_eq!(
+        take_published_connections(),
+        [ConnectionPhase::Connecting, ConnectionPhase::Offline]
+    );
+}
+
+// AC F7 (P19): the wait reason for each hold, and empty while playing or
+// offline.
+#[test]
+fn wait_reason_names_each_hold() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let digest = [1; 32];
+    for (hold, expected) in [
+        (HoldingCause::HostLevelAbsent, "host"),
+        (
+            HoldingCause::HostNotRevealed {
+                identity: "x".into(),
+            },
+            "host",
+        ),
+        (
+            HoldingCause::ClientNotRevealed {
+                identity: "x".into(),
+            },
+            "host",
+        ),
+        (
+            HoldingCause::LevelAbsent {
+                expected_identity: "x".into(),
+            },
+            "host",
+        ),
+        (
+            HoldingCause::ModDigest {
+                expected: digest,
+                received: [2; 32],
+            },
+            "modDiffers",
+        ),
+        (
+            HoldingCause::LevelIdentity {
+                expected: "a".into(),
+                received: "b".into(),
+            },
+            "levelDiffers",
+        ),
+        (
+            HoldingCause::LevelDigest {
+                identity: "a".into(),
+                expected: digest,
+                received: [2; 32],
+            },
+            "levelDiffers",
+        ),
+    ] {
+        let mut view = joining(&relay, &points);
+        drain(&mut view, vec![holding(hold.clone())]);
+        assert_eq!(wait_reason_of(&view.app), expected, "{hold:?}");
+    }
+    // A host level this client's catalog lacks.
+    let mut view = joining(&relay, &points);
+    drain(
+        &mut view,
+        vec![ServerControlMessage::Relevel {
+            catalog_id: "not-in-this-catalog".into(),
+            level_life: 1,
+        }],
+    );
+    assert_eq!(wait_reason_of(&view.app), "levelDiffers");
+    assert!(view.app.leave_session(LeaveCause::Own));
+    assert_eq!(wait_reason_of(&view.app), "", "offline");
+}
+
+// AC F8 (P20): the password clears when hosting starts, when a join is
+// admitted and on `refusedPassword`, and stays on `connectFailed`,
+// `hostFailed` and `badAddress`.
+#[test]
+fn the_password_clears_when_consumed_and_stays_for_a_retry() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let password = |app: &App| slot(app, "session.password");
+    let set = Some(SlotValue::String("hunter2".to_string()));
+    let empty = Some(SlotValue::String(String::new()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
+    run(&mut view.app, [host_verb()]);
+    assert_eq!(password(&view.app), empty, "hosting consumes it");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(password(&view.app), set, "dialing keeps it");
+    drain(&mut view, vec![holding(HoldingCause::HostLevelAbsent)]);
+    assert_eq!(password(&view.app), empty, "admission consumes it");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
+    run(&mut view.app, [join_verb()]);
+    assert!(view.app.leave_session(LeaveCause::NeverConnected));
+    assert_eq!(password(&view.app), set, "connectFailed keeps it");
+    run(&mut view.app, [join_verb()]);
+    assert!(
+        view.app
+            .leave_session(LeaveCause::Refused(EndCause::RefusedPassword))
+    );
+    assert_eq!(password(&view.app), empty, "refusedPassword consumes it");
+
+    let busy = std::net::UdpSocket::bind(("0.0.0.0", 0)).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points, dir.path(), "1.2.3");
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(password(&view.app), set, "badAddress keeps it");
+    view.app.in_app_host_port = busy.local_addr().unwrap().port();
+    run(&mut view.app, [host_from("named:busy-host")]);
+    assert_eq!(end_cause(&view.app), "hostFailed");
+    assert_eq!(password(&view.app), set, "hostFailed keeps it");
+}
+
+// AC F9 (P12): the address is remembered once a join is admitted, never on
+// a refusal, failed connect or bad address, and seeds the next boot.
+#[test]
+fn the_join_address_is_remembered_on_admission_and_seeds_the_next_boot() {
+    let points = spawn_points(3);
+    let relay = host_in_level(&points);
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.toml");
+    let remembered = |app: &App| {
+        app.session
+            .as_ref()
+            .unwrap()
+            .player_options
+            .last_join_address
+            .clone()
+    };
+    let address = relay.address().to_string();
+    let engine = || {
+        let mut view = entering_engine(points.clone());
+        view.app.session.as_mut().unwrap().settings_path = Some(settings.clone());
+        write_text(&mut view.app, "session.joinAddress", &address);
+        view
+    };
+
+    for (case, cause) in [
+        ("refused", LeaveCause::Refused(EndCause::RefusedMod)),
+        ("failed connect", LeaveCause::NeverConnected),
+    ] {
+        let mut view = engine();
+        run(&mut view.app, [join_verb()]);
+        assert!(view.app.leave_session(cause));
+        assert_eq!(remembered(&view.app), None, "{case}");
+    }
+    let mut view = engine();
+    write_text(&mut view.app, "session.joinAddress", "1.2.3");
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(remembered(&view.app), None, "bad address");
+    assert!(!settings.exists());
+
+    let mut view = engine();
+    run(&mut view.app, [join_verb()]);
+    drain(&mut view, vec![holding(HoldingCause::HostLevelAbsent)]);
+    assert_eq!(remembered(&view.app), Some(address.clone()));
+
+    // The next boot reads the file and seeds the slot.
+    let restarted = crate::options::PlayerOptions::load(&settings);
+    assert_eq!(
+        restarted.last_join_address.as_deref(),
+        Some(address.as_str())
+    );
+    let app = test_app();
+    crate::session::net_entry::publish_boot_facts(
+        &script_ctx_of(&app),
+        &["postretro".to_string()],
+        false,
+        &NetRole::SinglePlayer,
+        &crate::session::net_entry::RoleEntry {
+            endpoint: None,
+            failure: None,
+            released: Vec::new(),
+        },
+        restarted.last_join_address.as_deref(),
+    );
+    assert_eq!(
+        slot(&app, "session.joinAddress"),
+        Some(SlotValue::String(address))
     );
 }

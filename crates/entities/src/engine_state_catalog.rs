@@ -35,6 +35,9 @@ pub enum EngineStateValueType<'a> {
     Array,
 }
 
+/// `session.connection`'s values, in the order a join steps through them.
+pub const SESSION_CONNECTION_VALUES: &[&str] = &["offline", "connecting", "waiting", "playing"];
+
 /// Default value metadata for a built-in engine-owned state slot.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineStateDefault<'a> {
@@ -953,6 +956,68 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "session.joinAddress",
+        sdk_path: &["session", "joinAddress"],
+        value_type: EngineStateValueType::String,
+        // The address the next `joinSession` dials: IPv4, port optional.
+        // Seeded at boot from the address last admitted.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.password",
+        sdk_path: &["session", "password"],
+        value_type: EngineStateValueType::String,
+        // The password the next host or join uses. Never replicated, persisted
+        // or logged; cleared once a verb consumes it.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.connection",
+        sdk_path: &["session", "connection"],
+        value_type: EngineStateValueType::Enum {
+            values: SESSION_CONNECTION_VALUES,
+        },
+        // This machine's place in a session it joins. A host reads
+        // `session.hosting`.
+        default: EngineStateDefault::Enum("offline"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.waitReason",
+        sdk_path: &["session", "waitReason"],
+        value_type: EngineStateValueType::String,
+        // While `waiting`: `host`, `modDiffers` or `levelDiffers`; else empty.
+        // Append-only data; content supplies the wording.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.endCause",
+        sdk_path: &["session", "endCause"],
+        value_type: EngineStateValueType::String,
+        // Why the last session or attempt ended; empty until one does and
+        // again once the next host or join starts. Append-only data.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "session.playerCounts.connected",
         sdk_path: &["session", "playerCounts", "connected"],
         value_type: EngineStateValueType::Number,
@@ -1670,14 +1735,19 @@ mod tests {
                 "screen.flash",
                 "screen.shake",
                 "screen.vignette",
+                "session.connection",
+                "session.endCause",
                 "session.hostAddress",
                 "session.hosting",
+                "session.joinAddress",
                 "session.openSeats",
+                "session.password",
                 "session.playerCounts.connected",
                 "session.playerCounts.down",
                 "session.playerCounts.inPlay",
                 "session.playerCounts.loading",
                 "session.playerCounts.reconnecting",
+                "session.waitReason",
                 "ui.textEntry",
                 "window.displayModeBitDepth",
                 "window.displayModeCanApply",

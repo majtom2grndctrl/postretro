@@ -350,6 +350,8 @@ impl Machine {
                 SystemReactionCommand::ReturnToFrontend { .. } => "frontend".into(),
                 SystemReactionCommand::LeaveSession { .. } => "leave".into(),
                 SystemReactionCommand::EndSession { .. } => "end".into(),
+                SystemReactionCommand::HostSession { .. } => "host".into(),
+                SystemReactionCommand::JoinSession { .. } => "join".into(),
                 other => format!("{other:?}"),
             })
             .collect()
@@ -754,6 +756,44 @@ fn late_joiner_converge_skips_due_leave_session() {
     client.level_load();
     client.host_ticks(0, 61);
     assert_eq!(client.kinds(), ["show d", "leave", "frontend", "close"]);
+}
+
+// AC U4: a late joiner's catch-up skips a due `hostSession` and
+// `joinSession` at debug, without a warning, as it skips `leaveSession`. A
+// client live before the beat lands both: the app drain refuses them by role.
+#[test]
+fn late_joiner_converge_skips_due_host_and_join_session() {
+    let level = || {
+        vec![body(
+            "levelLoad",
+            vec![
+                show("d"),
+                wait(1000.0),
+                system("hostSession", json!({})),
+                system("joinSession", json!({})),
+                close(),
+            ],
+        )]
+    };
+
+    let mut client = Machine::client(level());
+    client.reveal_at(600);
+    client.level_load();
+    let capture = LogCapture::start();
+    client.host_ticks(600, 601);
+    assert_eq!(client.kinds(), ["show d", "close"]);
+    capture.assert_logged(
+        log::Level::Debug,
+        "client landing did not apply `hostSession`",
+    );
+    tail_quiet(&capture);
+    drop(capture);
+
+    let mut client = Machine::client(level());
+    client.reveal_at(0);
+    client.level_load();
+    client.host_ticks(0, 61);
+    assert_eq!(client.kinds(), ["show d", "host", "join", "close"]);
 }
 
 // S29: a joiner between two waits writes the due local slot at its reading,

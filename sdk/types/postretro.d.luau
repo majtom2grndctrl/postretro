@@ -1907,9 +1907,13 @@ export type GameStateRefs = {
     vignette: ComputedRef<{number}>,
   },
   session: {
+    connection: ComputedRef<"offline" | "connecting" | "waiting" | "playing">,
+    endCause: ComputedRef<string>,
     hostAddress: ComputedRef<string>,
     hosting: ComputedRef<boolean>,
+    joinAddress: Ref<string>,
     openSeats: ComputedRef<number>,
+    password: Ref<string>,
     playerCounts: {
       connected: ComputedRef<number>,
       down: ComputedRef<number>,
@@ -1923,6 +1927,7 @@ export type GameStateRefs = {
       status: ComputedRef<"loading" | "inPlay" | "down" | "reconnecting">,
       isLocal: ComputedRef<boolean>,
     }>,
+    waitReason: ComputedRef<string>,
   },
   ui: {
     textEntry: Ref<string>,
@@ -3924,6 +3929,10 @@ export type PostretroUiModule = {
   leaveSession: () -> SystemReactionStep,
   --- End the co-op session. Membership only, never navigates: a host closes every client's connection and stays in its level as single-player; a connected client refuses it (it leaves with `UI.leaveSession()`); single-player ignores it.
   endSession: () -> SystemReactionStep,
+  --- Host a co-op session from the frontend: a single-player machine at its frontend starts a new hosted run, protected by `session.password` when it is not empty. Pressed while a left level unloads or an ended host's connections close, it waits (`session.connection` reads `connecting`); anywhere else, in another role or with a press already waiting, it warns and changes nothing. Machine-local.
+  hostSession: () -> SystemReactionStep,
+  --- Join the co-op host at `session.joinAddress` (IPv4, port optional) from the frontend, answering its password from `session.password`. Saves the world and character first; `session.connection`, `session.waitReason` and `session.endCause` say how it goes. Waits and refuses as `UI.hostSession()` does. Machine-local.
+  joinSession: () -> SystemReactionStep,
   --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
   setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,
   --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.

@@ -448,7 +448,8 @@ impl std::fmt::Display for NetArgError {
 /// Recognized flags, scanned independently of the positional PRL-map path (which
 /// the existing `resolve_map_path` handling owns — this parser never consumes it):
 /// - `--host [port]` — listen server; bare `--host` uses [`DEFAULT_HOST_PORT`].
-/// - `--connect <ip:port>` — client; `<ip:port>` is required and must be IPv4.
+/// - `--connect <ip[:port]>` — client; IPv4 with an optional port, as
+///   [`parse_join_address`] reads it.
 ///   The host binds IPv4 only, so an IPv6 address could never reach it; it is
 ///   refused here with a clear message rather than failing on the first send.
 ///
@@ -491,16 +492,12 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
             } else {
                 iter.next_if(|v| !v.is_empty() && !v.starts_with("--"))
                     .cloned()
-                    .ok_or_else(|| NetArgError("--connect requires an <ip:port> address".into()))?
+                    .ok_or_else(|| {
+                        NetArgError("--connect requires an <ip[:port]> address".into())
+                    })?
             };
-            let addr: SocketAddr = value
-                .parse()
-                .map_err(|_| NetArgError(format!("invalid --connect address: {value}")))?;
-            if addr.is_ipv6() {
-                return Err(NetArgError(format!(
-                    "--connect does not support IPv6 addresses yet; use the host's IPv4 address (got {value})"
-                )));
-            }
+            let addr = parse_join_address(&value)
+                .map_err(|err| NetArgError(format!("--connect: {err}")))?;
             role = Some(NetRole::Connect { addr });
             continue;
         }
@@ -509,6 +506,35 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
     Ok(NetConfig {
         role: role.unwrap_or(NetRole::SinglePlayer),
     })
+}
+
+/// Parse the address a join dials: an IPv4 literal with an optional port,
+/// defaulting to [`DEFAULT_HOST_PORT`]. The `--connect` flag and in-app join
+/// share it. IPv6 is refused because the host binds IPv4 only, a hostname
+/// because DNS would be a second failure mode with its own notice, and port 0
+/// because nothing listens there.
+pub fn parse_join_address(text: &str) -> Result<SocketAddr, NetArgError> {
+    let text = text.trim();
+    let addr = match text.parse::<SocketAddr>() {
+        Ok(addr) => addr,
+        Err(_) => match text.parse::<std::net::IpAddr>() {
+            Ok(ip) => SocketAddr::new(ip, DEFAULT_HOST_PORT),
+            Err(_) => {
+                return Err(NetArgError(format!(
+                    "`{text}` is not an IPv4 address with an optional port"
+                )));
+            }
+        },
+    };
+    if addr.is_ipv6() {
+        return Err(NetArgError(format!(
+            "IPv6 addresses are not supported yet; use the host's IPv4 address (got {text})"
+        )));
+    }
+    if addr.port() == 0 {
+        return Err(NetArgError(format!("port 0 cannot be dialed (got {text})")));
+    }
+    Ok(addr)
 }
 
 /// A listen port players can be told in advance. Port 0 (an OS-chosen
@@ -8351,6 +8377,40 @@ mod tests {
         }
         let inline = parse_net_config(&argv(&["--connect=[::1]:27015"])).unwrap_err();
         assert!(inline.0.contains("IPv6"));
+    }
+
+    // AC F1: the menu and `--connect` share one grammar. A portless IPv4
+    // address dials the default; IPv6, hostnames and malformed text refuse.
+    #[test]
+    fn join_address_grammar_takes_ipv4_with_an_optional_port() {
+        assert_eq!(
+            parse_join_address("192.168.1.20").unwrap(),
+            SocketAddr::from(([192, 168, 1, 20], DEFAULT_HOST_PORT))
+        );
+        assert_eq!(
+            parse_join_address(" 10.0.0.2:30000 ").unwrap(),
+            SocketAddr::from(([10, 0, 0, 2], 30000))
+        );
+        for bad in [
+            "",
+            "10.0.0",
+            "10.0.0.2:",
+            "10.0.0.2:99999",
+            "10.0.0.2:0",
+            "::1",
+            "[::1]:27015",
+            "localhost",
+            "example.com:27015",
+        ] {
+            assert!(parse_join_address(bad).is_err(), "`{bad}` refuses");
+        }
+        let config = parse_net_config(&argv(&["--connect", "127.0.0.1"])).unwrap();
+        assert_eq!(
+            config.role,
+            NetRole::Connect {
+                addr: SocketAddr::from(([127, 0, 0, 1], DEFAULT_HOST_PORT))
+            }
+        );
     }
 
     #[test]

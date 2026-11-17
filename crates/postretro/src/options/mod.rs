@@ -57,6 +57,7 @@ pub(crate) mod keys {
     pub(crate) const SWITCH_CYCLE_DWELL_MS: &str = "switch_cycle_dwell_ms";
     pub(crate) const SCROLL_NOTCH_PIXELS: &str = "scroll_notch_pixels";
     pub(crate) const ACCESSIBILITY_PANEL_SHOWN: &str = "accessibility_panel_shown";
+    pub(crate) const LAST_JOIN_ADDRESS: &str = "last_join_address";
 }
 
 /// Filename written into the platform config directory
@@ -223,6 +224,11 @@ pub struct PlayerOptions {
     /// first-launch hold shows the panel until this is written.
     pub accessibility_panel_shown: bool,
 
+    /// The address of the last host a join was admitted by, as the player
+    /// typed it. It seeds `session.joinAddress` at boot. Never written on a
+    /// refusal or a failed connect.
+    pub last_join_address: Option<String>,
+
     /// This session's writes to `[game."<mod_id>".bindings]` rows.
     game_binding_writes: game::GameBindingWrites,
 
@@ -255,6 +261,7 @@ impl PartialEq for PlayerOptions {
             && self.scroll_notch_pixels == other.scroll_notch_pixels
             && self.accessibility == other.accessibility
             && self.accessibility_panel_shown == other.accessibility_panel_shown
+            && self.last_join_address == other.last_join_address
             && self.game_binding_writes == other.game_binding_writes
     }
 }
@@ -306,6 +313,7 @@ impl Default for PlayerOptions {
             scroll_notch_pixels: default_scroll_notch_pixels(),
             accessibility: AccessibilityOptions::default(),
             accessibility_panel_shown: false,
+            last_join_address: None,
             game_binding_writes: Default::default(),
             stored: StoredDocument::default(),
         }

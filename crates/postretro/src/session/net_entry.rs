@@ -125,6 +125,55 @@ pub(crate) fn enter_role(
     }
 }
 
+/// The session facts a boot publishes, as in-app entry does: the remembered
+/// address seeds `session.joinAddress`; a `--connect` endpoint reads
+/// `connecting`; a failed `--host` sets `hostFailed`, and a malformed
+/// `--connect` sets `badAddress`.
+pub(crate) fn publish_boot_facts(
+    script_ctx: &postretro_entities::ScriptCtx,
+    raw_args: &[String],
+    parse_failed: bool,
+    net_role: &netcode::NetRole,
+    entry: &RoleEntry,
+    remembered_address: Option<&str>,
+) {
+    use postretro_entities::slot_table::SlotValue;
+    let write = |slot: &str, value: SlotValue| {
+        if let Err(err) =
+            postretro_scripting_core::store_bridge::write_store_slot(script_ctx, slot, value)
+        {
+            log::warn!("[Net] failed to write `{slot}`: {err}");
+        }
+    };
+    if let Some(address) = remembered_address {
+        write(
+            "session.joinAddress",
+            SlotValue::String(address.to_string()),
+        );
+    }
+    let flag = |name: &str| raw_args.iter().skip(1).any(|arg| arg.starts_with(name));
+    let end_cause = if parse_failed && flag("--connect") && !flag("--host") {
+        Some("badAddress")
+    } else if (parse_failed && flag("--host") && !flag("--connect"))
+        || (matches!(net_role, netcode::NetRole::Host { .. }) && entry.failure.is_some())
+    {
+        Some("hostFailed")
+    } else if matches!(net_role, netcode::NetRole::Connect { .. }) && entry.failure.is_some() {
+        Some("connectFailed")
+    } else {
+        None
+    };
+    if let Some(cause) = end_cause {
+        write("session.endCause", SlotValue::String(cause.to_string()));
+    }
+    if matches!(&entry.endpoint, Some(netcode::NetEndpoint::Client { .. })) {
+        write(
+            "session.connection",
+            SlotValue::Enum("connecting".to_string()),
+        );
+    }
+}
+
 /// The address a live listen host publishes, else `None` (both slots keep
 /// their empty/false defaults). A host role whose endpoint failed setup has
 /// degraded to single-player and publishes nothing. `probe_lan` runs only when
@@ -226,7 +275,11 @@ mod tests {
                     stack.push(path);
                     continue;
                 }
-                let relative = path.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
                 // Test-only modules: their files, fixtures and test dirs.
                 if relative.contains("test") || relative.contains("fixture") {
                     continue;

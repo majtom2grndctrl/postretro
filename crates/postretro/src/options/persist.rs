@@ -124,6 +124,7 @@ impl PlayerOptions {
             accessibility_panel_shown: reader
                 .read(keys::ACCESSIBILITY_PANEL_SHOWN)
                 .unwrap_or(defaults.accessibility_panel_shown),
+            last_join_address: reader.read(keys::LAST_JOIN_ADDRESS),
             game_binding_writes: Default::default(),
             stored: StoredDocument::default(),
         };
@@ -173,6 +174,7 @@ impl PlayerOptions {
             keys::ACCESSIBILITY_PANEL_SHOWN,
             self.accessibility_panel_shown.then_some(&true),
         );
+        writer.put(keys::LAST_JOIN_ADDRESS, self.last_join_address.as_ref());
         self.accessibility.write(&mut writer);
         self.write_game_bindings(&mut writer);
         writer.finish()

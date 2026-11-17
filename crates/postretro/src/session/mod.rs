@@ -53,10 +53,10 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 pub(crate) mod level_streaming;
 pub(crate) mod lightmap_residency;
 mod lightmap_streaming_diagnostics;
+pub(crate) mod net_entry;
 pub(crate) mod occupancy_families;
 pub(crate) mod players;
 pub(crate) mod progress_save;
-pub(crate) mod net_entry;
 pub(crate) mod role_state;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
@@ -653,8 +653,9 @@ impl Session {
         //    inert) rather than blocking boot — the engine is playable without
         //    networking. The net subsystem never touches the registry.
         //    See: context/lib/networking.md.
-        let net_role = match netcode::parse_net_config(raw_args) {
-            Ok(config) => config.role,
+        let parsed = netcode::parse_net_config(raw_args);
+        let net_role = match &parsed {
+            Ok(config) => config.role.clone(),
             Err(err) => {
                 log::error!("[Net] CLI parse failed ({err}); starting single-player");
                 netcode::NetRole::SinglePlayer
@@ -663,15 +664,24 @@ impl Session {
         // Every role-bound value derives in one place, which in-app entry, a
         // client's leave and a host's end reuse.
         let mut seat_table = None;
-        let net_endpoint = net_entry::enter_role(
+        let entry = net_entry::enter_role(
             &net_role,
             player_options.player_id,
             &mut scripting,
             &mut seat_table,
             getrandom::fill,
             netcode::probe_lan_address,
-        )
-        .endpoint;
+        );
+        // Boot publishes the session facts in-app entry publishes.
+        net_entry::publish_boot_facts(
+            &scripting.script_ctx,
+            raw_args,
+            parsed.is_err(),
+            &net_role,
+            &entry,
+            player_options.last_join_address.as_deref(),
+        );
+        let net_endpoint = entry.endpoint;
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         let trigger_spawn_context = scripting.spawn_context.clone();
         boot_timings.record("net_endpoint_complete");

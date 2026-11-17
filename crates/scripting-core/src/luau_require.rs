@@ -534,6 +534,8 @@ mod tests {
                 "returnToFrontend",
                 "leaveSession",
                 "endSession",
+                "hostSession",
+                "joinSession",
                 "setSentiment",
                 "adjustSentiment",
                 "updateState",

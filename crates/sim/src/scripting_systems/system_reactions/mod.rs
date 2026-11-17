@@ -104,7 +104,8 @@ pub fn apply_adjust_sentiment(
 /// - Screen-space effects: `vignette`, `screenShake`
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
 /// - Game flow: `loadLevel`, `restartLevel`, `returnToFrontend`
-/// - Session membership: `leaveSession`, `endSession`
+/// - Session membership: `leaveSession`, `endSession`, `hostSession`,
+///   `joinSession`
 /// - Slot write: `setState`
 /// - Live faction sentiment writes: `setSentiment`, `adjustSentiment`
 /// - Ghost bus override: `setGhostAudio`
@@ -348,6 +349,22 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
     registry.register("endSession", |_args, queue| {
         let context = queue.fire_context();
         queue.push(SystemReactionCommand::EndSession {
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
+        Ok(())
+    });
+    registry.register("hostSession", |_args, queue| {
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::HostSession {
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
+        Ok(())
+    });
+    registry.register("joinSession", |_args, queue| {
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::JoinSession {
             dispatch_source: context.source,
             origin: context.origin,
         });

@@ -62,6 +62,9 @@ impl App {
         if boot_state_drains_level_requests(&self.boot_state) {
             self.drain_level_requests();
         }
+        // A waiting host or join press runs once the unload it waited for has
+        // drained and any ended host's close is done.
+        self.resume_pending_entry();
 
         // A Settling reveal frame still drops here: input pressed while the
         // level was held activates nothing on the first Running frame.
@@ -105,6 +108,7 @@ impl App {
 
         match &request {
             LevelRequest::Load(_) | LevelRequest::HostLevel(_) => {
+                self.cancel_pending_entry("a level load");
                 self.level_requests.retain(|queued| {
                     !matches!(queued, LevelRequest::Load(_) | LevelRequest::HostLevel(_))
                 });

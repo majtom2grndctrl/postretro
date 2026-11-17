@@ -25,7 +25,7 @@ use super::targeting::{
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
-use super::{attack_turns, clip_clock, engaged_motion};
+use super::{attack_turns, clip_clock, engaged_motion, leap};
 use crate::nav::{NavStart, find_path_from};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_entities::components::agent::AgentComponent;
@@ -475,6 +475,8 @@ pub(super) fn evaluate(
                 (SteeringIntent::Chase, None) => SteeringIntent::Clear,
                 (steering, _) => steering,
             };
+            // A leap travels to the spot it fixed on entry, never re-aiming.
+            let steering = leap::steer(&mut brain, resolved, target, snap.position, steering);
             // A flinch over a release or recover plants the enemy for the
             // rest of the activity, whatever its motion: a staggered charge
             // stops where it was hit.
@@ -569,6 +571,11 @@ pub(super) fn evaluate(
         // A repeating release strikes once per pass at its moment, under one
         // turn: a later pass ignores the cooldown its first hit started, and
         // each hit restarts it, so it runs from the release's last hit.
+        // A leap arrives at its spot by the moment the clock now reads.
+        let arrive_in_s = (matches!(steering, SteeringIntent::MoveTo(_))
+            && motion == Some(MotionVerb::Leap))
+        .then(|| clip_clock::seconds_to_moment(&brain, &clip_source))
+        .flatten();
         let strike_limit = clip_clock::strike_limit(&brain, moment);
         let leaf_strikes = brain
             .active_depth()
@@ -725,6 +732,7 @@ pub(super) fn evaluate(
             standoff_distance,
             entered,
             steering,
+            arrive_in_s,
             engaged,
             facing_direction: tick_heading.facing_direction,
             travel_variant: tick_heading.travel_variant,

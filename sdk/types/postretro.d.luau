@@ -765,7 +765,7 @@ export type DefenseLayerEntry = {
   resist: { [string]: NumberValue }?,
 }
 
---- What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`, `strafe`, `reposition`.
+--- What a behavior activity does with the enemy's movement. Closed vocabulary: the engine owns steering; the activity picks the mode. Valid values: `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, `patrol`, `hold`, `freeze`, `strafe`, `reposition`, `leap`.
 export type MotionVerb =
   --- Steer toward the selected target's combat slot.
   "chaseTarget"
@@ -783,6 +783,8 @@ export type MotionVerb =
   | "strafe"
   --- Engaged: claim a combat slot at least one slot spacing from the slot held at entry, within the activity's `reposition` bounds, and hold on arrival or when none qualifies. Never backs straight off. Faces the target by default.
   | "reposition"
+  --- Engaged: fix a landing spot on entry, the attack's standoff short of where the target stands then, and travel there to arrive by the activity's own clip moment, pacing each tick by the path and time left, never faster than the activity's `speed`; then stand. Never re-aims, so a target that moves off the spot is missed. A leaf's own motion beside an attack with `at`; not a selector's.
+  | "leap"
 
 --- Which heading an enemy faces while an activity is active. Valid values: `target`, `travel`.
 export type FacingPolicy =
@@ -3300,7 +3302,11 @@ export type StanceOptions = {
 export type Stance = { kind: "stance", name: string } & StanceOptions
 --- An attack's strike: its own animation state, an optional `ms` that only
 --- holds it longer, the clip event `at` it fires at (`false` fires on entry),
---- an optional `motion` and `speed` multiplier replacing the planted hold, and
+--- an optional `motion` and `speed` multiplier replacing the planted hold
+--- (`"leap"` fixes a landing spot its attack's standoff short of the target on
+--- entry and arrives there by the clip moment, `speed` capping its pace; it
+--- never re-aims, so a target that moves off the spot is missed, and it needs a
+--- moment, so not `at = false` or `["repeat"]`), and
 --- `["repeat"]` (a Luau keyword, so the key is quoted): how many passes of its
 --- clip it plays back to back, striking at `at` on each, a whole number from
 --- 1 to 8 (default 1). A repeating release plays a looping state, stands still, never fires
@@ -3310,7 +3316,7 @@ export type AttackRelease = {
   animation: string,
   ms: number?,
   at: (string | false)?,
-  motion: ("hold" | "chaseTarget" | "strafe" | "reposition")?,
+  motion: ("hold" | "chaseTarget" | "strafe" | "reposition" | "leap")?,
   speed: number?,
   ["repeat"]: number?,
 }

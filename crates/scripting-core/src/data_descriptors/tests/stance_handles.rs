@@ -522,3 +522,74 @@ fn a_repeating_release_on_a_one_shot_state_rejects_load_in_both_runtimes() {
         ..JS_BRUTE
     });
 }
+
+// A leaping release loads alike in both runtimes: its release activity
+// carries `motion: "leap"`, its `speed` (the leap's cap) and the timed `hit`
+// it arrives by. A leap needs a moment to arrive by, and has one.
+#[test]
+fn a_leaping_release_loads_and_rejects_with_its_path_in_both_runtimes() {
+    let js = js_loaded(&Brute {
+        slam: r#", release: { animation: "smash_strike", motion: "leap", speed: 14 }, recover: { animation: "idle" }"#,
+        ..JS_BRUTE
+    })
+    .behavior
+    .expect("behavior");
+    let lua = lua_loaded(&Brute {
+        slam: r#", release = { animation = "smash_strike", motion = "leap", speed = 14 }, recover = { animation = "idle" }"#,
+        ..LUA_BRUTE
+    })
+    .behavior
+    .expect("behavior");
+    assert_eq!(js, lua);
+    let release = &js.envelope.activities["slam_release"];
+    assert_eq!(release.motion, Some(postretro_foundation::MotionVerb::Leap));
+    assert_eq!(release.speed, Some(14.0));
+    assert!(matches!(
+        release.action,
+        Some(postretro_foundation::ActionVerb::Attack { at: Some(ref at), .. }) if at == "hit"
+    ));
+
+    assert_rejects_in_both(
+        "leap on entry",
+        &Brute {
+            slam: r#", release: { animation: "smash_strike", motion: "leap", at: false }, recover: { animation: "idle" }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", release = { animation = "smash_strike", motion = "leap", at = false }, recover = { animation = "idle" }"#,
+            ..LUA_BRUTE
+        },
+        &[
+            "`components.behavior.transitions.overhead[0].to.release.motion`",
+            "leaps (`motion: \"leap\"`), which arrives at its moment, but fires on entry (`at: false`)",
+        ],
+    );
+    assert_rejects_in_both(
+        "repeating leap",
+        &Brute {
+            slam: r#", release: { animation: "jab_quick", motion: "leap", repeat: 3 }, recover: { animation: "idle" }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", release = { animation = "jab_quick", motion = "leap", ["repeat"] = 3 }, recover = { animation = "idle" }"#,
+            ..LUA_BRUTE
+        },
+        &[
+            "`components.behavior.transitions.overhead[0].to.release.repeat`",
+            "repeats 3 passes but leaps (`motion: \"leap\"`), which arrives at one moment",
+        ],
+    );
+    // A leap moves, so its recover needs its own animation.
+    assert_rejects_in_both(
+        "leap without a recover animation",
+        &Brute {
+            slam: r#", release: { animation: "smash_strike", motion: "leap" }"#,
+            ..JS_BRUTE
+        },
+        &Brute {
+            slam: r#", release = { animation = "smash_strike", motion = "leap" }"#,
+            ..LUA_BRUTE
+        },
+        &["`components.behavior.transitions.overhead[0].to.recover` is missing"],
+    );
+}

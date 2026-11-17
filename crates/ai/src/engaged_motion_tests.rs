@@ -1122,8 +1122,9 @@ fn activity_facing_policy_overrides_verb_default() {
 fn existing_verbs_face_as_before_without_facing() {
     for verb in MotionVerb::ALL {
         let expected = match verb {
-            // Engaged pursuit faces its travel while it moves.
-            MotionVerb::ChaseTarget => FACES_TRAVEL,
+            // Engaged pursuit faces its travel while it moves, and a leap
+            // faces as a chase does.
+            MotionVerb::ChaseTarget | MotionVerb::Leap => FACES_TRAVEL,
             // Position goals face travel.
             MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol => {
                 FACES_TRAVEL

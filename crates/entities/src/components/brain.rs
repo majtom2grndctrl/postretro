@@ -252,6 +252,13 @@ pub struct BrainComponent {
     /// restore re-enters fresh, recording new bounds and re-picking direction.
     #[serde(skip)]
     pub engaged_motion: EngagedMotionMemory,
+    /// The landing spot a `leap` fixed on entry: its standoff short of where
+    /// the target stood then. Kept while the path's motion is `leap`, never
+    /// re-aimed. Serialized beside the clip clock, so a restore mid-leap
+    /// keeps its spot and its moment; old brains have none and fix one on
+    /// their next tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leap_spot: Option<Vec3>,
     /// Attack turns held, the pending request and the wait clock. Transient:
     /// a restored brain holds nothing and arbitrates from scratch.
     #[serde(skip)]
@@ -414,6 +421,7 @@ impl BrainComponent {
             presented_travel_variant: TravelVariant::Base,
             clip_clock: ClipClock::default(),
             engaged_motion: EngagedMotionMemory::None,
+            leap_spot: None,
             attack_turns: AttackTurnState::default(),
             attack_pool: None,
             aggro_armed: true,
@@ -915,6 +923,13 @@ impl BrainComponent {
         self.damage_in_activity[depth..].fill(0.0);
         self.activity_roll[depth..].fill(0.0);
         self.hold_release_ms[depth..].fill(0.0);
+    }
+
+    /// The depth [`Self::take_entry_pending`] would report, without consuming
+    /// the latch: for work that runs before the tick consumes it.
+    pub fn entry_pending_depth(&self) -> Option<usize> {
+        self.entry_pending
+            .then_some(self.entry_pending_start_depth.min(self.active_depth()))
     }
 
     /// Consume the atomic-entry latch after the tick captures entry-dependent

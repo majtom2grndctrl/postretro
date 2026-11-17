@@ -409,6 +409,7 @@ fn engaged_outcome(
         prior_acquired_target: Some(target.entity),
         brain,
         steering: SteeringIntent::Chase,
+        arrive_in_s: None,
         engaged: true,
         facing_direction: None,
         travel_variant: Default::default(),

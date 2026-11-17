@@ -187,6 +187,14 @@ pub struct AgentComponent {
     /// anywhere inside the destination's arrival band.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrival_leash: Option<ArrivalLeash>,
+    /// Seconds from this tick's steering until the agent should stand on
+    /// `destination`: a `leap`'s time to its clip moment, rewritten by the AI
+    /// pass every tick it sets one. Steering paces the agent to cover the
+    /// path left in the whole ticks left, never above [`Self::steered_speed`],
+    /// and skips arrival easing, so it lands on time and holds. `None` steers
+    /// at the steered speed. Host-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrive_in_s: Option<f32>,
     /// The destination the current `path` was planned for. The steering tick
     /// replans when the live `destination` drifts beyond a threshold from THIS
     /// position (cumulative drift-from-the-plan, not the per-call delta), so a
@@ -301,6 +309,7 @@ impl AgentComponent {
             waypoint_cursor: 0,
             destination: None,
             arrival_leash: None,
+            arrive_in_s: None,
             planned_destination: None,
             replan_cooldown_ticks: 0,
             arrived: false,

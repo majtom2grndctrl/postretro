@@ -1832,6 +1832,7 @@ an action or no action. A nested offense graph has its own active activity path.
 | `"freeze"` | Touch neither destination nor steering — the agent keeps whatever it had. Terminal presentation. |
 | `"strafe"` | Circle the target at combat-slot distance in one direction as a continuous orbit, aiming one 45° ring step ahead of the enemy's current bearing and re-aiming every tick. It turns back when the next slot is blocked, taken or out of sight. Takes no parameters. |
 | `"reposition"` | Move to a combat slot at least one slot spacing (the gap between neighboring slots) from the one held on entry, then hold. It never backs straight off, and holds when no slot qualifies. |
+| `"leap"` | On entry, pick a landing spot the attack's `standoffDistance` short of where the target stands, then travel there to land at the activity's clip moment, and stand. Only on an activity whose own `action` names an attack with `at`; see [Combos and leaps](#combos-and-leaps). |
 
 `strafe` and `reposition` engage the target, face it unless the activity sets
 `facing: "travel"`, and can fire an `action` mid-move. An activity whose own
@@ -2278,8 +2279,9 @@ An attack that begins in a stance adds these to its engine fields:
   rather than at the enemy's own offset into the loop, so the first pass
   follows on from the held tell and strikes on that pass. `repeat` is a Luau
   keyword: write the key as `["repeat"] = 3`.
-- **`release.motion`** is `hold` (the default), `chaseTarget`, `strafe` or
-  `reposition`, and `release.speed` multiplies `moveSpeed`. A moving release
+- **`release.motion`** is `hold` (the default), `chaseTarget`, `strafe`,
+  `reposition` or `leap`, and `release.speed` multiplies `moveSpeed`; for
+  `leap` it is the top speed (see [Combos and leaps](#combos-and-leaps)). A moving release
   needs a `recover` with its own `animation`, since a recover without one
   holds the release's state and its stride would play in place. Its stride follows its speed against the
   state's `travelSpeed`. `release.at: false` with a fast `chaseTarget` makes a
@@ -2325,10 +2327,27 @@ animations: {
 In Luau the release is `{ animation = "jab_combo", ["repeat"] = 3 }`.
 
 A leap starts from farther out than it hits. `queueRange` lets the tell wait
-in line from there; a steering release closes the gap while the strike plays,
-and the hit lands at its moment only within `maxRange`. Play the airborne clip
-on a state that does not rate-scale, so its hit keeps its time however fast
-the leap moves:
+in line from there. `motion: "leap"` closes the gap while the strike plays,
+and the hit lands at its moment only within `maxRange`:
+
+- On takeoff the leap picks a **landing spot**: `standoffDistance` short of
+  where the target stands, on the line between them. It does not re-aim
+  after that. A target that moves off the spot is missed at the moment, and
+  the leap still ends.
+- It flies there to **land at the moment** (`at`, by default `hit`). Each
+  tick it sets its speed from the path left and the time left, so a near and
+  a far leap both land on time, and a tick lost to a corner is made up. It
+  follows the level's walkable route to the spot.
+- `release.speed` is its **top speed**, times `moveSpeed`. A spot too far to
+  reach by the moment at that speed is not reached, and the strike misses.
+  Reach is about `speed × moveSpeed × (moment − 0.06 s)`.
+- It lands early only if it reaches the spot first, and then stands there
+  until the moment. After the moment it stands.
+- A leap needs a moment to land by: it rejects `at: false` and a `repeat`
+  above 1. If its clip lacks the event, it flies at its top speed.
+
+Play the airborne clip on a state that does not rate-scale, so its hit keeps
+its time however fast the leap moves:
 
 ```typescript
 const crouch = defineStance({ animation: "smash_windup", holdMs: 666 });
@@ -2336,10 +2355,12 @@ const leap = defineAttack({
   draws: [heavy],
   damage: 20,
   maxRange: 3, // the hit
-  queueRange: 15, // the tell waits in line from 15 m
+  queueRange: 50, // the tell waits in line from 50 m
+  standoffDistance: 1.5, // lands 1.5 m short of the target
   cooldownMs: 6000,
   beginningStance: crouch,
-  release: { animation: "leap_strike", motion: "chaseTarget", speed: 3 }, // slams at `hit`
+  // Lands at `hit`, 1.2 s in, at up to 14 × 3 m/s = 42 m/s: about 48 m.
+  release: { animation: "leap_strike", motion: "leap", speed: 14 },
   recover: { animation: "smash_recover" },
 });
 
@@ -2350,7 +2371,7 @@ animations: {
 ```
 
 Key the approach row by distance, so the leap is the long-range choice:
-`{ to: crouch, when: brain.targetDistance.le(15) }`.
+`{ to: crouch, when: brain.targetDistance.le(50) }`.
 
 #### Rows to stances and attacks
 
@@ -2496,8 +2517,9 @@ Each of these fails load and names the key path:
 - a release whose `animation` is its beginning stance's state;
 - `release.at` that is not an event name (a letter or underscore, then
   letters, digits and underscores) and not `false`;
-- `release.motion` other than `hold`, `chaseTarget`, `strafe` or
-  `reposition`; a `speed` of zero or below; a negative `ms`;
+- `release.motion` other than `hold`, `chaseTarget`, `strafe`,
+  `reposition` or `leap`; a `speed` of zero or below; a negative `ms`;
+- `release.motion: "leap"` with `at: false` or a `repeat` above 1;
 - `release.repeat` that is not a whole number from 1 to 8; a `repeat` above 1
   with `at: false`, with a `motion` other than `hold`, without a
   `recover.animation`, with a `recover.animation` naming the release's own

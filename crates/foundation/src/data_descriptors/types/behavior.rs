@@ -27,10 +27,17 @@ pub enum MotionVerb {
     /// Engaged: claim a combat slot at least one spacing from the entry slot,
     /// within the activity's `reposition` bounds.
     Reposition,
+    /// Engaged: fix a landing spot on entry, the activity's standoff short of
+    /// where the target stands then, and travel to it so as to arrive by the
+    /// activity's own clip moment (`action.at`), recomputing the pace each
+    /// tick from the distance and time left, never faster than the activity's
+    /// `speed`. It never re-aims: a target that moves off the spot is missed
+    /// at the moment. Belongs on a leaf beside its own timed attack.
+    Leap,
 }
 
 impl MotionVerb {
-    pub const ALL: [MotionVerb; 8] = [
+    pub const ALL: [MotionVerb; 9] = [
         MotionVerb::ChaseTarget,
         MotionVerb::MoveToAnchor,
         MotionVerb::MoveToLastKnown,
@@ -39,6 +46,7 @@ impl MotionVerb {
         MotionVerb::Freeze,
         MotionVerb::Strafe,
         MotionVerb::Reposition,
+        MotionVerb::Leap,
     ];
 
     /// Fixed-world-position motion is non-engaged even when selected from a
@@ -61,7 +69,8 @@ impl MotionVerb {
             | MotionVerb::MoveToLastKnown
             | MotionVerb::Patrol
             | MotionVerb::Strafe
-            | MotionVerb::Reposition => true,
+            | MotionVerb::Reposition
+            | MotionVerb::Leap => true,
             MotionVerb::Hold | MotionVerb::Freeze => false,
         }
     }

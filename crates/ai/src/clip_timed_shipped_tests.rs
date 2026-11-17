@@ -258,6 +258,11 @@ struct BruteRun {
     speed: Vec<f32>,
     steering: Vec<f32>,
     distance: Vec<f32>,
+    /// The brute's and the player's positions after each tick.
+    positions: Vec<Vec3>,
+    players: Vec<Vec3>,
+    /// The brute's leap landing spot after each tick.
+    spots: Vec<Option<Vec3>>,
     fired: Vec<usize>,
     /// The recorded attack's cooldown left after each tick, in milliseconds.
     cooldowns: Vec<f32>,
@@ -355,12 +360,25 @@ fn brute_run(
     attack: &str,
     player_at: Vec3,
     seconds: f32,
+    place: impl FnMut(&Shipped, EntityId, &[String]) -> Option<Vec3>,
+) -> BruteRun {
+    brute_run_in(dev_manifest(), tell, attack, player_at, seconds, place)
+}
+
+/// [`brute_run`] on `manifest`, the dev mod's or an edit of it. The floor is
+/// 64 m a side, room for a 50 m leap.
+fn brute_run_in(
+    manifest: ModManifestResult,
+    tell: &str,
+    attack: &str,
+    player_at: Vec3,
+    seconds: f32,
     mut place: impl FnMut(&Shipped, EntityId, &[String]) -> Option<Vec3>,
 ) -> BruteRun {
-    let floor = OpenFloor::new();
+    let floor = OpenFloor::wide();
     let (world, nav) = (floor.collision_world(), floor.nav_graph());
     let home = brute_home();
-    let mut shipped = Shipped::new(dev_manifest(), home + player_at);
+    let mut shipped = Shipped::new(manifest, home + player_at);
     let brute = spawn_shipped(
         &mut shipped.reg,
         &shipped.manifest,
@@ -430,6 +448,15 @@ fn brute_run(
             .position;
         run.speed.push(distance_xz(at, now) / DT);
         run.distance.push(distance_xz(now, player));
+        run.positions.push(now);
+        run.players.push(player);
+        run.spots.push(
+            shipped
+                .reg
+                .get_component::<BrainComponent>(brute)
+                .unwrap()
+                .leap_spot,
+        );
         run.steering.push(
             shipped
                 .reg
@@ -674,16 +701,36 @@ fn shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_2000_ms_hold() {
     );
 }
 
-/// The shipped brute's leap from `crouch` with the player `distance` away
-/// along +X, run for `seconds`. With `sidestep`, the player steps 8 m along
-/// +Z one second into the release, 200 ms before the hit.
-fn leap_run(distance: f32, sidestep: bool, seconds: f32) -> BruteRun {
-    brute_run(
+/// The leap's cap: `speed: 14` times the brute's 3 m/s `moveSpeed`.
+const LEAP_TOP_SPEED: f32 = 14.0 * 3.0;
+/// The leap's `standoffDistance`: its spot lies this far short of the target.
+const LEAP_STANDOFF: f32 = 1.5;
+/// How near its spot an agent stops: 1.5 capsule radii (0.35 m).
+const LEAP_ARRIVAL_BAND: f32 = 1.5 * 0.35;
+
+/// The shipped brute's leap from `crouch` on `manifest`, run for `seconds`.
+/// The player starts 10 m off along +X, inside the brute's 16 m detection,
+/// and steps to `distance` m along +X as the brute takes the crouch, so the
+/// tell queues from there. With `sidestep`, the player steps 8 m along +Z one
+/// second into the release, 200 ms before the hit.
+fn leap_run_in(
+    manifest: ModManifestResult,
+    distance: f32,
+    sidestep: bool,
+    seconds: f32,
+) -> BruteRun {
+    let mut stepped_out = false;
+    brute_run_in(
+        manifest,
         "crouch",
         "leap",
-        Vec3::new(distance, 0.0, 0.0),
+        Vec3::new(10.0, 0.0, 0.0),
         seconds,
         move |shipped, _, paths| {
+            if !stepped_out && paths.last().is_some_and(|path| path.ends_with("/crouch")) {
+                stepped_out = true;
+                return Some(brute_home() + Vec3::new(distance, 0.0, 0.0));
+            }
             let release = entry_tick(paths, "leap_release", 0)?;
             (sidestep && paths.len() == release + (1.0 / DT) as usize).then(|| {
                 let at = shipped
@@ -697,6 +744,10 @@ fn leap_run(distance: f32, sidestep: bool, seconds: f32) -> BruteRun {
     )
 }
 
+fn leap_run(distance: f32, sidestep: bool, seconds: f32) -> BruteRun {
+    leap_run_in(dev_manifest(), distance, sidestep, seconds)
+}
+
 impl BruteRun {
     /// The hits that landed from `from` up to, not including, `to`.
     fn hits_in(&self, from: usize, to: usize) -> Vec<(usize, f32)> {
@@ -708,14 +759,44 @@ impl BruteRun {
     }
 }
 
-// The leap: from 12 m, and from the edge of its 15 m queue, the brute takes
-// `crouch` and its tell waits in line there (`queueRange: 15`), holds exactly
-// 666 ms, then leaps at a target that holds still, steering at 3.5 times its
-// pace while `leap_strike` plays at 1x, and slams once, for 18, as the clip
-// reaches `hit`, inside slam range. It stands up on `idle` and rests coiled.
+impl BruteRun {
+    /// The landing spot a leap released on tick `release` should fix: the
+    /// standoff short of where the player stood, toward where the brute
+    /// stood, as the tick began.
+    fn expected_spot(&self, release: usize) -> Vec3 {
+        let (brute, player) = (self.positions[release - 1], self.players[release - 1]);
+        let away = Vec3::new(brute.x - player.x, 0.0, brute.z - player.z).normalize();
+        player + away * LEAP_STANDOFF
+    }
+
+    /// The spot the leap released on tick `release` fixed, asserting it held
+    /// for every tick of the release.
+    fn fixed_spot(&self, release: usize, recover: usize) -> Vec3 {
+        let spot = self.spots[release].expect("the leap fixes a spot on takeoff");
+        assert!(
+            self.spots[release..recover]
+                .iter()
+                .all(|held| *held == Some(spot)),
+            "the spot holds through the release, never re-aimed: {:?}",
+            &self.spots[release..recover]
+        );
+        spot
+    }
+}
+
+// The leap, near and far (owner addition, playtest round): from 5 m, and from
+// the edge of its 50 m queue, the brute takes `crouch` and its tell waits in
+// line there (`queueRange: 50`), holds exactly 666 ms, then leaps. On takeoff
+// it fixes its landing spot 1.5 m short of the target, then flies there paced
+// to land on the clip's `hit` while `leap_strike` plays at 1x, and slams
+// once, for 18. Its pace follows the distance: a crawl for the short leap,
+// its 42 m/s cap for the long one, never above it. Replaces the 12 m and 15 m
+// cases of the fixed-speed `chaseTarget` leap, which steered at 3.5x and
+// could not reach beyond about 12 m.
 #[test]
-fn shipped_brute_leap_queues_from_afar_closes_and_slams_at_the_clip_hit() {
-    for distance in [12.0, 15.0] {
+fn shipped_brute_leap_lands_on_its_spot_at_the_clip_hit_from_near_and_far() {
+    let mut tops = Vec::new();
+    for distance in [5.0, 50.0] {
         let run = leap_run(distance, false, 6.0);
         let hold = run.entered("leap_crouch");
         assert!(
@@ -735,27 +816,46 @@ fn shipped_brute_leap_queues_from_afar_closes_and_slams_at_the_clip_hit() {
             &run.paths[release..recover]
         );
         assert_eq!(run.fired, vec![moment]);
+
+        let spot = run.fixed_spot(release, recover);
+        let expected = run.expected_spot(release);
+        assert!(
+            distance_xz(spot, expected) <= 1.0e-3,
+            "the spot is the standoff short of the target at takeoff: {spot} vs {expected}"
+        );
+        assert!(
+            distance_xz(run.positions[moment - 1], spot) <= LEAP_ARRIVAL_BAND + 0.05,
+            "from {distance} m it stands on its spot as the hit lands: {} m off",
+            distance_xz(run.positions[moment - 1], spot)
+        );
+        let flight = distance_xz(run.positions[release - 1], spot);
+        let halfway = distance_xz(run.positions[release + (moment - release) / 2], spot);
+        assert!(
+            (0.25 * flight..0.75 * flight).contains(&halfway),
+            "from {distance} m it is still on its way halfway to the hit: {halfway} of {flight} m left"
+        );
         assert!(
             run.distance[moment] <= 3.5,
-            "the leap from {distance} m closes into slam range by the hit: {} m",
+            "the leap from {distance} m lands in slam range: {} m",
             run.distance[moment]
         );
         assert!(
             run.steering[release..recover]
                 .iter()
-                .all(|&speed| speed == 3.5),
-            "the release steers at `speed: 3.5`"
+                .all(|&speed| speed == 14.0),
+            "the release's `speed: 14` caps its pace"
         );
-        // `scaleWithSpeed: false` holds the strike at 1x however fast it
-        // moves, and `run`'s raised cap never reaches it.
         let top = run.speed[release..=moment]
             .iter()
             .copied()
             .fold(0.0_f32, f32::max);
         assert!(
-            top > 3.0 * 3.0,
-            "the leap outruns the brute's pace: {top} m/s"
+            top <= LEAP_TOP_SPEED + 0.01,
+            "the leap never passes its cap: {top} m/s"
         );
+        tops.push(top);
+        // `scaleWithSpeed: false` holds the strike at 1x however fast it
+        // moves, and `run`'s raised cap never reaches it.
         assert!(
             run.states[release..recover]
                 .iter()
@@ -771,21 +871,37 @@ fn shipped_brute_leap_queues_from_afar_closes_and_slams_at_the_clip_hit() {
             &run.paths[recover..]
         );
     }
+    assert!(
+        tops[0] < 6.0 && tops[1] > 0.9 * LEAP_TOP_SPEED,
+        "the pace follows the distance: {tops:?} m/s"
+    );
 }
 
 // A target that sidesteps 8 m during the leap is out of slam range at the
-// clip's `hit`: the leap whiffs, deals nothing, and still recovers and rests
-// coiled. The enemy committed, so the whiff starts the leap's 6000 ms
-// cooldown as it leaves the release, and it does not leap again until that
-// has run out.
+// clip's `hit`. The leap does not re-aim: it still lands on the spot it fixed
+// on takeoff, and whiffs, deals nothing, and still recovers and rests coiled.
+// The enemy committed, so the whiff starts the leap's 6000 ms cooldown as it
+// leaves the release, and it does not leap again until that has run out.
+// Updated for the fixed spot: the `chaseTarget` leap steered after the
+// target, and whiffed only because 10.5 m/s could not keep up.
 #[test]
-fn shipped_brute_leap_whiffs_when_the_target_sidesteps_out_of_slam_range() {
+fn shipped_brute_leap_lands_on_its_spot_and_whiffs_when_the_target_sidesteps() {
     const LEAP_COOLDOWN_MS: f32 = 6000.0;
     let run = leap_run(12.0, true, 12.0);
     let release = run.entered("leap_release");
     let recover = run.entered("leap_recover");
     let (hit, _) = run.moments["leap_strike"];
     let moment = release + one_shot_moment_tick(hit);
+    let spot = run.fixed_spot(release, recover);
+    assert!(
+        distance_xz(spot, run.expected_spot(release)) <= 1.0e-3,
+        "the spot is fixed from the target's position at takeoff"
+    );
+    assert!(
+        distance_xz(run.positions[moment - 1], spot) <= LEAP_ARRIVAL_BAND + 0.05,
+        "it lands on the spot it fixed, not after the target: {} m off",
+        distance_xz(run.positions[moment - 1], spot)
+    );
     assert!(
         run.distance[moment] > 3.5,
         "fixture: the target is out of slam range at the hit: {} m",
@@ -829,6 +945,60 @@ fn shipped_brute_leap_whiffs_when_the_target_sidesteps_out_of_slam_range() {
             .all(|path| !path.ends_with("/leap_crouch") && !path.ends_with("/leap_release")),
         "the leap neither tells nor releases while it cools down: {:?}",
         &run.paths[recover..ready]
+    );
+}
+
+// The cap holds: the dev brute with its leap's `speed` cut to 4 (12 m/s)
+// leaps at a target 30 m off, beyond the reach of 12 m/s by the hit. It flies
+// at no more than its cap, falls short, and whiffs.
+#[test]
+fn shipped_brute_leap_capped_below_its_distance_falls_short_and_whiffs() {
+    let mut manifest = dev_manifest();
+    let brute = manifest
+        .entities
+        .iter_mut()
+        .find(|entity| entity.canonical_name.as_deref() == Some("reference_enemy"))
+        .expect("the dev mod ships the brute");
+    let behavior = brute.behavior.as_mut().expect("the brute behaves");
+    let BehaviorLayerDescriptor::Graph(offense) = behavior
+        .envelope
+        .activities
+        .get_mut("engage")
+        .and_then(|engage| engage.layers.get_mut("offense"))
+        .expect("the brute's offense")
+    else {
+        panic!("the offense is a graph");
+    };
+    let leap = offense
+        .activities
+        .get_mut("leap_release")
+        .expect("the leap's release");
+    assert_eq!(leap.motion, Some(postretro_foundation::MotionVerb::Leap));
+    leap.speed = Some(4.0);
+
+    let run = leap_run_in(manifest, 30.0, false, 6.0);
+    let release = run.entered("leap_release");
+    let recover = run.entered("leap_recover");
+    let (hit, _) = run.moments["leap_strike"];
+    let moment = release + one_shot_moment_tick(hit);
+    let top = run.speed[release..=moment]
+        .iter()
+        .copied()
+        .fold(0.0_f32, f32::max);
+    assert!(
+        (11.5..=12.0 + 0.01).contains(&top),
+        "it flies at its 12 m/s cap and no faster: {top} m/s"
+    );
+    let flown = distance_xz(run.positions[release - 1], run.positions[moment]);
+    assert!(
+        flown < 15.0,
+        "12 m/s for 1.2 s falls short of the 28.5 m to its spot: {flown} m"
+    );
+    assert!(
+        run.distance[moment] > 3.5 && run.hits_in(release, recover).is_empty(),
+        "short of slam range at the hit, it whiffs: {} m, {:?}",
+        run.distance[moment],
+        run.hits
     );
 }
 

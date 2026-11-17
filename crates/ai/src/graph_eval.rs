@@ -466,11 +466,11 @@ pub(super) fn engages_path(
 }
 
 /// Motion that engages the target by itself, with or without an action:
-/// pursuit and the two combat-slot verbs.
+/// pursuit, the two combat-slot verbs and the leap.
 fn is_engaged_motion(motion: MotionVerb) -> bool {
     matches!(
         motion,
-        MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition
+        MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition | MotionVerb::Leap
     )
 }
 
@@ -703,6 +703,9 @@ pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
         // `engaged_motion::settle` replaces this with `MoveTo` that slot, or
         // leaves it standing when none is claimed.
         MotionVerb::Strafe | MotionVerb::Reposition => SteeringIntent::Clear,
+        // Its goal is the spot it fixes on entry: `leap::steer` replaces this
+        // with `MoveTo` that spot.
+        MotionVerb::Leap => SteeringIntent::Clear,
     }
 }
 

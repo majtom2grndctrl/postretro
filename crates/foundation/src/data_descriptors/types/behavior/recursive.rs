@@ -823,7 +823,11 @@ fn validate_activity(
         });
     }
     if let Some(motion) = activity.motion {
-        validate_motion(motion, &format!("{path}.motion"), patrol)?;
+        if motion == MotionVerb::Leap {
+            validate_leap(activity, path)?;
+        } else {
+            validate_motion(motion, &format!("{path}.motion"), patrol)?;
+        }
         if motion.is_position_goal() && activity.action.is_some() {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
@@ -1073,11 +1077,45 @@ fn validate_action(
     validate_at_name(action, path)
 }
 
+/// A leaf's own `leap`: it paces itself to arrive by its own attack's clip
+/// moment, so the leaf's action must fire `at` a clip event, and the moment
+/// comes once: a repeating release (`passes` above 1) has no one moment to
+/// arrive by.
+fn validate_leap(activity: &BehaviorActivityDescriptor, path: &str) -> Result<(), DescriptorError> {
+    if !matches!(
+        activity.action,
+        Some(ActionVerb::Attack { at: Some(_), .. })
+    ) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}.motion` is \"leap\", which arrives at its attack's clip moment, so `{path}.action` must name an attack with `at`"
+            ),
+        });
+    }
+    if activity.passes.is_some_and(|passes| passes > 1) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}.motion` is \"leap\", which arrives at one clip moment, so `{path}.passes` must be 1"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A selector's motion, or a leaf's other than `leap`. A selector cannot
+/// select `leap`: it arrives at its own leaf's clip moment.
 fn validate_motion(
     motion: MotionVerb,
     path: &str,
     patrol: Option<&PatrolDescriptor>,
 ) -> Result<(), DescriptorError> {
+    if motion == MotionVerb::Leap {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}` is \"leap\", which arrives at its own leaf's clip moment; give it to a leaf's `motion` beside an attack with `at`, not a selector"
+            ),
+        });
+    }
     if motion == MotionVerb::Patrol {
         match patrol {
             Some(patrol) if !patrol.points.is_empty() => Ok(()),
@@ -2182,6 +2220,67 @@ mod tests {
                 json["transitions"]["slam_release"][0]["afterMoment"] = serde_json::json!(false);
             },
             "slam_release.passes` belongs to a stance release",
+        );
+    }
+
+    // `leap` loads on a leaf beside its own timed attack and round-trips; it
+    // rejects without a clip moment to arrive by, with passes, and in a
+    // selector, each naming its path.
+    #[test]
+    fn leap_loads_beside_a_timed_attack_and_rejects_elsewhere_with_its_path() {
+        let mut json = lowered_release();
+        json["activities"]["slam_release"]["motion"] = serde_json::json!("leap");
+        let graph = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+            .unwrap()
+            .validate()
+            .expect("a leap beside a timed attack loads");
+        assert_eq!(
+            graph.envelope.activities["slam_release"].motion,
+            Some(MotionVerb::Leap)
+        );
+        let round_trip = serde_json::to_value(&graph).unwrap();
+        assert_eq!(round_trip["activities"]["slam_release"]["motion"], "leap");
+
+        let reject = |edit: &dyn Fn(&mut serde_json::Value), needle: &str| {
+            let mut json = lowered_release();
+            json["activities"]["slam_release"]["motion"] = serde_json::json!("leap");
+            edit(&mut json);
+            let error = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+                .unwrap()
+                .validate()
+                .expect_err("the misplaced leap rejects")
+                .to_string();
+            assert!(error.contains(needle), "{needle}: {error}");
+        };
+        let untimed = "`components.behavior.activities.slam_release.motion` is \"leap\", which arrives at its attack's clip moment, so `components.behavior.activities.slam_release.action` must name an attack with `at`";
+        reject(
+            &|json| {
+                json["activities"]["slam_release"]["action"] =
+                    serde_json::json!({ "attack": "slam" });
+            },
+            untimed,
+        );
+        reject(
+            &|json| {
+                let release = json["activities"]["slam_release"].as_object_mut().unwrap();
+                release.remove("action");
+            },
+            untimed,
+        );
+        reject(
+            &|json| json["activities"]["slam_release"]["passes"] = serde_json::json!(2),
+            "`components.behavior.activities.slam_release.motion` is \"leap\", which arrives at one clip moment, so `components.behavior.activities.slam_release.passes` must be 1",
+        );
+        reject(
+            &|json| {
+                json["activities"]["roam"] = serde_json::json!({
+                    "layers": { "move": [
+                        { "when": { "op": "const", "value": true }, "motion": "leap" },
+                        "hold"
+                    ] }
+                });
+            },
+            "`components.behavior.activities.roam.layers.move[0].motion` is \"leap\", which arrives at its own leaf's clip moment",
         );
     }
 

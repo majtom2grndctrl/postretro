@@ -320,6 +320,41 @@ pub(super) fn settle(
     moment
 }
 
+/// Game seconds from now until the path's clip moment, read after [`settle`]:
+/// it falls on the first later tick whose clip time, advancing at the drawn
+/// rate, reaches it (the window [`reached`] tests). `None` once this entry's
+/// moment is spent, while a dropped enemy's redraw is pending, or when the
+/// drawn clip cannot time it. A `leap` arrives by it.
+pub(super) fn seconds_to_moment(brain: &BrainComponent, source: &ClipSource<'_>) -> Option<f32> {
+    let clock = &brain.clip_clock;
+    if !clock.moment_open || clock.redraw {
+        return None;
+    }
+    let (event, facts) = event_timing(brain, source, timed_owner(brain)?)?;
+    let state = clock.state.as_deref()?;
+    // The rate the clock advances at: the mesh's drawn rate once it draws
+    // the tracked state (`begin_tick`), else 1.
+    let rate = source
+        .registry
+        .get_component::<MeshComponent>(source.id)
+        .ok()
+        .and_then(|mesh| mesh.animation.as_ref())
+        .filter(|animation| animation.current_state == state)
+        .map_or(1.0, |animation| f64::from(animation.rate));
+    if rate <= 0.0 {
+        return None;
+    }
+    let now = clock.time + CLIP_TIME_SLACK;
+    let event = f64::from(event);
+    let duration = f64::from(facts.duration);
+    let pass = if facts.looping && duration > 0.0 {
+        event + (((now - event) / duration).floor() + 1.0) * duration
+    } else {
+        event
+    };
+    Some(((pass - now) / rate).max(0.0) as f32)
+}
+
 /// How many strikes the active leaf's attack may have landed and still fire
 /// this tick: on its moment's tick a repeating release strikes once per pass,
 /// up to its pass count; anything else strikes once per entry.

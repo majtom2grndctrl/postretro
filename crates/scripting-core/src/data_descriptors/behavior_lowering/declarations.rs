@@ -11,7 +11,7 @@ use super::{Declared, DescriptorError, kind_of, shape};
 
 /// The release motions a strike may take. A position goal cannot carry an
 /// attack, so `moveToAnchor`, `moveToLastKnown` and `patrol` are left out.
-const RELEASE_MOTIONS: &[&str] = &["hold", "chaseTarget", "strafe", "reposition"];
+const RELEASE_MOTIONS: &[&str] = &["hold", "chaseTarget", "strafe", "reposition", "leap"];
 
 const STANCE_OPTIONS: &[&str] = &[
     "kind",
@@ -365,6 +365,19 @@ fn parse_release(value: &Value, path: &str, attack: &str) -> Result<Release, Des
         None => 1,
         Some(value) => release_repeat(value, &format!("{path}.repeat"), attack)?,
     };
+    // A leap paces itself to land at its moment, which comes once.
+    if motion.as_deref() == Some("leap") {
+        if matches!(at, At::OnEntry) {
+            return Err(shape(format!(
+                "`{path}.motion`: attack \"{attack}\"'s release leaps (`motion: \"leap\"`), which arrives at its moment, but fires on entry (`at: false`), which has none to arrive by; name a clip event, or leave `at` out for `hit`"
+            )));
+        }
+        if repeat > 1 {
+            return Err(shape(format!(
+                "`{path}.repeat`: attack \"{attack}\"'s release repeats {repeat} passes but leaps (`motion: \"leap\"`), which arrives at one moment; leave `repeat` out, or plant the release"
+            )));
+        }
+    }
     if repeat > 1 && matches!(at, At::OnEntry) {
         return Err(shape(format!(
             "`{path}.repeat`: attack \"{attack}\"'s release repeats {repeat} passes but fires on entry (`at: false`), which has no moment to strike at on each pass; name a clip event, or leave `at` out for `hit`"

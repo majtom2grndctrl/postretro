@@ -23,6 +23,7 @@ mod facing;
 mod graph_eval;
 mod heading;
 mod launch;
+mod leap;
 mod perception;
 mod steering;
 mod targeting;
@@ -176,6 +177,9 @@ pub(crate) struct EnemyOutcome {
     pub(crate) target_aim: Option<Vec3>,
     pub(crate) brain: BrainComponent,
     steering: SteeringIntent,
+    /// A `leap`'s seconds to its clip moment, the deadline its `MoveTo`
+    /// arrives by; `None` for any other steering.
+    arrive_in_s: Option<f32>,
     /// `true` when the selected state is ENGAGED with the target — it chases it
     /// or acts on it (`graph_eval::engages`). Drives facing and combat-slot
     /// participation; the destination writes key on `steering` instead.

@@ -203,7 +203,12 @@ where
                 }
             }
             SteeringIntent::MoveTo(goal) => {
-                agent_steering::set_destination(registry, outcome.id, goal);
+                agent_steering::set_destination_paced(
+                    registry,
+                    outcome.id,
+                    goal,
+                    outcome.arrive_in_s,
+                );
             }
             SteeringIntent::Clear => {
                 agent_steering::clear_destination(registry, outcome.id);

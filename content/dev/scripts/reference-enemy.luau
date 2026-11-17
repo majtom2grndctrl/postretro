@@ -23,9 +23,9 @@ local CHARGE_REACH = 2.5
 -- Combat slots sit inside jab reach, so the brute fights close enough to jab.
 local CLOSE_STANDOFF = 1.5
 -- The leap's tell waits in line from this far out; its hit lands at slam range.
-local LEAP_QUEUE_RANGE = 15
--- The leap steers at this multiple of `moveSpeed`. See the leap below.
-local LEAP_SPEED = 3.5
+local LEAP_QUEUE_RANGE = 50
+-- The leap's top pace, a multiple of `moveSpeed`. See the leap below.
+local LEAP_MAX_SPEED = 14
 -- The combo holds its drawn fist this long before the jabs, long enough to
 -- read as a wind-up and not a stutter.
 local FLURRY_MS = 2000
@@ -149,8 +149,10 @@ local combo = defineAttack("combo", {
   release = { animation = "jab_combo", ["repeat"] = 3 },
   recover = { animation = "swipe_windup", ms = 400 },
 })
--- Leaps at its target from up to 15 m and slams at the clip's `hit`, a whiff
--- if the target is then out of slam range.
+-- Leaps from up to 50 m to a spot fixed on takeoff, its standoff short of the
+-- target, paced to land at the clip's `hit` and never faster than 14x
+-- `moveSpeed` (42 m/s); it slams at the `hit`, a whiff if the target is then
+-- out of slam range.
 local leap = defineAttack("leap", {
   draws = { AttackTokens.melee:with({ cost = 2 }), AttackTokens.heavy },
   damage = 18,
@@ -160,7 +162,7 @@ local leap = defineAttack("leap", {
   cooldownMs = 6000,
   beginningStance = crouch,
   endingStance = coil,
-  release = { animation = "leap_strike", motion = "chaseTarget", speed = LEAP_SPEED },
+  release = { animation = "leap_strike", motion = "leap", speed = LEAP_MAX_SPEED },
   recover = { animation = "idle", ms = 600 },
 })
 -- `claw` is not wired into the graph; the explicit `attacks` list keeps it on

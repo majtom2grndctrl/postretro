@@ -5349,6 +5349,12 @@ impl OpenFloor {
         OpenFloor { extent: 40.0 }
     }
 
+    /// The widest floor the navmesh grid holds, 64 m a side: room for a
+    /// 50 m leap.
+    fn wide() -> Self {
+        OpenFloor { extent: 64.0 }
+    }
+
     /// Collision world: the single floor quad (two triangles), so agents are
     /// grounded and slide freely across it.
     fn collision_world(&self) -> CollisionWorld {
@@ -9195,8 +9201,8 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const FLINCH_MS: f32 = 700.0;
     const CHARGE_MS: f32 = 1200.0;
     const CHARGE_RECOVER_MS: f32 = 500.0;
-    const LEAP_QUEUE_RANGE: f32 = 15.0;
-    const LEAP_SPEED: f32 = 3.5;
+    const LEAP_QUEUE_RANGE: f32 = 50.0;
+    const LEAP_MAX_SPEED: f32 = 14.0;
     const LEAP_SHARE: f32 = 0.25;
     const FLURRY_FROM: f32 = 0.65;
     const PRESS_BELLOW_FROM: f32 = 0.75;
@@ -9344,10 +9350,11 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         passes: Some(3),
         ..release("jab_combo", "combo", "coil")
     };
-    // The leap steers at its target while its jump attack plays.
+    // The leap flies to the spot it fixes on takeoff, landing at its jump
+    // attack's `hit`, at up to 14x its pace.
     let leap_release = BehaviorActivityDescriptor {
-        motion: Some(MotionVerb::ChaseTarget),
-        speed: Some(LEAP_SPEED),
+        motion: Some(MotionVerb::Leap),
+        speed: Some(LEAP_MAX_SPEED),
         ..release("leap_strike", "leap", "coil")
     };
 
@@ -9854,7 +9861,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             (
                 "leap".to_string(),
                 AttackParams {
-                    // It queues from 15 m and runs for a slot inside its hit.
+                    // It queues from 50 m and lands its standoff short of the target.
                     standoff_distance: Some(CLOSE_STANDOFF),
                     queue_range: Some(LEAP_QUEUE_RANGE),
                     ..contact(

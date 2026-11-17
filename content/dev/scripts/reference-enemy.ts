@@ -37,9 +37,9 @@ const CHARGE_REACH = 2.5;
 // Combat slots sit inside jab reach, so the brute fights close enough to jab.
 const CLOSE_STANDOFF = 1.5;
 // The leap's tell waits in line from this far out; its hit lands at slam range.
-const LEAP_QUEUE_RANGE = 15;
-// The leap steers at this multiple of `moveSpeed`. See the leap below.
-const LEAP_SPEED = 3.5;
+const LEAP_QUEUE_RANGE = 50;
+// The leap's top pace, a multiple of `moveSpeed`. See the leap below.
+const LEAP_MAX_SPEED = 14;
 // The combo holds its drawn fist this long before the jabs, long enough to
 // read as a wind-up and not a stutter.
 const FLURRY_MS = 2000;
@@ -188,13 +188,14 @@ const combo = defineAttack({
   release: { animation: "jab_combo", repeat: 3 },
   recover: { animation: "swipe_windup", ms: 400 },
 });
-// From the crouch the brute leaps at its target, steering, while the jump
-// attack plays at 1x, and slams at its `hit` only if the target is then in
-// slam range. It waits in line from 15 m and runs for a slot inside its hit
-// reach, as the charge does. At `speed: 3.5` it steers at 10.5 m/s, reached
-// in an eighth of a second, and covers about 12 m by the hit 1.2 s in, so a
-// target holding still anywhere in the 15 m queue is slammed. It stands up on
-// `idle`, then lands coiled.
+// From the crouch the brute leaps, Fiend-style: on takeoff it fixes a landing
+// spot its 1.5 m standoff short of where the target stands, and flies there
+// while the jump attack plays at 1x, paced to land at the clip's `hit` 1.2 s
+// in, never faster than `speed` times `moveSpeed`. It slams only if the target
+// is then in slam range; one that moved off the spot is missed. It waits in
+// line from 50 m. At `speed: 14` its cap is 42 m/s, reached in an eighth of a
+// second, which covers about 48 m by the hit: a target holding still anywhere
+// in the 50 m queue is slammed. It stands up on `idle`, then lands coiled.
 const leap = defineAttack({
   draws: [melee.with({ cost: 2 }), heavy],
   damage: 18,
@@ -204,7 +205,7 @@ const leap = defineAttack({
   cooldownMs: 6000,
   beginningStance: crouch,
   endingStance: coil,
-  release: { animation: "leap_strike", motion: "chaseTarget", speed: LEAP_SPEED },
+  release: { animation: "leap_strike", motion: "leap", speed: LEAP_MAX_SPEED },
   recover: { animation: "idle", ms: 600 },
 });
 // `claw` is not wired into the graph; the explicit `attacks` list keeps it on
@@ -223,7 +224,7 @@ const claw = defineAttack({ damage: 15, damageType: corrosive, maxRange: 2, cool
  *   jab reach, takes the crouch.
  * - `overhead` leads to two strikes, the slam and the lunge, so the crouch
  *   names the threat and not its timing. `crouch`, the same pose taken from
- *   up to 15 m out, leads to the leap.
+ *   up to 50 m out, leads to the leap.
  * - `flurry` holds the drawn fist for 2,000 ms, then throws three jabs.
  * - the strikes chain through their ending stances: jab → crouch, lunge →
  *   cocked fist, charge → cocked fist, slam, leap and combo → coiled, then

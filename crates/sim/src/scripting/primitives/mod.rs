@@ -644,6 +644,10 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "reposition",
             "Engaged: claim a combat slot at least one slot spacing from the slot held at entry, within the activity's `reposition` bounds, and hold on arrival or when none qualifies. Never backs straight off. Faces the target by default.",
         )
+        .variant(
+            "leap",
+            "Engaged: fix a landing spot on entry, the attack's standoff short of where the target stands then, and travel there to arrive by the activity's own clip moment, pacing each tick by the path and time left, never faster than the activity's `speed`; then stand. Never re-aims, so a target that moves off the spot is missed. A leaf's own motion beside an attack with `at`; not a selector's.",
+        )
         .finish();
     registry
         .register_enum("FacingPolicy")

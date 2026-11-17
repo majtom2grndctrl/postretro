@@ -1313,3 +1313,80 @@ mod switch_tick_epoch_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod server_vocabulary_tests {
+    use super::*;
+    use crate::wire::{
+        PresentationCommand, ServerControlMessage, ServerMessage, ServerPresentationPayload,
+    };
+
+    // The server's message vocabulary, variant by variant, beside the
+    // constants that version it. A new server message changes the vocabulary,
+    // so it advances `PROTOCOL_ID`: each exhaustive match below (no `_` arm)
+    // stops compiling until whoever appends a variant lists it here and moves
+    // these pins with the bump. Enemy stances add none: rolls and hold
+    // release draws stay on the host, and clients follow poses through
+    // replicated animation state.
+    #[test]
+    fn server_message_vocabulary_is_pinned_with_its_version_constants() {
+        fn input(message: &ServerMessage) -> &'static str {
+            match message {
+                ServerMessage::TimeSync(_) => "TimeSync",
+                ServerMessage::ShotVerdicts(_) => "ShotVerdicts",
+                ServerMessage::ActivationOutcomes(_) => "ActivationOutcomes",
+                ServerMessage::WeaponCues(_) => "WeaponCues",
+                ServerMessage::HitRefused(_) => "HitRefused",
+                ServerMessage::SwitchAccepted(_) => "SwitchAccepted",
+                ServerMessage::SwitchRefused(_) => "SwitchRefused",
+            }
+        }
+        fn control(message: &ServerControlMessage) -> &'static str {
+            match message {
+                ServerControlMessage::Divergence(_) => "Divergence",
+                ServerControlMessage::Tuning(_) => "Tuning",
+                ServerControlMessage::Relevel { .. } => "Relevel",
+                ServerControlMessage::SessionRoster(_) => "SessionRoster",
+                ServerControlMessage::SpawnPoseHint(_) => "SpawnPoseHint",
+                ServerControlMessage::FinalCharacter { .. } => "FinalCharacter",
+            }
+        }
+        fn presentation(payload: &ServerPresentationPayload) -> &'static str {
+            match payload {
+                ServerPresentationPayload::Spawn { .. } => "Spawn",
+                ServerPresentationPayload::OverlayRoster(_) => "OverlayRoster",
+                ServerPresentationPayload::Command(command) => match command {
+                    PresentationCommand::PlaySound { .. } => "PlaySound",
+                    PresentationCommand::Rumble { .. } => "Rumble",
+                    PresentationCommand::FlashScreen { .. } => "FlashScreen",
+                    PresentationCommand::Vignette { .. } => "Vignette",
+                    PresentationCommand::ScreenShake { .. } => "ScreenShake",
+                },
+            }
+        }
+        assert_eq!(
+            input(&ServerMessage::SwitchAccepted(
+                crate::wire::ServerSwitchAccepted {
+                    declaration_id: 0,
+                    slot: 0,
+                }
+            )),
+            "SwitchAccepted"
+        );
+        assert_eq!(control(&ServerControlMessage::Tuning(Vec::new())), "Tuning");
+        assert_eq!(
+            presentation(&ServerPresentationPayload::Command(
+                PresentationCommand::Rumble {
+                    strong: 1.0,
+                    weak: None,
+                    duration_ms: 0.0,
+                }
+            )),
+            "Rumble"
+        );
+
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C45, "PROTOCOL_ID is still \"PRLE\"");
+        assert_eq!(WIRE_VERSION, 40);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
+    }
+}

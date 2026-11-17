@@ -125,6 +125,9 @@ mod tests {
 
     fn reposition_leaf(motion: MotionVerb, params: RepositionParams) -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
+            pose: None,
+            stagger_to: None,
+            passes: None,
             animation: Some("run".to_string()),
             motion: Some(motion),
             action: None,
@@ -133,6 +136,7 @@ mod tests {
             facing: None,
             reposition: Some(params),
             attack_turn: None,
+            speed: None,
             layers: BTreeMap::new(),
         }
     }

@@ -1173,6 +1173,9 @@ fn avatar_mesh() -> postretro_entities::components::mesh::MeshComponent {
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(0),
         },
     )]);

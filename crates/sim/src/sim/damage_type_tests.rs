@@ -507,6 +507,9 @@ fn idle_brain() -> BrainComponent {
             activities: BTreeMap::from([(
                 "idle".to_string(),
                 BehaviorActivityDescriptor {
+                    pose: None,
+                    stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: None,
                     motion: Some(MotionVerb::Hold),
@@ -515,6 +518,7 @@ fn idle_brain() -> BrainComponent {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),

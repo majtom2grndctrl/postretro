@@ -131,8 +131,9 @@ pub fn entity_descriptor_from_js<'js>(
             if components_obj.contains_key("behavior").map_err(js_err)? {
                 let raw: JsValue = components_obj.get("behavior").map_err(js_err)?;
                 if !raw.is_null() && !raw.is_undefined() {
-                    let json = conv::js_to_json(ctx, raw).map_err(js_err)?;
+                    let mut json = conv::js_to_json(ctx, raw).map_err(js_err)?;
                     reject_object_where_move_selector_belongs(&json)?;
+                    lower_behavior(&mut json, canonical_name.as_deref())?;
                     validate_optional_knockback_object(&json, "components.behavior.knockback")?;
                     let descriptor: BehaviorGraphDescriptor = serde_json::from_value(json)
                         .map_err(|e| DescriptorError::InvalidShape {
@@ -191,6 +192,7 @@ pub fn entity_descriptor_from_js<'js>(
         health,
         behavior,
     };
+    descriptor.validate_across_components()?;
     Ok(descriptor)
 }
 
@@ -425,6 +427,11 @@ pub fn raw_animation_state_from_js<'js>(
     // Optional per-state `travelSpeed` override, read raw here; positivity /
     // finiteness is validated in `MeshDescriptor::build`.
     let travel_speed = get_optional_f32_js(obj, "travelSpeed")?;
+    // Optional per-state rate policy, read raw; `maxPlaybackRate` and
+    // `playbackRate` bounds are validated in `MeshDescriptor::build`.
+    let max_playback_rate = get_optional_f32_js(obj, "maxPlaybackRate")?;
+    let scale_with_speed = get_optional_bool_js(obj, "scaleWithSpeed")?;
+    let playback_rate = get_optional_f32_js(obj, "playbackRate")?;
     let interrupt = if obj.contains_key("interrupt").map_err(js_err)? {
         let raw: JsValue = obj.get("interrupt").map_err(js_err)?;
         if raw.is_null() || raw.is_undefined() {
@@ -442,5 +449,8 @@ pub fn raw_animation_state_from_js<'js>(
         crossfade_ms,
         interrupt,
         travel_speed,
+        max_playback_rate,
+        scale_with_speed,
+        playback_rate,
     })
 }

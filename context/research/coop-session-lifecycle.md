@@ -182,8 +182,8 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    CS[("Character save<br/>one per player id, on that player's device")]
-    WS[("World save<br/>on the device that runs the world")]
+    CS[("Character saves<br/>numbered slots, on the owner's device")]
+    WS[("World save and run saves<br/>on the device that runs the world")]
     SP["Single-player"]
     HO["Hosting"]
     CL["Connected client"]
@@ -195,17 +195,17 @@ flowchart LR
     CL -. "never" .-x WS
 ```
 
-| | Character save | World save |
-|---|---|---|
-| Holds | the mod's per-owner `persist` slots (XP, unlocks, stats), plus the carried loadout when the author chooses, keyed by player id | global `persist` slots and faction sentiment (shipped). Run state is **open**: current map, revisited maps, and carried loadouts the author keeps with the world |
-| Lives | on the player's own device | on the device of whoever runs the world: the single-player machine, or the host |
-| Written by | its owner only, in every role (shipped; a host never writes a guest's character) | the world's runner only. A connected client never writes one |
-| Read | at boot, then sent up to any host in `JoinSeed` (shipped) | at boot. **Open:** a frontend "Continue" also reads run state |
-| Today | rows inside `state.json` | the same `state.json` (G10) |
+| | Character save | World save | Run save |
+|---|---|---|---|
+| Holds | the mod's per-owner `persist` slots (XP, unlocks, stats), a display name and the whole carried loadout, keyed by the character's own id | global `persist: true` slots: progress that outlives any run | its character's id, the level and checkpoint it last reached, `persist: "run"` global slots and faction sentiment |
+| Lives | on the player's own device, in numbered slots | on the device of whoever runs the world: the single-player machine, or the host | as the world save, in numbered slots |
+| Written by | its owner only, in every role (a host never writes a guest's character) | the world's runner only. A connected client never writes one | as the world save |
+| Read | at boot, then sent up to any host in `JoinSeed` | at boot | by Continue |
+| Today | rows inside `state.json` | the same `state.json` (G10) | nothing (G8) |
 
-- **Proposed:** separate files, one per kind. A character file then has an obvious identity (player id and mod) and can be backed up or moved on its own. A world save can grow into save slots without touching characters.
-- **Leaning (owner, this session): gear scope is the author's choice.** Players often want to bring gear from one game into another. A mod's parameters say whether the carried loadout (`CarriedState`: health, ammo, weapons, defense) travels with the character or stays with the world's run. Open: whether one switch covers the whole loadout or each part chooses, and how a host vets gear a joining character brings from another world (it must name weapons this host's mod defines, and it is client-asserted like all character progress).
-- **Leaning:** a run save, the revisited-map record (`roadmap.md` Future) and a host-migration handoff (Epic 15) share one serialization of the session-state ledger, decided before any of them ships.
+- **Decided (owner):** separate files, one per kind, in versioned JSON. A character file can be backed up or moved on its own, and runs keep numbered slots without touching characters. Brief: `plans/ready/coop--character-and-run-saves/`.
+- **Decided (owner): gear always belongs to the character.** Players bring gear from one game into another, and a host's run save never holds a guest's gear. A host checks a joiner's gear against its own mod's names. A character's runs share its gear, and a fresh start is a new character.
+- **Decided (owner):** run saves, the revisited-map record (`roadmap.md` Future) and a host-migration handoff (Epic 15) share one serialization of the durable session-state ledger. Run and character saves ship it first; the others add named sections.
 
 ```mermaid
 sequenceDiagram
@@ -222,7 +222,7 @@ sequenceDiagram
     H-->>C: host's world values + own character values
     Note over C,H: Play
     C->>CD: character every 60 s (shipped)
-    H->>HD: character + world at level boundaries [proposed, G7]
+    H->>HD: character, world and run at level boundaries [saves brief, G7]
     Note over C,H: Leave or any host-side ending
     C->>CD: character, while the seat is still known [leave brief]
     CD->>C: reload own world save, dropping the host's values [leave brief, G5]
@@ -240,6 +240,6 @@ sequenceDiagram
 | 3 | Phase 3.75 lobby authoring surface | in-app hosting, including setting a session password; session phase, join predicate, joined, left and phase-changed reactions, `evictPlayer` and its policy | optional lobby |
 | 3 | In-app join (new, small) | direct-connect UI: address and password entry, connecting and refused states, notice on a host-side ending | leave |
 | 3 | Session password (new, small) | the engine admission gate and its challenge and response, a refusal cause, and a CLI flag for command-line hosts and joiners | leave, for the refusal path |
-| 4 | Character and world saves (new) | separate files, level-boundary world saves (G7), the author's gear-scope parameter, run state and Continue | none |
+| 4 | `coop--character-and-run-saves` | character, world and run files with numbered slots; level-boundary saves (G7); gear on the character with host checks; run state, Continue and New game; the ledger serialization | in-app host and join |
 
 Ending a session with `endSession` closes G2 for games without a lobby, so brief 1 no longer leaves clients stranded. Brief 2 adds the stay-together path.

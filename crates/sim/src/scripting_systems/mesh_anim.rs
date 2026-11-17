@@ -458,6 +458,9 @@ mod tests {
             crossfade_ms,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: idx,
         }
     }

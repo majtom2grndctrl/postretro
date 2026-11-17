@@ -378,6 +378,8 @@ fn run_staged_mod_init_quickjs(
     source_path: &str,
     cfg: &QuickJsConfig,
 ) -> Result<ModManifestResult, ScriptError> {
+    // One mod load: a stance below the co-op floor warns once across every entity.
+    let _floor_warnings = crate::data_descriptors::stance_floor_warning_scope();
     let runtime = JsRuntime::new().map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: failed to create runtime: {e}"),
     })?;
@@ -824,6 +826,8 @@ fn run_staged_mod_init_luau(
     _cfg: &LuauConfig,
     require_tracker: Option<&LuauRequireTracker>,
 ) -> Result<ModManifestResult, ScriptError> {
+    // One mod load: a stance below the co-op floor warns once across every entity.
+    let _floor_warnings = crate::data_descriptors::stance_floor_warning_scope();
     let lua = super::luau::build_lua_state_with_require_tracking(
         &[],
         None,
@@ -1228,6 +1232,10 @@ mod attack_turn_read_tests;
 #[cfg(test)]
 #[path = "staged_manifest/surface_example_tests.rs"]
 mod surface_example_tests;
+
+#[cfg(test)]
+#[path = "staged_manifest/attack_handle_tests.rs"]
+mod attack_handle_tests;
 
 #[cfg(test)]
 mod tests {

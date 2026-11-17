@@ -50,6 +50,9 @@ pub fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor 
                 crossfade_ms: 150.0,
                 interrupt: InterruptPolicy::Smooth,
                 travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
                 clip_index: None,
             },
         );
@@ -61,6 +64,9 @@ pub fn mesh_descriptor(classname: &str, animated: bool) -> EntityTypeDescriptor 
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Snap,
                 travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
                 clip_index: None,
             },
         );
@@ -109,6 +115,9 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                 (
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -117,23 +126,29 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
                 (
                     "attack".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: Some(ActionVerb::Attack {
                             name: "claw".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                         on_enter: None,
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
@@ -141,6 +156,9 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
             transitions: BTreeMap::from([(
                 "idle".to_string(),
                 vec![GuardedRow {
+                    release_after: None,
+                    queue: None,
+                    after_moment: false,
                     to: "attack".to_string(),
                     when: IrNode::Le {
                         a: Box::new(IrNode::Input {
@@ -167,6 +185,7 @@ fn sample_behavior_graph() -> BehaviorGraphDescriptor {
                 cooldown_ms: Some(1200.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -182,4 +201,32 @@ pub fn behavior_enemy_descriptor(classname: &str) -> EntityTypeDescriptor {
     let mut descriptor = mesh_descriptor(classname, true);
     descriptor.behavior = Some(sample_behavior_graph());
     descriptor
+}
+
+/// A lowered stance strike whose release repeats three passes on `state`,
+/// its recover on `idle`: the graph a combo's mesh derives its zero-phase
+/// loop from.
+pub fn repeating_release_graph(state: &str) -> BehaviorGraphDescriptor {
+    serde_json::from_value(serde_json::json!({
+        "initial": "coil",
+        "moveSpeed": 3.0,
+        "attacks": { "combo": { "damage": 5.0, "maxRange": 2.5, "cooldownMs": 2500.0 } },
+        "activities": {
+            "coil": { "animation": "idle", "motion": "hold", "pose": "coil" },
+            "combo_release": {
+                "animation": state, "motion": "hold", "attackTurn": "combo",
+                "action": { "attack": "combo", "at": "hit", "atDefault": true },
+                "staggerTo": "coil", "passes": 3
+            },
+            "combo_recover": {
+                "animation": "idle", "motion": "hold", "attackTurn": "combo",
+                "staggerTo": "coil"
+            }
+        },
+        "transitions": {
+            "combo_release": [{ "to": "combo_recover", "afterMoment": true }],
+            "combo_recover": [{ "to": "coil" }]
+        }
+    }))
+    .expect("the lowered combo deserializes")
 }

@@ -48,6 +48,7 @@ export type {
 export { defineTriggerEvent, defineTriggerPool } from "./data_script/trigger_events";
 import { attackTokenDeclarationOf } from "./data_script/attack_budget";
 export { defaultToken, defineAttackToken } from "./data_script/attack_budget";
+export { defineAttack, defineStance } from "./data_script/attacks";
 export type {
   TriggerEventDescriptor,
   TriggerEventReaction,

@@ -556,3 +556,115 @@ fn lua_mesh_locomotion_present_without_field_defaults_speed_scale_true() {
     let d = eval_lua(src, |v| entity_descriptor_from_lua(v).unwrap());
     assert!(d.mesh.unwrap().speed_scale());
 }
+
+// --- per-state rate policy: maxPlaybackRate, scaleWithSpeed, playbackRate --
+
+/// Parse one JS mesh whose `idle` state carries `fields`, returning the result.
+fn js_state_with(fields: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
+    let src = format!(
+        r#"({{ components: {{ mesh: {{
+        model: "m", defaultState: "idle",
+        animations: {{ idle: {{ clip: "c", {fields} }} }}
+    }} }} }})"#
+    );
+    eval_js(&src, entity_descriptor_from_js)
+}
+
+/// Luau twin of [`js_state_with`]; `fields` use Luau `key = value` syntax.
+fn lua_state_with(fields: &str) -> Result<EntityTypeDescriptor, DescriptorError> {
+    let src = format!(
+        r#"return {{ components = {{ mesh = {{
+        model = "m", defaultState = "idle",
+        animations = {{ idle = {{ clip = "c", {fields} }} }}
+    }} }} }}"#
+    );
+    eval_lua(&src, entity_descriptor_from_lua)
+}
+
+fn idle_state(descriptor: EntityTypeDescriptor) -> AnimationState {
+    descriptor.mesh.expect("mesh parsed").animations["idle"].clone()
+}
+
+fn assert_rejects_naming(result: Result<EntityTypeDescriptor, DescriptorError>, key: &str) {
+    match result {
+        Err(DescriptorError::InvalidShape { reason }) => assert!(
+            reason.contains(&format!("animations.idle.{key}")),
+            "message names the state and field: {reason}"
+        ),
+        Err(other) => panic!("expected InvalidShape naming {key}, got {other:?}"),
+        Ok(_) => panic!("expected {key} to be rejected"),
+    }
+}
+
+#[test]
+fn rate_policy_fields_default_in_both_languages() {
+    for state in [
+        idle_state(js_state_with("").unwrap()),
+        idle_state(lua_state_with("").unwrap()),
+    ] {
+        assert_eq!(state.max_playback_rate, None);
+        assert!((state.max_playback_rate() - crate::components::mesh::RATE_MAX).abs() < 1e-6);
+        assert!(state.scale_with_speed, "scaleWithSpeed defaults to true");
+        assert_eq!(state.playback_rate, None);
+        assert!((state.playback_rate() - 1.0).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn rate_policy_fields_accept_in_both_languages() {
+    let js = idle_state(
+        js_state_with("maxPlaybackRate: 2.75, scaleWithSpeed: false, playbackRate: 2.5").unwrap(),
+    );
+    let lua = idle_state(
+        lua_state_with("maxPlaybackRate = 2.75, scaleWithSpeed = false, playbackRate = 2.5")
+            .unwrap(),
+    );
+    for state in [js, lua] {
+        assert_eq!(state.max_playback_rate, Some(2.75));
+        assert!(!state.scale_with_speed);
+        assert_eq!(state.playback_rate, Some(2.5));
+    }
+    // The cap may equal the engine default; a fixed rate may sit outside the
+    // stride clamp on either side.
+    for (js, lua) in [
+        ("maxPlaybackRate: 1.5", "maxPlaybackRate = 1.5"),
+        ("playbackRate: 0.25", "playbackRate = 0.25"),
+        ("playbackRate: 4", "playbackRate = 4"),
+    ] {
+        assert!(js_state_with(js).is_ok(), "JS accepts {js}");
+        assert!(lua_state_with(lua).is_ok(), "Luau accepts {lua}");
+    }
+}
+
+#[test]
+fn max_playback_rate_rejects_below_default_or_non_finite_in_both_languages() {
+    for (js, lua) in [
+        ("maxPlaybackRate: 1.49", "maxPlaybackRate = 1.49"),
+        ("maxPlaybackRate: 1", "maxPlaybackRate = 1"),
+        ("maxPlaybackRate: -2", "maxPlaybackRate = -2"),
+        ("maxPlaybackRate: 1/0", "maxPlaybackRate = 1/0"),
+        ("maxPlaybackRate: 0/0", "maxPlaybackRate = 0/0"),
+    ] {
+        assert_rejects_naming(js_state_with(js), "maxPlaybackRate");
+        assert_rejects_naming(lua_state_with(lua), "maxPlaybackRate");
+    }
+}
+
+#[test]
+fn playback_rate_rejects_non_positive_or_non_finite_in_both_languages() {
+    for (js, lua) in [
+        ("playbackRate: 0", "playbackRate = 0"),
+        ("playbackRate: -1", "playbackRate = -1"),
+        ("playbackRate: 1/0", "playbackRate = 1/0"),
+        ("playbackRate: 0/0", "playbackRate = 0/0"),
+    ] {
+        assert_rejects_naming(js_state_with(js), "playbackRate");
+        assert_rejects_naming(lua_state_with(lua), "playbackRate");
+    }
+}
+
+#[test]
+fn scale_with_speed_rejects_non_boolean_in_both_languages() {
+    assert!(js_state_with(r#"scaleWithSpeed: "no""#).is_err());
+    assert!(lua_state_with(r#"scaleWithSpeed = "no""#).is_err());
+}

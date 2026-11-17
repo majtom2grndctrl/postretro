@@ -55,7 +55,13 @@ local BrainSdk = {}
 --- previous tick), and `animationDone` (boolean; true from the tick after the
 --- selected non-looping animation's clip reaches its duration, false on a
 --- looping state, true for a non-looping state whose clip did not resolve; entity-wide,
---- not scope-relative).
+--- not scope-relative), and `activityRoll` (number; uniform in [0, 1), drawn
+--- when the currently-evaluated activity was entered and fixed until it is
+--- left; scope-relative like `timeInActivityMs`), and `damageInActivity`
+--- (number; points drained from defense layers and health since the
+--- currently-evaluated activity was entered, by every damage producer,
+--- `applyDamage` included; scope-relative like `timeInActivityMs`, resetting
+--- to 0 when that level is entered).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -79,6 +85,8 @@ BrainSdk.brain = table.freeze({
   damageSourceKnown = input("@brain.damageSourceKnown"),
   hasAttackTurn = input("@brain.hasAttackTurn"),
   animationDone = input("@brain.animationDone"),
+  activityRoll = input("@brain.activityRoll"),
+  damageInActivity = input("@brain.damageInActivity"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.
@@ -120,19 +128,39 @@ function BrainSdk.defense(layer: any): { current: RuntimeGuardNode, capacity: Ru
   })
 end
 
+-- The attack name a turn fact reads. Anything but an attack handle (a bare
+-- string, nil, a stance) raises at the call, naming the fact.
+local function attackHandleName(fact: string, attack: any): string
+  if type(attack) == "table" and rawget(attack, "kind") == "attack" and type(rawget(attack, "name")) == "string" then
+    return rawget(attack, "name")
+  end
+  local found
+  if type(attack) == "string" then
+    found = 'the bare string "' .. attack .. '"'
+  elseif attack == nil then
+    found = "nil"
+  elseif type(attack) == "table" then
+    found = 'a "' .. tostring(rawget(attack, "kind")) .. '" handle'
+  else
+    found = "a " .. type(attack)
+  end
+  error(fact .. "(attack): expected an attack handle from defineAttack, got " .. found, 3)
+end
+
 --- `true` while the enemy holds a turn for `attack`, one of its archetype's
---- attacks, as of the previous tick. Naming another attack fails load.
-function BrainSdk.attackTurnHeld(attack: string): RuntimeGuardNode
-  return input("@attackTurnHeld." .. attack)
+--- attacks, as of the previous tick. Naming another attack fails load. Reading
+--- it registers no attack.
+function BrainSdk.attackTurnHeld(attack: Attack): RuntimeGuardNode
+  return input("@attackTurnHeld." .. attackHandleName("attackTurnHeld", attack))
 end
 
 --- `true` when a request for `attack`, one of its archetype's attacks, would be
 --- granted now against the previous tick's counts and reservations, leaving out
 --- the enemy's own pending request. False with no target, and for an attack
 --- sharing a token with a turn the enemy holds. Naming another attack fails
---- load.
-function BrainSdk.attackTurnFree(attack: string): RuntimeGuardNode
-  return input("@attackTurnFree." .. attack)
+--- load. Reading it registers no attack.
+function BrainSdk.attackTurnFree(attack: Attack): RuntimeGuardNode
+  return input("@attackTurnFree." .. attackHandleName("attackTurnFree", attack))
 end
 
 return BrainSdk

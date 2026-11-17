@@ -1,0 +1,45 @@
+{
+  "initial": "approach",
+  "moveSpeed": 3,
+  "activities": {
+    "approach": { "animation": "walk", "motion": "chaseTarget" },
+    "flinch": { "animation": "flinch", "motion": "hold" }
+  },
+  "transitions": {
+    "approach": [
+      {
+        "to": {
+          "kind": "stance", "name": "overhead",
+          "animation": "smash_windup", "sound": "brute/stance_overhead",
+          "holdMs": 800, "breakOn": { "damage": 25, "to": "flinch" }
+        },
+        "when": { "op": "le", "a": { "op": "input", "name": "@brain.targetDistance" }, "b": { "op": "const", "value": 3.5 } }
+      }
+    ],
+    "overhead": [
+      {
+        "to": {
+          "kind": "attack", "name": "slam",
+          "damage": 14, "maxRange": 3.5, "cooldownMs": 1800,
+          "beginningStance": {
+            "kind": "stance", "name": "overhead",
+            "animation": "smash_windup", "sound": "brute/stance_overhead",
+            "holdMs": 800, "breakOn": { "damage": 25, "to": "flinch" }
+          },
+          "release": { "animation": "smash_strike", "ms": 900 }
+        },
+        "when": { "op": "lt", "a": { "op": "input", "name": "@brain.activityRoll" }, "b": { "op": "const", "value": 0.5 } }
+      },
+      {
+        "to": "approach",
+        "when": { "op": "gt", "a": { "op": "input", "name": "@brain.targetDistance" }, "b": { "op": "const", "value": 4.5 } }
+      }
+    ],
+    "flinch": [
+      {
+        "to": "approach",
+        "when": { "op": "ge", "a": { "op": "input", "name": "@brain.timeInActivityMs" }, "b": { "op": "const", "value": 450 } }
+      }
+    ]
+  }
+}

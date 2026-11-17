@@ -46,17 +46,16 @@ fn ts_mod(case: &Case) -> String {
            const heavy = defineAttackToken("heavy", {{ limit: 1, refreshMs: 4000 }});
            const shock = defineDamageType("shock", {{}});
            {decls}
+           const slam = defineAttack("slam", {{ damage: 14, maxRange: 3, cooldownMs: 1800{draws} }});
+           const jab = defineAttack("jab", {{ damage: 8, maxRange: 2, cooldownMs: 1200 }});
            globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1",
              damageTypes: [shock], {fields},
              entities: [{{ canonicalName: "brute", components: {{ behavior: {{
                initial: "idle", moveSpeed: 3,
-               attacks: {{
-                 slam: {{ damage: 14, maxRange: 3, cooldownMs: 1800{draws} }},
-                 jab: {{ damage: 8, maxRange: 2, cooldownMs: 1200 }}
-               }},
+               attacks: [slam, jab],
                activities: {{
                  idle: {{ animation: "idle", motion: "hold" }},
-                 engage: {{ animation: "walk", motion: "chaseTarget", action: {{ attack: "slam" }} }}
+                 engage: {{ animation: "walk", motion: "chaseTarget", action: {{ attack: slam }} }}
                }},
                transitions: {{}}
              }} }} }}] }});"#,
@@ -76,17 +75,16 @@ fn luau_mod(case: &Case) -> String {
            local heavy = defineAttackToken("heavy", {{ limit = 1, refreshMs = 4000 }})
            local shock = defineDamageType("shock", {{}})
            {decls}
+           local slam = defineAttack("slam", {{ damage = 14, maxRange = 3, cooldownMs = 1800{draws} }})
+           local jab = defineAttack("jab", {{ damage = 8, maxRange = 2, cooldownMs = 1200 }})
            return defineMod({{ name = "M", id = "m", version = "1",
              damageTypes = {{ shock }}, {fields},
              entities = {{ {{ canonicalName = "brute", components = {{ behavior = {{
                initial = "idle", moveSpeed = 3,
-               attacks = {{
-                 slam = {{ damage = 14, maxRange = 3, cooldownMs = 1800{draws} }},
-                 jab = {{ damage = 8, maxRange = 2, cooldownMs = 1200 }}
-               }},
+               attacks = {{ slam, jab }},
                activities = {{
                  idle = {{ animation = "idle", motion = "hold" }},
-                 engage = {{ animation = "walk", motion = "chaseTarget", action = {{ attack = "slam" }} }}
+                 engage = {{ animation = "walk", motion = "chaseTarget", action = {{ attack = slam }} }}
                }},
                transitions = {{}}
              }} }} }} }} }})"#,

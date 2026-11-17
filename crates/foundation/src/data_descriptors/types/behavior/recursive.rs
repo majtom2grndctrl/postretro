@@ -14,6 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::activity_motion::validate_reposition;
 use super::attack_turn_marks::validate_attack_turn_marks;
 use super::clip_timed_actions::{imply_attack_turn, reject_row_at, validate_at_name};
+use super::stance_defaults::MAX_RELEASE_REPEAT;
 use super::{
     ActionVerb, AttackParams, FacingPolicy, MotionVerb, PatrolDescriptor, RepositionParams,
 };
@@ -31,8 +32,47 @@ pub const MAX_BEHAVIOR_NESTING_DEPTH: usize = 8;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuardedRow {
+    /// The row's guard. An authored row may omit it; the row is then always
+    /// enabled, so it deserializes as the constant `true`.
+    #[serde(default = "always_enabled")]
     pub when: IrNode,
     pub to: String,
+    /// A stance hold's release row, written only by lowering: the `[min, max]`
+    /// milliseconds its hidden release time is drawn from on each entry of the
+    /// activity whose row this is. The row passes only once that activity's
+    /// pose has lasted the drawn time, and its `when` passes.
+    #[serde(
+        default,
+        rename = "releaseAfter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub release_after: Option<[f32; 2]>,
+    /// A row to an attack, written only by lowering: the attack, by name, a
+    /// stance's rest strikes through this row. The row passes only once that
+    /// attack's turn reads held, the target is within its queue distance
+    /// (`queueRange`, else `maxRange`) when it declares one, its own
+    /// cooldown has elapsed, and its `when` passes;
+    /// while all but the turn pass, the resting enemy requests the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
+    /// A stance release's own row, written only by lowering: the row stays
+    /// closed until the entry's moment resolves (fired, whiffed or
+    /// cancelled), or with no moment until the activity's clip has played
+    /// one pass, and opens on the evaluation after that. Its `when` (an `ms`
+    /// guard, say) may only hold it longer.
+    #[serde(
+        default,
+        rename = "afterMoment",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub after_moment: bool,
+}
+
+/// The guard an authored row without `when` reads.
+fn always_enabled() -> IrNode {
+    IrNode::Const {
+        value: crate::ir::IrValue::Bool(true),
+    }
 }
 
 /// A recursive graph envelope with no graph-wide gameplay fields.
@@ -76,6 +116,31 @@ pub struct BehaviorActivityDescriptor {
     /// the active path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attack_turn: Option<String>,
+    /// Multiplier on the archetype's `moveSpeed` while this is the innermost
+    /// active activity that sets one; an activity without one inherits its
+    /// nearest ancestor's, and the whole path without one moves at 1. Scales
+    /// the agent's own steered travel only, never knockback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<f32>,
+    /// A stance's pose, written only by lowering. Activities of one level
+    /// sharing a pose act as one activity: moving between them keeps that
+    /// level's scope-relative facts, raises no entry event, and restarts no
+    /// clip (`entity_model.md` §7c, Stances and attacks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<String>,
+    /// A stance release's or recover's flinch route, written only by
+    /// lowering: the sibling rest an impact flinch during this activity ends
+    /// in, once its reaction clip plays out (`entity_model.md` §7c, Stances
+    /// and attacks, Release exit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stagger_to: Option<String>,
+    /// A stance release's pass count (its `repeat`), written only by
+    /// lowering: its clip plays this many passes back to back, its attack
+    /// strikes once per pass at its moment, and its own rows stay closed until
+    /// the last pass has played (`entity_model.md` §7c, Stances and attacks,
+    /// Release exit). Absent, one pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passes: Option<u32>,
     #[serde(default)]
     pub layers: BTreeMap<String, BehaviorLayerDescriptor>,
 }
@@ -430,7 +495,28 @@ fn validate_envelope(
                 });
             }
             validate_guard(&row.when, &format!("{row_path}.when"))?;
+            validate_queue(source, row, attacks, &row_path)?;
         }
+        validate_release_rows(source, rows, &format!("{path}.transitions.{source}"))?;
+        validate_moment_rows(
+            source,
+            rows,
+            envelope.activities.get(source),
+            &format!("{path}.transitions.{source}"),
+        )?;
+    }
+    for (name, activity) in &envelope.activities {
+        validate_stagger_to(
+            name,
+            activity,
+            envelope,
+            &format!("{path}.activities.{name}"),
+        )?;
+        validate_passes(
+            activity,
+            envelope.transitions.get(name).map(Vec::as_slice),
+            &format!("{path}.activities.{name}"),
+        )?;
     }
 
     envelope
@@ -448,6 +534,175 @@ fn validate_envelope(
         .collect()
 }
 
+/// A hold's release row (`releaseAfter`): at most one per activity, so each
+/// entry draws one unambiguous release time, never on the `"*"` rows, which
+/// belong to no activity, and bounded by a finite, non-negative, ordered range.
+fn validate_release_rows(
+    source: &str,
+    rows: &[GuardedRow],
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let mut release_row = None;
+    for (index, row) in rows.iter().enumerate() {
+        let Some([min, max]) = row.release_after else {
+            continue;
+        };
+        let row_path = format!("{path}[{index}].releaseAfter");
+        if source == "*" {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{row_path}` belongs to an activity's own rows; a `*` row has no hold to draw a release time for"
+                ),
+            });
+        }
+        if let Some(first) = release_row {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{row_path}` is a second release row; `{path}[{first}]` already releases this activity"
+                ),
+            });
+        }
+        release_row = Some(index);
+        if !min.is_finite() || !max.is_finite() || min < 0.0 || max < 0.0 {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!(
+                    "`{row_path}` bounds must be finite values >= 0.0, got [{min}, {max}]"
+                ),
+            });
+        }
+        if min > max {
+            return Err(DescriptorError::InvalidShape {
+                reason: format!("`{row_path}` minimum {min} exceeds its maximum {max}"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// A release's moment-gated row (`afterMoment`) sits on a leaf's own rows:
+/// the gate reads the clip that leaf draws, and the `"*"` rows belong to no
+/// activity.
+fn validate_moment_rows(
+    source: &str,
+    rows: &[GuardedRow],
+    activity: Option<&BehaviorActivityDescriptor>,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(index) = rows.iter().position(|row| row.after_moment) else {
+        return Ok(());
+    };
+    let row_path = format!("{path}[{index}].afterMoment");
+    if source == "*" {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{row_path}` belongs to a release's own rows; a `*` row has no moment to wait on"
+            ),
+        });
+    }
+    if activity.is_some_and(|activity| !activity.layers.is_empty()) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{row_path}` belongs to a leaf's rows; `{source}` is a composite and draws no clip of its own"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A flinch route (`staggerTo`) is a leaf's, and names another activity at
+/// its own level.
+fn validate_stagger_to(
+    name: &str,
+    activity: &BehaviorActivityDescriptor,
+    envelope: &BehaviorGraphEnvelope,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(target) = activity.stagger_to.as_deref() else {
+        return Ok(());
+    };
+    let field = format!("{path}.staggerTo");
+    if !activity.layers.is_empty() {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` belongs to a leaf activity"),
+        });
+    }
+    if target == name || !envelope.activities.contains_key(target) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` (\"{target}\") must name another activity declared at this level"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A release's pass count (`passes`) is 1 to [`MAX_RELEASE_REPEAT`], on a
+/// leaf whose own action fires at a clip event (each pass strikes at its
+/// moment) and whose own rows wait on it (`afterMoment`): a stance release.
+fn validate_passes(
+    activity: &BehaviorActivityDescriptor,
+    rows: Option<&[GuardedRow]>,
+    path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(passes) = activity.passes else {
+        return Ok(());
+    };
+    let field = format!("{path}.passes");
+    if !(1..=MAX_RELEASE_REPEAT).contains(&passes) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{field}` must be 1 to {MAX_RELEASE_REPEAT}, got {passes}"),
+        });
+    }
+    if !matches!(
+        activity.action,
+        Some(ActionVerb::Attack { at: Some(_), .. })
+    ) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` belongs to a leaf whose own action fires `at` a clip event: each pass strikes at its moment"
+            ),
+        });
+    }
+    if !rows.is_some_and(|rows| rows.iter().any(|row| row.after_moment)) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{field}` belongs to a stance release, whose own rows wait on its moment (`afterMoment`)"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A queued row (`queue`) names an attack the graph declares, and sits on an
+/// activity's own rows: a strike leaves only out of its stance's rest, never
+/// from the `"*"` rows, which belong to no activity.
+fn validate_queue(
+    source: &str,
+    row: &GuardedRow,
+    attacks: &BTreeMap<String, AttackParams>,
+    row_path: &str,
+) -> Result<(), DescriptorError> {
+    let Some(attack) = row.queue.as_deref() else {
+        return Ok(());
+    };
+    let queue_path = format!("{row_path}.queue");
+    if source == "*" {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{queue_path}` belongs to a rest's own rows; a strike never leaves from a `*` row"
+            ),
+        });
+    }
+    if !attacks.contains_key(attack) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{queue_path}` (\"{attack}\") does not name an attack in the behavior's `attacks`"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn validate_activity(
     activity: &mut BehaviorActivityDescriptor,
     path: &str,
@@ -457,6 +712,18 @@ fn validate_activity(
 ) -> Result<ActivePathVerbs, DescriptorError> {
     if let Some(sound) = activity.sound.as_deref() {
         validate_sound_key(&format!("{path}.sound"), sound)?;
+    }
+    if let Some(speed) = activity.speed
+        && (!speed.is_finite() || speed <= 0.0)
+    {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}.speed` must be a finite value > 0.0, got {speed}"),
+        });
+    }
+    if activity.pose.as_ref().is_some_and(String::is_empty) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}.pose` must be a non-empty string when supplied"),
+        });
     }
     validate_reposition(activity, path)?;
     if !activity.layers.is_empty() {
@@ -556,7 +823,11 @@ fn validate_activity(
         });
     }
     if let Some(motion) = activity.motion {
-        validate_motion(motion, &format!("{path}.motion"), patrol)?;
+        if motion == MotionVerb::Leap {
+            validate_leap(activity, path)?;
+        } else {
+            validate_motion(motion, &format!("{path}.motion"), patrol)?;
+        }
         if motion.is_position_goal() && activity.action.is_some() {
             return Err(DescriptorError::InvalidShape {
                 reason: format!(
@@ -806,11 +1077,45 @@ fn validate_action(
     validate_at_name(action, path)
 }
 
+/// A leaf's own `leap`: it paces itself to arrive by its own attack's clip
+/// moment, so the leaf's action must fire `at` a clip event, and the moment
+/// comes once: a repeating release (`passes` above 1) has no one moment to
+/// arrive by.
+fn validate_leap(activity: &BehaviorActivityDescriptor, path: &str) -> Result<(), DescriptorError> {
+    if !matches!(
+        activity.action,
+        Some(ActionVerb::Attack { at: Some(_), .. })
+    ) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}.motion` is \"leap\", which arrives at its attack's clip moment, so `{path}.action` must name an attack with `at`"
+            ),
+        });
+    }
+    if activity.passes.is_some_and(|passes| passes > 1) {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}.motion` is \"leap\", which arrives at one clip moment, so `{path}.passes` must be 1"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// A selector's motion, or a leaf's other than `leap`. A selector cannot
+/// select `leap`: it arrives at its own leaf's clip moment.
 fn validate_motion(
     motion: MotionVerb,
     path: &str,
     patrol: Option<&PatrolDescriptor>,
 ) -> Result<(), DescriptorError> {
+    if motion == MotionVerb::Leap {
+        return Err(DescriptorError::InvalidShape {
+            reason: format!(
+                "`{path}` is \"leap\", which arrives at its own leaf's clip moment; give it to a leaf's `motion` beside an attack with `at`, not a selector"
+            ),
+        });
+    }
     if motion == MotionVerb::Patrol {
         match patrol {
             Some(patrol) if !patrol.points.is_empty() => Ok(()),
@@ -835,6 +1140,7 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
         let inline_stats = [
             ("damage", attack.damage),
             ("maxRange", attack.max_range),
+            ("queueRange", attack.queue_range),
             ("cooldownMs", attack.cooldown_ms),
         ];
         if attack.weapon.is_some() {
@@ -878,6 +1184,15 @@ fn validate_attacks(attacks: &BTreeMap<String, AttackParams>) -> Result<(), Desc
             }
             validate_positive(&format!("attacks.{name}.maxRange"), max_range)?;
             validate_positive(&format!("attacks.{name}.cooldownMs"), cooldown_ms)?;
+            if let Some(queue_range) = attack.queue_range
+                && (!queue_range.is_finite() || queue_range < max_range)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.behavior.attacks.{name}.queueRange` must be a finite value >= `components.behavior.attacks.{name}.maxRange` ({max_range}), got {queue_range}; it is how far out the attack waits in line, and `maxRange` how far it hits"
+                    ),
+                });
+            }
 
             if let Some(radius) = attack.engagement_radius {
                 validate_positive(&format!("attacks.{name}.engagementRadius"), radius)?;
@@ -973,6 +1288,38 @@ pub(crate) fn unreachable_activities(envelope: &BehaviorGraphEnvelope) -> Vec<St
 mod tests {
     use super::*;
 
+    // S5: a row may omit `when`; it is then always enabled, and still
+    // rejects a field it does not know.
+    #[test]
+    fn a_row_without_when_is_always_enabled_and_still_denies_unknown_fields() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "activities": {
+                "idle": { "animation": "idle" },
+                "walk": { "animation": "walk" }
+            },
+            "transitions": { "idle": [{ "to": "walk" }] },
+            "moveSpeed": 3.0
+        }))
+        .expect("a row without `when` deserializes");
+        assert_eq!(
+            graph.envelope.transitions["idle"][0].when,
+            IrNode::Const {
+                value: crate::ir::IrValue::Bool(true)
+            }
+        );
+        graph.validate().expect("an always-enabled row validates");
+
+        let unknown = serde_json::from_value::<BehaviorGraphDescriptor>(serde_json::json!({
+            "initial": "idle",
+            "activities": { "idle": { "animation": "idle" } },
+            "transitions": { "idle": [{ "to": "idle", "wait": "slam" }] },
+            "moveSpeed": 3.0
+        }))
+        .expect_err("an unknown row field rejects");
+        assert!(unknown.to_string().contains("wait"), "{unknown}");
+    }
+
     #[test]
     fn standoff_distance_defaults_to_per_attack_engagement_radius_override() {
         let graph = BehaviorGraphDescriptor {
@@ -995,6 +1342,7 @@ mod tests {
                     cooldown_ms: Some(1.0),
                     engagement_radius: Some(3.0),
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1002,10 +1350,7 @@ mod tests {
             engagement_radius: Some(2.0),
             move_speed: 1.0,
         };
-        let action = ActionVerb::Attack {
-            name: "slam".to_string(),
-            at: None,
-        };
+        let action = ActionVerb::attack("slam");
 
         assert_eq!(graph.engagement_radius_for_action(Some(&action)), 3.0);
         assert_eq!(graph.standoff_distance_for_action(Some(&action)), 3.0);
@@ -1078,6 +1423,7 @@ mod tests {
                 cooldown_ms: Some(1.0),
                 engagement_radius: None,
                 standoff_distance: Some(0.0),
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -1144,6 +1490,7 @@ mod tests {
                     cooldown_ms: None,
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1158,6 +1505,7 @@ mod tests {
                     cooldown_ms: None,
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1172,6 +1520,7 @@ mod tests {
                     cooldown_ms: Some(250.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1296,6 +1645,723 @@ mod tests {
         assert!(
             serde_json::from_str::<BehaviorGraphDescriptor>(nested_graph).is_err(),
             "a duplicate inside a nested graph layer must reject the whole descriptor"
+        );
+    }
+
+    /// A root `engage` composite carrying `speed` over a nested `run` leaf,
+    /// for the speed validation and rate-scaled-state rows.
+    fn speed_graph(
+        engage_speed: serde_json::Value,
+        run_speed: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "engage": {
+                    "speed": engage_speed,
+                    "layers": {
+                        "offense": {
+                            "initial": "run",
+                            "activities": {
+                                "run": { "animation": "run", "motion": "chaseTarget", "speed": run_speed }
+                            },
+                            "transitions": {}
+                        }
+                    }
+                }
+            },
+            "transitions": { "idle": [] }
+        })
+    }
+
+    // AC S26 (activity speed row): a non-positive or non-finite `speed`
+    // rejects load with the activity's path, on a composite and a leaf alike.
+    #[test]
+    fn activity_speed_rejects_zero_negative_and_non_finite_with_its_path() {
+        let accepted: BehaviorGraphDescriptor =
+            serde_json::from_value(speed_graph(serde_json::json!(2.0), serde_json::json!(0.5)))
+                .expect("positive speeds deserialize");
+        let accepted = accepted.validate().expect("positive speeds load");
+        let engage = &accepted.envelope.activities["engage"];
+        assert_eq!(engage.speed, Some(2.0));
+
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for leaf in [false, true] {
+                let mut graph = accepted.clone();
+                let engage = graph.envelope.activities.get_mut("engage").unwrap();
+                let expected_path = if leaf {
+                    let BehaviorLayerDescriptor::Graph(offense) =
+                        engage.layers.get_mut("offense").unwrap()
+                    else {
+                        panic!("offense is a nested graph");
+                    };
+                    offense.activities.get_mut("run").unwrap().speed = Some(bad);
+                    "components.behavior.activities.engage.layers.offense.activities.run.speed"
+                } else {
+                    engage.speed = Some(bad);
+                    "components.behavior.activities.engage.speed"
+                };
+                let error = graph
+                    .validate()
+                    .expect_err("a non-positive or non-finite speed rejects");
+                assert!(
+                    error.to_string().contains(&format!("`{expected_path}`")),
+                    "speed {bad}: {error}"
+                );
+            }
+        }
+    }
+
+    // The rate-scaled set: the graph's locomotion state, plus each animation
+    // an activity at any depth plays under its own steering motion, action or
+    // not, position goals included. Holds, freezes and selector-supplied
+    // motion add nothing.
+    #[test]
+    fn rate_scaled_animations_add_states_played_under_an_own_steering_motion() {
+        use super::super::{RateScaledStates, any_rate_scaled_animation};
+
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "attacks": { "bite": { "damage": 1.0, "maxRange": 2.0, "cooldownMs": 500.0 } },
+            "patrol": { "mode": "loop", "points": [[0.0, 0.0], [6.0, 0.0]] },
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "engage": {
+                    "animation": "walk",
+                    "layers": {
+                        "move": ["chaseTarget"],
+                        "offense": {
+                            "initial": "close",
+                            "activities": {
+                                "close": { "animation": "jog" },
+                                "charge": {
+                                    "animation": "run",
+                                    "motion": "chaseTarget",
+                                    "action": { "attack": "bite" }
+                                },
+                                "circle": { "animation": "strafe_walk", "motion": "strafe" },
+                                "planted": { "animation": "aim", "motion": "hold" },
+                                "stunned": { "animation": "stun", "motion": "freeze" }
+                            },
+                            "transitions": {}
+                        }
+                    }
+                },
+                "wander": { "animation": "stroll", "motion": "patrol" },
+                "search": {
+                    "animation": "idle",
+                    "layers": {
+                        "body": {
+                            "initial": "sweep",
+                            "activities": {
+                                "sweep": { "animation": "creep", "motion": "moveToLastKnown" }
+                            },
+                            "transitions": {}
+                        }
+                    }
+                },
+                "retreat": { "animation": "limp", "motion": "moveToAnchor" }
+            },
+            "transitions": { "idle": [] }
+        }))
+        .expect("graph deserializes");
+        let mut scaled = Vec::new();
+        assert!(!any_rate_scaled_animation(&graph, |state| {
+            if !scaled.contains(&state.to_string()) {
+                scaled.push(state.to_string());
+            }
+            false
+        }));
+        scaled.sort();
+        assert_eq!(
+            scaled,
+            ["creep", "limp", "run", "strafe_walk", "stroll", "walk"]
+        );
+        assert!(any_rate_scaled_animation(&graph, |state| state == "run"));
+        assert!(!any_rate_scaled_animation(&graph, |state| state == "jog"));
+
+        // The collected set names each state once, the same states the
+        // visitor reaches.
+        let set = RateScaledStates::of(&graph);
+        let mut collected: Vec<&str> = set.iter().collect();
+        collected.sort_unstable();
+        assert_eq!(collected, scaled);
+        assert!(
+            set.iter()
+                .all(|state| !["idle", "jog", "aim", "stun"].contains(&state))
+        );
+    }
+
+    // Every verb decides whether it steers: all but the two planted ones.
+    #[test]
+    fn every_motion_but_hold_and_freeze_steers() {
+        for motion in MotionVerb::ALL {
+            let planted = matches!(motion, MotionVerb::Hold | MotionVerb::Freeze);
+            assert_eq!(motion.steers(), !planted, "{motion:?}");
+        }
+    }
+
+    // The memo derives a graph's set once and lends it after; a memo derived
+    // for another graph never serves that graph's states, and equality ignores
+    // the memo.
+    #[test]
+    fn rate_scaled_states_memo_lends_its_graphs_set_and_rederives_for_another() {
+        use super::super::{RateScaledStates, RateScaledStatesMemo};
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        let graph_playing = |animation: &str, motion: &str| -> Arc<BehaviorGraphDescriptor> {
+            Arc::new(
+                serde_json::from_value(serde_json::json!({
+                    "initial": "idle",
+                    "moveSpeed": 3.0,
+                    "activities": {
+                        "idle": { "animation": "idle", "motion": "hold" },
+                        "go": { "animation": animation, "motion": motion }
+                    },
+                    "transitions": { "idle": [] }
+                }))
+                .expect("graph deserializes"),
+            )
+        };
+        let walker = graph_playing("walk", "moveToAnchor");
+        let runner = graph_playing("run", "chaseTarget");
+
+        let memo = RateScaledStatesMemo::of(&walker);
+        let lent = memo.get(&walker);
+        assert!(matches!(lent, Cow::Borrowed(_)), "the derived set is lent");
+        assert_eq!(*lent, RateScaledStates::of(&walker));
+        assert_eq!(lent.iter().collect::<Vec<_>>(), ["walk"]);
+
+        let other = memo.get(&runner);
+        assert_eq!(other.iter().collect::<Vec<_>>(), ["run"]);
+
+        let lazy = RateScaledStatesMemo::default();
+        assert_eq!(lazy.get(&runner).iter().collect::<Vec<_>>(), ["run"]);
+        assert!(matches!(lazy.get(&runner), Cow::Borrowed(_)));
+        assert_eq!(lazy, memo, "equality ignores the derived set");
+    }
+
+    /// The lowered shape of one stance and one strike from it: a rest and a
+    /// hold sharing a pose, the hold's rows break → turn-lost → release, its
+    /// release row carrying `releaseAfter`.
+    fn lowered_stance(release_after: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "initial": "overhead",
+            "moveSpeed": 3.0,
+            "attacks": { "slam": { "damage": 14.0, "maxRange": 3.5, "cooldownMs": 1800.0 } },
+            "activities": {
+                "overhead": { "animation": "smash_windup", "motion": "hold", "pose": "overhead" },
+                "slam_overhead": {
+                    "animation": "smash_windup", "motion": "hold",
+                    "pose": "overhead", "attackTurn": "slam"
+                },
+                "slam_release": {
+                    "animation": "smash_strike", "motion": "hold", "attackTurn": "slam",
+                    "action": { "attack": "slam" }
+                },
+                "flinch": { "animation": "flinch", "motion": "hold" }
+            },
+            "transitions": {
+                "overhead": [{ "to": "slam_overhead" }],
+                "slam_overhead": [
+                    { "to": "flinch", "when": { "op": "const", "value": false } },
+                    { "to": "overhead", "when": { "op": "const", "value": false } },
+                    { "to": "slam_release", "releaseAfter": release_after }
+                ],
+                "slam_release": [{ "to": "overhead" }],
+                "flinch": [{ "to": "overhead" }]
+            }
+        })
+    }
+
+    // Task 5: the runtime descriptor accepts the lowering-only `pose` and
+    // `releaseAfter` fields lowering writes, and serializes neither when
+    // absent, so descriptors without stances keep their shape.
+    #[test]
+    fn lowered_pose_and_release_rows_deserialize_validate_and_round_trip() {
+        let graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered_stance(serde_json::json!([500.0, 1200.0])))
+                .expect("the lowered stance deserializes");
+        let graph = graph.validate().expect("the lowered stance validates");
+        assert_eq!(
+            graph.envelope.activities["slam_overhead"].pose.as_deref(),
+            Some("overhead")
+        );
+        assert_eq!(
+            graph.envelope.transitions["slam_overhead"][2].release_after,
+            Some([500.0, 1200.0])
+        );
+        let round_trip = serde_json::to_value(&graph).expect("the graph serializes");
+        assert_eq!(
+            round_trip["transitions"]["slam_overhead"][2]["releaseAfter"],
+            serde_json::json!([500.0, 1200.0])
+        );
+        assert!(
+            round_trip["transitions"]["overhead"][0]
+                .get("releaseAfter")
+                .is_none()
+        );
+        assert!(round_trip["activities"]["flinch"].get("pose").is_none());
+
+        for fixed in [
+            serde_json::json!([0.0, 0.0]),
+            serde_json::json!([800.0, 800.0]),
+        ] {
+            serde_json::from_value::<BehaviorGraphDescriptor>(lowered_stance(fixed.clone()))
+                .unwrap()
+                .validate()
+                .unwrap_or_else(|error| panic!("{fixed} loads: {error}"));
+        }
+    }
+
+    // A release range must be finite, non-negative and ordered; one release
+    // row per activity keeps each entry's draw unambiguous; a `*` row has no
+    // activity to draw for; and a pose names something.
+    #[test]
+    fn release_rows_and_poses_reject_malformed_shapes_with_their_path() {
+        let release_path = "components.behavior.transitions.slam_overhead[2].releaseAfter";
+        for bad in [
+            serde_json::json!([900.0, 500.0]),
+            serde_json::json!([-1.0, 500.0]),
+            serde_json::json!([0.0, -1.0]),
+        ] {
+            let error =
+                serde_json::from_value::<BehaviorGraphDescriptor>(lowered_stance(bad.clone()))
+                    .unwrap()
+                    .validate()
+                    .expect_err("a malformed release range rejects");
+            assert!(error.to_string().contains(release_path), "{bad}: {error}");
+        }
+        let mut graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered_stance(serde_json::json!([500.0, 1200.0]))).unwrap();
+        graph.envelope.transitions.get_mut("slam_overhead").unwrap()[2].release_after =
+            Some([f32::NAN, 1200.0]);
+        let error = graph.validate().expect_err("a non-finite bound rejects");
+        assert!(error.to_string().contains(release_path), "{error}");
+
+        let mut graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered_stance(serde_json::json!([500.0, 1200.0]))).unwrap();
+        graph.envelope.transitions.get_mut("slam_overhead").unwrap()[1].release_after =
+            Some([100.0, 200.0]);
+        let error = graph.validate().expect_err("a second release row rejects");
+        assert!(
+            error.to_string().contains(release_path) && error.to_string().contains("second"),
+            "{error}"
+        );
+
+        let mut graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered_stance(serde_json::json!([500.0, 1200.0]))).unwrap();
+        graph.envelope.transitions.insert(
+            "*".to_string(),
+            vec![GuardedRow {
+                when: always_enabled(),
+                to: "flinch".to_string(),
+                release_after: Some([0.0, 1.0]),
+                queue: None,
+                after_moment: false,
+            }],
+        );
+        let error = graph.validate().expect_err("a `*` release row rejects");
+        assert!(
+            error
+                .to_string()
+                .contains("components.behavior.transitions.*[0].releaseAfter"),
+            "{error}"
+        );
+
+        let mut graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered_stance(serde_json::json!([500.0, 1200.0]))).unwrap();
+        graph.envelope.activities.get_mut("overhead").unwrap().pose = Some(String::new());
+        let error = graph.validate().expect_err("an empty pose rejects");
+        assert!(
+            error
+                .to_string()
+                .contains("components.behavior.activities.overhead.pose"),
+            "{error}"
+        );
+    }
+
+    // Task 5b: the runtime descriptor accepts the lowering-only `queue` on a
+    // rest's row to an attack, serializes it only when set, and rejects one
+    // naming no declared attack or sitting on a `*` row, with its path.
+    #[test]
+    fn queued_rows_name_a_declared_attack_on_an_activitys_own_rows() {
+        let mut lowered = lowered_stance(serde_json::json!([500.0, 1200.0]));
+        lowered["transitions"]["overhead"][0]["queue"] = serde_json::json!("slam");
+        let graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered.clone()).expect("a queued row deserializes");
+        let graph = graph.validate().expect("a queued row validates");
+        assert_eq!(
+            graph.envelope.transitions["overhead"][0].queue.as_deref(),
+            Some("slam")
+        );
+        let round_trip = serde_json::to_value(&graph).expect("the graph serializes");
+        assert_eq!(
+            round_trip["transitions"]["overhead"][0]["queue"],
+            serde_json::json!("slam")
+        );
+        assert!(
+            round_trip["transitions"]["slam_overhead"][0]
+                .get("queue")
+                .is_none()
+        );
+
+        let mut undeclared = lowered.clone();
+        undeclared["transitions"]["overhead"][0]["queue"] = serde_json::json!("sweep");
+        let error = serde_json::from_value::<BehaviorGraphDescriptor>(undeclared)
+            .unwrap()
+            .validate()
+            .expect_err("a queue naming no declared attack rejects");
+        assert!(
+            error
+                .to_string()
+                .contains("components.behavior.transitions.overhead[0].queue")
+                && error.to_string().contains("sweep"),
+            "{error}"
+        );
+
+        let mut graph: BehaviorGraphDescriptor = serde_json::from_value(lowered).unwrap();
+        graph.envelope.transitions.insert(
+            "*".to_string(),
+            vec![GuardedRow {
+                when: always_enabled(),
+                to: "slam_overhead".to_string(),
+                release_after: None,
+                queue: Some("slam".to_string()),
+                after_moment: false,
+            }],
+        );
+        let error = graph.validate().expect_err("a `*` queued row rejects");
+        assert!(
+            error
+                .to_string()
+                .contains("components.behavior.transitions.*[0].queue"),
+            "{error}"
+        );
+    }
+
+    /// The lowered shape of a strike's release and recover: the release fires
+    /// `slam` at a defaulted `hit` and its own rows wait on the moment (one
+    /// holding for an `ms` guard as well); both route a flinch to `coil`.
+    fn lowered_release() -> serde_json::Value {
+        serde_json::json!({
+            "initial": "coil",
+            "moveSpeed": 3.0,
+            "attacks": { "slam": { "damage": 14.0, "maxRange": 3.5, "cooldownMs": 1800.0 } },
+            "activities": {
+                "coil": { "animation": "swipe_windup", "motion": "hold", "pose": "coil" },
+                "slam_release": {
+                    "animation": "smash_strike", "motion": "hold", "attackTurn": "slam",
+                    "action": { "attack": "slam", "at": "hit", "atDefault": true },
+                    "staggerTo": "coil"
+                },
+                "slam_recover": {
+                    "animation": "smash_strike", "motion": "hold", "attackTurn": "slam",
+                    "staggerTo": "coil"
+                }
+            },
+            "transitions": {
+                "slam_release": [
+                    { "to": "slam_recover", "afterMoment": true,
+                      "when": { "op": "ge",
+                        "a": { "op": "input", "name": "@brain.timeInActivityMs" },
+                        "b": { "op": "const", "value": 900.0 } } }
+                ],
+                "slam_recover": [{ "to": "coil" }]
+            }
+        })
+    }
+
+    // Task 6: the runtime descriptor accepts the release exit's lowering-only
+    // `afterMoment`, `atDefault` and `staggerTo`, and serializes none of them
+    // when absent, so descriptors without stances keep their shape.
+    #[test]
+    fn lowered_release_exit_fields_deserialize_validate_and_round_trip() {
+        let graph: BehaviorGraphDescriptor =
+            serde_json::from_value(lowered_release()).expect("the lowered release deserializes");
+        let graph = graph.validate().expect("the lowered release validates");
+        let release = &graph.envelope.activities["slam_release"];
+        assert_eq!(release.stagger_to.as_deref(), Some("coil"));
+        assert_eq!(
+            release.action,
+            Some(ActionVerb::Attack {
+                name: "slam".to_string(),
+                at: Some("hit".to_string()),
+                at_default: true,
+            })
+        );
+        assert!(graph.envelope.transitions["slam_release"][0].after_moment);
+        assert!(!graph.envelope.transitions["slam_recover"][0].after_moment);
+
+        let json = serde_json::to_value(&graph).expect("the graph serializes");
+        assert_eq!(
+            json["transitions"]["slam_release"][0]["afterMoment"],
+            serde_json::json!(true)
+        );
+        assert!(
+            json["transitions"]["slam_recover"][0]
+                .get("afterMoment")
+                .is_none()
+        );
+        assert_eq!(json["activities"]["slam_recover"]["staggerTo"], "coil");
+        assert!(json["activities"]["coil"].get("staggerTo").is_none());
+        let reparsed: BehaviorGraphDescriptor =
+            serde_json::from_value(json).expect("the serialized graph parses");
+        assert_eq!(reparsed.validate().expect("and loads"), graph);
+    }
+
+    // A moment gate belongs to a leaf's own rows, and a flinch route names
+    // another activity at its leaf's own level.
+    #[test]
+    fn moment_rows_and_stagger_routes_reject_malformed_shapes_with_their_path() {
+        let reject = |edit: &dyn Fn(&mut serde_json::Value), path: &str| {
+            let mut json = lowered_release();
+            edit(&mut json);
+            let error = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+                .unwrap()
+                .validate()
+                .expect_err("the malformed shape rejects")
+                .to_string();
+            assert!(error.contains(path), "{path}: {error}");
+        };
+        reject(
+            &|json| {
+                json["transitions"]["*"] =
+                    serde_json::json!([{ "to": "coil", "afterMoment": true }])
+            },
+            "components.behavior.transitions.*[0].afterMoment",
+        );
+        reject(
+            &|json| {
+                json["activities"]["shell"] = serde_json::json!({ "layers": { "inner": {
+                    "initial": "a",
+                    "activities": { "a": { "animation": "idle" } },
+                    "transitions": {}
+                } } });
+                json["transitions"]["shell"] =
+                    serde_json::json!([{ "to": "coil", "afterMoment": true }]);
+            },
+            "components.behavior.transitions.shell[0].afterMoment",
+        );
+        for target in ["slam_release", "nowhere"] {
+            reject(
+                &|json| json["activities"]["slam_release"]["staggerTo"] = serde_json::json!(target),
+                "components.behavior.activities.slam_release.staggerTo",
+            );
+        }
+        reject(
+            &|json| {
+                json["activities"]["shell"] = serde_json::json!({
+                    "staggerTo": "coil",
+                    "layers": { "inner": {
+                        "initial": "a",
+                        "activities": { "a": { "animation": "idle" } },
+                        "transitions": {}
+                    } }
+                });
+            },
+            "components.behavior.activities.shell.staggerTo",
+        );
+    }
+
+    // A release's lowered pass count loads on a stance release,
+    // round-trips, and rejects out of its range or off a timed release.
+    #[test]
+    fn release_passes_load_on_a_timed_release_and_reject_elsewhere_with_their_path() {
+        let mut json = lowered_release();
+        json["activities"]["slam_release"]["passes"] = serde_json::json!(3);
+        let graph = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+            .unwrap()
+            .validate()
+            .expect("three passes on a timed release load");
+        assert_eq!(graph.envelope.activities["slam_release"].passes, Some(3));
+        let round_trip = serde_json::to_value(&graph).unwrap();
+        assert_eq!(round_trip["activities"]["slam_release"]["passes"], 3);
+        assert!(round_trip["activities"]["coil"].get("passes").is_none());
+
+        let reject = |edit: &dyn Fn(&mut serde_json::Value), needle: &str| {
+            let mut json = lowered_release();
+            edit(&mut json);
+            let error = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+                .unwrap()
+                .validate()
+                .expect_err("the malformed pass count rejects")
+                .to_string();
+            assert!(
+                error.contains("components.behavior.activities.") && error.contains(needle),
+                "{needle}: {error}"
+            );
+        };
+        for passes in [0, 9] {
+            reject(
+                &|json| json["activities"]["slam_release"]["passes"] = serde_json::json!(passes),
+                "slam_release.passes` must be 1 to 8",
+            );
+        }
+        reject(
+            &|json| {
+                json["activities"]["slam_release"]["passes"] = serde_json::json!(2);
+                json["activities"]["slam_release"]["action"] =
+                    serde_json::json!({ "attack": "slam" });
+            },
+            "slam_release.passes` belongs to a leaf whose own action fires `at`",
+        );
+        reject(
+            &|json| json["activities"]["slam_recover"]["passes"] = serde_json::json!(2),
+            "slam_recover.passes` belongs to a leaf whose own action fires `at`",
+        );
+        reject(
+            &|json| {
+                json["activities"]["slam_release"]["passes"] = serde_json::json!(2);
+                json["transitions"]["slam_release"][0]["afterMoment"] = serde_json::json!(false);
+            },
+            "slam_release.passes` belongs to a stance release",
+        );
+    }
+
+    // `leap` loads on a leaf beside its own timed attack and round-trips; it
+    // rejects without a clip moment to arrive by, with passes, and in a
+    // selector, each naming its path.
+    #[test]
+    fn leap_loads_beside_a_timed_attack_and_rejects_elsewhere_with_its_path() {
+        let mut json = lowered_release();
+        json["activities"]["slam_release"]["motion"] = serde_json::json!("leap");
+        let graph = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+            .unwrap()
+            .validate()
+            .expect("a leap beside a timed attack loads");
+        assert_eq!(
+            graph.envelope.activities["slam_release"].motion,
+            Some(MotionVerb::Leap)
+        );
+        let round_trip = serde_json::to_value(&graph).unwrap();
+        assert_eq!(round_trip["activities"]["slam_release"]["motion"], "leap");
+
+        let reject = |edit: &dyn Fn(&mut serde_json::Value), needle: &str| {
+            let mut json = lowered_release();
+            json["activities"]["slam_release"]["motion"] = serde_json::json!("leap");
+            edit(&mut json);
+            let error = serde_json::from_value::<BehaviorGraphDescriptor>(json)
+                .unwrap()
+                .validate()
+                .expect_err("the misplaced leap rejects")
+                .to_string();
+            assert!(error.contains(needle), "{needle}: {error}");
+        };
+        let untimed = "`components.behavior.activities.slam_release.motion` is \"leap\", which arrives at its attack's clip moment, so `components.behavior.activities.slam_release.action` must name an attack with `at`";
+        reject(
+            &|json| {
+                json["activities"]["slam_release"]["action"] =
+                    serde_json::json!({ "attack": "slam" });
+            },
+            untimed,
+        );
+        reject(
+            &|json| {
+                let release = json["activities"]["slam_release"].as_object_mut().unwrap();
+                release.remove("action");
+            },
+            untimed,
+        );
+        reject(
+            &|json| json["activities"]["slam_release"]["passes"] = serde_json::json!(2),
+            "`components.behavior.activities.slam_release.motion` is \"leap\", which arrives at one clip moment, so `components.behavior.activities.slam_release.passes` must be 1",
+        );
+        reject(
+            &|json| {
+                json["activities"]["roam"] = serde_json::json!({
+                    "layers": { "move": [
+                        { "when": { "op": "const", "value": true }, "motion": "leap" },
+                        "hold"
+                    ] }
+                });
+            },
+            "`components.behavior.activities.roam.layers.move[0].motion` is \"leap\", which arrives at its own leaf's clip moment",
+        );
+    }
+
+    // `queueRange` is a contact attack's, at least its `maxRange`,
+    // and a weapon attack rejects it as it rejects `maxRange`. Omitted, the
+    // queue distance is `maxRange`; combat slots still derive from `maxRange`.
+    #[test]
+    fn queue_range_is_a_contact_attacks_at_least_its_max_range() {
+        let attack = |fields: serde_json::Value| -> AttackParams {
+            serde_json::from_value(fields).expect("the attack parses")
+        };
+        let leap = attack(serde_json::json!({
+            "damage": 30.0, "maxRange": 3.0, "queueRange": 15.0, "cooldownMs": 4000.0
+        }));
+        validate_attacks(&BTreeMap::from([("leap".to_string(), leap.clone())]))
+            .expect("a queue range past the hit distance loads");
+        assert_eq!(leap.queue_distance(), Some(15.0));
+        assert_eq!(
+            serde_json::to_value(&leap).unwrap()["queueRange"],
+            serde_json::json!(15.0)
+        );
+        let graph = BehaviorGraphDescriptor {
+            attacks: BTreeMap::from([("leap".to_string(), leap)]),
+            ..serde_json::from_value(lowered_release()).unwrap()
+        };
+        let action = ActionVerb::Attack {
+            name: "leap".to_string(),
+            at: None,
+            at_default: false,
+        };
+        assert_eq!(graph.engagement_radius_for_action(Some(&action)), 3.0);
+        assert_eq!(graph.standoff_distance_for_action(Some(&action)), 3.0);
+
+        let jab =
+            attack(serde_json::json!({ "damage": 5.0, "maxRange": 2.0, "cooldownMs": 900.0 }));
+        assert_eq!(
+            jab.queue_distance(),
+            Some(2.0),
+            "omitted, it queues at its reach"
+        );
+        assert!(
+            serde_json::to_value(&jab)
+                .unwrap()
+                .get("queueRange")
+                .is_none()
+        );
+        let equal = attack(serde_json::json!({
+            "damage": 5.0, "maxRange": 2.0, "queueRange": 2.0, "cooldownMs": 900.0
+        }));
+        validate_attacks(&BTreeMap::from([("jab".to_string(), equal)]))
+            .expect("a queue range equal to the reach loads");
+
+        for (fields, needle) in [
+            (
+                serde_json::json!({ "damage": 5.0, "maxRange": 2.0, "queueRange": 1.5, "cooldownMs": 900.0 }),
+                "`components.behavior.attacks.jab.queueRange` must be a finite value >= `components.behavior.attacks.jab.maxRange` (2)",
+            ),
+            (
+                serde_json::json!({ "weapon": "rifle", "queueRange": 15.0 }),
+                "`components.behavior.attacks.jab.queueRange` must be omitted when `components.behavior.attacks.jab.weapon` is present",
+            ),
+        ] {
+            let error = validate_attacks(&BTreeMap::from([("jab".to_string(), attack(fields))]))
+                .expect_err("the queue range rejects")
+                .to_string();
+            assert!(error.contains(needle), "{error}");
+        }
+    }
+
+    // The repeating-release states come from activities with
+    // `passes` above 1 only, each named once.
+    #[test]
+    fn repeating_release_states_name_only_a_repeating_releases_animation() {
+        let mut json = lowered_release();
+        let single = serde_json::from_value::<BehaviorGraphDescriptor>(json.clone()).unwrap();
+        assert!(super::super::repeating_release_states(&single).is_empty());
+        json["activities"]["slam_release"]["passes"] = serde_json::json!(3);
+        let combo = serde_json::from_value::<BehaviorGraphDescriptor>(json).unwrap();
+        assert_eq!(
+            super::super::repeating_release_states(&combo),
+            vec!["smash_strike"]
         );
     }
 }

@@ -163,34 +163,61 @@ enum DeltaApply {
     Rejected,
 }
 
-/// Descriptor-immutable locomotion reference data for a remote enemy. The host
-/// replicates only its changing pose and mesh state; the client reads this from the
-/// shared descriptor table when that remote is materialized.
+/// Descriptor-immutable stride-rate reference data for a remote enemy: every
+/// state its graph rate-scales, not only a walk (the name predates the shared
+/// rule). The host replicates only its changing pose and mesh state; the
+/// client reads this from the shared descriptor table when that remote is
+/// materialized.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RemoteEnemyWalkPlayback {
+    /// The archetype's base `moveSpeed`, the uncalibrated reference. The host
+    /// divides by the same base value whatever an activity's `speed`.
     pub(crate) move_speed: f32,
-    /// The graph's locomotion state. It and its directional variants
-    /// (`_left`, `_right`, `_backward`) scale with presented speed.
-    pub(crate) walk_state: String,
+    /// The graph's rate-scaled states (foundation `RateScaledStates`: its
+    /// locomotion state and every state an activity plays under a motion that
+    /// steers, position goals included) whose base or any directional variant
+    /// (`_left`, `_right`, `_backward`) the mesh declares. The host matches
+    /// the same set the same way, so a mesh declaring `run_left` but not `run`
+    /// scales `run_left` on both. Each variant scales with presented speed.
+    pub(crate) scaled_states: Vec<RemoteScaledState>,
+}
+
+/// One rate-scaled state of a remote enemy's graph.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RemoteScaledState {
+    pub(crate) state: String,
     /// Load-derived speed of each variant's clip, indexed by
-    /// [`TravelVariant::index`]. The runtime state applies its authored
-    /// `travelSpeed` override before this value.
+    /// [`TravelVariant::index`]; `None` for a variant the mesh does not
+    /// declare. The runtime state applies its authored `travelSpeed` override
+    /// before this value.
     pub(crate) derived_travel_speeds: [Option<f32>; 4],
 }
 
 impl RemoteEnemyWalkPlayback {
-    /// A reference whose only calibrated clip is the base walk's.
+    /// A reference whose one scaled state has only its base clip calibrated.
     #[cfg(test)]
     pub(crate) fn base(
         move_speed: f32,
-        walk_state: impl Into<String>,
+        scaled_state: impl Into<String>,
         derived_travel_speed: Option<f32>,
     ) -> Self {
         Self {
             move_speed,
-            walk_state: walk_state.into(),
-            derived_travel_speeds: [derived_travel_speed, None, None, None],
+            scaled_states: vec![RemoteScaledState {
+                state: scaled_state.into(),
+                derived_travel_speeds: [derived_travel_speed, None, None, None],
+            }],
         }
+    }
+
+    /// The derived clip speed of the scaled-state variant `current` presents:
+    /// `None` when `current` is no rate-scaled state or variant of one,
+    /// `Some(None)` when its clip has no derived stride.
+    fn derived_speed_of(&self, current: &str) -> Option<Option<f32>> {
+        self.scaled_states.iter().find_map(|scaled| {
+            let variant = TravelVariant::of_state(&scaled.state, current)?;
+            Some(scaled.derived_travel_speeds[variant.index()])
+        })
     }
 }
 
@@ -2662,7 +2689,8 @@ impl ClientReplication {
     }
 
     /// Record (or clear) the immutable descriptor data used to derive a remote
-    /// enemy's walk playback rate. Called by descriptor-aware receive glue, while
+    /// enemy's stride playback rate for every rate-scaled state. Called by
+    /// descriptor-aware receive glue, while
     /// all per-frame registry writes remain in [`Self::sample_into_registry`].
     pub(crate) fn cache_remote_enemy_walk_playback(
         &mut self,
@@ -2856,9 +2884,9 @@ impl ClientReplication {
     }
 
     /// Apply the rate for one presented remote pose. Only an enemy whose current
-    /// mesh state is the descriptor's locomotion walk state, or a directional
-    /// variant of it, receives its displayed XZ speed; every other state
-    /// deliberately rests at rate 1. That speed includes knockback, which the
+    /// mesh state is one of the descriptor graph's rate-scaled states, or a
+    /// directional variant of one, receives its displayed XZ speed; every other state
+    /// plays its fixed `playbackRate` (default 1). That speed includes knockback, which the
     /// host's steering-velocity rate excludes (sim
     /// `update_brain_animation_playback_rates`): a known divergence until
     /// enemies carry velocity on the wire.
@@ -2873,37 +2901,37 @@ impl ClientReplication {
         let Some(reference) = self.remote_enemy_walk_playback.get(&network_id) else {
             return;
         };
-        let raw_ratio = registry
+        // The host's per-state policy (`MeshAnimation::stride_playback_target`)
+        // over the same local descriptor fields: `scaleWithSpeed: false` opts
+        // out, `maxPlaybackRate` bounds the clamp, and an unscaled state plays
+        // its fixed `playbackRate` from the frame it is entered.
+        let Some(target) = registry
             .get_component::<MeshComponent>(entity_id)
             .ok()
             .and_then(|mesh| mesh.animation.as_ref())
             .and_then(|animation| {
-                let variant =
-                    TravelVariant::of_state(&reference.walk_state, &animation.current_state);
-                let Some(variant) = variant.filter(|_| animation.speed_scale) else {
-                    return Some(1.0);
-                };
-                let state = animation.states.get(&animation.current_state)?;
-                let effective =
-                    state.effective_travel_speed(reference.derived_travel_speeds[variant.index()]);
-                Some(MeshAnimation::locomotion_rate_ratio(
-                    speed_xz,
-                    effective,
-                    reference.move_speed,
-                ))
-            });
-        let Some(raw_ratio) = raw_ratio else {
+                let stride_ratio = reference
+                    .derived_speed_of(&animation.current_state)
+                    .filter(|_| animation.speed_scale)
+                    .map(|derived| {
+                        let effective = animation
+                            .states
+                            .get(&animation.current_state)
+                            .map_or(derived, |state| state.effective_travel_speed(derived));
+                        MeshAnimation::locomotion_rate_ratio(
+                            speed_xz,
+                            effective,
+                            reference.move_speed,
+                        )
+                    });
+                let target = animation.stride_playback_target(stride_ratio);
+                animation
+                    .playback_rate_target_needs_update(target)
+                    .then_some(target)
+            })
+        else {
             return;
         };
-
-        let needs_rebase = registry
-            .get_component::<MeshComponent>(entity_id)
-            .ok()
-            .and_then(|mesh| mesh.animation.as_ref())
-            .is_some_and(|animation| animation.playback_rate_needs_update(raw_ratio));
-        if !needs_rebase {
-            return;
-        }
 
         // `sample_into_registry` intentionally allocates its mapped-id vector
         // before this helper to split the map and registry borrows. This helper
@@ -2915,7 +2943,7 @@ impl ClientReplication {
         let Some(animation) = mesh.animation.as_mut() else {
             return;
         };
-        animation.update_playback_rate(raw_ratio, frame_anim_time);
+        animation.apply_playback_rate_target(target, frame_anim_time);
         let _ = registry.set_component(entity_id, mesh);
     }
 
@@ -3573,6 +3601,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         };
         let mut states = HashMap::new();
@@ -3595,6 +3626,9 @@ mod tests {
             crossfade_ms: 50.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let mut states = HashMap::new();
@@ -5508,8 +5542,10 @@ mod tests {
         let measured = 3.0_f32;
         let reference = RemoteEnemyWalkPlayback {
             move_speed: 3.5,
-            walk_state: "locomotion".to_string(),
-            derived_travel_speeds: [Some(2.5), Some(2.0), Some(2.4), Some(1.5)],
+            scaled_states: vec![RemoteScaledState {
+                state: "locomotion".to_string(),
+                derived_travel_speeds: [Some(2.5), Some(2.0), Some(2.4), Some(1.5)],
+            }],
         };
         for (state, expected) in [
             ("locomotion_left", measured / 2.0),

@@ -630,11 +630,18 @@ fn selector_layer<'a>(
 /// Resolve the one mesh animation state driven by the active path. A nested
 /// phase's clip wins even when that phase has no action (windup/recover), then
 /// the active composite supplies locomotion, and a root leaf supplies the
-/// degenerate one-level fallback.
+/// degenerate one-level fallback. A locomotion state yields to the rest clip
+/// at a standstill: a root leaf that pursues without acting, and a nested
+/// leaf that only replays its moving ancestor's travel cycle (see
+/// [`replays_ancestor_travel`]).
 pub(super) fn animation_for_path(brain: &BrainComponent, moving: bool) -> Option<&str> {
     if brain.active_depth() > 1 {
-        let (_, leaf) = brain.activity_at_depth(brain.active_depth() - 1)?;
+        let leaf_depth = brain.active_depth() - 1;
+        let (_, leaf) = brain.activity_at_depth(leaf_depth)?;
         if leaf.animation.is_some() {
+            if !moving && replays_ancestor_travel(brain, leaf_depth, leaf) {
+                return rest_animation(&brain.graph);
+            }
             return leaf.animation.as_deref();
         }
     }
@@ -649,6 +656,39 @@ pub(super) fn animation_for_path(brain: &BrainComponent, moving: bool) -> Option
         return rest_animation(&brain.graph);
     }
     leaf.animation.as_deref()
+}
+
+/// Whether a nested leaf is locomotion by inheritance: it declares no motion,
+/// action, layer, pose or attack mark of its own, and plays the same clip as
+/// the nearest ancestor that supplies its motion, when that ancestor pursues
+/// or travels (its own locomotion motion, or a `move` selector that can
+/// engage). Such a leaf is that ancestor's travel cycle under another name,
+/// so it rests at a standstill as the ancestor would. A leaf with a clip of
+/// its own (a hand-written windup or recover) is a phase, and keeps it.
+fn replays_ancestor_travel(
+    brain: &BrainComponent,
+    leaf_depth: usize,
+    leaf: &BehaviorActivityDescriptor,
+) -> bool {
+    if leaf.motion.is_some()
+        || leaf.action.is_some()
+        || !leaf.layers.is_empty()
+        || commits_to_target(leaf)
+    {
+        return false;
+    }
+    let Some(supplier) = (0..leaf_depth).rev().find_map(|depth| {
+        let (_, activity) = brain.activity_at_depth(depth)?;
+        (activity.motion.is_some() || activity.layers.contains_key("move")).then_some(activity)
+    }) else {
+        return false;
+    };
+    let travels = is_locomotion_activity(supplier)
+        || supplier
+            .layers
+            .get("move")
+            .is_some_and(|layer| selector_can_engage("move", layer));
+    travels && supplier.animation.is_some() && supplier.animation == leaf.animation
 }
 
 pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
@@ -1494,5 +1534,51 @@ mod statechart_tests {
         assert!(select_transition_path(&programs, &mut scope, &mut brain));
         assert_eq!(brain.active_path_names(), ["flinch"]);
         assert_eq!(brain.damage_in_activity(0), Some(0.0));
+    }
+
+    /// The nested fixture resting in `rest`, its offense windup playing
+    /// `windup` clip, seated in `engage` → `windup`.
+    fn seated_windup(windup: &str) -> BrainComponent {
+        let mut graph = nested_fixture(false);
+        graph.envelope.initial = "rest".to_string();
+        let BehaviorLayerDescriptor::Graph(offense) = graph
+            .envelope
+            .activities
+            .get_mut("engage")
+            .unwrap()
+            .layers
+            .get_mut("offense")
+            .unwrap()
+        else {
+            panic!("the offense is a graph");
+        };
+        offense.activities.get_mut("windup").unwrap().animation = Some(windup.to_string());
+        let engage = graph
+            .envelope
+            .activities
+            .keys()
+            .position(|name| name == "engage")
+            .unwrap();
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert!(brain.enter_activity_at(0, engage));
+        assert_eq!(brain.active_path_names(), ["engage", "windup"]);
+        brain
+    }
+
+    // A nested actionless leaf that replays its chasing ancestor's travel
+    // cycle is locomotion: stopped, it plays the rest clip, not a run in place.
+    #[test]
+    fn a_stopped_nested_leaf_replaying_its_ancestors_travel_cycle_plays_rest() {
+        let brain = seated_windup("locomotion");
+        assert_eq!(animation_for_path(&brain, false), Some("idle"));
+        assert_eq!(animation_for_path(&brain, true), Some("locomotion"));
+    }
+
+    // A nested leaf with a clip of its own is a phase: it plays still.
+    #[test]
+    fn a_stopped_nested_phase_with_its_own_clip_keeps_it() {
+        let brain = seated_windup("windup");
+        assert_eq!(animation_for_path(&brain, false), Some("windup"));
+        assert_eq!(animation_for_path(&brain, true), Some("windup"));
     }
 }

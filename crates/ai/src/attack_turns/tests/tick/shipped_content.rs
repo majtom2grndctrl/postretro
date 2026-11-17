@@ -204,7 +204,8 @@ fn dev_mod_declares_the_surface_attack_tokens_and_arena_profile() {
     assert_eq!(in_arena("heavy"), (1, 4000.0), "left out, so as declared");
 }
 
-// S1: two shipped reference enemies on one player each slam within 10 s,
+// S1: two shipped reference enemies on one player each slam within 12 s (the
+// combo's 2,000 ms drawn fist can stand in line before a brute's first slam),
 // never within 4 s of each other, and while one slams the other is granted
 // a one-`melee` strike (its jab, lunge or combo), the third `melee`. Three shipped rifle troopers on one player never hold more than
 // two `ranged` turns at once, and each fires a burst and then repositions.
@@ -252,8 +253,8 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     for index in 0..2 {
         let first = slams.iter().find(|(brute, _)| *brute == index);
         assert!(
-            first.is_some_and(|(_, at)| *at <= 10.0),
-            "brute {index} slams within 10 s: {slams:?}"
+            first.is_some_and(|(_, at)| *at <= 12.0),
+            "brute {index} slams within 12 s: {slams:?}"
         );
     }
     assert!(

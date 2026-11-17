@@ -28,7 +28,7 @@ use crate::movement::agent_motion::{
 };
 use crate::nav::{NavGate, NavGraph, NavStart, distance_xz, find_path_from};
 use postretro_collision::EnvironmentView;
-use postretro_entities::components::agent::AgentComponent;
+use postretro_entities::components::agent::{AgentComponent, ArrivalLeash};
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
 
 mod corpse;
@@ -71,6 +71,17 @@ const ARRIVAL_RADIUS_FACTOR: f32 = 1.5;
 /// deliberately larger than the hard-stop radius (`ARRIVAL_RADIUS_FACTOR`) so
 /// easing happens before `arrived` zeroes the final low-speed tail.
 const ARRIVAL_SLOWDOWN_RADIUS_FACTOR: f32 = 7.0;
+
+/// Speed floor, as a fraction of the steered speed, for an agent inside its
+/// final arrival band that its [`ArrivalLeash`] still holds short. Arrival
+/// easing scales speed by distance to the destination, which tends to zero
+/// at the destination; without the floor a leashed agent would creep ever
+/// slower toward the point that satisfies its leash.
+const LEASH_PRESS_SPEED_FRACTION: f32 = 0.25;
+
+/// Slack on an [`ArrivalLeash`] radius, in world units, so a destination
+/// placed exactly on the leash still satisfies it after float rounding.
+const LEASH_TOLERANCE: f32 = 0.01;
 
 /// Tight collision-scale acceptance band for a mandatory clearance vertex: two
 /// skins, one for the collision-tangent target and one for the fixed-tick landing
@@ -271,9 +282,26 @@ impl AgentPathState {
 /// finiteness guard) so a NaN/inf target never enters the steering state. Also a
 /// silent no-op when the entity has no agent component.
 pub fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3) {
+    set_destination_leashed(registry, agent, pos, None);
+}
+
+/// [`set_destination`] with an [`ArrivalLeash`]: the agent counts `pos`
+/// reached only once it also stands within the leash. `None` drops any leash
+/// a previous call set. A non-finite or negative leash is dropped the same
+/// way, so the arrival falls back to the destination's band alone.
+///
+/// The AI pass leashes a chaser bound for a combat slot to its target, so the
+/// slot's arrival band never parks it outside the slot's ring.
+pub fn set_destination_leashed(
+    registry: &mut EntityRegistry,
+    agent: EntityId,
+    pos: Vec3,
+    leash: Option<ArrivalLeash>,
+) {
     if !pos.is_finite() {
         return;
     }
+    let leash = leash.filter(|leash| leash.anchor.is_finite() && leash.radius >= 0.0);
     let Ok(component) = registry.get_component::<AgentComponent>(agent) else {
         return;
     };
@@ -282,6 +310,7 @@ pub fn set_destination(registry: &mut EntityRegistry, agent: EntityId, pos: Vec3
     // sole place the path is rebuilt.
     let mut updated = component.clone();
     updated.destination = Some(pos);
+    updated.arrival_leash = leash;
     let _ = registry.set_component(agent, updated);
 }
 
@@ -294,6 +323,7 @@ pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
     };
     let mut updated = component.clone();
     updated.destination = None;
+    updated.arrival_leash = None;
     updated.planned_destination = None;
     updated.path.clear();
     updated.path_crossings.clear();
@@ -1255,13 +1285,27 @@ fn goal_speed(
     // this window defensively: a fast turn can show legitimately small forward
     // progress while the heading swings, so suppression there stays correct.)
     if is_final {
-        if final_distance <= arrival_radius {
+        // A leash holds the arrival until the agent also stands within it:
+        // inside the band it presses on toward the destination, which lies
+        // within the leash, at no less than the press floor.
+        // A destination outside its own leash (a route snapped off the
+        // requested point) cannot satisfy it, so the band alone decides.
+        let held_by_leash = agent.arrival_leash.is_some_and(|leash| {
+            let reach = leash.radius + LEASH_TOLERANCE;
+            distance_xz(position, leash.anchor) > reach
+                && distance_xz(target, leash.anchor) <= reach
+        });
+        if final_distance <= arrival_radius && !held_by_leash {
             agent.arrived = true;
             return 0.0;
         }
         agent.arrived = false;
         if final_distance < slowdown_radius {
-            return agent.steered_speed() * (final_distance / slowdown_radius).clamp(0.0, 1.0);
+            let eased = agent.steered_speed() * (final_distance / slowdown_radius).clamp(0.0, 1.0);
+            if held_by_leash {
+                return eased.max(LEASH_PRESS_SPEED_FRACTION * agent.steered_speed());
+            }
+            return eased;
         }
     }
     agent.steered_speed()

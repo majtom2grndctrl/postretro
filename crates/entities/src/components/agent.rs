@@ -20,6 +20,19 @@ use serde::{Deserialize, Serialize};
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
 use postretro_foundation::{GroundRef, KnockbackResponse, NavAgentParams};
 
+/// A bound on where a path-following arrival may end: the agent counts its
+/// destination reached only once it also stands within `radius` (XZ) of
+/// `anchor`. An engaged chaser carries one so the destination's arrival band
+/// never parks it farther from its target than its combat slot stands.
+/// Host-only, rewritten by the AI pass every tick it sets a destination.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ArrivalLeash {
+    /// The point the agent must end near, in world space: the chase target.
+    pub anchor: Vec3,
+    /// The farthest XZ distance from `anchor` an arrival may end at.
+    pub radius: f32,
+}
+
 /// A pinned agent's walk out of a mover's course. Host-only.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PinEscape {
@@ -170,6 +183,10 @@ pub struct AgentComponent {
     /// Where the agent is trying to go. `None` when idle (no destination set);
     /// the steering system plans a path to it when `Some`.
     pub destination: Option<Vec3>,
+    /// Bounds where an arrival at `destination` may end. `None` arrives
+    /// anywhere inside the destination's arrival band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrival_leash: Option<ArrivalLeash>,
     /// The destination the current `path` was planned for. The steering tick
     /// replans when the live `destination` drifts beyond a threshold from THIS
     /// position (cumulative drift-from-the-plan, not the per-call delta), so a
@@ -283,6 +300,7 @@ impl AgentComponent {
             mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,
             destination: None,
+            arrival_leash: None,
             planned_destination: None,
             replan_cooldown_ticks: 0,
             arrived: false,

@@ -9199,6 +9199,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const LEAP_SPEED: f32 = 3.5;
     const LEAP_SHARE: f32 = 0.25;
     const FLURRY_FROM: f32 = 0.65;
+    const PRESS_BELLOW_FROM: f32 = 0.75;
+    const PRESS_FLURRY_FROM: f32 = 0.4;
+    const PRESS_STALL_MS: f32 = 3000.0;
     const CROUCH_WAIT_MS: f32 = 3000.0;
     const COMBO_RECOVER_MS: f32 = 400.0;
     const LEAP_RECOVER_MS: f32 = 600.0;
@@ -9316,8 +9319,9 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     const OVERHEAD_HOLD: [f32; 2] = [500.0, 1100.0];
     const COCK_HOLD: [f32; 2] = [400.0, 800.0];
     const BELLOW_HOLD: [f32; 2] = [800.0, 1400.0];
-    // The combo's and the leap's tells hold exactly 666 ms.
-    const TELL_HOLD: [f32; 2] = [666.0, 666.0];
+    // The combo's tell holds exactly 2,000 ms, the leap's exactly 666 ms.
+    const FLURRY_HOLD: [f32; 2] = [2000.0, 2000.0];
+    const CROUCH_HOLD: [f32; 2] = [666.0, 666.0];
     const OVERHEAD_BREAK: f32 = 30.0;
     const COCK_BREAK: f32 = 20.0;
     const BELLOW_BREAK: f32 = 40.0;
@@ -9359,6 +9363,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
         initial: "approach".to_string(),
         activities: BTreeMap::from([
             ("approach".to_string(), activity("run", None)),
+            ("press".to_string(), activity("run", None)),
             (
                 "flinch".to_string(),
                 activity("flinch", Some(MotionVerb::Hold)),
@@ -9468,6 +9473,26 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
                         and(target_within(JAB_RANGE), roll_from(FLURRY_FROM)),
                     ),
                     edge("cock", target_within(JAB_RANGE)),
+                    edge("press", target_within(SLAM_RANGE)),
+                ],
+            ),
+            (
+                "press".to_string(),
+                vec![
+                    edge("approach", target_beyond(SLAM_RANGE + 1.0)),
+                    edge(
+                        "bellow",
+                        and(target_within(CHARGE_REACH), roll_from(PRESS_BELLOW_FROM)),
+                    ),
+                    edge(
+                        "flurry",
+                        and(target_within(JAB_RANGE), roll_from(PRESS_FLURRY_FROM)),
+                    ),
+                    edge("cock", target_within(JAB_RANGE)),
+                    edge(
+                        "overhead",
+                        and(target_within(SLAM_RANGE), in_activity_ms(PRESS_STALL_MS)),
+                    ),
                 ],
             ),
             (
@@ -9558,7 +9583,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             ),
             (
                 "combo_flurry".to_string(),
-                hold_rows("flurry", "combo", FLURRY_BREAK, TELL_HOLD),
+                hold_rows("flurry", "combo", FLURRY_BREAK, FLURRY_HOLD),
             ),
             ("combo_release".to_string(), after_moment("combo", always())),
             (
@@ -9567,7 +9592,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
             ),
             (
                 "leap_crouch".to_string(),
-                hold_rows("crouch", "leap", CROUCH_BREAK, TELL_HOLD),
+                hold_rows("crouch", "leap", CROUCH_BREAK, CROUCH_HOLD),
             ),
             ("leap_release".to_string(), after_moment("leap", always())),
             (

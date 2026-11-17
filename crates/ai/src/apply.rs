@@ -16,9 +16,11 @@ use super::{
 use crate::agent_steering;
 use crate::ai_host::AiHost;
 use crate::emission::entity_emitter;
+use crate::nav::distance_xz;
 use crate::sim::EnemyProjectilePresentationSpawn;
 use crate::weapon_controller::AiWeaponControllers;
 use glam::Quat;
+use postretro_entities::components::agent::ArrivalLeash;
 use postretro_entities::components::brain::{BrainComponent, TravelVariant};
 use postretro_entities::components::health::{DamageContext, DamageProducer};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
@@ -142,7 +144,11 @@ where
         };
 
         // Steering: chase sets the destination to a selected combat slot when
-        // one is available, otherwise to the raw target position. Fixed
+        // one is available, otherwise to the raw target position. A slot
+        // destination is leashed to the target: the agent arrives only once
+        // it stands no farther from the target than the slot does (never less
+        // than the standoff), so the slot's arrival band cannot park it
+        // outside the ring the standoff placed the slot on. Fixed
         // position goals write their resolved destination directly. Clear
         // stands down; hold releases the agent on the tick it takes over and
         // leaves it untouched thereafter.
@@ -152,7 +158,18 @@ where
             SteeringIntent::Chase => {
                 if let Some(target) = outcome.target {
                     let destination = outcome.combat_slot.unwrap_or(target.position);
-                    agent_steering::set_destination(registry, outcome.id, destination);
+                    let leash = outcome.combat_slot.map(|slot| ArrivalLeash {
+                        anchor: target.position,
+                        radius: outcome
+                            .standoff_distance
+                            .max(distance_xz(slot, target.position)),
+                    });
+                    agent_steering::set_destination_leashed(
+                        registry,
+                        outcome.id,
+                        destination,
+                        leash,
+                    );
                     // Diagnostic read of the steering surface: an agent that
                     // cannot route to the destination it was given AND holds no
                     // previous path to keep following is `blocked`. Surface it

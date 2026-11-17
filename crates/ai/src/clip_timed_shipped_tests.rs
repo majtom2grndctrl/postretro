@@ -614,12 +614,12 @@ fn shipped_brute_charge_strides_run_past_the_default_playback_cap() {
     );
 }
 
-// The combo: `flurry` holds the drawn fist exactly 666 ms, then the release
+// The combo: `flurry` holds the drawn fist exactly 2,000 ms, then the release
 // plays `jab_combo` (`jab_quick` at a fixed 2.5x) from clip time 0 and lands a
 // 5-point jab at `hit` on each of its three passes, about 320 ms apart, under
 // one turn. It recovers leaning back and rests coiled.
 #[test]
-fn shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_666_ms_hold() {
+fn shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_2000_ms_hold() {
     let run = brute_run(
         "flurry",
         "combo",
@@ -627,7 +627,7 @@ fn shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_666_ms_hold() {
         6.0,
         |_, _, _| None,
     );
-    assert_held_exactly(held_ms(&run, "flurry", "combo_release"), 666.0, &run);
+    assert_held_exactly(held_ms(&run, "flurry", "combo_release"), 2000.0, &run);
     let release = run.entered("combo_release");
     let recover = run.entered("combo_recover");
     assert!(
@@ -1348,5 +1348,62 @@ fn shipped_limitator_reposition_roll_picks_strafe_and_fire_or_stop_and_aim() {
             && branches.contains(&true)
             && branches.contains(&false),
         "consecutive cycles take both branches: {branches:?}"
+    );
+}
+
+// The shipped brute held 2.2 m off, past jab reach and inside slam range, on
+// a roll that names no tell there (0.6: neither the crouch, the roar nor a jab-
+// reach fist) still reaches one: `press` rolls again and, held short of jab
+// reach, takes the crouch. Stopped while it presses it plays its rest clip,
+// not a run in place.
+#[test]
+fn shipped_brute_held_past_jab_reach_on_a_mid_roll_reaches_a_tell() {
+    let mut shipped = Shipped::new(dev_manifest(), Vec3::new(2.2, 0.0, 0.0));
+    let brute = shipped.spawn("reference_enemy");
+    give_reference_armor(&mut shipped.reg, brute);
+    // No navigation: the brute engages and chases, but cannot close.
+    let mut engaged = false;
+    for _ in 0..120 {
+        shipped.tick();
+        if shipped.path(brute).ends_with("/approach") {
+            engaged = true;
+            break;
+        }
+    }
+    assert!(engaged, "the brute engages: {}", shipped.path(brute));
+    let mut brain = shipped
+        .reg
+        .get_component::<BrainComponent>(brute)
+        .unwrap()
+        .clone();
+    brain.activity_roll[1] = 0.6;
+    shipped.reg.set_component(brute, brain).unwrap();
+
+    let mut paths = Vec::new();
+    let mut pressing_states = Vec::new();
+    for _ in 0..(3.5 / DT) as usize {
+        shipped.tick();
+        let path = shipped.path(brute);
+        if path.ends_with("/press") {
+            pressing_states.push(shipped.anim_state(brute));
+        }
+        let still_closing = path.ends_with("/approach") || path.ends_with("/press");
+        paths.push(path);
+        if !still_closing {
+            break;
+        }
+    }
+    assert!(
+        paths.iter().any(|path| path.ends_with("/press")),
+        "the mid roll presses in: {paths:?}"
+    );
+    let last = paths.last().unwrap();
+    assert!(
+        !last.ends_with("/approach") && !last.ends_with("/press"),
+        "the brute reaches a tell: {paths:?}"
+    );
+    assert!(
+        pressing_states.iter().skip(1).all(|state| state == "idle"),
+        "a stopped press plays rest: {pressing_states:?}"
     );
 }

@@ -40,8 +40,11 @@ const CLOSE_STANDOFF = 1.5;
 const LEAP_QUEUE_RANGE = 15;
 // The leap steers at this multiple of `moveSpeed`. See the leap below.
 const LEAP_SPEED = 3.5;
-// The combo and the leap each hold their tell for exactly this long.
-const TELL_MS = 666;
+// The combo holds its drawn fist this long before the jabs, long enough to
+// read as a wind-up and not a stutter.
+const FLURRY_MS = 2000;
+// The leap holds its crouch this long.
+const CROUCH_MS = 666;
 const LEASH_RANGE = 100;
 const RETURN_ARRIVAL_EPSILON = 1;
 // Patrol and investigation stroll on the walk: 0.4 of `moveSpeed` is 1.2 m/s,
@@ -53,11 +56,21 @@ const STROLL = 0.4;
 //   a quarter of approaches from afar leap, and the rest close in;
 // - 0.85 and up at charge reach, the roar;
 // - 0.65 to 0.85 at jab reach, the combo's drawn fist;
-// - else, at jab reach, the cocked fist.
+// - else, at jab reach, the cocked fist;
+// - any other roll at slam range presses in (`press`, below).
 const OVERHEAD_SHARE = 0.4;
 const LEAP_SHARE = 0.25;
 const BELLOW_FROM = 0.85;
 const FLURRY_FROM = 0.65;
+// `press` closes the last stretch from slam range on a fresh roll, about the
+// shares `approach` gives the rolls it sends here: 0.75 and up the roar at
+// charge reach, 0.4 to 0.75 the combo's drawn fist at jab reach, else the
+// cocked fist there. Held short of jab reach this long (a crowd, a ledge) it
+// takes the crouch, whose slam and lunge reach where the jab does not, so no
+// roll leaves the brute running in place inside slam range.
+const PRESS_BELLOW_FROM = 0.75;
+const PRESS_FLURRY_FROM = 0.4;
+const PRESS_STALL_MS = 3000;
 // From the crouch, half the strikes slam and half lunge: one pose, two timings.
 const SLAM_SHARE = 0.5;
 // A tell waiting in line this long, or a target this far, sends the brute back
@@ -100,14 +113,14 @@ const bellow = defineStance({
 const flurry = defineStance({
   animation: "punch_windup",
   sound: "fixtures/pellet_hit",
-  holdMs: TELL_MS,
+  holdMs: FLURRY_MS,
   breakOn: { damage: 20, to: "flinch" },
 });
 // The leap's tell: the slam's crouch, taken from afar.
 const crouch = defineStance({
   animation: "smash_windup",
   sound: "fixtures/jump",
-  holdMs: TELL_MS,
+  holdMs: CROUCH_MS,
   breakOn: { damage: 30, to: "flinch" },
 });
 
@@ -205,11 +218,13 @@ const claw = defineAttack({ damage: 15, damageType: corrosive, maxRange: 2, cool
  * - `engage` runs a selector movement layer and a nested offense graph.
  * - `approach` closes on the target and takes a tell: `overhead`, `crouch`,
  *   `bellow`, `flurry` or `cock`. Each tell waits in line for its strike's
- *   turn, holds a time, and releases.
+ *   turn, holds a time, and releases. A roll that names no tell at slam range
+ *   hands the last stretch to `press`, which rolls again and, held short of
+ *   jab reach, takes the crouch.
  * - `overhead` leads to two strikes, the slam and the lunge, so the crouch
  *   names the threat and not its timing. `crouch`, the same pose taken from
  *   up to 15 m out, leads to the leap.
- * - `flurry` holds the drawn fist for 666 ms, then throws three jabs.
+ * - `flurry` holds the drawn fist for 2,000 ms, then throws three jabs.
  * - the strikes chain through their ending stances: jab → crouch, lunge →
  *   cocked fist, charge → cocked fist, slam, leap and combo → coiled, then
  *   `approach`.
@@ -313,6 +328,7 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
               initial: "approach",
               activities: {
                 approach: { animation: "run" },
+                press: { animation: "run" },
                 flinch: { animation: "flinch", motion: "hold" },
               },
               transitions: {
@@ -345,6 +361,29 @@ export const referenceEnemyEntity: EntityTypeDescriptor = defineEntity({
                       .and(brain.activityRoll.ge(FLURRY_FROM)),
                   },
                   { to: cock, when: brain.targetDistance.le(JAB_RANGE) },
+                  { to: "press", when: brain.targetDistance.le(SLAM_RANGE) },
+                ],
+                press: [
+                  { to: "approach", when: brain.targetDistance.gt(OVERHEAD_LEAVE_RANGE) },
+                  {
+                    to: bellow,
+                    when: brain.targetDistance
+                      .le(CHARGE_REACH)
+                      .and(brain.activityRoll.ge(PRESS_BELLOW_FROM)),
+                  },
+                  {
+                    to: flurry,
+                    when: brain.targetDistance
+                      .le(JAB_RANGE)
+                      .and(brain.activityRoll.ge(PRESS_FLURRY_FROM)),
+                  },
+                  { to: cock, when: brain.targetDistance.le(JAB_RANGE) },
+                  {
+                    to: overhead,
+                    when: brain.targetDistance
+                      .le(SLAM_RANGE)
+                      .and(brain.timeInActivityMs.ge(PRESS_STALL_MS)),
+                  },
                 ],
                 // Rows out of each rest. A row to an attack also waits for its
                 // turn, its range and its cooldown.

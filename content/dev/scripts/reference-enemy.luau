@@ -26,19 +26,29 @@ local CLOSE_STANDOFF = 1.5
 local LEAP_QUEUE_RANGE = 15
 -- The leap steers at this multiple of `moveSpeed`. See the leap below.
 local LEAP_SPEED = 3.5
--- The combo and the leap each hold their tell for exactly this long.
-local TELL_MS = 666
+-- The combo holds its drawn fist this long before the jabs, long enough to
+-- read as a wind-up and not a stutter.
+local FLURRY_MS = 2000
+-- The leap holds its crouch this long.
+local CROUCH_MS = 666
 local LEASH_RANGE = 100
 local RETURN_ARRIVAL_EPSILON = 1
 -- Strolls on the walk at its planted-foot speed, 1.2 m/s.
 local STROLL = 0.4
 -- `approach`'s tell, from one roll per entry: below 0.4 the crouch at slam
 -- range, below 0.25 the leaping crouch beyond it, 0.85 and up the roar,
--- 0.65 to 0.85 the combo's drawn fist, else the cocked fist.
+-- 0.65 to 0.85 the combo's drawn fist, else the cocked fist; any other roll
+-- at slam range presses in.
 local OVERHEAD_SHARE = 0.4
 local LEAP_SHARE = 0.25
 local BELLOW_FROM = 0.85
 local FLURRY_FROM = 0.65
+-- `press`'s fresh roll, about `approach`'s shares: 0.75 and up the roar, 0.4
+-- to 0.75 the drawn fist, else the cocked fist. Held short of jab reach this
+-- long, it takes the crouch, whose strikes reach farther than the jab.
+local PRESS_BELLOW_FROM = 0.75
+local PRESS_FLURRY_FROM = 0.4
+local PRESS_STALL_MS = 3000
 -- The crouch's two strikes.
 local SLAM_SHARE = 0.5
 local OVERHEAD_WAIT_MS = 3000
@@ -76,14 +86,14 @@ local bellow = defineStance("bellow", {
 local flurry = defineStance("flurry", {
   animation = "punch_windup",
   sound = "fixtures/pellet_hit",
-  holdMs = TELL_MS,
+  holdMs = FLURRY_MS,
   breakOn = { damage = 20, to = "flinch" },
 })
 -- The leap's tell: the slam's crouch, taken from afar.
 local crouch = defineStance("crouch", {
   animation = "smash_windup",
   sound = "fixtures/jump",
-  holdMs = TELL_MS,
+  holdMs = CROUCH_MS,
   breakOn = { damage = 30, to = "flinch" },
 })
 
@@ -262,6 +272,7 @@ M.referenceEnemyEntity = defineEntity({
               initial = "approach",
               activities = {
                 approach = { animation = "run" },
+                press = { animation = "run" },
                 flinch = { animation = "flinch", motion = "hold" },
               },
               transitions = {
@@ -283,6 +294,23 @@ M.referenceEnemyEntity = defineEntity({
                     when = inJabRange["and"](inJabRange, brain.activityRoll:ge(FLURRY_FROM)),
                   },
                   { to = cock, when = brain.targetDistance:le(JAB_RANGE) },
+                  { to = "press", when = brain.targetDistance:le(SLAM_RANGE) },
+                },
+                press = {
+                  { to = "approach", when = brain.targetDistance:gt(OVERHEAD_LEAVE_RANGE) },
+                  {
+                    to = bellow,
+                    when = inChargeReach["and"](inChargeReach, brain.activityRoll:ge(PRESS_BELLOW_FROM)),
+                  },
+                  {
+                    to = flurry,
+                    when = inJabRange["and"](inJabRange, brain.activityRoll:ge(PRESS_FLURRY_FROM)),
+                  },
+                  { to = cock, when = brain.targetDistance:le(JAB_RANGE) },
+                  {
+                    to = overhead,
+                    when = inSlamRange["and"](inSlamRange, brain.timeInActivityMs:ge(PRESS_STALL_MS)),
+                  },
                 },
                 overhead = {
                   { to = slam, when = brain.activityRoll:lt(SLAM_SHARE) },

@@ -1876,6 +1876,69 @@ fn agent_decelerates_inside_arrival_band_before_hard_stop() {
     );
 }
 
+/// Run the canonical agent head-on from x = 1 toward a destination 1.5 m short
+/// of a target at x = 6.5 on the open z = 6 lane, optionally leashed to that
+/// target at 1.5 m, until it arrives. Returns its XZ distance to the target.
+fn head_on_arrival_distance(leash: bool) -> f32 {
+    let wall = LWall::fixture();
+    let world = wall.collision_world();
+    let params = agent_params();
+    let mut registry = EntityRegistry::new();
+    let id = spawn_agent(&mut registry, 1.0, 6.0, &params);
+    let target = Vec3::new(6.5, rest_y(&params), 6.0);
+    let slot = Vec3::new(5.0, rest_y(&params), 6.0);
+    set_manual_path(
+        &mut registry,
+        id,
+        vec![Vec3::new(1.0, rest_y(&params), 6.0), slot],
+    );
+    if leash {
+        let mut agent = registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .clone();
+        agent.arrival_leash = Some(ArrivalLeash {
+            anchor: target,
+            radius: 1.5,
+        });
+        registry.set_component(id, agent).unwrap();
+    }
+    for _ in 0..600 {
+        tick(
+            &mut registry,
+            &world,
+            None,
+            postretro_collision::EnvironmentView::level_only(GRAVITY),
+            DT,
+        );
+        if registry
+            .get_component::<AgentComponent>(id)
+            .unwrap()
+            .arrived
+        {
+            return distance_xz(agent_position(&registry, id), target);
+        }
+    }
+    panic!("the agent never arrived (leash: {leash})");
+}
+
+// A chaser bound for a combat slot comes to rest no farther from its target
+// than the leash its standoff sets, where the slot's arrival band alone parks
+// it up to that band farther out.
+#[test]
+fn leashed_arrival_ends_within_the_leash_of_its_anchor() {
+    let unleashed = head_on_arrival_distance(false);
+    assert!(
+        unleashed > 1.5 + 0.25,
+        "the bare arrival band parks the agent outside the standoff, got {unleashed}"
+    );
+    let leashed = head_on_arrival_distance(true);
+    assert!(
+        leashed <= 1.5 + LEASH_TOLERANCE,
+        "a leashed arrival ends within its leash, got {leashed}"
+    );
+}
+
 #[test]
 fn arrived_agent_displaced_outside_final_radius_resumes_steering() {
     let wall = LWall::fixture();

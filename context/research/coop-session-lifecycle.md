@@ -197,14 +197,14 @@ flowchart LR
 
 | | Character save | World save | Run save |
 |---|---|---|---|
-| Holds | the mod's per-owner `persist` slots (XP, unlocks, stats), a display name and the whole carried loadout, keyed by the character's own id | global `persist: true` slots: progress that outlives any run | the level the run last entered, `persist: "run"` global slots and faction sentiment |
+| Holds | the mod's per-owner `persist` slots (XP, unlocks, stats), a display name and the whole carried loadout, keyed by the character's own id | global `persist: true` slots: progress that outlives any run | its character's id, the level and checkpoint it last reached, `persist: "run"` global slots and faction sentiment |
 | Lives | on the player's own device, in numbered slots | on the device of whoever runs the world: the single-player machine, or the host | as the world save, in numbered slots |
 | Written by | its owner only, in every role (a host never writes a guest's character) | the world's runner only. A connected client never writes one | as the world save |
 | Read | at boot, then sent up to any host in `JoinSeed` | at boot | by Continue |
 | Today | rows inside `state.json` | the same `state.json` (G10) | nothing (G8) |
 
 - **Decided (owner):** separate files, one per kind, in versioned JSON. A character file can be backed up or moved on its own, and runs keep numbered slots without touching characters. Brief: `plans/drafts/coop--character-and-run-saves/`.
-- **Decided (owner): gear always belongs to the character.** Players bring gear from one game into another, and a host's run save never holds a guest's gear. A host checks a joiner's gear against its own mod's names and caps, or strips it when the mod declares pistol-start co-op. A character's runs share its gear.
+- **Decided (owner): gear always belongs to the character.** Players bring gear from one game into another, and a host's run save never holds a guest's gear. A host checks a joiner's gear against its own mod's names. A character's runs share its gear, and a fresh start is a new character.
 - **Decided (owner):** run saves, the revisited-map record (`roadmap.md` Future) and a host-migration handoff (Epic 15) share one serialization of the durable session-state ledger. Run and character saves ship it first; the others add named sections.
 
 ```mermaid

@@ -9,10 +9,10 @@ use crate::scripting::state_persistence::{
     collect_persisted_state, merge_per_owner_state, save_persisted_state, state_path,
 };
 
-/// What a world-and-character save collected, and whether it reached disk.
+/// What a world-and-character save collected. A write that failed has
+/// warned.
 pub(crate) struct ProgressSave {
     pub(crate) state: PersistedState,
-    pub(crate) written: bool,
 }
 
 /// Collect the world slots, faction sentiment and the local player's
@@ -68,19 +68,15 @@ pub(crate) fn save_world_and_character(session: &mut Session) -> Option<Progress
         }
         merge_per_owner_state(&mut collected.state, per_owner.per_owner);
     }
-    let written = match state_path(session.data_dir.as_deref(), &mod_id) {
+    match state_path(session.data_dir.as_deref(), &mod_id) {
         Some(state_path) => match save_persisted_state(&state_path, &collected.state) {
             Ok(()) => {
                 log::info!("[State] saved persistent slots to {}", state_path.display());
-                true
             }
-            Err(error) => {
-                log::warn!(
-                    "[State] failed to save persistent slots to {}: {error}",
-                    state_path.display()
-                );
-                false
-            }
+            Err(error) => log::warn!(
+                "[State] failed to save persistent slots to {}: {error}",
+                state_path.display()
+            ),
         },
         None => {
             if session.state_store_lifecycle.disable_persistence() {
@@ -88,11 +84,9 @@ pub(crate) fn save_world_and_character(session: &mut Session) -> Option<Progress
                     "[State] platform data directory is unavailable; persistent state is disabled for this run"
                 );
             }
-            false
         }
-    };
+    }
     Some(ProgressSave {
         state: collected.state,
-        written,
     })
 }

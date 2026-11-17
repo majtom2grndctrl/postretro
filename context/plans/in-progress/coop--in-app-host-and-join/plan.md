@@ -19,6 +19,9 @@ Brief read at 7ffced62. Since then only `crates/netcode/src/command_queue.rs` an
 - Decision clarification: "Cleared when hosting starts … kept on `hostFailed`" → the host press clears `session.password` only once the build succeeds.
 - Refusal logging: entry refusals reuse the membership verbs' once-per-source warning (`report_refused_verb`). A second refusal from the same source logs at debug.
 
+- Path: the client answers a challenge inside `NetClient`'s Control drain, so the engine never sees one. Each endpoint keeps only the derived key: `NetServer::set_session_password` (empty means no challenge) and `NetClient::set_session_password` (empty still answers).
+- Test seam: `postretro-test-log-capture` gains `OrphanWatch`, which counts uncaptured records containing one needle. The plain orphan count is process-wide and shared by parallel tests. P-k scans relay datagrams. An engine client's own UDP datagrams come from the same `NetClient` code.
+
 ## Delegated answers
 - Host-side bound on an unanswered challenge — **5 s** on the transport clock, measured from when the challenge was sent. One round trip is under 1 s even under the dev lag profile with loss, and 5 s sits well inside a seat hold. A proof drained in the poll where the bound elapses still admits (P22).
 - Remembered address field and options mapping — `PlayerOptions::last_join_address: Option<String>` (TOML key `last_join_address`, default absent). It seeds `session.joinAddress` at session build, and the engine writes it on admission. It is not an options-bridge menu option, because no menu edits it except the Join field itself.
@@ -39,35 +42,35 @@ Automated rows run as `cargo test` loopback tests over real transports, as the l
 | E8 Failed mint at host entry: ledger untouched, SP, `hostFailed` | `failed_session_mint_at_host_entry_stays_single_player_with_its_ledger`, `failed_remint_leaves_the_ledger_untouched`; `hostFailed` on the shared failure branch: `host_presses_publish_offline_and_a_failed_build_publishes_host_failed` | proven |
 | E9 `hostSession`+`joinSession` and `joinSession`×2 in one reaction: first wins, one save and one endpoint (P1) | `two_entry_verbs_in_one_reaction_take_the_first_and_refuse_the_second` | proven |
 | E10 `leaveSession` then `joinSession` defers to after unload; other steps still drop at debug (P2) | `join_after_a_leave_waits_for_the_unload_then_joins`, existing `steps_after_leave_drop_at_debug` | proven |
-| E11 Waiting press captures address and password; malformed never shows `connecting`; load or navigation cancels to `offline` (P16) | `a_waiting_press_runs_with_what_it_captured_and_a_load_or_navigation_cancels_it` (address capture; password capture with task 6) | proven |
+| E11 Waiting press captures address and password; malformed never shows `connecting`; load or navigation cancels to `offline` (P16) | `a_waiting_press_runs_with_what_it_captured_and_a_load_or_navigation_cancels_it`, `a_waiting_join_answers_with_the_password_it_captured` | proven |
 | E12 Boot `--host`/`--connect` role-bound state equals in-app entry | `boot_flags_and_in_app_entry_derive_the_same_role_bound_state` | proven |
 | E13 One endpoint builder; no other non-test `NetEndpoint::from_role` call | `enter_role_is_the_only_production_endpoint_builder` | proven |
 | S1 World and character slots on disk once join starts, before first connect packet | `join_saves_world_and_character_before_its_first_connect_packet` | proven |
 | S2 Join then leave restores world-at-join; join seed carries character-at-join | `join_then_leave_restores_the_world_at_join_and_seeds_the_character_at_join` | proven |
 | S3 Failed join save still rebases snapshot and warns | `failed_join_save_still_rebases_the_restore_snapshot_and_warns` | proven |
 | S4 Join then leave: seat-0 carry equals a fresh SP ledger | `join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry` | proven |
-| P-a Right password admits | transport test | achievable as stated |
-| P-b Pre-proof parity, seed and reveal apply on admission; participates with join-seeded character (P6) | loopback test | achievable as stated |
-| P-c Distinct nonces; replayed proof refuses; stray proof changes nothing (P7) | transport test | achievable as stated |
-| P-d Wrong mod refused `refusedMod`, no challenge (P9) | transport test | achievable as stated |
-| P-e Live write of `session.password` takes effect only at next hosting (P10) | loopback test | achievable as stated |
-| P-f Wrong or empty-password proof refuses `refusedPassword`; client lands at frontend | loopback test | achievable as stated |
-| P-g Silent client refused within bound (P8) | transport test, advanced clock | achievable as stated |
-| P-h Proof on the bound's poll admits; end during challenge sends `sessionEnded`; level change admits into new level (P22) | transport + loopback tests | achievable as stated |
-| P-i Password host: reclaim on deadline poll; fresh seat after hold expiry (P21) | seat + transport test | achievable as stated |
-| P-j Passwordless host sends no challenge and admits clients with and without a password | transport test | achievable as stated |
-| P-k Password never in datagrams, saves, slots or logs; slot cleared once consumed | byte-scan test with log capture, worker-thread record assertion | achievable as stated |
-| P-l Password-refused client applies no parity, seed or reveal | transport test | achievable as stated |
-| P-m `--host --password p` and `--connect --password p` | CLI parse + loopback test | achievable as stated |
-| P-n Wire round-trip and protocol-id tests; protocol id advanced | `crates/net` wire tests | achievable as stated |
-| F1 Each end cause on its own path, incl. same-update refusal; `badAddress` cases open no socket; portless dials default; `Protocol` → `connectFailed` (P11) | `each_ending_publishes_its_own_end_cause`, `a_wrong_mod_join_publishes_refused_mod_over_the_transport`, `a_bad_address_opens_no_socket_writes_no_save_and_keeps_the_password`, `join_address_grammar_takes_ipv4_with_an_optional_port`; `refusedPassword` with task 6 | partly proven |
+| P-a Right password admits | `right_password_admits_and_applies_what_was_declared_before_the_proof`; engine: `a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one` | proven |
+| P-b Pre-proof parity, seed and reveal apply on admission; participates with join-seeded character (P6) | `right_password_admits_and_applies_what_was_declared_before_the_proof` (held join seed applies at admission); engine participation: `a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one` | proven |
+| P-c Distinct nonces; replayed proof refuses; stray proof changes nothing (P7) | `nonces_differ_per_connection_replays_refuse_and_stray_proofs_change_nothing` | proven |
+| P-d Wrong mod refused `refusedMod`, no challenge (P9) | `wrong_mod_is_refused_before_any_challenge` | proven |
+| P-e Live write of `session.password` takes effect only at next hosting (P10) | `a_live_password_write_takes_effect_at_the_next_hosting` | proven |
+| P-f Wrong or empty-password proof refuses `refusedPassword`; client lands at frontend | `wrong_or_missing_password_is_refused_and_applies_nothing`, `a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one` | proven |
+| P-g Silent client refused within bound (P8) | `the_proof_bound_refuses_a_silent_client_and_admits_a_proof_on_its_last_poll` | proven |
+| P-h Proof on the bound's poll admits; end during challenge sends `sessionEnded`; level change admits into new level (P22) | `the_proof_bound_refuses_a_silent_client_and_admits_a_proof_on_its_last_poll`, `an_outstanding_challenge_meets_the_session_end_and_a_level_change` | proven |
+| P-i Password host: reclaim on deadline poll; fresh seat after hold expiry (P21) | `a_password_proof_on_the_hold_deadline_reclaims_and_one_after_it_does_not` | proven |
+| P-j Passwordless host sends no challenge and admits clients with and without a password | `a_passwordless_host_admits_without_a_challenge` | proven |
+| P-k Password never in datagrams, saves, slots or logs; slot cleared once consumed | `the_password_never_leaves_the_slot_that_held_it` (relay datagrams both ways, save and settings files, every slot on host and client, captured logs, `OrphanWatch` for uncaptured records) | proven |
+| P-l Password-refused client applies no parity, seed or reveal | `wrong_or_missing_password_is_refused_and_applies_nothing` | proven |
+| P-m `--host --password p` and `--connect --password p` | `parse_password_for_either_role`, `the_password_flag_serves_host_and_connect` | proven |
+| P-n Wire round-trip and protocol-id tests; protocol id advanced | `password_control_variants_round_trip`, protocol gate tests at PRLF / 40 | proven |
+| F1 Each end cause on its own path, incl. same-update refusal; `badAddress` cases open no socket; portless dials default; `Protocol` → `connectFailed` (P11) | `each_ending_publishes_its_own_end_cause`, `a_wrong_mod_join_publishes_refused_mod_over_the_transport`, `a_bad_address_opens_no_socket_writes_no_save_and_keeps_the_password`, `join_address_grammar_takes_ipv4_with_an_optional_port`, `a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one` | proven |
 | F2 `badAddress` join: no save, stays `offline`, keeps password (P13) | `a_bad_address_opens_no_socket_writes_no_save_and_keeps_the_password` | proven |
 | F3 Own `endSession` sets none; boot `--host` failure `hostFailed`; malformed `--connect` `badAddress` (P14) | `boot_and_own_endings_set_the_causes_entry_sets` | proven |
 | F4 `session.connection` full sequence recorded per publish, incl. same-update hold+promote and admission+end (P23) | `connection_steps_through_waiting_and_playing_and_back_to_offline`, `a_refused_attempt_never_waits_and_an_admission_ended_in_one_update_waits_once` | proven |
 | F5 Deferred host press `offline`→`connecting`→`offline`; failed build ends `hostFailed`; undeferred never leaves `offline` (P18) | `host_after_an_end_waits_for_the_close_then_hosts`, `host_presses_publish_offline_and_a_failed_build_publishes_host_failed` | proven |
 | F6 `endCause` clears at next attempt; own leave sets none; host gone before admission → `connectFailed` (P17) | `each_ending_publishes_its_own_end_cause` | proven |
 | F7 `waitReason` mapping from each `HoldingCause` (P19) | `wait_reason_names_each_hold`, and `host` at the host's frontend in `connection_steps_through_waiting_and_playing_and_back_to_offline` | proven |
-| F8 `session.password` clear and keep rules (P20) | `the_password_clears_when_consumed_and_stays_for_a_retry`; the real `refusedPassword` path with task 6 | partly proven |
+| F8 `session.password` clear and keep rules (P20) | `the_password_clears_when_consumed_and_stays_for_a_retry`, `a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one` | proven |
 | F9 Remembered address seeds after restart; updated only on admission (P12) | `the_join_address_is_remembered_on_admission_and_seeds_the_next_boot` | proven |
 | U1 `mask: true` draws one `*` per grapheme; empty for empty | `crates/ui` layout/text test | achievable as stated |
 | U2 Keyboard types `.` and `:` | `keyboard_asset` test | achievable as stated |
@@ -91,6 +94,6 @@ Automated rows run as `cargo test` loopback tests over real transports, as the l
 | 3 | **Join save seam.** Extract the clean-exit save in `main.rs` into one entry point. Join calls it before building the endpoint, then rebases `session.persisted_state` (and so the join seed) on what it wrote, warning on failure. Proves S1–S4. | integrating executor | 1 | done |
 | 4 | **Verbs, refusals, deferral.** `SystemReactionKind::{HostSession, JoinSession}`, machine-local classification and catch-up ignore, the drain exemption after `leaveSession`, the one-press rule, and the pending-press state that captures address and password and is cancelled by load or navigation. SDK `hostSession()`/`joinSession()` in TS and Luau plus generated declarations. Proves E6, E7, E9–E11, U4, U5. | integrating executor | 2, 3 | done |
 | 5 | **Session facts.** Catalog `session.joinAddress`, `password`, `connection`, `waitReason`, `endCause`. Shared address parser and `--connect` widening. End-cause publication on every path, boot included. Connection phase from holding notices and participation. `waitReason` from `HoldingCause`. `last_join_address` option. Proves F1–F9 except the password rows. | integrating executor | 4 | done |
-| 6 | **Password gate.** `crates/net` gains `blake3`. Wire variants appended, `PROTOCOL_ID` advanced. Per-pending-slot nonce, proof check in constant time, the 5 s bound, buffered pre-admission declarations, and interactions with reclaim and level change. `--password`. Client answers from the captured password, and the slot clears per P20. Leak-scan test. Proves P-a–P-n and the password half of F1 and F8. | integrating executor | 5 | |
+| 6 | **Password gate.** `crates/net` gains `blake3`. Wire variants appended, `PROTOCOL_ID` advanced. Per-pending-slot nonce, proof check in constant time, the 5 s bound, buffered pre-admission declarations, and interactions with reclaim and level change. `--password`. Client answers from the captured password, and the slot clears per P20. Leak-scan test. Proves P-a–P-n and the password half of F1 and F8. | integrating executor | 5 | done |
 | 7 | **UI.** `Text` `mask`, keyboard `.` and `:` keys, the text-field target approach (see Corrections), and dev frontend Host and Join submenus with phase, wait reason and per-end-cause notices. Proves U1–U3, U6, U8. The `crates/ui` mask and keyboard part may run as a worktree worker beside task 6. | integrating executor (mask and keyboard: optional worker) | 5 | |
 | 8 | **Docs and gates.** `networking.md` §Two-gate, §Role model and §Session-state ledger corrections, plus the mask screen-reader rule in `ui.md` §4.2. Proves U7. The `scripting.md` §10.4 and `player_options.md` updates wait for landing. | integrating executor | 6, 7 | |

@@ -1292,9 +1292,7 @@ fn boot_and_own_endings_set_the_causes_entry_sets() {
     let app = test_app();
     let entry = crate::session::net_entry::RoleEntry {
         endpoint: None,
-        failure: Some(crate::session::net_entry::EntryFailure::Endpoint(
-            "bind".into(),
-        )),
+        failure: Some(crate::session::net_entry::EntryFailure::Endpoint),
         released: Vec::new(),
     };
     crate::session::net_entry::publish_boot_facts(
@@ -1638,5 +1636,279 @@ fn the_join_address_is_remembered_on_admission_and_seeds_the_next_boot() {
     assert_eq!(
         slot(&app, "session.joinAddress"),
         Some(SlotValue::String(address))
+    );
+}
+
+/// An engine that pressed Join toward `relay` answering with `password`.
+fn joining_with(relay: &Relay, points: &[MapEntity], password: &str) -> ClientView {
+    let mut view = entering_engine(points.to_vec());
+    write_text(&mut view.app, "session.password", password);
+    write_text(
+        &mut view.app,
+        "session.joinAddress",
+        &relay.address().to_string(),
+    );
+    run(&mut view.app, [join_verb()]);
+    assert_eq!(view.app.session_role(), SessionRole::Client);
+    view
+}
+
+/// Exchange until the joiner is admitted (`waiting` or `playing`) or refused
+/// (back to single-player). Returns whether it was admitted.
+fn admitted_or_refused(relay: &mut Relay, view: &mut ClientView) -> bool {
+    exchange_until(relay, view, |_, view| {
+        view.app.session_role() == SessionRole::SinglePlayer
+            || connection_is(&view.app, "waiting")
+            || connection_is(&view.app, "playing")
+    });
+    view.app.session_role() == SessionRole::Client
+}
+
+// AC P-a, P-b (P6), P-f: a password host admits the right password into its
+// level, the parity, join seed and reveal the client sent before its proof
+// included; a wrong password or none refuses with `refusedPassword` and lands
+// the client at its frontend.
+#[test]
+fn a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one() {
+    let points = spawn_points(3);
+    let mut relay = host_in_level(&points);
+    relay.server().set_session_password("p");
+
+    let mut view = joining_with(&relay, &points, "p");
+    let (id, hint) = follow_into_level(&mut relay, &mut view);
+    relay.assert_pawn_at_hint(relay.pawn(id).unwrap(), &hint);
+
+    for (case, password) in [("wrong", "q"), ("missing", "")] {
+        let mut view = joining_with(&relay, &points, password);
+        assert!(!admitted_or_refused(&mut relay, &mut view), "{case}");
+        assert_eq!(end_cause(&view.app), "refusedPassword", "{case}");
+        assert!(
+            view.app.frontend_menu_is_present(),
+            "{case}: at its frontend"
+        );
+        assert_eq!(
+            slot(&view.app, "session.password"),
+            Some(SlotValue::String(String::new())),
+            "{case}: the refusal consumes it"
+        );
+    }
+}
+
+// AC P-e (P10): writing `session.password` on a live host changes which
+// proof admits only at its next hosting.
+#[test]
+fn a_live_password_write_takes_effect_at_the_next_hosting() {
+    let points = spawn_points(3);
+    let mut host = entering_engine(points.clone());
+    write_text(&mut host.app, "session.password", "p");
+    run(&mut host.app, [host_verb()]);
+    write_text(&mut host.app, "session.password", "q");
+    let mut relay = Relay::adopt(host.app);
+
+    let mut late = joining_with(&relay, &points, "q");
+    assert!(
+        !admitted_or_refused(&mut relay, &mut late),
+        "the run keeps `p`"
+    );
+    let mut first = joining_with(&relay, &points, "p");
+    assert!(admitted_or_refused(&mut relay, &mut first));
+
+    relay.app.end_session();
+    close_out(&mut relay.app);
+    run(&mut relay.app, [host_from("named:host-again")]);
+    let mut relay = Relay::adopt(relay.app);
+    let mut now = joining_with(&relay, &points, "q");
+    assert!(
+        admitted_or_refused(&mut relay, &mut now),
+        "the next run takes `q`"
+    );
+}
+
+// AC P-m: `--host --password p` admits `p` and refuses `q`; `--connect
+// --password p` is admitted by a host holding `p`.
+#[test]
+fn the_password_flag_serves_host_and_connect() {
+    let points = spawn_points(3);
+    let config = |role: NetRole| crate::netcode::NetConfig {
+        role,
+        password: Some("p".to_string()),
+    };
+    let mut host = entering_engine(points.clone());
+    {
+        let session = host.app.session.as_mut().unwrap();
+        let role = NetRole::Host { port: 0 };
+        let mut endpoint = enter_role(
+            &role,
+            None,
+            &mut session.scripting,
+            &mut session.seat_table,
+            getrandom::fill,
+            crate::netcode::probe_lan_address,
+        )
+        .endpoint;
+        crate::session::net_entry::apply_cli_password(endpoint.as_mut(), Some(&config(role)));
+        session.net_endpoint = endpoint;
+    }
+    host.app.install_network_mod_content();
+    let mut relay = Relay::adopt(host.app);
+    let mut right = joining_with(&relay, &points, "p");
+    assert!(admitted_or_refused(&mut relay, &mut right));
+    let mut wrong = joining_with(&relay, &points, "q");
+    assert!(!admitted_or_refused(&mut relay, &mut wrong));
+
+    let mut relay = host_in_level(&points);
+    relay.server().set_session_password("p");
+    let mut client = entering_engine(points);
+    {
+        let session = client.app.session.as_mut().unwrap();
+        let role = NetRole::Connect {
+            addr: relay.address(),
+        };
+        let mut endpoint = enter_role(
+            &role,
+            None,
+            &mut session.scripting,
+            &mut session.seat_table,
+            getrandom::fill,
+            crate::netcode::probe_lan_address,
+        )
+        .endpoint;
+        crate::session::net_entry::apply_cli_password(endpoint.as_mut(), Some(&config(role)));
+        session.net_endpoint = endpoint;
+    }
+    client.app.install_network_mod_content();
+    assert!(admitted_or_refused(&mut relay, &mut client));
+}
+
+// AC P-i (P21): on a password host, a returning player whose proof lands on
+// its hold's deadline poll reclaims its seat; one whose hold expired first
+// takes a fresh seat.
+#[test]
+fn a_password_proof_on_the_hold_deadline_reclaims_and_one_after_it_does_not() {
+    /// A password host holding seat 1 for player 81, and 82 dialing back in
+    /// as that player. Returns the relay and the held seat.
+    fn returning() -> (Relay, Seat) {
+        let mut relay = Relay::host();
+        relay.server().set_session_password("p");
+        relay.connect_with_password(81, 81, "p");
+        relay.pump_until(|relay| relay.seat(81).is_some());
+        let held = relay.seat(81).unwrap();
+        relay.disconnect(81);
+        relay.connect_with_password(82, 81, "p");
+        (relay, held)
+    }
+    // The relay is deterministic: count the polls the challenge round takes.
+    let (mut dry, _) = returning();
+    let mut polls = 0;
+    while dry.seat(82).is_none() {
+        dry.step();
+        polls += 1;
+        assert!(polls < 64, "the dry run admits");
+    }
+
+    for (case, past_deadline) in [("on the deadline", false), ("after it", true)] {
+        let (mut relay, held) = returning();
+        for _ in 0..polls - 1 {
+            relay.step();
+        }
+        assert_eq!(relay.seat(82), None, "{case}: nothing is admitted unproven");
+        let extra = if past_deadline {
+            std::time::Duration::from_millis(1)
+        } else {
+            std::time::Duration::ZERO
+        };
+        // The hold began at clock zero: this poll is its deadline's, or past.
+        relay
+            .seats_mut()
+            .advance_hold_clock(crate::netcode::HOLD_WINDOW + extra);
+        relay.step();
+        if past_deadline {
+            assert_eq!(relay.seat(82), Some(Seat(2)), "{case}: a fresh seat");
+        } else {
+            assert_eq!(relay.seat(82), Some(held), "{case}: reclaimed");
+        }
+    }
+}
+
+// AC P-k: no datagram, save file, settings file, slot or captured log line
+// holds the password, no uncaptured record does either, and
+// `session.password` holds it only until a verb consumes it.
+#[test]
+fn the_password_never_leaves_the_slot_that_held_it() {
+    const PROBE: &str = "zq-probe-7731-never-in-a-fixture";
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let orphans = postretro_test_log_capture::OrphanWatch::start(PROBE);
+    let points = spawn_points(3);
+    let mut relay = host_in_level(&points);
+    relay.server().set_session_password(PROBE);
+    relay.record_packets();
+    relay.connect_with_password(91, 91, PROBE);
+    relay.pump_until(|relay| relay.seat(91).is_some());
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
+    let settings = dir.path().join("settings.toml");
+    view.app.session.as_mut().unwrap().settings_path = Some(settings.clone());
+    write_text(&mut view.app, "session.password", PROBE);
+    run(&mut view.app, [join_verb()]);
+    assert!(
+        admitted_or_refused(&mut relay, &mut view),
+        "the probe admits"
+    );
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String(String::new())),
+        "admission consumed it"
+    );
+    assert!(view.app.leave_session(LeaveCause::Own));
+
+    let probe = PROBE.as_bytes();
+    let holds = |bytes: &[u8]| bytes.windows(probe.len()).any(|window| window == probe);
+    let recorded = relay.recorded.as_ref().unwrap();
+    assert!(!recorded.is_empty(), "fixture: packets were recorded");
+    assert!(!recorded.iter().any(|packet| holds(packet)), "a datagram");
+    for file in [saved_file(&view.app), settings] {
+        if let Ok(bytes) = std::fs::read(&file) {
+            assert!(!holds(&bytes), "{}", file.display());
+        }
+    }
+    for app in [&view.app, &relay.app] {
+        let ctx = script_ctx_of(app);
+        let table = ctx.slot_table.borrow();
+        for (name, record) in table.iter() {
+            assert!(
+                !format!("{:?}", record.value).contains(PROBE),
+                "slot `{name}` holds it"
+            );
+        }
+    }
+    assert!(
+        !capture
+            .records()
+            .iter()
+            .any(|record| record.message.contains(PROBE)),
+        "a captured log line"
+    );
+    assert_eq!(orphans.count(), 0, "an uncaptured record");
+}
+
+// AC E11 (P16): a waiting join answers with the password it captured when
+// pressed, not one written while it waited.
+#[test]
+fn a_waiting_join_answers_with_the_password_it_captured() {
+    let points = spawn_points(3);
+    let mut first = host_in_level(&points);
+    let mut second = host_in_level(&points);
+    second.server().set_session_password("p");
+    let mut view = client_in_level(&mut first, &points, &second.address().to_string());
+    write_text(&mut view.app, "session.password", "p");
+    run(&mut view.app, [leave_verb(), join_verb()]);
+    assert!(view.app.pending_entry.is_some());
+    write_text(&mut view.app, "session.password", "q");
+    view.app.drain_level_requests();
+    view.app.resume_pending_entry();
+    assert!(
+        admitted_or_refused(&mut second, &mut view),
+        "answered with `p`"
     );
 }

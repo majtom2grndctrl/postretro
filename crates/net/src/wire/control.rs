@@ -141,6 +141,26 @@ pub enum ClientControlMessage {
     /// at unload or suspend. Re-sent on change; the host keeps the last one
     /// per slot.
     Revealed(Option<RevealedLevel>),
+    /// The answer to a [`ServerControlMessage::PasswordChallenge`]: a keyed
+    /// hash of the challenge's nonce under the session password's key
+    /// ([`password_proof`]). The password itself never crosses the wire. Sent
+    /// once per challenge.
+    PasswordProof {
+        proof: [u8; 32],
+    },
+}
+
+/// The key a session password derives. An empty password derives a key like
+/// any other, so a client that holds none still answers a challenge.
+#[must_use]
+pub fn session_password_key(password: &str) -> [u8; 32] {
+    blake3::derive_key("postretro session password v1", password.as_bytes())
+}
+
+/// The proof a client sends for `nonce` under `key`.
+#[must_use]
+pub fn password_proof(key: &[u8; 32], nonce: &[u8; 32]) -> [u8; 32] {
+    *blake3::keyed_hash(key, nonce).as_bytes()
 }
 
 /// One revealed level install: which map, and which host install of it.
@@ -186,6 +206,9 @@ pub enum ClosingCause {
     /// The host ended the session (`endSession`). Lets a client tell an ended
     /// session from a lost host.
     SessionEnded,
+    /// The client's password proof was wrong, or none arrived within
+    /// [`crate::transport::PASSWORD_PROOF_BOUND`].
+    Password,
 }
 
 /// A recoverable reason a slot is held below participating: a content
@@ -265,6 +288,9 @@ impl std::fmt::Display for DivergenceReason {
                 "mod id mismatch: expected {expected} ({expected_version}), received {received} ({received_version})"
             ),
             Self::Closing(ClosingCause::SessionEnded) => write!(f, "the host ended the session"),
+            Self::Closing(ClosingCause::Password) => {
+                write!(f, "the session password did not match")
+            }
             Self::Holding(HoldingCause::ModDigest { expected, received }) => write!(
                 f,
                 "mod digest differs: expected {}, received {}",
@@ -354,6 +380,13 @@ pub enum ServerControlMessage {
     /// client applies only keys its own declarations persist per owner.
     FinalCharacter {
         slots: BTreeMap<String, JoinSeedValue>,
+    },
+    /// A password host's challenge to a pending connection whose mod id
+    /// matched: a fresh nonce from the OS RNG, answered with
+    /// [`ClientControlMessage::PasswordProof`]. The transport answers it; the
+    /// engine never sees it.
+    PasswordChallenge {
+        nonce: [u8; 32],
     },
 }
 

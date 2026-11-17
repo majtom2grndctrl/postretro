@@ -109,7 +109,8 @@ fn drain_rosters(
             | ServerControlMessage::Relevel { .. }
             | ServerControlMessage::Tuning(_)
             | ServerControlMessage::SpawnPoseHint(_)
-            | ServerControlMessage::FinalCharacter { .. } => None,
+            | ServerControlMessage::FinalCharacter { .. }
+            | ServerControlMessage::PasswordChallenge { .. } => None,
         })
         .collect()
 }

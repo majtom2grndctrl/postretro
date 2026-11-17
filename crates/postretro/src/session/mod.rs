@@ -681,7 +681,8 @@ impl Session {
             &entry,
             player_options.last_join_address.as_deref(),
         );
-        let net_endpoint = entry.endpoint;
+        let mut net_endpoint = entry.endpoint;
+        net_entry::apply_cli_password(net_endpoint.as_mut(), parsed.as_ref().ok());
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         let trigger_spawn_context = scripting.spawn_context.clone();
         boot_timings.record("net_endpoint_complete");

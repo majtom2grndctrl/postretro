@@ -12,13 +12,14 @@ use super::ScriptingCore;
 use super::role_state::{RoleBoundState, SessionRole, apply_role};
 use crate::netcode;
 
-/// Why a role's endpoint could not be built. The machine stays single-player.
-#[derive(Debug)]
+/// Why a role's endpoint could not be built. The machine stays single-player;
+/// [`enter_role`] has logged the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntryFailure {
     /// Socket bind or transport construction failed.
-    Endpoint(String),
+    Endpoint,
     /// Session-id entropy was unavailable for a hosted run.
-    Identity(String),
+    Identity,
 }
 
 /// What entering a role built.
@@ -69,7 +70,7 @@ pub(crate) fn enter_role(
         }
         Err(err) => {
             log::error!("[Net] endpoint setup failed ({err}); starting single-player");
-            failure = Some(EntryFailure::Endpoint(err));
+            failure = Some(EntryFailure::Endpoint);
             None
         }
     };
@@ -100,7 +101,7 @@ pub(crate) fn enter_role(
             log::error!(
                 "[Net] session identity setup failed ({err}); disabling networking for this session"
             );
-            failure.get_or_insert(EntryFailure::Identity(err.to_string()));
+            failure.get_or_insert(EntryFailure::Identity);
         }
     }
     // Identity setup above can still have demoted the endpoint to
@@ -122,6 +123,20 @@ pub(crate) fn enter_role(
         endpoint,
         failure,
         released,
+    }
+}
+
+/// `--password`: the hosted run's password for `--host`, the answer for
+/// `--connect`. The endpoint keeps only the derived key.
+pub(crate) fn apply_cli_password(
+    endpoint: Option<&mut netcode::NetEndpoint>,
+    config: Option<&netcode::NetConfig>,
+) {
+    if let (Some(endpoint), Some(password)) = (
+        endpoint,
+        config.and_then(|config| config.password.as_deref()),
+    ) {
+        endpoint.set_session_password(password);
     }
 }
 

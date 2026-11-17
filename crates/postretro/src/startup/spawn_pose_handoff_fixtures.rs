@@ -95,6 +95,9 @@ pub(super) struct Relay {
     /// The host poll the frame runs: the Running net frame, or the world-less
     /// poll a Loading, Settling or Frontend frame runs.
     pub(super) world_less: bool,
+    /// Every relay packet in both directions, once [`Self::record_packets`]
+    /// turns recording on.
+    pub(super) recorded: Option<Vec<Vec<u8>>>,
 }
 
 fn claim(client_id: u64) -> ConnectClaim {
@@ -139,6 +142,7 @@ impl Relay {
             mod_digest,
             level_digest: [0; 32],
             world_less: false,
+            recorded: None,
         }
     }
 
@@ -162,6 +166,7 @@ impl Relay {
             mod_digest,
             level_digest: [0; 32],
             world_less: true,
+            recorded: None,
         }
     }
 
@@ -196,6 +201,18 @@ impl Relay {
             forwarded: 0,
         });
         self.client(client_id)
+    }
+
+    /// [`Self::connect_as`] for a client that answers a password challenge
+    /// with `password`.
+    pub(super) fn connect_with_password(&mut self, client_id: u64, claim_of: u64, password: &str) {
+        self.connect_as(client_id, claim_of)
+            .set_session_password(password);
+    }
+
+    /// Record every relay packet from now on.
+    pub(super) fn record_packets(&mut self) {
+        self.recorded = Some(Vec::new());
     }
 
     /// Connect `client_ids` and pump until each holds a seat.
@@ -293,6 +310,9 @@ impl Relay {
             let client = &mut self.clients[index].client;
             client.update_connections(STEP);
             let packets = client.packets_to_send();
+            if let Some(recorded) = self.recorded.as_mut() {
+                recorded.extend(packets.iter().cloned());
+            }
             for packet in packets {
                 self.server().process_packet_from(&packet, client_id);
             }
@@ -311,6 +331,9 @@ impl Relay {
         for index in 0..self.clients.len() {
             let client_id = self.clients[index].id;
             let packets = self.server().packets_to_send(client_id);
+            if let Some(recorded) = self.recorded.as_mut() {
+                recorded.extend(packets.iter().cloned());
+            }
             let client = &mut self.clients[index];
             for packet in packets {
                 client.client.process_packet(&packet);

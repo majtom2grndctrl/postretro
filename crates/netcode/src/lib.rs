@@ -282,7 +282,7 @@ pub use replication::{
     host_register_loaded_ghost_links, host_register_loaded_movers,
     host_register_loaded_teleporters, host_register_presentation_overrides,
 };
-pub use seat::{SeatTable, SessionIdSource, finish_host_poll};
+pub use seat::{HOLD_WINDOW, SeatTable, SessionIdSource, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
 
 pub const PROJECTILE_CONTACT_DESPAWN_REASON: postretro_net::replication::DespawnReason = 1;
@@ -424,12 +424,23 @@ pub fn role_suppresses_boot_player_spawn(role: &NetRole) -> bool {
     matches!(role, NetRole::Connect { .. })
 }
 
-/// Parsed net configuration. Today this is just the role; kept as a struct so
-/// future net CLI knobs (tick rate override, snapshot rate) extend it without
-/// rippling the `main.rs` call site.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed net configuration: the role and the session password. Its `Debug`
+/// never shows the password.
+#[derive(Clone, PartialEq, Eq)]
 pub struct NetConfig {
     pub role: NetRole,
+    /// `--password <text>`: the session password `--host` challenges for and
+    /// `--connect` answers with. Never logged.
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for NetConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetConfig")
+            .field("role", &self.role)
+            .field("password", &self.password.as_ref().map(|_| "<set>"))
+            .finish()
+    }
 }
 
 /// Error parsing the net CLI flags. Carries an operator-facing message; `main.rs`
@@ -457,9 +468,25 @@ impl std::fmt::Display for NetArgError {
 /// `--connect` are mutually exclusive — supplying both is an error.
 pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
     let mut role: Option<NetRole> = None;
+    let mut password: Option<String> = None;
 
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
+        // `--password <text>` or `--password=<text>`. An empty value is a
+        // passwordless session.
+        let password_inline = arg.strip_prefix("--password=");
+        if arg == "--password" || password_inline.is_some() {
+            let value = match password_inline {
+                Some(value) => value.to_string(),
+                None => iter
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| NetArgError("--password requires a value".into()))?,
+            };
+            password = Some(value);
+            continue;
+        }
+
         // `--host` with an optional inline (`--host=PORT`) or following port.
         let host_inline = arg.strip_prefix("--host=");
         if arg == "--host" || host_inline.is_some() {
@@ -505,6 +532,7 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
 
     Ok(NetConfig {
         role: role.unwrap_or(NetRole::SinglePlayer),
+        password,
     })
 }
 
@@ -8411,6 +8439,24 @@ mod tests {
                 addr: SocketAddr::from(([127, 0, 0, 1], DEFAULT_HOST_PORT))
             }
         );
+    }
+
+    // AC P-m: `--password` serves both roles, inline or as the next argument.
+    #[test]
+    fn parse_password_for_either_role() {
+        let host = parse_net_config(&argv(&["--host", "--password", "p"])).unwrap();
+        assert_eq!(
+            host.role,
+            NetRole::Host {
+                port: DEFAULT_HOST_PORT
+            }
+        );
+        assert_eq!(host.password.as_deref(), Some("p"));
+        let client = parse_net_config(&argv(&["--password=p", "--connect", "10.0.0.2"])).unwrap();
+        assert_eq!(client.password.as_deref(), Some("p"));
+        assert!(!format!("{client:?}").contains("\"p\""), "Debug hides it");
+        assert!(parse_net_config(&argv(&["--password"])).is_err());
+        assert_eq!(parse_net_config(&argv(&[])).unwrap().password, None);
     }
 
     #[test]

@@ -20,6 +20,12 @@ renet_netcode = { version = "=2.0.0", default-features = false }
 # version mismatch is rejected before any bitcode payload is decoded.
 bitcode = "=0.6.9"
 
+# Session-password admission: a keyed hash of a per-connection nonce under a
+# key derived from the password, so the password never crosses the wire.
+blake3.workspace = true
+# The OS RNG draws each password challenge's nonce.
+getrandom.workspace = true
+
 # Logging. `[Net]`-tagged actionable failures (handshake rejects, transport
 # errors) — see development_guide §6.1.
 log.workspace = true

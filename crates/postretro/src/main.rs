@@ -273,6 +273,13 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                         startup::lifecycle::session_entry::EndCause::RefusedMod,
                     ));
             }
+            ServerControlMessage::Divergence(DivergenceReason::Closing(ClosingCause::Password)) => {
+                log::warn!("[Net] the host refused this session password");
+                app.client_left_in_control_drain =
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused(
+                        startup::lifecycle::session_entry::EndCause::RefusedPassword,
+                    ));
+            }
             ServerControlMessage::Divergence(DivergenceReason::Closing(
                 ClosingCause::SessionEnded,
             )) => {
@@ -364,6 +371,8 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             ServerControlMessage::FinalCharacter { slots } => {
                 app.received_final_character = Some(slots);
             }
+            // The transport answers a challenge itself and never surfaces one.
+            ServerControlMessage::PasswordChallenge { .. } => {}
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;

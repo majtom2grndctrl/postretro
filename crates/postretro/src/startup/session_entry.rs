@@ -104,8 +104,8 @@ impl std::fmt::Debug for PendingEntry {
 }
 
 /// What a client has learned of the session it joined. Reset when a join
-/// starts and when the session ends. Its `Debug` never shows the password.
-#[derive(Default, Clone)]
+/// starts and when the session ends.
+#[derive(Debug, Default, Clone)]
 pub(crate) struct JoinFacts {
     /// The host has shown it admitted this client: a relevel, a holding
     /// notice, a spawn-pose hint, a roster or a final character arrived.
@@ -117,19 +117,6 @@ pub(crate) struct JoinFacts {
     /// The address the join dialed, as the player typed it: remembered once
     /// admitted.
     address: String,
-    /// The password the join captured, which answers the host's challenge.
-    pub(crate) password: String,
-}
-
-impl std::fmt::Debug for JoinFacts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JoinFacts")
-            .field("admitted", &self.admitted)
-            .field("hold", &self.hold)
-            .field("host_level_missing", &self.host_level_missing)
-            .field("address", &self.address)
-            .finish_non_exhaustive()
-    }
 }
 
 /// `session.waitReason` for a hold. A host level this client lacks reads as
@@ -318,11 +305,12 @@ impl App {
     /// Run a captured press.
     fn run_entry(&mut self, entry: PendingEntry) {
         match entry {
-            PendingEntry::Host { password: _ } => {
+            PendingEntry::Host { password } => {
                 let port = self.in_app_host_port;
                 if self.host_from_frontend(port) {
-                    // Hosting consumes the password; a failed build keeps it
-                    // for a retry.
+                    // The hosted run's password is fixed now. Hosting
+                    // consumes it; a failed build keeps it for a retry.
+                    self.set_endpoint_password(&password);
                     self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
                 } else {
                     self.publish_end_cause(Some(EndCause::HostFailed));
@@ -337,12 +325,15 @@ impl App {
                         .read_session_string(JOIN_ADDRESS_SLOT)
                         .trim()
                         .to_string(),
-                    password,
                     ..JoinFacts::default()
                 };
                 self.write_session_slot(WAIT_REASON_SLOT, SlotValue::String(String::new()));
                 self.publish_connection(ConnectionPhase::Connecting);
-                if !self.join_from_frontend(addr) {
+                if self.join_from_frontend(addr) {
+                    // Set before the first poll: the challenge can arrive
+                    // with the host's first reply.
+                    self.set_endpoint_password(&password);
+                } else {
                     self.join_facts = JoinFacts::default();
                     self.publish_end_cause(Some(EndCause::ConnectFailed));
                     self.publish_connection(ConnectionPhase::Offline);
@@ -391,7 +382,6 @@ impl App {
         }
         self.join_facts.admitted = true;
         self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
-        self.join_facts.password.clear();
         self.publish_connection(ConnectionPhase::Waiting);
         self.publish_wait_reason();
         let address = self.join_facts.address.clone();
@@ -472,6 +462,18 @@ impl App {
                 self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
             }
             self.publish_end_cause(Some(cause));
+        }
+    }
+
+    /// Hand the endpoint the password a press captured. It keeps only the
+    /// derived key.
+    fn set_endpoint_password(&mut self, password: &str) {
+        if let Some(endpoint) = self
+            .session
+            .as_mut()
+            .and_then(|session| session.net_endpoint.as_mut())
+        {
+            endpoint.set_session_password(password);
         }
     }
 

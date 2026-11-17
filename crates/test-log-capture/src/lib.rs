@@ -83,8 +83,58 @@ impl Log for TestLogger {
     fn flush(&self) {}
 }
 
+/// Needles an [`OrphanWatch`] counts uncaptured records for, with its count.
+static ORPHAN_WATCHES: Mutex<Vec<(u64, String, u64)>> = Mutex::new(Vec::new());
+static NEXT_ORPHAN_WATCH: AtomicU64 = AtomicU64::new(0);
+
+/// Counts uncaptured records, from any thread, whose message contains one
+/// needle. The plain orphan count is process-wide and parallel tests share
+/// it; a needle unique to one test makes the count that test's own.
+pub struct OrphanWatch {
+    id: u64,
+}
+
+impl OrphanWatch {
+    /// Start counting uncaptured records containing `needle`.
+    pub fn start(needle: &str) -> Self {
+        install_logger();
+        let id = NEXT_ORPHAN_WATCH.fetch_add(1, Ordering::Relaxed);
+        ORPHAN_WATCHES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((id, needle.to_owned(), 0));
+        Self { id }
+    }
+
+    /// Uncaptured records containing the needle since [`Self::start`].
+    pub fn count(&self) -> u64 {
+        ORPHAN_WATCHES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|(id, _, _)| *id == self.id)
+            .map_or(0, |(_, _, count)| *count)
+    }
+}
+
+impl Drop for OrphanWatch {
+    fn drop(&mut self) {
+        ORPHAN_WATCHES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|(id, _, _)| *id != self.id);
+    }
+}
+
 fn record_orphan(record: &CapturedRecord) {
     ORPHAN_RECORDS.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut watches) = ORPHAN_WATCHES.lock() {
+        for (_, needle, count) in watches.iter_mut() {
+            if record.message.contains(needle.as_str()) || record.target.contains(needle.as_str()) {
+                *count += 1;
+            }
+        }
+    }
     if std::env::var_os("POSTRETRO_LOG_CAPTURE_ORPHANS").is_some() {
         eprintln!(
             "[postretro-test-log-capture orphan] {} {}: {}",

@@ -651,6 +651,16 @@ impl NetEndpoint {
         }
     }
 
+    /// The session password: a host challenges every joiner for it unless it
+    /// is empty, and a client answers a challenge with it. Only its derived
+    /// key is kept.
+    pub fn set_session_password(&mut self, password: &str) {
+        match self {
+            Self::Host { server, .. } => server.set_session_password(password),
+            Self::Client { client, .. } => client.set_session_password(password),
+        }
+    }
+
     /// A debug no-start-script session otherwise looks exactly like a stalled
     /// pending handshake. Emit the operator-facing warning once when a peer has
     /// actually arrived, rather than noisily at boot before anyone connects.

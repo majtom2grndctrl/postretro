@@ -22,7 +22,7 @@ When done:
 - Per-enemy targeting cost tracks the hostile pawns it must inspect, not every pawn, and does not depend on registry size.
 - Target-side placement work runs once per target and position per batch, not once per enemy.
 - Point-to-region lookup does not scan the navmesh.
-- A route query costs what its search visits, not the size of the graph.
+- A route query costs what its search visits, not the size of the graph, and positioning searches only slots that could still win.
 - Every enemy selects the same target, and claims the same combat slot, on the same tick as today.
 
 ## Decisions
@@ -41,6 +41,7 @@ When done:
   - `region_at` and the snapping `resolve_region_at` return exactly what the linear scans return, including stacked floors, both tie rules and off-mesh snap within tolerance, without visiting every region.
   - No PRL format change. A load-time build keeps the bake cache untouched and is reversible.
 - **Route queries reuse search scratch.** Every A* entry point (`find_path`, `find_path_gated`, `find_path_from` and the reachability and positioning queries built on them) keeps its per-node state in reusable scratch reset by a generation stamp, so a query touches only the nodes it visits. Routes, costs, tie order and failure cases are identical to today's. No PRL format change.
+- **Positioning skips route searches that cannot win.** A route is never shorter than the straight line, so each candidate slot gets a lower-bound score from its straight-line distance first; the enemy's own route search runs only for slots whose bound can still beat the best real score found, taken lazily in score order as the proposal loop asks for its next candidate. Assignments are identical to today's.
 - **AI cost gets sub-stages.** `sim_ai` gains sub-stages for targeting (candidate line of sight included), combat positioning (its own stage, carved out of slot resolution), perception, graph evaluation, and apply with slots and turns, on the existing `SimStage` set. Labels follow `rendering_pipeline.md` §12.
 - **Performance is measured, not gated.** Two headless measurements: `replan_stress_row` (packed waves, one-region graph) and a multi-arena row on a graph of about 4,000 regions, with a spread wave and off-arena idle, patrolling and far-targeted enemies (the spike's `spike_arena_row`, made permanent). Both are deterministic, windowless and run on any machine. The windowed `stress-env-volumes` row stays for steering, where the nav index is the change. The cost goals below are reported against; a miss is planned as an addendum that adjusts performance levers, not a failed landing (owner). Identical results are gated.
 - **Non-goals.**
@@ -74,6 +75,7 @@ When done:
 - [ ] Indexed region lookup equals the linear scan for every nav grid cell centre and for randomized points, including stacked floors at one XZ, equal floor-band distances, points just inside and just outside the snap tolerance, points beyond the grid, points exactly on region min and max edges under a non-integral origin and a cell size other than 1 m, equal-XZ-distance snap ties between two regions, non-finite points, and a region rect reaching past the grid dimensions.
 - [ ] On a grid of 4,000 or more regions, a lookup examines only the candidate regions near the point, never every region (P3).
 - [ ] Same results over a run: the stress row's chase, strafe and strafe+hits infight waves at 32, 64 and 128 produce identical per-tick targets, retaliation latches and slot claims before and after the pawn index and the positioning cache (P2).
+- [ ] Lazy, bound-pruned positioning matches the uncached batch on every assignment across the positioning scenes above, plus a slot whose route detours far beyond its straight line, a path-length weight of zero, and a scarce-slot batch that walks several candidates deep; on a fixture where one slot's bound beats every other's real score, the other slots' route searches do not run, counted at the scoring seam.
 - [ ] Route queries with reused scratch return the same path, cost and failure as a fresh-allocation reference, kept test-only, across randomized start and goal pairs on a graph of about 4,000 regions: stacked floors, closed gates, mover links and rides, off-mesh endpoints within and beyond snap tolerance, unreachable goals, and a query run straight after one that failed part way.
 - [ ] A steady-state route query allocates nothing for per-node state (`alloc_probe`), and its per-node work, counted at the search, scales with the nodes it visits: a one-region route on the 4,000-region graph touches no more nodes than on a 10-region graph.
 - [ ] With CPU timing on and an engaged enemy, the targeting, combat-positioning, perception, graph-evaluation and apply sub-stages each report under `sim_ai`, and the steering sub-stages under `sim_steering`, each no larger than its parent. Combat positioning reports absent on a tick with no engaged enemy (regression guard: positioning already returns before any batch then). With timing off, none report.
@@ -98,5 +100,5 @@ When done:
 - `sim/src/sim/mod.rs`, `agent_steering.rs` and `combat_positioning.rs` are past 800 lines. Extend them in place, or split first in a behaviour-preserving commit.
 
 ## Open questions
-- How far-targeted enemies stop routing every candidate slot every tick (a cap or a distance gate on per-candidate routes). It changes which slot an enemy claims, so it breaks identical results here; decide whether it joins this brief as a named exception or goes to `E10--ai-tick-scheduling`. — **owner**, does not block the exact cuts.
+- Far-targeted enemies routing every candidate slot: `E10--ai-tick-scheduling`'s far band owns it (beyond 100 m an engaged enemy routes toward its target, not a slot). This brief's cuts are exact.
 - Where the pawn index lives (AI crate versus sim), whether and at what size a faction bucket gains a grid, and the clearance query's cell size. — **delegated**

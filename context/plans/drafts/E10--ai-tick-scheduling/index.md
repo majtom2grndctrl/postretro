@@ -18,7 +18,7 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
   | Dormant | unperceived, no target | every 2 s | whole tick at 2 Hz |
 
   - Every rate is a constant expected to be retuned on better test maps. Owner: a slow first notice reads as fair; perfect reflexes do not. Reaction time is not authored per archetype (owner dropped `thinkIntervalMs`).
-  - An engaged NPC whose target is beyond 100 m acquires on every third decide.
+  - **Far band.** An engaged NPC whose target is beyond 100 m acquires on every third decide, and routes toward its target instead of choosing a combat slot; it chooses a slot once inside 100 m. A slot around a target that far away is stale before the NPC arrives, and choosing one costs a long route search per candidate slot (`spike-visible-rates.md`: about 485 ms per tick for 100 far chasers).
   - Decides and dormant steps are staggered by a pure function of per-NPC data that does not depend on spawn order or frame split, so assignment replays identically.
   - Amends `entity_model.md` §7c: guards evaluate on decide ticks. The clip accumulator and moment check stay on every tick for perceived and engaged NPCs; a dormant NPC's 2 Hz step resolves each moment inside it once.
 - **Visible NPCs keep acting at 60 Hz.** The spike measured 60 Hz steering for 128 engaged NPCs at 0.6–0.8 ms per tick once the nav index lands; capping them at 30 Hz with 15 Hz steering would save 0.3–0.9 ms and need host interpolation, a drawn-pose hit contract, a snapshot wire change and coarser clip moments (owner, 2026-11-17, over the earlier 30 Hz cap). Presentation, hit tests, snapshots and the client interpolation delay are unchanged.
@@ -41,7 +41,7 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
   - Network relevance and combat VFX culling: later consumers of the per-player step.
   - A sightline PVS bake, a tighter id 46, or door-aware relevance. Owner ground rule: get runtime value from metadata the bake already produces (cells, portals, sampled visibility), even after its source such as the BSP is dropped, instead of adding a Quake-style PVS bake, historically the heaviest bake stage here and in Quake.
   - A hearing model or alert propagation between NPCs: NPCs wake as they do today, through damage, targets and the aggro gate.
-  - Route-query cost: `perf-ai-tick-cost`.
+  - Route-query cost beyond the far band: `perf-ai-tick-cost` (exact cuts). Long-range routing over a coarser graph for very large maps: a later roadmap item.
 
 ## Acceptance
 
@@ -57,6 +57,7 @@ Tiers and rates:
 - [ ] With many NPCs, every staggered decide and dormant step is identical across frame splits, reversed spawn order, and host versus replay.
 - [ ] On the stress fixture, including when NPCs spawn interleaved or at a regular stride, the number of NPCs deciding or stepping dormant on any tick differs from the per-phase mean by at most one (P15).
 - [ ] `@brain.acquisitionDue` is true only on decide ticks; an engaged NPC whose target is beyond 100 m acquires on every third, for every spawn tick relative to its phase (P5).
+- [ ] An engaged NPC whose target is beyond 100 m claims no combat slot and routes toward its target; crossing inside 100 m, it chooses a slot at its next decide; one oscillating across 100 m does not flap between the two. On the multi-arena row, far-targeted NPCs' AI cost per NPC is reported against an engaged NPC's inside the band.
 - [ ] The clip-timed jab, the brute's combo (three jabs 320 ms apart after a 2,000 ms hold) and a leap land on their pinned ticks for every decide phase and frame split.
 - [ ] A clip moment inside a dormant step resolves once, on that step, with its gates evaluated then; none is skipped or fired twice, except a repeating release whose passes inside one step whiff as they do inside one tick today.
 - [ ] A dormant NPC riding a lift or pushed by a door moves with it every tick: carried, pushed or blocking, never embedded or dropped through (P10).

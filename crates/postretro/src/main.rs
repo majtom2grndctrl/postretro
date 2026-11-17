@@ -12667,6 +12667,15 @@ mod tests {
             snapshot.get("session.hosting"),
             Some(&SlotValue::Boolean(false))
         );
+        // The five session-entry facts have defaults, so all five are present.
+        assert_eq!(
+            snapshot.get("session.connection"),
+            Some(&SlotValue::Enum("offline".to_string()))
+        );
+        assert_eq!(
+            snapshot.get("session.endCause"),
+            Some(&SlotValue::Enum(String::new()))
+        );
         // The assist progress slots default to 0 and are value-bearing.
         assert_eq!(
             snapshot.get("player.assistProgress"),
@@ -12694,7 +12703,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            72 + list_slots,
+            77 + list_slots,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

@@ -87,11 +87,13 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "hostSes
 **Password**
 - [ ] The right password admits.
 - [ ] A client admitted by password, whose parity, join seed and reveal reached the host before its proof, participates in the host's level with its join-seeded character (P6).
-- [ ] Two clients pending on one host receive different nonces, and a proof replayed from one connection onto another refuses with `refusedPassword` (P7).
+- [ ] Two clients pending on one host receive different nonces, a proof replayed from one connection onto another refuses with `refusedPassword`, and a proof with no challenge outstanding (passwordless host, already admitted, second proof) changes no slot state (P7).
 - [ ] A client on the wrong mod is refused with `refusedMod` and receives no challenge, whatever its password (P9).
 - [ ] Writing `session.password` on a live host changes which proof admits only at the next hosting (P10).
 - [ ] A wrong password and a proof made from an empty password each refuse with `refusedPassword`, and the client lands at its frontend.
 - [ ] A client that stays connected and never answers the challenge is refused with `refusedPassword` within the bound (P8).
+- [ ] A proof drained in the poll its bound elapses admits. A host that ends while a challenge is outstanding sends `sessionEnded`. A host level change while a challenge is outstanding admits the proving client into the new level (P22).
+- [ ] On a password host, a reconnecting client whose proof lands on its hold's deadline poll reclaims its seat, and one whose hold expires before its proof lands gets a fresh seat (P21).
 - [ ] A host with no password (an empty slot) sends no challenge and admits both a client with no password and a client with one.
 - [ ] No sent datagram, save file, replicated or persisted slot, or captured log line contains the password, and `session.password` holds it only until a verb consumes it. The test uses a password no fixture contains, scans captured bytes for it, and asserts no uncaptured worker-thread records.
 - [ ] A client refused for its password applies no parity, join seed or reveal to the host.
@@ -102,9 +104,9 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "hostSes
 - [ ] Each end cause publishes on its own path, including a refusal whose cause arrives in the same update as the disconnect (P11). `badAddress` is checked against a malformed address, an IPv6 address and a hostname, none of which opens a socket, while an address without a port dials the default, from the menu and from `--connect`. A `Protocol` refusal publishes `connectFailed`.
 - [ ] A `badAddress` join writes no save, never leaves `offline` and keeps `session.password` (P13).
 - [ ] A host's own `endSession` sets no end cause. A failed boot `--host` sets `hostFailed`, and a malformed `--connect` sets `badAddress` (P14).
-- [ ] `session.connection` steps `offline` → `connecting` → `waiting` (host at its frontend) → `playing` (host starts a level) → `waiting` (host changes level) → `playing` → `offline` (leave). A refused attempt goes `connecting` → `offline` and never shows `waiting`.
+- [ ] `session.connection` steps `offline` → `connecting` → `waiting` (host at its frontend) → `playing` (host starts a level) → `waiting` (host changes level) → `playing` → `offline` (leave). A refused attempt goes `connecting` → `offline` and never shows `waiting`. The test records every published value, not one sample per frame, and includes a hold and re-promotion in one update and an admission with a session-ended cause in one update (P23).
+- [ ] A deferred host press steps `session.connection` `offline` → `connecting` → `offline` as `session.hosting` publishes, and a deferred host press whose build fails ends `offline` with `hostFailed`. An undeferred host press never leaves `offline` (P18).
 - [ ] `session.endCause` clears when the next attempt starts, and a client's own leave sets none.
-- [ ] `session.password` empties once a verb consumes it.
 - [ ] The remembered address seeds `session.joinAddress` after a restart. It updates only when a join is admitted, never on a refusal, `connectFailed` or `badAddress` (P12).
 
 **UI**
@@ -114,6 +116,7 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "hostSes
 - [ ] A late joiner's catch-up ignores `hostSession` and `joinSession` steps without a warning, as it ignores `leaveSession`.
 - [ ] `UI.hostSession()` and `UI.joinSession()` in a Luau script produce the same steps as the TypeScript calls.
 - [ ] The reserved `ui.*` actions gain no host or join action. Grep gate.
+- [ ] `networking.md` no longer calls gate 1 an encrypted handshake or admission "not a trust decision", and §Role model no longer says hosting or joining again needs a relaunch. Grep gate.
 - [ ] The dev frontend shows a notice for every end-cause value. The test derives the list from the end-cause enum.
 
 ### Manual
@@ -127,7 +130,7 @@ Both take no arguments and return a `SystemReactionStep` (`{ primitive: "hostSes
 - The exit save is inline in `main.rs` (`collect_persisted_state`, `collect_persisted_faction_sentiment`, `collect_per_owner_state`, `merge_per_owner_state`, `save_persisted_state`). Extracting it is the join save's seam. `restore_store_after_leave` and `join_seed_from_persisted_state` read `session.persisted_state`.
 - Admission is decided in `NetServer::process_control_messages`. `NetServer::reject` carries the close. The client's closing-cause match in `main.rs` already falls unknown causes to `leave_session(LeaveCause::Refused)`, and it is also where end causes publish. `crates/net` gains a `blake3` dependency, which is already a workspace dependency.
 - The boot-time ledger is replaced by a fresh mint at host entry; `SeatTable` keeps its id and counter private, so this needs a new ledger operation that keeps seat 0's carry (`apply_role` keeps any existing ledger via `get_or_insert_with`).
-- `waiting` and `playing` derive from the client's holding notices and participation marker; the host sends no admitted message, so admission is first visible as the first roster frame.
+- `waiting` and `playing` derive from the client's holding notices and participation marker; the host sends no admitted message, so admission is first visible as the `Relevel` or `Holding` notice sent at admission (`process_control_messages`); the roster follows later from `finish_host_poll`.
 - Two text fields on one screen: text-entry edits land on the active tree's `textEntryTarget` (`resolve_text_entry_intents`), but the dev keyboard reactions append to `ui.textEntry` explicitly. Settle how each field reaches its own slot on both input paths before building the menus.
 - A connect started from the frontend skips the splash and first-launch hold that absorb a boot connect (`boot_sequence.md` §First-launch hold). A relevel reloading an installed backdrop as the host's level is specified, but off the boot path it is untested.
 - Rival: netcode `Secure` mode, with the server key derived from the password, encrypts everything and saves a round trip. It loses the brief's terms: a wrong password reads as an unreachable host, so no `refusedPassword`; and a passwordless host cannot admit a client that holds one. Threat model, either way: anyone watching the LAN can capture a nonce and its proof and guess passwords offline. That is acceptable for an access gate.

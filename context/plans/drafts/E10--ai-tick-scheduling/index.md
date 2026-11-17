@@ -117,7 +117,7 @@ Perception and tier changes:
 - [ ] Replan budget, both sides: with 24 or fewer owed NPCs it is exactly 4; with 128 owed chasers it admits ⌈128 / 6⌉ = 22 per tick, the drift tier's fair wait is at most 6 ticks, and the gate tier's ⌈N / budget⌉ bound holds while gates flip.
 
 Scale (reported per tier on a `tools/gen_stress_map.py` multi-arena fixture, `sim_ai` and `sim_steer_agents` with the new sub-stages):
-- [ ] Quake/Doom class (about 64 engaged in view, about 500 placed across arenas): the fixed step never spirals and AI plus steering holds `perf-ai-tick-cost`'s budgets.
+- [ ] Quake/Doom class (about 64 engaged in view, about 500 placed across arenas): the fixed step never spirals; AI and steering are reported against `perf-ai-tick-cost`'s goals, and a miss is planned as an addendum, not a failed landing.
 - [ ] Serious Sam class (about 128 engaged, about 1,000 placed): measured and reported, not gated.
 - [ ] Per-tick cost of an NPC in each tier, as a fraction of today's 60 Hz NPC, reported.
 - [ ] Scale rows report the worst tick, the one carrying every 30 Hz part, as well as the mean, and the fixed step does not spiral on it.

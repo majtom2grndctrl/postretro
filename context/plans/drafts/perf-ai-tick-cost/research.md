@@ -25,7 +25,7 @@ Findings that inform the brief but do not decide it. The 2026-10-05 snapshot pre
 - Positioning's per-call cost is flat (`score_candidate` 11.8k → 12.7k instructions); calls grow faster than agents (194k → 440k per run), mostly `capsule_static_placement_center` from grounding. From source: grounding, the docked-mover test, slot line of sight and the target-side route depend only on target and position, yet run per enemy; `dynamic_placement_is_clear` scans every agent per candidate.
 - Rotated rings (strafe, reposition) are built on each enemy's own bearing from the target (`engaged_motion`), so their slots almost never share position bits with another enemy's. The positioning cache is exact for them but saves little. The strafe wave was not profiled: its split is unmeasured, so the strafe target rests on the pawn index and the clearance query.
 - Slot line of sight casts from each enemy's own eye offset (`compute.rs` → `CombatQuery::enemy_eye_offset`; `perception` derives it from the archetype's hitbox, and `(p + k) − p` rounds per position), so it cannot be shared between enemies.
-- `resolve_combat_slots` and attack-turn arbitration are under 0.1%. `LiveFactionSentiment::sentiment` itself is 0.09%; the cost sits in `relationship`.
+- `resolve_combat_slots` and attack-turn arbitration are under 0.1%. `LiveFactionSentiment::sentiment` itself is 0.09%; the hashing sits in the faction-leaf read (above).
 - Caveats: instruction counts are not time, so the ms split is proportional (total instruction growth 2.78× matches wall-clock 2.80×). The profile includes 60 warm-up ticks the row's timer excludes. Confidence high on which terms grow, moderate on exact shares.
 
 ## Replan budget (from `done/E10--enemy-combat-movement/plan.md` §Review loop)
@@ -53,7 +53,7 @@ Measured at 90c9b9687 plus the `sim_steer_*` sub-stages, source read at 2095e74c
 |---|---|---|
 | `targeting::target_candidates` registry slot walk (`target_offers` every tick, replayed by `select_target_with_attacker_ledger` on due ticks) | 84% | 4.9 |
 | └ of which leaf `Option::as_ref` on `Vec<Option<ComponentValue>>` cells (`EntityRegistry::iter_with_kind`) | 50% | 2.9 |
-| Faction sentiment lookups and hashing (`LiveFactionSentiment::sentiment`, SipHash) | 6.7% | 0.39 |
+| Faction hashing, attributed then to `LiveFactionSentiment::sentiment` (SipHash); the 2026-11-17 review places it in the string-keyed faction-leaf read | 6.7% | 0.39 |
 | Guard and transition evaluation (`eval_value`, `select_transition_path`, scope refresh) | 0.7% | 0.04 |
 | `nav::find_path` reachability | 0.5% | 0.03 |
 | `resolve_combat_slots` and `apply_outcomes` | 0.8% | 0.05 |
@@ -136,7 +136,7 @@ General engine practice, not re-verified against sources this session.
 - `target_offers` prices the stride from hostile candidates only (`is_hostile` over the candidate's faction leaf). Non-hostile pawns stay in the raw scan only so selection can admit them through retaliation.
 - `select_target_with_attacker_ledger` admits a non-hostile candidate only when `retaliation_preference` returns a rank, and that requires `has_attacker_record`, which `CandidateScope::refresh` sets from the brain's ledger. The ledger holds at most `RECENT_ATTACKER_LEDGER_CAPACITY` (8) entries. Retaliation candidates are therefore a subset of ledger attackers.
 - Among non-retaliation candidates the winner is the nearest eligible hostile; ties go to the earlier candidate (`total_cmp(..).is_lt()`), i.e. movement holders before brain-only holders, then slot order. A walk in (distance, group, slot) order that stops at the first eligible hostile returns the same winner, and that winner is also the nearest eligible hostile the retaliation latch compares against.
-- Hostility is a function of (evaluating faction, candidate faction) only, through `LiveFactionSentiment`, which `run_ai_tick_with_host` builds once per pass. So hostility resolves per bucket pair, not per pawn pair. The measured per-pair sentiment hashing (6.7% of AI) goes with it.
+- Hostility is a function of (evaluating faction, candidate faction) only, through `LiveFactionSentiment`, which `run_ai_tick_with_host` builds once per pass. So hostility resolves per bucket pair, not per pawn pair. The per-candidate faction-leaf read, where the measured hashing sits, goes with it.
 - The rival, a single all-pawn XZ grid, returns the full candidate set in distance order on due ticks. That is more than the selection rule needs. It also mixes allied pawns into every ring search. In a converged horde, the case the spread-patrol rows never measured, one faction surrounds one player: the hostile bucket holds one pawn and the allied bucket holds the horde.
 
 ## Rejected: cell-visibility broad phase
@@ -168,5 +168,6 @@ A per-kind occupancy index lands last, as its own brief, not here:
 | Id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
 | P1 | Two consecutive AI ticks. Tick 1's apply changes a pawn's faction state, writes a sentiment override, despawns a pawn, and spawns one into the reused slot. | The index is built at the start of tick 2's pass, after tick 1's apply. | Tick 2's selection, latch and stride distance equal the brute-force reference. An index kept across passes and rebuilt only when dirty fails. |
-| P2 | Stress wave at 32 / 64 / 128 for chase, strafe and strafe+hits infight. | A per-tick digest of (enemy, target, retaliation latch, slot bits) is recorded at the pre-change commit and checked in; each change replays it. | Equal digests on every tick. Ignore-gated release run (the row is minutes long in debug). |
-| P3 | Region lookup on a grid of 4,000 or more regions, counting regions examined per `region_at` or `resolve_region_at`. | Index built once at `NavGraph` construction. | No more than the candidate lists of the cells within snap tolerance, never the full region count. A linear fallback fails. |
+| P2 | Stress wave at 32 / 64 / 128 for chase, strafe and strafe+hits infight. | A per-tick digest of (enemy, target, retaliation latch, slot bits) is recorded at the pre-change commit and checked in; each change replays it. | Equal digests on every tick. Ignore-gated release run (the row is minutes long in debug). Record and replay on the same OS: platform `sin`/`cos` can differ in the last bit across platforms. |
+| P3 | Region lookup on a grid of 4,000 or more regions, finite points only (a NaN coordinate's exact answer spans a strip), counting regions examined per `region_at` or `resolve_region_at`. | Index built once at `NavGraph` construction. | No more than the candidate lists of the cells within snap tolerance, never the full region count. A linear fallback fails. |
+| P4 | A batch of 128 agents on one target, counting agents examined per clearance test. | Proximity query built once per batch from the batch's agent snapshots. | Only agents within the spacing radius's cells, never every agent. A linear fallback fails. |

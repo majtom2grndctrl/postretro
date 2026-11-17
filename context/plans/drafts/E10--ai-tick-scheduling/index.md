@@ -38,7 +38,7 @@ Owner-requested capability for an anticipated need (roadmap Epic 10, AI at scale
 - **Docs amended at promotion:** `scripting.md` §11, `entity_model.md` §3, §5, §6 (if an NPC's cell is stored on it), §7c (every every-tick clause), `networking.md` (NPC presentation and the host's drawn-pose hits), the substrate doc's no-cull rule and its consumer relation, roadmap E15 Phase 4 and combat VFX culling (id 51, not id 46); the no-PVS ground rule lands in `context/lib/`.
 - **Non-goals:**
   - Network relevance and combat VFX culling: later consumers of the per-player step.
-  - A sightline PVS bake, a tighter id 46, or door-aware relevance. Owner ground rule: push PostRetro as far as it goes without a Quake-style PVS bake, historically the heaviest bake stage here and in Quake.
+  - A sightline PVS bake, a tighter id 46, or door-aware relevance. Owner ground rule: get runtime value from metadata the bake already produces (cells, portals, sampled visibility), even after its source such as the BSP is dropped, instead of adding a Quake-style PVS bake, historically the heaviest bake stage here and in Quake.
   - A hearing model or alert propagation between NPCs: NPCs wake as they do today, through damage, targets and the aggro gate.
 
 ## Acceptance
@@ -60,12 +60,20 @@ Tiers and rates:
 - [ ] The clip-timed jab's first damage lands at its clip moment, within one 30 Hz step, for every phase and frame split (P19).
 - [ ] A clip moment that falls inside a 30 Hz or dormant step resolves once, on that step, with its gates evaluated then; none is skipped or fired twice.
 - [ ] An NPC crossing the close radius changes steering rate on the next tick, without a jump in its drawn position.
+- [ ] An NPC whose XZ distance from its tick pose to its target's position at the tier choice equals the close radius is close; one just beyond it is engaged.
+- [ ] Tier assignment is identical on a headless host and on a listen host whose camera looks elsewhere.
 - [ ] An NPC riding a lift or pushed by a door moves with it every tick in every tier: carried, pushed or blocking, never embedded or dropped through (P10).
 - [ ] A dormant NPC wandering, patrolling or falling never passes through a wall, floor or ledge it would stop at under 60 Hz.
+- [ ] A knocked-back NPC travels the same distance at 30, 15 and 2 Hz as at 60 Hz, within one step's travel, for every authored drag.
 
 Presentation:
 - [ ] The host draws every NPC between its last two steps; a 15 Hz NPC shows no hold-then-jump on host or client at the minimum client delay.
-- [ ] Host hitscan, a host projectile's direct contact and splash each hit an NPC at its tick pose, at every tier and speed; aimed where only its simulated pose stands, they miss.
+- [ ] Host hitscan, a host projectile's direct contact and splash each hit an NPC at its tick pose at every tier; against an NPC moving at least half its run speed, a shot aimed where only its simulated pose stands misses.
+- [ ] A projectile and a host hitscan striking the same NPC on the tick it steps test the same pose (P24).
+- [ ] An NPC spawned, teleported or set by a script is drawn and hit at its new pose from that tick, never along a path from its old pose (P22).
+- [ ] Across every tier change, up or down and mid step, an NPC's tick pose never jumps or moves backwards, and hits on it land where it is drawn on each tick of the change (P23).
+- [ ] On the host, an NPC's mesh draw, portal cull, ghost-link draw, attached lights and sound anchors all use its tick pose; a running 15 Hz NPC is never culled while its drawn pose is in view, and its sounds and lights do not lead its body.
+- [ ] Raising the NPC interpolation floor leaves remote player pawns, movers and projectiles at today's delay on the same link.
 - [ ] An NPC's melee reach and its muzzle and launch origins are measured from its tick pose.
 - [ ] Tick poses are identical across frame splits and on replay.
 - [ ] An NPC's locomotion clip does not flicker between walk and rest while it moves at a steady speed.
@@ -97,6 +105,7 @@ Scale (reported per tier on a `tools/gen_stress_map.py` multi-arena fixture, `si
 - [ ] Quake/Doom class (about 64 engaged in view, about 500 placed across arenas): the fixed step never spirals and AI plus steering holds `perf-ai-tick-cost`'s budgets.
 - [ ] Serious Sam class (about 128 engaged, about 1,000 placed): measured and reported, not gated.
 - [ ] Per-tick cost of an NPC in each tier, as a fraction of today's 60 Hz NPC, reported.
+- [ ] Scale rows report the worst tick, the one carrying every 30 Hz part, as well as the mean, and the fixed step does not spiral on it.
 - [ ] A player teleporting into the most populated dormant arena moves every NPC there up on one tick without spiralling the fixed step; that tick's cost is reported (P14).
 - [ ] The perception union costs no per-tick allocation, and its cost per tick is reported against player and NPC counts.
 

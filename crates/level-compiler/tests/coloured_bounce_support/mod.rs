@@ -13,6 +13,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use postretro_level_format::sh_body::pre_flag::{downgrade_to_pre_flag_prl, upgrade_pre_flag_prl};
 use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
@@ -183,6 +184,7 @@ impl Run {
             sections: read_sections(&self.prl),
             sidecars: sidecars(&self.materials),
             log: self.log,
+            prl: self.prl,
         }
     }
 }
@@ -197,7 +199,11 @@ pub fn diagnostic(output: &Output) -> String {
 
 /// Every section the PRL carries, keyed by id; an absent section stays absent.
 pub fn read_sections(prl: &Path) -> BTreeMap<u32, Vec<u8>> {
-    let mut cursor = Cursor::new(std::fs::read(prl).expect("compiled PRL"));
+    sections_of(std::fs::read(prl).expect("compiled PRL"))
+}
+
+fn sections_of(prl: Vec<u8>) -> BTreeMap<u32, Vec<u8>> {
+    let mut cursor = Cursor::new(prl);
     let metadata = read_container(&mut cursor).unwrap();
     let ids: Vec<u32> = metadata
         .sections
@@ -239,9 +245,35 @@ pub struct Bake {
     pub log: String,
     pub sections: BTreeMap<u32, Vec<u8>>,
     pub sidecars: BTreeMap<String, Vec<u8>>,
+    pub prl: PathBuf,
 }
 
 impl Bake {
+    /// This compiler's `--whole-load-sh` bake in the SH section format of the
+    /// saved pre-colour compiler, which predates the body-presence field:
+    /// ids 27/34/35/41/45 one version lower, no flag. Its oracles compare these.
+    pub fn pre_flag_sections(&self) -> BTreeMap<u32, Vec<u8>> {
+        let prl = std::fs::read(&self.prl).expect("compiled PRL");
+        sections_of(downgrade_to_pre_flag_prl(&prl).unwrap_or_else(|error| {
+            panic!(
+                "{}: downgrade to the pre-flag SH format: {error}",
+                self.prl.display()
+            )
+        }))
+    }
+
+    /// A saved pre-colour compiler's bake in the current SH section format, for
+    /// decoders that refuse the pre-flag versions.
+    pub fn current_format_sections(&self) -> BTreeMap<u32, Vec<u8>> {
+        let prl = std::fs::read(&self.prl).expect("compiled PRL");
+        sections_of(upgrade_pre_flag_prl(&prl).unwrap_or_else(|error| {
+            panic!(
+                "{}: upgrade from the pre-flag SH format: {error}",
+                self.prl.display()
+            )
+        }))
+    }
+
     pub fn section(&self, id: SectionId) -> &[u8] {
         self.sections
             .get(&(id as u32))

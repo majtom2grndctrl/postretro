@@ -71,6 +71,9 @@ mod tests {
 
     fn leaf() -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
+            pose: None,
+            stagger_to: None,
+            passes: None,
             sound: None,
             animation: Some("idle".to_string()),
             motion: None,
@@ -79,6 +82,7 @@ mod tests {
             facing: None,
             reposition: None,
             attack_turn: None,
+            speed: None,
             layers: BTreeMap::new(),
         }
     }
@@ -96,6 +100,9 @@ mod tests {
                 transitions: BTreeMap::from([(
                     "initial".to_string(),
                     vec![GuardedRow {
+                        release_after: None,
+                        queue: None,
+                        after_moment: false,
                         when: IrNode::Const {
                             value: IrValue::Bool(true),
                         },

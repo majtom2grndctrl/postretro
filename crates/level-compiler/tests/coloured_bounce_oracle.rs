@@ -90,10 +90,26 @@ fn bake_using(
         fixtures::room_map(appearance, true, true)
     };
     let fixture = Fixture::new(&map_text, true);
-    let bake = fixture.bake(binary, "room", "warn", &ORACLE_FLAGS);
+    let mut flags = ORACLE_FLAGS.to_vec();
+    // The saved compiler predates the SH body-presence field: it writes ids
+    // 27/34/35/41/45 with their bodies, one version lower and with no flag.
+    // The checked-in digests and sizes are of that form. The current compiler
+    // bakes the bodies too (`--whole-load-sh`); its sections are digested and
+    // sized downgraded to the pre-flag form, and either side decodes in the
+    // current form.
+    let current = binary == current_compiler();
+    if current {
+        flags.push("--whole-load-sh");
+    }
+    let bake = fixture.bake(binary, "room", "warn", &flags);
+    let (decoded, recorded) = if current {
+        (bake.sections.clone(), bake.pre_flag_sections())
+    } else {
+        (bake.current_format_sections(), bake.sections.clone())
+    };
     // The approved storage dependency applies to id 41 only.
     for id in [27, 45] {
-        if let Some(bytes) = bake.sections.get(&id) {
+        if let Some(bytes) = decoded.get(&id) {
             let levels = if id == 27 {
                 DeltaShVolumesSection::from_bytes(bytes)
                     .unwrap()
@@ -109,14 +125,14 @@ fn bake_using(
             );
         }
     }
-    let shape = bake.sections.get(&41).map(|bytes| {
+    let shape = decoded.get(&41).map(|bytes| {
         let section = DirectShDeltaVolumesSection::from_bytes(bytes).unwrap();
         let mut cell_levels = [0; 3];
         for &level in &section.cell_levels {
             cell_levels[usize::from(level)] += 1;
         }
         let shape = Id41Shape {
-            section_bytes: bytes.len(),
+            section_bytes: recorded[&41].len(),
             entries: section.affinity_lights.len(),
             valid_probes: section
                 .valid_probe_masks
@@ -143,12 +159,14 @@ fn bake_using(
         shape
     });
     let digest = |bytes: &[u8]| blake3::hash(bytes).to_hex().to_string();
-    let sections = bake
-        .required(ids)
-        .into_iter()
-        .map(|(id, bytes)| {
+    let sections = ids
+        .iter()
+        .map(|&id| {
+            let bytes = recorded
+                .get(&id)
+                .unwrap_or_else(|| panic!("fixture must exercise section {id}"));
             assert!(!bytes.is_empty(), "section {id} must carry a payload");
-            (id, digest(&bytes))
+            (id, digest(bytes))
         })
         .collect();
     let sidecars = bake

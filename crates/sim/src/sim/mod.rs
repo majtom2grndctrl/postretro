@@ -1,12 +1,16 @@
 // Headless fixed-tick game-state advance seam.
 // See: context/lib/entity_model.md §5 · context/lib/networking.md
 
+#[cfg(test)]
+mod activity_speed_tests;
 pub mod assist;
 pub mod assist_pairs;
 mod assist_pass;
 mod assist_scratch;
 pub mod assist_snapshot;
 pub mod cpu_stages;
+#[cfg(test)]
+mod damage_in_activity_tests;
 #[cfg(test)]
 mod damage_type_tests;
 pub mod defense_layers;
@@ -455,6 +459,9 @@ pub struct TickEvents {
     /// most one per target. Each carries the target's life state and elapsed
     /// at record for the player-event pass's re-check.
     pub assist_completions: Vec<assist::AssistCompletion>,
+    /// This tick's Triggers-stage player pawns, captured before any trigger
+    /// reaction or damage. The host derives session player status from it.
+    pub trigger_stage_pawns: player_life::TriggerStagePawns,
     /// Test-only fixed-tick trace. Production consumes residual handles only;
     /// keeping the detailed sequence out of non-test builds avoids a hot-path
     /// diagnostic allocation.
@@ -800,6 +807,7 @@ where
     let mut trigger_command_fires = Vec::new();
     let stage_capabilities =
         player_life::TriggerStageCapabilities::capture(&registry.borrow(), &players);
+    let mut trigger_stage_pawns = stage_capabilities.stage_pawns();
     if let Some(trigger_context) = trigger_context {
         let canonical_player_pawns = &stage_capabilities.pawns;
         let alive_players = &stage_capabilities.occupants;
@@ -915,6 +923,11 @@ where
                     },
                 );
         }
+        // Occupancy after the trigger stage settles, from the same capture
+        // the stage counted with: a player killed later this tick still
+        // occupies for it, and leaves on the next.
+        trigger_stage_pawns.occupied_volumes =
+            trigger_context.system.counted_volumes(&stage_capabilities);
     }
     let touch_events = {
         let mut registry = registry.borrow_mut();
@@ -1194,6 +1207,7 @@ where
         trigger_residuals,
         trigger_exit_fires,
         assist_completions,
+        trigger_stage_pawns,
         #[cfg(test)]
         trigger_fires,
         #[cfg(test)]
@@ -1396,30 +1410,43 @@ fn update_brain_animation_playback_rates(
             continue;
         };
 
-        // Rate-scale only the graph's locomotion state — the one that chases
-        // without an action of its own — or a directional variant of it
+        // Rate-scale only the graph's rate-scaled states — its locomotion
+        // state, and each state an activity plays under its own steering
+        // motion (every motion but `hold` and `freeze`: a patrol's walk and a
+        // moving attack's stride included) — or a directional variant of one
         // (`_left`, `_right`, `_backward`), and only while the archetype leaves
-        // `speedScale` on. Every other case rests at the authored rate (1.0).
+        // `speedScale` on. The set is derived once per graph (foundation
+        // `RateScaledStates`), so this reads a handful of names, never the
+        // graph; the remote client derives the same set from the descriptor.
+        // Every other state plays its fixed `playbackRate` (default 1).
         // Calibration is `measured_ground_speed / effective_travel_speed`, each
         // variant against its own clip's stride; a state with neither an
         // override nor a derived clip stride falls back to
         // `speed_xz / move_speed`, keeping the shipped in-place walk unchanged.
-        let is_locomotion =
-            postretro_foundation::locomotion_animation(&brain.graph).is_some_and(|locomotion| {
-                TravelVariant::of_state(locomotion, &animation.current_state).is_some()
-            });
-        let rate_input = if is_locomotion && animation.speed_scale {
+        // The fallback is the archetype's base speed, never the activity's
+        // steered speed, because the client has only the base to divide by.
+        // The active state's own policy applies last
+        // (`MeshAnimation::stride_playback_target`): `scaleWithSpeed: false`
+        // opts it out, `maxPlaybackRate` (default `RATE_MAX`) bounds the
+        // clamp, and a state the rule does not scale plays its fixed
+        // `playbackRate` (default 1). The client reads the same fields from
+        // its local descriptor.
+        let is_rate_scaled = animation.speed_scale
+            && brain
+                .rate_scaled_states()
+                .iter()
+                .any(|state| TravelVariant::of_state(state, &animation.current_state).is_some());
+        let stride_ratio = is_rate_scaled.then(|| {
             let effective = effective_travel_speed(animation, mesh, hit_zone_store);
             MeshAnimation::locomotion_rate_ratio(speed_xz, effective, agent.move_speed)
-        } else {
-            1.0
-        };
-        if animation.playback_rate_needs_update(rate_input) {
-            rebases.push((id, rate_input));
+        });
+        let target = animation.stride_playback_target(stride_ratio);
+        if animation.playback_rate_target_needs_update(target) {
+            rebases.push((id, target));
         }
     }
 
-    for (id, rate_input) in rebases {
+    for (id, target) in rebases {
         // The read-only predicate above centralizes clamping and the epsilon
         // policy, so clone/write only the components whose timeline will rebase.
         let Ok(mut mesh) = registry.get_component::<MeshComponent>(id).cloned() else {
@@ -1429,12 +1456,12 @@ fn update_brain_animation_playback_rates(
             continue;
         };
 
-        animation.update_playback_rate(rate_input, anim_time);
+        animation.apply_playback_rate_target(target, anim_time);
         let _ = registry.set_component(id, mesh);
     }
 }
 
-/// Resolve the effective travel speed for a locomotion state's speed-scaled
+/// Resolve the effective travel speed for a rate-scaled state's speed-scaled
 /// playback: the active state's authored `travelSpeed` override wins, else the
 /// model clip's load-derived stride (via [`HitZoneStore`], keyed by the mesh's
 /// model handle, with the clip picked by `ModelHitZones::state_clip`, which the
@@ -2107,12 +2134,6 @@ pub(crate) mod teleport_tick_tests;
 #[cfg(test)]
 mod trap_tick_tests;
 
-/// Single-player / single-pawn movement stage. Resolves the local movement pawn via
-/// the registry marker, then drives it through the shared host multi-pawn seam
-/// (`host_movement::run_host_movement_tick`) with a one-element input list. The host
-/// netcode path bypasses this entirely and calls the seam directly with EVERY
-/// authoritative pawn — `local_movement_pawn` is the single-player resolver
-/// only, never the authoritative-host resolver.
 struct LocalMovementTickEvents {
     stepped_pawn: Option<EntityId>,
     teleport: Option<(EntityId, crate::movement::TeleportEvent)>,
@@ -2120,6 +2141,10 @@ struct LocalMovementTickEvents {
     state_edges: Vec<crate::movement::MovementStateEdge>,
 }
 
+/// Local-pawn movement stage. Resolves the local movement pawn from the registry
+/// marker and advances it through `host_movement::run_host_movement_tick` as a
+/// one-pawn list. Single-player and the listen host both move their own pawn here;
+/// the host moves remote pawns in a separate, earlier call.
 fn run_movement_tick(
     registry: &Rc<RefCell<EntityRegistry>>,
     collision: &impl crate::movement::MovementCollisionSource,
@@ -2219,6 +2244,9 @@ mod tests {
                     (
                         "idle".to_string(),
                         BehaviorActivityDescriptor {
+                            pose: None,
+                            stagger_to: None,
+                            passes: None,
                             sound: None,
                             animation: Some("idle".to_string()),
                             motion: Some(MotionVerb::Hold),
@@ -2227,12 +2255,16 @@ mod tests {
                             facing: None,
                             reposition: None,
                             attack_turn: None,
+                            speed: None,
                             layers: BTreeMap::new(),
                         },
                     ),
                     (
                         "alert".to_string(),
                         BehaviorActivityDescriptor {
+                            pose: None,
+                            stagger_to: None,
+                            passes: None,
                             sound: None,
                             animation: Some("walk".to_string()),
                             motion: Some(MotionVerb::ChaseTarget),
@@ -2241,6 +2273,7 @@ mod tests {
                             facing: None,
                             reposition: None,
                             attack_turn: None,
+                            speed: None,
                             layers: BTreeMap::new(),
                         },
                     ),
@@ -2600,6 +2633,9 @@ mod tests {
                     crossfade_ms: DEFAULT_CROSSFADE_MS,
                     interrupt: InterruptPolicy::Smooth,
                     travel_speed: None,
+                    max_playback_rate: None,
+                    scale_with_speed: true,
+                    playback_rate: None,
                     clip_index: Some(clip_index),
                 },
             );
@@ -2802,6 +2838,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let states = HashMap::from([
@@ -2851,6 +2890,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index,
         };
         let set_states = |registry: &mut EntityRegistry, states: Vec<(&str, AnimationState)>| {
@@ -2957,6 +2999,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let states = HashMap::from([
@@ -3061,6 +3106,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(clip_index),
         };
         let states = HashMap::from([

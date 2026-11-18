@@ -9,6 +9,11 @@ license.workspace = true
 [features]
 serde = ["dep:serde"]
 gltf-resolve = ["dep:gltf", "dep:percent-encoding"]
+# Exposes `sh_body::pre_flag`, which converts a PRL between the SH sections'
+# pre-flag format and the current one, for tests that compare against a
+# baseline compiler from before the body-presence field. Never enabled by
+# production dependencies.
+test-support = []
 
 [dependencies]
 serde = { workspace = true, optional = true }

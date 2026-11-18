@@ -3,10 +3,12 @@
 // See: context/lib/build_pipeline.md
 
 use crate::FormatError;
+use crate::SectionId;
 use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F};
 use crate::octahedral::{
     DEFAULT_IRRADIANCE_TILE_BORDER, RUNTIME_SUPPORTED_TILE_DIMENSION, irradiance_atlas_array_layout,
 };
+use crate::sh_body::{ShBodyPresence, require_sh_body};
 use crate::sh_reconstruct::{Level, MAX_NODE_SCALE, StoredBrickPrefixSum, stored_node_prefix_sum};
 
 /// Section-internal version written as the first u32 of the `OctahedralShVolume`
@@ -33,8 +35,10 @@ use crate::sh_reconstruct::{Level, MAX_NODE_SCALE, StoredBrickPrefixSum, stored_
 /// geometry and a BC6H/RGBA16F format tag. Version 10 replaces the two v9 atlas
 /// geometry blocks with one metadata-derived stored-tile geometry: L0 stores
 /// valid probes, L1 reserves all corners, and L2 stores one brick mean. Version
-/// 11 assigns one reserved probe byte to the aligned base-node scale.
-pub const SH_VOLUME_VERSION: u32 = 11;
+/// 11 assigns one reserved probe byte to the aligned base-node scale. Version
+/// 12 appends a `u32` body-presence field to the header; an omitted body drops
+/// the compact atlas bytes and keeps `compact_atlas_len` at its full value.
+pub const SH_VOLUME_VERSION: u32 = 12;
 
 /// Sentinel for "this map light has no animated-light section slot" in
 /// `OctahedralShVolumeSection.slot_for_map_light`. Non-animated lights and any
@@ -58,17 +62,17 @@ pub struct OctahedralShProbe {
     pub mean_distance: u16,
     /// Mean squared ray distance `E[d²]`, f16 bits.
     pub mean_sq_distance: u16,
-    /// Per-affinity-brick storage level: 0 = L0, 1 = L1, 2 = L2. v11 requires
+    /// Per-affinity-brick storage level: 0 = L0, 1 = L1, 2 = L2. The current format requires
     /// one shared value per full 4×4×4 brick and L0 on partial edge bricks.
     pub density_level: u8,
-    /// Power-of-two brick-node scale. 0 is one brick; v11 permits 0..=3.
+    /// Power-of-two brick-node scale. 0 is one brick; the current format permits 0..=3.
     pub node_scale: u8,
 }
 
 /// One `Rgba16Float` atlas texel, stored as raw f16 channel bits.
 ///
 /// This remains the compiler's uncompressed tile-packing representation. The
-/// v11 section payload itself is the tagged byte blob on
+/// current section payload itself is the tagged byte blob on
 /// [`OctahedralShVolumeSection::compact_atlas`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OctahedralAtlasTexel {
@@ -121,7 +125,7 @@ impl Default for AnimationDescriptor {
 /// On-disk layout (all little-endian):
 ///
 /// ```text
-///   Header (84 bytes):
+///   Header (88 bytes):
 ///     u32      version                (= SH_VOLUME_VERSION)
 ///     f32 × 3  grid_origin
 ///     f32 × 3  cell_size
@@ -136,7 +140,10 @@ impl Default for AnimationDescriptor {
 ///     u32      layer_count            (2D array layers)
 ///     u32      tiles_per_layer        (whole probe tiles per layer)
 ///     u32      irradiance_format       (BC6H / RGBA16F tag from `lightmap`)
-///     u32      compact_atlas_len       (byte length of stored atlas blob)
+///     u32      compact_atlas_len       (byte length of stored atlas blob,
+///                                      full value even when omitted)
+///     u32      body_present           (1 = atlas blob follows the probe
+///                                      records, 0 = omitted; see `sh_body`)
 ///
 ///   Probe metadata records (probe_stride bytes each, x-fastest order):
 ///     u8       validity
@@ -146,10 +153,12 @@ impl Default for AnimationDescriptor {
 ///     u8       node_scale             (0 = one brick, 1 = 2³ bricks, ...)
 ///     u8       padding
 ///
-///   Compact atlas blob (compact_atlas_len bytes), carrying the stored set in
-///   brick-major order (affinity bricks x-fastest): L0 valid probes in local
-///   x-fastest order; L1 all corners in `corner_locals` order with zero tiles
-///   for invalid corners; L2 one valid-probe mean; all-invalid bricks none.
+///   Compact atlas blob (compact_atlas_len bytes; absent when body_present
+///   is 0, so the animation tail follows the probe records), carrying the
+///   stored set in brick-major order (affinity bricks x-fastest): L0 valid
+///   probes in local x-fastest order; L1 all corners in `corner_locals` order
+///   with zero tiles for invalid corners; L2 one valid-probe mean; all-invalid
+///   bricks none.
 ///     IRRADIANCE_FORMAT_RGBA16F: layer-major, then row-major
 ///                                atlas_width × atlas_height
 ///                                `f16 × 4` texels per layer.
@@ -187,7 +196,7 @@ pub struct OctahedralShVolumeSection {
 }
 
 impl OctahedralShVolumeSection {
-    pub const HEADER_SIZE: usize = 84;
+    pub const HEADER_SIZE: usize = 88;
 
     pub fn placeholder() -> Self {
         Self {
@@ -221,6 +230,11 @@ impl OctahedralShVolumeSection {
     }
 
     pub fn try_byte_len(&self) -> crate::Result<usize> {
+        self.try_byte_len_with_body(ShBodyPresence::Present)
+    }
+
+    /// Byte length of the form [`Self::try_to_bytes_with_body`] writes.
+    pub fn try_byte_len_with_body(&self, body: ShBodyPresence) -> crate::Result<usize> {
         self.validate_wire_contract()?;
         let total_probes = checked_total_probe_count(self.grid_dimensions)?;
         let descriptor_bytes = self
@@ -232,27 +246,33 @@ impl OctahedralShVolumeSection {
                     + descriptor.direction.len() * 12
             })
             .sum::<usize>();
+        let body_bytes = if body.is_present() {
+            self.compact_atlas.len()
+        } else {
+            0
+        };
         Ok(Self::HEADER_SIZE
             + total_probes * OCTAHEDRAL_PROBE_STRIDE as usize
-            + self.compact_atlas.len()
+            + body_bytes
             + descriptor_bytes
             + 4
             + self.slot_for_map_light.len() * 4)
     }
 
-    /// Encode only a canonical section whose stored payload fits the v11
-    /// `u32` byte-length field.
+    /// Encode only a canonical section whose stored payload fits the
+    /// current `u32` byte-length field.
     pub fn try_to_bytes(&self) -> crate::Result<Vec<u8>> {
+        self.try_to_bytes_with_body(ShBodyPresence::Present)
+    }
+
+    /// Encode with the compact atlas present or omitted. The omitted form keeps
+    /// `compact_atlas_len` at its full value; only the atlas bytes are absent.
+    pub fn try_to_bytes_with_body(&self, body: ShBodyPresence) -> crate::Result<Vec<u8>> {
         self.validate_wire_contract()?;
 
-        let total_probes = checked_total_probe_count(self.grid_dimensions)?;
         let compact_atlas_len = compact_atlas_len_for_header(self.compact_atlas.len() as u64)?;
 
-        let mut buf = Vec::with_capacity(
-            Self::HEADER_SIZE
-                + total_probes * OCTAHEDRAL_PROBE_STRIDE as usize
-                + self.compact_atlas.len(),
-        );
+        let mut buf = Vec::with_capacity(self.try_byte_len_with_body(body)?);
 
         buf.extend_from_slice(&SH_VOLUME_VERSION.to_le_bytes());
         for v in &self.grid_origin {
@@ -275,6 +295,7 @@ impl OctahedralShVolumeSection {
         buf.extend_from_slice(&self.tiles_per_layer.to_le_bytes());
         buf.extend_from_slice(&self.irradiance_format.to_le_bytes());
         buf.extend_from_slice(&compact_atlas_len.to_le_bytes());
+        buf.extend_from_slice(&u32::from(body.flag()).to_le_bytes());
 
         for probe in &self.probes {
             buf.push(probe.validity);
@@ -285,7 +306,9 @@ impl OctahedralShVolumeSection {
             buf.push(0);
         }
 
-        buf.extend_from_slice(&self.compact_atlas);
+        if body.is_present() {
+            buf.extend_from_slice(&self.compact_atlas);
+        }
 
         write_animation_descriptors(&mut buf, &self.animation_descriptors);
         write_slot_table(&mut buf, &self.slot_for_map_light);
@@ -295,7 +318,7 @@ impl OctahedralShVolumeSection {
     fn validate_wire_contract(&self) -> crate::Result<()> {
         if self.probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11",
+                "octahedral sh volume probe_stride {}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for the node-aware format",
                 self.probe_stride,
             )));
         }
@@ -342,7 +365,7 @@ impl OctahedralShVolumeSection {
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "octahedral sh volume section version {version}, expected {SH_VOLUME_VERSION} — \
-                     recompile the .prl with the current `prl-build` for the v11 node-aware stored-atlas format"
+                     recompile the .prl with the current `prl-build` for the v12 body-presence format"
                 ),
             )));
         }
@@ -387,11 +410,14 @@ impl OctahedralShVolumeSection {
         o += 4;
         let compact_atlas_len = read_u32(data, o) as usize;
         o += 4;
+        let body_flag = read_u32(data, o);
+        o += 4;
         debug_assert_eq!(o, Self::HEADER_SIZE);
+        require_sh_body(SectionId::OctahedralShVolume, body_flag)?;
 
         if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
             return Err(invalid_data(format!(
-                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11"
+                "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for the node-aware format"
             )));
         }
 
@@ -506,7 +532,7 @@ pub fn validate_metadata_projection(
 ) -> crate::Result<()> {
     if probe_stride != OCTAHEDRAL_PROBE_STRIDE {
         return Err(invalid_data(format!(
-            "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for v11"
+            "octahedral sh volume probe_stride {probe_stride}, expected exactly {OCTAHEDRAL_PROBE_STRIDE} for the node-aware format"
         )));
     }
     validate_irradiance_format(irradiance_format)?;
@@ -611,7 +637,7 @@ fn checked_total_probe_count(grid_dimensions: [u32; 3]) -> crate::Result<usize> 
         })
 }
 
-/// Validate the complete v11 probe metadata table and derive its canonical
+/// Validate the complete node-aware probe metadata table and derive its canonical
 /// stored-node prefix. This intentionally needs no atlas body, so metadata-only
 /// readers (including id-50 streaming validation) can share the source codec's
 /// exact closure rules.
@@ -981,7 +1007,7 @@ fn expected_compact_atlas_len(
 fn compact_atlas_len_for_header(len: u64) -> crate::Result<u32> {
     u32::try_from(len).map_err(|_| {
         invalid_data(format!(
-            "octahedral sh volume stored atlas byte length {len} exceeds the v11 u32 header maximum {}",
+            "octahedral sh volume stored atlas byte length {len} exceeds the current u32 header maximum {}",
             u32::MAX,
         ))
     })
@@ -1402,7 +1428,7 @@ mod tests {
         assert!(error.to_string().contains("disagreeing node_scale"));
     }
 
-    // Regression: v11 declares validity as binary, but accepted any nonzero byte.
+    // Regression: the node-aware format declares validity as binary, but accepted any nonzero byte.
     #[test]
     fn octahedral_rejects_non_binary_probe_validity() {
         let section = oct_section([1, 1, 1]);
@@ -1534,7 +1560,7 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("exceeds the v11 u32 header maximum"),
+            msg.contains("exceeds the current u32 header maximum"),
             "expected compact-atlas header-length error, got: {msg}",
         );
     }
@@ -1546,7 +1572,7 @@ mod tests {
         let err = compact_atlas_len_for_header(u64::from(u32::MAX) + 1).unwrap_err();
         assert!(
             err.to_string()
-                .contains("exceeds the v11 u32 header maximum")
+                .contains("exceeds the current u32 header maximum")
         );
     }
 
@@ -1771,8 +1797,9 @@ mod tests {
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("probe_stride") && msg.contains("expected exactly 8 for v11"),
-            "expected exact v11 probe-stride error, got: {msg}",
+            msg.contains("probe_stride")
+                && msg.contains("expected exactly 8 for the node-aware format"),
+            "expected exact probe-stride error, got: {msg}",
         );
     }
 
@@ -1838,14 +1865,14 @@ mod tests {
     fn octahedral_rejects_previous_section_version() {
         let section = oct_section([1, 1, 1]);
         let mut bytes = section.to_bytes();
-        bytes[0..4].copy_from_slice(&10u32.to_le_bytes());
+        bytes[0..4].copy_from_slice(&11u32.to_le_bytes());
         let err = OctahedralShVolumeSection::from_bytes(&bytes).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("version 10")
-                && msg.contains("expected 11")
+            msg.contains("version 11")
+                && msg.contains("expected 12")
                 && msg.contains("recompile")
-                && msg.contains("v11 node-aware stored-atlas format"),
+                && msg.contains("v12 body-presence format"),
             "expected version-mismatch error, got: {msg}",
         );
     }
@@ -1880,5 +1907,68 @@ mod tests {
         assert!(meta.find_section(SectionId::ShVolume as u32).is_none());
         let result = read_section_data(&mut cursor, &meta, SectionId::ShVolume as u32).unwrap();
         assert!(result.is_none(), "missing SH volume must return None");
+    }
+
+    #[test]
+    fn octahedral_body_flag_writes_present_and_omitted_forms() {
+        let mut section = oct_section([2, 2, 1]);
+        section.animation_descriptors = vec![AnimationDescriptor {
+            period: 2.0,
+            brightness: vec![0.25, 1.0],
+            ..AnimationDescriptor::default()
+        }];
+        section.slot_for_map_light = vec![0, ANIMATED_SLOT_NONE];
+        let present = section
+            .try_to_bytes_with_body(ShBodyPresence::Present)
+            .unwrap();
+        let omitted = section
+            .try_to_bytes_with_body(ShBodyPresence::Omitted)
+            .unwrap();
+        assert_eq!(present, section.to_bytes());
+        assert_eq!(
+            section
+                .try_byte_len_with_body(ShBodyPresence::Present)
+                .unwrap(),
+            present.len()
+        );
+        assert_eq!(
+            section
+                .try_byte_len_with_body(ShBodyPresence::Omitted)
+                .unwrap(),
+            omitted.len()
+        );
+
+        // The animation tail follows the probe records directly.
+        let body_start = OctahedralShVolumeSection::HEADER_SIZE
+            + section.probes.len() * OCTAHEDRAL_PROBE_STRIDE as usize;
+        crate::sh_body::assert_sh_body_wire_forms(
+            SectionId::OctahedralShVolume,
+            &present,
+            &omitted,
+            body_start..body_start + section.compact_atlas.len(),
+            |bytes| {
+                assert_eq!(OctahedralShVolumeSection::from_bytes(bytes)?, section);
+                Ok(())
+            },
+        );
+
+        // The omitted header keeps the full atlas length, so metadata-only
+        // validation accepts it unchanged.
+        let compact_atlas_len = read_u32(&omitted, 80);
+        assert_eq!(compact_atlas_len as usize, section.compact_atlas.len());
+        validate_metadata_projection(
+            section.grid_dimensions,
+            section.probe_stride,
+            section.tile_dimension,
+            section.tile_border,
+            section.atlas_dimensions,
+            section.layer_count,
+            section.tiles_per_layer,
+            section.atlas_tiles_per_row,
+            section.irradiance_format,
+            compact_atlas_len,
+            &section.probes,
+        )
+        .unwrap();
     }
 }

@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::components::billboard_emitter::BillboardEmitterComponent;
-use crate::components::mesh::{AnimationState, InterruptPolicy};
+use crate::components::brain::TravelVariant;
+use crate::components::mesh::{AnimationState, InterruptPolicy, RATE_MAX};
 use crate::data_descriptors::{
     BehaviorGraphDescriptor, DescriptorError, HealthDescriptor, PlayerMovementDescriptor,
     TouchableDescriptor, WeaponDescriptor,
@@ -24,7 +25,9 @@ pub use postretro_foundation::data_descriptors::LightDescriptor;
 ///
 /// Validation (at parse time): `model`, attachment socket names, attachment model
 /// paths, and each state's `clip` are non-empty; `crossfade_ms` finite ≥ 0;
-/// `travel_speed` (when present) finite > 0; `interrupt` (when present on the
+/// `travel_speed` (when present) finite > 0; `max_playback_rate` (when present)
+/// finite and `>= RATE_MAX`; `playback_rate` (when present) finite > 0;
+/// `interrupt` (when present on the
 /// wire) one of `"smooth"`/`"snap"`. When `animations` is present it must be
 /// non-empty and `default_state` must be present and name a declared state. A
 /// `defaultState` without an `animations` block is also rejected. Clip resolution
@@ -101,6 +104,14 @@ pub struct RawAnimationState {
     /// finiteness is validated in [`MeshDescriptor::build`] so both FFI paths
     /// reject the same inputs.
     pub travel_speed: Option<f32>,
+    /// Raw per-state `maxPlaybackRate` (`None` = absent ⇒ the engine default
+    /// `RATE_MAX`). Validated in [`MeshDescriptor::build`].
+    pub max_playback_rate: Option<f32>,
+    /// Raw per-state `scaleWithSpeed` (`None` = absent ⇒ `true`).
+    pub scale_with_speed: Option<bool>,
+    /// Raw per-state `playbackRate` (`None` = absent ⇒ 1). Validated in
+    /// [`MeshDescriptor::build`].
+    pub playback_rate: Option<f32>,
 }
 
 /// Parsed mesh fields supplied by the JS and Luau descriptor bridges before
@@ -193,6 +204,9 @@ impl MeshDescriptor {
         }
 
         let mut animations = HashMap::with_capacity(states.len());
+        // Each state's authored rate fields, unset ones `None`, for the travel
+        // variants' inheritance below.
+        let mut rate_fields = HashMap::with_capacity(states.len());
         for raw in states {
             if raw.clip.is_empty() {
                 return Err(DescriptorError::InvalidShape {
@@ -235,6 +249,39 @@ impl MeshDescriptor {
                     ),
                 });
             }
+            // A present `maxPlaybackRate` only raises the stride cap: finite
+            // and at least the engine default, so `RATE_MIN..=cap` stays a
+            // valid range and production states cannot lower it.
+            if let Some(max_playback_rate) = raw.max_playback_rate
+                && (!max_playback_rate.is_finite() || max_playback_rate < RATE_MAX)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.animations.{}.maxPlaybackRate` must be a finite value >= {RATE_MAX}, got {}",
+                        raw.name, max_playback_rate
+                    ),
+                });
+            }
+            // A present `playbackRate` is a fixed authored speed: finite and
+            // strictly positive, with no stride clamp.
+            if let Some(playback_rate) = raw.playback_rate
+                && (!playback_rate.is_finite() || playback_rate <= 0.0)
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!(
+                        "`components.mesh.animations.{}.playbackRate` must be a finite value > 0.0, got {}",
+                        raw.name, playback_rate
+                    ),
+                });
+            }
+            rate_fields.insert(
+                raw.name.clone(),
+                (
+                    raw.max_playback_rate,
+                    raw.scale_with_speed,
+                    raw.playback_rate,
+                ),
+            );
             animations.insert(
                 raw.name,
                 AnimationState {
@@ -246,11 +293,38 @@ impl MeshDescriptor {
                     // runtime `AnimationState`; no extra threading needed since
                     // this map is what `MeshAnimation::new` receives.
                     travel_speed: raw.travel_speed,
+                    max_playback_rate: raw.max_playback_rate,
+                    scale_with_speed: raw.scale_with_speed.unwrap_or(true),
+                    playback_rate: raw.playback_rate,
                     // Resolved against the model's clip metadata at level load
                     // by `resolve_mesh_entity_clips`; unresolved here.
                     clip_index: None,
                 },
             );
+        }
+
+        // A travel variant (`<base>_left`, `_right`, `_backward`, the names the
+        // AI draws while steering) inherits each rate field it leaves unset
+        // from its base state, so it plays as its base does: `run_left` keeps
+        // `run`'s raised cap, and a leap's `_backward` keeps its fixed 1x.
+        // Resolved here, so host and client read one resolved state through
+        // `MeshAnimation::stride_playback_target`.
+        for (name, &(max_playback_rate, scale_with_speed, playback_rate)) in &rate_fields {
+            let Some(base) = TravelVariant::ALL
+                .into_iter()
+                .filter(|variant| *variant != TravelVariant::Base)
+                .find_map(|variant| name.strip_suffix(variant.suffix()))
+            else {
+                continue;
+            };
+            let (Some(&(base_max, base_scale, base_rate)), Some(state)) =
+                (rate_fields.get(base), animations.get_mut(name))
+            else {
+                continue;
+            };
+            state.max_playback_rate = max_playback_rate.or(base_max);
+            state.scale_with_speed = scale_with_speed.or(base_scale).unwrap_or(true);
+            state.playback_rate = playback_rate.or(base_rate);
         }
 
         // `defaultState` is required exactly when states are declared, and must
@@ -337,6 +411,20 @@ pub struct EntityTypeDescriptor {
 }
 
 impl EntityTypeDescriptor {
+    /// The checks only the mesh and the behavior together can make, run by
+    /// both entity readers once each has parsed its own block: a stance
+    /// release that repeats (`passes`) plays a looping state, in its own
+    /// state and every travel variant the mesh declares. A client replays each
+    /// pass from the replicated state name alone, which a one-shot cannot do.
+    /// A state the mesh does not declare is left to spawn validation's
+    /// warning.
+    pub fn validate_across_components(&self) -> Result<(), DescriptorError> {
+        let (Some(mesh), Some(behavior)) = (self.mesh.as_ref(), self.behavior.as_ref()) else {
+            return Ok(());
+        };
+        repeating_releases_loop(&behavior.envelope, &mesh.animations)
+    }
+
     /// Whether this descriptor declares a component in the provenance vocabulary.
     /// Behavior is a separate authoring surface and is checked directly by callers.
     pub fn declares(&self, component: DescriptorComponentKind) -> bool {
@@ -352,6 +440,38 @@ impl EntityTypeDescriptor {
     }
 }
 
+fn repeating_releases_loop(
+    envelope: &postretro_foundation::BehaviorGraphEnvelope,
+    states: &HashMap<String, AnimationState>,
+) -> Result<(), DescriptorError> {
+    for activity in envelope.activities.values() {
+        if let (Some(passes @ 2..), Some(base)) = (activity.passes, activity.animation.as_deref()) {
+            for variant in TravelVariant::ALL {
+                let state = format!("{base}{}", variant.suffix());
+                if states.get(&state).is_some_and(|declared| !declared.looping) {
+                    let attack = match activity.action.as_ref() {
+                        Some(postretro_foundation::ActionVerb::Attack { name, .. }) => {
+                            name.as_str()
+                        }
+                        None => "",
+                    };
+                    return Err(DescriptorError::InvalidShape {
+                        reason: format!(
+                            "attack \"{attack}\"'s release repeats {passes} passes on animation state \"{state}\", which does not loop; a client replays each pass only from a looping state, so set `loop: true` on `components.mesh.animations.{state}`"
+                        ),
+                    });
+                }
+            }
+        }
+        for layer in activity.layers.values() {
+            if let postretro_foundation::BehaviorLayerDescriptor::Graph(child) = layer {
+                repeating_releases_loop(child, states)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Author-side player inventory composition. SDK builders validate typed
 /// descriptor references, then lower them to canonical archetype names for
 /// this runtime descriptor.
@@ -360,4 +480,75 @@ impl EntityTypeDescriptor {
 pub struct InventoryDescriptor {
     #[serde(default)]
     pub loadout: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw_state(
+        name: &str,
+        max_playback_rate: Option<f32>,
+        scale_with_speed: Option<bool>,
+        playback_rate: Option<f32>,
+    ) -> RawAnimationState {
+        RawAnimationState {
+            name: name.to_string(),
+            clip: name.to_string(),
+            looping: true,
+            crossfade_ms: 0.0,
+            interrupt: None,
+            travel_speed: None,
+            max_playback_rate,
+            scale_with_speed,
+            playback_rate,
+        }
+    }
+
+    // A travel variant inherits each rate field it leaves unset from its base
+    // state, and keeps any it sets; a state with no base keeps its own.
+    #[test]
+    fn a_travel_variant_inherits_its_base_states_unset_rate_fields() {
+        let mesh = MeshDescriptor::build(RawMeshDescriptor {
+            model: "brute".to_string(),
+            attachments: HashMap::new(),
+            states: vec![
+                raw_state("run", Some(3.0), None, None),
+                raw_state("run_left", None, None, None),
+                raw_state("run_right", Some(2.0), None, None),
+                raw_state("leap", None, Some(false), Some(1.25)),
+                raw_state("leap_backward", None, None, None),
+                raw_state("leap_left", None, Some(true), Some(2.0)),
+                raw_state("idle_left", None, None, None),
+            ],
+            default_state: Some("run".to_string()),
+            animations_present: true,
+            locomotion: None,
+            shadow_bias_scale: None,
+            shadow_only: false,
+        })
+        .expect("the mesh builds");
+        let rates = |name: &str| {
+            let state = &mesh.animations[name];
+            (
+                state.max_playback_rate,
+                state.scale_with_speed,
+                state.playback_rate,
+            )
+        };
+        assert_eq!(rates("run_left"), (Some(3.0), true, None), "the raised cap");
+        assert_eq!(rates("run_right"), (Some(2.0), true, None), "its own cap");
+        assert_eq!(
+            rates("leap_backward"),
+            (None, false, Some(1.25)),
+            "the base's fixed rate"
+        );
+        assert_eq!(
+            rates("leap_left"),
+            (None, true, Some(2.0)),
+            "its own scaling and rate"
+        );
+        assert_eq!(rates("idle_left"), (None, true, None), "no base: defaults");
+        assert_eq!(rates("run"), (Some(3.0), true, None), "a base is unchanged");
+    }
 }

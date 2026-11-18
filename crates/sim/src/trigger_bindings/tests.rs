@@ -65,6 +65,9 @@ fn spawn_brain(registry: &mut EntityRegistry, tag: &str) -> EntityId {
             activities: std::collections::BTreeMap::from([(
                 "idle".to_string(),
                 postretro_foundation::BehaviorActivityDescriptor {
+                    pose: None,
+                    stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: Some("idle".to_string()),
                     motion: Some(postretro_foundation::MotionVerb::Hold),
@@ -73,6 +76,7 @@ fn spawn_brain(registry: &mut EntityRegistry, tag: &str) -> EntityId {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: Default::default(),
                 },
             )]),

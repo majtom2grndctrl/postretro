@@ -15,13 +15,13 @@ fn build(runtime: &str, entry: &str, source: &str) -> StagedManifestBuildResult 
 
 fn ts_mod(read: &str) -> String {
     format!(
-        r#"globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1",
+        r#"const slam = defineAttack("slam", {{ damage: 8, maxRange: 2, cooldownMs: 1200 }});
+           globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1",
              entities: [{{ canonicalName: "grunt", components: {{ behavior: {{
                initial: "idle", moveSpeed: 3,
-               attacks: {{ slam: {{ damage: 8, maxRange: 2, cooldownMs: 1200 }} }},
                activities: {{
                  idle: {{ animation: "idle", motion: "hold" }},
-                 engage: {{ animation: "walk", motion: "chaseTarget", action: {{ attack: "slam" }} }}
+                 engage: {{ animation: "walk", motion: "chaseTarget", action: {{ attack: slam }} }}
                }},
                transitions: {{ idle: [{{ when: {{ op: "input", name: "{read}" }}, to: "engage" }}] }}
              }} }} }}] }});"#
@@ -30,13 +30,15 @@ fn ts_mod(read: &str) -> String {
 
 fn luau_mod(read: &str) -> String {
     format!(
-        r#"return defineMod({{ name = "M", id = "m", version = "1",
+        r#"local slam = defineAttack("slam", {{ damage = 8, maxRange = 2, cooldownMs = 1200 }})
+           -- Declared but referenced by nothing, so a read of it names no attack.
+           local jab = defineAttack("jab", {{ damage = 4, maxRange = 2, cooldownMs = 500 }})
+           return defineMod({{ name = "M", id = "m", version = "1",
              entities = {{ {{ canonicalName = "grunt", components = {{ behavior = {{
                initial = "idle", moveSpeed = 3,
-               attacks = {{ slam = {{ damage = 8, maxRange = 2, cooldownMs = 1200 }} }},
                activities = {{
                  idle = {{ animation = "idle", motion = "hold" }},
-                 engage = {{ animation = "walk", motion = "chaseTarget", action = {{ attack = "slam" }} }}
+                 engage = {{ animation = "walk", motion = "chaseTarget", action = {{ attack = slam }} }}
                }},
                transitions = {{ idle = {{ {{ when = {read}, to = "engage" }} }} }}
              }} }} }} }} }})"#
@@ -54,7 +56,7 @@ fn attack_turn_reads_of_an_archetype_attack_load_in_both_runtimes() {
         );
     }
     // The Luau SDK helpers build the same reads.
-    for read in [r#"attackTurnHeld("slam")"#, r#"attackTurnFree("slam")"#] {
+    for read in ["attackTurnHeld(slam)", "attackTurnFree(slam)"] {
         let result = build("luau_ok", "start-script.luau", &luau_mod(read));
         assert!(
             matches!(result.status, StagedManifestBuildStatus::Built(_)),
@@ -80,7 +82,7 @@ fn attack_turn_reads_naming_no_archetype_attack_fail_load_in_both_runtimes() {
             build(
                 "luau_held",
                 "start-script.luau",
-                &luau_mod(r#"attackTurnHeld("jab")"#),
+                &luau_mod("attackTurnHeld(jab)"),
             ),
             "@attackTurnHeld.jab",
         ),
@@ -88,7 +90,7 @@ fn attack_turn_reads_naming_no_archetype_attack_fail_load_in_both_runtimes() {
             build(
                 "luau_free",
                 "start-script.luau",
-                &luau_mod(r#"attackTurnFree("jab")"#),
+                &luau_mod("attackTurnFree(jab)"),
             ),
             "@attackTurnFree.jab",
         ),

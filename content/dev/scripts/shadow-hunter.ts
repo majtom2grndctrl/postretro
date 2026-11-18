@@ -10,7 +10,7 @@
 //
 // Map-placeable via `"classname" "shadow_hunter"`.
 
-import { brain, defineEntity } from "postretro";
+import { brain, defineAttack, defineEntity } from "postretro";
 import { melee } from "./attack-tokens";
 
 const DETECTION_RANGE = 30;
@@ -20,6 +20,10 @@ const CLAW_RANGE = 1.8;
 // A claw plays the punch, whose strike lands about 250 ms in; the hunter
 // stays planted that long before it can claw or chase again.
 const CLAW_MS = 450;
+
+// One `melee` draw: claws take turns with the brutes' jabs and slams on one
+// target.
+const claw = defineAttack({ draws: [melee], damage: 6, maxRange: CLAW_RANGE, cooldownMs: 600 });
 const LEASH_RANGE = 80;
 const RETURN_ARRIVAL_EPSILON = 1;
 
@@ -72,11 +76,6 @@ export const shadowHunterEntity = defineEntity({
     behavior: {
       initial: "idle",
       moveSpeed: 5,
-      attacks: {
-        // One `melee` draw: claws take turns with the brutes' jabs and slams
-        // on one target.
-        claw: { draws: [melee], damage: 6, maxRange: CLAW_RANGE, cooldownMs: 600 },
-      },
       engagementRadius: CLAW_RANGE,
       activities: {
         idle: { animation: "idle", motion: "hold" },
@@ -92,7 +91,7 @@ export const shadowHunterEntity = defineEntity({
               initial: "approach",
               activities: {
                 approach: { animation: "run" },
-                claw: { animation: "attack_claw", action: { attack: "claw" } },
+                claw: { animation: "attack_claw", action: { attack: claw } },
               },
               transitions: {
                 approach: [

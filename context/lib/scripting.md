@@ -153,13 +153,13 @@ Primitive closures access engine state through a shared handle (`ScriptCtx`) cap
 
 ### Durable State Store
 
-The state store has engine-global lifetime and is never cleared on level unload, platform suspend, or hot reload. Slots use stable dotted names grouped into unique namespaces. Decided, not yet built: an `occupancy` family that only a level's script references is the one exception, and lives for that level (Engine State SDK, Occupancy).
+The state store has engine-global lifetime and is never cleared on level unload, platform suspend, or hot reload. Slots use stable dotted names grouped into unique namespaces. An `occupancy` family that only a level's script references is the one exception, and lives for that level (Engine State SDK, Occupancy).
 
 Authored dotted names are in-memory addresses, not durable identity. Every mod-owned persisted writable or replicated slot requires `<mod-root>/identity.json` version 1, with `slots` mapping each dotted name to its opaque key. Run `postretro-tool mint-identity <mod>` after adding one (`build_pipeline.md` §Distribution packaging); the tool execs the `mint-identity` binary rather than linking it. A rename moves the authored-name side and keeps the key. The engine only reads and validates this snapshot. Missing durable identity rejects the declaration attempt; ordinary malformed saved values still warn and degrade to defaults. Persistence uses the bare durable key. Replicated schemas use the mod-qualified durable identity.
 
 `defineStore` is a pure SDK builder. It returns a frozen store handle whose enumerable top-level keys are the schema's references: `store.key`, not a nested state tree. Pass that handle through `defineMod({ stores: [store] })`; `defineMod` resolves its declaration data by object identity before the manifest crosses the FFI. Calling either helper performs no FFI and changes no engine state. An unreturned store handle commits no slots when the short-lived setup VM drops. `state` and `declaration` are ordinary valid slot names — the identity map, not an author-visible property, carries the declaration.
 
-Names beginning with `@` are reserved for ephemeral dispatch inputs (§12). Store declarations reject a namespace or slot name beginning with `@`. They will also reject `occupancy` and any namespace overlapping it, with or without a level loaded, because the engine declares that namespace at runtime (decided, not yet built).
+Names beginning with `@` are reserved for ephemeral dispatch inputs (§12). Store declarations reject a namespace or slot name beginning with `@`. They also reject `occupancy` and any namespace overlapping it, with or without a level loaded, because the engine declares that namespace at runtime (`EngineReservedNamespace`).
 
 Engine-owned slots may be readonly to scripts while remaining writable by engine systems. Engine writes bypass readonly but still apply declared type, enum, finite-number, and range validation. Mod-owned slots are script-writable unless declared otherwise. Scripts and engine systems address slots by dotted name so references remain valid after the authoring VM drops.
 
@@ -180,7 +180,7 @@ Each successful commit also replaces current declaration membership. Persistence
 
 Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.
 
-Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts. Character progress (per-owner rows) and world progress (globals and faction sentiment) stay separate. A connected client saves periodically and at clean exit; its saves keep the world it booted with (its boot document's globals and faction sentiment) and replace only its own character rows, so the host's world never reaches its disk.
+Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts. Character progress (per-owner rows) and world progress (globals and faction sentiment) stay separate; under the saves below, sentiment becomes run state. A connected client saves periodically and at clean exit; its saves keep the world it booted with (its boot document's globals and faction sentiment) and replace only its own character rows, so the host's world never reaches its disk.
 
 When its session ends (`networking.md` §Slot lifecycle), a client applies the final character its host returned, saves its character only if it participated on that connection, then restores its store as single-player:
 
@@ -193,6 +193,8 @@ Live faction sentiment persists beside the slot store as a directional sparse
 set. Authored factions use their names. The player and default-enemy indices use
 engine-reserved keys in a namespace authored faction names cannot enter. Unknown
 or renamed authored names warn and drop without aborting the remaining restore.
+
+**Character, world and run saves (decided, not yet built).** These replace the single file and clean-exit save above with three kinds, each its own versioned JSON file. A character holds its per-owner `persist` slots, display name and whole carried loadout. The world file, one per mod, holds `persist: true` global slots: progress that outlives any run. A run holds its character's id, the level and checkpoint it last reached, `persist: "run"` global slots and faction sentiment. Per-owner run scope is refused at declaration. A mod's `saves` block declares how many character and run slots it keeps. A mod without one gets one of each, created, selected and active for the whole process. The character saves its live state at every save point; the run saves at each level start and each `checkpoint(name)` step. Continue resumes from the last of these, and a fresh start is a new character. Save verbs run only at the frontend. Selecting a character, Continue and `newRun` reset every mod-owned slot to its default, then overlay the world file, the character and, for Continue, the run; while hosting, only seat 0 reloads. Every file is one form of the durable ledger document (`networking.md` §Session-state ledger). Brief: `plans/ready/coop--character-and-run-saves/`.
 
 ### Engine State SDK
 
@@ -229,7 +231,7 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | `getGameState().input.mode` | `input.mode` |
 | `getGameState().ui.textEntry` | `ui.textEntry` |
 
-The catalog will also declare entries the host computes and shares with every machine, families keyed by data and reached through a generated accessor, and lists: families keyed by row, each row carrying a `present` flag (decided, not yet built).
+The catalog also declares entries the host computes and shares with every machine, families keyed by data and reached through a generated accessor, and lists: families keyed by row, each row carrying a `present` flag. Families and lists install through generated runtime helpers in both languages, mirrored at build time and held to the runtime copies by a drift guard.
 
 The runtime installs the generated tree before SDK prelude evaluation, captures it into a language-native `getGameState()` closure, and hides the bridge global before author code runs. Calling `getGameState()` invokes no host callback or FFI.
 
@@ -247,14 +249,14 @@ The runtime installs the generated tree before SDK prelude evaluation, captures 
 
 **Assist progress.** `player.assistProgress` is the pawn's progress as an assist helper; `player.assistReceivedProgress` is the highest progress among its helpers, 0 with none or while the pawn's state declares no `assistable`. Both are owner-private readonly Numbers in 0..1, read from the pawn's components like every other per-player slot. There are two because owner-private slots never reach another player's machine: a target's client cannot read its helper's slot, and a pawn helping while being helped needs both. Conditions, crossings and the store see only host values; only UI reads substitute a predicted or projected display value (`ui.md` §3, `networking.md` §What gates, and what replicates instead).
 
-`session.openSeats` is a readonly client-local projection of the host's status roster. It is absent before admission and after a leave. The roster Control message remains its only transport path.
+`session.openSeats` is a readonly client-local projection of the host's roster. It is absent before admission and after a leave. The roster Control message remains its only transport path.
 
-**Session players** (decided, not yet built). The host derives one status per seat, its own included: `loading` (connected, no live pawn), `inPlay` (live pawn counted by the life-state `occupancy` rule, §12), `down` (live pawn not counted), `reconnecting` (held after a disconnect).
+**Session players.** The host derives one status per seat, its own included: `loading` (connected, no live pawn), `inPlay` (live pawn counted by the life-state `occupancy` rule, §12), `down` (live pawn not counted), `reconnecting` (held after a disconnect).
 - `session.playerCounts` holds readonly Numbers `connected`, `loading`, `inPlay`, `down` and `reconnecting`, host-computed and shared with every machine; `connected` sums the first three. Gameplay reads these.
 - `session.players` is a display list: one row per seat, dense and in seat order up to the session's player capacity, each `present`, `name`, `status` and `isLocal`. Every machine holds the same rows; clients fill them from the roster (`networking.md` §Session-state ledger). An empty name reads `Player N`, N being the seat plus 1.
 - Counts and rows hold no players from unload until the next install writes them, and on a machine with no session level. A frontend backdrop is not a session level.
 
-**Occupancy** (decided, not yet built). `occupancy.tag(tag)` reads `occupiedCount` (player-occupied trigger volumes carrying the tag, armed or not) and `occupants` (distinct counted players inside any of them), host-computed and shared.
+**Occupancy.** `occupancy.tag(tag)` reads `occupiedCount` (player-occupied trigger volumes carrying the tag, armed or not) and `occupants` (distinct counted players inside any of them), host-computed and shared.
 - A family exists for each tag the scripts reference, collected from what they evaluate to, never from source text. Mod-scope references are replaced at each mod commit; a level's `setupLevel` references live that level.
 - A family reads 0 where no trigger volume carries its tag; a level reference to such a tag warns once at install.
 - Every machine derives the set from the scripts it runs, so a peer running different scripts gets a different replicated schema and drops every replicated slot (`networking.md` §What gates).
@@ -544,11 +546,20 @@ drops it. Every refusal latch clears with a role change.
 
 Once a leave lands in the frame-end command drain, the rest of that drain drops
 at debug: the drain cannot tell which reaction queued a command, and what
-remains belongs to the level being unloaded. Store writes and grants have
-already applied at dispatch (§12, Body order). After a `wait`, a client landing
-drops the steps after a kept `leaveSession` at debug. What leave and end do to
-the connection: `networking.md` §Slot lifecycle; to a client's store and saves:
-§5.
+remains belongs to the level being unloaded. Session entry verbs are the one
+exception (below). Store writes and grants have already applied at dispatch
+(§12, Body order). After a `wait`, a client landing drops the steps after a kept
+`leaveSession` at debug. What leave and end do to the connection:
+`networking.md` §Slot lifecycle; to a client's store and saves: §5.
+
+**Session entry (decided, not yet built).** `hostSession()` and `joinSession()`
+enter a role from single-player at the frontend. They read `session.password`,
+and a join also reads `session.joinAddress`. In any other role or scene they are
+refused with a warning. A press made while a left level unloads or an ended host
+closes waits, then runs with what it captured when pressed. A later navigation
+or load cancels it. An entry verb after `leaveSession` in one reaction belongs
+to the next session, so it survives the drop and defers. Both are machine-local,
+and a late joiner skips them (`networking.md` §Role model).
 
 Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions

@@ -1333,6 +1333,7 @@ end
 -- pins the merged set.
 for _, part in ipairs({
   dataScriptParts.attackBudget,
+  dataScriptParts.attacks,
   dataScriptParts.playerEvents,
   dataScriptParts.commands,
   dataScriptParts.reactions,

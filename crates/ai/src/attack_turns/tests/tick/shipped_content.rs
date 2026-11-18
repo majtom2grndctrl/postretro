@@ -88,7 +88,8 @@ pub(crate) fn durable_player(reg: &mut EntityRegistry, position: Vec3) -> Entity
 }
 
 /// One of `manifest`'s archetypes, spawned facing +X with its shipped
-/// behavior graph and its descriptor's mesh. The mesh's model loads into
+/// behavior graph and its descriptor's mesh, built as level load builds it.
+/// The mesh's model loads into
 /// `clips` from `content/dev`, its clip library bound, and each state's clip
 /// resolves against it as level load resolves it, so clip-timed attacks and
 /// `brain.animationDone` read the committed clips.
@@ -109,6 +110,10 @@ pub(crate) fn spawn_shipped(
         .as_ref()
         .unwrap_or_else(|| panic!("`{name}` ships a mesh"));
     let enemy = spawn_enemy(reg, position, BrainComponent::from_graph(graph), 100.0);
+    // Steering runs at the descriptor's `moveSpeed`, as level load attaches it.
+    let mut agent = reg.get_component::<AgentComponent>(enemy).unwrap().clone();
+    agent.move_speed = graph.move_speed;
+    reg.set_component(enemy, agent).unwrap();
     if clips.get_by_name(&mesh.model).is_none() {
         let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/dev");
         clips.insert_from_load(&mesh.model, &content, ModelLoadWarningOwner::GameSide);
@@ -126,7 +131,13 @@ pub(crate) fn spawn_shipped(
         );
     }
     let default_state = mesh.default_state.clone().expect("an animated mesh");
-    let animation = MeshAnimation::new(states, default_state).with_speed_scale(mesh.speed_scale());
+    // A repeating release's loop starts at clip time 0, as level load
+    // derives it from the graph.
+    let animation = MeshAnimation::new(states, default_state)
+        .with_speed_scale(mesh.speed_scale())
+        .with_zero_phase_states(postretro_entities::components::mesh::ZeroPhaseStates::of(
+            postretro_foundation::repeating_release_states(graph),
+        ));
     reg.set_component(
         enemy,
         MeshComponent::animated(mesh.model.clone(), animation),
@@ -161,6 +172,15 @@ fn holds(reg: &EntityRegistry, enemy: EntityId, attack: &str) -> bool {
     held(reg, enemy).iter().any(|name| name == attack)
 }
 
+/// The rifle enemies' attacks that draw `ranged`: the aimed burst, the
+/// strafe's panicked spray and the far long shot.
+const RIFLE_ATTACKS: [&str; 3] = ["shoot", "spray", "longshot"];
+
+/// Whether `enemy` holds a `ranged` turn for any of its rifle attacks.
+fn holds_rifle_turn(reg: &EntityRegistry, enemy: EntityId) -> bool {
+    RIFLE_ATTACKS.iter().any(|attack| holds(reg, enemy, attack))
+}
+
 // The dev mod declares the Scripting surface's tokens and `arena` profile.
 #[test]
 fn dev_mod_declares_the_surface_attack_tokens_and_arena_profile() {
@@ -193,10 +213,11 @@ fn dev_mod_declares_the_surface_attack_tokens_and_arena_profile() {
     assert_eq!(in_arena("heavy"), (1, 4000.0), "left out, so as declared");
 }
 
-// S1: two shipped reference enemies on one player each slam within 10 s,
-// never within 4 s of each other, and while one slams the other's jab is
-// granted. Three shipped rifle troopers on one player never hold more than
-// two `ranged` turns at once, and each fires a burst and then repositions.
+// S1: two shipped reference enemies on one player each slam within 12 s (the
+// combo's 2,000 ms drawn fist can stand in line before a brute's first slam),
+// never within 4 s of each other, and while one slams the other is granted
+// a one-`melee` strike (its jab, lunge or combo), the third `melee`. Three shipped rifle troopers on one player never hold more than
+// two `ranged` turns at once, and each fires and then repositions.
 #[test]
 fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     let manifest = dev_manifest();
@@ -213,9 +234,11 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     const SECONDS: f32 = 16.0;
     let ticks = (SECONDS / DT) as u32;
     let mut slams: Vec<(usize, f32)> = Vec::new();
-    let mut jab_beside_slam = false;
+    // The brute's strikes that draw a single `melee`.
+    const ONE_MELEE: [&str; 3] = ["jab", "lunge", "combo"];
+    let mut melee_beside_slam = false;
     let mut last_cooldown = [0.0_f32; 2];
-    let mut held_jab = [false; 2];
+    let mut held_melee = [false; 2];
     for tick in 1..=ticks {
         tick_with_clips(&mut reg, &mut runtime, &manifest.entities, &clips);
         let now = tick as f32 * DT;
@@ -225,11 +248,11 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
                 slams.push((index, now));
             }
             last_cooldown[index] = cooldown;
-            let jab = holds(&reg, brute, "jab");
-            if jab && !held_jab[index] && holds(&reg, brutes[1 - index], "slam") {
-                jab_beside_slam = true;
+            let melee = ONE_MELEE.iter().any(|attack| holds(&reg, brute, attack));
+            if melee && !held_melee[index] && holds(&reg, brutes[1 - index], "slam") {
+                melee_beside_slam = true;
             }
-            held_jab[index] = jab;
+            held_melee[index] = melee;
         }
     }
     assert!(
@@ -239,8 +262,8 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     for index in 0..2 {
         let first = slams.iter().find(|(brute, _)| *brute == index);
         assert!(
-            first.is_some_and(|(_, at)| *at <= 10.0),
-            "brute {index} slams within 10 s: {slams:?}"
+            first.is_some_and(|(_, at)| *at <= 12.0),
+            "brute {index} slams within 12 s: {slams:?}"
         );
     }
     assert!(
@@ -248,8 +271,8 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
         "no two slams land within 4 s of each other: {slams:?}"
     );
     assert!(
-        jab_beside_slam,
-        "while one brute holds its slam turn, the other's jab is granted"
+        melee_beside_slam,
+        "while one brute holds its slam turn, the other's one-`melee` strike is granted"
     );
 
     // Three troopers at their firing standoff around one player.
@@ -264,16 +287,16 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
         })
         .collect();
     let mut most_ranged = 0;
-    let mut bursts = [0_u32; 3];
+    let mut fires = [0_u32; 3];
     let mut repositioned = [false; 3];
     let mut was_holding = [false; 3];
     for _ in 0..ticks {
         tick_with_clips(&mut reg, &mut runtime, &manifest.entities, &clips);
         let mut ranged = 0;
         for (index, &trooper) in troopers.iter().enumerate() {
-            let shooting = holds(&reg, trooper, "shoot");
+            let shooting = holds_rifle_turn(&reg, trooper);
             ranged += usize::from(shooting);
-            bursts[index] += u32::from(shooting && !was_holding[index]);
+            fires[index] += u32::from(shooting && !was_holding[index]);
             was_holding[index] = shooting;
             repositioned[index] |= enemy_state_path(&reg, trooper) == "engage/offense/move";
         }
@@ -285,12 +308,12 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
     }
     assert_eq!(most_ranged, 2, "the troopers fill the `ranged` allowance");
     assert!(
-        bursts.iter().all(|&count| count >= 2),
-        "every trooper takes turns firing: {bursts:?}"
+        fires.iter().all(|&count| count >= 2),
+        "every trooper takes turns firing: {fires:?}"
     );
     assert!(
         repositioned.iter().all(|&moved| moved),
-        "every trooper enters its reposition after a burst"
+        "every trooper enters its reposition after it fires"
     );
 }
 
@@ -337,7 +360,7 @@ fn arena_start_runs_tagged_guards_under_the_arena_profile() {
         let shooting = |group: &[EntityId]| {
             group
                 .iter()
-                .filter(|&&trooper| holds(&reg, trooper, "shoot"))
+                .filter(|&&trooper| holds_rifle_turn(&reg, trooper))
                 .count()
         };
         for &guard in &guards {

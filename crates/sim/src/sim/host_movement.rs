@@ -5,11 +5,13 @@
 // events for the caller to scope.
 // See: context/lib/networking.md · context/lib/movement.md
 //
-// This is the authoritative-host counterpart to `simulate_tick`'s single-pawn
-// `run_movement_tick`. It NEVER consults `local_movement_pawn()` or the single
-// local-player marker: every authoritative movement pawn — including the listen
-// host's own player pawn — is named explicitly in the input list. The host fixed
-// tick runs THIS first, then AI/agent/weapon/death exactly as `simulate_tick` does.
+// The seam never reads the local-player marker; callers name every pawn.
+// `simulate_tick` calls it twice per tick: first with the remote pawns (none in
+// single-player), then through `run_movement_tick` with the local pawn, which that
+// wrapper resolves from the marker. Separate calls keep remote pawns' events out
+// of the host's script registry. The order is safe only because movement never
+// reads another pawn: remote pawns write before the local pawn reads. Pawn-pawn
+// collision would need one call over every pawn.
 //
 // Boundary: registry-driven (it reads/writes Transform + PlayerMovementComponent),
 // but it adds no networking branch to `movement::tick` — the per-pawn input is

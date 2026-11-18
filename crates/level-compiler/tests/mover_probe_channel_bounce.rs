@@ -20,7 +20,8 @@ use postretro_level_format::kinematic_geometry::KinematicGeometrySection;
 use postretro_level_format::probe_depth_tiles::PROBE_DEPTH_TILE_TEXELS;
 use prl_build_support::BuildDir;
 
-const UNCOMPRESSED: &[&str] = &["--uncompressed-irradiance"];
+/// The builds `Volume::read` decodes: uncompressed, and id 34 kept whole.
+const WHOLE_UNCOMPRESSED: &[&str] = &["--uncompressed-irradiance", "--whole-load-sh"];
 /// The ship bake: high fidelity, whatever the interactive default.
 const RELEASE: &[&str] = &["--release"];
 
@@ -66,14 +67,14 @@ fn closet() -> &'static Closet {
                 &map,
                 "mover-closet",
                 Cache::Cold,
-                UNCOMPRESSED,
+                WHOLE_UNCOMPRESSED,
             ),
             reference: build_in(
                 BuildDir::fixture("closet-reference"),
                 &uniform(&dev_map("mover-closet-static-door.map")),
                 "mover-closet-static-door",
                 Cache::Cold,
-                UNCOMPRESSED,
+                WHOLE_UNCOMPRESSED,
             ),
         }
     })
@@ -263,14 +264,14 @@ fn setpiece() -> &'static Setpiece {
                 &map,
                 "mover-setpiece",
                 Cache::Cold,
-                UNCOMPRESSED,
+                WHOLE_UNCOMPRESSED,
             ),
             reference: build_in(
                 BuildDir::fixture("setpiece-reference"),
                 &raised,
                 "mover-setpiece-room-raised",
                 Cache::Cold,
-                UNCOMPRESSED,
+                WHOLE_UNCOMPRESSED,
             ),
         }
     })

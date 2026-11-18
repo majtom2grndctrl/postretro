@@ -500,6 +500,9 @@ mod tests {
                 activities: BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: None,
                         motion: None,
@@ -508,6 +511,7 @@ mod tests {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 )]),

@@ -124,6 +124,9 @@ pub(super) fn rig(specs: Vec<ClipSpec>) -> (MeshComponent, HitZoneStore, MeshCli
                 crossfade_ms: 0.0,
                 interrupt: InterruptPolicy::Smooth,
                 travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
                 clip_index,
             },
         );
@@ -171,6 +174,7 @@ pub(super) fn timed(attack: &str, event: &str) -> ActionVerb {
     ActionVerb::Attack {
         name: attack.to_string(),
         at: Some(event.to_string()),
+        at_default: false,
     }
 }
 
@@ -178,6 +182,7 @@ pub(super) fn untimed(attack: &str) -> ActionVerb {
     ActionVerb::Attack {
         name: attack.to_string(),
         at: None,
+        at_default: false,
     }
 }
 
@@ -203,6 +208,7 @@ pub(super) fn contact_attack(cooldown_ms: f32) -> AttackParams {
         cooldown_ms: Some(cooldown_ms),
         engagement_radius: None,
         standoff_distance: None,
+        queue_range: None,
         damage_type: None,
         draws: None,
     }

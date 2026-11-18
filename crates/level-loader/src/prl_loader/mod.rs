@@ -11,6 +11,7 @@ mod mover_probe_channel;
 mod spatial;
 mod staged;
 mod validation;
+mod whole_load_sh;
 
 use postretro_level_format::SectionId;
 use postretro_level_format::cluster_directory::ClusterDirectorySection;
@@ -58,6 +59,9 @@ pub use staged::{
     HandOutCollector, HandOutStage, LoadCancel, ShManifestHandOut, ShManifestMetadata,
     SpatialHandOut, StagedParseOutcome, assemble,
 };
+#[cfg(test)]
+pub(crate) use whole_load_sh::require_whole_load_sh_bodies;
+pub(crate) use whole_load_sh::require_whole_load_sh_bodies_positionally;
 
 use entities::EntityDecode;
 use geometry::GeometryDecode;
@@ -113,6 +117,10 @@ pub(crate) struct LoadManifests {
 ///
 /// The oracle for [`load_prl_staged_from_container`]: both call the same
 /// decode steps, each in its own sequence, and assemble the level apart.
+///
+/// When SH loads whole (`manifests.streaming` is `None`), the caller has run
+/// the whole-load SH gate ([`require_whole_load_sh_bodies_positionally`])
+/// first, as the open does before it reads the image.
 pub(crate) fn load_prl_from_container(
     container: PrlContainer,
     max_delta_section_binding_bytes: u64,

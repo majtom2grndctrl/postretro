@@ -80,6 +80,7 @@ mod reconcile;
 mod remote_materialize;
 mod replication;
 mod seat;
+pub mod session_players;
 mod snapshot_apply;
 #[cfg(test)]
 mod teleport_tests;
@@ -204,8 +205,8 @@ pub use command_queue::{
 #[cfg(feature = "dev-tools")]
 pub use endpoint::LagProfile;
 pub use endpoint::{
-    ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientTimeSync, NetEndpoint, WorldLessPoll,
-    apply_client_session_roster,
+    ClientApplyFrameOutcome, ClientArmedLocalPawn, ClientSessionStatus, ClientTimeSync,
+    NetEndpoint, WorldLessPoll, apply_client_session_roster,
 };
 pub use host::{
     DemoMoverState, SERVER_TICK_MICROS, complete_host_fixed_tick, end_host_session,
@@ -390,9 +391,9 @@ pub fn synchronize_weapon_attachment_for_pawn(
 /// Default listen port for `--host` when no port is supplied.
 pub const DEFAULT_HOST_PORT: u16 = 27015;
 
-/// Max clients a listen server accepts. Phase 1 co-op bar is "ugly-but-connected"
-/// loopback; a small ceiling keeps the netcode transport allocation modest.
-const MAX_CLIENTS: usize = 8;
+// Max clients a listen server accepts. It lives in foundation because the
+// per-seat player list sizes from it.
+use postretro_foundation::seat::MAX_CLIENTS;
 
 /// Network role selected at startup from CLI args.
 ///
@@ -7515,6 +7516,9 @@ mod tests {
                 crossfade_ms: DEFAULT_CROSSFADE_MS,
                 interrupt: InterruptPolicy::Smooth,
                 travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
                 clip_index: None,
             },
         );

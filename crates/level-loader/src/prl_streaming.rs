@@ -17,6 +17,7 @@ use crate::prl_file::PrlFile;
 use crate::prl_loader::{
     HandOut, LoadCancel, LoadManifests, MAX_DELTA_SECTION_BINDING_BYTES, StagedParseOutcome,
     load_prl_from_container, load_prl_staged_from_container,
+    require_whole_load_sh_bodies_positionally,
 };
 use crate::sh_stream::{
     ShStreamManifest, ShStreamingMode, load_manifest_positionally, read_container_positionally,
@@ -187,7 +188,8 @@ pub(crate) fn load_prl_staged_with_modes(
 }
 
 /// Read the table, plan and credit the parse's progress, validate the
-/// id-49/id-50 pair, resolve the modes, and pick the container backing.
+/// id-49/id-50 pair, resolve the modes, run the whole-load SH gate when SH
+/// will not stream, and pick the container backing.
 ///
 /// The plan is fixed right after the table read so the table and the SH
 /// manifest's reads are credited parse work: on a streamed-manifest map the
@@ -262,6 +264,12 @@ fn open_load(
         Some(ShStreamingMode::SyncProof | ShStreamingMode::Async) => manifest.clone(),
         Some(ShStreamingMode::Off) | None => None,
     };
+    // SH loads whole, so it needs every SH body. Judge their presence from
+    // header prefixes on the retained file, before the image read or any
+    // container: a default bake is refused by name without reading the image.
+    if sh_manifest.is_none() {
+        require_whole_load_sh_bodies_positionally(&file, &metadata)?;
+    }
     debug_assert_eq!(
         whole_file,
         sh_manifest.is_none()
@@ -470,7 +478,13 @@ fn load_prl_with_section_limits(
     max_delta_section_binding_bytes: u64,
     max_scatter_section_bytes: u64,
 ) -> Result<LevelWorld, PrlLoadError> {
-    let result = PrlContainer::open(path).and_then(|container| {
+    // No id-50 manifest, so SH loads whole: the gate the open would run.
+    let open = || {
+        let container = PrlContainer::open(path)?;
+        crate::prl_loader::require_whole_load_sh_bodies(&container)?;
+        Ok::<_, PrlLoadError>(container)
+    };
+    let result = open().and_then(|container| {
         load_prl_from_container(
             container,
             max_delta_section_binding_bytes,
@@ -481,7 +495,7 @@ fn load_prl_with_section_limits(
     });
     crate::prl_loader::staged_tests::cross_check_staged(&result, |sink| {
         load_prl_staged_from_container(
-            PrlContainer::open(path)?,
+            open()?,
             max_delta_section_binding_bytes,
             max_scatter_section_bytes,
             LoadManifests::default(),

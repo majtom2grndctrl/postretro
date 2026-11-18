@@ -188,6 +188,16 @@ pub enum PrlLoadError {
         "AnimatedLightWeightMaps (id 25): {message} — recompile the .prl with the current `prl-build`"
     )]
     AnimatedAtlasLayout { message: String },
+    /// The whole-load SH path (`POSTRETRO_SH_STREAMING=off`, or a PRL without
+    /// id 50) needs every present SH section's body, and these omit theirs.
+    #[error("{}", sh_bodies_omitted_message(.section_ids, *.streamable))]
+    ShBodiesOmitted {
+        /// Ids of the present sections whose body is omitted, in the order
+        /// of [`postretro_level_format::sh_body::SH_BODY_SECTIONS`].
+        section_ids: Vec<u32>,
+        /// Whether the PRL carries id 50, so SH streaming could load it.
+        streamable: bool,
+    },
     #[error(
         "PRL file has no TextureCacheKeys section (section 32) — file is corrupt or was produced by a writer that omits the section; recompile with `prl-build`"
     )]
@@ -252,6 +262,36 @@ pub enum PrlLoadError {
         found: u64,
         expected: u64,
     },
+}
+
+#[cfg(feature = "load-prl")]
+/// Section ids as `Name (id N)`, comma-separated, for messages that name them.
+pub(crate) fn named_section_ids(section_ids: &[u32]) -> String {
+    section_ids
+        .iter()
+        .map(|&id| match prl_format::SectionId::from_u32(id) {
+            Some(section) => format!("{section:?} (id {id})"),
+            None => format!("section {id}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn sh_bodies_omitted_message(section_ids: &[u32], streamable: bool) -> String {
+    let sections = named_section_ids(section_ids);
+    if streamable {
+        format!(
+            "PRL file omits the SH body of {sections}, which the whole-load SH path \
+             (POSTRETRO_SH_STREAMING=off) needs — rebake with `prl-build --whole-load-sh` to load it \
+             with `off`, or load it with SH streaming (POSTRETRO_SH_STREAMING unset, `async`, or `sync-proof`)"
+        )
+    } else {
+        format!(
+            "PRL file omits the SH body of {sections} but has no ClusterShPayloads section (id 50) \
+             to stream SH from, so only a whole load could read it — rebake with \
+             `prl-build --whole-load-sh`"
+        )
+    }
 }
 
 /// Face → index-range mapping lives on BVH leaves; `FaceMeta` carries only
@@ -708,7 +748,7 @@ pub struct LevelWorld {
     /// base→total copy.
     #[cfg(feature = "load-prl")]
     pub delta_sh_volumes: Option<DeltaShVolumesSection>,
-    /// v4 metadata-derived node-aware stored-tile direct SH atlas for dynamic objects
+    /// Metadata-derived node-aware stored-tile direct SH atlas for dynamic objects
     /// (mesh entities + billboards). `None` only when id35 is absent. A present
     /// malformed, stale, geometry-mismatched, or tag-mismatched id35 is a fatal
     /// loader error. Renderer device-limit fallback does not clear this field.
@@ -1477,7 +1517,7 @@ mod tests {
             affinity_dims,
             tile_dimension: DEFAULT_IRRADIANCE_TILE_DIMENSION,
             tile_border: DEFAULT_IRRADIANCE_TILE_BORDER,
-            // Regression: the v11 node-aware stored-atlas fixture has one valid probe;
+            // Regression: the node-aware stored-atlas fixture has one valid probe;
             // id 41 must carry the same validity and one tile per CSR entry.
             valid_probe_masks: vec![1; cell_count],
             cell_levels: vec![0u8; cell_count],
@@ -1667,7 +1707,7 @@ mod tests {
 
     /// One complete affinity brick at L2: valid metadata but only one stored
     /// tile. This is the smallest fixture that can violate I2 against an L0
-    /// delta cell while preserving id-34's v11 node-aware stored-geometry contract.
+    /// delta cell while preserving id-34's current node-aware stored-geometry contract.
     fn l2_storage_ceiling_base() -> OctahedralShVolumeSection {
         use postretro_level_format::lightmap::IRRADIANCE_FORMAT_RGBA16F;
         use postretro_level_format::octahedral::irradiance_atlas_array_layout;
@@ -6464,7 +6504,9 @@ mod tests {
         let direct = minimal_direct_sh_volume_section();
         let base = base_octahedral_section_for_direct(&direct);
         let mut stale_bytes = direct.to_bytes();
-        stale_bytes[0..4].copy_from_slice(&3u32.to_le_bytes());
+        stale_bytes[0..4].copy_from_slice(
+            &(postretro_level_format::direct_sh_volume::DIRECT_SH_VOLUME_VERSION - 1).to_le_bytes(),
+        );
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -6477,16 +6519,14 @@ mod tests {
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
-        let tmp = write_prl_fixture(sections, "postretro_test_stale_direct_sh_v3.prl");
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_direct_sh_previous.prl");
         let error =
             load_prl(tmp.to_str().unwrap()).expect_err("stale present id-35 must reject the PRL");
         assert!(
             error
                 .to_string()
                 .contains("DirectShVolume validation error")
-                && error
-                    .to_string()
-                    .contains("v4 node-aware stored-atlas format"),
+                && error.to_string().contains("v5 body-presence format"),
             "expected named id-35 stale-format error, got {error}"
         );
         std::fs::remove_file(&tmp).ok();
@@ -6495,7 +6535,9 @@ mod tests {
     #[test]
     fn load_prl_rejects_stale_present_octahedral_sh_volume() {
         let mut stale_bytes = base_octahedral_section([2, 1, 1]).to_bytes();
-        stale_bytes[0..4].copy_from_slice(&10u32.to_le_bytes());
+        stale_bytes[0..4].copy_from_slice(
+            &(postretro_level_format::sh_volume::SH_VOLUME_VERSION - 1).to_le_bytes(),
+        );
         let sections = vec![
             geometry_blob(sample_geometry()),
             bvh_blob(sample_bvh_section()),
@@ -6507,21 +6549,19 @@ mod tests {
             default_texture_cache_keys_blob(),
             default_fog_volumes_blob(),
         ];
-        let tmp = write_prl_fixture(sections, "postretro_test_stale_octahedral_sh_v10.prl");
+        let tmp = write_prl_fixture(sections, "postretro_test_stale_octahedral_sh_previous.prl");
         let error =
             load_prl(tmp.to_str().unwrap()).expect_err("stale present id-34 must reject the PRL");
         assert!(
             error.to_string().contains("PRL format error")
                 && error.to_string().contains("octahedral sh volume")
-                && error
-                    .to_string()
-                    .contains("v11 node-aware stored-atlas format"),
+                && error.to_string().contains("v12 body-presence format"),
             "expected named id-34 stale-format error, got {error}"
         );
         std::fs::remove_file(&tmp).ok();
     }
 
-    // Regression: v11 validity is a binary wire field, not a truthy byte.
+    // Regression: validity is a binary wire field, not a truthy byte.
     #[test]
     fn load_prl_rejects_non_binary_octahedral_probe_validity() {
         let mut malformed_bytes = base_octahedral_section([1, 1, 1]).to_bytes();

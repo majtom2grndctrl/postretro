@@ -31,12 +31,17 @@ const OFF_PROBE_ENV: &str = "POSTRETRO_TEST_MOVER_PLACEMENT_PRLS";
 const OFF_PROBE: &str = "a_streamed_build_loaded_under_off_holds_the_resident_payload";
 
 /// The setpiece: both of its blocks carry a payload, of different sizes.
+/// Every build also loads under `off`, so it keeps the whole-load SH bodies.
 fn setpiece(flags: &[&str]) -> Built {
+    let flags: Vec<&str> = ["--whole-load-sh"]
+        .into_iter()
+        .chain(flags.iter().copied())
+        .collect();
     build(
         &dev_map("mover-setpiece.map"),
         "mover-setpiece",
         Cache::Cold,
-        flags,
+        &flags,
     )
 }
 

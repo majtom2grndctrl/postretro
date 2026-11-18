@@ -90,9 +90,9 @@ The codec surface is two functions (encode, decode) over these types. Decode of 
 
 Version compatibility is enforced **twice**, because the two gates catch different failures at different layers. Both gates derive from the same two build constants — an app protocol id and a wire-format version. The app id bumps when the message *vocabulary* changes (a new control message, a changed channel layout); the wire version bumps when any wire type's bitcode byte layout changes (added field, reordered enum, bumped bitcode major).
 
-**Gate 1 — transport `protocol_id` (u64).** Both constants are packed into the netcode `protocol_id`. A peer whose `(protocol_id, wire_version)` pair differs fails the *encrypted netcode handshake itself* — the connection never establishes. This catches wire-incompatible peers before any app code runs.
+**Gate 1 — transport `protocol_id` (u64).** Both constants are packed into the netcode `protocol_id`. A peer whose `(protocol_id, wire_version)` pair differs fails netcode's connect handshake, and the connection never establishes. Both sides run netcode `Unsecure`, so the gate only compares ids; it neither encrypts nor authenticates. This catches wire-incompatible peers before any app code runs.
 
-**Gate 2 — the app gate**, carried over the reliable Control channel and evaluated in two stages, below. It proves app compatibility and shared content before prediction can arm.
+**Gate 2 — the app gate**, carried over the reliable Control channel and evaluated in two stages, below. It proves app compatibility and shared content, and checks any session password, before prediction can arm.
 
 The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at the encryption layer, before a single bitcode payload is interpreted. Gate 2 reasons about content, which the encryption layer cannot see. **No entity state is sent or applied to a client that has not cleared both** — the snapshot send path refuses it.
 
@@ -101,6 +101,8 @@ The two gates are not redundant. Gate 1 stops wire-incompatible peers cheaply at
 The app gate splits by **mutability**, not by subject. A value belongs to the earlier stage only if a mismatch on it can *never* later become a match.
 
 **Admission** carries what cannot change for a live connection: the two build constants and the mod's declared id. Nothing can make a mismatch here true later, so a mismatch is terminal — the slot closes immediately, the typed cause is sent reliably, and transport teardown waits for its acknowledgement. Without that delivery gate a player on the wrong mod cannot distinguish a refusal from an unreachable host.
+
+**Session password (decided, not yet built).** A host may set a password for a hosted run. Admission checks it after the mod id, by challenge and response: the host sends each connection a fresh nonce, and the client answers with a keyed hash of password and nonce. The password never crosses the wire. A wrong answer, or none within a host-side bound, is a terminal refusal, as a mod-id mismatch is. A passwordless host sends no challenge. Nothing a client declares applies before it is admitted. The password cannot change during the run, so it passes the mutability test above. It gates access only: traffic stays unencrypted, and it proves no identity.
 
 **Content parity** carries everything derived from loaded content: a mod compatibility digest, the identity of the installed level, and that level's content digest. Every one of these is *designed* to become true later — a level digest at the next install, a mod digest at the next reload. So a parity mismatch **never closes the connection**. It holds the slot below participating, names which of the three diverged, and clears itself when the values agree, whichever peer moved. A parity match is necessary, not sufficient: the slot still waits for both peers to reveal the level (*Slot lifecycle*, the revealed term).
 
@@ -167,7 +169,7 @@ A held slot is bounded by the transport, not by the gate: a peer that never reac
 
 ### Leaving and ending a session
 
-Membership changes only through its own verbs (`scripting.md` §10.4). Navigation never changes it, and the frontend is outside every session.
+Membership changes only through its own verbs (`scripting.md` §10.4). Navigation never changes it, and the frontend is outside every session (one interim exception: §Role model, *Runtime entry*).
 
 - **Leave.** A client sends netcode's disconnect, drops its endpoint, and lands at its mod's frontend as single-player: the one membership change that lands somewhere, because a client cannot keep a world it never owned. renet_netcode reports a client's disconnect packet and a keepalive timeout as the same transport ending, so the host reads one from a client it heard within netcode's 15 s timeout window as a disconnect, not a timeout, and holds the seat. The disconnect is one unacknowledged datagram: if it is lost, the slot times out.
 - **Every host-side ending lands a client where a leave does**, minus the disconnect: a session-ended cause, a refusal at admission, a lost host, a connect whose attempts all fail, and any later host close. A first connect still retrying has not ended. A cause that arrives in the same update as the host's disconnect still drains, because the transport reads Control at the connection's end. An ending before boot clears lands at the frontend (`boot_sequence.md` §First-launch hold).
@@ -275,7 +277,7 @@ State that survives a level change, enumerated rather than accreted:
 
 - **The connection** — its id, lifecycle stage, last parity declaration, and the host's per-slot revealed record, which a host level change does not clear. On the client, its latest spawn-pose hint, which survives the level-scoped reset and demotion and goes with the endpoint when the client leaves.
 - **The seat** — the host-minted durable player key, its asserted claim when one exists, and its carried state. Its placement assignment and the overflow round-robin position are level-scoped (*Slot lifecycle*). A seat sits above participation and is never released by a level transition.
-- **The roster** — the host's seat-keyed projection of host-minted seat ids, current connection state, and remaining fresh-seat count. Each entry will also carry the seat's status and display name (decided, not yet built; `scripting.md` §5), rate-limited when only a status changes. Player ids stay host-local for rejoin.
+- **The roster** — the host's seat-keyed projection of host-minted seat ids, current connection state, and remaining fresh-seat count. Each entry also carries the seat's status and display name (`scripting.md` §5). A change to statuses alone publishes at most once per `STATUS_ROSTER_INTERVAL` (250 ms) of the hold clock; any other roster change publishes at once. Player ids stay host-local for rejoin.
 
 The rest is defined by subtraction. Everything level-scoped and everything per-slot clears on demotion, so what survives a session is exactly what a demotion does not touch.
 
@@ -285,9 +287,11 @@ new session starts.
 
 The pawn a seat currently owns is one fact stored in two directions. The host's seat table keeps seat→pawn; the entity registry keeps the pawn→seat reverse index, as a sparse map parallel to the component columns — never a `ComponentKind`, which would make it a wire discriminant. That reverse index is what lets owner-addressed layers holding only a registry and an `EntityId` — impact effects, impact policy, reaction dispatch — resolve a pawn's owner. It also keeps a host without a pawn of its own from borrowing a client's as its local player, so host input moves no client's pawn. The seat table is its sole writer, through one binding call that updates both directions together, so an entry exists exactly while a seat is bound to a live pawn: a rebind clears the outgoing pawn, a rejoin hold clears the held seat's pawn, and `despawn` clears the entry.
 
-Three constraints bind the seat wherever it lands. It sits **above** the participation lifecycle — the exit sweep clears a slot's state, never its seat, or a level change would churn the identity the seat exists to preserve. Its type belongs in `foundation`, the only crate the binary, `entities`, and a later floor-crate consumer can all name; `net` is postretro-free by contract and cannot depend on `foundation`, so a seat minted in `net` forces a duplicate the first time per-seat storage reaches the floor slot table. Seat *ids* may cross the wire as a bare integer, but seat *contents* never do — that is what keeps the transport registry-blind.
+Three constraints bind the seat wherever it lands. It sits **above** the participation lifecycle — the exit sweep clears a slot's state, never its seat, or a level change would churn the identity the seat exists to preserve. Its type belongs in `foundation`, the only crate the binary, `entities`, and a later floor-crate consumer can all name; `net` is postretro-free by contract and cannot depend on `foundation`, so a seat minted in `net` forces a duplicate the first time per-seat storage reaches the floor slot table. Seat *ids* may cross the wire as a bare integer, but seat *contents* never do — that is what keeps the transport registry-blind. One exception is decided, not yet built: a carried loadout crosses as a names-only mirror that depends on no engine crate. It goes between the host and that seat's owner only, in the join seed, at each level start and checkpoint, and in the final character.
 
-The roster publishes no lower than admitted. Admission is a compatibility gate, not a trust decision: it checks the build constants and the mod id, admits automatically, and never asks the host who the peer is. A peer below it has proven only that it can reach the socket, so it receives no roster frame — not even a seat count. Admitted and participating peers receive a status-only frame encoded separately with their own seat.
+**Durable ledger (decided, not yet built).** The durable part of the ledger has one serialization: a ledger document holding a level, global slot values, faction sentiment and seat records. A seat record holds a claim, a display name, per-owner slot values and a carried loadout. Connections, holds and placement are live and never serialize. A run save is a document with no seat records, and a character save is one seat record (`scripting.md` §5). Revisited-map state and a host-migration handoff each add a named section. Readers ignore a section they do not know, and writers keep it. Each character has its own id, and that id is the claim it joins with. A host checks a joiner's loadout against its own mod and never stores it.
+
+The roster publishes no lower than admitted. Admission checks the build constants, the mod id and any session password, then admits automatically. It never asks the host who the peer is. A peer below it has proven only that it can reach the socket, so it receives no roster frame — not even a seat count. Admitted and participating peers receive the roster frame, encoded separately with their own seat.
 
 ## Game-logic-owned apply invariant
 
@@ -334,7 +338,9 @@ Despawn records carry tombstone metadata only, never component payloads.
 
 ## Role model
 
-Role is selected at startup from CLI flags; default is **single-player with net fully inert** — no endpoint is constructed, serialize/apply never run. Afterwards a role moves one way only: a client that leaves and a host that ends become single-player (§Slot lifecycle, *Leaving and ending a session*). Hosting or joining again needs a relaunch.
+Role is selected at startup from CLI flags; default is **single-player with net fully inert** — no endpoint is constructed, serialize/apply never run. A client that leaves and a host that ends become single-player (§Slot lifecycle, *Leaving and ending a session*). Hosting or joining again needs a relaunch.
+
+**Runtime entry (decided, not yet built).** A single-player machine at its frontend hosts or joins without a relaunch, through the scripting verbs `hostSession()` and `joinSession()` (`scripting.md` §10.4). Boot flags and runtime entry share one construction path for the endpoint and role-bound state, so they cannot drift. Each hosting is a new hosted run: a fresh session id and seat counter, with seat 0 keeping its carried state. A join first saves the world and character, and a later leave restores from that save. Until a lobby scene exists, an in-app host waits at its frontend with a live endpoint and its clients held: the one exception to the frontend sitting outside every session. `--connect` takes an optional port, and `--password` serves both flags.
 
 | Flag | Role |
 |------|------|

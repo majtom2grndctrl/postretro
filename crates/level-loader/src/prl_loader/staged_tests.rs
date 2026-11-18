@@ -25,7 +25,7 @@ use crate::lightmap_stream::{LightmapStorage, LightmapStreamingMode};
 use crate::prl_load_test_fixtures::{write_portal_prl_load_fixture, write_prl_load_fixture};
 use crate::prl_streaming::{ModeSource, load_prl_staged_with_modes, load_prl_with_modes};
 use crate::sh_stream::{ShStorage, ShStreamingMode};
-use crate::sh_stream_tests::{Id50Body, write_stream_fixture};
+use crate::sh_stream_tests::{Id50Body, write_stream_fixture, write_stream_fixture_omitting};
 use crate::{LevelLoadProgress, LevelWorld, LoadPhase, LoadProgress, PrlLoadError};
 
 const DELTA_LIMIT: u64 = super::MAX_DELTA_SECTION_BINDING_BYTES;
@@ -74,15 +74,55 @@ macro_rules! same_fields {
     };
 }
 
-fn same_sh_storage(staged: &ShStorage, monolithic: &ShStorage) {
+/// What two compared worlds share: one PRL file, or only its content (two
+/// PRLs that differ in section layout, such as SH bodies present or omitted).
+#[derive(Clone, Copy)]
+enum WorldIdentity {
+    SameFile,
+    SameContent,
+}
+
+fn same_sh_storage(staged: &ShStorage, monolithic: &ShStorage, identity: WorldIdentity) {
     match (staged.manifest(), monolithic.manifest()) {
         (None, None) => {}
-        (Some(staged), Some(monolithic)) => same_debug(
-            "sh_storage",
-            &staged.content_debug(),
-            &monolithic.content_debug(),
-        ),
+        (Some(staged), Some(monolithic)) => match identity {
+            WorldIdentity::SameFile => same_debug(
+                "sh_storage",
+                &staged.content_debug(),
+                &monolithic.content_debug(),
+            ),
+            WorldIdentity::SameContent => same_debug(
+                "sh_storage",
+                &staged.stream_content_debug(),
+                &monolithic.stream_content_debug(),
+            ),
+        },
         _ => panic!("staged sh_storage {staged:?} differs in mode from {monolithic:?}"),
+    }
+}
+
+fn same_read_counters(
+    staged: &Option<Arc<crate::prl_file::PrlReadCounters>>,
+    monolithic: &Option<Arc<crate::prl_file::PrlReadCounters>>,
+    identity: WorldIdentity,
+) {
+    match (identity, staged, monolithic) {
+        (WorldIdentity::SameFile, _, _) => same_debug("prl_read_counters", staged, monolithic),
+        (WorldIdentity::SameContent, Some(staged), Some(monolithic)) => {
+            // Bytes read per section, in table order, outside the offsets.
+            let reads = |counters: &crate::prl_file::PrlReadCounters| {
+                (
+                    counters.section_read_bytes(),
+                    counters.bytes_outside_sections(),
+                )
+            };
+            same_debug("prl_read_counters", &reads(staged), &reads(monolithic));
+        }
+        (WorldIdentity::SameContent, _, _) => same_debug(
+            "prl_read_counters presence",
+            &staged.is_some(),
+            &monolithic.is_some(),
+        ),
     }
 }
 
@@ -98,9 +138,21 @@ fn same_lightmap_storage(staged: &LightmapStorage, monolithic: &LightmapStorage)
     }
 }
 
-/// Every field of `staged` equals `monolithic`'s. The exhaustive destructure
-/// makes a new `LevelWorld` field fail to compile here until it is compared.
+/// Every field of `staged` equals `monolithic`'s.
 fn assert_worlds_match(staged: &LevelWorld, monolithic: &LevelWorld) {
+    assert_worlds_match_as(staged, monolithic, WorldIdentity::SameFile);
+}
+
+/// Every field of `a` equals `b`'s, except the file layout two PRLs of one
+/// level may differ in: section offsets and sizes, the content tag that binds
+/// them, and the path. Read counters compare bytes read per section.
+pub(crate) fn assert_worlds_match_across_layouts(a: &LevelWorld, b: &LevelWorld) {
+    assert_worlds_match_as(a, b, WorldIdentity::SameContent);
+}
+
+/// The exhaustive destructure makes a new `LevelWorld` field fail to compile
+/// here until it is compared.
+fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity: WorldIdentity) {
     let LevelWorld {
         vertices,
         indices,
@@ -183,7 +235,7 @@ fn assert_worlds_match(staged: &LevelWorld, monolithic: &LevelWorld) {
     same_debug("lights", lights, &m.lights);
     same_debug("light_influences", light_influences, &m.light_influences);
     same_debug("sh_volume", sh_volume, &m.sh_volume);
-    same_sh_storage(sh_storage, &m.sh_storage);
+    same_sh_storage(sh_storage, &m.sh_storage, identity);
     same_debug("probe_depth_tiles", probe_depth_tiles, &m.probe_depth_tiles);
     same_debug(
         "mover_probe_channel",
@@ -275,7 +327,7 @@ fn assert_worlds_match(staged: &LevelWorld, monolithic: &LevelWorld) {
         cell_residency_set,
         &m.cell_residency_set,
     );
-    same_debug("prl_read_counters", prl_read_counters, &m.prl_read_counters);
+    same_read_counters(prl_read_counters, &m.prl_read_counters, identity);
 }
 
 /// Each hand-out's sections equal the monolithic parse's final data for
@@ -384,7 +436,11 @@ fn assert_hand_outs_match(hand_outs: &[HandOut], monolithic: &LevelWorld) {
                         cluster_directory,
                     ]
                 );
-                same_sh_storage(&lighting.sh_storage, &monolithic.sh_storage);
+                same_sh_storage(
+                    &lighting.sh_storage,
+                    &monolithic.sh_storage,
+                    WorldIdentity::SameFile,
+                );
                 same_lightmap_storage(&lighting.lightmap_storage, &monolithic.lightmap_storage);
             }
         }
@@ -823,6 +879,46 @@ fn late_validation_rejects_after_hand_outs() {
         format!("{error}").contains("runtime_cell_count"),
         "the semantic check names the cell count: {error}"
     );
+}
+
+// The whole-load SH gate runs at the open, ahead of both parses: a level whose
+// id 45 omits its body is refused by name before hand-out 1, under either
+// lightmap mode, where the soft id-45 path would otherwise disable animated
+// direct SH.
+#[test]
+fn staged_parse_refuses_an_omitted_sh_body_before_any_hand_out() {
+    let fixture = write_stream_fixture_omitting(&[SectionId::AnimatedDirectShDeltaVolumes]);
+    let path = fixture.path.to_str().unwrap();
+    for lightmap in [
+        LightmapStreamingMode::AllResident,
+        LightmapStreamingMode::Stream,
+    ] {
+        let error = assert_equivalent(path, ShStreamingMode::Off, lightmap)
+            .expect_err("off cannot load an omitted body");
+        assert!(
+            matches!(
+                &error,
+                PrlLoadError::ShBodiesOmitted { section_ids, streamable: true }
+                    if *section_ids == [SectionId::AnimatedDirectShDeltaVolumes as u32]
+            ),
+            "{lightmap:?}: {error:?}"
+        );
+        let staged = collect_staged(|sink| {
+            run_staged(
+                path,
+                ShStreamingMode::Off,
+                lightmap,
+                &Arc::new(LoadProgress::new()),
+                &AtomicBool::new(false),
+                sink,
+            )
+        });
+        assert!(staged.hand_outs.is_empty(), "{lightmap:?}");
+        assert!(matches!(
+            staged.result,
+            Err(PrlLoadError::ShBodiesOmitted { .. })
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------

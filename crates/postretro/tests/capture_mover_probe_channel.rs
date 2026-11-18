@@ -16,6 +16,7 @@ use image::RgbaImage;
 use postretro_level_format::mover_probe_channel::{
     MOVER_PROBE_CHANNEL_EPOCH, MoverProbeChannelSection,
 };
+use postretro_level_format::sh_body::pre_flag::upgrade_pre_flag_prl;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 
 // Shared by every capture target; the mover rows compile through
@@ -38,12 +39,21 @@ fn compile_release(workspace: &Path, map_name: &str) -> tempfile::TempPath {
     compile_dev_map_with(workspace, map_name, &["--release"])
 }
 
+/// [`compile_release`] with `--whole-load-sh`, for a row that also captures
+/// under `POSTRETRO_SH_STREAMING=off`, which loads the whole-load SH bodies.
+fn compile_release_whole_load_sh(workspace: &Path, map_name: &str) -> tempfile::TempPath {
+    compile_dev_map_with(workspace, map_name, &["--release", "--whole-load-sh"])
+}
+
 /// Names the baseline compiler C10's frame row judges against: a `prl-build`
 /// from before mid-travel light poses, the same binary
 /// `mover_probe_channel_prl_parity` takes. Its bake matches that build's;
 /// it writes id 57 at epoch 5, which the engine refuses, so each baseline
 /// PRL has that one byte relabelled to the current epoch, which the parity
-/// test's module doc shows is safe for a two-pose section only.
+/// test's module doc shows is safe for a two-pose section only. It also
+/// predates the SH body-presence field, whose old section versions the
+/// engine refuses too, so each baseline PRL is then upgraded to the current
+/// SH format with its bodies present, which both modes load.
 const BASELINE_ENV: &str = "POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN";
 
 /// The baseline compiler, or a failure naming the variable.
@@ -70,8 +80,9 @@ fn baseline_compiler() -> PathBuf {
 const BASELINE_EPOCH: u8 = 5;
 
 /// [`compile_release`] through the baseline compiler, id 57's epoch byte
-/// relabelled from [`BASELINE_EPOCH`] to the current epoch. Fails unless
-/// every mover record stores two poses, the one case the relabel preserves
+/// relabelled from [`BASELINE_EPOCH`] to the current epoch, then its SH
+/// sections upgraded ([`upgrade_pre_flag_prl`]). Fails unless every mover
+/// record stores two poses, the one case the relabel preserves
 /// (`mover_probe_channel_prl_parity`'s `at_this_epoch`).
 fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> tempfile::TempPath {
     let prl = compile_dev_map_using(compiler, workspace, map_name, &["--release"]);
@@ -101,6 +112,9 @@ fn compile_release_using(compiler: &Path, workspace: &Path, map_name: &str) -> t
             );
         }
     }
+    let bytes = upgrade_pre_flag_prl(&bytes).unwrap_or_else(|error| {
+        panic!("{map_name}: upgrade the baseline's pre-flag SH sections: {error}")
+    });
     std::fs::write(&prl, bytes).expect("write the baseline PRL");
     prl
 }
@@ -238,8 +252,9 @@ fn closet_pool_pixels(pose: Pose) -> impl Fn(u32, u32) -> bool {
 #[ignore = "requires a GPU adapter and a local prl-build bake; run with `cargo test -p postretro --features capture --test capture_mover_probe_channel -- --ignored`"]
 fn k1_closet_closed_reads_as_dark_as_the_static_door_and_open_reads_as_stripped() {
     let run = Run::new();
-    let closet = compile_release(&run.workspace, "mover-closet");
-    let reference = compile_release(&run.workspace, "mover-closet-static-door");
+    // Both modes run on each map, and `off` loads the whole-load SH bodies.
+    let closet = compile_release_whole_load_sh(&run.workspace, "mover-closet");
+    let reference = compile_release_whole_load_sh(&run.workspace, "mover-closet-static-door");
     let stripped = without_channel(&run.workspace, &closet, "mover-closet-no-id57", false);
     let mut misses = Vec::new();
 
@@ -470,8 +485,9 @@ fn k2_setpiece_wall_closed_darkens_the_held_receiver_like_the_static_wall() {
 fn c10_streaming_off_and_sync_proof_compose_the_same_channel_output() {
     let run = Run::new();
     let compiler = baseline_compiler();
-    let closet = compile_release(&run.workspace, "mover-closet");
-    let setpiece = compile_release(&run.workspace, "mover-setpiece");
+    // The `off` captures load the whole-load SH bodies.
+    let closet = compile_release_whole_load_sh(&run.workspace, "mover-closet");
+    let setpiece = compile_release_whole_load_sh(&run.workspace, "mover-setpiece");
     let closet_base = compile_release_using(&compiler, &run.workspace, "mover-closet");
     let setpiece_base = compile_release_using(&compiler, &run.workspace, "mover-setpiece");
     let both = vec![(SETPIECE_WALL, 0.5), (SETPIECE_ROOM, 0.5)];

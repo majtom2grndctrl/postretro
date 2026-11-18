@@ -1359,6 +1359,8 @@ export type OwnerAddressedComputedRef<T> = { slot: string, kind: StateRefKind, o
 export type OwnerAddressedRef<T> = OwnerAddressedComputedRef<T> & { __writableStateRefBrand: T }
 export type ComputedRef<T> = { slot: string, kind: StateRefKind, __stateRefValueBrand: T? }
 export type Ref<T> = ComputedRef<T> & { __writableStateRefBrand: T }
+--- An engine catalog list: row tables 1..capacity, row `i` holding the refs of slot row `i - 1`. Each row's `present` says whether it holds anything. Render rows with `forEach` from `"postretro/ui"`.
+export type StateList<Row> = { [number]: Row }
 export type StateRef<T> = ComputedRef<T> | Ref<T>
 --- Who `byPlayer` addresses: the impact damager (`impact.source`), a player
 --- event's player (`on.player`), or a side of an assist pair expression
@@ -1503,6 +1505,66 @@ declare defaultToken: AttackToken
 --- Declare an attack token by its default budget. Luau passes the name
 --- explicitly. Register it with `defineMod({ attackTokens = { token } })`.
 declare function defineAttackToken(name: string, budget: AttackTokenBudget?): AttackToken
+
+--- A stance's options: the pose an enemy rests in before the attacks that
+--- begin in it. `animation` names one of the archetype's animation states;
+--- `sound` is a sound key played once per pose entry; `stance` is reserved:
+--- it rejects load until crouching enemies are supported; `holdMs` bounds how
+--- long the pose holds before a strike releases, one value or `{ min, max }`;
+--- `breakOn` leaves the pose for the sibling activity `to` once `damage` has
+--- landed in it.
+export type StanceOptions = {
+  animation: string,
+  sound: string?,
+  stance: ("stand" | "crouch")?,
+  holdMs: (number | {number})?,
+  breakOn: { damage: number, to: string }?,
+}
+--- A stance handle from `defineStance`. It crosses as `{ kind, name, ...options }`,
+--- nested in each attack that names it.
+export type Stance = { kind: "stance", name: string } & StanceOptions
+--- An attack's strike: its own animation state, an optional `ms` that only
+--- holds it longer, the clip event `at` it fires at (`false` fires on entry),
+--- an optional `motion` and `speed` multiplier replacing the planted hold
+--- (`"leap"` fixes a landing spot the attack's standoff short of the target on
+--- entry (or on the first tick with a target) and arrives there by the clip
+--- moment, `speed` capping its pace; it never re-aims, so a target that moves
+--- off the spot is missed, and it needs a moment, so not `at = false` or a
+--- `["repeat"]` above 1), and
+--- `["repeat"]` (a Luau keyword, so the key is quoted): how many passes of its
+--- clip it plays back to back, striking at `at` on each, a whole number from
+--- 1 to 8 (default 1). A repeating release plays a looping state, stands still, never fires
+--- on entry, and needs a `recover` with its own animation; one turn and one
+--- cooldown cover every pass.
+export type AttackRelease = {
+  animation: string,
+  ms: number?,
+  at: (string | false)?,
+  motion: ("hold" | "chaseTarget" | "strafe" | "reposition" | "leap")?,
+  speed: number?,
+  ["repeat"]: number?,
+}
+--- An attack's recovery after its strike: an animation state and an optional duration.
+export type AttackRecover = { animation: string, ms: number? }
+--- What `defineAttack` declares: the engine's attack fields plus the stance it
+--- begins in (`beginningStance`), the stance it rests in afterwards
+--- (`endingStance`, defaulting to the beginning), and its `release` and `recover`.
+export type AttackDeclaration = AttackParams & {
+  beginningStance: Stance?,
+  endingStance: Stance?,
+  release: AttackRelease?,
+  recover: AttackRecover?,
+}
+--- An attack handle from `defineAttack`. It crosses as `{ kind, name, ...declaration }`;
+--- load-time lowering resolves it to the attack's name. Pass it wherever an
+--- attack is meant: `action = { attack = slam }`, `attackTurn`, a behavior's
+--- `attacks` list, `attackTurnFree`, `attackTurnHeld`.
+export type Attack = { kind: "attack", name: string } & AttackDeclaration
+--- Declare an attack. Luau passes the name explicitly. A behavior that
+--- references the handle has the attack; no separate registration.
+declare function defineAttack(name: string, declaration: AttackDeclaration): Attack
+--- Declare a stance. Luau passes the name explicitly.
+declare function defineStance(name: string, options: StanceOptions): Stance
 
 --- Lift a number or boolean state ref into the fluent impact-expression algebra.
 declare read: ((ref: StateRef<number>) -> NumberRef) & ((ref: StateRef<boolean>) -> BoolRef)
@@ -1854,6 +1916,8 @@ export type LocalStateHandle<T> = {
 declare function createLocalState(init: { [string]: any }): { scope: any, cells: any }
 --- `Switch(cell, map)` (M13 G2) — expand a string-valued cell's `map` of `value -> subtree` into an array, injecting `visibleWhen = cell:is(key)` onto each subtree in LEXICOGRAPHICALLY-SORTED key order (byte-identical TS/Luau). Splice the result into a container's `children`.
 declare function Switch(cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }): {WidgetDescriptor}
+--- `forEach(list, function(row, i) ... end)` — unroll a widget once per row of an engine list up to its capacity; a row shows only while its `present` flag and any `visibleWhen` it declares hold; authored ids get the suffix `.<slot row>` and same-row references follow. `i` counts from 1.
+declare function forEach<Row>(list: StateList<Row>, build: (row: Row, i: number) -> WidgetDescriptor): {WidgetDescriptor}
 --- State-helper namespace (state helpers are namespaced; reactions stay bare).
 declare ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } }
 
@@ -2038,6 +2102,10 @@ export type BrainInputs = {
   hasAttackTurn: RuntimeGuardNode,
   --- `true` from the tick after the selected non-looping animation's clip reaches its duration; false on a looping state; true for a non-looping state whose clip did not resolve. Entity-wide: parent and nested rows read one value, unlike `timeInActivityMs` (boolean).
   animationDone: RuntimeGuardNode,
+  --- A per-entry roll, uniform in [0, 1): drawn when the currently-evaluated activity was entered and fixed until it is left. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own roll, and every row at one level reads the same value (number).
+  activityRoll: RuntimeGuardNode,
+  --- Points drained from this enemy's defense layers and health since the currently-evaluated activity was entered, counting every damage producer, `applyDamage` included. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own sum, which resets to 0 when that level is entered (number).
+  damageInActivity: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.
@@ -2072,11 +2140,11 @@ declare function state(name: string): RuntimeGuardNode
 --- Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current:le(0)`. An entity without the layer reads `0`; a bad reference fails load.
 declare function defense(layer: DefenseLayer): { current: RuntimeGuardNode, capacity: RuntimeGuardNode }
 
---- `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load.
-declare function attackTurnHeld(attack: string): RuntimeGuardNode
+--- `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle raises at the call. Reading it registers no attack.
+declare function attackTurnHeld(attack: Attack): RuntimeGuardNode
 
---- `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load.
-declare function attackTurnFree(attack: string): RuntimeGuardNode
+--- `true` when a request for `attack`, one of its archetype's attacks, would be granted now against the previous tick's counts and reservations, leaving out the enemy's own pending request. False with no target, and for an attack sharing a token with a turn the enemy holds. Naming another attack fails load; anything but an attack handle raises at the call. Reading it registers no attack.
+declare function attackTurnFree(attack: Attack): RuntimeGuardNode
 
 -- UI navigation intents — the closed gamepad-first nav vocabulary the input
 -- stage produces (keyboard arrows/enter/escape, D-pad, stick edges) and that UI

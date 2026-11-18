@@ -15,6 +15,8 @@ use postretro_entities::provenance::DescriptorProvenance;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::{AmmoReserve, EntityId, EntityRegistry};
 use postretro_foundation::Seat;
+
+use crate::session_players::SeatStatus;
 use postretro_net::slots::SlotState;
 use postretro_net::transport::NetServer;
 use postretro_net::wire::{
@@ -132,7 +134,20 @@ pub struct SeatTable {
     /// Coalesces all roster-affecting mutations in one transport poll into one
     /// publication after its lifecycle batch completes.
     roster_dirty: bool,
+    /// Each seat's latest derived status, recorded by the host each tick.
+    statuses: HashMap<Seat, SeatStatus>,
+    /// A status changed since the last publication. Status-only changes wait
+    /// out `STATUS_ROSTER_INTERVAL` so a flapping life state cannot flood Control.
+    status_dirty: bool,
+    /// `hold_clock` at the last roster publication.
+    last_roster_publish: Option<Duration>,
 }
+
+/// Status-only roster changes publish at most this often. Every publication
+/// carries every seat's current status, so the last change goes out within one
+/// interval of it, plus up to one frame: the host poll that publishes runs
+/// before the frame's ticks record statuses.
+pub const STATUS_ROSTER_INTERVAL: Duration = Duration::from_millis(250);
 
 impl SeatTable {
     /// Create the table for a single-player or listen-host session, reserving
@@ -169,6 +184,9 @@ impl SeatTable {
             overflow_cursor: 0,
             overflow_warned: HashSet::new(),
             roster_dirty: true,
+            statuses: HashMap::new(),
+            status_dirty: false,
+            last_roster_publish: None,
         }
     }
 
@@ -345,6 +363,22 @@ impl SeatTable {
         })
     }
 
+    /// Visit every seat in ascending order without allocating. Seats are few
+    /// (the join cap plus held seats), so a scan per step beats a sort buffer.
+    pub fn for_each_seat(&self, mut visit: impl FnMut(Seat)) {
+        let mut floor = 0u32;
+        while let Some(seat) = self
+            .carried
+            .keys()
+            .copied()
+            .filter(|seat| u32::from(seat.0) >= floor)
+            .min_by_key(|seat| seat.0)
+        {
+            visit(seat);
+            floor = u32::from(seat.0) + 1;
+        }
+    }
+
     /// The live client bound to `seat`. The host's own seat and a held seat
     /// have none.
     #[must_use]
@@ -457,7 +491,63 @@ impl SeatTable {
 
     /// Whether this poll needs one consolidated roster publication.
     pub(crate) fn take_roster_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.roster_dirty)
+        let status_due = self.status_dirty
+            && self
+                .last_roster_publish
+                .is_none_or(|at| self.hold_clock.saturating_sub(at) >= STATUS_ROSTER_INTERVAL);
+        if !(self.roster_dirty || status_due) {
+            return false;
+        }
+        // A lifecycle publication carries every current status too.
+        self.roster_dirty = false;
+        self.status_dirty = false;
+        self.last_roster_publish = Some(self.hold_clock);
+        true
+    }
+
+    /// Record each seat's status from this tick's derivation. A change marks a
+    /// status-only publication, which the roster gate rate-limits.
+    pub fn record_statuses(&mut self, statuses: &[(Seat, SeatStatus)]) {
+        for &(seat, status) in statuses {
+            if self.statuses.insert(seat, status) != Some(status) {
+                self.status_dirty = true;
+            }
+        }
+        let carried = &self.carried;
+        self.statuses.retain(|seat, _| carried.contains_key(seat));
+    }
+
+    /// Forget recorded statuses when no session level is installed. The
+    /// roster then reports each seat by its connection alone.
+    pub fn clear_statuses(&mut self) {
+        if !self.statuses.is_empty() {
+            self.statuses.clear();
+            self.status_dirty = true;
+        }
+    }
+
+    /// A seat's status. The connection decides first, so a hold or reclaim
+    /// publishes a status that agrees with it at once: a held seat reads
+    /// reconnecting, and a connected seat reads its recorded status, else
+    /// loading (a reclaimed seat until a tick records it).
+    #[must_use]
+    pub fn seat_status(&self, seat: Seat) -> SeatStatus {
+        if seat != Seat(0) && !self.client_bindings.contains_key(&seat) {
+            return SeatStatus::Reconnecting;
+        }
+        match self.statuses.get(&seat) {
+            Some(SeatStatus::Reconnecting) | None => SeatStatus::Loading,
+            Some(&status) => status,
+        }
+    }
+
+    /// The display name a seat's claim asserted; empty for the host's seat and
+    /// a seat with no claim.
+    #[must_use]
+    pub fn display_name(&self, seat: Seat) -> &str {
+        self.connect_claims
+            .get(&seat)
+            .map_or("", |claim| claim.display_name.as_str())
     }
 
     /// Join capacity remaining after connected and held remote seats reserve
@@ -474,8 +564,8 @@ impl SeatTable {
     }
 
     /// Build a deterministic seat-keyed roster snapshot from the table's own
-    /// lifecycle bindings. Claims and carried contents never leave this table:
-    /// only the host-minted seat and current connection fact are projected.
+    /// lifecycle bindings. Carried contents and a claim's player id never leave
+    /// this table: each seat projects its connection, display name and status.
     #[must_use]
     pub(crate) fn roster_entries(&self) -> Vec<RosterEntry> {
         let mut seats: Vec<Seat> = self.carried.keys().copied().collect();
@@ -485,6 +575,8 @@ impl SeatTable {
             .map(|seat| RosterEntry {
                 seat: seat.0,
                 connected: seat == Seat(0) || self.client_bindings.contains_key(&seat),
+                name: self.display_name(seat).to_string(),
+                status: self.seat_status(seat).roster_code(),
             })
             .collect()
     }
@@ -494,7 +586,7 @@ impl SeatTable {
         self.roster_entries()
     }
 
-    fn roster_message_for(&self, client_id: u64) -> SessionRosterMessage {
+    pub(crate) fn roster_message_for(&self, client_id: u64) -> SessionRosterMessage {
         SessionRosterMessage {
             session_id: self.session_id(),
             your_seat: self.seat_for_client(client_id).map(|seat| seat.0),
@@ -1568,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn roster_projects_only_seat_status_and_connection_lifecycle() {
+    fn roster_projects_seat_name_status_and_connection_lifecycle() {
         let mut seats = SeatTable::from_test_session_id([6; 16]);
         let remote = seats
             .admit_or_reclaim(
@@ -1590,10 +1682,14 @@ mod tests {
                 RosterEntry {
                     seat: 0,
                     connected: true,
+                    name: String::new(),
+                    status: 0,
                 },
                 RosterEntry {
                     seat: remote.0,
                     connected: true,
+                    name: "Runner".to_string(),
+                    status: 0,
                 },
             ]
         );
@@ -1610,6 +1706,106 @@ mod tests {
         assert!(
             !seats.roster_entries()[1].connected,
             "a dropped seat remains rostered but is no longer connected"
+        );
+    }
+
+    // P19: a life state flipping every tick publishes status-only roster
+    // updates no faster than the interval; the final status and another seat's
+    // change each land within one interval; a lifecycle change publishes at once.
+    #[test]
+    fn status_only_roster_updates_respect_rate_limit() {
+        use crate::session_players::SeatStatus;
+        const TICK: Duration = Duration::from_micros(16_667);
+        let mut seats = SeatTable::from_test_session_id([0x19; 16]);
+        let flapping = seats.admit_or_reclaim(31, None, false).unwrap().seat;
+        let steady = seats.admit_or_reclaim(32, None, false).unwrap().seat;
+        assert!(seats.take_roster_dirty(), "admission publishes at once");
+
+        let mut publishes: Vec<Duration> = Vec::new();
+        let mut clock = Duration::ZERO;
+        let mut steady_status = SeatStatus::InPlay;
+        let mut steady_changed_at = None;
+        let mut steady_published_at = None;
+        for tick in 0..120u32 {
+            clock += TICK;
+            seats.advance_hold_clock(TICK);
+            if tick == 50 {
+                steady_status = SeatStatus::Down;
+                steady_changed_at = Some(clock);
+            }
+            let flapping_status = if tick % 2 == 0 {
+                SeatStatus::InPlay
+            } else {
+                SeatStatus::Down
+            };
+            seats.record_statuses(&[
+                (Seat(0), SeatStatus::InPlay),
+                (flapping, flapping_status),
+                (steady, steady_status),
+            ]);
+            if seats.take_roster_dirty() {
+                publishes.push(clock);
+                if steady_published_at.is_none()
+                    && steady_changed_at.is_some()
+                    && seats.roster_entries()[2].status == SeatStatus::Down.roster_code()
+                {
+                    steady_published_at = Some(clock);
+                }
+            }
+        }
+        for pair in publishes.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= STATUS_ROSTER_INTERVAL,
+                "status-only publications at {publishes:?} come faster than the interval"
+            );
+        }
+        assert!(publishes.len() >= 2, "the flapping state still publishes");
+        let steady_delay = steady_published_at.unwrap() - steady_changed_at.unwrap();
+        assert!(
+            steady_delay <= STATUS_ROSTER_INTERVAL,
+            "another seat's change reaches the roster within one interval, took {steady_delay:?}"
+        );
+
+        // The flapping stops on its final status (tick 119 recorded `Down`):
+        // the first publication at or after that tick lands within one interval.
+        let last_flip = clock;
+        for _ in 0..30 {
+            clock += TICK;
+            seats.advance_hold_clock(TICK);
+            seats.record_statuses(&[
+                (Seat(0), SeatStatus::InPlay),
+                (flapping, SeatStatus::Down),
+                (steady, steady_status),
+            ]);
+            if seats.take_roster_dirty() {
+                publishes.push(clock);
+            }
+        }
+        let settled_at = *publishes
+            .iter()
+            .find(|&&at| at >= last_flip)
+            .expect("the final status publishes");
+        assert!(settled_at - last_flip <= STATUS_ROSTER_INTERVAL);
+        assert_eq!(
+            seats.roster_entries()[1].status,
+            SeatStatus::Down.roster_code()
+        );
+
+        // Right after a publication, a status-only change waits; an admission
+        // publishes at once, carrying that status.
+        seats.advance_hold_clock(STATUS_ROSTER_INTERVAL);
+        seats.record_statuses(&[(flapping, SeatStatus::InPlay)]);
+        assert!(seats.take_roster_dirty());
+        seats.record_statuses(&[(flapping, SeatStatus::Down)]);
+        assert!(!seats.take_roster_dirty(), "a status-only change waits");
+        seats.admit_or_reclaim(33, None, false).unwrap();
+        assert!(
+            seats.take_roster_dirty(),
+            "an admission publishes without waiting out the interval"
+        );
+        assert_eq!(
+            seats.roster_entries()[1].status,
+            SeatStatus::Down.roster_code()
         );
     }
 
@@ -1650,6 +1846,8 @@ mod tests {
             vec![RosterEntry {
                 seat: 0,
                 connected: true,
+                name: String::new(),
+                status: 0,
             }],
             "expiry removes the held seat from the roster atomically with its state"
         );

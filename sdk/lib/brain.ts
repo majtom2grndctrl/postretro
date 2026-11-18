@@ -104,6 +104,17 @@ export interface BrainInputs {
    * clip did not resolve. Entity-wide: parent and nested rows read one value,
    * unlike `timeInActivityMs` (boolean). */
   readonly animationDone: RuntimeGuardNode;
+  /** A per-entry roll, uniform in [0, 1): drawn when the currently-evaluated
+   * activity was entered and fixed until it is left. Scope-relative like
+   * `timeInActivityMs`: each level, and its selectors, read their own roll,
+   * and every row at one level reads the same value (number). */
+  readonly activityRoll: RuntimeGuardNode;
+  /** Points drained from this enemy's defense layers and health since the
+   * currently-evaluated activity was entered, counting every damage producer,
+   * `applyDamage` included. Scope-relative like `timeInActivityMs`: each
+   * level, and its selectors, read their own sum, which resets to 0 when that
+   * level is entered (number). */
+  readonly damageInActivity: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -155,6 +166,8 @@ export const brain: BrainInputs = Object.freeze({
   damageSourceKnown: input("@brain.damageSourceKnown"),
   hasAttackTurn: input("@brain.hasAttackTurn"),
   animationDone: input("@brain.animationDone"),
+  activityRoll: input("@brain.activityRoll"),
+  damageInActivity: input("@brain.damageInActivity"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */
@@ -199,17 +212,33 @@ export function defense(
   });
 }
 
+/** The attack name a turn fact reads. Anything but an attack handle (a bare
+ * string, `undefined`, a stance) throws at the call, naming the fact. */
+function attackHandleName(fact: string, attack: unknown): string {
+  const handle = attack as { kind?: unknown; name?: unknown } | null;
+  if (handle !== null && typeof handle === "object" && handle.kind === "attack" && typeof handle.name === "string") {
+    return handle.name;
+  }
+  let found: string;
+  if (typeof attack === "string") found = `the bare string "${attack}"`;
+  else if (attack === null || attack === undefined) found = String(attack);
+  else if (typeof attack === "object") found = `a "${String(handle?.kind)}" handle`;
+  else found = `a ${typeof attack}`;
+  throw new TypeError(`${fact}(attack): expected an attack handle from defineAttack, got ${found}`);
+}
+
 /** `true` while the enemy holds a turn for `attack`, one of its archetype's
- * attacks, as of the previous tick. Naming another attack fails load. */
-export function attackTurnHeld(attack: string): RuntimeGuardNode {
-  return runtime.read("@attackTurnHeld." + attack) as RuntimeGuardNode;
+ * attacks, as of the previous tick. Naming another attack fails load. Reading
+ * it registers no attack. */
+export function attackTurnHeld(attack: import("postretro").Attack): RuntimeGuardNode {
+  return runtime.read("@attackTurnHeld." + attackHandleName("attackTurnHeld", attack)) as RuntimeGuardNode;
 }
 
 /** `true` when a request for `attack`, one of its archetype's attacks, would be
  * granted now against the previous tick's counts and reservations, leaving out
  * the enemy's own pending request. False with no target, and for an attack
  * sharing a token with a turn the enemy holds. Naming another attack fails
- * load. */
-export function attackTurnFree(attack: string): RuntimeGuardNode {
-  return runtime.read("@attackTurnFree." + attack) as RuntimeGuardNode;
+ * load. Reading it registers no attack. */
+export function attackTurnFree(attack: import("postretro").Attack): RuntimeGuardNode {
+  return runtime.read("@attackTurnFree." + attackHandleName("attackTurnFree", attack)) as RuntimeGuardNode;
 }

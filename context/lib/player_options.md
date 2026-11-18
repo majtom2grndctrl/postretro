@@ -13,9 +13,9 @@ Player options are settings (input preferences, accessibility scales). Game save
 | Store | Format | Lifecycle |
 |-------|--------|-----------|
 | Player options | TOML, human-editable | Persists across sessions; survives game save deletion |
-| Game saves | TBD (SQLite candidate) | Per-save-slot; separate spec |
+| Game saves | Versioned JSON, atomic writes (decided, not yet built) | Character, world and run files under the mod's data directory, with numbered character and run slots (`scripting.md` §5) |
 
-Do not merge these stores. The formats, lifecycles, and ownership are incompatible.
+Do not merge these stores. The formats, lifecycles, and ownership are incompatible. The last selected character and run belong to game saves, not to player options.
 
 ---
 

@@ -371,15 +371,23 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                         continue;
                     };
                     let previous_seat = session_status.local_seat();
-                    let (changed, open_seats) = netcode::apply_client_session_roster(
+                    let previous_open_seats = session_status.open_seats();
+                    let (_, open_seats) = netcode::apply_client_session_roster(
                         session_status,
                         &mut session.scripting.script_ctx.slot_table.borrow_mut(),
                         roster,
                     );
                     let local_seat = session_status.local_seat();
+                    session.session_players.apply_roster(
+                        session_status,
+                        &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                    );
                     let newly_assigned_seat = (previous_seat != local_seat)
                         .then_some(local_seat)
                         .flatten();
+                    // Status and name changes republish the roster; only a
+                    // changed seat count is worth a log line.
+                    let changed = previous_open_seats != Some(open_seats);
                     (changed, open_seats, newly_assigned_seat)
                 };
                 if let (Some(local_seat), Some(persisted)) =
@@ -12066,6 +12074,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         };
         let mut states = HashMap::new();
@@ -12363,6 +12374,9 @@ mod tests {
             crossfade_ms: DEFAULT_CROSSFADE_MS,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         };
         let mut states = HashMap::new();
@@ -12667,9 +12681,25 @@ mod tests {
             snapshot.get("player.assistReceivedProgress"),
             Some(&SlotValue::Number(0.0))
         );
+        // The session player counts default to 0 and are value-bearing.
+        assert_eq!(
+            snapshot.get("session.playerCounts.inPlay"),
+            Some(&SlotValue::Number(0.0))
+        );
+        // Every player-list row field has a default, so each row slot appears.
+        let list_slots: usize = postretro_entities::engine_state_catalog::engine_state_catalog()
+            .unwrap()
+            .lists()
+            .iter()
+            .map(|list| list.capacity * list.fields.len())
+            .sum();
+        assert_eq!(
+            snapshot.get("session.players.0.status"),
+            Some(&SlotValue::Enum("loading".to_string()))
+        );
         assert_eq!(
             snapshot.len(),
-            67,
+            72 + list_slots,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

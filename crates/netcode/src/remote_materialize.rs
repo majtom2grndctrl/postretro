@@ -376,6 +376,9 @@ mod tests {
                 crossfade_ms: 150.0,
                 interrupt: InterruptPolicy::Smooth,
                 travel_speed: None,
+                max_playback_rate: None,
+                scale_with_speed: true,
+                playback_rate: None,
                 clip_index: None,
             },
         );
@@ -1082,5 +1085,47 @@ mod tests {
             reg.has_component_kind(id, ComponentKind::PlayerMovement),
             Ok(false)
         );
+    }
+
+    // A remote enemy's mesh derives its zero-phase loops from the
+    // shared descriptor's graph, as the host's does: the client draws a
+    // repeating release's state from clip time 0 on entry, while its other
+    // loops keep the drawn phase. Nothing about it crosses the wire.
+    #[test]
+    fn a_remote_enemy_starts_a_repeating_releases_loop_at_phase_zero() {
+        let mut descriptor = enemy_mesh_descriptor("brute");
+        let mesh = descriptor.mesh.as_mut().unwrap();
+        let mut jab = mesh.animations["idle"].clone();
+        jab.clip = "jab_quick".to_string();
+        mesh.animations.insert("jab_quick".to_string(), jab);
+        descriptor.behavior = Some(
+            crate::scripting::builtins::data_archetype_test_fixtures::repeating_release_graph(
+                "jab_quick",
+            ),
+        );
+        let descriptors = vec![descriptor];
+        let mut reg = EntityRegistry::new();
+        let id = spawn_transform_only(&mut reg);
+        materialize_armed_remote_enemy(
+            &RemoteEntityMaterialize {
+                network_id: postretro_net::wire::NetworkId(9),
+                entity_id: id,
+                entity_class: "brute".to_string(),
+                initial_animation_state: Some("jab_quick".to_string()),
+                active_weapon_archetype: None,
+                weapon_attachment_changed: false,
+            },
+            &descriptors,
+            &mut reg,
+            None,
+        );
+        let animation = reg
+            .get_component::<MeshComponent>(id)
+            .expect("the remote enemy renders its mesh")
+            .animation
+            .clone()
+            .expect("animated");
+        assert_eq!(animation.loop_phase("jab_quick", 0.4), 0.0);
+        assert_eq!(animation.loop_phase("idle", 0.4), 0.4);
     }
 }

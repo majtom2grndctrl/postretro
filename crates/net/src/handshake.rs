@@ -56,7 +56,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C45; // "PRLE"
 /// player movement state's `assistable` bool, `assist_held` on
 /// `WireMovementInput`, and the local-pawn record's assist pair table and
 /// received required ticks.
-pub const WIRE_VERSION: u32 = 39;
+/// The roster entry's display name and status advance it to 40.
+pub const WIRE_VERSION: u32 = 40;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -311,6 +312,8 @@ mod tests {
             entries: vec![RosterEntry {
                 seat: 2,
                 connected: true,
+                name: String::new(),
+                status: 0,
             }],
         };
         let cases = [
@@ -674,13 +677,22 @@ mod tests {
         let entry = crate::wire::RosterEntry {
             seat: 4,
             connected: true,
+            name: String::new(),
+            status: crate::wire::roster_status::IN_PLAY,
         };
 
         // Exhaustive destructuring is the privacy drift guard for AC-ROSTER-2.
         // Any future field must be explicitly classified before it can cross
-        // the roster boundary.
-        let crate::wire::RosterEntry { seat, connected } = entry;
-        let _host_minted_or_observed = (seat, connected);
+        // the roster boundary. The display name is shown to every peer by
+        // design; the claim's player id, the rejoin key, never crosses.
+        let crate::wire::RosterEntry {
+            seat,
+            connected,
+            name,
+            status,
+        } = entry;
+        let _host_minted_or_observed = (seat, connected, status);
+        let _displayed_to_every_peer = name;
     }
 }
 
@@ -1060,7 +1072,7 @@ mod switch_tick_epoch_tests {
     #[test]
     fn assist_refuses_wire_38_peers_and_admits_wire_39() {
         const PRE_ASSIST_WIRE_VERSION: u32 = 38;
-        assert_eq!(WIRE_VERSION, 39);
+        const { assert!(WIRE_VERSION > PRE_ASSIST_WIRE_VERSION) };
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
         const {
             assert!(
@@ -1089,6 +1101,40 @@ mod switch_tick_epoch_tests {
             ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_ASSIST_WIRE_VERSION),
             "gate 1 refuses the pre-assist movement record before decode"
         );
+    }
+
+    /// The roster entry as shipped at wire 39, before its name and status.
+    #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+    struct PreNameRosterEntry {
+        seat: u16,
+        connected: bool,
+    }
+
+    // A wire-39 peer encodes a roster entry without its display name and
+    // status: the bump refuses it at both gates, and the shipped prefix no
+    // longer decodes as the current entry.
+    #[test]
+    fn roster_names_refuse_wire_39_peers_and_admit_wire_40() {
+        const PRE_ROSTER_NAME_WIRE_VERSION: u32 = 39;
+        assert_eq!(WIRE_VERSION, 40);
+        let old_peer = ProtocolVersion {
+            app_protocol_id: PROTOCOL_ID,
+            wire_version: PRE_ROSTER_NAME_WIRE_VERSION,
+        };
+        assert!(matches!(
+            validate_handshake(protocol_version(), old_peer),
+            Err(ClosingCause::Protocol { .. })
+        ));
+        assert_ne!(
+            transport_protocol_id(),
+            ((PROTOCOL_ID as u64) << 32) | u64::from(PRE_ROSTER_NAME_WIRE_VERSION),
+            "gate 1 refuses the name-free roster before decode"
+        );
+        let shipped = bitcode::encode(&vec![PreNameRosterEntry {
+            seat: 1,
+            connected: true,
+        }]);
+        assert!(bitcode::decode::<Vec<crate::wire::RosterEntry>>(&shipped).is_err());
     }
 
     /// The switch declaration as shipped at wire 25, before its client tick.
@@ -1265,5 +1311,82 @@ mod switch_tick_epoch_tests {
                 "appending the switch outcomes changed a shipped server Input tag"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod server_vocabulary_tests {
+    use super::*;
+    use crate::wire::{
+        PresentationCommand, ServerControlMessage, ServerMessage, ServerPresentationPayload,
+    };
+
+    // The server's message vocabulary, variant by variant, beside the
+    // constants that version it. A new server message changes the vocabulary,
+    // so it advances `PROTOCOL_ID`: each exhaustive match below (no `_` arm)
+    // stops compiling until whoever appends a variant lists it here and moves
+    // these pins with the bump. Enemy stances add none: rolls and hold
+    // release draws stay on the host, and clients follow poses through
+    // replicated animation state.
+    #[test]
+    fn server_message_vocabulary_is_pinned_with_its_version_constants() {
+        fn input(message: &ServerMessage) -> &'static str {
+            match message {
+                ServerMessage::TimeSync(_) => "TimeSync",
+                ServerMessage::ShotVerdicts(_) => "ShotVerdicts",
+                ServerMessage::ActivationOutcomes(_) => "ActivationOutcomes",
+                ServerMessage::WeaponCues(_) => "WeaponCues",
+                ServerMessage::HitRefused(_) => "HitRefused",
+                ServerMessage::SwitchAccepted(_) => "SwitchAccepted",
+                ServerMessage::SwitchRefused(_) => "SwitchRefused",
+            }
+        }
+        fn control(message: &ServerControlMessage) -> &'static str {
+            match message {
+                ServerControlMessage::Divergence(_) => "Divergence",
+                ServerControlMessage::Tuning(_) => "Tuning",
+                ServerControlMessage::Relevel { .. } => "Relevel",
+                ServerControlMessage::SessionRoster(_) => "SessionRoster",
+                ServerControlMessage::SpawnPoseHint(_) => "SpawnPoseHint",
+                ServerControlMessage::FinalCharacter { .. } => "FinalCharacter",
+            }
+        }
+        fn presentation(payload: &ServerPresentationPayload) -> &'static str {
+            match payload {
+                ServerPresentationPayload::Spawn { .. } => "Spawn",
+                ServerPresentationPayload::OverlayRoster(_) => "OverlayRoster",
+                ServerPresentationPayload::Command(command) => match command {
+                    PresentationCommand::PlaySound { .. } => "PlaySound",
+                    PresentationCommand::Rumble { .. } => "Rumble",
+                    PresentationCommand::FlashScreen { .. } => "FlashScreen",
+                    PresentationCommand::Vignette { .. } => "Vignette",
+                    PresentationCommand::ScreenShake { .. } => "ScreenShake",
+                },
+            }
+        }
+        assert_eq!(
+            input(&ServerMessage::SwitchAccepted(
+                crate::wire::ServerSwitchAccepted {
+                    declaration_id: 0,
+                    slot: 0,
+                }
+            )),
+            "SwitchAccepted"
+        );
+        assert_eq!(control(&ServerControlMessage::Tuning(Vec::new())), "Tuning");
+        assert_eq!(
+            presentation(&ServerPresentationPayload::Command(
+                PresentationCommand::Rumble {
+                    strong: 1.0,
+                    weak: None,
+                    duration_ms: 0.0,
+                }
+            )),
+            "Rumble"
+        );
+
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C45, "PROTOCOL_ID is still \"PRLE\"");
+        assert_eq!(WIRE_VERSION, 40);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
     }
 }

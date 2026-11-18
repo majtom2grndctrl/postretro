@@ -180,6 +180,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) billboard_direct_scatter_volume: Option<&'a BillboardDirectScatterVolumeSection>,
     pub(super) animated_billboard_direct_scatter_delta_volumes:
         Option<&'a AnimatedBillboardDirectScatterDeltaVolumesSection>,
+    /// `--whole-load-sh`: also write the bodies of ids 27/34/35/41/45.
+    pub(super) whole_load_sh: bool,
     pub(super) metadata: FinalizedClusterMetadata<'a>,
 }
 
@@ -232,6 +234,7 @@ pub(super) fn write_finalized_prl(
         animated_direct_sh_delta_volumes,
         billboard_direct_scatter_volume,
         animated_billboard_direct_scatter_delta_volumes,
+        whole_load_sh,
         metadata:
             FinalizedClusterMetadata {
                 portals,
@@ -286,5 +289,6 @@ pub(super) fn write_finalized_prl(
         animated_billboard_direct_scatter_delta_volumes,
         Some((sh_pack, &cluster_directory)),
         section_codec,
+        whole_load_sh,
     )
 }

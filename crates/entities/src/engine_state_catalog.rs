@@ -5,6 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::components::weapon::MAX_EFFECTIVE_SPREAD_DEGREES;
 use crate::components::weapon_resource::WEAPON_RESOURCE_KIND_NAMES;
+use crate::engine_state_collections::{
+    BUILTIN_ENGINE_STATE_FAMILIES, BUILTIN_ENGINE_STATE_LISTS, EngineStateFamily, EngineStateList,
+};
 use crate::slot_table::{
     NumericRange, ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
 };
@@ -84,7 +87,7 @@ impl EngineStateCatalogEntry<'_> {
 }
 
 impl EngineStateValueType<'_> {
-    fn slot_type(self) -> SlotType {
+    pub(crate) fn slot_type(self) -> SlotType {
         match self {
             Self::Number => SlotType::Number,
             Self::Boolean => SlotType::Boolean,
@@ -126,7 +129,7 @@ impl EngineStateValueType<'_> {
 }
 
 impl EngineStateDefault<'_> {
-    fn slot_value(self) -> Option<SlotValue> {
+    pub(crate) fn slot_value(self) -> Option<SlotValue> {
         match self {
             Self::None => None,
             Self::Number(value) => Some(SlotValue::Number(value)),
@@ -153,7 +156,17 @@ pub enum EngineStateCatalogError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineStateTreeNode {
     Object(BTreeMap<String, EngineStateTreeNode>),
-    Leaf { entry_index: usize },
+    Leaf {
+        entry_index: usize,
+    },
+    /// A node whose accessor reaches a family's members.
+    Family {
+        family_index: usize,
+    },
+    /// A list of rows, one per index up to its capacity.
+    List {
+        list_index: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,7 +183,9 @@ impl EngineStateTree {
     fn leaf_paths(&self) -> Vec<String> {
         fn collect(prefix: &mut Vec<String>, node: &EngineStateTreeNode, out: &mut Vec<String>) {
             match node {
-                EngineStateTreeNode::Leaf { .. } => out.push(prefix.join(".")),
+                EngineStateTreeNode::Leaf { .. }
+                | EngineStateTreeNode::Family { .. }
+                | EngineStateTreeNode::List { .. } => out.push(prefix.join(".")),
                 EngineStateTreeNode::Object(children) => {
                     for (segment, child) in children {
                         prefix.push(segment.clone());
@@ -195,12 +210,22 @@ impl EngineStateTree {
 #[derive(Clone, Debug)]
 pub struct EngineStateCatalog {
     entries: Vec<EngineStateCatalogEntry<'static>>,
+    families: &'static [EngineStateFamily<'static>],
+    lists: &'static [EngineStateList<'static>],
     tree: EngineStateTree,
 }
 
 impl EngineStateCatalog {
     pub fn entries(&self) -> &[EngineStateCatalogEntry<'static>] {
         &self.entries
+    }
+
+    pub fn families(&self) -> &'static [EngineStateFamily<'static>] {
+        self.families
+    }
+
+    pub fn lists(&self) -> &'static [EngineStateList<'static>] {
+        self.lists
     }
 
     pub fn tree(&self) -> &EngineStateTree {
@@ -219,17 +244,37 @@ impl EngineStateCatalog {
                 .or_default()
                 .push((slot_name.to_string(), entry.slot_record()));
         }
+        // List rows exist for the process's life, beside their namespace's
+        // entries. Family members are declared at run time instead.
+        for list in self.lists {
+            namespaces
+                .entry(list.sdk_path[0].to_string())
+                .or_default()
+                .extend(list.namespace_slots());
+        }
         namespaces.into_iter().collect()
     }
 }
 
 pub fn engine_state_catalog() -> Result<EngineStateCatalog, EngineStateCatalogError> {
-    EngineStateCatalog::from_entries(BUILTIN_ENGINE_STATE)
+    EngineStateCatalog::from_parts(
+        BUILTIN_ENGINE_STATE,
+        BUILTIN_ENGINE_STATE_FAMILIES,
+        BUILTIN_ENGINE_STATE_LISTS,
+    )
 }
 
 impl EngineStateCatalog {
     pub fn from_entries(
         entries: &[EngineStateCatalogEntry<'static>],
+    ) -> Result<Self, EngineStateCatalogError> {
+        Self::from_parts(entries, &[], &[])
+    }
+
+    pub fn from_parts(
+        entries: &[EngineStateCatalogEntry<'static>],
+        families: &'static [EngineStateFamily<'static>],
+        lists: &'static [EngineStateList<'static>],
     ) -> Result<Self, EngineStateCatalogError> {
         let mut sorted = entries.to_vec();
         sorted.sort_by(|left, right| {
@@ -237,9 +282,25 @@ impl EngineStateCatalog {
                 .cmp(right.sdk_path)
                 .then_with(|| left.wire_name.cmp(right.wire_name))
         });
-        let tree = validate_entries(&sorted)?;
+        let mut tree = validate_entries(&sorted)?;
+        for (family_index, family) in families.iter().enumerate() {
+            insert_collection_node(
+                &mut tree.root,
+                family.sdk_path,
+                EngineStateTreeNode::Family { family_index },
+            )?;
+        }
+        for (list_index, list) in lists.iter().enumerate() {
+            insert_collection_node(
+                &mut tree.root,
+                list.sdk_path,
+                EngineStateTreeNode::List { list_index },
+            )?;
+        }
         Ok(Self {
             entries: sorted,
+            families,
+            lists,
             tree,
         })
     }
@@ -319,7 +380,11 @@ fn insert_tree_path(
                         sdk_path: prefix.join("."),
                     });
                 }
-                Some(EngineStateTreeNode::Leaf { .. }) => {
+                Some(
+                    EngineStateTreeNode::Leaf { .. }
+                    | EngineStateTreeNode::Family { .. }
+                    | EngineStateTreeNode::List { .. },
+                ) => {
                     return Err(EngineStateCatalogError::DuplicateSdkPath {
                         sdk_path: prefix.join("."),
                     });
@@ -337,7 +402,9 @@ fn insert_tree_path(
                 .or_insert_with(|| EngineStateTreeNode::Object(BTreeMap::new()));
             match node {
                 EngineStateTreeNode::Object(next) => children = next,
-                EngineStateTreeNode::Leaf { .. } => {
+                EngineStateTreeNode::Leaf { .. }
+                | EngineStateTreeNode::Family { .. }
+                | EngineStateTreeNode::List { .. } => {
                     return Err(EngineStateCatalogError::LeafObjectPathCollision {
                         sdk_path: prefix.join("."),
                     });
@@ -345,6 +412,43 @@ fn insert_tree_path(
             }
         }
     }
+    Ok(())
+}
+
+/// Place a family or list node at `path`, which must be free: a collection
+/// node owns its whole subtree.
+fn insert_collection_node(
+    root: &mut BTreeMap<String, EngineStateTreeNode>,
+    path: &[&str],
+    node: EngineStateTreeNode,
+) -> Result<(), EngineStateCatalogError> {
+    let sdk_path = path.join(".");
+    let Some((last, parents)) = path.split_last() else {
+        return Err(EngineStateCatalogError::InvalidSdkPathSegment {
+            wire_name: sdk_path,
+            segment: String::new(),
+        });
+    };
+    if let Some(segment) = path.iter().find(|segment| !is_valid_sdk_segment(segment)) {
+        return Err(EngineStateCatalogError::InvalidSdkPathSegment {
+            wire_name: sdk_path,
+            segment: (*segment).to_string(),
+        });
+    }
+    let mut children = root;
+    for segment in parents {
+        let next = children
+            .entry((*segment).to_string())
+            .or_insert_with(|| EngineStateTreeNode::Object(BTreeMap::new()));
+        match next {
+            EngineStateTreeNode::Object(grandchildren) => children = grandchildren,
+            _ => return Err(EngineStateCatalogError::LeafObjectPathCollision { sdk_path }),
+        }
+    }
+    if children.contains_key(*last) {
+        return Err(EngineStateCatalogError::DuplicateSdkPath { sdk_path });
+    }
+    children.insert((*last).to_string(), node);
     Ok(())
 }
 
@@ -368,6 +472,13 @@ const REFLECTION_QUALITY_VALUES: &[&str] = &["off", "low", "medium", "high", "ve
 /// Scene render resolution: Auto or an integer divisor of the surface. Same
 /// names as the `settings.toml` values. See `context/lib/player_options.md` §4.
 const RENDER_RESOLUTION_VALUES: &[&str] = &["auto", "native", "half", "third", "quarter"];
+
+/// Seat counts span the monotonic `u16` seat namespace, not the join cap: held
+/// seats can outnumber it.
+const PLAYER_COUNT_RANGE: NumericRange = NumericRange {
+    min: 0.0,
+    max: u16::MAX as f32 + 1.0,
+};
 
 const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
     // Accessibility preferences: engine-owned, readonly, always-live resolved
@@ -804,7 +915,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         sdk_path: &["session", "openSeats"],
         value_type: EngineStateValueType::Number,
         // Absence keeps the presentation hidden until an admitted client receives
-        // its first status-only roster publication.
+        // its first roster publication.
         default: EngineStateDefault::None,
         range: Some(NumericRange {
             min: 0.0,
@@ -840,6 +951,66 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         persist: false,
         capability: EngineStateCapability::Readonly,
         network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.connected",
+        sdk_path: &["session", "playerCounts", "connected"],
+        value_type: EngineStateValueType::Number,
+        // Seats loading, in play or down: every connected seat.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.loading",
+        sdk_path: &["session", "playerCounts", "loading"],
+        value_type: EngineStateValueType::Number,
+        // Connected seats with no live pawn a trigger stage has captured.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.inPlay",
+        sdk_path: &["session", "playerCounts", "inPlay"],
+        value_type: EngineStateValueType::Number,
+        // Seats whose live pawn the effective occupancy rule counts.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.down",
+        sdk_path: &["session", "playerCounts", "down"],
+        value_type: EngineStateValueType::Number,
+        // Seats whose live pawn the effective occupancy rule does not count.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.playerCounts.reconnecting",
+        sdk_path: &["session", "playerCounts", "reconnecting"],
+        value_type: EngineStateValueType::Number,
+        // Remote seats held after a disconnect.
+        // Host-computed each authoritative tick; 0 with no session level.
+        default: EngineStateDefault::Number(0.0),
+        range: Some(PLAYER_COUNT_RANGE),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::SharedGlobal,
     },
     EngineStateCatalogEntry {
         wire_name: "screen.flash",
@@ -1502,6 +1673,11 @@ mod tests {
                 "session.hostAddress",
                 "session.hosting",
                 "session.openSeats",
+                "session.playerCounts.connected",
+                "session.playerCounts.down",
+                "session.playerCounts.inPlay",
+                "session.playerCounts.loading",
+                "session.playerCounts.reconnecting",
                 "ui.textEntry",
                 "window.displayModeBitDepth",
                 "window.displayModeCanApply",
@@ -1687,6 +1863,22 @@ mod tests {
         assert_eq!(session_hosting.capability, EngineStateCapability::Readonly);
         assert_eq!(session_hosting.network, ReplicationScope::None);
         assert!(!session_hosting.persist);
+
+        // The player counts are the catalog's host-computed shared entries:
+        // every machine reads the host's values, 0 with no session level.
+        for name in ["connected", "loading", "inPlay", "down", "reconnecting"] {
+            let wire_name = format!("session.playerCounts.{name}");
+            let count = entries
+                .iter()
+                .find(|entry| entry.wire_name == wire_name)
+                .unwrap();
+            assert_eq!(count.sdk_path, &["session", "playerCounts", name]);
+            assert_eq!(count.value_type, EngineStateValueType::Number);
+            assert_eq!(count.default, EngineStateDefault::Number(0.0));
+            assert_eq!(count.capability, EngineStateCapability::Readonly);
+            assert_eq!(count.network, ReplicationScope::SharedGlobal);
+            assert!(!count.persist);
+        }
 
         let reload_active = entries
             .iter()
@@ -1928,15 +2120,28 @@ mod tests {
             ]
             .contains(&entry.wire_name)
             {
+                // The host computes these and every machine reads its values.
+                let expected = if HOST_COMPUTED_SHARED.contains(&entry.wire_name) {
+                    ReplicationScope::SharedGlobal
+                } else {
+                    ReplicationScope::None
+                };
                 assert_eq!(
-                    entry.network,
-                    ReplicationScope::None,
-                    "{} must stay local-only",
+                    entry.network, expected,
+                    "{} has the wrong replication scope",
                     entry.wire_name
                 );
             }
         }
     }
+
+    const HOST_COMPUTED_SHARED: &[&str] = &[
+        "session.playerCounts.connected",
+        "session.playerCounts.loading",
+        "session.playerCounts.inPlay",
+        "session.playerCounts.down",
+        "session.playerCounts.reconnecting",
+    ];
 
     #[test]
     fn swim_slots_are_readonly_per_player_and_read_dry_by_default() {

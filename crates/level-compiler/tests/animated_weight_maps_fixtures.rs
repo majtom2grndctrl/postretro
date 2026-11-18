@@ -239,6 +239,8 @@ fn fixture_keeps_script_and_kvp_animated_prl_slots_distinct() {
         .arg("-o")
         .arg(&output)
         .arg("--no-cache")
+        // Id 34 decodes whole below, so keep its body.
+        .arg("--whole-load-sh")
         .arg("--baked-root")
         .arg(out_dir.join("baked"))
         .current_dir(&ws)
@@ -386,6 +388,8 @@ fn mixed_fixture_light_indices_are_in_descriptor_buffer_bounds() {
         .arg("-o")
         .arg(&output)
         .arg("--no-cache")
+        // Id 34 decodes whole below, so keep its body.
+        .arg("--whole-load-sh")
         .arg("--baked-root")
         .arg(out_dir.join("baked"))
         .current_dir(&ws)
@@ -450,7 +454,12 @@ fn empty_script_membership_preserves_existing_lightmap_and_animated_sections() {
     let without_script_map = temp.path().join("without-script.map");
     std::fs::write(&without_script_map, &source).expect("write original fixture");
     let without_script = temp.path().join("without-script.prl");
-    prl_build_logged(&without_script_map, &without_script, &["--no-cache"]);
+    // Id 34 decodes whole below, so both bakes keep its body.
+    prl_build_logged(
+        &without_script_map,
+        &without_script,
+        &["--no-cache", "--whole-load-sh"],
+    );
 
     let script = temp.path().join("empty.ts");
     std::fs::write(
@@ -470,7 +479,11 @@ fn empty_script_membership_preserves_existing_lightmap_and_animated_sections() {
     let with_script_map = temp.path().join("with-script.map");
     std::fs::write(&with_script_map, with_script_source).expect("write scripted fixture");
     let with_script = temp.path().join("with-script.prl");
-    prl_build_logged(&with_script_map, &with_script, &["--no-cache"]);
+    prl_build_logged(
+        &with_script_map,
+        &with_script,
+        &["--no-cache", "--whole-load-sh"],
+    );
 
     for (prl, scripted) in [(&without_script, false), (&with_script, true)] {
         let bytes = std::fs::read(prl).expect("read compiled fixture");

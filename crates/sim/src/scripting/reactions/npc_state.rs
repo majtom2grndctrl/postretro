@@ -99,6 +99,9 @@ mod tests {
                         activities: std::collections::BTreeMap::from([(
                             "idle".to_string(),
                             postretro_foundation::BehaviorActivityDescriptor {
+                                pose: None,
+                                stagger_to: None,
+                                passes: None,
                                 sound: None,
                                 animation: Some("idle".to_string()),
                                 motion: Some(postretro_foundation::MotionVerb::Hold),
@@ -107,6 +110,7 @@ mod tests {
                                 facing: None,
                                 reposition: None,
                                 attack_turn: None,
+                                speed: None,
                                 layers: Default::default(),
                             },
                         )]),

@@ -917,6 +917,38 @@ mod tests {
         );
     }
 
+    // C1: the session counts, a player-list row field and an occupancy family
+    // member are engine-written: a script `setState` warns and changes nothing.
+    #[test]
+    fn engine_session_and_occupancy_slots_reject_script_writes() {
+        use postretro_entities::engine_state_collections::OCCUPANCY_FAMILY;
+        let ctx = ScriptCtx::new();
+        ctx.slot_table.borrow_mut().replace_family_members(
+            &OCCUPANCY_FAMILY,
+            &["hill".to_string()].into_iter().collect(),
+        );
+        let capture = LogCapture::start();
+        for (slot, value) in [
+            ("session.playerCounts.inPlay", serde_json::json!(4)),
+            ("session.players.0.present", serde_json::json!(true)),
+            ("session.players.0.status", serde_json::json!("down")),
+            ("occupancy.hill.occupants", serde_json::json!(2)),
+        ] {
+            let before = ctx.slot_table.borrow().get(slot).unwrap().value.clone();
+            write_state_slot_json(&ctx, slot, &value)
+                .expect("readonly JSON writes are refused without an error");
+            assert_eq!(
+                ctx.slot_table.borrow().get(slot).unwrap().value,
+                before,
+                "{slot} is unchanged"
+            );
+            capture.assert_logged_once(
+                Level::Warn,
+                &format!("[Scripting] setState: rejected write to readonly slot `{slot}`"),
+            );
+        }
+    }
+
     #[test]
     fn write_state_slot_json_returns_success_and_logs_readonly_refusal() {
         let ctx = context_with_readonly_slot();

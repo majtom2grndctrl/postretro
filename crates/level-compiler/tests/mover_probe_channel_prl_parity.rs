@@ -1,12 +1,20 @@
 //! A map with no movers, and a map whose movers change nothing in the probe data,
-//! emit no MoverProbeChannel (id 57) and pack byte-identical to the parent commit's compiler.
-//! A map whose every mover bakes `light_poses 2` packs byte-identical too but for id 57's epoch
-//! byte, and with mid poses every terminus state equals the parent's.
+//! emit no MoverProbeChannel (id 57) and pack byte-identical to the parent commit's compiler once
+//! its SH sections are upgraded (below). A map whose every mover bakes `light_poses 2` packs
+//! byte-identical too but for id 57's epoch byte, and with mid poses every terminus state equals
+//! the parent's.
 //!
 //! The parent writes id 57 at epoch 5. A two-pose section has no across block at any epoch and
 //! never reads the mean-and-variance depth rule or skips anything, so it is epoch 5's bytes with
-//! only its first byte changed. That byte is the one difference these tests allow: they relabel
-//! the parent's to the current epoch and compare everything else.
+//! only its first byte changed. These tests relabel the parent's to the current epoch.
+//!
+//! The parent also predates the SH body-presence field. It writes ids 27, 34, 35, 41 and 45 one
+//! version lower, with no flag and with their bodies, and id 50 records those versions. This
+//! compiler bakes `--whole-load-sh` here, so it writes the same bodies, and
+//! `sh_body::pre_flag::upgrade_pre_flag_prl` rewrites the parent's PRL into the current format:
+//! each version bumped, a present flag inserted, id 50's source versions moved, the container
+//! rewritten. With the epoch byte, those are the only differences these tests allow; everything
+//! else must match byte for byte, whole file included.
 //!
 //! Opt-in and `#[ignore]`: it runs a second compiler. A missing baseline fails the test, so a
 //! green run always means both maps were compared.
@@ -14,8 +22,9 @@
 //! Baseline: the mid-travel-poses brief's parent compiler, `prl-build` at 27c92488f, the commit
 //! that moved id 57 to epoch 5 while every mover still baked its two termini alone. It is named
 //! by `POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN`. Both compilers build the same map files from
-//! this checkout with the same flags, so no path differs between them. Build the binary there in
-//! this checkout, copy it out, then return (`development_guide.md` §Worktree builds):
+//! this checkout with the same flags, `--whole-load-sh` aside, so no path differs between them.
+//! Build the binary there in this checkout, copy it out, then return (`development_guide.md`
+//! §Worktree builds):
 //!
 //! ```text
 //! PARENT=27c92488f
@@ -41,6 +50,7 @@ use std::process::Command;
 use postretro_level_format::mover_probe_channel::{
     MOVER_PROBE_CHANNEL_EPOCH, MoverProbeChannelSection, PoseMark,
 };
+use postretro_level_format::sh_body::pre_flag::upgrade_pre_flag_prl;
 use postretro_level_format::{SectionId, read_container, read_section_data};
 use prl_build_support::REACH_VERIFY_ENV;
 
@@ -120,8 +130,9 @@ fn parity_maps(dir: &Path) -> Vec<PathBuf> {
 
 /// Compile `map` with `compiler` into `out` as the ship bake, `--release`: cold, and at high
 /// bake fidelity on this branch. The parent bakes every mover's own `light_bounces` cold, as
-/// `--release` does here, and takes `--release` as its own cold bake, so both name it.
-fn compile(compiler: &Path, map: &Path, out: &Path) -> PathBuf {
+/// `--release` does here, and takes `--release` as its own cold bake, so both name it. `extra`
+/// adds flags only one compiler knows.
+fn compile(compiler: &Path, map: &Path, out: &Path, extra: &[&str]) -> PathBuf {
     std::fs::create_dir_all(out).expect("create output directory");
     let prl = out
         .join(map.file_name().expect("map name"))
@@ -131,6 +142,7 @@ fn compile(compiler: &Path, map: &Path, out: &Path) -> PathBuf {
         .arg("-o")
         .arg(&prl)
         .args(["--release", "--no-tui", "--jobs", PARITY_JOBS])
+        .args(extra)
         .arg("--baked-root")
         .arg(out.join("baked"))
         .env(REACH_VERIFY_ENV, "0")
@@ -151,8 +163,72 @@ fn compile(compiler: &Path, map: &Path, out: &Path) -> PathBuf {
 /// The parent compiler's id-57 epoch: the same bytes, read under the through-base depth rule.
 const PARENT_EPOCH: u8 = 5;
 
-/// `prl` (the parent compiler's packed PRL) with id 57's epoch byte, the one difference these
-/// tests allow, rewritten to this branch's epoch. Fails unless the parent wrote [`PARENT_EPOCH`]
+/// This compiler's ship bake of `map`, with the SH bodies the parent always writes.
+fn compile_branch(map: &Path, out: &Path) -> PathBuf {
+    let branch = PathBuf::from(env!("CARGO_BIN_EXE_prl-build"));
+    compile(&branch, map, out, &["--whole-load-sh"])
+}
+
+/// The parent compiler's ship bake of `map`, read and upgraded to the current SH section format
+/// ([`upgrade_pre_flag_prl`]).
+fn compile_parent(baseline: &Path, map: &Path, out: &Path) -> Vec<u8> {
+    let prl = std::fs::read(compile(baseline, map, out, &[])).expect("read baseline PRL");
+    upgrade_pre_flag_prl(&prl).unwrap_or_else(|error| {
+        panic!(
+            "{}: upgrade the parent's pre-flag SH sections: {error}",
+            map.display()
+        )
+    })
+}
+
+/// Fails unless the two PRLs are byte-identical, naming each section that differs.
+fn assert_same_prl(label: &str, before: &[u8], after: &[u8]) {
+    if before == after {
+        return;
+    }
+    let table = |prl: &[u8]| {
+        let mut cursor = Cursor::new(prl);
+        let meta = read_container(&mut cursor).expect("read the container");
+        meta.sections
+            .iter()
+            .map(|entry| {
+                let data = read_section_data(&mut cursor, &meta, entry.section_id)
+                    .expect("read the section")
+                    .expect("a listed section");
+                (entry.section_id, entry.version, data)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (parent, branch) = (table(before), table(after));
+    let order = |sections: &[(u32, u16, Vec<u8>)]| {
+        sections
+            .iter()
+            .map(|(id, version, _)| (*id, *version))
+            .collect::<Vec<_>>()
+    };
+    let differing: Vec<u32> = parent
+        .iter()
+        .zip(&branch)
+        .filter(|(a, b)| a.2 != b.2)
+        .map(|(a, _)| a.0)
+        .collect();
+    panic!(
+        "{label}: packed PRL differs from the parent compiler's past the allowed differences: {} B \
+         against {} B, first difference at byte {:?}; table (id, version) {}; differing \
+         sections {differing:?}",
+        before.len(),
+        after.len(),
+        before.iter().zip(after).position(|(a, b)| a != b),
+        if order(&parent) == order(&branch) {
+            "matches".to_owned()
+        } else {
+            format!("{:?} against {:?}", order(&parent), order(&branch))
+        },
+    );
+}
+
+/// `prl` (the parent compiler's packed PRL, upgraded) with id 57's epoch byte rewritten to this
+/// branch's epoch. Fails unless the parent wrote [`PARENT_EPOCH`]
 /// there and every mover record stores two poses: only a two-pose section reads the same under
 /// both epochs' depth rules, since a blend between termini runs through the base under either.
 fn at_this_epoch(mut prl: Vec<u8>) -> Vec<u8> {
@@ -187,29 +263,14 @@ fn has_channel(prl: &Path) -> bool {
 #[ignore = "opt-in comparison: set POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN to the parent commit's prl-build"]
 fn maps_whose_movers_change_nothing_pack_byte_identical_to_the_parent_compiler() {
     let baseline = baseline_compiler();
-    let branch = PathBuf::from(env!("CARGO_BIN_EXE_prl-build"));
     let dir = tempfile::tempdir().expect("create output directory");
     let mut compared = 0;
     for map in parity_maps(dir.path()) {
-        let before = compile(&baseline, &map, &dir.path().join("parent"));
-        let after = compile(&branch, &map, &dir.path().join("branch"));
+        let before_bytes = compile_parent(&baseline, &map, &dir.path().join("parent"));
+        let after = compile_branch(&map, &dir.path().join("branch"));
         assert!(!has_channel(&after), "{}: no id 57", map.display());
-        let (before_bytes, after_bytes) = (
-            std::fs::read(&before).expect("read baseline PRL"),
-            std::fs::read(&after).expect("read compiled PRL"),
-        );
-        assert!(
-            before_bytes == after_bytes,
-            "{}: packed PRL differs from the parent compiler's: {} B against {} B, first \
-             difference at byte {:?}",
-            map.display(),
-            before_bytes.len(),
-            after_bytes.len(),
-            before_bytes
-                .iter()
-                .zip(&after_bytes)
-                .position(|(a, b)| a != b)
-        );
+        let after_bytes = std::fs::read(&after).expect("read compiled PRL");
+        assert_same_prl(&map.display().to_string(), &before_bytes, &after_bytes);
         compared += 1;
     }
     assert_eq!(compared, 2, "both parity maps compared");
@@ -228,13 +289,12 @@ const MOVER_MAPS: [&str; 3] = ["mover-closet", "mover-setpiece", "enemy-movers"]
 
 // Regression guard (`light_poses 2`): a mover baking its two termini alone
 // stores the parent's terminus states, so a map whose every mover sets the
-// key packs byte-identical to the parent compiler's, id 57's epoch byte
-// alone apart.
+// key packs byte-identical to the parent compiler's, id 57's epoch byte and
+// the SH sections' pre-flag format apart.
 #[test]
 #[ignore = "opt-in comparison: set POSTRETRO_MOVER_CHANNEL_PARITY_BASELINE_BIN to the parent commit's prl-build"]
 fn every_mover_at_light_poses_two_packs_byte_identical_to_the_parent_compiler() {
     let baseline = baseline_compiler();
-    let branch = PathBuf::from(env!("CARGO_BIN_EXE_prl-build"));
     let dir = tempfile::tempdir().expect("create output directory");
     let maps = dir.path().join("maps");
     std::fs::create_dir_all(&maps).expect("create maps directory");
@@ -244,11 +304,8 @@ fn every_mover_at_light_poses_two_packs_byte_identical_to_the_parent_compiler() 
                 .expect("read the dev map");
         let map = maps.join(format!("{name}-two-poses.map"));
         std::fs::write(&map, with_light_poses(&text, 2)).expect("write the map");
-        let before = at_this_epoch(
-            std::fs::read(compile(&baseline, &map, &dir.path().join("parent")))
-                .expect("read baseline PRL"),
-        );
-        let after = std::fs::read(compile(&branch, &map, &dir.path().join("branch")))
+        let before = at_this_epoch(compile_parent(&baseline, &map, &dir.path().join("parent")));
+        let after = std::fs::read(compile_branch(&map, &dir.path().join("branch")))
             .expect("read compiled PRL");
         assert!(
             channel_of(&after).is_some_and(|channel| channel
@@ -257,14 +314,7 @@ fn every_mover_at_light_poses_two_packs_byte_identical_to_the_parent_compiler() 
                 .all(|record| record.knots == [0.0, 1.0])),
             "{name}: every mover stores two poses"
         );
-        assert!(
-            before == after,
-            "{name}: packed PRL differs from the parent compiler's past id 57's epoch byte: {} B \
-             against {} B, first difference at byte {:?}",
-            before.len(),
-            after.len(),
-            before.iter().zip(&after).position(|(a, b)| a != b)
-        );
+        assert_same_prl(name, &before, &after);
     }
 }
 
@@ -290,21 +340,19 @@ fn mid_poses_keep_every_terminus_state_of_the_parent_compiler() {
     use std::collections::BTreeMap;
 
     let baseline = baseline_compiler();
-    let branch = PathBuf::from(env!("CARGO_BIN_EXE_prl-build"));
     let dir = tempfile::tempdir().expect("create output directory");
     for name in MOVER_MAPS {
         let map = workspace_root().join(format!("content/dev/maps/{name}.map"));
-        let read = |compiler: &Path, side: &str| {
-            let prl = compile(compiler, &map, &dir.path().join(side));
-            let bytes = std::fs::read(prl).expect("read the PRL");
-            let bytes = if side == "parent" {
-                at_this_epoch(bytes)
-            } else {
-                bytes
-            };
-            channel_of(&bytes).expect("id 57")
-        };
-        let (before, after) = (read(&baseline, "parent"), read(&branch, "branch"));
+        let before = channel_of(&at_this_epoch(compile_parent(
+            &baseline,
+            &map,
+            &dir.path().join("parent"),
+        )))
+        .expect("id 57");
+        let after = channel_of(
+            &std::fs::read(compile_branch(&map, &dir.path().join("branch"))).expect("read the PRL"),
+        )
+        .expect("id 57");
         let mid_poses: usize = after
             .mover_records
             .iter()

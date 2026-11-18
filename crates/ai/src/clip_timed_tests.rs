@@ -9,6 +9,12 @@ mod fixtures;
 #[path = "clip_timed_shipped_tests.rs"]
 mod shipped;
 
+#[path = "release_exit_tests.rs"]
+mod release_exit;
+
+#[path = "stance_lowering_tests.rs"]
+mod stance_lowering;
+
 use super::*;
 use crate::alloc_probe::AllocSnapshot;
 use crate::attack_turns::{AttackBudgets, BudgetTable, TokenBudget, attack_index};
@@ -603,6 +609,36 @@ fn fire15_a_loop_fires_once_per_entry_at_the_next_pass_from_its_drawn_phase() {
     );
 }
 
+// A fixed authored `playbackRate` (here 2.5×, as the combo's 0.8 s
+// `jab_quick` loop plays) runs clip time at that rate: the loop's moment comes
+// at the first pass from its drawn phase in clip time over the rate.
+#[test]
+fn a_loop_at_two_and_a_half_times_reaches_its_moment_at_clip_time_over_the_rate() {
+    const RATE: f32 = 2.5;
+    let mut scene = Scene::new(vec![looping("jab_quick", 0.8, &[("hit", 0.4)])]);
+    let graph = clip_graph(
+        "combo",
+        vec![("combo", act("jab_quick", Some(timed(JAB, "hit"))))],
+        vec![],
+        vec![(JAB, contact_attack(10.0))],
+    );
+    let enemy = scene.spawn(0, &graph, "combo");
+    let phase = instance_phase(enemy.to_raw(), 0.8);
+    // Clip time `phase + DT·RATE·k` crosses a pass exactly when game time
+    // `phase/RATE + DT·k` crosses one of the clip scaled by the rate.
+    let passes = loop_pass_ticks(phase / RATE, 0.4 / RATE, 0.8 / RATE, 240);
+    assert!(
+        passes.windows(2).all(|pair| pair[1] - pair[0] >= 19),
+        "fixture: one 0.32 s pass per ~19 ticks: {passes:?}"
+    );
+    let hits = scene.hits_with(240, |scene, tick| {
+        if tick > 0 {
+            scene.set_rate(enemy, RATE);
+        }
+    });
+    assert_eq!(hits, vec![passes[0]], "the first pass at 2.5×");
+}
+
 /// A projectile weapon whose action fires `shots` shots `wait_ms` apart.
 fn burst_weapon(name: &str, shots: usize, wait_ms: f32) -> EntityTypeDescriptor {
     let mut descriptor = projectile_weapon_descriptor(name, 4.0, 1.0, 300.0);
@@ -920,13 +956,14 @@ fn end4_a_parent_and_its_leaf_read_one_animation_done_on_a_tick() {
 // to the graph the runtime fires and leaves on.
 #[test]
 fn surf1_the_surface_example_jab_fires_at_hit_and_leaves_on_animation_done() {
-    const SOURCE: &str = r#"({ components: { behavior: {
+    // The jab is a handle as `defineAttack` builds it; this raw VM has no SDK.
+    const SOURCE: &str = r#"const jab = { kind: "attack", name: "jab", damage: 8, maxRange: 2, cooldownMs: 1200 };
+    ({ components: { behavior: {
         initial: "stalk",
         moveSpeed: 3,
-        attacks: { jab: { damage: 8, maxRange: 2, cooldownMs: 1200 } },
         activities: {
             stalk: { animation: "walk" },
-            jab: { animation: "attack_jab", action: { attack: "jab", at: "hit" } }
+            jab: { animation: "attack_jab", action: { attack: jab, at: "hit" } }
         },
         transitions: {
             stalk: [{ to: "jab", when: { op: "and",
@@ -1686,7 +1723,7 @@ fn clip_clock_steady_state_allocates_nothing() {
     scene
         .runtime
         .programs
-        .warn_unclipped_moments(&scene.reg, &scene.clips, &mut warned);
+        .warn_unclipped_moments(&scene.reg, &scene.clips, DT, &mut warned);
     let allocs = snapshot.allocs_since();
     drop(clock);
     assert!(!done);
@@ -1729,5 +1766,83 @@ fn clip_timed_wave_allocates_no_more_per_tick_than_an_untimed_one() {
     assert!(
         timed <= untimed,
         "clip-timed {timed:.1} vs untimed {untimed:.1} allocations per tick"
+    );
+}
+
+// C2 on the host: entering an activity whose clip already plays restarts
+// nothing. A stance's rest and hold share one state, and so does an unposed
+// sibling: moving among them never switches the mesh, never re-stamps its
+// entry, and the brain's clip time runs on.
+#[test]
+fn entering_an_activity_on_the_playing_clip_restarts_nothing() {
+    let posed = |attack: Option<&str>| {
+        let mut activity = act("smash_windup", None);
+        activity.pose = Some("overhead".to_string());
+        activity.attack_turn = attack.map(str::to_string);
+        activity
+    };
+    let graph = clip_graph(
+        "overhead",
+        vec![
+            ("overhead", posed(None)),
+            ("slam_overhead", posed(Some(JAB))),
+            ("glare", act("smash_windup", None)),
+        ],
+        vec![
+            ("overhead", vec![edge("slam_overhead", after_ms(100.0))]),
+            ("slam_overhead", vec![edge("glare", after_ms(200.0))]),
+            ("glare", vec![edge("overhead", after_ms(100.0))]),
+        ],
+        vec![(JAB, contact_attack(10.0))],
+    );
+    let mut scene = Scene::new(vec![one_shot("smash_windup", 4.0, &[])]);
+    let enemy = scene.spawn(0, &graph, "overhead");
+    scene.tick();
+    assert_eq!(mesh_state(&scene, enemy), "smash_windup");
+    let switches = scene
+        .reg
+        .get_component::<MeshComponent>(enemy)
+        .unwrap()
+        .animation
+        .as_ref()
+        .unwrap()
+        .switches
+        .get();
+    let stamp = enemy_anim_entered_at(&scene.reg, enemy);
+
+    let mut visited = vec![scene.state(enemy)];
+    let mut clip_time = scene.brain(enemy).clip_clock.time;
+    for _ in 0..20 {
+        scene.tick();
+        let state = scene.state(enemy);
+        if visited.last() != Some(&state) {
+            visited.push(state);
+        }
+        let now = scene.brain(enemy).clip_clock.time;
+        assert!(
+            (now - clip_time - f64::from(DT)).abs() < 1.0e-6,
+            "clip time runs on across `{}`: {clip_time} → {now}",
+            scene.state(enemy)
+        );
+        clip_time = now;
+        let animation = scene
+            .reg
+            .get_component::<MeshComponent>(enemy)
+            .unwrap()
+            .animation
+            .clone()
+            .unwrap();
+        assert_eq!(animation.current_state, "smash_windup");
+        assert_eq!(animation.switches.get(), switches, "no switch is drawn");
+        assert_eq!(
+            enemy_anim_entered_at(&scene.reg, enemy),
+            stamp,
+            "nor re-stamped"
+        );
+    }
+    assert_eq!(
+        visited,
+        ["overhead", "slam_overhead", "glare", "overhead"].map(String::from),
+        "the walk covers the hold, an unposed sibling and the rest"
     );
 }

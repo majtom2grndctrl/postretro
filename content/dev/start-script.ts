@@ -10,6 +10,7 @@ import {
   read,
   sentiment,
 } from "postretro";
+import { kingHill } from "./scripts/coop-hill";
 import { onStateCrossing } from "postretro/ui";
 import { armor, shield } from "./scripts/defenses";
 import { heavy, melee, ranged } from "./scripts/attack-tokens";
@@ -46,7 +47,12 @@ import { targetDummyEntity } from "./scripts/target-dummy";
 import { cyberpunkWarriorEntity } from "./scripts/cyberpunk-warrior";
 import { sciFiTrooperEntity } from "./scripts/sci-fi-trooper";
 import { referenceEnemyEntity } from "./scripts/reference-enemy";
-import { enemyRifleBurstEntity, enemyRifleEntity } from "./scripts/enemy-rifle";
+import { stanceSurfaceEntity } from "./scripts/stance-surface";
+import {
+  enemyRifleBurstEntity,
+  enemyRifleEntity,
+  enemyRifleLongEntity,
+} from "./scripts/enemy-rifle";
 import { limitatorEntity } from "./scripts/limitator";
 import { shadowHunterEntity } from "./scripts/shadow-hunter";
 import {
@@ -89,6 +95,7 @@ import {
   hud,
   hudTheme,
   openSeatsReadout,
+  playerListReadout,
   reloadMeterTree,
   revivingMeterTree,
   spreadReticle,
@@ -182,6 +189,7 @@ export default defineMod({
     xpReadout,
     ammoReadout,
     openSeatsReadout,
+    playerListReadout,
     spreadReticle,
     reloadMeterTree,
     bleedOutMeterTree,
@@ -242,7 +250,7 @@ export default defineMod({
     shieldBreak,
   ],
   triggerEvents: [...factionSentimentTriggerEvents, boosterPads],
-  stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats],
+  stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats, kingHill],
   // Registration lists each handle, as `stores` does; the default is one of
   // them, dealt by anything that names no type.
   defenseLayers: [shield, armor],
@@ -380,11 +388,15 @@ export default defineMod({
     cyberpunkWarriorEntity,
     sciFiTrooperEntity,
     referenceEnemyEntity,
+    // The Stances section of docs/scripting-reference.md as dev content: poses
+    // that telegraph a mix-up of strikes. `"classname" "stance_surface_brute"`; in no map.
+    stanceSurfaceEntity,
     // DEV FIXTURE: the damage-triangle playtest (scripts/damage-triangle.ts).
     shieldedEnemyEntity,
     arcRifleEntity,
     acidRifleEntity,
     enemyRifleEntity,
+    enemyRifleLongEntity,
     enemyRifleBurstEntity,
     limitatorEntity,
     // Fast melee skirmisher: `"classname" "shadow_hunter"`.

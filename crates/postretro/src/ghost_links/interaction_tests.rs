@@ -276,6 +276,9 @@ fn enemy(registry: &mut EntityRegistry, at: Vec3) -> EntityId {
             activities: BTreeMap::from([(
                 "watch".into(),
                 BehaviorActivityDescriptor {
+                    pose: None,
+                    stagger_to: None,
+                    passes: None,
                     sound: None,
                     animation: None,
                     // An engaging activity keeps its acquired target; speed 0
@@ -286,6 +289,7 @@ fn enemy(registry: &mut EntityRegistry, at: Vec3) -> EntityId {
                     facing: None,
                     reposition: None,
                     attack_turn: None,
+                    speed: None,
                     layers: BTreeMap::new(),
                 },
             )]),

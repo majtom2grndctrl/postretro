@@ -106,7 +106,11 @@ impl TriggerFireReport {
 /// across otherwise equivalent authoritative input orderings.
 #[derive(Debug, Default)]
 pub struct TriggerSystem {
-    occupants: BTreeMap<EntityId, BTreeSet<PlayerId>>,
+    occupants: crate::trigger_occupants::TriggerOccupants,
+    /// Counted occupants per volume after the last trigger stage, for the
+    /// dev-tools Triggers tab; filled only in dev-tools builds.
+    #[cfg(feature = "dev-tools")]
+    effective_counts: BTreeMap<EntityId, usize>,
     paired_enters: BTreeSet<(EntityId, PlayerId)>,
     warned_duplicate_players: HashSet<PlayerId>,
     direct_commands: crate::trigger_direct_commands::DirectCommandHandles,
@@ -137,6 +141,8 @@ impl TriggerSystem {
 
     pub fn clear(&mut self) {
         self.occupants.clear();
+        #[cfg(feature = "dev-tools")]
+        self.effective_counts.clear();
         self.paired_enters.clear();
         self.warned_duplicate_players.clear();
     }
@@ -145,7 +151,35 @@ impl TriggerSystem {
     /// whether the trigger was armed or its activation gate fired.
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub fn occupancy(&self, trigger: EntityId) -> usize {
-        self.occupants.get(&trigger).map_or(0, BTreeSet::len)
+        self.occupants.count(trigger)
+    }
+
+    /// After this tick's trigger stage: each volume the capture's counted
+    /// players occupy, with their pawns.
+    pub fn counted_volumes(
+        &mut self,
+        capabilities: &crate::sim::player_life::TriggerStageCapabilities,
+    ) -> Vec<(EntityId, Vec<EntityId>)> {
+        let volumes = self
+            .occupants
+            .counted_volumes(&capabilities.occupants, &capabilities.pawns);
+        #[cfg(feature = "dev-tools")]
+        {
+            self.effective_counts.clear();
+            self.effective_counts.extend(
+                volumes
+                    .iter()
+                    .map(|(volume, inside)| (*volume, inside.len())),
+            );
+        }
+        volumes
+    }
+
+    /// Counted occupants of `trigger` after the last trigger stage: raw
+    /// occupancy filtered by the effective rule, as `occupancy.tag` counts them.
+    #[cfg(feature = "dev-tools")]
+    pub fn counted_occupancy(&self, trigger: EntityId) -> usize {
+        self.effective_counts.get(&trigger).copied().unwrap_or(0)
     }
 
     /// The set of `(trigger, player)` pairs whose Enter gate has fired and whose
@@ -250,8 +284,7 @@ impl TriggerSystem {
             .copied()
             .filter(|trigger| bridge.aabb(*trigger).is_some())
             .collect();
-        self.occupants
-            .retain(|trigger, _| active_triggers.contains(trigger));
+        self.occupants.retain_triggers(&active_triggers);
         self.paired_enters
             .retain(|(trigger, _)| active_triggers.contains(trigger));
 
@@ -274,27 +307,13 @@ impl TriggerSystem {
             trigger.touch_reactivation_pending = false;
             let _ = registry.set_component(trigger_id, trigger.clone());
 
-            // Retain the authoritative occupancy set in place. The old path
-            // rebuilt, cloned, and unioned a BTreeSet for every trigger on every
-            // tick. Only players that actually leave need temporary storage.
-            let leaving_players = {
-                let occupants = self.occupants.entry(trigger_id).or_default();
-                let leaving_players: Vec<PlayerId> = occupants
-                    .iter()
-                    .copied()
-                    .filter(|player_id| {
-                        let Some((_, center, radius, half_height)) = player_capsules.get(player_id)
-                        else {
-                            return true;
-                        };
-                        !capsule_overlaps_aabb(*center, *radius, *half_height, aabb_min, aabb_max)
+            let leaving_players = self.occupants.take_leaving(trigger_id, |player_id| {
+                player_capsules
+                    .get(&player_id)
+                    .is_some_and(|&(_, center, radius, half_height)| {
+                        capsule_overlaps_aabb(center, radius, half_height, aabb_min, aabb_max)
                     })
-                    .collect();
-                for &player_id in &leaving_players {
-                    occupants.remove(&player_id);
-                }
-                leaving_players
-            };
+            });
 
             let mut edges: Vec<(PlayerId, TriggerEventEdge)> = leaving_players
                 .into_iter()
@@ -303,12 +322,7 @@ impl TriggerSystem {
             for (&player_id, &(_, center, radius, half_height)) in &player_capsules {
                 let overlapping =
                     capsule_overlaps_aabb(center, radius, half_height, aabb_min, aabb_max);
-                let entered = overlapping
-                    && self
-                        .occupants
-                        .entry(trigger_id)
-                        .or_default()
-                        .insert(player_id);
+                let entered = overlapping && self.occupants.enter(trigger_id, player_id);
                 let activated = match trigger.activation {
                     TriggerActivation::Touch => {
                         capabilities.permits_touch(player_id)
@@ -425,15 +439,7 @@ impl TriggerSystem {
         trigger: EntityId,
         alive_players: &HashSet<PlayerId>,
     ) -> Vec<PlayerId> {
-        self.occupants
-            .get(&trigger)
-            .map_or_else(Vec::new, |occupants| {
-                occupants
-                    .iter()
-                    .filter(|player| alive_players.contains(player))
-                    .copied()
-                    .collect()
-            })
+        self.occupants.effective(trigger, alive_players)
     }
 
     #[cfg(test)]
@@ -1750,6 +1756,9 @@ mod tests {
                 activities: std::collections::BTreeMap::from([(
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -1758,6 +1767,7 @@ mod tests {
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: Default::default(),
                     },
                 )]),

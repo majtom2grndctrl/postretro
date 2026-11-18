@@ -989,14 +989,15 @@ fn sh_sync_proof_with_lightmap_stream_loads_the_hinted_door_fixture_on_one_file(
 // Real map, owner-run: a coded bake and a `--section-codec raw` bake
 // of one map decode to identical texels, and the coded bake's streamed pairs
 // decode to exactly its all-resident payloads. Point `POSTRETRO_CODED_PRL` and
-// `POSTRETRO_RAW_PRL` at the two bakes and run with `--ignored`.
+// `POSTRETRO_RAW_PRL` at the two bakes and run with `--ignored`. SH loads in
+// the default mode, so default bakes (no SH bodies) load.
 #[test]
 #[ignore = "needs two bakes of one map; see the comment"]
 fn coded_sections_decode_identical_through_every_load_path() {
     let path = |var: &str| std::env::var(var).unwrap_or_else(|_| panic!("{var} names a baked PRL"));
     let (coded_path, raw_path) = (path("POSTRETRO_CODED_PRL"), path("POSTRETRO_RAW_PRL"));
     let load = |path: &str, mode| {
-        load_prl_with_modes_for_test(path, ShStreamingMode::Off, mode)
+        load_prl_with_modes_for_test(path, ShStreamingMode::Async, mode)
             .unwrap_or_else(|error| panic!("{path}: {error}"))
     };
     let coded = load(&coded_path, LightmapStreamingMode::AllResident);

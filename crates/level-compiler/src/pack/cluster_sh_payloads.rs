@@ -781,7 +781,7 @@ mod tests {
 
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
-            "f1332472349433222e23dd6c1df09032e75a5e75da99e6f21f23d26607639771"
+            "b389a38a41e5b23e358bcccca5621ba37c5a316ab4f2655e601446190e9e0d50"
         );
     }
 
@@ -819,7 +819,7 @@ mod tests {
         assert_eq!(directory.clusters.len(), 2);
         assert_eq!(
             blake3::hash(&bytes).to_hex().as_str(),
-            "5f85a2fcd1caa64b0a282b65e691ee2ce936fa95658a4ee82891cf9162f64ed8"
+            "bc0c0a4cdaec51d258f68a1a18b9cc6887a605f0a4961d14d83bd708ef8b4b63"
         );
     }
 

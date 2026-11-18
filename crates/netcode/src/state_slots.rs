@@ -22,8 +22,12 @@ use postretro_scripting_core::player_slots::{
 };
 
 #[cfg(test)]
+mod coop_activation_replication_test;
+#[cfg(test)]
 mod defense_slots_test;
 mod owner_source;
+#[cfg(test)]
+mod player_counts_test;
 #[cfg(test)]
 mod player_slot_lookup_test;
 mod resource_projection;
@@ -1560,6 +1564,25 @@ mod tests {
         )
     }
 
+    /// The catalog's host-computed shared engine slots, the session player counts.
+    fn engine_shared_slot_names() -> Vec<&'static str> {
+        postretro_entities::engine_state_catalog::engine_state_catalog()
+            .unwrap()
+            .entries()
+            .iter()
+            .filter(|entry| entry.network == ReplicationScope::SharedGlobal)
+            .map(|entry| entry.wire_name)
+            .collect()
+    }
+
+    /// Make the shared engine slots local, so a fixture observes only its own
+    /// replicated records.
+    fn localize_engine_shared_slots(table: &mut SlotTable) {
+        for name in engine_shared_slot_names() {
+            table.get_mut(name).unwrap().schema.network = ReplicationScope::None;
+        }
+    }
+
     /// A table with two replicated mod slots under one namespace plus the default
     /// owner-private engine player slots.
     fn table_with_replicated() -> SlotTable {
@@ -1675,6 +1698,11 @@ mod tests {
                 "player.reloadProgress",
                 "player.swimming",
                 "player.weaponCooldownMs",
+                "session.playerCounts.connected",
+                "session.playerCounts.down",
+                "session.playerCounts.inPlay",
+                "session.playerCounts.loading",
+                "session.playerCounts.reconnecting",
                 "net.alpha",
                 "net.bravo",
             ]
@@ -1684,9 +1712,9 @@ mod tests {
     }
 
     #[test]
-    fn default_table_has_player_owner_private_slots() {
+    fn default_table_has_player_owner_private_and_shared_count_slots() {
         // The default table's schema is exactly the owner-private engine player
-        // facts.
+        // facts and the host-computed shared session player counts.
         let table = SlotTable::new();
         let schema = build_test_schema(&table);
         let names: Vec<&str> = schema.entries().iter().map(|e| e.name.as_str()).collect();
@@ -1710,6 +1738,11 @@ mod tests {
                 "player.reloadProgress",
                 "player.swimming",
                 "player.weaponCooldownMs",
+                "session.playerCounts.connected",
+                "session.playerCounts.down",
+                "session.playerCounts.inPlay",
+                "session.playerCounts.loading",
+                "session.playerCounts.reconnecting",
             ]
         );
         assert!(!schema.to_net_schema().is_empty());
@@ -1764,8 +1797,12 @@ mod tests {
         let schema = build_test_schema(&table);
         let net = schema.to_net_schema();
         assert_eq!(net.fingerprint(), schema.fingerprint());
-        // Two mod slots plus every owner-private engine player slot.
-        assert_eq!(net.len(), 2 + PlayerSlot::ALL.len());
+        // Two mod slots, every owner-private engine player slot, and the
+        // shared engine slots.
+        assert_eq!(
+            net.len(),
+            2 + PlayerSlot::ALL.len() + engine_shared_slot_names().len()
+        );
         let alpha = net
             .descriptor(schema.id_for("net.alpha").expect("alpha descriptor exists"))
             .expect("alpha descriptor exists");
@@ -2026,6 +2063,7 @@ mod tests {
     /// slots are disabled so these round-trip tests cover exactly the two mod slots.
     fn shared_and_private_table() -> SlotTable {
         let mut table = SlotTable::new();
+        localize_engine_shared_slots(&mut table);
         for slot in PlayerSlot::ALL {
             table.get_mut(slot.name()).unwrap().schema.network = ReplicationScope::None;
         }
@@ -2064,6 +2102,7 @@ mod tests {
     /// the behavior harness observes exactly these mod-owned records.
     fn per_owner_currency_table() -> SlotTable {
         let mut table = SlotTable::new();
+        localize_engine_shared_slots(&mut table);
         for slot in PlayerSlot::ALL {
             table.get_mut(slot.name()).unwrap().schema.network = ReplicationScope::None;
         }
@@ -2105,7 +2144,8 @@ mod tests {
     /// sets this scope, so a plain `SlotTable::new()` carries it; both peers build
     /// this identically.
     fn owner_private_player_table() -> SlotTable {
-        let table = SlotTable::new();
+        let mut table = SlotTable::new();
+        localize_engine_shared_slots(&mut table);
         debug_assert_eq!(
             table.get("player.health").unwrap().schema.network,
             ReplicationScope::OwnerPrivatePlayer,
@@ -4038,6 +4078,7 @@ mod tests {
     /// owner source, so this fixture produces only the shared mod slot.
     fn net_fixture_table() -> SlotTable {
         let mut table = SlotTable::new();
+        localize_engine_shared_slots(&mut table);
         table.get_mut("player.health").unwrap().schema.network = ReplicationScope::None;
         table.get_mut("player.maxHealth").unwrap().schema.network = ReplicationScope::None;
 

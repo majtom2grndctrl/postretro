@@ -41,6 +41,8 @@ pub(super) fn run_mod_init_quickjs(
     source: &str,
     source_path: &str,
 ) -> Result<ModManifestResult, ScriptError> {
+    // One mod load: a stance below the co-op floor warns once across every entity.
+    let _floor_warnings = crate::data_descriptors::stance_floor_warning_scope();
     let ctx = JsContext::full(subsys.runtime()).map_err(|e| ScriptError::InvalidArgument {
         reason: format!("mod-init: failed to create context: {e}"),
     })?;
@@ -639,6 +641,8 @@ pub(super) fn run_mod_init_luau(
     source_path: &str,
     mod_root: &Path,
 ) -> Result<ModManifestResult, ScriptError> {
+    // One mod load: a stance below the co-op floor warns once across every entity.
+    let _floor_warnings = crate::data_descriptors::stance_floor_warning_scope();
     // The mod-init Luau VM gets a working `require` resolver rooted at the
     // mod root so start-script can pull in domain scripts.
     let lua = crate::luau::build_lua_state(primitives, None, Some(mod_root))?;

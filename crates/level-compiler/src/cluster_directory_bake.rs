@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "measurement helper; set POSTRETRO_CLUSTER_DRY_RUN_PRL"]
+    #[ignore = "measurement helper; set POSTRETRO_CLUSTER_DRY_RUN_PRL to a PRL baked with --whole-load-sh"]
     fn cluster_directory_threshold_dry_run_from_prl() {
         use postretro_level_format::animated_billboard_direct_scatter_delta_volumes::AnimatedBillboardDirectScatterDeltaVolumesSection;
         use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
@@ -624,7 +624,7 @@ mod tests {
         use std::io::Cursor;
 
         let path = std::env::var("POSTRETRO_CLUSTER_DRY_RUN_PRL")
-            .expect("POSTRETRO_CLUSTER_DRY_RUN_PRL must name a compiler-produced PRL");
+            .expect("POSTRETRO_CLUSTER_DRY_RUN_PRL must name a PRL baked with --whole-load-sh");
         let bytes = std::fs::read(path).unwrap();
         let mut cursor = Cursor::new(bytes);
         let meta = read_container(&mut cursor).unwrap();

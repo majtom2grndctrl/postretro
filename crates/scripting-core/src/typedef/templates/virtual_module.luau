@@ -80,6 +80,8 @@ export type PostretroUiModule = {
   ui: { createLocalState: (init: { [string]: any }) -> { scope: any, cells: any } },
   --- Expand a string cell into sorted visible subtrees keyed by cell value.
   Switch: (cell: LocalStateHandle<string>, map: { [string]: WidgetDescriptor }) -> {WidgetDescriptor},
+  --- Unroll a widget once per row of an engine list; rows show while present.
+  forEach: <Row>(list: StateList<Row>, build: (row: Row, i: number) -> WidgetDescriptor) -> {WidgetDescriptor},
   defineTheme: (theme: ThemeDefinition) -> DefinedTheme,
   getDesignTokens: (theme: DefinedTheme) -> DesignTokens,
   --- Build a state-crossing watcher: either a numeric threshold or a Bool predicate over live store slots, a fluent value such as `read(player.swimming)` or a raw `runtime.*` node. A predicate already true at registration only arms; it must return false, then true, to fire.
@@ -208,6 +210,10 @@ export type PostretroModule = {
   defineAttackToken: typeof(defineAttackToken),
   --- The SDK's attack token at the default budget; every mod has it.
   defaultToken: AttackToken,
+  --- Declare an attack; its handle carries its declaration.
+  defineAttack: typeof(defineAttack),
+  --- Declare a stance an attack begins or ends in.
+  defineStance: typeof(defineStance),
   --- Read a state ref into an expression value.
   read: typeof(read),
   --- Read whether the evaluated player (or local crossing's own pawn) is in an authored life state.
@@ -230,9 +236,9 @@ export type PostretroModule = {
   state: typeof(state),
   --- Build `@defense.<name>` guard input leaves for the brain's own layer.
   defense: typeof(defense),
-  --- Build an `@attackTurnHeld.<attack>` guard input leaf for one of the archetype's attacks.
+  --- Build an `@attackTurnHeld.<attack>` guard input leaf from one of the archetype's attack handles.
   attackTurnHeld: typeof(attackTurnHeld),
-  --- Build an `@attackTurnFree.<attack>` guard input leaf for one of the archetype's attacks.
+  --- Build an `@attackTurnFree.<attack>` guard input leaf from one of the archetype's attack handles.
   attackTurnFree: typeof(attackTurnFree),
   emitter: typeof(emitter),
   smokeEmitter: typeof(smokeEmitter),

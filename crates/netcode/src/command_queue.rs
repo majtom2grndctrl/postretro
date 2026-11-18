@@ -997,10 +997,9 @@ impl HostCommandQueues {
 /// (`sim::run_host_movement_tick`) consumes. Game-logic-owned selection: it routes
 /// each owner's resolved command through the `EntityId -> client_id` map and applies
 /// the deterministic gap policy per pawn. A pawn whose owner has never sent a command
-/// (and has no prior resolution) is omitted — its authoritative pose holds. This is
-/// the host's substitute for `local_movement_pawn`: every authoritative pawn is named
-/// explicitly, including the listen host's own pawn (which the caller appends
-/// separately with its locally-sampled input).
+/// (and has no prior resolution) is omitted — its authoritative pose holds. The list
+/// holds remote pawns only: the listen host's own pawn has no owner entry and moves
+/// in a separate call with its locally sampled input.
 ///
 /// This sampled-frame resolver is a test seam. Production uses
 /// [`crate::host_resolve_remote_commands_with_switches`], which applies timed switch

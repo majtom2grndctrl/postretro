@@ -50,6 +50,7 @@ pub mod probe_depth_tiles;
 pub mod push_forces;
 pub mod reflection_probes;
 pub mod sdf_atlas;
+pub mod sh_body;
 pub mod sh_pool_cost;
 pub mod sh_reconstruct;
 pub mod sh_volume;

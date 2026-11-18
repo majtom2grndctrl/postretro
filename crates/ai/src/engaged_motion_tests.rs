@@ -74,6 +74,7 @@ fn shoot_attack() -> BTreeMap<String, AttackParams> {
             cooldown_ms: Some(100_000.0),
             engagement_radius: None,
             standoff_distance: None,
+            queue_range: None,
             damage_type: None,
             draws: None,
         },
@@ -220,6 +221,7 @@ fn strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass() {
                 Some(ActionVerb::Attack {
                     name: "shoot".to_string(),
                     at: None,
+                    at_default: false,
                 }),
             ),
         )],
@@ -551,6 +553,7 @@ fn reposition_graph(params: Option<RepositionParams>) -> BehaviorGraphDescriptor
                     Some(ActionVerb::Attack {
                         name: "shoot".to_string(),
                         at: None,
+                        at_default: false,
                     }),
                 ),
             ),
@@ -1119,8 +1122,9 @@ fn activity_facing_policy_overrides_verb_default() {
 fn existing_verbs_face_as_before_without_facing() {
     for verb in MotionVerb::ALL {
         let expected = match verb {
-            // Engaged pursuit faces its travel while it moves.
-            MotionVerb::ChaseTarget => FACES_TRAVEL,
+            // Engaged pursuit faces its travel while it moves, and a leap
+            // faces as a chase does.
+            MotionVerb::ChaseTarget | MotionVerb::Leap => FACES_TRAVEL,
             // Position goals face travel.
             MotionVerb::MoveToAnchor | MotionVerb::MoveToLastKnown | MotionVerb::Patrol => {
                 FACES_TRAVEL
@@ -1292,6 +1296,7 @@ fn actionless_engaged_slot_verbs_yield_to_rest_animation_at_standstill() {
                         Some(ActionVerb::Attack {
                             name: "shoot".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                     ),
                 ),

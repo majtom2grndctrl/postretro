@@ -9,6 +9,7 @@ use crate::registry::{ComponentKind, ComponentValue, EntityId, EntityRegistry, T
 
 /// Record one landed hit in the damaged entity's brain, when it has one.
 /// Called only for hits on a live target, so the lethal hit freezes perception.
+/// `amount` is the hit's points dealt: layer-absorbed plus health loss.
 pub(crate) fn record_damage_perception(
     registry: &mut EntityRegistry,
     id: EntityId,
@@ -22,6 +23,9 @@ pub(crate) fn record_damage_perception(
         registry.get_component_value_mut(id, ComponentKind::Brain)
     {
         brain.time_since_damage_ms = 0.0;
+        // Every producer reaches this chokepoint, so the per-activity sum
+        // counts hitscan, projectile, splash, melee and `applyDamage` alike.
+        brain.record_damage_in_activity(amount);
         // A concrete attacker is valuable even when it lacks a transform: the
         // per-candidate ledger is identity-based, while bearing/last-known
         // position below deliberately require spatial provenance. Contextless

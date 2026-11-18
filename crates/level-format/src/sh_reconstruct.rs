@@ -8,7 +8,7 @@ use crate::delta_sh_volumes::{AFFINITY_FACTOR, PROBES_PER_CELL};
 /// Affinity factor as `usize` — a 4×4×4 brick edge (= one affinity cell).
 const AF: usize = AFFINITY_FACTOR as usize; // 4
 
-/// Largest power-of-two brick-node scale represented by the v11 base wire.
+/// Largest power-of-two brick-node scale represented by the node-aware base wire.
 pub const MAX_NODE_SCALE: u8 = 3;
 
 /// An octahedral interior tile: `interior*interior` RGB texels.
@@ -312,7 +312,7 @@ pub fn stored_brick_prefix_sum(
     )
 }
 
-/// Whole-grid stored-tile prefix sum for the node-aware v11 base contract.
+/// Whole-grid stored-tile prefix sum for the node-aware base contract.
 ///
 /// Every brick carries its containing node's level and scale. A node is an
 /// aligned cube of `2^scale` bricks. Its stored set is charged to the aligned

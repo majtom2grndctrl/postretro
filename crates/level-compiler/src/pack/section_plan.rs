@@ -4,6 +4,7 @@
 use postretro_level_format::cluster_directory::{ClusterDirectorySection, ShMandatoryBoundEntry};
 use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::probe_depth_tiles::{ProbeDepthTilesSection, moment_sign_bit_set};
+use postretro_level_format::sh_body::ShBodyPresence;
 
 use super::*;
 
@@ -90,6 +91,20 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     /// Id 58, present when id 22 has blocks and id 51 is emitted.
     pub(super) lightmap_pool_bound: Option<LightmapPoolBoundSection>,
     pub(super) cluster_payload: Option<super::cluster_sh_payloads::ClusterPayloadSpool>,
+    /// `--whole-load-sh`. See [`legacy_sh_body`].
+    pub(super) whole_load_sh: bool,
+}
+
+/// Body presence for ids 27, 34, 35, 41 and 45. Only the whole-load path
+/// (`POSTRETRO_SH_STREAMING=off`, or a PRL without id 50) reads the bodies;
+/// streaming takes that payload from id 50. So the bodies are omitted unless
+/// `--whole-load-sh` asks for them, and always written when no id 50 is.
+pub(super) fn legacy_sh_body(emits_cluster_payload: bool, whole_load_sh: bool) -> ShBodyPresence {
+    if emits_cluster_payload && !whole_load_sh {
+        ShBodyPresence::Omitted
+    } else {
+        ShBodyPresence::Present
+    }
 }
 
 /// Fail the build on the id-34 and id-59 contents the loader refuses: a valid
@@ -170,10 +185,12 @@ pub(super) fn build_finalized_section_plan<'a>(
         sh_mandatory_bound,
         lightmap_pool_bound,
         cluster_payload,
+        whole_load_sh,
     } = inputs;
 
-    let sh_volume_len = sh_volume.try_byte_len().map_err(|error| {
-        anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
+    let sh_body = legacy_sh_body(cluster_payload.is_some(), whole_load_sh);
+    let sh_volume_len = sh_volume.try_byte_len_with_body(sh_body).map_err(|error| {
+        anyhow::anyhow!("OctahedralShVolume violates its wire contract: {error}")
     })?;
     let has_usable_direct_sh_deltas = direct_sh_delta_volumes.is_some();
     let mut sections = Vec::new();
@@ -241,9 +258,9 @@ pub(super) fn build_finalized_section_plan<'a>(
         SectionId::OctahedralShVolume as u32,
         1,
         sh_volume_len,
-        || {
-            sh_volume.try_to_bytes().map_err(|error| {
-                anyhow::anyhow!("OctahedralShVolume violates its v11 wire contract: {error}")
+        move || {
+            sh_volume.try_to_bytes_with_body(sh_body).map_err(|error| {
+                anyhow::anyhow!("OctahedralShVolume violates its wire contract: {error}")
             })
         },
     ));
@@ -261,15 +278,15 @@ pub(super) fn build_finalized_section_plan<'a>(
         |writer| Ok(lightmap.write_to(writer)?),
     ));
     if let Some(section) = direct_sh_volume {
-        let len = section.try_byte_len().map_err(|error| {
+        let len = section.try_byte_len_with_body(sh_body).map_err(|error| {
             anyhow::anyhow!("DirectShVolume violates its wire contract: {error}")
         })?;
         sections.push(PlannedSection::new(
             SectionId::DirectShVolume as u32,
             1,
             len,
-            || {
-                section.try_to_bytes().map_err(|error| {
+            move || {
+                section.try_to_bytes_with_body(sh_body).map_err(|error| {
                     anyhow::anyhow!("DirectShVolume violates its wire contract: {error}")
                 })
             },
@@ -290,8 +307,8 @@ pub(super) fn build_finalized_section_plan<'a>(
             sections.push(PlannedSection::new(
                 SectionId::DirectShDeltaVolumes as u32,
                 1,
-                section.byte_len(),
-                || Ok(section.to_bytes()),
+                section.byte_len_with_body(sh_body),
+                move || Ok(section.to_bytes_with_body(sh_body)),
             ));
         }
     }
@@ -375,20 +392,20 @@ pub(super) fn build_finalized_section_plan<'a>(
         sections.push(PlannedSection::new(
             SectionId::DeltaShVolumes as u32,
             1,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
+            section.byte_len_with_body(sh_body),
+            move || Ok(section.to_bytes_with_body(sh_body)),
         ));
     }
     if let Some(section) = animated_direct_sh_delta_volumes {
-        let len = section.try_byte_len().map_err(|error| {
+        let len = section.try_byte_len_with_body(sh_body).map_err(|error| {
             anyhow::anyhow!("AnimatedDirectShDeltaVolumes violates its wire contract: {error}")
         })?;
         sections.push(PlannedSection::new(
             SectionId::AnimatedDirectShDeltaVolumes as u32,
             1,
             len,
-            || {
-                section.try_to_bytes().map_err(|error| {
+            move || {
+                section.try_to_bytes_with_body(sh_body).map_err(|error| {
                     anyhow::anyhow!(
                         "AnimatedDirectShDeltaVolumes violates its wire contract: {error}"
                     )

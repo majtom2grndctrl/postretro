@@ -93,15 +93,17 @@ fn luau_retired_free_verbs_and_world_are_absent() {
     let value = luau_fixture_value(
         r#"
         local Postretro = require("postretro")
+        -- Strict globals raise on an undeclared read; probe the SDK globals.
+        local function absent(name) return rawget(_G, name) == nil end
         return {
           moduleDamage = Postretro.damage == nil,
-          globalDamage = damage == nil,
-          enemies = enemies == nil and Postretro.enemies == nil,
-          spawner = spawner == nil and Postretro.spawner == nil,
-          armTrigger = armTrigger == nil and disarmTrigger == nil,
-          grants = grantHealth == nil and grantAmmo == nil and addSlot == nil,
-          onTriggerEvent = onTriggerEvent == nil,
-          world = world == nil and Postretro.world == nil,
+          globalDamage = absent("damage"),
+          enemies = absent("enemies") and Postretro.enemies == nil,
+          spawner = absent("spawner") and Postretro.spawner == nil,
+          armTrigger = absent("armTrigger") and absent("disarmTrigger"),
+          grants = absent("grantHealth") and absent("grantAmmo") and absent("addSlot"),
+          onTriggerEvent = absent("onTriggerEvent"),
+          world = absent("world") and Postretro.world == nil,
         }
         "#,
     );

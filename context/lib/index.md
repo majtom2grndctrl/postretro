@@ -16,7 +16,7 @@
 - **Testing** → `testing_guide.md`
 - **Asserting on log output / log capture in tests** → `testing_guide.md` §3 · entry point `crates/test-log-capture`
 - **Rendering pipeline / lighting** → `rendering_pipeline.md`
-- **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets / bounded SH pool / SH mandatory bound** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51: `build_pipeline.md` §PRL section IDs
+- **SH probe streaming / cluster residency / id-51 reach and lead L / cell-demand stage / read scheduling / streaming diagnostics and miss buckets / bounded SH pool / SH mandatory bound / whole-load SH bodies / `--whole-load-sh`** → `rendering_pipeline.md` §Cluster SH residency · ids 49/50/51, whole-load bodies: `build_pipeline.md` §PRL section IDs
 - **Probe depth visibility / Chebyshev weight and its floor / direction-aware probe visibility / probe depth tiles (id 59) / moment-texel tile reference / runtime tile-reference rewrite / probe-weight IP rules (Square Enix '372)** → `rendering_pipeline.md` §4 (Probe depth moments, Direction-aware probe visibility) · format, bake and selection: `build_pipeline.md` §PRL section IDs · IP: `context/research/gi-rtx-lite/ip-check.md` §Piece 2
 - **Lightmap/shadowmask residency / cell blocks / lightmap pool / bounded lightmap pool / lightmap pool bound / mask pool / vertex block table / lightmap miss policy / `POSTRETRO_LIGHTMAP_STREAMING` / shared SH+lightmap read issuer and drain budget** → `rendering_pipeline.md` §4 (Lightmap cell-block residency) · ids 22/42/51/58: `build_pipeline.md` §PRL section IDs
 - **Frame capture / offscreen readback / headless (surfaceless) rendering** → `rendering_pipeline.md` §7.8
@@ -49,6 +49,7 @@
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad / triggers / active pad / device family (glyph family by vendor id)** → `input.md`
 - **Remapping / rebinding / key bindings / author default bindings / manifest `input` block / command relevance / tap-hold activators / controls panel / rebind capture / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat, nested groups, tabs, scroll, glyphs, text-entry shortcuts)** → `player_options.md` §6 · `input.md` §2, §5, §7 · `ui.md` §4, §4.1
+- **Game saves / character, world and run slots / Continue and New game / `persist: "run"` / checkpoints / durable ledger document** (decided, not yet built) → `scripting.md` §5 · `networking.md` §Session-state ledger · checkpoint spawns: `entity_model.md` §7b
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2

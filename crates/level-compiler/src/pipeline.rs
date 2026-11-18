@@ -2313,6 +2313,7 @@ fn run_after_parsing(
         billboard_direct_scatter_volume: billboard_direct_scatter_volume_section.as_ref(),
         animated_billboard_direct_scatter_delta_volumes:
             animated_billboard_direct_scatter_delta_volumes_section.as_ref(),
+        whole_load_sh: args.whole_load_sh,
         metadata: finalized_cluster_metadata,
     })?;
     finish_stage(

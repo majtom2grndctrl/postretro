@@ -20,6 +20,19 @@ use serde::{Deserialize, Serialize};
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
 use postretro_foundation::{GroundRef, KnockbackResponse, NavAgentParams};
 
+/// A bound on where a path-following arrival may end: the agent counts its
+/// destination reached only once it also stands within `radius` (XZ) of
+/// `anchor`. An engaged chaser carries one so the destination's arrival band
+/// never parks it farther from its target than its combat slot stands.
+/// Host-only, rewritten by the AI pass every tick it sets a destination.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ArrivalLeash {
+    /// The point the agent must end near, in world space: the chase target.
+    pub anchor: Vec3,
+    /// The farthest XZ distance from `anchor` an arrival may end at.
+    pub radius: f32,
+}
+
 /// A pinned agent's walk out of a mover's course. Host-only.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PinEscape {
@@ -112,9 +125,19 @@ pub struct AgentComponent {
     /// this; it is a stored field so downstream steering uses the baked step
     /// the navmesh was eroded for.
     pub step_height: f32,
-    /// Top horizontal speed the steering system drives the agent at, in
-    /// world-units/sec. Passed to `attach_agent` at attach time.
+    /// The archetype's base top horizontal speed, in world-units/sec. Passed
+    /// to `attach_agent` at attach time and never rescaled: presentation on
+    /// every peer references this base value.
     pub move_speed: f32,
+    /// Multiplier the active behavior activity sets on `move_speed` for path
+    /// steering, written by the AI pass from its post-transition path each
+    /// tick; 1 when no activity on the path sets one. See
+    /// [`Self::steered_speed`].
+    #[serde(
+        default = "unit_activity_speed",
+        skip_serializing_if = "is_unit_activity_speed"
+    )]
+    pub activity_speed: f32,
     /// Live velocity (world space) the agent controller integrates and resolves
     /// each tick.
     pub velocity: Vec3,
@@ -160,6 +183,35 @@ pub struct AgentComponent {
     /// Where the agent is trying to go. `None` when idle (no destination set);
     /// the steering system plans a path to it when `Some`.
     pub destination: Option<Vec3>,
+    /// Bounds where an arrival at `destination` may end. `None` arrives
+    /// anywhere inside the destination's arrival band.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrival_leash: Option<ArrivalLeash>,
+    /// Set once a leashed arrival has held: the leash then lets go only
+    /// beyond its radius plus one arrival band, so a neighbour's shove past
+    /// the radius does not flip the agent back to moving. Host-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub leash_settled: bool,
+    /// The destination a leash was dropped for: stuck recovery fired while
+    /// the leash held the agent short, so it cannot get closer, and the
+    /// destination's arrival band alone decides until the destination moves
+    /// on. Host-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leash_waived_at: Option<Vec3>,
+    /// Seconds from this tick's steering until the agent should stand on
+    /// `destination`: a `leap`'s time to its clip moment, rewritten by the AI
+    /// pass every tick it sets one. Steering paces the agent to cover the
+    /// path left in the whole ticks left, never above [`Self::steered_speed`],
+    /// with no arrival easing and no arrival band: it arrives only on the
+    /// destination itself, which its last paced step lands on. `None` steers
+    /// at the steered speed. Host-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrive_in_s: Option<f32>,
+    /// The destination is a `leap`'s spot, with or without a deadline: its
+    /// steered speed is a cap that may be many times its stride, so crowding
+    /// and stuck recovery push it at its base `move_speed`. Host-only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paced: bool,
     /// The destination the current `path` was planned for. The steering tick
     /// replans when the live `destination` drifts beyond a threshold from THIS
     /// position (cumulative drift-from-the-plan, not the per-call delta), so a
@@ -225,6 +277,14 @@ pub struct AgentComponent {
     pub drift_wait_ticks: u32,
 }
 
+fn unit_activity_speed() -> f32 {
+    1.0
+}
+
+fn is_unit_activity_speed(value: &f32) -> bool {
+    *value == 1.0
+}
+
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
@@ -246,6 +306,7 @@ impl AgentComponent {
             height,
             step_height,
             move_speed,
+            activity_speed: 1.0,
             velocity: Vec3::ZERO,
             knockback_velocity: Vec3::ZERO,
             knockback: KnockbackResponse::default(),
@@ -264,6 +325,11 @@ impl AgentComponent {
             mandatory_waypoints: Vec::new(),
             waypoint_cursor: 0,
             destination: None,
+            arrival_leash: None,
+            leash_settled: false,
+            leash_waived_at: None,
+            arrive_in_s: None,
+            paced: false,
             planned_destination: None,
             replan_cooldown_ticks: 0,
             arrived: false,
@@ -294,6 +360,13 @@ impl AgentComponent {
             self.ground = GroundRef::Airborne;
         }
         true
+    }
+
+    /// Top horizontal speed of the agent's own steered travel this tick: the
+    /// base `move_speed` scaled by the active activity's `speed`. Knockback
+    /// is added after this cap and never scales with it.
+    pub fn steered_speed(&self) -> f32 {
+        self.move_speed * self.activity_speed
     }
 
     /// Whether the capsule rests on a walkable floor, static or mover.

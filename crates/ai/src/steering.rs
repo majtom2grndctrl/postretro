@@ -41,7 +41,8 @@ pub(super) fn position_goal_steering(
         | MotionVerb::Hold
         | MotionVerb::Freeze
         | MotionVerb::Strafe
-        | MotionVerb::Reposition => steering_for(motion),
+        | MotionVerb::Reposition
+        | MotionVerb::Leap => steering_for(motion),
     }
 }
 

@@ -7,14 +7,18 @@ use crate::clip_events::is_clip_event_name;
 use crate::data_descriptors::DescriptorError;
 
 /// `at` must name an event a clip could carry, so a typo rejects at load
-/// instead of never matching.
+/// instead of never matching. `atDefault` marks a defaulted `at`, so it
+/// needs one beside it.
 pub(super) fn validate_at_name(action: &ActionVerb, path: &str) -> Result<(), DescriptorError> {
-    let ActionVerb::Attack { at, .. } = action;
+    let ActionVerb::Attack { at, at_default, .. } = action;
     match at.as_deref() {
         Some(event) if !is_clip_event_name(event) => Err(DescriptorError::InvalidShape {
             reason: format!(
                 "`{path}.at` (\"{event}\") must name a clip event matching `[A-Za-z_][A-Za-z0-9_]*`"
             ),
+        }),
+        None if *at_default => Err(DescriptorError::InvalidShape {
+            reason: format!("`{path}.atDefault` marks a defaulted `at`, but `{path}.at` is absent"),
         }),
         _ => Ok(()),
     }
@@ -44,7 +48,10 @@ pub(super) fn imply_attack_turn(
     activity: &mut BehaviorActivityDescriptor,
     path: &str,
 ) -> Result<(), DescriptorError> {
-    let Some(ActionVerb::Attack { name, at: Some(_) }) = activity.action.as_ref() else {
+    let Some(ActionVerb::Attack {
+        name, at: Some(_), ..
+    }) = activity.action.as_ref()
+    else {
         return Ok(());
     };
     match activity.attack_turn.as_deref() {
@@ -101,13 +108,7 @@ mod tests {
     fn action_at_parses_and_round_trips_through_its_authored_shape() {
         let graph = load(jab_at_hit()).expect("`at` on an activity's own action loads");
         let jab = &graph.envelope.activities["jab"];
-        assert_eq!(
-            jab.action,
-            Some(ActionVerb::Attack {
-                name: "jab".to_string(),
-                at: Some("hit".to_string()),
-            })
-        );
+        assert_eq!(jab.action, Some(ActionVerb::attack_at("jab", "hit")));
 
         let json = serde_json::to_value(&graph).expect("the descriptor serializes");
         assert_eq!(
@@ -128,10 +129,7 @@ mod tests {
 
     #[test]
     fn action_without_at_serializes_as_the_bare_attack_shape() {
-        let action = ActionVerb::Attack {
-            name: "jab".to_string(),
-            at: None,
-        };
+        let action = ActionVerb::attack("jab");
         assert_eq!(
             serde_json::to_value(&action).unwrap(),
             serde_json::json!({ "attack": "jab" })
@@ -280,6 +278,51 @@ mod tests {
         }));
         assert!(
             error.contains("components.behavior.activities.stalk.animation"),
+            "{error}"
+        );
+    }
+
+    // Stance lowering's default-`at` marker rides inside the action object,
+    // serializes only when set, and binds the same implied mark as `at`.
+    #[test]
+    fn at_default_round_trips_beside_at_and_implies_the_same_mark() {
+        let graph = load(serde_json::json!({
+            "stalk": { "animation": "walk" },
+            "jab": {
+                "animation": "attack_jab",
+                "action": { "attack": "jab", "at": "hit", "atDefault": true }
+            }
+        }))
+        .expect("a defaulted `at` loads");
+        let jab = &graph.envelope.activities["jab"];
+        assert_eq!(
+            jab.action,
+            Some(ActionVerb::Attack {
+                name: "jab".to_string(),
+                at: Some("hit".to_string()),
+                at_default: true,
+            })
+        );
+        assert_eq!(jab.attack_turn.as_deref(), Some("jab"));
+        let json = serde_json::to_value(&graph).expect("serializes");
+        assert_eq!(
+            json["activities"]["jab"]["action"],
+            serde_json::json!({ "attack": "jab", "at": "hit", "atDefault": true })
+        );
+        assert_eq!(
+            serde_json::to_value(ActionVerb::attack_at("jab", "hit")).unwrap(),
+            serde_json::json!({ "attack": "jab", "at": "hit" }),
+            "an authored `at` serializes no marker"
+        );
+    }
+
+    #[test]
+    fn at_default_without_at_rejects_with_its_path() {
+        let error = rejection(serde_json::json!({
+            "stalk": { "animation": "attack_jab", "action": { "attack": "jab", "atDefault": true } }
+        }));
+        assert!(
+            error.contains("components.behavior.activities.stalk.action.atDefault"),
             "{error}"
         );
     }

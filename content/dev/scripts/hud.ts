@@ -8,6 +8,7 @@ import {
   bindState,
   defineTheme,
   defineUiTree,
+  forEach,
   getGameState,
   getDesignTokens,
   stateCompare,
@@ -162,6 +163,44 @@ export const openSeatsReadout = defineUiTree({
   name: "hud.openSeats",
   alwaysOn: true,
   tree: Tree({ anchor: "topLeft", offset: [24.0, 24.0] }, openSeats),
+});
+
+// The session's players, one row per seat: who is in, who is still loading,
+// and who is down. A row shows only while its seat is present, so single
+// player shows one row and an empty seat shows nothing.
+type PlayerRow = (typeof session.players)[number];
+
+const statusTag = (row: PlayerRow, status: "loading" | "down" | "reconnecting", content: string) =>
+  Text({
+    content,
+    color: status === "down" ? color.critical : color.warning,
+    font: font.hud.status,
+    fontSize: 14.0,
+    visibleWhen: stateEquals(row.status, status),
+  });
+
+const playerList = VStack(
+  { gap: spacing.hud.rowGap },
+  forEach(session.players, (p) =>
+    HStack({ gap: spacing.hud.gap }, [
+      Text({
+        content: "",
+        color: color.hud.text,
+        font: font.hud.status,
+        fontSize: 14.0,
+        bind: bindState(p.name),
+      }),
+      statusTag(p, "loading", "LOADING"),
+      statusTag(p, "down", "DOWN"),
+      statusTag(p, "reconnecting", "RECONNECTING"),
+    ]),
+  ),
+);
+
+export const playerListReadout = defineUiTree({
+  name: "hud.players",
+  alwaysOn: true,
+  tree: Tree({ anchor: "topLeft", offset: [24.0, 52.0] }, playerList),
 });
 
 // XP sits centered along the bottom edge, away from the health and ammo groups.

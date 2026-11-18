@@ -1254,6 +1254,9 @@ pub(crate) struct App {
     /// frame returns before them, until the leave's queued unload drains.
     /// Cleared by `unload_level`.
     level_stopped_by_session_end: bool,
+    /// The installed level is the frontend backdrop, whose pawn is never
+    /// harvested. Set at install, cleared at unload.
+    backdrop_installed: bool,
 
     /// A `hostSession` or `joinSession` press waiting for a left level's
     /// unload or an ended host's close, with what it captured when pressed.
@@ -2434,24 +2437,34 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        // Every exit path reaches here, `ui.exitToDesktop`, window close and
-        // the quit chord alike: a client leaves and a host ends first, so
-        // peers learn now rather than at their keepalive timeout, and the
-        // saves below run as single-player.
+        self.exit_saves_and_teardown();
+    }
+}
+
+impl App {
+    /// Leave or end any session, then save. A played level's seat-0 pawn is
+    /// harvested first, so the character saves the gear it holds now.
+    /// Saving before declarations commit and restore completes could replace
+    /// valid saves with defaults, which the save entry point refuses. The
+    /// leave or end makes every role single-player, and a client's leave
+    /// restored its own world, so this save never writes a host's values.
+    pub(crate) fn leave_end_and_save_for_exit(&mut self) {
+        self.harvest_seat_zero_for_save();
         self.leave_or_end_for_exit();
         if let Some(session) = self.session.as_mut() {
             session
                 .options_bridge
                 .flush_on_clean_exit(&session.player_options, session.settings_path.as_deref());
-        }
-
-        // Saving before declarations commit and restore completes could replace
-        // a valid state file with an empty or default-only snapshot. The leave
-        // or end above made every role single-player, and a client's leave
-        // restored its own world, so this save never writes a host's values.
-        if let Some(session) = self.session.as_mut() {
             let _ = crate::session::progress_save::save_world_and_character(session);
         }
+    }
+
+    fn exit_saves_and_teardown(&mut self) {
+        // Every exit path reaches here, `ui.exitToDesktop`, window close and
+        // the quit chord alike: a client leaves and a host ends first, so
+        // peers learn now rather than at their keepalive timeout, and the
+        // saves below run as single-player.
+        self.leave_end_and_save_for_exit();
 
         // Release the level's sound registry at teardown too, mirroring the
         // runtime level-unload path. Audio is session-owned.

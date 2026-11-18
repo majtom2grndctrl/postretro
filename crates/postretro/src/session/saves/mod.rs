@@ -3,13 +3,17 @@
 
 mod boot;
 mod rows;
+mod save_points;
 mod store;
 
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use boot::{BootInputs, load_save_slots};
 pub(crate) use rows::publish_save_rows;
+pub(crate) use save_points::{save_on_frontend_entry, save_on_level_start};
 pub(crate) use store::{
     boot_restore, boot_restore_with, collect_character_record, collect_world_and_run, reload_store,
     set_seat_zero_carry_from_selection,
@@ -37,6 +41,9 @@ pub(crate) struct SaveSlots {
     /// A run is active from Continue or `newRun` until the frontend is entered
     /// again; always, for a mod without a `saves` block.
     run_active: bool,
+    /// The catalog id Continue's level load is arriving at, until its level
+    /// start writes the run.
+    continue_arrival: Option<String>,
 }
 
 impl SaveSlots {
@@ -209,4 +216,68 @@ fn write_slot(path: &std::path::Path, slot: &mut SlotFile, document: LedgerDocum
             false
         }
     }
+}
+
+impl SaveSlots {
+    /// Record that Continue's own level load is arriving at `catalog_id`: its
+    /// level start keeps the run's checkpoint.
+    pub(crate) fn mark_continue_arrival(&mut self, catalog_id: &str) {
+        self.continue_arrival = Some(catalog_id.to_owned());
+    }
+
+    /// Whether this level start is Continue's own arrival at `catalog_id`.
+    fn take_continue_arrival(&mut self, catalog_id: &str) -> bool {
+        self.continue_arrival
+            .take()
+            .is_some_and(|arriving| arriving == catalog_id)
+    }
+
+    /// Write the selected run at a level start or checkpoint: the level it
+    /// reached, the checkpoint, its live run-scoped globals and sentiment, and
+    /// the save time. Everything else the run file held, unknown sections
+    /// included, is kept.
+    pub(crate) fn save_run_progress(
+        &mut self,
+        catalog_id: &str,
+        checkpoint: RunCheckpoint,
+        live: LedgerDocument,
+    ) -> bool {
+        let Some(previous) = self.selected_run().cloned() else {
+            return false;
+        };
+        let keep_checkpoint = matches!(checkpoint, RunCheckpoint::LevelStart)
+            && self.take_continue_arrival(catalog_id);
+        let checkpoint = match checkpoint {
+            RunCheckpoint::Set(name) => Some(name),
+            _ if keep_checkpoint => previous
+                .level
+                .as_ref()
+                .filter(|level| level.catalog_id == catalog_id)
+                .and_then(|level| level.checkpoint.clone()),
+            _ => None,
+        };
+        let run = previous.run.clone().map(|mut run| {
+            run.saved_at = postretro_sim::scripting::save_files::now_unix_seconds();
+            run
+        });
+        self.save_selected_run(LedgerDocument {
+            level: Some(postretro_sim::scripting::save_files::LevelRecord {
+                catalog_id: catalog_id.to_owned(),
+                checkpoint,
+            }),
+            run,
+            slots: live.slots,
+            faction_sentiment: live.faction_sentiment,
+            ..previous
+        })
+    }
+}
+
+/// What a run write does to the run's checkpoint.
+pub(crate) enum RunCheckpoint {
+    /// A level start clears the checkpoint, except Continue's own arrival,
+    /// which keeps it.
+    LevelStart,
+    /// A `checkpoint(name)` step.
+    Set(String),
 }

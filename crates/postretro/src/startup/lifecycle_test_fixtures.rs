@@ -255,6 +255,7 @@ pub(crate) fn test_app() -> App {
         active_level_source: None,
         active_level_host_named: false,
         level_stopped_by_session_end: false,
+        backdrop_installed: false,
         pending_entry: None,
         text_entry_field: None,
         join_facts: Default::default(),

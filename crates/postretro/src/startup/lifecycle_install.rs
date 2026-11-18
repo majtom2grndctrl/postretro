@@ -204,6 +204,7 @@ impl App {
         // (`loadLevel`, `restartLevel`, a host-named or launch level) installs
         // with the menu cleared. Counts are written before crossings initialize.
         let session_level = !self.frontend_menu_is_present();
+        self.backdrop_installed = !session_level;
         if let Some(session) = self.session.as_mut() {
             let script_ctx = &session.scripting.script_ctx;
             let client = match session.net_endpoint.as_ref() {

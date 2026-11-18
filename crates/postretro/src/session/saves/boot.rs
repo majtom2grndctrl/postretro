@@ -50,6 +50,7 @@ pub(crate) fn load_save_slots(inputs: BootInputs) -> SaveSlots {
         world: Some(read_slot(&inputs.dir.world_path())),
         selection: Selection::default(),
         run_active: false,
+        continue_arrival: None,
         declared: inputs.declared,
         dir: Some(inputs.dir.clone()),
     };

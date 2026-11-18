@@ -48,6 +48,8 @@ pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
 #[cfg(test)]
 mod revive_marker_surface_tests;
+#[cfg(test)]
+mod save_points_tests;
 pub(crate) mod session;
 pub(crate) mod settle_log;
 pub(crate) mod settling;

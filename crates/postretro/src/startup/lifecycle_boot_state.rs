@@ -255,17 +255,77 @@ impl App {
                     if self.level_is_installed_state() {
                         self.unload_level();
                     }
+                    self.save_on_level_start(&load);
                     self.begin_level_load(load);
                     return;
                 }
                 None => {
+                    let played = self.played_level_present();
                     self.cancel_beside_level_load();
                     self.abandon_level_load_for_frontend();
                     if self.level_is_installed_state() {
                         self.unload_level();
                     }
+                    self.save_on_frontend_entry(played);
                 }
             }
+        }
+    }
+
+    /// A level a session plays is installed: not a frontend backdrop.
+    pub(crate) fn played_level_present(&self) -> bool {
+        self.level_is_installed_state()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.session_players.session_level())
+    }
+
+    /// A level start on the host or in single player: a load beginning with
+    /// the frontend menu cleared, so never a backdrop. Runs after the unload's
+    /// harvest and life-state clear, before the next level installs.
+    fn save_on_level_start(&mut self, load: &crate::startup::InFlightLevelLoad) {
+        if self.frontend_menu_is_present()
+            || self.session_role() == crate::session::role_state::SessionRole::Client
+        {
+            return;
+        }
+        if let Some(session) = self.session.as_mut() {
+            crate::session::saves::save_on_level_start(session, load.entry.catalog_id.as_deref());
+        }
+    }
+
+    /// Harvest the live pawns into their seats' carry without unbinding
+    /// them, so a save point mid-level writes the loadout held now. Only a played level
+    /// on the host or in single player: a backdrop's pawn is never
+    /// harvested, and a client's carry comes from its host.
+    pub(crate) fn harvest_seat_zero_for_save(&mut self) {
+        if !self.played_level_present()
+            || self.session_role() == crate::session::role_state::SessionRole::Client
+        {
+            return;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let ctx = &session.scripting.script_ctx;
+        let registry = ctx.registry.borrow();
+        if let Some(seats) = session.seat_table.as_mut() {
+            // Every bound seat, as a level unload harvests: a host's guests
+            // then carry what they hold now too.
+            seats.harvest_bound_pawns(&registry, &ctx.data_registry.borrow().life_state_names);
+        }
+    }
+
+    /// The frontend is entered: the character and world save after a played
+    /// level unloads, and the run in play ends. A connected client saves its
+    /// character on its own path.
+    fn save_on_frontend_entry(&mut self, played: bool) {
+        if self.session_role() == crate::session::role_state::SessionRole::Client {
+            return;
+        }
+        if let Some(session) = self.session.as_mut() {
+            crate::session::saves::save_on_frontend_entry(session, played);
         }
     }
 

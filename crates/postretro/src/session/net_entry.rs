@@ -160,7 +160,17 @@ pub(crate) fn publish_boot_facts(
     if let Some(password) = cli_password {
         let live_host = matches!(&entry.endpoint, Some(netcode::NetEndpoint::Host { .. }));
         for slot in boot_password_slots(net_role, live_host) {
-            write(slot, SlotValue::String(password.to_string()));
+            // The error is never logged: a validation message could quote
+            // the value, and the password never reaches a log.
+            if postretro_scripting_core::store_bridge::write_store_slot(
+                script_ctx,
+                slot,
+                SlotValue::String(password.to_string()),
+            )
+            .is_err()
+            {
+                log::warn!("[Net] failed to seed `{slot}` from --password");
+            }
         }
     }
     let end_cause = match (

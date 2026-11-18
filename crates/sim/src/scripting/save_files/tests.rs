@@ -164,3 +164,82 @@ fn save_killed_before_rename_keeps_previous_file() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     assert_eq!(read_document(&path).unwrap(), Some(before));
 }
+
+fn world(value: f64) -> LedgerDocument {
+    LedgerDocument {
+        slots: BTreeMap::from([("kworld".into(), PersistedValue::Number(value))]),
+        ..LedgerDocument::default()
+    }
+}
+
+#[test]
+fn slot_files_live_under_the_mod_directory() {
+    let dir = SaveDir::new(std::path::Path::new("/data"), "dev");
+    assert_eq!(dir.character_path(2), std::path::Path::new("/data/dev/characters/2.json"));
+    assert_eq!(dir.run_path(0), std::path::Path::new("/data/dev/runs/0.json"));
+    assert_eq!(dir.world_path(), std::path::Path::new("/data/dev/world.json"));
+    assert_eq!(dir.selection_path(), std::path::Path::new("/data/dev/selection.json"));
+}
+
+#[test]
+fn unreadable_slot_reads_occupied_and_not_readable() {
+    let dir = tempfile::tempdir().unwrap();
+    let saves = SaveDir::new(dir.path(), "dev");
+    let future = saves.character_path(0);
+    std::fs::create_dir_all(future.parent().unwrap()).unwrap();
+    std::fs::write(&future, br#"{"version":999,"seats":[]}"#).unwrap();
+    let garbled = saves.character_path(1);
+    std::fs::write(&garbled, b"{ not json").unwrap();
+    let older = saves.run_path(0);
+    write_document(&older, &world(3.0)).unwrap();
+
+    for path in [&future, &garbled] {
+        let slot = read_slot(path);
+        assert_eq!(slot, SlotFile::Unreadable);
+        assert!(slot.is_occupied());
+        assert!(slot.document().is_none());
+    }
+    assert_eq!(read_slot(&saves.character_path(2)), SlotFile::Empty);
+    assert_eq!(read_slot(&older), SlotFile::Occupied(world(3.0)));
+
+    delete_slot(&future).unwrap();
+    assert_eq!(read_slot(&future), SlotFile::Empty);
+}
+
+#[test]
+fn slots_are_independent_and_delete_touches_one_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let saves = SaveDir::new(dir.path(), "dev");
+    let paths = [
+        saves.character_path(0),
+        saves.character_path(1),
+        saves.run_path(0),
+        saves.run_path(1),
+    ];
+    for (index, path) in paths.iter().enumerate() {
+        write_document(path, &world(index as f64)).unwrap();
+    }
+    let before: Vec<Vec<u8>> = paths.iter().map(|path| std::fs::read(path).unwrap()).collect();
+
+    write_document(&paths[1], &world(10.0)).unwrap();
+    delete_slot(&paths[2]).unwrap();
+
+    assert_eq!(std::fs::read(&paths[0]).unwrap(), before[0]);
+    assert_eq!(std::fs::read(&paths[3]).unwrap(), before[3]);
+    assert_eq!(read_slot(&paths[2]), SlotFile::Empty);
+    assert_eq!(read_slot(&paths[1]), SlotFile::Occupied(world(10.0)));
+}
+
+#[test]
+fn selection_round_trips_and_defaults_to_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = SaveDir::new(dir.path(), "dev").selection_path();
+    assert_eq!(read_selection(&path), Selection::default());
+
+    let selection = Selection { character: 2, run: -1 };
+    write_selection(&path, selection).unwrap();
+    assert_eq!(read_selection(&path), selection);
+
+    std::fs::write(&path, b"garbage").unwrap();
+    assert_eq!(read_selection(&path), Selection::default());
+}

@@ -26,7 +26,7 @@ const SEATS: &str = "seats";
 /// Each top-level key is a named section. A section this build does not know
 /// is kept as its raw bytes and written back unchanged, so a later section
 /// (revisited-map state, a host-migration handoff) needs no version bump.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct LedgerDocument {
     pub level: Option<LevelRecord>,
     pub run: Option<RunRecord>,
@@ -35,7 +35,8 @@ pub struct LedgerDocument {
     /// Directional faction sentiment, as `state.json` stores it.
     pub faction_sentiment: BTreeMap<String, BTreeMap<String, f32>>,
     pub seats: Vec<SeatRecord>,
-    unknown: BTreeMap<String, Box<RawValue>>,
+    /// Sections this build does not know, kept as their raw bytes.
+    pub unknown: BTreeMap<String, Box<RawValue>>,
 }
 
 /// The level a run last reached, and the checkpoint within it.
@@ -71,6 +72,22 @@ pub struct SeatRecord {
     pub per_owner: BTreeMap<String, PersistedValue>,
     #[serde(default)]
     pub loadout: LoadoutRecord,
+}
+
+impl PartialEq for LedgerDocument {
+    fn eq(&self, other: &Self) -> bool {
+        self.level == other.level
+            && self.run == other.run
+            && self.slots == other.slots
+            && self.faction_sentiment == other.faction_sentiment
+            && self.seats == other.seats
+            && self.unknown.len() == other.unknown.len()
+            && self
+                .unknown
+                .iter()
+                .zip(&other.unknown)
+                .all(|((a_name, a), (b_name, b))| a_name == b_name && a.get() == b.get())
+    }
 }
 
 impl LedgerDocument {

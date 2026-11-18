@@ -94,13 +94,27 @@ pub fn encode_plane(codec: BlockCodec, raw: &[u8]) -> Vec<u8> {
     }
 }
 
-/// [`encode_plane`] taking the raw plane by value: a raw plane is stored
-/// without a copy, a coded one drops its raw bytes once framed.
+/// [`encode_plane`] taking the raw plane by value: a raw or absent plane is
+/// stored without a copy, a coded one drops its raw bytes once framed.
 pub fn store_plane(codec: BlockCodec, raw: Vec<u8>) -> Vec<u8> {
     match codec {
-        _ if raw.is_empty() => raw,
-        BlockCodec::Raw => raw,
-        BlockCodec::Zstd => compress(&raw),
+        BlockCodec::Zstd if !raw.is_empty() => compress(&raw),
+        _ => raw,
+    }
+}
+
+/// Most bytes one stored zstd byte can decode to. A zstd block decodes to at
+/// most 128 KiB, and the smallest block that does, an RLE block, stores 4
+/// bytes: its 3-byte header and the repeated byte.
+const ZSTD_MAX_EXPANSION: u64 = 128 * 1024 / 4;
+
+/// The most bytes `stored_len` stored bytes can decode to under `codec`. A
+/// reader bounds a declared raw length by it before decoding allocates, so a
+/// corrupt length costs at most a fixed multiple of the bytes read.
+pub fn max_decoded_len(codec: BlockCodec, stored_len: usize) -> u64 {
+    match codec {
+        BlockCodec::Raw => stored_len as u64,
+        BlockCodec::Zstd => (stored_len as u64).saturating_mul(ZSTD_MAX_EXPANSION),
     }
 }
 
@@ -183,6 +197,21 @@ pub fn decode_plane_into(codec: BlockCodec, stored: &[u8], out: &mut [u8]) -> Re
     }
 }
 
+/// The checks [`decode_plane`] makes before it decodes, alone: a caller that
+/// allocates the decoded plane itself refuses a malformed frame before it
+/// allocates.
+pub fn check_stored_plane(codec: BlockCodec, stored: &[u8], raw_len: usize) -> Result<(), String> {
+    match codec {
+        _ if stored.is_empty() && raw_len == 0 => Ok(()),
+        BlockCodec::Raw if stored.len() != raw_len => Err(format!(
+            "raw plane is {} bytes, but its raw length is {raw_len}",
+            stored.len()
+        )),
+        BlockCodec::Raw => Ok(()),
+        BlockCodec::Zstd => check_zstd_frame(stored, raw_len),
+    }
+}
+
 fn decode_zstd(stored: &[u8], raw_len: usize) -> Result<Vec<u8>, String> {
     check_zstd_frame(stored, raw_len)?;
     let decoded = with_decompressor(|decompressor| {
@@ -215,11 +244,19 @@ fn decode_zstd_into(stored: &[u8], out: &mut [u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// One frame exactly, recording a checksum and a content size of `raw_len`.
+/// One frame exactly, recording a checksum and a content size of `raw_len`,
+/// which its stored bytes can decode to.
 fn check_zstd_frame(stored: &[u8], raw_len: usize) -> Result<(), String> {
     if stored.len() < 6 || u32::from_le_bytes(stored[..4].try_into().unwrap()) != ZSTD_MAGIC {
         return Err(format!(
             "zstd plane of {} bytes does not start with a zstd frame",
+            stored.len()
+        ));
+    }
+    let most = max_decoded_len(BlockCodec::Zstd, stored.len());
+    if raw_len as u64 > most {
+        return Err(format!(
+            "zstd plane of {} bytes cannot decode to its raw length {raw_len}; at most {most}",
             stored.len()
         ));
     }

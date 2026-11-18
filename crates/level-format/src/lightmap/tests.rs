@@ -394,15 +394,56 @@ fn rejects_blobs_that_overlap_or_leave_record_order() {
     assert!(message.contains(&expected), "{message}");
 
     // The same bytes with the two pairs swapped: disjoint, but block 1's
-    // blobs come first.
+    // blobs come first, so block 0's leave a gap after the index.
     let mut reversed = section.to_bytes();
     place(&mut reversed, 0, &first, start + second_len);
     place(&mut reversed, 1, &second, start);
     let message = error_message(LightmapSection::from_bytes(&reversed));
-    assert!(
-        message.contains("disjoint and in record order"),
-        "{message}"
+    let expected = format!(
+        "lightmap block 0 irradiance blob at {} leaves a gap after the previous block's blobs end at {start}",
+        start + second_len
     );
+    assert!(message.contains(&expected), "{message}");
+}
+
+#[test]
+fn rejects_a_trailing_byte_after_the_last_blob() {
+    let mut bytes = two_block_section().to_bytes();
+    let blobs_end = bytes.len();
+    bytes.push(0);
+    let message = error_message(LightmapSection::from_bytes(&bytes));
+    let expected = format!(
+        "lightmap section is {} bytes, but its index and blobs end at {blobs_end}",
+        blobs_end + 1
+    );
+    assert!(message.contains(&expected), "{message}");
+
+    // The streaming path reads the index alone against the whole section.
+    let index_len = two_block_section().header().index_byte_len().unwrap() as usize;
+    let prefix = &bytes[..index_len];
+    let message = error_message(LightmapBlockIndex::from_prefix(prefix, bytes.len() as u64));
+    assert!(message.contains(&expected), "{message}");
+}
+
+#[test]
+fn rejects_a_gap_between_blocks() {
+    // Block 1's pair moved one byte on into a section one byte longer: every
+    // range fits, each pair is adjacent and in order, but a byte lies between.
+    let section = two_block_section();
+    let second = section.index().records[1];
+    let mut bytes = section.to_bytes();
+    bytes.push(0);
+    let after_gap = second.irradiance.offset + 1;
+    let irradiance = record_at(1, 8);
+    bytes[irradiance..irradiance + 8].copy_from_slice(&after_gap.to_le_bytes());
+    let direction = record_at(1, 20);
+    bytes[direction..direction + 8].copy_from_slice(&(second.direction.offset + 1).to_le_bytes());
+    let message = error_message(LightmapSection::from_bytes(&bytes));
+    let expected = format!(
+        "lightmap block 1 irradiance blob at {after_gap} leaves a gap after the previous block's blobs end at {}",
+        second.irradiance.offset
+    );
+    assert!(message.contains(&expected), "{message}");
 }
 
 #[test]

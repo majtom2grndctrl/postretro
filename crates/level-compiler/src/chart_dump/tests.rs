@@ -390,7 +390,7 @@ fn bake_dump_is_deterministic_leaves_the_prl_unchanged_and_catches_a_perturbed_t
 
 // ---- the A/B comparison ----
 
-/// AC 5, 6 and 8's instrument: compare a candidate bake's chart dump against
+/// The bit-identity instrument for irradiance, direction and masks: compare a candidate bake's chart dump against
 /// a baseline's. Fails, never passes empty, when either input is unset.
 #[test]
 #[ignore = "manual A/B: set POSTRETRO_CHART_DUMP_BASELINE and POSTRETRO_CHART_DUMP_CANDIDATE \

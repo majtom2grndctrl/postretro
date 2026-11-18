@@ -767,11 +767,12 @@ fn assert_summary_bytes(level: &BoundLevel, bound: &LightmapPoolBound, hand: u64
 
 #[test]
 fn summary_bytes_equal_first_generation_bytes() {
-    // Below the cap: 8 × 5/4 = 10 rises to the 16-layer floor of 20 lightmap
-    // layers and, with both planes, 16 × 5/4 = 20 of 40 mask layers stands
-    // past it. Each pool adds its spare.
+    // Below the cap: the 96 MiB floor is 16 lightmap layers and 24 mask
+    // layers. 8 × 5/4 = 10 of 20 lightmap layers rises to 16 and, with both
+    // planes, 16 × 5/4 = 20 of 40 mask layers rises to 24. Each pool adds its
+    // spare.
     let level = full_block_level(20, 8, BOTH_PLANES);
-    assert_summary_bytes(&level, &level.resolve(), 17 * 6 + 21 * 4);
+    assert_summary_bytes(&level, &level.resolve(), 17 * 6 + 25 * 4);
 
     // At the cap: 10 × 5/4 rounds to 13 and rises toward the floor, stopping
     // at the whole level's 12 layers × 5/4 = 15, and plane A alone gives the
@@ -782,10 +783,11 @@ fn summary_bytes_equal_first_generation_bytes() {
     // No id 51: the whole level, with no margin and no spare in either pool.
     assert_summary_bytes(&level, &level.resolve_without_id_51(), 12 * 6 + 12 * 4);
 
-    // Between the floor and the cap: 13 × 5/4 = 17 would stand, so the floor
-    // holds.
+    // A cap between the margin and the floor: 10 × 5/4 = 13 rises to the
+    // lightmap floor of 16 under the cap of 13 × 5/4 = 17, while the mask
+    // pool's floor of 24 stops at that cap.
     let level = full_block_level(13, 10, PLANE_A);
-    assert_summary_bytes(&level, &level.resolve(), 17 * 6 + 17 * 4);
+    assert_summary_bytes(&level, &level.resolve(), 17 * 6 + 18 * 4);
 
     // Id 42 with no present plane: no mask pool, so no mask spare either way.
     let level = full_block_level(20, 8, NO_PLANES);

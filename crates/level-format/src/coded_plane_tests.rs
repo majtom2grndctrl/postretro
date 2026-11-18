@@ -184,3 +184,28 @@ fn codec_wire_values_are_pinned() {
     assert_eq!(BlockCodec::from_u32(1), Some(BlockCodec::Zstd));
     assert_eq!(BlockCodec::from_u32(2), None);
 }
+
+// The expansion bound admits the most compressible plane there is: one byte
+// repeated, framed as RLE blocks.
+#[test]
+fn the_decoded_length_bound_admits_a_plane_of_one_repeated_byte() {
+    let raw = vec![0x5A; 16 << 20];
+    let stored = encode_plane(BlockCodec::Zstd, &raw);
+    assert!(raw.len() as u64 <= max_decoded_len(BlockCodec::Zstd, stored.len()));
+    assert_eq!(
+        decode_plane(BlockCodec::Zstd, stored, raw.len()).unwrap(),
+        raw
+    );
+    assert_eq!(max_decoded_len(BlockCodec::Raw, 9), 9);
+}
+
+#[test]
+fn a_raw_length_past_what_the_frame_can_decode_to_is_refused_before_decoding() {
+    let stored = encode_plane(BlockCodec::Zstd, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    let most = max_decoded_len(BlockCodec::Zstd, stored.len());
+    let error = check_stored_plane(BlockCodec::Zstd, &stored, most as usize + 1).unwrap_err();
+    assert!(error.contains("cannot decode to its raw length"), "{error}");
+    assert!(check_stored_plane(BlockCodec::Zstd, &stored, 8).is_ok());
+    assert!(check_stored_plane(BlockCodec::Raw, &[0; 4], 5).is_err());
+    assert!(check_stored_plane(BlockCodec::Zstd, &[], 0).is_ok());
+}

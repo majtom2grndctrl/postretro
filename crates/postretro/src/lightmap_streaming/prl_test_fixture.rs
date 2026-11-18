@@ -16,6 +16,7 @@ use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_RGBA16F, IRRADIANCE_TEXEL_BYTES,
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlock, LightmapMode, LightmapSection,
 };
+use postretro_level_format::lightmap_pool::pool_layer_bytes;
 use postretro_level_format::lightmap_pool_bound::LightmapPoolBoundSection;
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
@@ -86,7 +87,12 @@ pub(crate) fn manifest_pool_model(manifest: &LightmapStreamManifest) -> Lightmap
     let demand = PoolDemand::of_indices(manifest.lightmap_index(), manifest.shadowmask_index());
     let bound = manifest.pool_bound().expect("the fixture stores id 58");
     let first_generation = demand
-        .first_generation(bound.layers(), LIGHTMAP_POOL_LAYER_EDGE)
+        .first_generation(
+            bound.layers(),
+            LIGHTMAP_POOL_LAYER_EDGE,
+            pool_layer_bytes(&manifest.lightmap_index().header)
+                .expect("a shipped irradiance format"),
+        )
         .expect("fixture blocks fit a pool layer");
     LightmapPoolModel::new(demand, LIGHTMAP_POOL_LAYER_EDGE, first_generation)
         .expect("fixture blocks fit a pool layer")

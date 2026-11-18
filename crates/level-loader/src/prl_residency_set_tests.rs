@@ -99,7 +99,7 @@ fn a_raw_residency_set_loads_the_same_section() {
     assert_eq!(world.expect("load").cell_residency_set, Some(section));
 }
 
-// AC 4: a corrupt id-51 frame fails the level load by name.
+// A corrupt id-51 frame fails the level load by name.
 #[test]
 fn load_rejects_a_corrupt_residency_frame_by_name() {
     let mut bytes = valid_section().to_bytes(BlockCodec::Zstd);
@@ -113,7 +113,7 @@ fn load_rejects_a_corrupt_residency_frame_by_name() {
     assert!(message.contains("frame is corrupt"), "{message}");
 }
 
-// AC 3: a level baked before the coded layout is refused with a re-bake
+// A level baked before the coded layout is refused with a re-bake
 // message. The bytes are the v1 writer's: version 1, then the body uncoded.
 #[test]
 fn load_rejects_a_v1_residency_set_with_a_rebake_message() {

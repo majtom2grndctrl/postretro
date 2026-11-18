@@ -192,7 +192,7 @@ fn animated_block_uv(block_texel: vec2<f32>, block_id: u32) -> AnimatedBlockUv {
 // plane B) keeps bilinear taps inside the plane's own placement, never in a
 // neighbouring one. A face that owns only channels 0/1 lies outside the
 // plane-B sub-rect; its plane-B sample clamps into another chart and goes
-// unused, since the face owns no channel 2 or 3 to read it (pin P1).
+// unused, since the face owns no channel 2 or 3 to read it.
 fn sample_shadowmask_plane(mask_texel: vec2<f32>, address: u32, extent: u32) -> vec2<f32> {
     return textureSampleLevel(
         shadowmask_atlas,

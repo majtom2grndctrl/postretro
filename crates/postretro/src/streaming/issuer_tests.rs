@@ -397,7 +397,7 @@ fn shared_issuer_absorbs_repeat_submissions_of_a_pending_key_into_one_read() {
     assert_eq!(block.len(), 1);
 }
 
-// AC 21 / P4 (issuer half): a raise is never read. While its request is
+// Issuer half: a raise is never read. While its request is
 // pending it lifts that request's tier; once the request has been delivered
 // the issuer hands the raise to the route, which completes nothing.
 #[test]

@@ -2,8 +2,8 @@
 
 use super::*;
 use postretro_level_format::lightmap::{
-    IRRADIANCE_FORMAT_BC6H, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockRecord,
-    LightmapHeader, LightmapMode, SectionByteRange,
+    IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LIGHTMAP_POOL_LAYER_EDGE,
+    LightmapBlockIndex, LightmapBlockRecord, LightmapHeader, LightmapMode, SectionByteRange,
 };
 use postretro_level_format::shadowmask_atlas::{
     MaskExtents, ShadowmaskBlockIndex, ShadowmaskBlockRecord,
@@ -354,8 +354,8 @@ fn first_generation_is_bound_plus_margin_floored_and_capped() {
     assert_eq!(sized(15, 21), layers(19, 27), "rounded up, each its own");
     assert_eq!(
         sized(8, 14),
-        layers(16, 18),
-        "a small bound rises to the floor"
+        layers(16, 24),
+        "a small bound rises to the floor: one byte budget, 16 lightmap or 24 mask layers"
     );
     assert_eq!(
         sized(36, 44),
@@ -369,8 +369,18 @@ fn first_generation_is_bound_plus_margin_floored_and_capped() {
     );
     assert_eq!(
         sized(0, 0),
-        layers(16, 16),
+        layers(16, 24),
         "a pool with data takes the floor"
+    );
+
+    // Uncompressed irradiance takes 34 MiB layers: the same floor bytes are
+    // two of them, not 16.
+    let mut rgba16f = index.clone();
+    rgba16f.header.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
+    let sizing = StreamedPoolSizing::from_bound(layers(0, 0));
+    assert_eq!(
+        first_generation(&rgba16f, Some(&masks), sizing, 2048),
+        layers(2, 24)
     );
 }
 
@@ -437,10 +447,11 @@ fn a_harness_figure_sets_one_pools_first_generation() {
         first_generation(&index, Some(&masks), sizing(lightmap, mask), device)
     };
     let layers = |lightmap, mask| PerPool { lightmap, mask };
-    assert_eq!(sized(None, None, 2048), layers(20, 20));
+    // 16 × 5/4 = 20 lightmap layers; the mask pool rises to its 24-layer floor.
+    assert_eq!(sized(None, None, 2048), layers(20, 24));
     assert_eq!(
         sized(Some(2), None, 2048),
-        layers(2, 20),
+        layers(2, 24),
         "the lightmap pool alone"
     );
     assert_eq!(
@@ -451,7 +462,7 @@ fn a_harness_figure_sets_one_pools_first_generation() {
     assert_eq!(sized(Some(9), Some(11), 2048), layers(9, 11));
     assert_eq!(
         sized(Some(40), None, 24),
-        layers(23, 20),
+        layers(23, 23),
         "the spare fits the device"
     );
 }
@@ -470,6 +481,11 @@ fn pool_policy_identity_changed_with_the_sizing_policy() {
             "first generation floored at 16 layers\"",
         ]
         .join(" "),
+        [
+            "\"bound-sized split pools, shared margin 5/4,",
+            "first generation floored at 16 layers and capped at all-resident × 5/4\"",
+        ]
+        .join(" "),
     ];
     for retired in retired {
         assert_ne!(format!("{POOL_POLICY_IDENTITY:?}"), retired);
@@ -480,8 +496,8 @@ fn pool_policy_identity_changed_with_the_sizing_policy() {
     }
     assert!(
         POOL_POLICY_IDENTITY.contains(&format!(
-            "floored at {} layers",
-            postretro_level_format::lightmap_pool::FIRST_GENERATION_FLOOR_LAYERS
+            "floored at {} MiB",
+            postretro_level_format::lightmap_pool::FIRST_GENERATION_FLOOR_BYTES / (1024 * 1024)
         )),
         "{POOL_POLICY_IDENTITY}"
     );

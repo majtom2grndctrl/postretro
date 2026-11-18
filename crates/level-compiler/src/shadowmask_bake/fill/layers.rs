@@ -96,7 +96,7 @@ impl OwnershipFill<'_> {
             #[cfg(test)]
             self.record_block_snapshot(block, &raw);
             // Its last cut face finished above, so its owners and its mask
-            // layout are fixed only now (P10).
+            // layout are fixed from here on.
             self.finish_mask_block(block_id, &raw, block.width, [block.x, block.y], shared);
             drop(raw);
         }

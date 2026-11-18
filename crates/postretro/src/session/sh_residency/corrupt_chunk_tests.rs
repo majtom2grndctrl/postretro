@@ -1,5 +1,5 @@
 //! Coded id-50 chunks through a real session: a coded chunk installs as its
-//! raw form, and a corrupt frame takes the hash-failure path (AC 4).
+//! raw form, and a corrupt frame takes the hash-failure path.
 //! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
 
 use super::*;

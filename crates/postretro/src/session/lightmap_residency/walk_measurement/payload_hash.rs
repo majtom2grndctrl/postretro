@@ -6,7 +6,7 @@
 // their lengths. The run's hash is blake3 over the digests sorted, so two runs
 // that upload the same multiset of (block, placement, bytes) agree whatever
 // order their reads completed in, and a coded build and an uncoded build of
-// one layout agree when they install identical decoded data (AC 15). A block
+// one layout agree when they install identical decoded data. A block
 // uploaded twice counts twice.
 
 use postretro_level_format::lightmap_pool::BlockPlacement;

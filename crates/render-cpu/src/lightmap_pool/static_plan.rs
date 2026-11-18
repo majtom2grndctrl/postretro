@@ -12,7 +12,7 @@ use super::{
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::lightmap_pool::first_generation_layers;
+use postretro_level_format::lightmap_pool::{first_generation_layers, pool_layer_bytes};
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 
 /// Every block of a level placed in the lightmap pool, and every plane placed
@@ -111,12 +111,17 @@ impl StreamedPoolSizing {
     }
 
     /// Each pool's first generation, given the layers that hold every block
-    /// at once: the override where one is set, else the bound sized as
-    /// [`PoolDemand::first_generation`] sizes it.
-    fn first_generation(&self, all_resident: PerPool<u32>) -> PerPool<u32> {
+    /// at once and what each pool's layer costs: the override where one is
+    /// set, else the bound sized as [`PoolDemand::first_generation`] sizes it.
+    fn first_generation(
+        &self,
+        all_resident: PerPool<u32>,
+        layer_bytes: PerPool<u64>,
+    ) -> PerPool<u32> {
         PerPool::from_fn(|kind| {
-            self.first_generation_override[kind]
-                .unwrap_or_else(|| first_generation_layers(self.bound[kind], all_resident[kind]))
+            self.first_generation_override[kind].unwrap_or_else(|| {
+                first_generation_layers(self.bound[kind], all_resident[kind], layer_bytes[kind])
+            })
         })
     }
 }
@@ -267,7 +272,15 @@ pub fn plan_streaming_pool(
             }
         }
     }
-    let first_generation = all_resident.map(|all_resident| sizing.first_generation(all_resident));
+    let first_generation = all_resident.and_then(|all_resident| {
+        let layer_bytes = pool_layer_bytes(&header).ok_or_else(|| {
+            format!(
+                "no pool can allocate irradiance format {}",
+                header.irradiance_format
+            )
+        })?;
+        Ok(sizing.first_generation(all_resident, layer_bytes))
+    });
     let first_generation = match first_generation {
         Ok(layers) => layers,
         Err(reason) => {

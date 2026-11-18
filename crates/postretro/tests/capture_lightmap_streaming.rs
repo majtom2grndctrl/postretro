@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
+use postretro_level_format::lightmap_pool::pool_layer_bytes;
 use postretro_level_loader::ShadowType;
 use postretro_render_cpu::frame_uniforms::LightTermMask;
 use postretro_render_cpu::lightmap_pool::{PerPool, PoolDemand};
@@ -144,7 +145,12 @@ fn level_pool_layers(map: &Path) -> (PerPool<u32>, PerPool<u32>) {
         .expect("a streamed level stores id 58");
     (
         demand
-            .first_generation(bound.layers(), LIGHTMAP_POOL_LAYER_EDGE)
+            .first_generation(
+                bound.layers(),
+                LIGHTMAP_POOL_LAYER_EDGE,
+                pool_layer_bytes(&manifest.lightmap_index().header)
+                    .expect("a shipped irradiance format"),
+            )
             .expect("every block fits a layer"),
         demand
             .all_resident(LIGHTMAP_POOL_LAYER_EDGE)

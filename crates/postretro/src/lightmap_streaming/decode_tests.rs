@@ -33,7 +33,7 @@ fn coded_corridor(half_bytes: u64) -> Vec<BlockSpec> {
         .collect()
 }
 
-// AC 17: a pair is charged at its decoded size from its permit on: the
+// A pair is charged at its decoded size from its permit on: the
 // in-hand caps and the shared drain count decoded bytes, never stored ones,
 // so a coded build admits exactly what an uncoded build of the same decoded
 // sizes admits.
@@ -67,7 +67,7 @@ fn pairs_are_charged_at_decoded_size_in_hand_and_in_the_drain() {
     assert_eq!(admitted(&coded), admitted(&raw));
 }
 
-// AC 16: a decoded pair reaches the controller split per plane, and
+// A decoded pair reaches the controller split per plane, and
 // admitting it moves its buffers: the batch hands the renderer the very
 // allocations the decode produced.
 #[test]
@@ -296,7 +296,7 @@ impl Drop for Pipeline {
     }
 }
 
-// AC 23: retiring the level's workers while one pair decodes and others wait
+// Retiring the level's workers while one pair decodes and others wait
 // in the pool returns every charge: queued pairs are discarded, the running
 // one releases instead of delivering, and nothing reaches the frame.
 #[test]
@@ -334,7 +334,7 @@ fn retiring_mid_decode_returns_every_charge_and_delivers_nothing() {
     assert_eq!(source.decodes(1) + source.decodes(2), 0);
 }
 
-// AC 2 (streaming): a pair whose plane fails its decode completes failed with
+// Streaming: a pair whose plane fails its decode completes failed with
 // no charge left behind, is never offered to the renderer, and fails like a
 // failed read: one warning, `Failed` while targeted.
 #[test]
@@ -359,7 +359,7 @@ fn a_corrupt_pair_fails_its_decode_and_is_never_uploaded() {
     assert_eq!(ready, vec![0, 2], "the corrupt block is never uploaded");
 }
 
-// AC 21 / P4: a band pair raised to mandatory after its read was delivered
+// A band pair raised to mandatory after its read was delivered
 // is never read or decoded again. The raise lifts its queued decode, which is
 // taken before the mandatory pairs read after it; the pair already decoding
 // finishes as it was. Each keeps one permit and one charge, and completes
@@ -449,7 +449,7 @@ fn three_pairs_queued_behind_a_held_decode() -> (Rig, Arc<DecodeProbe>, Pipeline
     (rig, source, pipeline)
 }
 
-// AC 22 / P7: a pair whose block leaves its targets while its decode is
+// A pair whose block leaves its targets while its decode is
 // queued is not decoded: it completes cancelled with no charge, and the
 // controller frees its permit and returns it to Absent.
 #[test]
@@ -479,7 +479,7 @@ fn a_departed_pair_is_cancelled_without_decoding_and_its_charge_released() {
     assert_eq!(pipeline.ledger.in_memory_bytes(), 0);
 }
 
-// P7: a block that leaves its targets and returns before its queued decode
+// A block that leaves its targets and returns before its queued decode
 // runs still decodes and becomes ready.
 #[test]
 fn a_pair_whose_target_returned_before_its_decode_still_decodes() {
@@ -532,7 +532,7 @@ impl DecodeJob for OptionalJob {
     fn panicked(self: Box<Self>, _: &AtomicBool) {}
 }
 
-// P3 with P7: a mandatory decode of the other resource queued behind
+// A mandatory decode of the other resource queued behind
 // departed lightmap pairs on a one-thread pool waits for the running decode
 // only, never for theirs.
 #[test]

@@ -4,8 +4,8 @@
 
 use postretro_level_format::lightmap::{LIGHTMAP_POOL_LAYER_EDGE, LightmapSection};
 use postretro_level_format::lightmap_pool::{
-    BlockMasks, MASK_POOL_LAYER_BYTES, PackScratch, PerPool, PoolDemand, all_resident_pool_bytes,
-    lightmap_pool_layer_bytes, streamed_pool_bytes,
+    BlockMasks, PackScratch, PerPool, PoolDemand, all_resident_pool_bytes, first_generation_layers,
+    pool_layer_bytes, streamed_pool_bytes,
 };
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 
@@ -15,31 +15,41 @@ pub(crate) type PoolLayers = PerPool<u32>;
 /// What a layer of each pool costs in this level's formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct LayerPrices {
-    lightmap: u64,
+    layer_bytes: PerPool<u64>,
 }
 
 impl LayerPrices {
     pub(super) fn of(lightmap: &LightmapSection) -> anyhow::Result<Self> {
         let header = lightmap.header();
-        let lightmap = lightmap_pool_layer_bytes(&header).ok_or_else(|| {
+        let layer_bytes = pool_layer_bytes(&header).ok_or_else(|| {
             anyhow::anyhow!(
                 "Lightmap pool bound: no pool can allocate irradiance format {}",
                 header.irradiance_format
             )
         })?;
-        Ok(Self { lightmap })
+        Ok(Self { layer_bytes })
     }
 
     /// `layers` exactly, with no spare.
     pub(super) fn all_resident_bytes(self, layers: PoolLayers) -> u64 {
-        all_resident_pool_bytes(layers.lightmap, self.lightmap)
-            + all_resident_pool_bytes(layers.mask, MASK_POOL_LAYER_BYTES)
+        PerPool::from_fn(|kind| all_resident_pool_bytes(layers[kind], self.layer_bytes[kind]))
+            .total()
     }
 
     /// `layers` as streamed pools, each with its spare.
     pub(super) fn streamed_bytes(self, layers: PoolLayers) -> u64 {
-        streamed_pool_bytes(layers.lightmap, self.lightmap)
-            + streamed_pool_bytes(layers.mask, MASK_POOL_LAYER_BYTES)
+        PerPool::from_fn(|kind| streamed_pool_bytes(layers[kind], self.layer_bytes[kind])).total()
+    }
+
+    /// Each pool's first generation from its `bound`, as the runtime sizes it.
+    pub(super) fn first_generation(
+        self,
+        bound: PoolLayers,
+        all_resident: PoolLayers,
+    ) -> PoolLayers {
+        PerPool::from_fn(|kind| {
+            first_generation_layers(bound[kind], all_resident[kind], self.layer_bytes[kind])
+        })
     }
 }
 

@@ -125,7 +125,7 @@ pub(super) struct PoolStats {
     pub(super) preload_install_bytes: u64,
     pub(super) pools: PerPool<PoolRun>,
     /// Every upload's payload and placement, the settled-entry preload's
-    /// included: the AC 15 identity of what a walk installed.
+    /// included: the identity of what a walk installed, coded or raw.
     pub(super) payload_hash: PayloadHash,
 }
 

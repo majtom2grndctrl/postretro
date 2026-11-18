@@ -1224,7 +1224,7 @@ fn lone_chart_layout_fingerprint_placed(
     })
 }
 
-/// AC 27: a chart turned in place, same corner and layer, moves every texel
+/// A chart turned in place, same corner and layer, moves every texel
 /// but its corner, so every layer keyed on the layout must miss once.
 #[test]
 fn atlas_layout_fingerprint_rekeys_a_chart_turned_in_place() {
@@ -2117,7 +2117,7 @@ fn section_key(
     CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
 }
 
-// AC 25: the section memo key folds the codec identity, so a cached id 22
+// The section memo key folds the codec identity, so a cached id 22
 // written by another codec, zstd level or zstd library version is never
 // reused.
 #[test]

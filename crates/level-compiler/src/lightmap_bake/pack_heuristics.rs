@@ -33,7 +33,7 @@ pub struct PackHeuristic {
 }
 
 /// Every heuristic a cell tries, in tie-break order: on equal block area the
-/// earlier one is kept. The first is the packer's historical rule.
+/// earlier one is kept. The first is [`PackHeuristic::DEFAULT`].
 pub(crate) const PACK_HEURISTICS: [PackHeuristic; 8] = [
     PackHeuristic::new(FreeRectRule::ShortSide, ChartOrder::Area),
     PackHeuristic::new(FreeRectRule::LongSide, ChartOrder::Area),
@@ -50,7 +50,8 @@ impl PackHeuristic {
         Self { rule, order }
     }
 
-    /// The historical rule: short-side fit, largest area first.
+    /// Short-side fit, largest area first: the one heuristic a mask layout
+    /// packs with.
     pub(crate) const DEFAULT: PackHeuristic = PACK_HEURISTICS[0];
 
     /// The `--pack-heuristic` name.
@@ -112,7 +113,7 @@ impl PackRules {
     }
 
     /// Mask charts: copied whole in their lightmap orientation, so never
-    /// turned or rounded, packed as the mask layout always packed them.
+    /// turned or rounded, and never trimmed.
     pub(crate) fn mask(align: u32) -> Self {
         Self {
             align,

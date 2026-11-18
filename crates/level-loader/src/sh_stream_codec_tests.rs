@@ -30,7 +30,7 @@ fn decoded_chunks(body: Id50Body, mode: ShStreamingMode) -> Vec<Vec<u8>> {
         .collect()
 }
 
-// AC 1 (loader half): a coded id 50 stores less and decodes, through the
+// A coded id 50 stores less and decodes, through the
 // sync-proof manifest read and the issuer's read-then-decode, to exactly the
 // raw fixture's chunks.
 #[test]
@@ -51,7 +51,7 @@ fn a_coded_chunk_decodes_to_the_raw_chunk_on_every_read_path() {
     assert!(stored_len(Id50Body::Coded) < stored_len(Id50Body::Valid) / 4);
 }
 
-// AC 4: a chunk whose frame fails takes the hash-failure path: the level
+// A chunk whose frame fails takes the hash-failure path: the level
 // loads (no chunk is read at load), and the read fails naming the decode.
 #[test]
 fn a_corrupt_frame_loads_and_fails_its_read_by_name() {
@@ -72,7 +72,7 @@ fn a_corrupt_frame_loads_and_fails_its_read_by_name() {
     }
 }
 
-// AC 1 (real map, owner-run): a coded bake and a `--section-codec raw` bake
+// Real map, owner-run: a coded bake and a `--section-codec raw` bake
 // of one map decode every id-50 chunk to identical bytes, through the
 // sync-proof manifest read and the issuer's read-then-decode, and load equal
 // id-51 sets. Point `POSTRETRO_CODED_PRL` and `POSTRETRO_RAW_PRL` at the two

@@ -1104,7 +1104,7 @@ fn shadowmask_atlas_key_changes_with_tracer_epoch() {
     assert_ne!(key(TRACER_EPOCH), key(TRACER_EPOCH + 1));
 }
 
-// AC 25: the memo key folds the codec identity, so a cached id 42 written by
+// The memo key folds the codec identity, so a cached id 42 written by
 // another codec, zstd level or zstd library version is never reused.
 #[test]
 fn shadowmask_atlas_key_changes_with_codec_zstd_level_and_version() {
@@ -1493,8 +1493,8 @@ fn estimate_parameters_carry_stride_mode_and_cut_map() {
 
 /// Every owned chart's mask texels, read through its face's stamped offset in
 /// its block's mask image, equal the chart's lightmap-layout raw fill texels:
-/// the copy is a pure translation of the padded rect (AC 8, P8). Every chart
-/// whose face owns channel 2 or 3 lies inside plane B (P1); an unowned face
+/// the copy is a pure translation of the padded rect. Every chart
+/// whose face owns channel 2 or 3 lies inside plane B; an unowned face
 /// takes no mask place and keeps a zero offset. Reads this thread's last raw
 /// fill and mask layouts.
 pub(super) fn assert_masks_are_translations(

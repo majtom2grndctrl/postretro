@@ -582,7 +582,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         },
     ));
     if let Some(section) = cell_residency_set {
-        // One whole-section frame, coded now so its stored length is known.
+        // One whole-section frame, coded here so its stored length is known.
         let bytes = section.to_bytes(section_codec);
         sections.push(PlannedSection::new(
             SectionId::CellResidencySet as u32,

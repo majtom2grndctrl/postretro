@@ -248,7 +248,7 @@ fn restamp(section: &mut ClusterShPayloadsSection, stored: &[u8]) {
     section.index[0].hash = *blake3::hash(stored).as_bytes();
 }
 
-// AC 1 (format half): a coded chunk decodes to exactly the raw chunk a
+// A coded chunk decodes to exactly the raw chunk a
 // `--section-codec raw` bake stores, codec word 0, through the validated
 // and the plan-free decode; the raw chunk moves through unchanged.
 #[test]
@@ -359,6 +359,22 @@ fn a_corrupt_coded_chunk_is_refused_by_name() {
         decode_error(&section, read_short, &directory, base, &sources),
         ClusterShPayloadsError::RangeOutOfBounds(_)
     ));
+}
+
+// A frame that cannot decode to the declared raw length is refused before the
+// decoded chunk is allocated: a corrupt length never reaches the allocator.
+#[test]
+fn a_coded_chunk_is_checked_before_its_decoded_buffer_is_allocated() {
+    let (_, stored, _, _, _, _) = coded_fixture(BlockCodec::Zstd);
+    let huge = usize::MAX / 2;
+    let mut garbage = stored[..CLUSTER_SH_CHUNK_HEADER_SIZE].to_vec();
+    garbage.extend_from_slice(&[0xAB; 32]);
+    for (what, chunk) in [("a real frame", stored), ("no frame", garbage)] {
+        match super::chunk_codec::unstore_chunk(7, chunk, huge) {
+            Err(ClusterShPayloadsError::ChunkDecodeFailed { cluster_id: 7, .. }) => {}
+            other => panic!("{what}: {other:?}"),
+        }
+    }
 }
 
 #[test]

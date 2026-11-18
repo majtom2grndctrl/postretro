@@ -66,13 +66,5 @@ pub(super) fn check_block_planes(
         (false, true) => (group_b, record.group_b),
         (false, false) => return Ok(bounds.previous_end),
     };
-    let end = check_after_previous_block("shadowmask", block, first, last, bounds.previous_end)?;
-    if first.1.offset != bounds.previous_end {
-        return Err(invalid(format!(
-            "shadowmask block {block} {} blob at {} leaves a gap after the previous block's \
-             blobs end at {}; present planes must be adjacent in record order",
-            first.0, first.1.offset, bounds.previous_end
-        )));
-    }
-    Ok(end)
+    check_after_previous_block("shadowmask", block, first, last, bounds.previous_end)
 }

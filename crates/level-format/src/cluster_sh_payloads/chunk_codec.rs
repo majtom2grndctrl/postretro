@@ -4,7 +4,7 @@
 //! See: context/lib/build_pipeline.md §PRL section IDs
 
 use super::*;
-use crate::coded_plane::{BlockCodec, decode_plane_into, store_plane};
+use crate::coded_plane::{BlockCodec, check_stored_plane, decode_plane_into, store_plane};
 
 /// Header word holding the chunk's codec. In the decoded (raw) form it is 0.
 const CODEC_WORD: usize = 12;
@@ -59,6 +59,9 @@ pub(super) fn unstore_chunk(
             Ok(stored)
         }
         BlockCodec::Zstd => {
+            let payload = &stored[CLUSTER_SH_CHUNK_HEADER_SIZE..];
+            let payload_raw_len = raw_len - CLUSTER_SH_CHUNK_HEADER_SIZE;
+            check_stored_plane(codec, payload, payload_raw_len).map_err(failed)?;
             let mut raw = Vec::new();
             raw.try_reserve_exact(raw_len)
                 .map_err(|_| ClusterShPayloadsError::AllocationFailed("decoded chunk"))?;
@@ -66,12 +69,8 @@ pub(super) fn unstore_chunk(
             raw[..CLUSTER_SH_CHUNK_HEADER_SIZE]
                 .copy_from_slice(&stored[..CLUSTER_SH_CHUNK_HEADER_SIZE]);
             raw[CODEC_WORD..CODEC_WORD + 4].copy_from_slice(&0u32.to_le_bytes());
-            decode_plane_into(
-                codec,
-                &stored[CLUSTER_SH_CHUNK_HEADER_SIZE..],
-                &mut raw[CLUSTER_SH_CHUNK_HEADER_SIZE..],
-            )
-            .map_err(failed)?;
+            decode_plane_into(codec, payload, &mut raw[CLUSTER_SH_CHUNK_HEADER_SIZE..])
+                .map_err(failed)?;
             Ok(raw)
         }
     }

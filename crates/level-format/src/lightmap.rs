@@ -252,8 +252,9 @@ impl LightmapBlockIndex {
     /// block's extent and format; a raw plane stored at another length, or a
     /// coded plane stored empty; a blob range that overlaps the index or
     /// leaves the section; a direction blob that does not start where its
-    /// irradiance blob ends; a block whose blobs start before the previous
-    /// block's end; a nonzero reserved field.
+    /// irradiance blob ends; a block whose blobs do not start exactly where
+    /// the previous block's (or the index) end; blobs that do not end at
+    /// `section_len`; a nonzero reserved field.
     pub fn from_prefix(prefix: &[u8], section_len: u64) -> crate::Result<Self> {
         let header = LightmapHeader::from_bytes(prefix)?;
         let index_len = header
@@ -285,6 +286,11 @@ impl LightmapBlockIndex {
                 blobs_end,
             )?;
             records.push(record);
+        }
+        if blobs_end != section_len {
+            return Err(invalid(format!(
+                "lightmap section is {section_len} bytes, but its index and blobs end at {blobs_end}"
+            )));
         }
         Ok(Self { header, records })
     }
@@ -363,11 +369,12 @@ pub(crate) fn check_adjacent(
     )))
 }
 
-/// Shared by ids 22 and 42: a block's adjacent blob pair starts at or after
+/// Shared by ids 22 and 42: a block's adjacent blob pair starts exactly at
 /// `previous_end`, where the previous block's pair (or the index) ends, so
-/// blobs are disjoint and in record order. The compiler writes them so, and
-/// id 42's slot-table bound counts each blob byte once. Returns this pair's
-/// end. Callers have already checked both ranges with [`check_blob_range`].
+/// blobs are disjoint, in record order and gapless. The compiler writes them
+/// so, and id 42's slot-table bound counts each blob byte once. Returns this
+/// pair's end; the caller checks that the last block's end is the section's.
+/// Callers have already checked both ranges with [`check_blob_range`].
 pub(crate) fn check_after_previous_block(
     section: &str,
     block: usize,
@@ -378,6 +385,12 @@ pub(crate) fn check_after_previous_block(
     if first.offset < previous_end {
         return Err(invalid(format!(
             "{section} block {block} {first_what} blob at {} starts before the previous block's blobs end at {previous_end}; blobs must be disjoint and in record order",
+            first.offset
+        )));
+    }
+    if first.offset > previous_end {
+        return Err(invalid(format!(
+            "{section} block {block} {first_what} blob at {} leaves a gap after the previous block's blobs end at {previous_end}; blobs must be adjacent in record order",
             first.offset
         )));
     }
@@ -441,8 +454,8 @@ impl LightmapBlock {
 ///     u32 irradiance_raw_len, u32 direction_raw_len  (the extent's lengths;
 ///                                 direction is Rg8 at extent / scale)
 ///     u32 reserved (= 0)
-///   Blobs, in record order: each block's stored irradiance, then its stored
-///   direction, adjacent.
+///   Blobs, in record order with no gap, to the section's end: each block's
+///   stored irradiance, then its stored direction.
 /// ```
 ///
 /// Records and blobs are sorted by owning cluster, then cell id, then
@@ -638,8 +651,9 @@ impl LightmapSection {
 pub struct LightmapBlockPayload {
     pub irradiance: Vec<u8>,
     pub direction: Vec<u8>,
-    /// Shadowmask group A then group B, BC5 at the block extent. An absent
-    /// plane is empty: it takes no placement, no upload and no bytes.
+    /// Shadowmask group A then group B, BC5 at each plane's own extent: group
+    /// A at the mask block's, group B at its plane-B sub-rect. An absent plane
+    /// is empty: it takes no placement, no upload and no bytes.
     pub shadowmask: Option<[Vec<u8>; 2]>,
 }
 

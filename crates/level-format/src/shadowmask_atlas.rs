@@ -19,15 +19,16 @@ pub use record::{MaskExtents, SHADOWMASK_BLOCK_RECORD_BYTES};
 /// Per-face owner table with each face's lightmap-to-mask texel offset, then
 /// BC5 `.rg` per cell block with two mask groups: group 0 (channels 0/1) at
 /// the mask block's own extent and group 1 (channels 2/3) at its plane-B
-/// sub-rect, each plane stored coded. A plane whose encoded bytes are all
-/// zero has no blob, and reads as the zero it would have decoded to. ASCII
-/// `SMB9`.
+/// sub-rect, each plane stored under its block's codec. A plane whose BC5
+/// bytes are all zero has no blob, and reads as the zero it would have
+/// decoded to. ASCII `SMB9`.
 pub const SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS: u32 = u32::from_le_bytes(*b"SMB9");
 
 /// Retired layouts, named so load can say "re-bake" instead of "unknown tag":
 /// SMB5 held whole bake layers; SMB6 held one map-wide slot per selected light;
 /// SMB7 stored every block's two planes, all-zero ones included; SMB8 stored
-/// each plane at its lightmap block's extent, in the lightmap layout.
+/// each nonzero plane raw at its lightmap block's extent, in the lightmap
+/// layout, with no per-face mask offset.
 const RETIRED_SHADOWMASK_FORMAT_SMB5: u32 = u32::from_le_bytes(*b"SMB5");
 const RETIRED_SHADOWMASK_FORMAT_SMB6: u32 = u32::from_le_bytes(*b"SMB6");
 const RETIRED_SHADOWMASK_FORMAT_SMB7: u32 = u32::from_le_bytes(*b"SMB7");

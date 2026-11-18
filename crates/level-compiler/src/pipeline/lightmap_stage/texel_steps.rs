@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use bvh::bvh::Bvh;
 
 use crate::bvh_build::BvhPrimitive;
-use crate::chart_raster::chart_interior_dims;
+use crate::chart_raster::{ChartPlacement, chart_interior_dims};
 use crate::geometry::GeometryResult;
 use crate::lightmap_bake::CutParent;
-use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
+use crate::lightmap_layer::{LayerTexel, LightmapLayer, SharedAtlas};
 use crate::ray_traversal::segment_clear;
 use crate::texel_step_detector::{
     ChartSteps, CutSites, TexelRect, TexelStepReport, merge_chart_steps, scan_chart,
@@ -95,23 +95,14 @@ impl<'a> StepDetector<'a> {
         if chart.uv_extent[0] <= 0.0 || chart.uv_extent[1] <= 0.0 {
             return None;
         }
-        let placement = self.shared.placements[face];
         let (width, height) = chart_interior_dims(chart);
-        let index_of = |tx: u32, ty: u32| {
-            let (x, y) = placement.interior_texel(tx as i32, ty as i32);
-            y as u32 * self.shared.atlas_width + x as u32
-        };
-        let (width, height) = (width as u32, height as u32);
-        let texels = &partition.texels;
-        // The interior's first and one-past-last atlas index, in either
-        // orientation: its placed rect's top-left and bottom-right corners.
-        let first = index_of(0, 0);
-        let last = index_of(width - 1, height - 1) + 1;
-        let mut cursor = texels.partition_point(|texel| texel.idx < first);
-        // A chart the light left without a record costs one search.
-        if texels.get(cursor).is_none_or(|texel| texel.idx >= last) {
-            return None;
-        }
+        let mut rows = ChartRows::new(
+            &partition.texels,
+            self.shared.placements[face],
+            self.shared.atlas_width,
+            width as u32,
+            height as u32,
+        )?;
         scan_chart(
             chart,
             face,
@@ -119,30 +110,10 @@ impl<'a> StepDetector<'a> {
             TexelRect {
                 x: 0,
                 y: 0,
-                width,
-                height,
+                width: width as u32,
+                height: height as u32,
             },
-            |ty, row| {
-                if placement.transposed {
-                    // A chart row runs down an atlas column: one search per
-                    // texel.
-                    for (tx, value) in (0..width).zip(row.iter_mut()) {
-                        let idx = index_of(tx, ty);
-                        if let Ok(at) = texels.binary_search_by_key(&idx, |texel| texel.idx) {
-                            *value = Some(texels[at].raw_visibility);
-                        }
-                    }
-                    return;
-                }
-                let start = index_of(0, ty);
-                cursor += texels[cursor..].partition_point(|texel| texel.idx < start);
-                while let Some(texel) = texels.get(cursor)
-                    && texel.idx < start + width
-                {
-                    row[(texel.idx - start) as usize] = Some(texel.raw_visibility);
-                    cursor += 1;
-                }
-            },
+            |ty, row| rows.fill(ty, row),
             |from, to| segment_clear(self.bvh, self.primitives, self.geometry, from, to),
             self.threshold,
         )
@@ -171,3 +142,102 @@ impl<'a> StepDetector<'a> {
         (report, elapsed)
     }
 }
+
+/// Streams a chart's interior rows, in chart order, out of a partition's
+/// records sorted by atlas index. Every cursor only moves forward, so a
+/// chart's rows read each of its records once in either orientation.
+struct ChartRows<'t> {
+    texels: &'t [LayerTexel],
+    placement: ChartPlacement,
+    atlas_width: u32,
+    width: u32,
+    /// Upright: the next unread record; the chart's rows follow atlas order.
+    cursor: usize,
+    /// Transposed: a chart row runs down an atlas column, so chart column
+    /// `tx` lies on one atlas row and keeps its own cursor there.
+    row_cursors: Vec<usize>,
+}
+
+impl<'t> ChartRows<'t> {
+    /// `None` when no record falls inside the chart's interior rect: a chart
+    /// the light left without a record costs one search.
+    fn new(
+        texels: &'t [LayerTexel],
+        placement: ChartPlacement,
+        atlas_width: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        let mut rows = Self {
+            texels,
+            placement,
+            atlas_width,
+            width,
+            cursor: 0,
+            row_cursors: Vec::new(),
+        };
+        // The placed rect's top-left and bottom-right corners bound the
+        // interior's atlas indices in either orientation.
+        let first = rows.index_of(0, 0);
+        let last = rows.index_of(width - 1, height - 1) + 1;
+        rows.cursor = texels.partition_point(|texel| texel.idx < first);
+        if texels
+            .get(rows.cursor)
+            .is_none_or(|texel| texel.idx >= last)
+        {
+            return None;
+        }
+        if placement.transposed {
+            // Atlas rows rise with `tx`, so each row's start is searched
+            // after the previous one's.
+            let mut at = rows.cursor;
+            rows.row_cursors = (0..width)
+                .map(|tx| {
+                    let start = rows.index_of(tx, 0);
+                    at += texels[at..].partition_point(|texel| texel.idx < start);
+                    at
+                })
+                .collect();
+        }
+        Some(rows)
+    }
+
+    fn index_of(&self, tx: u32, ty: u32) -> u32 {
+        let (x, y) = self.placement.interior_texel(tx as i32, ty as i32);
+        y as u32 * self.atlas_width + x as u32
+    }
+
+    /// Writes chart row `ty` into `row`, leaving absent texels untouched.
+    /// Rows must come in increasing `ty`.
+    fn fill(&mut self, ty: u32, row: &mut [Option<f32>]) {
+        let texels = self.texels;
+        if self.placement.transposed {
+            for tx in 0..self.width {
+                let idx = self.index_of(tx, ty);
+                let cursor = &mut self.row_cursors[tx as usize];
+                while texels.get(*cursor).is_some_and(|texel| texel.idx < idx) {
+                    *cursor += 1;
+                }
+                if let Some(texel) = texels.get(*cursor)
+                    && texel.idx == idx
+                {
+                    row[tx as usize] = Some(texel.raw_visibility);
+                    *cursor += 1;
+                }
+            }
+            return;
+        }
+        let start = self.index_of(0, ty);
+        self.cursor += texels[self.cursor..].partition_point(|texel| texel.idx < start);
+        while let Some(texel) = texels.get(self.cursor)
+            && texel.idx < start + self.width
+        {
+            row[(texel.idx - start) as usize] = Some(texel.raw_visibility);
+            self.cursor += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "texel_steps_tests.rs"]
+mod tests;

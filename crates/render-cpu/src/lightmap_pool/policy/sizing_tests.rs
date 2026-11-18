@@ -172,7 +172,7 @@ fn a_whole_level_bound_starts_a_margin_past_the_all_resident_layers() {
     let mixed = mixed_level(0xca9, 120);
     let all_resident = pack_layers(&mixed, 0..mixed.len() as u32);
     assert_eq!(
-        first_generation_layers(all_resident, all_resident),
+        first_generation_layers(all_resident, all_resident, 6 * 1024 * 1024),
         LIGHTMAP_POOL_MARGIN.of(all_resident)
     );
 }

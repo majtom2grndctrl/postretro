@@ -3,7 +3,7 @@
 // See: context/lib/build_pipeline.md §PRL section IDs, rendering_pipeline.md §4
 
 use crate::cell_visibility::CELL_VISIBILITY_DISTANCE_FIXED_POINT_SCALE;
-use crate::coded_plane::{BlockCodec, decode_plane_from, store_plane};
+use crate::coded_plane::{BlockCodec, decode_plane_from, max_decoded_len, store_plane};
 use crate::lightmap::{eof, invalid, read_u32};
 
 /// Section version. Load rejects any other. v2: the body is stored raw or as
@@ -144,20 +144,22 @@ impl CellResidencySetSection {
             return Err(invalid("cell residency set reserved word is not 0"));
         }
         let raw_len = u64::from_le_bytes(data[12..20].try_into().expect("8-byte slice"));
-        // The largest body this cell count admits: every camera cell holding
-        // every cell. Checked before the decode allocates.
-        let max_raw_len = (cell_count as u64)
-            .checked_mul(cell_count as u64)
-            .and_then(|entries| entries.checked_mul(ENTRY_BYTES as u64))
-            .and_then(|entries| entries.checked_add((cell_count as u64 + 1) * 4))
-            .and_then(|len| len.checked_add(HEADER_BYTES as u64))
+        let stored = &data[PREFIX_BYTES..];
+        // A body holds at least its header and CSR offsets, and at most what
+        // its stored bytes can decode to: checked before the decode allocates.
+        let min_raw_len = (cell_count as u64 + 1)
+            .checked_mul(4)
+            .and_then(|offsets| offsets.checked_add(HEADER_BYTES as u64))
             .ok_or_else(|| invalid("cell residency set length overflows"))?;
-        if raw_len < HEADER_BYTES as u64 || raw_len > max_raw_len {
+        let max_raw_len = max_decoded_len(codec, stored.len());
+        if raw_len < min_raw_len || raw_len > max_raw_len {
             return Err(invalid(format!(
-                "cell residency set raw length {raw_len} is outside {HEADER_BYTES}..={max_raw_len} for {cell_count} cells"
+                "cell residency set raw length {raw_len} is outside {min_raw_len}..={max_raw_len} \
+                 for {cell_count} cells in {} stored bytes",
+                stored.len()
             )));
         }
-        let body = decode_plane_from(codec, &data[PREFIX_BYTES..], raw_len as usize)
+        let body = decode_plane_from(codec, stored, raw_len as usize)
             .map_err(|reason| invalid(format!("cell residency set frame is corrupt: {reason}")))?;
         Self::from_body(&body, cell_count)
     }
@@ -317,8 +319,8 @@ mod tests {
         );
     }
 
-    /// The v1 writer, kept to prove the old layout is refused: version, then
-    /// today's body, uncoded.
+    /// A v1 section, to prove that layout is refused: version 1, then the
+    /// body uncoded with no codec prefix.
     fn v1_bytes(section: &CellResidencySetSection) -> Vec<u8> {
         let raw = section.to_bytes(BlockCodec::Raw);
         let mut bytes = 1u32.to_le_bytes().to_vec();
@@ -331,6 +333,37 @@ mod tests {
         let error = message(CellResidencySetSection::from_bytes(&v1_bytes(&sample()), 3));
         assert!(error.contains("version: 1"), "{error}");
         assert!(error.contains("re-bake the level"), "{error}");
+    }
+
+    // A declared raw length is bounded by the stored bytes, linearly, before
+    // anything is allocated for the decode.
+    #[test]
+    fn a_raw_length_past_what_the_stored_bytes_can_hold_is_refused_before_decoding() {
+        let section = sample();
+        let declare = |mut bytes: Vec<u8>, raw_len: u64| {
+            bytes[12..20].copy_from_slice(&raw_len.to_le_bytes());
+            message(CellResidencySetSection::from_bytes(&bytes, 3))
+        };
+        let coded = section.coded();
+        let stored = (coded.len() - PREFIX_BYTES) as u64;
+        let most = stored * 32 * 1024;
+        let error = declare(coded.clone(), most + 1);
+        assert!(
+            error.contains(&format!(
+                "raw length {} is outside 28..={most} for 3 cells in {stored} stored bytes",
+                most + 1
+            )),
+            "{error}"
+        );
+        assert!(declare(coded.clone(), u64::MAX).contains("is outside"));
+        // Within the bound, the frame's own content size refuses it.
+        assert!(declare(coded.clone(), most).contains("frame is corrupt"));
+
+        let raw = section.to_bytes(BlockCodec::Raw);
+        let stored = raw.len() - PREFIX_BYTES;
+        assert!(declare(raw.clone(), stored as u64 + 1).contains("is outside"));
+        // Shorter than its header and one CSR offset per cell plus one.
+        assert!(declare(raw, 27).contains("raw length 27 is outside 28..="));
     }
 
     // A corrupt frame fails by name, and never yields a different section: a

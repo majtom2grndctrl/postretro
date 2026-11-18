@@ -27,7 +27,7 @@ fn rect_of(layout: &MaskBlockLayout, face: u32) -> (u32, u32, u32, u32) {
     (x, y, x + CHART, y + CHART)
 }
 
-// P1: every chart whose face owns channel 2 or 3 lies inside the plane-B
+// Every chart whose face owns channel 2 or 3 lies inside the plane-B
 // sub-rect at the mask block's origin, so plane B never clamps a face onto a
 // neighbour's texels.
 #[test]
@@ -73,7 +73,7 @@ fn a_channel_01_chart_may_sit_outside_plane_b() {
     }
 }
 
-// P9: a block with no owned face has no mask block: zero extents, no chart,
+// A block with no owned face has no mask block: zero extents, no chart,
 // no stored plane, and so no mask-pool placement.
 #[test]
 fn a_block_with_no_owned_face_has_zero_extents_no_planes_no_placement() {
@@ -114,7 +114,7 @@ fn a_block_with_no_owned_face_has_zero_extents_no_planes_no_placement() {
 }
 
 // Owned charts that pack no smaller than their block keep the lightmap
-// layout: the mask pool never grows past today's whole-block planes.
+// layout: the mask pool never grows past whole-block planes.
 #[test]
 fn owned_charts_that_pack_no_smaller_keep_the_lightmap_layout() {
     let atlas = Atlas::new(2);

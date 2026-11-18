@@ -986,7 +986,7 @@ fn sh_sync_proof_with_lightmap_stream_loads_the_hinted_door_fixture_on_one_file(
     assert!(reads.section_bytes(LIGHTMAP) > 0);
 }
 
-// AC 15 (real map, owner-run): a coded bake and a `--section-codec raw` bake
+// Real map, owner-run: a coded bake and a `--section-codec raw` bake
 // of one map decode to identical texels, and the coded bake's streamed pairs
 // decode to exactly its all-resident payloads. Point `POSTRETRO_CODED_PRL` and
 // `POSTRETRO_RAW_PRL` at the two bakes and run with `--ignored`.

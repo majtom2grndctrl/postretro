@@ -1333,7 +1333,7 @@ fn a_streamed_payload_loads_whole_under_off_equal_to_the_resident_load() {
 
 // A whole load reads every id-50 chunk for a streamed id-57 payload: coded
 // chunks load the same payload as raw ones, and a chunk whose frame fails
-// fails the level load by name (AC 4), as a chunk whose hash fails does.
+// fails the level load by name, as a chunk whose hash fails does.
 #[test]
 fn the_whole_load_mover_read_decodes_coded_chunks_and_fails_a_corrupt_one_by_name() {
     let placed = placed(&fixture_section(), Streamed, Streamed);

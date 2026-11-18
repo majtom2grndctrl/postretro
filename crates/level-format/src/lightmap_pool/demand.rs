@@ -202,12 +202,18 @@ impl PoolDemand {
         self.layers_of(&blocks, edge, &mut PackScratch::default())
     }
 
-    /// Each pool's first generation from its stored `bound`, in `edge`² layers.
-    /// `None` when a block does not fit a layer.
-    pub fn first_generation(&self, bound: PerPool<u32>, edge: u32) -> Option<PerPool<u32>> {
+    /// Each pool's first generation from its stored `bound`, in `edge`² layers
+    /// of `layer_bytes` each ([`super::pool_layer_bytes`]). `None` when a block
+    /// does not fit a layer.
+    pub fn first_generation(
+        &self,
+        bound: PerPool<u32>,
+        edge: u32,
+        layer_bytes: PerPool<u64>,
+    ) -> Option<PerPool<u32>> {
         let all_resident = self.all_resident(edge)?;
         Some(PerPool::from_fn(|kind| {
-            first_generation_layers(bound[kind], all_resident[kind])
+            first_generation_layers(bound[kind], all_resident[kind], layer_bytes[kind])
         }))
     }
 

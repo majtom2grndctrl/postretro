@@ -262,7 +262,7 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
     drop(reads);
 }
 
-// AC 18 / P2: a lightmap-only level spawns the decode pool with its issuer;
+// A lightmap-only level spawns the decode pool with its issuer;
 // every pair decodes on a `stream-decode-*` thread, never on the issuer that
 // read it nor on the frame thread.
 #[test]

@@ -202,7 +202,7 @@ fn cut_dumped(
     }
     let result = fill.finish(&shared);
     if let Some(section) = &result.0 {
-        // P10: a carried block's layout is fixed after its last cut face.
+        // A carried block's layout is fixed after its last cut face.
         super::assert_masks_are_translations(&shared, section);
     }
     let layer_bytes = fixture.atlas.width as usize * CHART as usize * 4;

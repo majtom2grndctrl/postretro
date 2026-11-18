@@ -194,7 +194,7 @@ fn a_chunk_discarded_on_the_pool_releases_its_decoded_charge() {
     assert_eq!(drained.ready.current_bytes, 0);
 }
 
-// P7 for SH: a chunk whose cluster leaves the targets while its decode is
+// For SH: a chunk whose cluster leaves the targets while its decode is
 // queued is not decoded; it completes cancelled and releases its charge. One
 // that returns before its decode runs still decodes.
 #[test]

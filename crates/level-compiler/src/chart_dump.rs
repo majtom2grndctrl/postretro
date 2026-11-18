@@ -15,9 +15,10 @@
 //   the bake produced them, which is fixed for a layout whatever the worker
 //   count. Every plane is chart-local row-major.
 //
-// Mask records cover only faces some light owns, in the lightmap layout the
-// mask shares today. A kind whose stage had nothing to dump writes no index;
-// readers treat a missing index as no records.
+// Mask records cover only faces some light owns, each read from the mask
+// layout through its face's stamped mask offset, so it compares with a
+// lightmap-layout mask chart. A kind whose stage had nothing to dump writes no
+// index; readers treat a missing index as no records.
 
 use std::path::PathBuf;
 

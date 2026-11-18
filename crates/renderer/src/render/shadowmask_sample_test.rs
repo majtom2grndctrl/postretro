@@ -484,7 +484,7 @@ fn sub_rect_mask(bx: u32, by: u32) -> [f32; 4] {
     .map(|byte| f32::from(byte) / 255.0)
 }
 
-// P8: a face reads its mask through its offset, and a filtered sample at its
+// A face reads its mask through its offset, and a filtered sample at its
 // chart's border, out to its padding ring's texel centres, reads only its own
 // chart's texels, never the chart abutting it in the mask block.
 #[test]
@@ -527,7 +527,7 @@ fn a_border_sample_reads_its_own_padding_not_the_abutting_chart() {
     }
 }
 
-// AC 14: each plane clamps to its own extent. Plane B, a 4×4 sub-rect, clamps
+// Each plane clamps to its own extent. Plane B, a 4×4 sub-rect, clamps
 // to its own edge texel wherever plane A's wider extent would let a sample
 // reach, so it never reads the plane-A placement flush beside it in the pool.
 #[test]

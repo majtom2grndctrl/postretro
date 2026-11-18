@@ -708,7 +708,7 @@ fn the_steady_drain_of_two_pools_allocates_nothing() {
     assert_eq!(h.model.demand_passes, passes);
 }
 
-// P11: a block evicted and its places re-tenanted in one drain. Mask blocks
+// A block evicted and its places re-tenanted in one drain. Mask blocks
 // here are smaller than their lightmap blocks, each plane at its own extent.
 // Each touched entry gets one write carrying both of its words, so the
 // arrival's lightmap address never sits beside the leaver's mask extents.

@@ -16,8 +16,8 @@ const EXAMPLES_PER_CATEGORY: usize = 10;
 const KEYS_LISTED: usize = 10;
 
 /// Whether a padding-ring difference fails the comparison or is only
-/// reported. The bit-identity AC is about the chart's own grid; the ring is
-/// P8's evidence.
+/// reported. Bit identity is about the chart's own grid; the ring shows that
+/// a filtered sample reads only its own chart and padding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RingPolicy {
     Fail,
@@ -30,7 +30,8 @@ pub(crate) struct KindTally {
     pub(crate) candidate: usize,
     pub(crate) missing_in_candidate: Vec<ChartKey>,
     pub(crate) missing_in_baseline: Vec<ChartKey>,
-    /// Same key, different chart grid: the key no longer names one chart.
+    /// Same key, different chart grid: the key names a different chart in
+    /// each dump.
     pub(crate) fingerprint_mismatch: Vec<ChartKey>,
 }
 
@@ -76,7 +77,8 @@ impl Category {
         }
     }
 
-    /// Padding-ring categories: P8's evidence, not the bit-identity AC's.
+    /// Padding-ring categories: evidence of what a filtered sample reads, not
+    /// part of the chart's bit identity.
     pub(crate) fn is_ring(self) -> bool {
         matches!(
             self,
@@ -167,7 +169,7 @@ fn compare_category<'a>(
     cand: &'a IndexEntry,
 ) -> Outcome<'a> {
     // Direction groups `scale²` texels; at an unaligned baseline origin its
-    // texels mixed this chart with another, so the AC has no baseline there.
+    // texels mixed this chart with another, so it has no baseline there.
     if category == Category::Direction && !base.meta.direction_aligned() {
         return Outcome::Skipped;
     }

@@ -145,7 +145,7 @@ fn decode_pool_size_is_half_the_cores_between_one_and_three() {
     }
 }
 
-// P3: a mandatory decode of either resource is taken before every queued
+// A mandatory decode of either resource is taken before every queued
 // optional decode of either resource, and waits only for the running one.
 #[test]
 fn a_mandatory_job_of_either_resource_is_taken_before_every_queued_optional_job() {
@@ -249,7 +249,7 @@ fn pool_threads_are_named_for_the_shared_pool() {
     );
 }
 
-// P4: a pair raised to mandatory after its read, while its decode is still
+// A pair raised to mandatory after its read, while its decode is still
 // queued, is taken before every optional job and ranks among mandatory jobs
 // by its own submission, so a mandatory job queued after it waits for it.
 #[test]

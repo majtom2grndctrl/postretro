@@ -141,7 +141,7 @@ mod scripting_systems;
 #[global_allocator]
 static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -204,7 +204,7 @@ use postretro_entities::{ComponentKind, ComponentValue, ScriptCtx, SystemReactio
 use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
 #[cfg(test)]
 use postretro_foundation::resolve_weapon_placement;
-use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor};
+use postretro_foundation::{ModThemeTokens, SwitchingDescriptor, WeaponPlacementDescriptor};
 use postretro_net::wire::{ClosingCause, DivergenceReason, ServerControlMessage};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 #[cfg(test)]

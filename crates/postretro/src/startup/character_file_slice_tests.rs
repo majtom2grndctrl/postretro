@@ -85,7 +85,11 @@ fn harvested_carry_restores_whole_in_a_later_process_through_a_character_file() 
         .filter_map(|descriptor| descriptor.canonical_name.clone())
         .take(2)
         .collect();
-    assert_eq!(weapons.len(), 2, "fixture: the dev mod declares two weapons");
+    assert_eq!(
+        weapons.len(),
+        2,
+        "fixture: the dev mod declares two weapons"
+    );
     let mut seeded = CarriedState {
         health_current: Some(37.0),
         active_slot: 3,
@@ -106,7 +110,10 @@ fn harvested_carry_restores_whole_in_a_later_process_through_a_character_file() 
         .unwrap()
         .set_carried_state(Seat(0), Some(seeded));
     let harvested = install_and_harvest(&mut first);
-    assert_eq!(harvested.wieldables[3].as_deref(), Some(weapons[1].as_str()));
+    assert_eq!(
+        harvested.wieldables[3].as_deref(),
+        Some(weapons[1].as_str())
+    );
     assert_eq!(harvested.active_slot, 3);
     drop(first);
 
@@ -127,7 +134,9 @@ fn harvested_carry_restores_whole_in_a_later_process_through_a_character_file() 
     .unwrap();
 
     let mut later = process();
-    let document = read_document(&path).unwrap().expect("the character file exists");
+    let document = read_document(&path)
+        .unwrap()
+        .expect("the character file exists");
     let mut warnings = Vec::new();
     let restored = document.seats[0].loadout.to_carried(&mut warnings);
     assert!(warnings.is_empty(), "{warnings:?}");

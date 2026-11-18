@@ -58,10 +58,10 @@ pub(crate) mod occupancy_families;
 pub(crate) mod players;
 pub(crate) mod progress_save;
 pub(crate) mod role_state;
-pub(crate) mod store_saves;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;
+pub(crate) mod store_saves;
 use level_streaming::LevelStreaming;
 use sh_residency::ShStreamingSession;
 

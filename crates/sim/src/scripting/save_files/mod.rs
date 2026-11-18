@@ -30,7 +30,9 @@ pub enum SaveFileError {
     Io(#[from] io::Error),
     #[error("not a ledger document: {0}")]
     Parse(#[from] serde_json::Error),
-    #[error("save version {0} is outside the supported range {OLDEST_SUPPORTED_SAVE_VERSION}..={CURRENT_SAVE_VERSION}")]
+    #[error(
+        "save version {0} is outside the supported range {OLDEST_SUPPORTED_SAVE_VERSION}..={CURRENT_SAVE_VERSION}"
+    )]
     UnsupportedVersion(u32),
     #[error("section `{section}` is malformed: {error}")]
     MalformedSection {
@@ -79,7 +81,10 @@ impl StagedWrite {
 
 /// Write `document` to the temporary sibling of `path`, creating parent
 /// directories, without replacing `path`.
-pub fn stage_document(path: &Path, document: &LedgerDocument) -> Result<StagedWrite, SaveFileError> {
+pub fn stage_document(
+    path: &Path,
+    document: &LedgerDocument,
+) -> Result<StagedWrite, SaveFileError> {
     stage_bytes(path, &document.to_vec()?)
 }
 

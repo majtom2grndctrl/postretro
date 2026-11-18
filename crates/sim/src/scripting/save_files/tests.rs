@@ -49,7 +49,10 @@ fn character_file_round_trips_every_loadout_field() {
 
     assert_eq!(read, document);
     let mut warnings = Vec::new();
-    assert_eq!(read.seats[0].loadout.to_carried(&mut warnings), Some(carried));
+    assert_eq!(
+        read.seats[0].loadout.to_carried(&mut warnings),
+        Some(carried)
+    );
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
@@ -92,7 +95,10 @@ fn unknown_ledger_section_is_ignored_and_rewritten_byte_for_byte() {
     let source = format!(r#"{{"version":1,"slots":{{"kworld":3}},"revisited":{section}}}"#);
 
     let document = LedgerDocument::from_slice(source.as_bytes()).unwrap();
-    assert_eq!(document.unknown_sections().collect::<Vec<_>>(), ["revisited"]);
+    assert_eq!(
+        document.unknown_sections().collect::<Vec<_>>(),
+        ["revisited"]
+    );
     assert_eq!(
         document.slots.get("kworld"),
         Some(&PersistedValue::Number(3.0))
@@ -103,7 +109,10 @@ fn unknown_ledger_section_is_ignored_and_rewritten_byte_for_byte() {
         rewritten.contains(&format!(r#""revisited": {section}"#)),
         "the unknown section keeps its bytes: {rewritten}"
     );
-    assert_eq!(LedgerDocument::from_slice(rewritten.as_bytes()).unwrap(), document);
+    assert_eq!(
+        LedgerDocument::from_slice(rewritten.as_bytes()).unwrap(),
+        document
+    );
 }
 
 #[test]
@@ -175,10 +184,22 @@ fn world(value: f64) -> LedgerDocument {
 #[test]
 fn slot_files_live_under_the_mod_directory() {
     let dir = SaveDir::new(std::path::Path::new("/data"), "dev");
-    assert_eq!(dir.character_path(2), std::path::Path::new("/data/dev/characters/2.json"));
-    assert_eq!(dir.run_path(0), std::path::Path::new("/data/dev/runs/0.json"));
-    assert_eq!(dir.world_path(), std::path::Path::new("/data/dev/world.json"));
-    assert_eq!(dir.selection_path(), std::path::Path::new("/data/dev/selection.json"));
+    assert_eq!(
+        dir.character_path(2),
+        std::path::Path::new("/data/dev/characters/2.json")
+    );
+    assert_eq!(
+        dir.run_path(0),
+        std::path::Path::new("/data/dev/runs/0.json")
+    );
+    assert_eq!(
+        dir.world_path(),
+        std::path::Path::new("/data/dev/world.json")
+    );
+    assert_eq!(
+        dir.selection_path(),
+        std::path::Path::new("/data/dev/selection.json")
+    );
 }
 
 #[test]
@@ -219,7 +240,10 @@ fn slots_are_independent_and_delete_touches_one_file() {
     for (index, path) in paths.iter().enumerate() {
         write_document(path, &world(index as f64)).unwrap();
     }
-    let before: Vec<Vec<u8>> = paths.iter().map(|path| std::fs::read(path).unwrap()).collect();
+    let before: Vec<Vec<u8>> = paths
+        .iter()
+        .map(|path| std::fs::read(path).unwrap())
+        .collect();
 
     write_document(&paths[1], &world(10.0)).unwrap();
     delete_slot(&paths[2]).unwrap();
@@ -236,7 +260,10 @@ fn selection_round_trips_and_defaults_to_none() {
     let path = SaveDir::new(dir.path(), "dev").selection_path();
     assert_eq!(read_selection(&path), Selection::default());
 
-    let selection = Selection { character: 2, run: -1 };
+    let selection = Selection {
+        character: 2,
+        run: -1,
+    };
     write_selection(&path, selection).unwrap();
     assert_eq!(read_selection(&path), selection);
 

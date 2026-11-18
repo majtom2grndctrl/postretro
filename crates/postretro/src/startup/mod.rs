@@ -11,6 +11,8 @@ pub(crate) mod app_dirs;
 mod assist_rebind_tests;
 pub(crate) mod audio_profile;
 #[cfg(test)]
+mod character_file_slice_tests;
+#[cfg(test)]
 mod closet_reveal_surface_tests;
 #[cfg(test)]
 mod coop_activation_tests;
@@ -27,8 +29,6 @@ mod ghost_links_surface_tests;
 mod grant_layer_surface_tests;
 #[cfg(test)]
 mod layer_lifecycle_surface_tests;
-#[cfg(test)]
-mod character_file_slice_tests;
 pub(crate) mod level_loads;
 mod life_state_validation;
 pub(crate) mod lifecycle;

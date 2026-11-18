@@ -9,8 +9,7 @@ use postretro_net::wire::{ConnectClaim, JoinSeedValue, PlayerClaimId};
 use postretro_scripting_core::store_identity::StoreIdentityLedger;
 use postretro_sim::scripting::save_files::{LedgerDocument, LoadoutRecord, SeatRecord};
 use postretro_sim::scripting::state_persistence::{
-    apply_join_seed, collect_seat_per_owner_values, decode_player_claim_id,
-    encode_player_claim_id,
+    apply_join_seed, collect_seat_per_owner_values, decode_player_claim_id, encode_player_claim_id,
 };
 
 const XP: &str = "hero.xp";
@@ -33,7 +32,10 @@ fn per_owner_slot(slot_type: SlotType, default: SlotValue) -> SlotRecord {
 fn store() -> (SlotTable, StoreIdentityLedger, BTreeSet<String>) {
     let mut table = SlotTable::new();
     table
-        .insert(XP.into(), per_owner_slot(SlotType::Number, SlotValue::Number(0.0)))
+        .insert(
+            XP.into(),
+            per_owner_slot(SlotType::Number, SlotValue::Number(0.0)),
+        )
         .unwrap();
     table
         .insert(
@@ -103,7 +105,10 @@ fn ledger_document_restores_every_durable_seat_field_and_omits_live_state() {
             player_id: PlayerClaimId([client as u8; 16]),
             display_name: name.into(),
         };
-        let seat = seats.admit_or_reclaim(client, Some(claim), false).unwrap().seat;
+        let seat = seats
+            .admit_or_reclaim(client, Some(claim), false)
+            .unwrap()
+            .seat;
         seats.set_carried_state(seat, Some(full_carry(weapon, 20.0 + client as f32)));
         let xp = table.get_mut(XP).unwrap();
         xp.set_per_seat_value(seat, SlotValue::Number(client as f32 * 100.0));
@@ -119,8 +124,16 @@ fn ledger_document_restores_every_durable_seat_field_and_omits_live_state() {
     let bytes = written.to_vec().unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     for record in json["seats"].as_array().unwrap() {
-        let keys: BTreeSet<&str> = record.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, BTreeSet::from(["claim", "name", "perOwner", "loadout"]));
+        let keys: BTreeSet<&str> = record
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from(["claim", "name", "perOwner", "loadout"])
+        );
     }
 
     let read = LedgerDocument::from_slice(&bytes).unwrap();
@@ -147,7 +160,11 @@ fn ledger_document_restores_every_durable_seat_field_and_omits_live_state() {
         let outcome = apply_join_seed(&mut fresh_table, Some(&identity), &committed, seat, seed);
         assert_eq!(outcome.applied, 2, "{:?}", outcome.warnings);
         assert_eq!(fresh.client_for_seat(seat), None, "no connection restores");
-        assert_eq!(fresh.placement_for_seat(seat), None, "no placement restores");
+        assert_eq!(
+            fresh.placement_for_seat(seat),
+            None,
+            "no placement restores"
+        );
         restored.push(seat);
     }
 

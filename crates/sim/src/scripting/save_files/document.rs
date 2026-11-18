@@ -95,12 +95,11 @@ impl LedgerDocument {
     /// read, so a document from an unsupported build is never half-parsed.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, SaveFileError> {
         let mut sections: BTreeMap<String, Box<RawValue>> = serde_json::from_slice(bytes)?;
-        let version: u32 = section(&mut sections, VERSION)?.ok_or_else(|| {
-            SaveFileError::MalformedSection {
+        let version: u32 =
+            section(&mut sections, VERSION)?.ok_or_else(|| SaveFileError::MalformedSection {
                 section: VERSION,
                 error: serde::de::Error::missing_field(VERSION),
-            }
-        })?;
+            })?;
         if !(OLDEST_SUPPORTED_SAVE_VERSION..=CURRENT_SAVE_VERSION).contains(&version) {
             return Err(SaveFileError::UnsupportedVersion(version));
         }
@@ -150,8 +149,10 @@ fn section<T: DeserializeOwned>(
     sections
         .remove(name)
         .map(|raw| {
-            serde_json::from_str(raw.get())
-                .map_err(|error| SaveFileError::MalformedSection { section: name, error })
+            serde_json::from_str(raw.get()).map_err(|error| SaveFileError::MalformedSection {
+                section: name,
+                error,
+            })
         })
         .transpose()
 }

@@ -2080,7 +2080,7 @@ fn install_dev_frontend(app: &mut App) -> Vec<(String, serde_json::Value)> {
     std::fs::write(
         &entry,
         format!(
-            "{}\nexport function setupLevel() {{ return {{ uiTrees: [frontendMenu, hostMenu, joinMenu, devKeyboard], reactions: frontendReactions }}; }}\n",
+            "{}\nexport function setupLevel() {{ return {{ uiTrees: [frontendMenu, hostMenu, joinMenu, devKeyboard, devLevelSelectMenu, optionsMenu, exitConfirm, quitConfirm], reactions: frontendReactions }}; }}\n",
             include_str!("../../../../content/dev/scripts/frontend-menu.ts")
         ),
     )
@@ -2201,11 +2201,19 @@ fn the_dev_frontend_shows_a_notice_for_every_end_cause() {
     }
 }
 
-/// Lay out the top modal tree over the session's live slots and cells, as the
-/// UI pass does: its drawn texts, and its focus stops in export order.
-fn draw_top(app: &mut App) -> (Vec<String>, Vec<String>) {
+/// One drawn layer: its tree, its texts, and its enabled focus stops in export
+/// order, each with what pressing it does and where it sits.
+struct DrawnLayer {
+    name: String,
+    texts: Vec<String>,
+    stops: Vec<(String, String, [f32; 4])>,
+}
+
+/// Lay out every layer the UI pass composes this frame, bottom to top, over
+/// the session's live slots and cells.
+fn draw_layers(app: &mut App) -> Vec<DrawnLayer> {
     use postretro_ui::theme::UiTheme;
-    use postretro_ui::tree::{ImageSizes, UiTree};
+    use postretro_ui::tree::{ImageSizes, NodeInteraction, UiTree};
     const DEVICE: [u32; 2] = [1280, 720];
     let session = app.session.as_mut().unwrap();
     let snapshot = App::build_ui_read_snapshot(
@@ -2220,30 +2228,52 @@ fn draw_top(app: &mut App) -> (Vec<String>, Vec<String>) {
         None,
         None,
     );
-    let top = snapshot.trees.last().expect("a modal is up");
-    let mut ui = UiTree::from_descriptor(&top.descriptor, &UiTheme::engine_default());
-    let drawn = ui.build_draw_data_retained(
-        DEVICE,
-        &mut session.font_system,
-        &ImageSizes::new(),
-        &snapshot.slot_values,
-        &snapshot.cell_values,
-        0.0,
-    );
-    let rects = ui.export_focus_rects(
-        &top.descriptor,
-        DEVICE,
-        &snapshot.slot_values,
-        &snapshot.cell_values,
-    );
+    snapshot
+        .trees
+        .iter()
+        .map(|tree| {
+            let mut ui = UiTree::from_descriptor(&tree.descriptor, &UiTheme::engine_default());
+            let drawn = ui.build_draw_data_retained(
+                DEVICE,
+                &mut session.font_system,
+                &ImageSizes::new(),
+                &snapshot.slot_values,
+                &snapshot.cell_values,
+                0.0,
+            );
+            let rects = ui.export_focus_rects(
+                &tree.descriptor,
+                DEVICE,
+                &snapshot.slot_values,
+                &snapshot.cell_values,
+            );
+            DrawnLayer {
+                name: tree.name.clone(),
+                texts: drawn.texts.into_iter().map(|text| text.content).collect(),
+                stops: rects
+                    .rects
+                    .into_iter()
+                    .filter(|rect| !rect.disabled)
+                    .map(|rect| {
+                        let on_press = match rect.interaction {
+                            Some(NodeInteraction::Button { on_press, .. }) => on_press,
+                            _ => String::new(),
+                        };
+                        (rect.id, on_press, rect.rect)
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+/// Lay out the top modal tree, as the UI pass does: its drawn texts, and its
+/// focus stops in export order.
+fn draw_top(app: &mut App) -> (Vec<String>, Vec<String>) {
+    let top = draw_layers(app).pop().expect("a modal is up");
     (
-        drawn.texts.into_iter().map(|text| text.content).collect(),
-        rects
-            .rects
-            .into_iter()
-            .filter(|rect| !rect.disabled)
-            .map(|rect| rect.id)
-            .collect(),
+        top.texts,
+        top.stops.into_iter().map(|(id, _, _)| id).collect(),
     )
 }
 
@@ -2337,7 +2367,7 @@ fn the_dev_session_menus_show_one_state_at_a_time() {
     let (texts, stops) = draw_top(app);
     assert_eq!(stops, ["joinLeave", "frontend.join.back"]);
     assert!(
-        has(&texts, "WAITING FOR THE HOST TO START A LEVEL"),
+        has(&texts, "Waiting for the host to start a level."),
         "{texts:?}"
     );
     enum_slot(app, "session.connection", "offline");
@@ -2350,7 +2380,7 @@ fn the_dev_session_menus_show_one_state_at_a_time() {
     press(app, "frontend.openHost");
     let (texts, stops) = draw_top(app);
     assert_eq!(stops, ["hostPassword", "hostStart", "frontend.host.back"]);
-    assert!(has(&texts, "NONE: ANYONE CAN JOIN"), "{texts:?}");
+    assert!(has(&texts, "None: anyone can join"), "{texts:?}");
     assert!(
         !has(&texts, "PASSWORD REFUSED"),
         "a join's notice: {texts:?}"
@@ -2386,6 +2416,120 @@ fn the_dev_session_menus_show_one_state_at_a_time() {
             "frontendExit"
         ]
     );
+}
+
+/// The press that closes a dev frontend layer: BACK or CANCEL, or on the
+/// title root, which nothing lies beneath, EXIT.
+fn closes_its_layer(on_press: &str) -> bool {
+    on_press == postretro_ui::actions::CLOSE_DIALOG_ACTION || on_press == "dev.askExit"
+}
+
+/// Every screen of the dev frontend flow, as the player reaches it: one
+/// layer draws, so only its controls show and take focus; it has exactly one
+/// way back, and nothing else reads as one; and that way back sits in the
+/// footer, below every other control.
+fn assert_one_layer_with_one_way_back(app: &mut App, screen: &str) {
+    let layers = draw_layers(app);
+    let names: Vec<&str> = layers.iter().map(|layer| layer.name.as_str()).collect();
+    assert_eq!(layers.len(), 1, "{screen}: layers drawn {names:?}");
+    let layer = &layers[0];
+    let backs: Vec<_> = layer
+        .stops
+        .iter()
+        .filter(|(_, on_press, _)| closes_its_layer(on_press))
+        .collect();
+    assert_eq!(
+        backs.len(),
+        1,
+        "{screen}: one way back, found {backs:?} in {:?}",
+        layer.stops
+    );
+    let back_labels = layer
+        .texts
+        .iter()
+        .filter(|text| matches!(text.as_str(), "BACK" | "CANCEL"))
+        .count();
+    assert!(
+        back_labels <= 1,
+        "{screen}: only the way back reads as one: {:?}",
+        layer.texts
+    );
+    let (back, _, back_rect) = backs[0];
+    for (id, _, rect) in &layer.stops {
+        assert!(
+            back_rect[1] >= rect[1],
+            "{screen}: `{back}` sits below every control, but `{id}` is lower"
+        );
+    }
+}
+
+// The rules the frontend's visual grammar rests on, over every screen and
+// session state: title, level select, options, the exit dialog, Host and Join
+// in each state, and the keyboard over each field.
+#[test]
+fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    let app = &mut view.app;
+    let reset = |app: &mut App| {
+        let stack = &mut app.session.as_mut().unwrap().modal_stack;
+        stack.clear_pushed();
+        stack.push_named("frontend.menuTree", None);
+    };
+
+    reset(app);
+    assert_one_layer_with_one_way_back(app, "title");
+    for (open, screen) in [
+        ("frontend.openPlay", "level select"),
+        ("frontend.openOptions", "options"),
+        ("dev.askExit", "exit dialog"),
+        ("dev.askQuit", "quit dialog"),
+        ("frontend.openHost", "host"),
+        ("frontend.editHostPassword", "host password keyboard"),
+    ] {
+        press(app, open);
+        assert_one_layer_with_one_way_back(app, screen);
+    }
+    app.cancel_text_entry();
+    app.write_session_slot("session.hosting", SlotValue::Boolean(true));
+    write_text(app, "session.hostAddress", "10.0.0.7:27015");
+    assert_one_layer_with_one_way_back(app, "hosting");
+    press(app, "frontend.openPlay");
+    assert_one_layer_with_one_way_back(app, "level select over hosting");
+    reset(app);
+    assert_one_layer_with_one_way_back(app, "title while hosting");
+    app.write_session_slot("session.hosting", SlotValue::Boolean(false));
+
+    press(app, "frontend.openJoin");
+    assert_one_layer_with_one_way_back(app, "join");
+    for (edit, screen) in [
+        ("frontend.editJoinAddress", "address keyboard"),
+        ("frontend.editPassword", "password keyboard"),
+    ] {
+        press(app, edit);
+        assert_one_layer_with_one_way_back(app, screen);
+        app.cancel_text_entry();
+    }
+    for cause in EndCause::ALL {
+        enum_slot(app, "session.endCause", cause.as_str());
+        assert_one_layer_with_one_way_back(app, cause.as_str());
+    }
+    enum_slot(app, "session.endCause", "");
+    enum_slot(app, "session.connection", "connecting");
+    assert_one_layer_with_one_way_back(app, "connecting");
+    enum_slot(app, "session.connection", "waiting");
+    for reason in ["host", "modDiffers", "levelDiffers"] {
+        enum_slot(app, "session.waitReason", reason);
+        assert_one_layer_with_one_way_back(app, reason);
+    }
+    reset(app);
+    assert_one_layer_with_one_way_back(app, "title while waiting");
+    enum_slot(app, "session.connection", "offline");
+    enum_slot(app, "session.waitReason", "");
+    for cause in EndCause::ALL {
+        enum_slot(app, "session.endCause", cause.as_str());
+        assert_one_layer_with_one_way_back(app, &format!("title, {}", cause.as_str()));
+    }
 }
 
 // The title's answer to a refused password opens the Join menu with the

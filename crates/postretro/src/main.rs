@@ -10624,8 +10624,11 @@ mod tests {
             let Widget::VStack(select_root) = &tree("frontend.devLevelSelect").root else {
                 panic!("level select root is a vstack");
             };
-            let Some(Widget::HStack(columns)) = select_root.children.first() else {
-                panic!("level select opens with its columns");
+            let Some(columns) = select_root.children.iter().find_map(|child| match child {
+                Widget::HStack(columns) if columns.focus.is_some() => Some(columns),
+                _ => None,
+            }) else {
+                panic!("level select holds its columns under its title");
             };
             assert_eq!(
                 columns.focus.as_ref().map(|focus| focus.kind()),
@@ -10768,11 +10771,11 @@ mod tests {
             ]
         );
         assert!(
-            options_root
-                .children
-                .iter()
-                .any(|child| matches!(child, Widget::Button(button) if button.id == "optionsBack")),
-            "BACK sits outside the tab panels, so every tab reaches it"
+            options_root.children.iter().any(|child| {
+                find_button(child, "optionsBack").is_some()
+                    && find_by_id(child, "optionsPanelControls").is_none()
+            }),
+            "BACK sits in the footer, outside the tab panels, so every tab reaches it"
         );
 
         for (tab_id, key, panel_id, grid_len, controls) in [

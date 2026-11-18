@@ -1,6 +1,4 @@
 import {
-  Button,
-  CLOSE_DIALOG_ACTION,
   Text,
   Tree,
   VStack,
@@ -8,7 +6,7 @@ import {
   defineUiTree,
   getDesignTokens,
 } from "postretro/ui";
-import { askExit, askQuit, openOptions } from "./frontend-menu";
+import { action, askExit, askQuit, backAction, footer, openOptions } from "./frontend-menu";
 
 const pauseTheme = defineTheme({
   color: {
@@ -54,28 +52,24 @@ export const pauseMenu = defineUiTree({
           font: font.mono,
           color: color.ok,
         }),
-        Button({
-          id: "pauseResume",
-          label: "RESUME",
-          onPress: CLOSE_DIALOG_ACTION,
-        }),
-        // The tabbed options screen, accessibility included. It hides this
-        // menu while open; its BACK returns here.
-        Button({
+        // The frontend's grammar: boxed controls, and the footer's way back,
+        // which here resumes play.
+        action("secondary", {
           id: "pauseOptions",
           label: "OPTIONS",
           onPress: openOptions,
         }),
-        Button({
+        action("secondary", {
           id: "pauseQuitToMenu",
           label: "QUIT TO MENU",
           onPress: askQuit,
         }),
-        Button({
+        action("secondary", {
           id: "pauseExitDesktop",
           label: "EXIT TO DESKTOP",
           onPress: askExit,
         }),
+        footer(backAction("pauseResume", "RESUME")),
       ],
     ),
   ),

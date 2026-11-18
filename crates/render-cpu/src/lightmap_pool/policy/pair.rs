@@ -219,9 +219,12 @@ impl LightmapPoolModel {
         }
     }
 
+    /// Whether a half of `block` is at least as large, in its own pool, as an
+    /// extent that pool already failed to place this drain. Each half reads
+    /// its own extent: a mask plane need not be its block's size.
     fn past_device_limit(&self, block: u32, limited: &PerPool<Vec<(u32, u32)>>) -> bool {
-        let (width, height) = self.slot_extent(block);
-        self.halves(block).any(|(kind, _)| {
+        self.halves(block).any(|(kind, item)| {
+            let (width, height) = self.pools[kind].alloc_extent(item);
             limited[kind]
                 .iter()
                 .any(|&(w, h)| w <= width && h <= height)

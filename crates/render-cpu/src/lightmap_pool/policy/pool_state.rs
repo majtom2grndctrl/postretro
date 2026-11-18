@@ -62,7 +62,7 @@ impl PoolState {
         };
         let mut extents = vec![(0, 0); count];
         for &item in &items {
-            extents[item as usize] = demand.extents()[kind.block_of(item) as usize];
+            extents[item as usize] = demand.item_extent(kind, item);
         }
         let alignment = demand.alignment();
         let present: Vec<(u32, u32)> = items.iter().map(|&i| extents[i as usize]).collect();

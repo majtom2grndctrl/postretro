@@ -3,13 +3,11 @@
 
 use super::ShadowmaskBlockRecord;
 use crate::lightmap::{
-    SectionByteRange, check_adjacent, check_after_previous_block, check_blob, invalid,
+    SectionByteRange, check_adjacent, check_after_previous_block, check_blob_range, invalid,
 };
 
 /// What a block's plane records are checked against.
 pub(super) struct PlaneBounds {
-    /// Bytes of one plane at the block's extent.
-    pub expected_len: u64,
     pub index_len: u64,
     pub section_len: u64,
     /// Where the previous block's planes end, or the index when none has.
@@ -29,9 +27,10 @@ pub(super) fn plane_range(cursor: &mut u64, plane: &[u8]) -> SectionByteRange {
     range
 }
 
-/// Refuses an absent plane that keeps an offset, a present plane whose length
-/// is not the block's or whose range leaves the section blobs, and present
-/// planes that do not run on from the previous block's in record order.
+/// Refuses an absent plane that keeps an offset, a present plane whose stored
+/// range leaves the section blobs, and present planes that do not run on from
+/// the previous block's in record order. The record has checked each stored
+/// length against its codec.
 /// Returns where this block's planes end: `previous_end` for a block with none.
 pub(super) fn check_block_planes(
     block: usize,
@@ -42,12 +41,11 @@ pub(super) fn check_block_planes(
     let group_b = ("group B", record.group_b);
     for (what, range) in [group_a, group_b] {
         if range.len != 0 {
-            check_blob(
+            check_blob_range(
                 "shadowmask",
                 block,
                 what,
                 range,
-                bounds.expected_len,
                 bounds.index_len,
                 bounds.section_len,
             )?;
@@ -68,13 +66,5 @@ pub(super) fn check_block_planes(
         (false, true) => (group_b, record.group_b),
         (false, false) => return Ok(bounds.previous_end),
     };
-    let end = check_after_previous_block("shadowmask", block, first, last, bounds.previous_end)?;
-    if first.1.offset != bounds.previous_end {
-        return Err(invalid(format!(
-            "shadowmask block {block} {} blob at {} leaves a gap after the previous block's \
-             blobs end at {}; present planes must be adjacent in record order",
-            first.0, first.1.offset, bounds.previous_end
-        )));
-    }
-    Ok(end)
+    check_after_previous_block("shadowmask", block, first, last, bounds.previous_end)
 }

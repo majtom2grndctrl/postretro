@@ -24,6 +24,7 @@ use crate::session::sh_async_workers::{ShAsyncWorkers, ShWorkerSource};
 use crate::session::sh_residency::sync_manifest_test_fixture;
 use crate::sh_streaming::controller::ShClusterRequest;
 use crate::streaming::cell_demand::{CellDemand, DemandFrame};
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::request::StreamResource;
 
 /// SH's id 49, decoded as level scope does.
@@ -153,7 +154,11 @@ fn sh_request(cluster_id: u32, mandatory: bool) -> ShClusterRequest {
         content_tag: [9; 32],
         cluster_id,
         chunk_hash: [cluster_id as u8; 32],
-        mandatory,
+        class: if mandatory {
+            DrainClass::Visible
+        } else {
+            DrainClass::Prefetch
+        },
     }
 }
 
@@ -172,13 +177,20 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
         ranges: vec![at(100), at(2), at(6), at(10), at(0)],
         log: Arc::clone(&log),
     });
-    let (mut workers, sh_route) = ShAsyncWorkers::prepare_with_source(sh_source, 1).unwrap();
+    let (decode, queue) = spawn_decode_pool().unwrap();
+    let (mut workers, sh_route) = ShAsyncWorkers::prepare_with_source(sh_source, queue.clone());
     let lightmap_source = TestBlockSource::with_log(corridor_blocks(64, false), Arc::clone(&log));
     let set = corridor_set();
     let mut lightmap = lightmap_session(&lightmap_source);
-    let reads = LevelReadIssuer::spawn(Some(Box::new(sh_route)), lightmap.take_route()).unwrap();
+    let reads = LevelReadIssuer::spawn(
+        decode,
+        Some(Box::new(sh_route)),
+        lightmap.take_route(&queue),
+        None,
+    )
+    .unwrap();
     workers.attach_issuer(reads.issuer().clone());
-    workers.publish_targets(&(0..5).collect::<BTreeSet<_>>());
+    workers.publish_target_keys(&(0..5).collect::<BTreeSet<_>>());
 
     // Pin the issuer inside one read while both resources queue work.
     log.gate.hold(at(100).start);
@@ -253,6 +265,57 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
     drop(workers);
     drop(lightmap);
     drop(reads);
+}
+
+// A lightmap-only level spawns the decode pool with its issuer;
+// every pair decodes on a `stream-decode-*` thread, never on the issuer that
+// read it nor on the frame thread.
+#[test]
+fn a_lightmap_only_level_decodes_its_pairs_on_the_pool_not_the_issuer() {
+    let log = Arc::new(ReadLog::default());
+    let blocks = corridor_blocks(64, true)
+        .into_iter()
+        .map(|block| block.coded(4))
+        .collect();
+    let source = TestBlockSource::with_log(blocks, Arc::clone(&log));
+    let set = corridor_set();
+    let visible = VisibleCells::Culled(Vec::new());
+    let cpu = StageFrame::default();
+    let mut level = LevelStreaming::default();
+    level.install_cell_demand(CellDemand::new(corridor_set().max_lead));
+    level.install_lightmap(lightmap_session(&source));
+    let mut installed = Vec::new();
+    wait_until("camera 0's pairs", || {
+        installed.extend(renderer_installs_lightmap_batch(&mut level));
+        level
+            .prepare_drains(&mut None, Some(&set), frame(&visible, 0, &cpu))
+            .unwrap();
+        installed.len() >= 3
+    });
+
+    let issuers: HashSet<ThreadId> = log
+        .reads
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, _, thread)| *thread)
+        .collect();
+    let decodes = log.decodes.lock().unwrap().clone();
+    assert!(decodes.len() >= 3, "{decodes:?}");
+    for (block, thread, name) in &decodes {
+        assert!(
+            !issuers.contains(thread),
+            "block {block} decoded on the issuer"
+        );
+        assert_ne!(*thread, std::thread::current().id());
+        assert!(
+            name.as_deref().is_some_and(|name| {
+                name.starts_with(crate::streaming::decode_pool::DECODE_THREAD_NAME_PREFIX)
+            }),
+            "block {block} decoded on {name:?}"
+        );
+    }
+    level.retire(&mut None);
 }
 
 // AC 13 / P3: a reload while a pair's second half is being read discards the
@@ -913,7 +976,7 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
     use crate::lightmap_streaming::route::{
         LightmapCompletion, LightmapReadResult, LightmapRouteLedger,
     };
-    use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, ReadTier};
+    use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest};
 
     let (completions, queue) = std::sync::mpsc::sync_channel(1);
     let issuer = std::thread::spawn(move || {
@@ -921,7 +984,7 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
             let request = ReadRequest {
                 resource: StreamResource::LightmapBlock,
                 key,
-                tier: ReadTier::Mandatory,
+                class: DrainClass::Visible,
                 identity: ReadIdentity {
                     generation: 1,
                     content_tag: [0; 32],
@@ -932,11 +995,12 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
             let _ = completions.send(LightmapCompletion {
                 request,
                 result: LightmapReadResult::Cancelled,
+                charged_bytes: 0,
             });
         }
     });
     let mut retirement = StreamingRetirement::default();
-    retirement.add_issuer(issuer);
+    retirement.add_threads(vec![issuer]);
     retirement.drain_lightmap_completions(queue, Arc::new(LightmapRouteLedger::default()));
     wait_until("the blocked issuer to finish", || retirement.try_finish());
 }

@@ -7,21 +7,19 @@ use std::sync::mpsc::SyncSender;
 
 use postretro_level_loader::PrlLoadError;
 
-use super::{DecodeJob, ShWorkerCompletion, ShWorkerResult, ShWorkerSource, WorkerShared};
+use super::decode_job::ShDecodeJob;
+use super::{ShWorkerCompletion, ShWorkerResult, ShWorkerSource, WorkerShared};
 use crate::sh_streaming::controller::ShClusterRequest;
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::issuer::{ReadOutcome, ReadRecord, ReadRoute};
-use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, ReadTier, StreamResource};
+use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, StreamResource};
 
 /// The shared-issuer request for one SH cluster chunk at `range`.
 pub(super) fn read_request(request: ShClusterRequest, range: Range<u64>) -> ReadRequest {
     ReadRequest {
         resource: StreamResource::Sh,
         key: request.cluster_id,
-        tier: if request.mandatory {
-            ReadTier::Mandatory
-        } else {
-            ReadTier::Optional
-        },
+        class: request.class,
         identity: ReadIdentity {
             generation: request.generation,
             content_tag: request.content_tag,
@@ -37,12 +35,12 @@ fn cluster_request(request: ReadRequest) -> ShClusterRequest {
         content_tag: request.identity.content_tag,
         cluster_id: request.key,
         chunk_hash: request.identity.item_hash,
-        mandatory: request.tier == ReadTier::Mandatory,
+        class: request.class,
     }
 }
 
-/// Read bytes go to the decode pool; cancellations and failures complete
-/// directly, without a decode.
+/// Read bytes go to the level's decode pool, ranked by their cluster's live
+/// class; cancellations and failures complete directly, without a decode.
 pub(in crate::session) struct ShReadRoute {
     pub(super) source: Arc<dyn ShWorkerSource>,
     pub(super) shared: Arc<WorkerShared>,
@@ -66,32 +64,36 @@ impl ReadRoute for ShReadRoute {
         self.shared.targets.contains(key)
     }
 
+    fn live_class(&self, key: u32) -> Option<DrainClass> {
+        self.shared.targets.class(key)
+    }
+
     fn read_span(&self, span: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
         self.source.read_file_span(span)
     }
 
     fn charge_read_bytes(&self, bytes: u64) {
-        self.shared
-            .phases
-            .lock()
-            .expect("SH phase mutex poisoned")
+        // Checked once the guard has dropped, so a failure never poisons the
+        // ledger.
+        let charged = self
+            .shared
+            .phases()
             .encoded
-            .add(bytes, "encoded worker bytes")
-            .expect("validated encoded bound");
+            .add(bytes, "encoded worker bytes");
+        charged.expect("validated encoded bound");
     }
 
     fn release_read_bytes(&self, bytes: u64) {
-        self.shared
-            .phases
-            .lock()
-            .expect("SH phase mutex poisoned")
+        let released = self
+            .shared
+            .phases()
             .encoded
-            .remove(bytes, "encoded worker bytes")
-            .expect("balanced encoded read");
+            .remove(bytes, "encoded worker bytes");
+        released.expect("balanced encoded read");
     }
 
     fn record_read(&self, read: &ReadRecord<'_>) {
-        let mut stats = self.shared.stats.lock().expect("SH stats mutex poisoned");
+        let mut stats = self.shared.stats();
         stats.record_read(read.span_bytes, read.ranges_served, read.gap_bytes);
         for &latency in read.latencies {
             stats.read_latency.record(latency);
@@ -104,10 +106,29 @@ impl ReadRoute for ShReadRoute {
             ReadOutcome::Read(parts) => {
                 // An SH request carries exactly one range.
                 let bytes = parts.into_iter().next().unwrap_or_default();
-                // Cancelled workers have taken the sender: SH's receiver is gone.
-                self.shared
-                    .decode_sender()
-                    .is_some_and(|decode| decode.send(DecodeJob { request, bytes }).is_ok())
+                // Cancelled workers have taken the queue: SH's receiver is
+                // gone, and the read bytes drop here.
+                let Some(decode) = self.shared.decode_queue() else {
+                    self.release_read_bytes(bytes.len() as u64);
+                    return false;
+                };
+                // From here the chunk is charged at its decoded size, as a
+                // lightmap pair is; its stored bytes leave the encoded phase.
+                // A retired pool discards the job, releasing that charge.
+                let decoded_bytes = self.source.decoded_bytes(request.cluster_id);
+                let moved = self
+                    .shared
+                    .phases()
+                    .move_encoded_to_decoding(bytes.len() as u64, decoded_bytes);
+                moved.expect("balanced encoded read within the validated decode bound");
+                decode.submit(Box::new(ShDecodeJob {
+                    request,
+                    bytes,
+                    decoded_bytes,
+                    source: Arc::clone(&self.source),
+                    shared: Arc::clone(&self.shared),
+                    completed: Some(self.completed.clone()),
+                }))
             }
             ReadOutcome::Failed(error) => self.complete(request, ShWorkerResult::Failed(error)),
             ReadOutcome::Cancelled => self.complete(request, ShWorkerResult::Cancelled),

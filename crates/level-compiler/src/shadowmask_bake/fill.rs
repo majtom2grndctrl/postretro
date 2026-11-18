@@ -5,8 +5,10 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::shadowmask_atlas::{
-    FaceOwners, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS, ShadowmaskAtlasSection,
+    FaceOwners, MaskExtents, MaskOffset, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS,
+    ShadowmaskAtlasSection,
 };
 
 use crate::bake_control::BakeControl;
@@ -79,24 +81,37 @@ struct CutOwners {
 
 pub(super) struct OwnershipFill<'a> {
     width: u32,
-    height: u32,
     layer_count: u32,
     plane: usize,
     /// Cell blocks the encoder slices out of the bake layers, in block order.
     blocks: Vec<CellBlock>,
+    /// Faces of each cell block, ascending: what its mask layout packs.
+    block_faces: Vec<Vec<u32>>,
     /// Exactly one working layer, allocated only when its first item arrives.
     data: Option<RawFillBuffer>,
     layer: Option<u32>,
     next_layer: u32,
     carry: Vec<Option<RawFillBuffer>>,
     hold_until: Vec<u32>,
+    /// Each block's stored planes, coded by `codec` as each block closes.
     encoded: Vec<[Vec<u8>; 2]>,
+    codec: BlockCodec,
+    /// Each block's mask extents, set when its mask block encodes.
+    mask_extents: Vec<MaskExtents>,
     owners: Vec<FaceOwners>,
+    /// Each face's lightmap-to-mask texel offset, set when its block's mask
+    /// layout is fixed; zero for a face with no owner.
+    mask_offsets: Vec<MaskOffset>,
+    /// Blocks whose owned charts kept their lightmap layout.
+    pub(super) identity_mask_blocks: u32,
     any_owner: bool,
     peak_cut_demand: u32,
     pub(super) probe: RawFillProbe,
     #[cfg(test)]
     raw_snapshot: Vec<u8>,
+    /// Each block's mask image and layout as it went to BC5, in close order.
+    #[cfg(test)]
+    mask_snapshots: Vec<super::MaskBlockSnapshot>,
     /// One per chart: the id-17 face order. A cut face's sub-faces use
     /// `cuts` instead.
     faces: Vec<FaceChannels>,
@@ -106,6 +121,9 @@ pub(super) struct OwnershipFill<'a> {
     drops: Vec<OwnerDrop>,
     face_map: LayerFaceMap,
     control: Option<&'a BakeControl>,
+    /// `--dump-chart-texels`: reads each block's final values as it goes to
+    /// BC5; `None` costs nothing.
+    pub(super) chart_dump: Option<crate::chart_dump::capture::MaskCapture>,
 }
 
 impl<'a> OwnershipFill<'a> {
@@ -143,15 +161,19 @@ impl<'a> OwnershipFill<'a> {
             })
             .collect();
         let plane = texel_plane_len(shared.atlas_width, shared.atlas_height);
+        let mut block_faces = vec![Vec::new(); shared.layout.blocks.len()];
+        for (face, &block) in shared.layout.chart_blocks.iter().enumerate() {
+            block_faces[block as usize].push(face as u32);
+        }
         let probe = RawFillProbe::default();
         #[cfg(test)]
         super::register_raw_fill_probe(&probe);
         Self {
             width: shared.atlas_width,
-            height: shared.atlas_height,
             layer_count,
             plane,
             blocks: shared.layout.blocks.clone(),
+            block_faces,
             data: None,
             layer: None,
             next_layer: 0,
@@ -162,12 +184,18 @@ impl<'a> OwnershipFill<'a> {
                 cut_parents,
             ),
             encoded: vec![[Vec::new(), Vec::new()]; shared.layout.blocks.len()],
+            codec: BlockCodec::default(),
+            mask_extents: vec![MaskExtents::NONE; shared.layout.blocks.len()],
             owners: vec![NO_FACE_OWNERS; shared.charts.len()],
+            mask_offsets: vec![[0; 2]; shared.charts.len()],
+            identity_mask_blocks: 0,
             any_owner: false,
             peak_cut_demand: 0,
             probe,
             #[cfg(test)]
             raw_snapshot: vec![0; plane * layer_count as usize * SHADOWMASK_OWNER_CHANNELS],
+            #[cfg(test)]
+            mask_snapshots: Vec::new(),
             faces: vec![FaceChannels::default(); shared.charts.len()],
             cuts,
             cut_of,
@@ -177,7 +205,14 @@ impl<'a> OwnershipFill<'a> {
                 faces: Vec::new(),
             },
             control,
+            chart_dump: None,
         }
+    }
+
+    /// Stores every plane under `codec` instead of the default zstd.
+    pub(super) fn with_codec(mut self, codec: BlockCodec) -> Self {
+        self.codec = codec;
+        self
     }
 
     /// Rank `light` on every face its partition lights, then write its mask
@@ -298,10 +333,23 @@ impl<'a> OwnershipFill<'a> {
         }
         #[cfg(test)]
         super::record_raw_fill(&self.raw_snapshot);
+        #[cfg(test)]
+        super::record_mask_layouts(std::mem::take(&mut self.mask_snapshots));
+        if self.identity_mask_blocks > 0 {
+            log::info!(
+                "[Shadowmask] {} of {} block(s) kept their lightmap layout as their mask \
+                 layout: their owned charts packed no smaller",
+                self.identity_mask_blocks,
+                self.blocks.len()
+            );
+        }
         (
             Some(ShadowmaskAtlasSection {
                 owners: self.owners,
+                mask_offsets: self.mask_offsets,
+                codecs: vec![self.codec; self.encoded.len()],
                 blocks: self.encoded,
+                extents: self.mask_extents,
             }),
             report,
         )
@@ -317,9 +365,8 @@ impl<'a> OwnershipFill<'a> {
         let window = shared.charts[face]
             .window
             .expect("a cut sub-face's chart windows its parent");
-        let tx = idx % shared.atlas_width - placement.x - CHART_PADDING_TEXELS;
-        let ty = idx / shared.atlas_width - placement.y - CHART_PADDING_TEXELS;
-        u.contains(&(window.origin[0] + tx)) && v.contains(&(window.origin[1] + ty))
+        let (tx, ty) = placement.interior_of(idx % shared.atlas_width, idx / shared.atlas_width);
+        u.contains(&(window.origin[0] + tx as u32)) && v.contains(&(window.origin[1] + ty as u32))
     }
 
     /// An estimated owner whose partitions lit no texel of its cut face holds
@@ -396,7 +443,9 @@ impl<'a> OwnershipFill<'a> {
     ) -> impl Iterator<Item = usize> + use<> {
         let chart = &shared.charts[face];
         let (width, x, y) = self.face_rect(face, shared);
-        let (chart_w, chart_h) = (chart.width_texels as usize, chart.height_texels as usize);
+        let (chart_w, chart_h) =
+            shared.placements[face].placed_extent(chart.width_texels, chart.height_texels);
+        let (chart_w, chart_h) = (chart_w as usize, chart_h as usize);
         (0..chart_h).flat_map(move |row| {
             let start = (y + row) * width + x;
             (start..start + chart_w).map(|texel| texel * SHADOWMASK_OWNER_CHANNELS)
@@ -462,6 +511,7 @@ impl<'a> OwnershipFill<'a> {
             return;
         }
         let (atlas_width, placement_x, placement_y) = self.face_rect(face, shared);
+        let turned = shared.placements[face].transposed;
         let data = self.face_data_mut(face, shared);
         let padding = i64::from(CHART_PADDING_TEXELS);
         // Inclusive interior bounds in padded-rect coordinates.
@@ -473,8 +523,11 @@ impl<'a> OwnershipFill<'a> {
             move |x: i64, y: i64| (x_lo - x).max(x - x_hi).max(y_lo - y).max(y - y_hi).max(0);
         // Only called for texels of ring `CHART_PADDING_TEXELS` or less, which
         // all lie inside the padded rect, so both coordinates are non-negative.
+        // `(x, y)` are the chart's own padded coordinates; a transposed chart
+        // sits turned. The sums are integer, so neighbour order is moot.
         let offset = move |x: i64, y: i64| {
-            ((placement_y + y as usize) * atlas_width + placement_x + x as usize)
+            let (dx, dy) = if turned { (y, x) } else { (x, y) };
+            ((placement_y + dy as usize) * atlas_width + placement_x + dx as usize)
                 * SHADOWMASK_OWNER_CHANNELS
         };
         for ring in 1..=padding {
@@ -521,11 +574,8 @@ fn rect_perimeter(x0: i64, x1: i64, y0: i64, y1: i64) -> impl Iterator<Item = (i
 
 /// World position of the chart-interior texel at bake-layer index `idx`.
 fn texel_world_position(shared: &SharedAtlas<'_>, face: usize, idx: u32) -> glam::Vec3 {
-    let placement = &shared.placements[face];
-    let atlas_x = idx % shared.atlas_width;
-    let atlas_y = idx / shared.atlas_width;
-    let tx = (atlas_x - placement.x - CHART_PADDING_TEXELS) as i32;
-    let ty = (atlas_y - placement.y - CHART_PADDING_TEXELS) as i32;
+    let (tx, ty) =
+        shared.placements[face].interior_of(idx % shared.atlas_width, idx / shared.atlas_width);
     chart_texel_world_position(&shared.charts[face], tx, ty)
 }
 

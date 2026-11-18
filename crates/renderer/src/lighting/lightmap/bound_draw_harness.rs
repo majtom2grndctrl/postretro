@@ -23,7 +23,7 @@ const BINDINGS_AND_ENTRIES: &str = r#"
 @group(0) @binding(2) var lightmap_sampler: sampler;
 @group(0) @binding(4) var lightmap_filtering_sampler: sampler;
 @group(0) @binding(6) var shadowmask_atlas: texture_2d_array<f32>;
-@group(1) @binding(0) var<storage, read> lightmap_block_table: array<vec4<u32>>;
+@group(1) @binding(0) var<storage, read> lightmap_block_table: array<LightmapBlockEntry>;
 @group(2) @binding(0) var<storage, read> probes: array<Probe>;
 @group(2) @binding(1) var<uniform> uniforms: HarnessUniforms;
 
@@ -33,7 +33,7 @@ struct Varyings {
     @location(6) @interpolate(flat) lightmap_layer_flags: u32,
     @location(7) @interpolate(flat) probe_index: u32,
     @location(8) @interpolate(flat) lightmap_rect: vec4<u32>,
-    @location(10) @interpolate(flat) lightmap_plane_addresses: vec2<u32>,
+    @location(10) @interpolate(flat) lightmap_mask: vec4<u32>,
 };
 
 @vertex
@@ -51,7 +51,7 @@ fn vs_main(
     out.lightmap_layer_flags = block.layer_flags;
     out.probe_index = instance;
     out.lightmap_rect = block.rect;
-    out.lightmap_plane_addresses = block.plane_addresses;
+    out.lightmap_mask = block.mask;
     return out;
 }
 
@@ -63,7 +63,7 @@ fn fs_main(in: Varyings) -> HarnessOut {
         in.lightmap_texel,
         in.lightmap_layer_flags,
         in.lightmap_rect,
-        in.lightmap_plane_addresses,
+        in.lightmap_mask,
     );
 }
 "#;

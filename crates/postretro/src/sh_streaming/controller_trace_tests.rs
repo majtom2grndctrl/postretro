@@ -409,7 +409,7 @@ fn run_schedule() -> String {
                 let class = controller.states[request.cluster_id as usize]
                     .class
                     .map_or("none", class_name);
-                let tier = if request.mandatory { "m" } else { "o" };
+                let tier = if request.mandatory() { "m" } else { "o" };
                 format!("{} {tier} {class}", request.cluster_id)
             })
             .collect();

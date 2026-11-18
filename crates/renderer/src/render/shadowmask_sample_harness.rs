@@ -21,7 +21,7 @@ use super::gpu_test_harness::{GpuCtx, wgsl_const_line, wgsl_function};
 use crate::lighting::lightmap::filtering_sampler_descriptor;
 use crate::lighting::lightmap::test_fixtures::lightmap_block_decode_wgsl;
 
-const PROBE_BYTES: usize = 16;
+const PROBE_BYTES: usize = 24;
 const OUTPUT_TEXEL_BYTES: u32 = 16;
 /// Render targets: the sampled mask, then the two paths' selects (even pixel)
 /// or the union attenuation at entity visibility 1 and 0 (odd pixel). Two
@@ -53,12 +53,14 @@ struct Probe {
     uv: vec2<f32>,
     block: u32,
     position: u32,
+    mask_offset: u32,
+    _pad: u32,
 };
 @group(0) @binding(0) var shadowmask_atlas: texture_2d_array<f32>;
 @group(0) @binding(1) var lightmap_filtering_sampler: sampler;
 @group(0) @binding(2) var<uniform> uniforms: HarnessUniforms;
 @group(0) @binding(3) var<storage, read> probes: array<Probe>;
-@group(0) @binding(4) var<storage, read> lightmap_block_table: array<vec4<u32>>;
+@group(0) @binding(4) var<storage, read> lightmap_block_table: array<LightmapBlockEntry>;
 "#;
     let entry = r#"
 struct HarnessOut {
@@ -82,8 +84,8 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
     let mask = sample_shadowmask_atlas(
         block.texel,
         block.layer_flags,
-        block.rect,
-        block.plane_addresses,
+        block.mask,
+        probe.mask_offset,
     );
     // A face owned by spec lights 10..13 at positions 0..3. The probe's light
     // is the owner at `position`, or spec light 99, which owns nothing.
@@ -140,6 +142,9 @@ pub(super) struct Probe {
     pub(super) block: u32,
     /// The light's owner position `0..3` on the face, or [`NOT_AN_OWNER`].
     pub(super) position: u32,
+    /// The face's lightmap-to-mask texel offset, as the owner stream carries
+    /// it.
+    pub(super) mask_offset: [i16; 2],
 }
 
 impl Probe {
@@ -148,6 +153,16 @@ impl Probe {
             uv,
             block,
             position,
+            mask_offset: [0; 2],
+        }
+    }
+
+    /// The same probe on a face whose mask chart sits `mask_offset` texels
+    /// from its lightmap chart.
+    pub(super) fn offset_by(self, mask_offset: [i16; 2]) -> Self {
+        Self {
+            mask_offset,
+            ..self
         }
     }
 
@@ -157,6 +172,8 @@ impl Probe {
             self.uv[1].to_bits(),
             self.block,
             self.position,
+            pack_mask_offset(self.mask_offset),
+            0,
         ];
         let mut out = [0u8; PROBE_BYTES];
         for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(words) {
@@ -164,6 +181,11 @@ impl Probe {
         }
         out
     }
+}
+
+/// The owner stream's packing: i16 x low, i16 y high.
+fn pack_mask_offset([x, y]: [i16; 2]) -> u32 {
+    u32::from(x as u16) | (u32::from(y as u16) << 16)
 }
 
 #[derive(Debug, PartialEq)]

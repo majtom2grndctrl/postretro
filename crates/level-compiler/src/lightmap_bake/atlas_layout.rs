@@ -305,12 +305,14 @@ fn split_shared_vertices(geom: &mut GeometryResult) {
 
 /// Continuous texel position of `world_p` inside `chart` placed with its
 /// padded top-left at `(origin_x, origin_y)`: the interior starts one padding
-/// in, and the chart's UV extent spans the interior. Shared by UV assignment
+/// in, and the chart's UV extent spans the interior. A `transposed` chart's
+/// U runs down the placed rect and its V across. Shared by UV assignment
 /// (block-local origin) and the rebase proof (bake-layer origin).
 pub(crate) fn chart_texel_position(
     chart: &Chart,
     origin_x: u32,
     origin_y: u32,
+    transposed: bool,
     world_p: Vec3,
 ) -> (f32, f32) {
     let padding = CHART_PADDING_TEXELS as f32;
@@ -341,10 +343,14 @@ pub(crate) fn chart_texel_position(
     let rel = world_p - chart.origin;
     let local_u = rel.dot(chart.u_axis) - uv_min[0];
     let local_v = rel.dot(chart.v_axis) - uv_min[1];
-    (
-        (origin_x as f32 + padding - window[0]) + local_u * scale_u,
-        (origin_y as f32 + padding - window[1]) + local_v * scale_v,
-    )
+    let (origin_u, origin_v) = if transposed {
+        (origin_y, origin_x)
+    } else {
+        (origin_x, origin_y)
+    };
+    let u = (origin_u as f32 + padding - window[0]) + local_u * scale_u;
+    let v = (origin_v as f32 + padding - window[1]) + local_v * scale_v;
+    if transposed { (v, u) } else { (u, v) }
 }
 
 /// Quantize a texel position over `extent` texels to the vertex's unorm16 UV.
@@ -371,7 +377,8 @@ pub(super) fn assign_lightmap_uvs(
     for (face_index, chart) in charts.iter().enumerate() {
         let block_id = layout.chart_blocks[face_index];
         let block = &layout.blocks[block_id as usize];
-        let (local_x, local_y) = layout.local_placement(face_index, &placements[face_index]);
+        let placement = &placements[face_index];
+        let (local_x, local_y) = layout.local_placement(face_index, placement);
         // `check_block_limits` bounds the block count to `MAX_LIGHTMAP_BLOCKS`,
         // so `id + 1` fits the vertex's `u16`.
         let vertex_block = u16::try_from(block_id + 1).expect("block count limit keeps ids in u16");
@@ -389,8 +396,13 @@ pub(super) fn assign_lightmap_uvs(
                     continue;
                 }
                 let vert = &mut geom_section.vertices[vi];
-                let (tx, ty) =
-                    chart_texel_position(chart, local_x, local_y, Vec3::from(vert.position));
+                let (tx, ty) = chart_texel_position(
+                    chart,
+                    local_x,
+                    local_y,
+                    placement.transposed,
+                    Vec3::from(vert.position),
+                );
                 vert.lightmap_uv = [
                     quantize_lightmap_uv(tx, block.width),
                     quantize_lightmap_uv(ty, block.height),
@@ -403,16 +415,20 @@ pub(super) fn assign_lightmap_uvs(
 }
 
 /// Copy one chart-local bake buffer into its disjoint rectangle in the
-/// layer-major atlas. `pack_layers` establishes the non-overlap contract that
-/// makes the completion order of these copies irrelevant to output bytes.
+/// layer-major atlas, turned when the placement is transposed, and mark the
+/// placed rect's orientation. `pack_layers` establishes the non-overlap
+/// contract that makes the completion order of these copies irrelevant to
+/// output bytes.
 pub(super) fn scatter_chart_into_atlas(
     chart_atlas: &CompositedAtlas,
     placement: &ChartPlacement,
     atlas: &mut CompositedAtlas,
 ) {
     debug_assert_eq!(chart_atlas.layer_count, 1);
-    debug_assert!(chart_atlas.atlas_width + placement.x <= atlas.atlas_width);
-    debug_assert!(chart_atlas.atlas_height + placement.y <= atlas.atlas_height);
+    let (placed_w, placed_h) =
+        placement.placed_extent(chart_atlas.atlas_width, chart_atlas.atlas_height);
+    debug_assert!(placed_w + placement.x <= atlas.atlas_width);
+    debug_assert!(placed_h + placement.y <= atlas.atlas_height);
     debug_assert!(placement.layer < atlas.layer_count);
 
     let chart_w = chart_atlas.atlas_width as usize;
@@ -420,17 +436,32 @@ pub(super) fn scatter_chart_into_atlas(
     let atlas_w = atlas.atlas_width as usize;
     let layer_offset = placement.layer as usize * atlas_w * atlas.atlas_height as usize;
 
-    for row in 0..chart_h {
-        let source_start = row * chart_w;
-        let source_end = source_start + chart_w;
-        let dest_start =
-            layer_offset + (placement.y as usize + row) * atlas_w + placement.x as usize;
-        let dest_end = dest_start + chart_w;
-        atlas.irradiance[dest_start * 4..dest_end * 4]
-            .copy_from_slice(&chart_atlas.irradiance[source_start * 4..source_end * 4]);
-        atlas.direction[dest_start..dest_end]
-            .copy_from_slice(&chart_atlas.direction[source_start..source_end]);
-        atlas.coverage[dest_start..dest_end]
-            .copy_from_slice(&chart_atlas.coverage[source_start..source_end]);
+    if !placement.transposed {
+        for row in 0..chart_h {
+            let source_start = row * chart_w;
+            let source_end = source_start + chart_w;
+            let dest_start =
+                layer_offset + (placement.y as usize + row) * atlas_w + placement.x as usize;
+            let dest_end = dest_start + chart_w;
+            atlas.irradiance[dest_start * 4..dest_end * 4]
+                .copy_from_slice(&chart_atlas.irradiance[source_start * 4..source_end * 4]);
+            atlas.direction[dest_start..dest_end]
+                .copy_from_slice(&chart_atlas.direction[source_start..source_end]);
+            atlas.coverage[dest_start..dest_end]
+                .copy_from_slice(&chart_atlas.coverage[source_start..source_end]);
+        }
+        return;
+    }
+    for row in 0..chart_h as u32 {
+        for column in 0..chart_w as u32 {
+            let source = row as usize * chart_w + column as usize;
+            let (x, y) = placement.padded_texel(column, row);
+            let dest = layer_offset + y as usize * atlas_w + x as usize;
+            atlas.irradiance[dest * 4..dest * 4 + 4]
+                .copy_from_slice(&chart_atlas.irradiance[source * 4..source * 4 + 4]);
+            atlas.direction[dest] = chart_atlas.direction[source];
+            atlas.coverage[dest] = chart_atlas.coverage[source];
+            atlas.transposed[dest] = true;
+        }
     }
 }

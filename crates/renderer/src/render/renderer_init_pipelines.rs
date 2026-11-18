@@ -118,11 +118,20 @@ pub(crate) fn build_renderer_pipelines(
                 Some(wgpu::VertexBufferLayout {
                     array_stride: SPEC_OWNER_STRIDE as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        offset: 0,
-                        shader_location: 6,
-                        format: wgpu::VertexFormat::Uint16x4,
-                    }],
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 6,
+                            format: wgpu::VertexFormat::Uint16x4,
+                        },
+                        // The face's lightmap-to-mask texel offset, two
+                        // packed i16s the shader sign-extends.
+                        wgpu::VertexAttribute {
+                            offset: SPEC_OWNER_MASK_OFFSET_AT as wgpu::BufferAddress,
+                            shader_location: 7,
+                            format: wgpu::VertexFormat::Uint32,
+                        },
+                    ],
                 }),
             ],
             compilation_options: wgpu::PipelineCompilationOptions::default(),

@@ -200,6 +200,17 @@ postretro-tool mint-identity base
 
 Commit the updated file with your content. See `docs/scripting-reference.md`.
 
+## Level size
+
+To see what makes a compiled level large:
+
+```bash
+postretro-tool prl-sections content/base/maps/arena.prl
+```
+
+It lists every section of the level, largest first, with its size and share of
+the file. It reads only the file you name, so it needs no project.
+
 ## Building distributions
 
 From the project root, exactly as from a bundle:

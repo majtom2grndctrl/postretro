@@ -58,6 +58,7 @@ fn lightmap_section(extents: &[(u16, u16)]) -> LightmapSection {
             .map(|(cell, &(width, height))| {
                 let texels = usize::from(width) * usize::from(height);
                 LightmapBlock {
+                    codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                     cell_id: cell as u32,
                     width,
                     height,
@@ -72,9 +73,9 @@ fn lightmap_section(extents: &[(u16, u16)]) -> LightmapSection {
 /// Groups at these extents, with an empty owner table for the fixtures'
 /// face-free Geometry.
 fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
-    ShadowmaskAtlasSection {
-        owners: Vec::new(),
-        blocks: extents
+    ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
+        extents
             .iter()
             .enumerate()
             .map(|(block, &(width, height))| {
@@ -82,7 +83,8 @@ fn shadowmask_section(extents: &[(u16, u16)]) -> ShadowmaskAtlasSection {
                 [vec![block as u8 + 10; len], vec![block as u8 + 110; len]]
             })
             .collect(),
-    }
+        extents.iter().copied(),
+    )
 }
 
 /// Every cell mandatory from every camera cell of the two-cell fixtures.
@@ -114,7 +116,7 @@ fn lighting_blobs(
     if with_residency_set {
         blobs.push(blob(
             SectionId::CellResidencySet,
-            residency_set().to_bytes(),
+            residency_set().to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
         ));
         if !lightmap.blocks.is_empty() {
             blobs.push(blob(
@@ -277,7 +279,7 @@ fn a_level_without_id22_logs_no_lightmap_blocks_as_its_residency_reason() {
         "postretro_test_lm_stream_no_id22_reason.prl",
         vec![blob(
             SectionId::CellResidencySet,
-            residency_set().to_bytes(),
+            residency_set().to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
         )],
     );
     let capture = LogCapture::start();
@@ -564,6 +566,87 @@ fn pair_bytes_of_the_wrong_length_are_rejected() {
             .payload_from_pair_bytes(0, lightmap_bytes, Some(shadowmask_bytes))
             .unwrap(),
         expected_payload(&lightmap, Some(&shadowmask), 0)
+    );
+}
+
+/// `lightmap` and `shadowmask` with every stored plane coded as zstd frames.
+fn coded(
+    mut lightmap: LightmapSection,
+    mut shadowmask: ShadowmaskAtlasSection,
+) -> (LightmapSection, ShadowmaskAtlasSection) {
+    use postretro_level_format::coded_plane::{BlockCodec, encode_plane};
+    for block in &mut lightmap.blocks {
+        block.codec = BlockCodec::Zstd;
+        block.irradiance = encode_plane(BlockCodec::Zstd, &block.irradiance);
+        block.direction = encode_plane(BlockCodec::Zstd, &block.direction);
+    }
+    for (planes, codec) in shadowmask.blocks.iter_mut().zip(&mut shadowmask.codecs) {
+        *codec = BlockCodec::Zstd;
+        for plane in planes.iter_mut().filter(|plane| !plane.is_empty()) {
+            *plane = encode_plane(BlockCodec::Zstd, plane);
+        }
+    }
+    (lightmap, shadowmask)
+}
+
+// A streamed pair reads its stored ranges and decodes them, split per
+// plane, to exactly what the all-resident load decodes; a corrupt frame in
+// either half fails the pair by name.
+#[test]
+fn a_streamed_coded_pair_decodes_to_the_all_resident_payload() {
+    let extents = [(16, 8), (8, 16)];
+    let (raw_lightmap, mut raw_shadowmask) =
+        (lightmap_section(&extents), shadowmask_section(&extents));
+    raw_shadowmask.blocks[1][0].clear();
+    let (lightmap, shadowmask) = coded(raw_lightmap.clone(), raw_shadowmask.clone());
+    let fixture = Fixture::with_portals(
+        "postretro_test_lm_stream_coded_pair.prl",
+        lighting_blobs(&lightmap, Some(&shadowmask), true),
+    );
+    let all_resident = fixture.load(LightmapStreamingMode::AllResident);
+    let manifest = fixture.manifest();
+    for block in 0..2u32 {
+        let ranges = manifest.block_file_ranges(block).unwrap();
+        let record = lightmap.index().records[block as usize];
+        assert_eq!(
+            range_len(&ranges.lightmap),
+            u64::from(record.irradiance.len + record.direction.len),
+            "a pair reads its stored bytes"
+        );
+        let payload = manifest.read_block_pair(block).unwrap();
+        assert_eq!(
+            payload,
+            expected_payload(&raw_lightmap, Some(&raw_shadowmask), block as usize)
+        );
+        assert_eq!(
+            payload,
+            all_resident.gpu_lighting_payloads.blocks[block as usize]
+        );
+    }
+
+    let ranges = manifest.block_file_ranges(0).unwrap();
+    let lightmap_bytes = manifest.read_file_span(ranges.lightmap).unwrap();
+    let shadowmask_bytes = manifest.read_file_span(ranges.shadowmask.unwrap()).unwrap();
+    let mut corrupt = lightmap_bytes.clone();
+    corrupt[3] ^= 0x01;
+    let error = manifest
+        .payload_from_pair_bytes(0, corrupt, Some(shadowmask_bytes.clone()))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("lightmap block 0 irradiance plane failed to decode"),
+        "{error}"
+    );
+    let mut corrupt = shadowmask_bytes;
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 0x01;
+    let error = manifest
+        .payload_from_pair_bytes(0, lightmap_bytes, Some(corrupt))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("shadowmask block 0 group B plane failed to decode"),
+        "{error}"
     );
 }
 
@@ -901,4 +984,56 @@ fn sh_sync_proof_with_lightmap_stream_loads_the_hinted_door_fixture_on_one_file(
     let reads = world.prl_read_counters().expect("positional load");
     assert!(Arc::ptr_eq(reads, sh.retained_file().read_counters()));
     assert!(reads.section_bytes(LIGHTMAP) > 0);
+}
+
+// Real map, owner-run: a coded bake and a `--section-codec raw` bake
+// of one map decode to identical texels, and the coded bake's streamed pairs
+// decode to exactly its all-resident payloads. Point `POSTRETRO_CODED_PRL` and
+// `POSTRETRO_RAW_PRL` at the two bakes and run with `--ignored`. SH loads in
+// the default mode, so default bakes (no SH bodies) load.
+#[test]
+#[ignore = "needs two bakes of one map; see the comment"]
+fn coded_sections_decode_identical_through_every_load_path() {
+    let path = |var: &str| std::env::var(var).unwrap_or_else(|_| panic!("{var} names a baked PRL"));
+    let (coded_path, raw_path) = (path("POSTRETRO_CODED_PRL"), path("POSTRETRO_RAW_PRL"));
+    let load = |path: &str, mode| {
+        load_prl_with_modes_for_test(path, ShStreamingMode::Async, mode)
+            .unwrap_or_else(|error| panic!("{path}: {error}"))
+    };
+    let coded = load(&coded_path, LightmapStreamingMode::AllResident);
+    let raw = load(&raw_path, LightmapStreamingMode::AllResident);
+    let blocks = &coded.gpu_lighting_payloads.blocks;
+    assert!(!blocks.is_empty(), "the map bakes lightmap blocks");
+    assert_eq!(blocks.len(), raw.gpu_lighting_payloads.blocks.len());
+    let mut hasher = blake3::Hasher::new();
+    for (block, (coded, raw)) in blocks
+        .iter()
+        .zip(&raw.gpu_lighting_payloads.blocks)
+        .enumerate()
+    {
+        assert_eq!(coded, raw, "block {block}: coded and raw bakes differ");
+        hasher.update(&coded.irradiance);
+        hasher.update(&coded.direction);
+        for plane in coded.shadowmask.iter().flatten() {
+            hasher.update(plane);
+        }
+    }
+    drop(raw);
+
+    let streamed = load(&coded_path, LightmapStreamingMode::Stream);
+    let manifest = streamed
+        .lightmap_stream_manifest()
+        .expect("the coded bake streams its lightmap");
+    for (block, resident) in blocks.iter().enumerate() {
+        assert_eq!(
+            &manifest.read_block_pair(block as u32).unwrap(),
+            resident,
+            "block {block}: streamed and all-resident decodes differ"
+        );
+    }
+    println!(
+        "coded-vs-raw: {} blocks identical on both load paths; payload blake3 {}",
+        blocks.len(),
+        hasher.finalize().to_hex()
+    );
 }

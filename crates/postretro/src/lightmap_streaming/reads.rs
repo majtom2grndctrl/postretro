@@ -24,12 +24,11 @@ pub(super) enum PairCharge {
 }
 
 impl LightmapResidencyController {
-    /// Resubmits promoted in-flight reads at the mandatory tier, then submits
-    /// every read the permits, the in-hand byte bound, and the band limits
-    /// allow, in request order: visible, pinned, mandatory by lead (nearest
-    /// first), then band (priority, then lead). A frame whose path holds
-    /// demand submits no new read, and a non-portal frame reads only the
-    /// camera cell's baked set and the pins.
+    /// Submits every read the permits, the in-hand byte bound, and the band
+    /// limits allow, in request order: visible, pinned, mandatory by lead
+    /// (nearest first), then band (priority, then lead). A frame whose path
+    /// holds demand submits no new read, and a non-portal frame reads only
+    /// the camera cell's baked set and the pins.
     ///
     /// Band reads stop at their half of the permits and bytes, and at the
     /// lightmap pool's band headroom from the last outcome less the slots of
@@ -40,7 +39,6 @@ impl LightmapResidencyController {
         &mut self,
         submit: &mut dyn FnMut(ReadRequest) -> Result<(), &'static str>,
     ) -> Result<(), LightmapResidencyError> {
-        self.submit_tier_raises(submit)?;
         if !self.may_request || !self.requests_due {
             return Ok(());
         }
@@ -84,14 +82,14 @@ impl LightmapResidencyController {
             submit(ReadRequest {
                 resource: StreamResource::LightmapBlock,
                 key: block,
-                tier: target.drain_class.tier(),
+                class: target.drain_class,
                 identity: self.identity(),
                 ranges: facts.ranges,
             })
             .map_err(LightmapResidencyError::Submit)?;
             let slot = &mut self.slots[block as usize];
             slot.phase = BlockPhase::InFlight;
-            slot.read_tier = target.drain_class.tier();
+            slot.optional_in_flight = target.drain_class.tier() == ReadTier::Optional;
             self.take_permit(
                 block,
                 if band {
@@ -123,48 +121,18 @@ impl LightmapResidencyController {
             <= self.pool[kind].band_headroom_texels
     }
 
-    /// A band read promoted in flight is still queued at the optional tier;
-    /// resubmitting it at the mandatory tier lets the issuer raise the
-    /// pending request's tier, so it is read before optional work. The
-    /// issuer absorbs the duplicate: one read, one completion.
-    fn submit_tier_raises(
-        &mut self,
-        submit: &mut dyn FnMut(ReadRequest) -> Result<(), &'static str>,
-    ) -> Result<(), LightmapResidencyError> {
-        for index in 0..self.promotions.len() {
-            let block = self.promotions[index];
-            let slot = self.slots[block as usize];
-            self.slots[block as usize].promotion_queued = false;
-            let raises = slot.phase == BlockPhase::InFlight
-                && slot.read_tier == ReadTier::Optional
-                && slot
-                    .target
-                    .is_some_and(|target| target.drain_class.tier() == ReadTier::Mandatory);
-            if !raises {
-                continue;
-            }
-            submit(ReadRequest {
-                resource: StreamResource::LightmapBlock,
-                key: block,
-                tier: ReadTier::Mandatory,
-                identity: self.identity(),
-                ranges: self.map.facts(block).ranges,
-            })
-            .map_err(LightmapResidencyError::Submit)?;
-            self.slots[block as usize].read_tier = ReadTier::Mandatory;
-            self.counters.tier_raises += 1;
-        }
-        self.promotions.clear();
-        Ok(())
-    }
-
     /// The renderer took or gave back one pool item's reserved room. Headroom
     /// moves with it, so a pair in hand moves the other way and is charged
     /// once.
     pub(super) fn set_room_reserved(&mut self, kind: PoolKind, item: u32, reserved: bool) {
         let block = kind.block_of(item);
-        // A plane takes its block's slot, so any half is one slot.
-        let texels = self.map.facts(block).texels.lightmap;
+        // A lightmap half takes its block's slot; a mask plane takes a slot
+        // at that plane's own extent.
+        let facts = self.map.facts(block);
+        let texels = match kind {
+            PoolKind::Lightmap => facts.texels.lightmap,
+            PoolKind::Mask => facts.mask_plane_texels[mask_item_plane(item)],
+        };
         let slot = &mut self.slots[block as usize];
         if slot.room_held.set(kind, item, reserved) && slot.charge == PairCharge::NeverRefused {
             if reserved {
@@ -176,8 +144,10 @@ impl LightmapResidencyController {
     }
 
     /// `block` became mandatory or visible. A band pair in hand moves to the
-    /// never-refused charge; a band read in flight is queued for a tier
-    /// raise.
+    /// never-refused charge. A band read in flight needs no message: its
+    /// block's class in the target set, written by the retarget, lifts its
+    /// pending read at the issuer or its queued decode in the pool. It is
+    /// counted once as an in-flight lift.
     pub(super) fn promote_in_hand(&mut self, block: u32) {
         let slot = &mut self.slots[block as usize];
         if slot.charge == PairCharge::Band {
@@ -188,12 +158,9 @@ impl LightmapResidencyController {
             self.band_committed_texels -= facts.texels;
             self.never_refused_texels += slot.room_held.unheld_texels(&facts);
         }
-        if slot.phase == BlockPhase::InFlight
-            && slot.read_tier == ReadTier::Optional
-            && !slot.promotion_queued
-        {
-            slot.promotion_queued = true;
-            self.promotions.push(block);
+        if slot.phase == BlockPhase::InFlight && slot.optional_in_flight {
+            slot.optional_in_flight = false;
+            self.counters.lifted_in_flight += 1;
         }
     }
 
@@ -210,11 +177,6 @@ impl LightmapResidencyController {
                 self.counters.cancelled_reads += 1;
             }
         }
-        for index in 0..self.promotions.len() {
-            let block = self.promotions[index];
-            self.slots[block as usize].promotion_queued = false;
-        }
-        self.promotions.clear();
     }
 
     /// The session stopped streaming: every ready pair's payload is dropped,
@@ -244,15 +206,20 @@ impl LightmapResidencyController {
         self.request_order_stale = false;
     }
 
-    /// Admits one issuer completion. A completion from another generation,
-    /// for a block with no read in flight, or for a block that left demand is
-    /// dropped with its buffers. A read pair becomes ready only whole: the
-    /// issuer completes a request after both its ranges are read.
+    /// Admits one completion from the issuer or the decode pool. A completion
+    /// from another generation, for a block with no read in flight, or for a
+    /// block that left demand is dropped with its buffers. A pair becomes
+    /// ready only whole: the issuer completes a request after both its ranges
+    /// are read, and the pool after every plane decodes. The decoded payload
+    /// arrives split per plane and moves into the ready map: admission copies
+    /// no payload byte.
     pub(crate) fn admit_completion(
         &mut self,
         completion: LightmapCompletion,
     ) -> Result<(), LightmapResidencyError> {
-        let LightmapCompletion { request, result } = completion;
+        let LightmapCompletion {
+            request, result, ..
+        } = completion;
         let block = request.key;
         if request.resource != StreamResource::LightmapBlock
             || request.identity != self.identity()
@@ -266,12 +233,9 @@ impl LightmapResidencyController {
             return Ok(());
         }
         let targeted = self.slots[block as usize].target.is_some();
-        let (lightmap, shadowmask) = match result {
-            LightmapReadResult::Read {
-                lightmap,
-                shadowmask,
-            } if targeted => (lightmap, shadowmask),
-            LightmapReadResult::Read { .. } => {
+        let payload = match result {
+            LightmapReadResult::Decoded(payload) if targeted => payload,
+            LightmapReadResult::Decoded(_) => {
                 // Left demand while in flight: dropped here, released.
                 self.counters.departed_reads += 1;
                 self.release_in_hand(block);
@@ -291,31 +255,26 @@ impl LightmapResidencyController {
                 self.fail(block, targeted, "read", &error);
                 return Ok(());
             }
-        };
-        match self
-            .source
-            .payload_from_pair_bytes(block, lightmap, shadowmask)
-        {
-            Ok(payload) => {
-                // The pair keeps its permit and charges until the renderer
-                // installs or refuses it.
-                self.ready.insert(
-                    block,
-                    PreparedLightmapBlock {
-                        generation: self.generation,
-                        content_tag: self.content_tag,
-                        block,
-                        payload,
-                    },
-                );
-                self.slots[block as usize].phase = BlockPhase::Ready;
-            }
-            Err(error) => {
+            LightmapReadResult::DecodeFailed(error) => {
+                // A corrupt block is never uploaded: it fails like a read.
                 self.release_in_hand(block);
                 self.counters.failed_reads += 1;
-                self.fail(block, true, "payload split", &error);
+                self.fail(block, targeted, "decode", &error);
+                return Ok(());
             }
-        }
+        };
+        // The pair keeps its permit and charges until the renderer installs
+        // or refuses it.
+        self.ready.insert(
+            block,
+            PreparedLightmapBlock {
+                generation: self.generation,
+                content_tag: self.content_tag,
+                block,
+                payload,
+            },
+        );
+        self.slots[block as usize].phase = BlockPhase::Ready;
         Ok(())
     }
 

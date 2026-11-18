@@ -1,12 +1,15 @@
-// Forward vertex-stage lightmap block table: one `vec4<u32>` per entry,
+// Forward vertex-stage lightmap block table: two `vec4<u32>` per entry,
 // indexed by `WorldVertex::lightmap_block` (block id + 1, 0 = no lightmap).
 // See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use super::BlockPlacement;
 use postretro_level_format::lightmap::LIGHTMAP_POOL_LAYER_EDGE;
 
-/// Bytes of one entry: a WGSL `vec4<u32>`.
-pub const BLOCK_TABLE_ENTRY_BYTES: usize = 16;
+/// `u32` words in one entry: the lightmap word, then the mask word, each a WGSL
+/// `vec4<u32>`.
+pub const BLOCK_TABLE_ENTRY_WORDS: usize = 8;
+/// Bytes of one entry: WGSL `LightmapBlockEntry { lightmap, mask }`.
+pub const BLOCK_TABLE_ENTRY_BYTES: usize = BLOCK_TABLE_ENTRY_WORDS * 4;
 /// The entry's texels are in the pool at its address.
 pub const BLOCK_FLAG_RESIDENT: u32 = 1 << 0;
 /// The "no lightmap" entry: zero static irradiance, neutral direction,
@@ -61,21 +64,26 @@ impl BlockAddresses {
     }
 }
 
-/// One table entry. Layout, mirrored by `lightmap_block_table` in
-/// forward.wgsl and decoded by `resolve_lightmap_block` in
-/// lightmap_sample.wgsl, as native-endian `u32`s:
+/// One table entry. Layout, mirrored by `LightmapBlockEntry` in forward.wgsl
+/// and decoded by `resolve_lightmap_block` in lightmap_sample.wgsl, as
+/// native-endian `u32`s:
 ///
 /// ```text
-///   x  lightmap address   offset x/4 (9) | offset y/4 (9) << 9 | layer (14) << 18
-///   y  plane A address    same
-///   z  plane B address    same
-///   w  extent w (12) | extent h (12) << 12 | flags (8) << 24
+///   lightmap.x  lightmap address   offset x/4 (9) | offset y/4 (9) << 9 | layer (14) << 18
+///   lightmap.y  plane A address    same
+///   lightmap.z  plane B address    same
+///   lightmap.w  extent w (12) | extent h (12) << 12 | flags (8) << 24
+///   mask.x      plane A extent     w (12) | h (12) << 12: the mask block's
+///   mask.y      plane B extent     same: the plane-B sub-rect's
+///   mask.z, w   0
 /// ```
 ///
 /// The three addresses are three pool places: a block's lightmap and its two
 /// planes need not share a layer or an offset. `block_alignment()` is at least
 /// 4, so an offset is whole in texels / 4, and a pool layer is at most
-/// `LIGHTMAP_POOL_LAYER_EDGE` (2048) texels on a side.
+/// `LIGHTMAP_POOL_LAYER_EDGE` (2048) texels on a side. Each plane has its own
+/// extent, which the fragment clamps its mask texel to; only a resident entry
+/// writes them, every other entry's mask word is 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockTableEntry {
     /// Entry 0 of a level with blocks.
@@ -88,6 +96,8 @@ pub enum BlockTableEntry {
         addresses: BlockAddresses,
         width: u32,
         height: u32,
+        /// Plane A's extent, then plane B's; `(0, 0)` with no mask pool.
+        mask_extents: [(u32, u32); 2],
     },
     /// A real block whose texels are not in the pool. The extent stays so
     /// the block-local texel (and the animated lookup keyed on it) resolves.
@@ -122,19 +132,23 @@ fn pack_extent(width: u32, height: u32, flags: u32) -> u32 {
 }
 
 impl BlockTableEntry {
-    pub fn to_words(self) -> [u32; 4] {
-        match self {
-            Self::None => [0, 0, 0, pack_extent(0, 0, BLOCK_FLAG_NONE)],
-            Self::Placeholder => [
-                0,
-                0,
-                0,
-                pack_extent(1, 1, BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NO_MASK_POOL),
-            ],
+    pub fn to_words(self) -> [u32; BLOCK_TABLE_ENTRY_WORDS] {
+        let ([x, y, z, w], mask) = match self {
+            Self::None => ([0, 0, 0, pack_extent(0, 0, BLOCK_FLAG_NONE)], [0; 2]),
+            Self::Placeholder => (
+                [
+                    0,
+                    0,
+                    0,
+                    pack_extent(1, 1, BLOCK_FLAG_RESIDENT | BLOCK_FLAG_NO_MASK_POOL),
+                ],
+                [0; 2],
+            ),
             Self::Resident {
                 addresses,
                 width,
                 height,
+                mask_extents,
             } => {
                 let (planes, mask_flags) = match addresses.masks {
                     MaskAddresses::NoPool => ([None; 2], BLOCK_FLAG_NO_MASK_POOL),
@@ -146,21 +160,26 @@ impl BlockTableEntry {
                         (planes, flags)
                     }
                 };
-                [
-                    pack_address(addresses.lightmap),
-                    planes[0].map_or(0, pack_address),
-                    planes[1].map_or(0, pack_address),
-                    pack_extent(width, height, BLOCK_FLAG_RESIDENT | mask_flags),
-                ]
+                (
+                    [
+                        pack_address(addresses.lightmap),
+                        planes[0].map_or(0, pack_address),
+                        planes[1].map_or(0, pack_address),
+                        pack_extent(width, height, BLOCK_FLAG_RESIDENT | mask_flags),
+                    ],
+                    mask_extents.map(|(width, height)| pack_extent(width, height, 0)),
+                )
             }
-            Self::Missing { width, height } => [0, 0, 0, pack_extent(width, height, 0)],
-        }
+            Self::Missing { width, height } => ([0, 0, 0, pack_extent(width, height, 0)], [0; 2]),
+        };
+        [x, y, z, w, mask[0], mask[1], 0, 0]
     }
 
     /// Inverse of [`Self::to_words`]. A resident entry whose extent is 1×1 at
     /// the origin of layer 0 with no mask pool reads back as
     /// [`Self::Placeholder`].
-    pub fn from_words([lightmap, plane_a, plane_b, packed]: [u32; 4]) -> Self {
+    pub fn from_words(words: [u32; BLOCK_TABLE_ENTRY_WORDS]) -> Self {
+        let [lightmap, plane_a, plane_b, packed, mask_a, mask_b, _, _] = words;
         let (width, height) = (packed & EXTENT_MASK, (packed >> EXTENT_BITS) & EXTENT_MASK);
         let flags = packed >> FLAGS_SHIFT;
         if flags & BLOCK_FLAG_NONE != 0 {
@@ -186,10 +205,12 @@ impl BlockTableEntry {
         if lightmap == origin && (width, height) == (1, 1) && masks == MaskAddresses::NoPool {
             return Self::Placeholder;
         }
+        let unpack_extent = |word: u32| (word & EXTENT_MASK, (word >> EXTENT_BITS) & EXTENT_MASK);
         Self::Resident {
             addresses: BlockAddresses { lightmap, masks },
             width,
             height,
+            mask_extents: [unpack_extent(mask_a), unpack_extent(mask_b)],
         }
     }
 
@@ -202,6 +223,7 @@ impl BlockTableEntry {
                 addresses,
                 width,
                 height,
+                ..
             } if local_x < width && local_y < height => {
                 let placement = addresses.lightmap;
                 Some((
@@ -231,17 +253,29 @@ pub fn placeholder_block_table() -> Vec<u8> {
 
 /// The table of a level with blocks: entry 0 is "no lightmap", then one entry
 /// per block id, resident where `addresses[id]` is `Some` and a miss where it
-/// is `None`.
-pub fn block_table_bytes(extents: &[(u32, u32)], addresses: &[Option<BlockAddresses>]) -> Vec<u8> {
+/// is `None`. `mask_extents[id]` holds the block's plane extents.
+pub fn block_table_bytes(
+    extents: &[(u32, u32)],
+    mask_extents: &[[(u32, u32); 2]],
+    addresses: &[Option<BlockAddresses>],
+) -> Vec<u8> {
     assert_eq!(extents.len(), addresses.len(), "one address slot per block");
+    assert_eq!(
+        extents.len(),
+        mask_extents.len(),
+        "one mask extent per block"
+    );
     let mut bytes = Vec::with_capacity((extents.len() + 1) * BLOCK_TABLE_ENTRY_BYTES);
     push_entry(&mut bytes, BlockTableEntry::None);
-    for (&(width, height), address) in extents.iter().zip(addresses) {
+    for ((&(width, height), &mask_extents), address) in
+        extents.iter().zip(mask_extents).zip(addresses)
+    {
         let entry = match *address {
             Some(addresses) => BlockTableEntry::Resident {
                 addresses,
                 width,
                 height,
+                mask_extents,
             },
             None => BlockTableEntry::Missing { width, height },
         };

@@ -2,24 +2,25 @@
 // See: context/lib/build_pipeline.md §PRL section IDs, rendering_pipeline.md §4
 
 use crate::FormatError;
+use crate::coded_plane::{self, BlockCodec};
+
+mod record;
+
+pub use record::LIGHTMAP_BLOCK_RECORD_BYTES;
 
 /// Irradiance texel byte width for the uncompressed `Rgba16Float` path.
 pub const IRRADIANCE_TEXEL_BYTES: usize = 8;
 /// Direction texel byte width: two octahedral `Rg8Unorm` components.
 pub const DIRECTION_TEXEL_BYTES: usize = 2;
 
-/// v3: per-cell blocks. v2 was layer-major whole atlases; `from_bytes` rejects
-/// every version but this one.
-pub const LIGHTMAP_SECTION_VERSION: u32 = 3;
+/// v4: each plane is stored coded ([`BlockCodec`]), its record carrying the
+/// codec and both raw lengths. v3 stored per-cell blocks raw; v2 was
+/// layer-major whole atlases. `from_bytes` rejects every version but this one.
+pub const LIGHTMAP_SECTION_VERSION: u32 = 4;
 
 /// Fixed header: version, block_count, direction_texel_scale,
 /// irradiance_format, mode.
 pub const LIGHTMAP_HEADER_BYTES: usize = 20;
-
-/// One block record: cell_id u32, width u16, height u16, irradiance_offset
-/// u64, irradiance_len u32, direction_offset u64, direction_len u32,
-/// reserved u32.
-pub const LIGHTMAP_BLOCK_RECORD_BYTES: usize = 36;
 
 /// Edge of one runtime pool layer. No block may exceed it on either axis;
 /// the compiler rejects such a level and the loader rejects such a record.
@@ -93,7 +94,7 @@ impl SectionByteRange {
     }
 }
 
-/// Fixed header of a v3 lightmap section.
+/// Fixed header of a v4 lightmap section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LightmapHeader {
     pub block_count: u32,
@@ -214,8 +215,23 @@ pub struct LightmapBlockRecord {
     pub cell_id: u32,
     pub width: u16,
     pub height: u16,
+    /// The stored irradiance plane.
     pub irradiance: SectionByteRange,
+    /// The stored direction plane, starting where the irradiance plane ends.
     pub direction: SectionByteRange,
+    /// How both planes are stored.
+    pub codec: BlockCodec,
+    /// Irradiance then direction bytes once decoded: the lengths the block's
+    /// extent and format give.
+    pub raw_len: [u32; 2],
+}
+
+impl LightmapBlockRecord {
+    /// Both planes' bytes once decoded: what the block costs in hand and to
+    /// upload.
+    pub fn decoded_bytes(&self) -> u64 {
+        u64::from(self.raw_len[0]) + u64::from(self.raw_len[1])
+    }
 }
 
 /// Header plus every block record: what a loaded level keeps CPU-side for
@@ -231,12 +247,14 @@ impl LightmapBlockIndex {
     /// hold at least [`LightmapHeader::index_byte_len`] bytes; `section_len`
     /// is the whole section's length, which every blob range must fit inside.
     ///
-    /// Rejects: a record with a zero, misaligned, or pool-layer-oversize
-    /// extent; a blob length that disagrees with the block's extent and
-    /// format; a blob range that overlaps the index or leaves the section; a
-    /// direction blob that does not start where its irradiance blob ends; a
-    /// block whose blobs start before the previous block's end; a nonzero
-    /// reserved field.
+    /// Rejects: an unknown codec; a record with a zero, misaligned, or
+    /// pool-layer-oversize extent; a raw length that disagrees with the
+    /// block's extent and format; a raw plane stored at another length, or a
+    /// coded plane stored empty; a blob range that overlaps the index or
+    /// leaves the section; a direction blob that does not start where its
+    /// irradiance blob ends; a block whose blobs do not start exactly where
+    /// the previous block's (or the index) end; blobs that do not end at
+    /// `section_len`; a nonzero reserved field.
     pub fn from_prefix(prefix: &[u8], section_len: u64) -> crate::Result<Self> {
         let header = LightmapHeader::from_bytes(prefix)?;
         let index_len = header
@@ -258,26 +276,8 @@ impl LightmapBlockIndex {
         let mut blobs_end = index_len;
         for block in 0..header.block_count as usize {
             let at = LIGHTMAP_HEADER_BYTES + block * LIGHTMAP_BLOCK_RECORD_BYTES;
-            let record = LightmapBlockRecord {
-                cell_id: read_u32(prefix, at),
-                width: read_u16(prefix, at + 4),
-                height: read_u16(prefix, at + 6),
-                irradiance: SectionByteRange {
-                    offset: read_u64(prefix, at + 8),
-                    len: read_u32(prefix, at + 16),
-                },
-                direction: SectionByteRange {
-                    offset: read_u64(prefix, at + 20),
-                    len: read_u32(prefix, at + 28),
-                },
-            };
-            let reserved = read_u32(prefix, at + 32);
-            if reserved != 0 {
-                return Err(invalid(format!(
-                    "lightmap block {block} has nonzero reserved field {reserved:#x}"
-                )));
-            }
-            validate_record(&header, block, &record, align, index_len, section_len)?;
+            let record = record::read_record(prefix, at, block)?;
+            record::validate_record(&header, block, &record, align, index_len, section_len)?;
             blobs_end = check_after_previous_block(
                 "lightmap",
                 block,
@@ -286,6 +286,11 @@ impl LightmapBlockIndex {
                 blobs_end,
             )?;
             records.push(record);
+        }
+        if blobs_end != section_len {
+            return Err(invalid(format!(
+                "lightmap section is {section_len} bytes, but its index and blobs end at {blobs_end}"
+            )));
         }
         Ok(Self { header, records })
     }
@@ -296,81 +301,45 @@ impl LightmapBlockIndex {
             .get(block)
             .map(|r| (u32::from(r.width), u32::from(r.height)))
     }
+
+    /// Decodes block `block`'s stored planes to its irradiance and direction
+    /// bytes, as the pool uploads them. A raw plane moves through uncopied.
+    /// Fails by name on a frame that does not decode, checksum verified, to
+    /// exactly its declared raw length.
+    pub fn decode_block(
+        &self,
+        block: usize,
+        irradiance: Vec<u8>,
+        direction: Vec<u8>,
+    ) -> crate::Result<(Vec<u8>, Vec<u8>)> {
+        let record = self
+            .records
+            .get(block)
+            .ok_or_else(|| invalid(format!("lightmap block {block} is past the index")))?;
+        let decode = |what: &str, stored: Vec<u8>, raw_len: u32| {
+            coded_plane::decode_plane(record.codec, stored, raw_len as usize).map_err(|reason| {
+                invalid(format!(
+                    "lightmap block {block} {what} plane failed to decode: {reason}"
+                ))
+            })
+        };
+        Ok((
+            decode("irradiance", irradiance, record.raw_len[0])?,
+            decode("direction", direction, record.raw_len[1])?,
+        ))
+    }
 }
 
-fn validate_record(
-    header: &LightmapHeader,
-    block: usize,
-    record: &LightmapBlockRecord,
-    align: u32,
-    index_len: u64,
-    section_len: u64,
-) -> crate::Result<()> {
-    let (w, h) = (u32::from(record.width), u32::from(record.height));
-    if w == 0 || h == 0 {
-        return Err(invalid(format!(
-            "lightmap block {block} has zero extent {w}x{h}"
-        )));
-    }
-    if w > LIGHTMAP_POOL_LAYER_EDGE || h > LIGHTMAP_POOL_LAYER_EDGE {
-        return Err(invalid(format!(
-            "lightmap block {block} extent {w}x{h} exceeds the {LIGHTMAP_POOL_LAYER_EDGE}² pool layer"
-        )));
-    }
-    if w % align != 0 || h % align != 0 {
-        return Err(invalid(format!(
-            "lightmap block {block} extent {w}x{h} is not a multiple of {align}"
-        )));
-    }
-    let expected_irr = header
-        .irradiance_len(w, h)
-        .ok_or_else(|| invalid("lightmap irradiance length overflows"))?;
-    let expected_dir = header
-        .direction_len(w, h)
-        .ok_or_else(|| invalid("lightmap direction length overflows"))?;
-    check_blob(
-        "lightmap",
-        block,
-        "irradiance",
-        record.irradiance,
-        expected_irr,
-        index_len,
-        section_len,
-    )?;
-    check_blob(
-        "lightmap",
-        block,
-        "direction",
-        record.direction,
-        expected_dir,
-        index_len,
-        section_len,
-    )?;
-    check_adjacent(
-        "lightmap",
-        block,
-        ("irradiance", record.irradiance),
-        ("direction", record.direction),
-    )
-}
-
-/// Shared by ids 22 and 42: a blob has its exact expected length and lies
-/// after the index, inside the section.
-pub(crate) fn check_blob(
+/// Shared by ids 22 and 42: a stored blob lies after the index, inside the
+/// section. Its length is the record's to check against its codec.
+pub(crate) fn check_blob_range(
     section: &str,
     block: usize,
     what: &str,
     range: SectionByteRange,
-    expected_len: u64,
     index_len: u64,
     section_len: u64,
 ) -> crate::Result<()> {
-    if u64::from(range.len) != expected_len {
-        return Err(invalid(format!(
-            "{section} block {block} {what} blob is {} bytes, expected {expected_len}",
-            range.len
-        )));
-    }
     let end = range
         .end()
         .ok_or_else(|| invalid(format!("{section} block {block} {what} range overflows")))?;
@@ -400,11 +369,12 @@ pub(crate) fn check_adjacent(
     )))
 }
 
-/// Shared by ids 22 and 42: a block's adjacent blob pair starts at or after
+/// Shared by ids 22 and 42: a block's adjacent blob pair starts exactly at
 /// `previous_end`, where the previous block's pair (or the index) ends, so
-/// blobs are disjoint and in record order. The compiler writes them so, and
-/// id 42's slot-table bound counts each blob byte once. Returns this pair's
-/// end. Callers have already checked both ranges with [`check_blob`].
+/// blobs are disjoint, in record order and gapless. The compiler writes them
+/// so, and id 42's slot-table bound counts each blob byte once. Returns this
+/// pair's end; the caller checks that the last block's end is the section's.
+/// Callers have already checked both ranges with [`check_blob_range`].
 pub(crate) fn check_after_previous_block(
     section: &str,
     block: usize,
@@ -418,41 +388,74 @@ pub(crate) fn check_after_previous_block(
             first.offset
         )));
     }
+    if first.offset > previous_end {
+        return Err(invalid(format!(
+            "{section} block {block} {first_what} blob at {} leaves a gap after the previous block's blobs end at {previous_end}; blobs must be adjacent in record order",
+            first.offset
+        )));
+    }
     Ok(second.offset + u64::from(second.len))
 }
 
-/// One block's baked texels in their stored formats.
+/// One block's baked planes in their stored form: BC6H (or RGBA16F)
+/// irradiance and Rg8 direction, each coded by `codec`. Read the texels
+/// through [`LightmapSection::decode_block`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightmapBlock {
     pub cell_id: u32,
     pub width: u16,
     pub height: u16,
+    pub codec: BlockCodec,
     pub irradiance: Vec<u8>,
     pub direction: Vec<u8>,
 }
 
-/// A whole v3 lightmap section in memory: the compiler's output, and the
-/// all-resident loader's input. A streaming loader never builds one; it keeps
-/// a [`LightmapBlockIndex`] and reads blob ranges.
+impl LightmapBlock {
+    /// A block whose raw planes are stored under `codec`.
+    pub fn coded(
+        cell_id: u32,
+        width: u16,
+        height: u16,
+        codec: BlockCodec,
+        irradiance: &[u8],
+        direction: &[u8],
+    ) -> Self {
+        Self {
+            cell_id,
+            width,
+            height,
+            codec,
+            irradiance: coded_plane::encode_plane(codec, irradiance),
+            direction: coded_plane::encode_plane(codec, direction),
+        }
+    }
+}
+
+/// A whole v4 lightmap section in memory, planes in their stored form: the
+/// compiler's output and its memo. Loaders never build one: they keep a
+/// [`LightmapBlockIndex`] and decode each block's planes as they read them.
 ///
 /// On-disk layout (little-endian; offsets from the payload start):
 ///
 /// ```text
 ///   Header (20 bytes):
-///     u32 version                (= 3)
+///     u32 version                (= 4)
 ///     u32 block_count            (<= MAX_LIGHTMAP_BLOCKS)
 ///     u32 direction_texel_scale  (power of two dividing LIGHTMAP_POOL_LAYER_EDGE)
 ///     u32 irradiance_format      (0 = Rgba16Float, 1 = Bc6hRgbUfloat)
 ///     u32 mode                   (LightmapMode: 0 = shadowed, 1 = unshadowed)
-///   block_count records (36 bytes each), block id = record index:
+///   block_count records (48 bytes each), block id = record index:
 ///     u32 cell_id
 ///     u16 width, u16 height      (multiples of lcm(4, direction_texel_scale),
 ///                                 each <= LIGHTMAP_POOL_LAYER_EDGE)
-///     u64 irradiance_offset, u32 irradiance_len
-///     u64 direction_offset,  u32 direction_len   (Rg8, extent / scale)
+///     u64 irradiance_offset, u32 irradiance_stored_len
+///     u64 direction_offset,  u32 direction_stored_len
+///     u32 codec                  (0 = stored raw, 1 = one zstd frame per plane)
+///     u32 irradiance_raw_len, u32 direction_raw_len  (the extent's lengths;
+///                                 direction is Rg8 at extent / scale)
 ///     u32 reserved (= 0)
-///   Blobs, in record order: each block's irradiance, then its direction,
-///   adjacent.
+///   Blobs, in record order with no gap, to the section's end: each block's
+///   stored irradiance, then its stored direction.
 /// ```
 ///
 /// Records and blobs are sorted by owning cluster, then cell id, then
@@ -506,12 +509,22 @@ impl LightmapSection {
                     len: block.direction.len() as u32,
                 };
                 cursor += block.direction.len() as u64;
+                let (w, h) = (u32::from(block.width), u32::from(block.height));
+                let raw_len = |len: Option<u64>| {
+                    len.and_then(|len| u32::try_from(len).ok())
+                        .expect("a block's plane fits u32 bytes")
+                };
                 LightmapBlockRecord {
                     cell_id: block.cell_id,
                     width: block.width,
                     height: block.height,
                     irradiance,
                     direction,
+                    codec: block.codec,
+                    raw_len: [
+                        raw_len(header.irradiance_len(w, h)),
+                        raw_len(header.direction_len(w, h)),
+                    ],
                 }
             })
             .collect();
@@ -534,14 +547,7 @@ impl LightmapSection {
         let mut out = Vec::with_capacity(index.header.index_byte_len().unwrap_or(0) as usize);
         index.header.write(&mut out);
         for record in &index.records {
-            out.extend_from_slice(&record.cell_id.to_le_bytes());
-            out.extend_from_slice(&record.width.to_le_bytes());
-            out.extend_from_slice(&record.height.to_le_bytes());
-            out.extend_from_slice(&record.irradiance.offset.to_le_bytes());
-            out.extend_from_slice(&record.irradiance.len.to_le_bytes());
-            out.extend_from_slice(&record.direction.offset.to_le_bytes());
-            out.extend_from_slice(&record.direction.len.to_le_bytes());
-            out.extend_from_slice(&0u32.to_le_bytes());
+            record::write_record(&mut out, record);
         }
         out
     }
@@ -567,6 +573,7 @@ impl LightmapSection {
     }
 
     /// Parse a whole section, validating the index against its own length.
+    /// Planes stay in their stored form.
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let index = LightmapBlockIndex::from_prefix(data, data.len() as u64)?;
         let blocks = index
@@ -576,6 +583,7 @@ impl LightmapSection {
                 cell_id: record.cell_id,
                 width: record.width,
                 height: record.height,
+                codec: record.codec,
                 irradiance: slice_range(data, record.irradiance).to_vec(),
                 direction: slice_range(data, record.direction).to_vec(),
             })
@@ -587,17 +595,65 @@ impl LightmapSection {
             blocks,
         })
     }
+
+    /// This section with every block's planes decoded and stored raw: the
+    /// texels a compiler-side reader or a test inspects byte for byte.
+    pub fn decoded(&self) -> crate::Result<Self> {
+        let blocks = (0..self.blocks.len())
+            .map(|block| {
+                let (irradiance, direction) = self.decode_block(block)?;
+                Ok(LightmapBlock {
+                    codec: BlockCodec::Raw,
+                    irradiance,
+                    direction,
+                    ..self.blocks[block]
+                })
+            })
+            .collect::<crate::Result<_>>()?;
+        Ok(Self { blocks, ..*self })
+    }
+
+    /// Block `block`'s irradiance and direction bytes, decoded from their
+    /// stored form, as the pool uploads them. Fails by name like
+    /// [`LightmapBlockIndex::decode_block`].
+    pub fn decode_block(&self, block: usize) -> crate::Result<(Vec<u8>, Vec<u8>)> {
+        let header = self.header();
+        let stored = self
+            .blocks
+            .get(block)
+            .ok_or_else(|| invalid(format!("lightmap block {block} is past the section")))?;
+        let (w, h) = (u32::from(stored.width), u32::from(stored.height));
+        let decode = |what: &str, plane: &[u8], raw_len: Option<u64>| {
+            let raw_len = raw_len.ok_or_else(|| invalid("lightmap plane length overflows"))?;
+            coded_plane::decode_plane_from(stored.codec, plane, raw_len as usize).map_err(
+                |reason| {
+                    invalid(format!(
+                        "lightmap block {block} {what} plane failed to decode: {reason}"
+                    ))
+                },
+            )
+        };
+        Ok((
+            decode(
+                "irradiance",
+                &stored.irradiance,
+                header.irradiance_len(w, h),
+            )?,
+            decode("direction", &stored.direction, header.direction_len(w, h))?,
+        ))
+    }
 }
 
-/// One block's texels as the pool installs them: the lightmap pair plus its
-/// shadowmask groups when id 42 is present. The all-resident loader and the
-/// streaming issuer both produce this.
+/// One block's texels as the pool installs them, decoded and split per plane:
+/// the lightmap pair plus its shadowmask groups when id 42 is present. The
+/// all-resident loader and the streaming decode pool both produce this.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LightmapBlockPayload {
     pub irradiance: Vec<u8>,
     pub direction: Vec<u8>,
-    /// Shadowmask group A then group B, BC5 at the block extent. An absent
-    /// plane is empty: it takes no placement, no upload and no bytes.
+    /// Shadowmask group A then group B, BC5 at each plane's own extent: group
+    /// A at the mask block's, group B at its plane-B sub-rect. An absent plane
+    /// is empty: it takes no placement, no upload and no bytes.
     pub shadowmask: Option<[Vec<u8>; 2]>,
 }
 
@@ -725,289 +781,4 @@ fn signum_nonzero(v: f32) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn block(cell_id: u32, width: u16, height: u16, seed: u8, scale: u32) -> LightmapBlock {
-        let header = LightmapHeader {
-            block_count: 0,
-            direction_texel_scale: scale,
-            irradiance_format: IRRADIANCE_FORMAT_BC6H,
-            mode: LightmapMode::Shadowed,
-        };
-        let (w, h) = (u32::from(width), u32::from(height));
-        let irr_len = header.irradiance_len(w, h).unwrap() as usize;
-        let dir_len = header.direction_len(w, h).unwrap() as usize;
-        LightmapBlock {
-            cell_id,
-            width,
-            height,
-            irradiance: (0..irr_len).map(|i| seed.wrapping_add(i as u8)).collect(),
-            direction: (0..dir_len).map(|i| seed ^ (i as u8)).collect(),
-        }
-    }
-
-    fn two_block_section() -> LightmapSection {
-        LightmapSection {
-            direction_texel_scale: 2,
-            irradiance_format: IRRADIANCE_FORMAT_BC6H,
-            mode: LightmapMode::Unshadowed,
-            blocks: vec![block(7, 8, 4, 3, 2), block(2, 4, 12, 9, 2)],
-        }
-    }
-
-    fn error_message(result: crate::Result<impl std::fmt::Debug>) -> String {
-        format!("{:?}", result.expect_err("expected a rejection"))
-    }
-
-    /// Byte offset of block `block`'s record field at `field` within it.
-    fn record_at(block: usize, field: usize) -> usize {
-        LIGHTMAP_HEADER_BYTES + block * LIGHTMAP_BLOCK_RECORD_BYTES + field
-    }
-
-    #[test]
-    fn lightmap_blocks_round_trip_with_header_mode_and_scale() {
-        let section = two_block_section();
-        let bytes = section.to_bytes();
-        assert_eq!(section.byte_len(), bytes.len());
-        assert_eq!(LightmapSection::from_bytes(&bytes).unwrap(), section);
-    }
-
-    #[test]
-    fn zero_block_section_is_a_bare_header() {
-        let section = LightmapSection::empty(2);
-        let bytes = section.to_bytes();
-        assert_eq!(bytes.len(), LIGHTMAP_HEADER_BYTES);
-        let index = LightmapBlockIndex::from_prefix(&bytes, bytes.len() as u64).unwrap();
-        assert!(index.records.is_empty());
-        assert_eq!(LightmapSection::from_bytes(&bytes).unwrap(), section);
-    }
-
-    #[test]
-    fn index_parses_from_the_prefix_alone() {
-        let section = two_block_section();
-        let bytes = section.to_bytes();
-        let index_len = section.header().index_byte_len().unwrap() as usize;
-        let index = LightmapBlockIndex::from_prefix(&bytes[..index_len], bytes.len() as u64)
-            .expect("the index needs no blob bytes");
-        assert_eq!(index, section.index());
-        // Blobs follow the index in record order: irradiance, then direction.
-        let first = index.records[0];
-        assert_eq!(first.irradiance.offset, index_len as u64);
-        assert_eq!(
-            first.direction.offset,
-            first.irradiance.offset + u64::from(first.irradiance.len)
-        );
-        assert_eq!(index.extent(1), Some((4, 12)));
-    }
-
-    #[test]
-    fn block_alignment_is_lcm_of_bc_edge_and_direction_scale() {
-        let mut header = two_block_section().header();
-        for (scale, align) in [(1, 4), (2, 4), (4, 4), (8, 8), (3, 12)] {
-            header.direction_texel_scale = scale;
-            assert_eq!(header.block_alignment(), align, "scale {scale}");
-        }
-    }
-
-    #[test]
-    fn rejects_older_section_versions_with_a_rebake_hint() {
-        let mut bytes = two_block_section().to_bytes();
-        bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
-        let message = error_message(LightmapSection::from_bytes(&bytes));
-        assert!(message.contains("version: 2"), "{message}");
-        assert!(message.contains("re-bake"), "{message}");
-    }
-
-    #[test]
-    fn rejects_nonzero_reserved_field() {
-        let mut bytes = two_block_section().to_bytes();
-        let at = record_at(1, 32);
-        bytes[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
-        let message = error_message(LightmapSection::from_bytes(&bytes));
-        assert!(message.contains("reserved"), "{message}");
-    }
-
-    #[test]
-    fn rejects_blob_range_outside_the_section() {
-        let mut bytes = two_block_section().to_bytes();
-        let at = record_at(1, 20);
-        let past_end = bytes.len() as u64;
-        bytes[at..at + 8].copy_from_slice(&past_end.to_le_bytes());
-        let message = error_message(LightmapSection::from_bytes(&bytes));
-        assert!(message.contains("outside the section"), "{message}");
-    }
-
-    #[test]
-    fn rejects_blob_range_overlapping_the_index() {
-        let mut bytes = two_block_section().to_bytes();
-        let at = record_at(0, 8);
-        bytes[at..at + 8].copy_from_slice(&0u64.to_le_bytes());
-        let message = error_message(LightmapSection::from_bytes(&bytes));
-        assert!(message.contains("outside the section"), "{message}");
-    }
-
-    #[test]
-    fn rejects_block_larger_than_a_pool_layer() {
-        let edge = LIGHTMAP_POOL_LAYER_EDGE as u16 + 4;
-        let section = LightmapSection {
-            blocks: vec![block(0, edge, 4, 1, 2)],
-            ..two_block_section()
-        };
-        let message = error_message(LightmapSection::from_bytes(&section.to_bytes()));
-        assert!(message.contains("pool layer"), "{message}");
-    }
-
-    #[test]
-    fn accepts_a_block_exactly_one_pool_layer() {
-        let edge = LIGHTMAP_POOL_LAYER_EDGE as u16;
-        let section = LightmapSection {
-            blocks: vec![block(0, edge, 4, 1, 2)],
-            ..two_block_section()
-        };
-        assert!(LightmapSection::from_bytes(&section.to_bytes()).is_ok());
-    }
-
-    #[test]
-    fn rejects_misaligned_extent() {
-        let mut bytes = two_block_section().to_bytes();
-        let at = record_at(0, 4);
-        bytes[at..at + 2].copy_from_slice(&6u16.to_le_bytes());
-        let message = error_message(LightmapSection::from_bytes(&bytes));
-        assert!(message.contains("not a multiple of 4"), "{message}");
-    }
-
-    #[test]
-    fn rejects_blob_length_that_disagrees_with_extent() {
-        let mut section = two_block_section();
-        section.blocks[1].direction.pop();
-        let message = error_message(LightmapSection::from_bytes(&section.to_bytes()));
-        assert!(message.contains("direction blob"), "{message}");
-    }
-
-    #[test]
-    fn rejects_block_count_past_the_vertex_id_limit() {
-        let mut bytes = LightmapSection::empty(2).to_bytes();
-        bytes[4..8].copy_from_slice(&(MAX_LIGHTMAP_BLOCKS + 1).to_le_bytes());
-        let message = error_message(LightmapHeader::from_bytes(&bytes));
-        assert!(message.contains("vertex id limit"), "{message}");
-        bytes[4..8].copy_from_slice(&MAX_LIGHTMAP_BLOCKS.to_le_bytes());
-        assert!(LightmapHeader::from_bytes(&bytes).is_ok());
-    }
-
-    #[test]
-    fn block_limit_is_u16_max_so_the_last_block_id_plus_one_fits_a_vertex() {
-        assert_eq!(MAX_LIGHTMAP_BLOCKS, 65_535);
-        let last_block_id = MAX_LIGHTMAP_BLOCKS - 1;
-        assert_eq!(u16::try_from(last_block_id + 1), Ok(u16::MAX));
-    }
-
-    #[test]
-    fn rejects_direction_scale_that_is_not_a_power_of_two_dividing_the_pool_layer() {
-        for scale in [3u32, 6, 12, LIGHTMAP_POOL_LAYER_EDGE * 2] {
-            let mut bytes = LightmapSection::empty(2).to_bytes();
-            bytes[8..12].copy_from_slice(&scale.to_le_bytes());
-            let message = error_message(LightmapHeader::from_bytes(&bytes));
-            assert!(
-                message.contains("power of two dividing"),
-                "{scale}: {message}"
-            );
-        }
-        for scale in [1u32, 2, 8, LIGHTMAP_POOL_LAYER_EDGE] {
-            let mut bytes = LightmapSection::empty(2).to_bytes();
-            bytes[8..12].copy_from_slice(&scale.to_le_bytes());
-            assert!(LightmapHeader::from_bytes(&bytes).is_ok(), "{scale}");
-        }
-    }
-
-    #[test]
-    fn rejects_direction_blob_that_does_not_start_where_its_irradiance_ends() {
-        let mut bytes = two_block_section().to_bytes();
-        // Block 0's direction moved one byte on: still inside the section
-        // and the right length, but no longer adjacent to its irradiance.
-        let at = record_at(0, 20);
-        let offset = read_u64(&bytes, at) + 1;
-        bytes[at..at + 8].copy_from_slice(&offset.to_le_bytes());
-        let message = error_message(LightmapSection::from_bytes(&bytes));
-        let expected = format!(
-            "lightmap block 0 direction blob at {offset} does not start where its irradiance blob ends"
-        );
-        assert!(message.contains(&expected), "{message}");
-    }
-
-    #[test]
-    fn rejects_blobs_that_overlap_or_leave_record_order() {
-        let section = two_block_section();
-        let index = section.index();
-        let (first, second) = (index.records[0], index.records[1]);
-        let first_len = u64::from(first.irradiance.len + first.direction.len);
-        let second_len = u64::from(second.irradiance.len + second.direction.len);
-        let start = first.irradiance.offset;
-        let place = |bytes: &mut Vec<u8>, block: usize, record: &LightmapBlockRecord, at: u64| {
-            let irradiance = record_at(block, 8);
-            bytes[irradiance..irradiance + 8].copy_from_slice(&at.to_le_bytes());
-            let direction = record_at(block, 20);
-            let direction_at = at + u64::from(record.irradiance.len);
-            bytes[direction..direction + 8].copy_from_slice(&direction_at.to_le_bytes());
-        };
-
-        // Block 1's pair laid over block 0's: each pair adjacent and inside
-        // the section, but the two share bytes.
-        let mut overlapping = section.to_bytes();
-        place(&mut overlapping, 1, &second, start);
-        let message = error_message(LightmapSection::from_bytes(&overlapping));
-        let expected = format!(
-            "lightmap block 1 irradiance blob at {start} starts before the previous block's blobs end at {}",
-            start + first_len
-        );
-        assert!(message.contains(&expected), "{message}");
-
-        // The same bytes with the two pairs swapped: disjoint, but block 1's
-        // blobs come first.
-        let mut reversed = section.to_bytes();
-        place(&mut reversed, 0, &first, start + second_len);
-        place(&mut reversed, 1, &second, start);
-        let message = error_message(LightmapSection::from_bytes(&reversed));
-        assert!(
-            message.contains("disjoint and in record order"),
-            "{message}"
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_mode_format_and_zero_scale() {
-        for (at, value, expect) in [
-            (16, 9u32, "mode"),
-            (12, 9u32, "irradiance format"),
-            (8, 0u32, "scale"),
-        ] {
-            let mut bytes = LightmapSection::empty(2).to_bytes();
-            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-            let message = error_message(LightmapSection::from_bytes(&bytes));
-            assert!(message.contains(expect), "{expect}: {message}");
-        }
-    }
-
-    #[test]
-    fn rejects_truncated_index() {
-        let bytes = two_block_section().to_bytes();
-        let index_len = LIGHTMAP_HEADER_BYTES + 2 * LIGHTMAP_BLOCK_RECORD_BYTES;
-        assert!(
-            LightmapBlockIndex::from_prefix(&bytes[..index_len - 1], bytes.len() as u64).is_err()
-        );
-    }
-
-    #[test]
-    fn encode_direction_axis_round_trip() {
-        let enc = encode_direction_oct([0.0, 1.0, 0.0]);
-        assert_eq!(enc[0], 128);
-        assert_eq!(enc[1], 255);
-    }
-
-    #[test]
-    fn f32_to_f16_known_values() {
-        assert_eq!(f32_to_f16_bits(0.0), 0x0000);
-        assert_eq!(f32_to_f16_bits(1.0), 0x3c00);
-        assert_eq!(f32_to_f16_bits(-1.0), 0xbc00);
-    }
-}
+mod tests;

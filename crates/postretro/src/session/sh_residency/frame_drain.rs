@@ -95,7 +95,7 @@ impl ShStreamingSession {
         };
         // Publish before admitting or submitting, so the issuer never reads a
         // cluster this frame's target update dropped.
-        workers.publish_targets(self.controller.targets());
+        workers.publish_targets(self.controller.target_classes());
         while let Some(completion) = workers.try_completion().map_err(anyhow::Error::msg)? {
             if !self
                 .controller

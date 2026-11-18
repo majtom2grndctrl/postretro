@@ -32,6 +32,7 @@ use lead_map::{
     LeadSources, MAX_LEAD_METERS, build_lead_map, dilate_one_hop, meters_fixed, portal_neighbours,
 };
 use portal_distance::{Neighbors, portal_graph_from_sections, recompute_pairs};
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::teleporters::TeleportersSection;
 use pvs_sampling::{SamplingStats, sample_pvs};
 use teleport_routes::{TeleportResidencyInput, arrival_origins, build_routes};
@@ -43,7 +44,9 @@ pub const CELL_RESIDENCY_SET_STAGE_ID: &str = "cell_residency_set";
 /// v2: the key hashes the Cells fields the walk reads instead of the encoded
 /// section, so per-cell face ranges no longer participate.
 /// v3: canonical teleporter section data and zero-length arrival routes.
-pub const CELL_RESIDENCY_SET_STAGE_VERSION: u32 = 3;
+/// v4: entries hold the v2 section stored raw (the codec applies at pack, so
+/// no entry holds coded bytes and the key needs no codec identity).
+pub const CELL_RESIDENCY_SET_STAGE_VERSION: u32 = 4;
 
 /// Camera cells: every cell the camera can stand in (not solid, not
 /// exterior), charted or not. Ascending.
@@ -112,7 +115,7 @@ pub fn cell_residency_set_bake_cached(
         .unwrap_or_default();
     let section = bake(&world, cells, portals, &cameras, &routes, control);
     if let (Some(cache), Some(key)) = (cache, key.as_ref()) {
-        cache.put(key, &section.to_bytes());
+        cache.put(key, &section.to_bytes(BlockCodec::Raw));
     }
     Ok(Some(section))
 }
@@ -172,14 +175,14 @@ fn bake(
     );
     let section = map.into_section();
     log::info!(
-        "[Compiler] CellResidencySet: {} camera cells, {} entries (max {} per camera), {} bytes, max lead {MAX_LEAD_METERS} m, {:.3} s",
+        "[Compiler] CellResidencySet: {} camera cells, {} entries (max {} per camera), {} raw bytes, max lead {MAX_LEAD_METERS} m, {:.3} s",
         cameras.len(),
         section.entries.len(),
         (0..cell_count)
             .map(|camera| section.entries_for(camera).len())
             .max()
             .unwrap_or(0),
-        section.byte_len(),
+        section.raw_len(),
         started.elapsed().as_secs_f64(),
     );
     section

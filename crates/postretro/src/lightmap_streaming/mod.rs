@@ -3,6 +3,7 @@
 
 pub(crate) mod block_map;
 pub(crate) mod controller;
+mod decode_job;
 pub(crate) mod demand;
 #[cfg(test)]
 mod planar_demand_tests;

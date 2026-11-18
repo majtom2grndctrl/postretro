@@ -12,7 +12,7 @@ use super::{
 use postretro_level_format::lightmap::{
     LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockPayload, LightmapHeader,
 };
-use postretro_level_format::lightmap_pool::first_generation_layers;
+use postretro_level_format::lightmap_pool::{first_generation_layers, pool_layer_bytes};
 use postretro_level_format::shadowmask_atlas::ShadowmaskBlockIndex;
 
 /// Every block of a level placed in the lightmap pool, and every plane placed
@@ -35,6 +35,10 @@ impl StaticPoolPlan {
 
     /// The block table of the all-resident pools.
     pub fn table_bytes(&self) -> Vec<u8> {
+        let mask_extents: Vec<[(u32, u32); 2]> = match &self.masks {
+            Some(masks) => masks.extents.clone(),
+            None => vec![[(0, 0); 2]; self.extents.len()],
+        };
         let addresses: Vec<Option<BlockAddresses>> = self
             .pool
             .placements
@@ -50,7 +54,7 @@ impl StaticPoolPlan {
                 })
             })
             .collect();
-        block_table_bytes(&self.extents, &addresses)
+        block_table_bytes(&self.extents, &mask_extents, &addresses)
     }
 }
 
@@ -107,12 +111,17 @@ impl StreamedPoolSizing {
     }
 
     /// Each pool's first generation, given the layers that hold every block
-    /// at once: the override where one is set, else the bound sized as
-    /// [`PoolDemand::first_generation`] sizes it.
-    fn first_generation(&self, all_resident: PerPool<u32>) -> PerPool<u32> {
+    /// at once and what each pool's layer costs: the override where one is
+    /// set, else the bound sized as [`PoolDemand::first_generation`] sizes it.
+    fn first_generation(
+        &self,
+        all_resident: PerPool<u32>,
+        layer_bytes: PerPool<u64>,
+    ) -> PerPool<u32> {
         PerPool::from_fn(|kind| {
-            self.first_generation_override[kind]
-                .unwrap_or_else(|| first_generation_layers(self.bound[kind], all_resident[kind]))
+            self.first_generation_override[kind].unwrap_or_else(|| {
+                first_generation_layers(self.bound[kind], all_resident[kind], layer_bytes[kind])
+            })
         })
     }
 }
@@ -207,10 +216,10 @@ pub fn plan_static_pool(
 /// drain, so only the pool shape and each pool's first generation are settled
 /// here. Degrades to placeholder mode, logging once, when the device cannot
 /// hold a pool layer or one layer plus the spare, or when the mask planes do
-/// not fit the pool layer edge. A level whose every block at
-/// once would not fit the device still streams, since streaming holds only a
-/// subset: the pool model defers a pair rather than grow past the device's
-/// layers, in either pool.
+/// not fit the pool layer edge. A level whose every block at once would not
+/// fit the device still streams, since streaming holds only a subset: the
+/// pool model defers a pair rather than grow past the device's layers, in
+/// either pool.
 pub fn plan_streaming_pool(
     index: Option<&LightmapBlockIndex>,
     shadowmask: Option<&ShadowmaskBlockIndex>,
@@ -263,7 +272,15 @@ pub fn plan_streaming_pool(
             }
         }
     }
-    let first_generation = all_resident.map(|all_resident| sizing.first_generation(all_resident));
+    let first_generation = all_resident.and_then(|all_resident| {
+        let layer_bytes = pool_layer_bytes(&header).ok_or_else(|| {
+            format!(
+                "no pool can allocate irradiance format {}",
+                header.irradiance_format
+            )
+        })?;
+        Ok(sizing.first_generation(all_resident, layer_bytes))
+    });
     let first_generation = match first_generation {
         Ok(layers) => layers,
         Err(reason) => {
@@ -369,9 +386,11 @@ fn place_masks(
     max_texture_array_layers: u32,
 ) -> Result<AllResidentMasks, String> {
     let demand = PoolDemand::of_indices(index, Some(shadowmask));
-    for (block, (&(w, h), payload)) in demand.extents().iter().zip(payloads).enumerate() {
-        let planes = demand.planes(block as u32);
-        if let Some(reason) = planes_mismatch((w, h), planes, payload) {
+    for (block, payload) in payloads.iter().enumerate().take(demand.block_count()) {
+        let masks = demand
+            .block_masks(block as u32)
+            .expect("of_indices with id 42 has a mask pool");
+        if let Some(reason) = planes_mismatch(masks, payload) {
             return Err(format!("block {block} {reason}"));
         }
     }

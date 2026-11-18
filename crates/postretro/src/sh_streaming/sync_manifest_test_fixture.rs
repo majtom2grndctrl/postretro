@@ -12,8 +12,9 @@ use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_VERSION, ClusterShPayloadsHeader,
     ClusterShPayloadsIndexRecord, ClusterShPayloadsSection, ClusterShPayloadsSourceRecord,
     ClusterShPayloadsValidationInputs, cluster_sh_isolated_atlas_array_layout,
-    source_metadata_from_sections,
+    source_metadata_from_sections, store_chunk,
 };
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
@@ -25,7 +26,23 @@ use postretro_level_format::sh_volume::{
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::{SectionBlob, SectionId, write_prl};
 
+/// How [`write_one_cluster_prl_stored`] stores its one chunk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StoredChunk {
+    Raw,
+    Coded,
+    /// One zstd frame whose content checksum fails, the index's length and
+    /// hash stamped over those stored bytes, so only the decode can tell.
+    CorruptFrame,
+}
+
 pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf) {
+    write_one_cluster_prl_stored(StoredChunk::Raw)
+}
+
+pub(crate) fn write_one_cluster_prl_stored(
+    stored: StoredChunk,
+) -> (tempfile::TempDir, std::path::PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("sync-proof.prl");
     let cells = CellsSection {
@@ -151,6 +168,14 @@ pub(crate) fn write_one_cluster_prl() -> (tempfile::TempDir, std::path::PathBuf)
         push_u32(&mut chunk, word);
     }
     chunk.resize(chunk.len() + atlas_bytes, 0);
+    let mut chunk = match stored {
+        StoredChunk::Raw => chunk,
+        StoredChunk::Coded | StoredChunk::CorruptFrame => store_chunk(BlockCodec::Zstd, chunk),
+    };
+    if stored == StoredChunk::CorruptFrame {
+        // The frame's last byte is its content checksum's.
+        *chunk.last_mut().unwrap() ^= 0x5a;
+    }
 
     let sources = source_metadata_from_sections(&base, None, None, None, None, None);
     let payloads = ClusterShPayloadsSection {

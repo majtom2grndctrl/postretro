@@ -5,15 +5,15 @@
 use postretro_level_format::lightmap::{LightmapBlockPayload, LightmapHeader};
 use postretro_level_format::shadowmask_atlas::group_plane_len;
 
-use super::PlanePresence;
+use super::BlockMasks;
 
 /// Why `payload` cannot fill a `width × height` block, or `None` when every
-/// plane the pools keep matches the block. `planes` is `None` for a level with
+/// plane the pools keep matches the block. `masks` is `None` for a level with
 /// no mask pool, whose payload's masks go nowhere.
 pub fn payload_mismatch(
     header: &LightmapHeader,
     (width, height): (u32, u32),
-    planes: Option<PlanePresence>,
+    masks: Option<BlockMasks>,
     payload: &LightmapBlockPayload,
 ) -> Option<String> {
     let irradiance = header.irradiance_len(width, height);
@@ -28,25 +28,24 @@ pub fn payload_mismatch(
             payload.direction.len(),
         ));
     }
-    planes.and_then(|planes| planes_mismatch((width, height), planes, payload))
+    masks.and_then(|masks| planes_mismatch(masks, payload))
 }
 
 /// Why `payload`'s mask planes disagree with the block's plane presence: a
-/// stored plane must fill its extent, and an absent one must be empty.
-pub(super) fn planes_mismatch(
-    (width, height): (u32, u32),
-    planes: PlanePresence,
-    payload: &LightmapBlockPayload,
-) -> Option<String> {
+/// stored plane must fill its own extent, and an absent one must be empty.
+pub(super) fn planes_mismatch(masks: BlockMasks, payload: &LightmapBlockPayload) -> Option<String> {
     let Some(groups) = &payload.shadowmask else {
         return Some("arrived without its groups".to_string());
     };
-    let full = group_plane_len(width, height);
-    let expected = planes.map(|stored| if stored { full } else { Some(0) });
+    let BlockMasks { planes, extents } = masks;
+    let expected: [Option<u64>; 2] = std::array::from_fn(|plane| match planes[plane] {
+        true => group_plane_len(extents[plane].0, extents[plane].1),
+        false => Some(0),
+    });
     (expected != [Some(groups[0].len() as u64), Some(groups[1].len() as u64)]).then(|| {
         format!(
-            "({width}x{height}) groups are {} and {} byte(s), expected {expected:?} for plane \
-             presence {planes:?}",
+            "groups are {} and {} byte(s), expected {expected:?} for plane presence {planes:?} \
+             at plane extents {extents:?}",
             groups[0].len(),
             groups[1].len(),
         )
@@ -80,10 +79,17 @@ mod tests {
         }
     }
 
+    fn whole_block(planes: [bool; 2]) -> BlockMasks {
+        BlockMasks {
+            planes,
+            extents: [EXTENT; 2],
+        }
+    }
+
     #[test]
     fn payload_disagreeing_with_presence_fails_whole() {
         let mismatch = |planes, payload: &LightmapBlockPayload| {
-            payload_mismatch(&header(), EXTENT, Some(planes), payload)
+            payload_mismatch(&header(), EXTENT, Some(whole_block(planes)), payload)
         };
         for (a, b) in [(true, true), (true, false), (false, true), (false, false)] {
             assert_eq!(mismatch([a, b], &payload(a, b)), None, "{a} {b}");
@@ -102,6 +108,25 @@ mod tests {
             mismatch([false, false], &none).is_some(),
             "no planes at all"
         );
+    }
+
+    // A plane fills its own extent, not its lightmap block's: plane B at a
+    // 4x4 sub-rect of an 8x4 mask block stores one BC5 block.
+    #[test]
+    fn each_plane_is_checked_at_its_own_extent() {
+        let masks = BlockMasks {
+            planes: [true, true],
+            extents: [(8, 4), (4, 4)],
+        };
+        let mut payload = payload(true, true);
+        payload.shadowmask = Some([vec![1; 32], vec![2; 16]]);
+        assert_eq!(
+            payload_mismatch(&header(), EXTENT, Some(masks), &payload),
+            None
+        );
+        payload.shadowmask = Some([vec![1; 32], vec![2; 32]]);
+        let reason = payload_mismatch(&header(), EXTENT, Some(masks), &payload).expect("disagrees");
+        assert!(reason.contains("plane extents"), "{reason}");
     }
 
     #[test]

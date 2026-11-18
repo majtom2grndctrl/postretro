@@ -608,7 +608,7 @@ fn pin_makes_only_its_cluster_resident() {
         requests.iter().map(|r| r.cluster_id).collect::<Vec<_>>(),
         vec![1]
     );
-    assert!(requests[0].mandatory);
+    assert!(requests[0].mandatory());
     assert_eq!(
         controller.admit_prepared(prepared(&controller, 1)).unwrap(),
         ShDrainAdmission::Ready
@@ -852,9 +852,8 @@ fn sync_proof_reads_retained_manifest_and_releases_cpu_phases_after_install() {
     let (_temp, path) = sync_manifest_test_fixture::write_one_cluster_prl();
     let world = postretro_level_loader::load_prl(path.to_str().unwrap()).unwrap();
     let manifest = Arc::clone(world.sh_stream_manifest().expect("id 50 selects streaming"));
-    let index = &manifest.payloads().index[0];
-    let payload_len = index.payload_len;
-    let decoded_bytes = index.decoded_bytes;
+    let payload_len = manifest.payloads().index[0].payload_len;
+    let decoded_len = manifest.decoded_chunk_len(0);
     let hints = Arc::new(ClusterHints::decode(manifest.cluster_directory()).unwrap());
     let mut controller =
         ShResidencyController::with_clock(manifest, hints, &FixedGenerationClock::new(1)).unwrap();
@@ -872,9 +871,12 @@ fn sync_proof_reads_retained_manifest_and_releases_cpu_phases_after_install() {
     assert_eq!(cpu.encoded.current_bytes, 0);
     assert_eq!(cpu.encoded.high_water_bytes, payload_len);
     assert_eq!(cpu.decoding.current_bytes, 0);
-    assert_eq!(cpu.decoding.high_water_bytes, decoded_bytes);
-    assert_eq!(cpu.ready.current_bytes, payload_len);
-    assert_eq!(cpu.ready.high_water_bytes, payload_len);
+    // Decode and ready both hold the decoded chunk; the read held the
+    // stored one (the fixture's chunk is raw, so the two agree).
+    assert_eq!(cpu.decoding.high_water_bytes, decoded_len);
+    assert_eq!(cpu.ready.current_bytes, decoded_len);
+    assert_eq!(cpu.ready.high_water_bytes, decoded_len);
+    assert_eq!(decoded_len, payload_len);
 
     let batch = controller.take_drain_batch().unwrap();
     assert_eq!(batch.ready.len(), 1);

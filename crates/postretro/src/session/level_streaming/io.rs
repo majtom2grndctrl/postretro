@@ -1,21 +1,43 @@
-//! The level's one read issuer and the retirement of a replaced level's I/O.
+//! The level's one read issuer and decode pool, and the retirement of a replaced level's I/O.
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use crate::lightmap_streaming::controller::LIGHTMAP_QUEUE_CAPACITY;
+use crate::lightmap_streaming::controller::{LIGHTMAP_QUEUE_CAPACITY, MAX_LIGHTMAP_PERMITS};
 use crate::lightmap_streaming::route::{LightmapCompletion, LightmapRouteLedger};
 use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::session::sh_async_workers::ShWorkerRetirement;
 use crate::sh_streaming::controller::MAX_STREAM_PERMITS;
+use crate::streaming::decode_pool::{DecodePool, DecodeQueue, decode_pool_size};
 use crate::streaming::issuer::{ReadIssuer, ReadRoute, ReadRoutes};
+use crate::streaming::issuer_busy::IssuerBusyLog;
 use crate::streaming::request::StreamResource;
 
+/// Jobs the decode pool can hold at once. A job is a delivered read, and each
+/// read holds one of its resource's permits until the frame admits its
+/// completion, so neither resource ever has more jobs queued than permits.
+const DECODE_QUEUE_CAPACITY: usize = MAX_STREAM_PERMITS + MAX_LIGHTMAP_PERMITS;
+
+/// The level's decode pool before its issuer: routes are built over its
+/// queue, then [`LevelReadIssuer::spawn`] takes both. The pool lives and
+/// retires with the issuer, so it starts whenever an issuer does, whichever
+/// resources it serves: every route decodes.
+pub(crate) fn spawn_decode_pool() -> std::io::Result<(DecodePool, DecodeQueue)> {
+    let pool = DecodePool::spawn(
+        decode_pool_size(crate::parallelism::available_parallelism()),
+        DECODE_QUEUE_CAPACITY,
+    )?;
+    let queue = pool.queue();
+    Ok((pool, queue))
+}
+
 /// Owns the one issuer thread every streamed resource of a level reads
-/// through. SH's workers hold a clone of the handle to submit; lightmap
-/// submits through [`Self::issuer`].
+/// through, and the one decode pool both resources decode on. The issuer
+/// only reads; its routes hand read bytes to the pool. SH's workers hold a
+/// clone of the issuer handle to submit; lightmap submits through
+/// [`Self::issuer`].
 ///
 /// Teardown order: every clone must be dropped before this owner joins,
 /// because the thread exits only when its last handle is gone. The session
@@ -25,17 +47,24 @@ use crate::streaming::request::StreamResource;
 pub(crate) struct LevelReadIssuer {
     issuer: Option<ReadIssuer>,
     handle: Option<JoinHandle<()>>,
+    decode: Option<DecodePool>,
 }
 
 impl LevelReadIssuer {
-    /// Spawns one issuer over the routes present. Its queue covers every
-    /// submission the routed resources can have outstanding, so a
-    /// submission never finds it full.
+    /// Spawns one issuer over the routes present, beside `decode`, the pool
+    /// their routes were built over. Its queue holds one submission per
+    /// permit of each routed resource: every submission is a read that holds
+    /// a permit until the frame admits its completion, and tier changes
+    /// travel through the target sets, never the queue. So a submission
+    /// never finds it full. `busy`, when present, receives the issuer's busy time per
+    /// physical read.
     pub(crate) fn spawn(
+        decode: DecodePool,
         sh: Option<Box<dyn ReadRoute>>,
         lightmap: Option<Box<dyn ReadRoute>>,
+        busy: Option<Arc<IssuerBusyLog>>,
     ) -> std::io::Result<Self> {
-        let mut routes = ReadRoutes::default();
+        let mut routes = ReadRoutes::default().with_busy_log(busy);
         let mut queue_capacity = 0;
         if let Some(route) = sh {
             routes = routes.with(StreamResource::Sh, route);
@@ -49,6 +78,7 @@ impl LevelReadIssuer {
         Ok(Self {
             issuer: Some(issuer),
             handle: Some(handle),
+            decode: Some(decode),
         })
     }
 
@@ -58,12 +88,18 @@ impl LevelReadIssuer {
             .expect("the issuer handle lives until retirement")
     }
 
-    /// Stops the thread before its next read and drops this handle, without
-    /// waiting on an in-flight positional read. The caller polls the returned
-    /// thread and joins it only once finished.
-    pub(crate) fn begin_retirement(mut self) -> JoinHandle<()> {
+    /// Stops the issuer before its next read and drops this handle, and
+    /// retires the decode pool: queued decodes are released, a running one
+    /// releases rather than delivers. Waits on neither an in-flight
+    /// positional read nor a running decode; the caller polls the returned
+    /// threads and joins them only once finished.
+    pub(crate) fn begin_retirement(mut self) -> Vec<JoinHandle<()>> {
         self.cancel_and_release();
-        self.handle.take().expect("spawned issuer has a thread")
+        let mut threads = vec![self.handle.take().expect("spawned issuer has a thread")];
+        if let Some(decode) = self.decode.take() {
+            threads.extend(decode.begin_retirement());
+        }
+        threads
     }
 
     fn cancel_and_release(&mut self) {
@@ -79,17 +115,20 @@ impl Drop for LevelReadIssuer {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+        drop(self.decode.take());
     }
 }
 
-/// A replaced level's cancelled I/O: SH worker threads, the issuer thread,
-/// the lightmap source its route may still read through, and the completion
-/// queues it may still deliver into. The frame path polls it and never joins
-/// a live positional read; teardown joins.
+/// A replaced level's cancelled I/O: SH worker threads, the issuer and decode
+/// pool threads, the lightmap source its route and decodes may still read
+/// through, and the completion queues they may still deliver into. The frame
+/// path polls it and never joins a live positional read or decode; teardown
+/// joins.
 #[derive(Debug, Default)]
 pub(crate) struct StreamingRetirement {
     sh: Vec<ShWorkerRetirement>,
-    issuers: Vec<JoinHandle<()>>,
+    /// Issuer and decode pool threads.
+    threads: Vec<JoinHandle<()>>,
     retained_lightmap: Vec<Arc<dyn LightmapBlockSource>>,
     /// A kept lightmap session's old completion queue, with the ledger its
     /// deliveries were charged to.
@@ -101,8 +140,9 @@ impl StreamingRetirement {
         self.sh.push(retirement);
     }
 
-    pub(crate) fn add_issuer(&mut self, handle: JoinHandle<()>) {
-        self.issuers.push(handle);
+    /// The threads of a retiring [`LevelReadIssuer`].
+    pub(crate) fn add_threads(&mut self, threads: Vec<JoinHandle<()>>) {
+        self.threads.extend(threads);
     }
 
     pub(crate) fn retain_lightmap(&mut self, source: Arc<dyn LightmapBlockSource>) {
@@ -119,7 +159,7 @@ impl StreamingRetirement {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.sh.is_empty()
-            && self.issuers.is_empty()
+            && self.threads.is_empty()
             && self.retained_lightmap.is_empty()
             && self.lightmap_completions.is_empty()
     }
@@ -131,7 +171,7 @@ impl StreamingRetirement {
     pub(crate) fn try_finish(&mut self) -> bool {
         self.sh.retain_mut(|retirement| !retirement.try_finish());
         self.release_lightmap_completions();
-        if !self.sh.is_empty() || !self.issuers.iter().all(JoinHandle::is_finished) {
+        if !self.sh.is_empty() || !self.threads.iter().all(JoinHandle::is_finished) {
             return false;
         }
         self.join_and_release();
@@ -143,19 +183,19 @@ impl StreamingRetirement {
     fn release_lightmap_completions(&self) {
         for (completions, ledger) in &self.lightmap_completions {
             while let Ok(completion) = completions.try_recv() {
-                ledger.release(completion.result.read_bytes());
+                ledger.release(completion.charged_bytes);
             }
         }
     }
 
-    /// Releases the old completion queues, then joins the issuers, then drops
-    /// what they could still reach. A delivery into a dropped queue fails,
-    /// wakes a blocked issuer, and releases its own bytes, so neither the
-    /// join nor the byte figure waits on the frame.
+    /// Releases the old completion queues, then joins the issuer and decode
+    /// threads, then drops what they could still reach. A delivery into a
+    /// dropped queue fails, wakes a blocked issuer, and releases its own
+    /// bytes, so neither the join nor the byte figure waits on the frame.
     fn join_and_release(&mut self) {
         self.release_lightmap_completions();
         self.lightmap_completions.clear();
-        for handle in self.issuers.drain(..) {
+        for handle in self.threads.drain(..) {
             let _ = handle.join();
         }
         self.retained_lightmap.clear();

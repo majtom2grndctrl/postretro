@@ -143,19 +143,23 @@ fn load_error(path: &std::path::Path, mode: LightmapStreamingMode) -> String {
 fn a_level_with_the_retired_tag_is_refused_by_name_in_both_load_modes() {
     let lightmap = lightmap_section(&[(8, 4)]);
     let shadowmask = shadowmask_section(&[(8, 4)]);
-    let mut blobs = lighting_blobs(&lightmap, Some(&shadowmask), true);
-    let id_42 = blobs
-        .iter_mut()
-        .find(|blob| blob.section_id == SHADOWMASK)
-        .unwrap();
-    id_42.data[0..4].copy_from_slice(b"SMB7");
-    let fixture = Fixture::with_portals("postretro_test_lm_planes_smb7.prl", blobs);
-    for mode in BOTH_MODES {
-        let message = load_error(&fixture.0, mode);
-        assert!(
-            message.contains("SMB7") && message.contains("re-bake"),
-            "{mode:?}: {message}"
-        );
+    for tag in [b"SMB7", b"SMB8"] {
+        let mut blobs = lighting_blobs(&lightmap, Some(&shadowmask), true);
+        let id_42 = blobs
+            .iter_mut()
+            .find(|blob| blob.section_id == SHADOWMASK)
+            .unwrap();
+        id_42.data[0..4].copy_from_slice(tag);
+        let tag = String::from_utf8_lossy(tag);
+        let name = format!("postretro_test_lm_planes_{tag}.prl");
+        let fixture = Fixture::with_portals(&name, blobs);
+        for mode in BOTH_MODES {
+            let message = load_error(&fixture.0, mode);
+            assert!(
+                message.contains(tag.as_ref()) && message.contains("re-bake"),
+                "{mode:?}: {message}"
+            );
+        }
     }
 }
 
@@ -183,7 +187,8 @@ fn level_needing_the_bound_refuses_absent_or_unknown_id_58() {
     });
     let unknown = level_with_bound("postretro_test_lm_bound_version.prl", |blobs| {
         let bound = blobs.iter_mut().find(|blob| is_bound(blob)).unwrap();
-        bound.data[0..4].copy_from_slice(&2u32.to_le_bytes());
+        // Version 1 priced mask planes at their lightmap block's extent.
+        bound.data[0..4].copy_from_slice(&1u32.to_le_bytes());
     });
     for mode in BOTH_MODES {
         let message = load_error(&absent.0, mode);
@@ -193,7 +198,7 @@ fn level_needing_the_bound_refuses_absent_or_unknown_id_58() {
         );
         let message = load_error(&unknown.0, mode);
         assert!(
-            message.contains("LightmapPoolBound version 2 is unknown"),
+            message.contains("LightmapPoolBound version 1 is unknown"),
             "{mode:?}: {message}"
         );
     }

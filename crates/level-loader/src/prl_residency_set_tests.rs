@@ -5,6 +5,7 @@
 use postretro_level_format::cell_residency_set::{
     CELL_RESIDENCY_SET_VERSION, CellResidencySetSection, ResidencyEntry,
 };
+use postretro_level_format::coded_plane::{BlockCodec, encode_plane};
 use postretro_level_format::{SectionBlob, SectionId};
 
 use crate::load_prl;
@@ -34,25 +35,32 @@ fn residency_blob(data: Vec<u8>) -> SectionBlob {
     }
 }
 
-/// Raw section bytes with arbitrary CSR words, bypassing the encoder so a
-/// malformed table reaches the loader intact.
+/// Section bytes with arbitrary CSR words, bypassing the encoder so a
+/// malformed table reaches the loader intact; the body is one zstd frame, as
+/// a default bake stores it.
 fn raw_section(offsets: &[u32], entries: &[(u32, u32)]) -> Vec<u8> {
-    let mut out = Vec::new();
-    for word in [
-        CELL_RESIDENCY_SET_VERSION,
-        FIXTURE_CELLS,
-        32 * 1024,
-        entries.len() as u32,
-    ] {
-        out.extend_from_slice(&word.to_le_bytes());
+    let mut body = Vec::new();
+    for word in [FIXTURE_CELLS, 32 * 1024, entries.len() as u32] {
+        body.extend_from_slice(&word.to_le_bytes());
     }
     for offset in offsets {
-        out.extend_from_slice(&offset.to_le_bytes());
+        body.extend_from_slice(&offset.to_le_bytes());
     }
     for &(cell, lead) in entries {
-        out.extend_from_slice(&cell.to_le_bytes());
-        out.extend_from_slice(&lead.to_le_bytes());
+        body.extend_from_slice(&cell.to_le_bytes());
+        body.extend_from_slice(&lead.to_le_bytes());
     }
+    framed(BlockCodec::Zstd, &body)
+}
+
+/// The v2 prefix (version, codec, reserved, raw length) over `body`.
+fn framed(codec: BlockCodec, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&CELL_RESIDENCY_SET_VERSION.to_le_bytes());
+    out.extend_from_slice(&codec.as_u32().to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(body.len() as u64).to_le_bytes());
+    out.extend_from_slice(&encode_plane(codec, body));
     out
 }
 
@@ -70,13 +78,54 @@ fn load_error(data: Vec<u8>, name: &str) -> String {
 fn a_valid_residency_set_decodes_onto_the_world() {
     let section = valid_section();
     let path = write_prl_load_fixture(
-        [residency_blob(section.to_bytes())],
+        [residency_blob(section.to_bytes(BlockCodec::Zstd))],
         "postretro_test_residency_set_valid.prl",
     );
     let world = load_prl(path.to_str().unwrap());
     std::fs::remove_file(&path).ok();
     let world = world.expect("a valid id-51 section loads");
     assert_eq!(world.cell_residency_set, Some(section));
+}
+
+#[test]
+fn a_raw_residency_set_loads_the_same_section() {
+    let section = valid_section();
+    let path = write_prl_load_fixture(
+        [residency_blob(section.to_bytes(BlockCodec::Raw))],
+        "postretro_test_residency_set_raw.prl",
+    );
+    let world = load_prl(path.to_str().unwrap());
+    std::fs::remove_file(&path).ok();
+    assert_eq!(world.expect("load").cell_residency_set, Some(section));
+}
+
+// A corrupt id-51 frame fails the level load by name.
+#[test]
+fn load_rejects_a_corrupt_residency_frame_by_name() {
+    let mut bytes = valid_section().to_bytes(BlockCodec::Zstd);
+    // The frame's last byte is its content checksum's.
+    *bytes.last_mut().unwrap() ^= 0x5a;
+    let message = load_error(bytes, "postretro_test_residency_set_corrupt_frame.prl");
+    assert!(
+        message.contains("CellResidencySet validation error"),
+        "{message}"
+    );
+    assert!(message.contains("frame is corrupt"), "{message}");
+}
+
+// A level baked before the coded layout is refused with a re-bake
+// message. The bytes are the v1 writer's: version 1, then the body uncoded.
+#[test]
+fn load_rejects_a_v1_residency_set_with_a_rebake_message() {
+    let raw = valid_section().to_bytes(BlockCodec::Raw);
+    let mut bytes = 1u32.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&raw[20..]);
+    let message = load_error(bytes, "postretro_test_residency_set_v1.prl");
+    assert!(
+        message.contains("CellResidencySet validation error"),
+        "{message}"
+    );
+    assert!(message.contains("re-bake the level"), "{message}");
 }
 
 #[test]
@@ -94,7 +143,7 @@ fn load_rejects_a_residency_entry_naming_a_cell_past_the_cell_count() {
     let mut section = valid_section();
     section.entries[1] = entry(FIXTURE_CELLS, 4 * 1024);
     let message = load_error(
-        section.to_bytes(),
+        section.to_bytes(BlockCodec::Zstd),
         "postretro_test_residency_set_cell_past_count.prl",
     );
     assert!(
@@ -143,8 +192,9 @@ fn load_rejects_residency_csr_offsets_past_entry_count() {
 
 #[test]
 fn load_rejects_a_residency_set_sized_for_another_cell_count() {
-    let mut bytes = valid_section().to_bytes();
-    bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+    let mut bytes = valid_section().to_bytes(BlockCodec::Raw);
+    // The raw body's first word: camera_cell_count.
+    bytes[20..24].copy_from_slice(&3u32.to_le_bytes());
     let message = load_error(bytes, "postretro_test_residency_set_cell_count.prl");
     assert!(
         message.contains("CellResidencySet validation error"),

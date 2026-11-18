@@ -15,11 +15,15 @@ use crate::streaming::request::ReadRanges;
 pub(crate) struct BlockFacts {
     /// What placing the block takes from each pool's band headroom: one slot,
     /// its extent rounded up to the slot alignment, in the lightmap pool, and
-    /// one more per present plane in the mask pool.
+    /// one per present plane, at that plane's own extent, in the mask pool.
     pub(crate) texels: PerPool<u64>,
-    /// Upload bytes of the id-22 half (irradiance plus direction).
+    /// Each mask plane's slot texels at its own extent; 0 for an absent
+    /// plane. `texels.mask` is their sum.
+    pub(crate) mask_plane_texels: [u64; 2],
+    /// Decoded bytes of the id-22 half (irradiance plus direction): what it
+    /// costs in hand and to upload, whatever its stored size.
     pub(crate) lightmap_bytes: u64,
-    /// Bytes of the id-42 half as stored, its present planes; 0 with none.
+    /// Decoded bytes of the id-42 half's present planes; 0 with none.
     pub(crate) shadowmask_bytes: u64,
     /// The pair's absolute file ranges, as the issuer reads them.
     pub(crate) ranges: ReadRanges,
@@ -32,6 +36,8 @@ pub(crate) struct BlockFacts {
 }
 
 impl BlockFacts {
+    /// The pair's decoded bytes: what the in-hand caps, the band share and
+    /// the per-drain budget charge it, from its permit on.
     pub(crate) fn pair_bytes(&self) -> u64 {
         self.lightmap_bytes + self.shadowmask_bytes
     }
@@ -93,14 +99,11 @@ impl LevelBlockMap {
             let ranges = source
                 .block_file_ranges(block)
                 .map_err(LightmapResidencyError::Source)?;
-            let lightmap_bytes = ranges.lightmap.end - ranges.lightmap.start;
-            let (read_ranges, shadowmask_bytes) = match &ranges.shadowmask {
-                Some(shadowmask) => (
-                    ReadRanges::pair(ranges.lightmap.clone(), shadowmask.clone()),
-                    shadowmask.end - shadowmask.start,
-                ),
-                None => (ReadRanges::one(ranges.lightmap.clone()), 0),
+            let read_ranges = match &ranges.shadowmask {
+                Some(shadowmask) => ReadRanges::pair(ranges.lightmap.clone(), shadowmask.clone()),
+                None => ReadRanges::one(ranges.lightmap.clone()),
             };
+            let [lightmap_bytes, shadowmask_bytes] = summary.decoded_bytes;
             let cluster = hints.map(|hints| hints.cell_to_cluster[summary.cell_id as usize]);
             let pinned = hints
                 .zip(cluster)
@@ -111,15 +114,20 @@ impl LevelBlockMap {
             if pinned {
                 pinned_blocks.push(block);
             }
+            let mask_plane_texels = [0, 1].map(|plane| {
+                let (width, height) = summary.plane_extents[plane];
+                if summary.planes[plane] {
+                    slot_edge(width) * slot_edge(height)
+                } else {
+                    0
+                }
+            });
             blocks.push(BlockFacts {
-                texels: {
-                    let slot = slot_edge(summary.width) * slot_edge(summary.height);
-                    let planes = summary.planes.iter().filter(|&&stored| stored).count();
-                    PerPool {
-                        lightmap: slot,
-                        mask: slot * planes as u64,
-                    }
+                texels: PerPool {
+                    lightmap: slot_edge(summary.width) * slot_edge(summary.height),
+                    mask: mask_plane_texels.iter().sum(),
                 },
+                mask_plane_texels,
                 lightmap_bytes,
                 shadowmask_bytes,
                 ranges: read_ranges,

@@ -81,6 +81,7 @@ fn fixture_pool(ctx: &GpuCtx) -> BoundLightmap {
         },
         masks: Some(AllResidentMasks {
             planes: PLACEMENTS.iter().copied().map(plane_places).collect(),
+            extents: resident.iter().map(|&extent| [extent; 2]).collect(),
             layer_count: 2,
         }),
     };
@@ -99,7 +100,7 @@ fn fixture_pool(ctx: &GpuCtx) -> BoundLightmap {
         irradiance: textures.irradiance,
         direction: textures.direction,
         shadowmask: textures.shadowmask.expect("the plan keeps the shadowmask"),
-        table: block_table_bytes(&EXTENTS, &placements),
+        table: block_table_bytes(&EXTENTS, &EXTENTS.map(|extent| [extent; 2]), &placements),
         mask_present: true,
     }
 }
@@ -304,6 +305,7 @@ fn three_address_pool(ctx: &GpuCtx) -> (BoundLightmap, [(u32, u32); 2]) {
         },
         masks: Some(AllResidentMasks {
             planes: planes.to_vec(),
+            extents: extents.iter().map(|&extent| [extent; 2]).collect(),
             layer_count: 3,
         }),
     };
@@ -411,6 +413,7 @@ fn shadowmask_block_states_read_as_before() {
         shadowmask: upload_placeholder_shadowmask(&ctx.device, &ctx.queue),
         table: block_table_bytes(
             &extents,
+            &[[(0, 0); 2]; 2],
             &[Some(BlockAddresses::without_masks(PLACEMENTS[0])), None],
         ),
         mask_present: false,

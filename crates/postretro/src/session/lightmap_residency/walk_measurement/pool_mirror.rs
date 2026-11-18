@@ -20,9 +20,11 @@ use postretro_level_loader::{
     LevelWorld, LightmapDrainBatch, LightmapDrainOutcome, LightmapStreamManifest,
 };
 use postretro_render_cpu::lightmap_pool::{
-    LightmapPoolModel, PerPool, PoolDemand, PoolKind, PoolPlan, RepackKind, StaticPool,
+    BlockMasks, LightmapPoolModel, PerPool, PoolDemand, PoolKind, PoolPlan, RepackKind, StaticPool,
     StreamedPoolSizing, payload_mismatch, plan_streaming_pool,
 };
+
+use super::payload_hash::PayloadHash;
 
 /// Ticks a grown-out generation stays alive before its submitted work is
 /// reported done. The renderer polls an `on_submitted_work_done` flag at
@@ -101,6 +103,8 @@ impl PoolRun {
 pub(super) struct PoolStats {
     pub(super) drains: u64,
     pub(super) submissions: u64,
+    /// Pairs made sampleable: every upload, plus ready pairs already resident.
+    pub(super) installs: u64,
     pub(super) uploads: u64,
     pub(super) install_bytes: u64,
     pub(super) deferred: u64,
@@ -120,6 +124,9 @@ pub(super) struct PoolStats {
     pub(super) preload_uploads: u64,
     pub(super) preload_install_bytes: u64,
     pub(super) pools: PerPool<PoolRun>,
+    /// Every upload's payload and placement, the settled-entry preload's
+    /// included: the identity of what a walk installed, coded or raw.
+    pub(super) payload_hash: PayloadHash,
 }
 
 impl PoolStats {
@@ -260,8 +267,16 @@ impl PoolMirror {
             .map(|summary| (u32::from(summary.width), u32::from(summary.height)))
             .collect();
         let block_texels = texel_areas(&extents);
-        let planes = summaries.iter().map(|summary| summary.planes).collect();
-        let demand = PoolDemand::new(source.block_alignment(), extents, Some(planes));
+        let masks = summaries
+            .iter()
+            .map(|summary| BlockMasks {
+                planes: summary.planes,
+                extents: summary
+                    .plane_extents
+                    .map(|(width, height)| (u32::from(width), u32::from(height))),
+            })
+            .collect();
+        let demand = PoolDemand::with_masks(source.block_alignment(), extents, Some(masks));
         let model = LightmapPoolModel::new(demand, edge, first_generation)
             .expect("test blocks fit a layer");
         Self::with_model(
@@ -346,6 +361,7 @@ impl PoolMirror {
         s.preload_install_bytes = s.install_bytes;
         s.drains = 0;
         s.submissions = 0;
+        s.installs = 0;
         s.uploads = 0;
         s.install_bytes = 0;
         s.plan_nanos.clear();
@@ -437,14 +453,27 @@ impl PoolMirror {
             || PoolKind::ALL.iter().any(|&kind| {
                 plan.pools[kind].growth.is_some() || !plan.pools[kind].copies.is_empty()
             });
-        let drain_install_bytes: u64 = plan
-            .uploads
-            .iter()
-            .filter_map(|u| batch.ready.iter().find(|p| p.block == u.block))
-            .map(|p| payload_bytes(&p.payload))
-            .sum();
+        let mut drain_install_bytes = 0;
+        for upload in &plan.uploads {
+            let Some(prepared) = batch.ready.iter().find(|p| p.block == upload.block) else {
+                continue;
+            };
+            let payload = &prepared.payload;
+            drain_install_bytes += payload_bytes(payload);
+            let [mask_a, mask_b] = payload
+                .shadowmask
+                .as_ref()
+                .map_or([&[][..], &[][..]], |[a, b]| [&a[..], &b[..]]);
+            self.stats.payload_hash.add(
+                upload.block,
+                upload.placement,
+                upload.planes,
+                &[&payload.irradiance, &payload.direction, mask_a, mask_b],
+            );
+        }
         let s = &mut self.stats;
         s.drains += 1;
+        s.installs += plan.installed.len() as u64;
         if submitted {
             s.submissions += 1;
             s.plan_nanos.push(plan_nanos);
@@ -486,8 +515,8 @@ impl PoolMirror {
         let Some(layout) = &self.layout else {
             return true;
         };
-        let (extent, planes) = (self.model.extent(block), self.model.planes(block));
-        payload_mismatch(&layout.header, extent, planes, payload).is_none()
+        let (extent, masks) = (self.model.extent(block), self.model.masks(block));
+        payload_mismatch(&layout.header, extent, masks, payload).is_none()
     }
 
     /// As `LightmapStreamState::outcome`.

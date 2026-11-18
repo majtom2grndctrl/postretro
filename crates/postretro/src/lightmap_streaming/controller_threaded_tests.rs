@@ -25,6 +25,7 @@ struct ThreadedRig {
     completions: Receiver<LightmapCompletion>,
     issuer: Option<ReadIssuer>,
     handle: Option<JoinHandle<()>>,
+    decode: Option<crate::streaming::decode_pool::DecodePool>,
     drain: SharedDrain,
     /// Every drain's installed blocks, in order.
     batches: Vec<Vec<u32>>,
@@ -43,9 +44,12 @@ impl ThreadedRig {
         let ledger = Arc::new(LightmapRouteLedger::default());
         let (route, completions) = lightmap_route(
             Arc::clone(&source) as Arc<dyn LightmapBlockSource>,
-            Arc::clone(controller.target_bitset()),
+            Arc::clone(controller.target_set()),
             Arc::clone(&ledger),
         );
+        let decode =
+            crate::streaming::decode_pool::DecodePool::spawn(1, MAX_LIGHTMAP_PERMITS).unwrap();
+        let route = route.attach(decode.queue());
         let (issuer, handle) = ReadIssuer::spawn(
             ReadRoutes::default().with(StreamResource::LightmapBlock, Box::new(route)),
             MAX_LIGHTMAP_PERMITS,
@@ -59,6 +63,7 @@ impl ThreadedRig {
             completions,
             issuer: Some(issuer),
             handle: Some(handle),
+            decode: Some(decode),
             drain: SharedDrain::default(),
             batches: Vec::new(),
         }
@@ -74,7 +79,7 @@ impl ThreadedRig {
             visible_cells: &visible,
         });
         while let Ok(completion) = self.completions.try_recv() {
-            let bytes = completion.result.read_bytes();
+            let bytes = completion.charged_bytes;
             self.controller.admit_completion(completion).unwrap();
             self.ledger.release(bytes);
         }
@@ -132,6 +137,7 @@ impl Drop for ThreadedRig {
         if let Some(handle) = self.handle.take() {
             handle.join().unwrap();
         }
+        drop(self.decode.take());
     }
 }
 
@@ -191,7 +197,11 @@ fn held_lightmap_read_keeps_the_pair_unready_when_the_shadowmask_lands_first() {
 }
 
 // P4: a block leaving demand while its one-range read is in flight is
-// discarded when the read lands, and its buffers are released.
+// discarded when the read lands, and its buffers are released. Its read
+// lands after it left the targets, so its decode is skipped and it completes
+// cancelled. Whether block 5, read before the retarget, completes decoded
+// (a departed read) or cancelled depends on when the decode thread reaches
+// it, so the test counts block 6 either way.
 #[test]
 fn block_leaving_demand_mid_read_is_discarded_and_released() {
     let mut rig = ThreadedRig::new(corridor_blocks(64, false));
@@ -201,10 +211,16 @@ fn block_leaving_demand_mid_read_is_discarded_and_released() {
     rig.source.log.wait_for_reads(2);
     rig.frame(0);
     assert_eq!(rig.controller.target(6), None);
+    assert_eq!(rig.controller.phase(6), BlockPhase::InFlight);
     rig.source.log.gate.release(held);
     rig.pump_until(0, "the departed read", |rig| {
-        rig.controller.counters().departed_reads >= 1
+        rig.controller.phase(6) == BlockPhase::Absent
     });
+    let counters = rig.controller.counters();
+    assert!(
+        counters.cancelled_reads + counters.departed_reads >= 2,
+        "blocks 5 and 6 both discarded: {counters:?}"
+    );
     rig.pump_until(0, "camera 0's targets", |rig| rig.all_installed(0..5));
     assert_eq!(rig.controller.phase(6), BlockPhase::Absent);
     assert_eq!(rig.installs_of(6), 0);

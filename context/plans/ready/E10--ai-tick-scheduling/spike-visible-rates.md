@@ -1,6 +1,6 @@
 # Spike: visible NPC rates (E10--ai-tick-scheduling rival check)
 
-Findings, measured. The question: is "visible NPCs act at 60 Hz, decide in 15 Hz pools, dormant tier for targetless unperceived NPCs" (the rival) almost as cheap as the brief's 30 Hz cap with 15/30 Hz steering? Throwaway patch, not built on: `spike-visible-rates.diff` next to this note (2026-11-17, against 635edd536).
+Findings, measured. The question: is "visible NPCs act at 60 Hz, decide in 15 Hz pools, dormant tier for targetless unperceived NPCs" (the rival) almost as cheap as the brief's 30 Hz cap with 15/30 Hz steering? Throwaway patch, not built on (2026-11-17, against 635edd536); dropped from the tree; recover it from git history (`git log --diff-filter=D -- '*spike-visible-rates.diff'`).
 
 **Machine:** cloud container, 4 vCPU Intel Xeon @ 2.10 GHz, no perf. Each timing run was single-threaded. Some runs shared the box with a callgrind process on another core. Baseline chase AI medians were 1.00 / 2.92 / 8.27 ms at 32/64/128, against the owner's 1.02 / 2.94 / 8.24 ms.
 **Build:** `CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`, target and TMPDIR on /dev/shm because the root volume was full.

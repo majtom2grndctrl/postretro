@@ -1350,6 +1350,7 @@ mod server_vocabulary_tests {
                 ServerControlMessage::SessionRoster(_) => "SessionRoster",
                 ServerControlMessage::SpawnPoseHint(_) => "SpawnPoseHint",
                 ServerControlMessage::FinalCharacter { .. } => "FinalCharacter",
+                ServerControlMessage::PasswordChallenge { .. } => "PasswordChallenge",
             }
         }
         fn presentation(payload: &ServerPresentationPayload) -> &'static str {
@@ -1386,7 +1387,7 @@ mod server_vocabulary_tests {
             "Rumble"
         );
 
-        assert_eq!(PROTOCOL_ID, 0x_5052_4C45, "PROTOCOL_ID is still \"PRLE\"");
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C46, "PROTOCOL_ID is still \"PRLF\"");
         assert_eq!(WIRE_VERSION, 40);
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
     }

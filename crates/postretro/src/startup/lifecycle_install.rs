@@ -227,7 +227,7 @@ impl App {
                 .expect("session installed before level install");
             crate::scripting::state_persistence::join_seed_from_persisted_state(
                 session.persisted_state.as_ref(),
-                session.player_options.player_id,
+                session.character_claim().0,
             )
         };
         // A host's frontend backdrop names no level to its clients: no parity,

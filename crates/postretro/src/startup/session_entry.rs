@@ -673,9 +673,11 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return Some(EntryFailure::Endpoint);
         };
+        let (claim_id, claim_name) = session.character_claim();
         let entry = enter_role(
             net_role,
-            session.player_options.player_id,
+            claim_id,
+            &claim_name,
             &mut session.scripting,
             &mut session.seat_table,
             mint,

@@ -421,7 +421,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                         persisted,
                         identity.as_ref(),
                         &membership,
-                        session.player_options.player_id,
+                        session.character_claim().0,
                         local_seat,
                     ) {
                         log::warn!("[State] {warning}");

@@ -506,6 +506,7 @@ fn with_saves(view: &mut ClientView, data_dir: &std::path::Path) {
             .state_store_lifecycle
             .should_restore_after_mod_init(true)
     );
+    crate::session::saves::boot_restore(session);
     session.state_store_lifecycle.mark_restore_completed();
     let boot = crate::session::progress_save::save_world_and_character(session)
         .expect("fixture: saves are allowed");
@@ -530,9 +531,25 @@ fn write_character(app: &App, value: f32) {
         .set_per_seat_value(Seat(0), SlotValue::Number(value));
 }
 
+/// The world file: what a host or single player's save point always writes.
 fn saved_file(app: &App) -> std::path::PathBuf {
     let session = app.session.as_ref().unwrap();
-    crate::scripting::state_persistence::state_path(session.data_dir.as_deref(), MOD_ID).unwrap()
+    postretro_sim::scripting::save_files::SaveDir::new(session.data_dir.as_deref().unwrap(), MOD_ID)
+        .world_path()
+}
+
+/// The world file and character slot 0 as the store document they compose.
+fn on_disk_state(app: &App) -> crate::scripting::state_persistence::PersistedState {
+    use postretro_sim::scripting::save_files::{SaveDir, read_document};
+    let session = app.session.as_ref().unwrap();
+    let dir = SaveDir::new(session.data_dir.as_deref().unwrap(), MOD_ID);
+    let world = read_document(&dir.world_path()).unwrap();
+    let character = read_document(&dir.character_path(0)).unwrap();
+    crate::scripting::state_persistence::PersistedState::from_ledger(
+        world.as_ref(),
+        None,
+        character.as_ref().and_then(|document| document.seats.first()),
+    )
 }
 
 fn character_in(state: Option<&crate::scripting::state_persistence::PersistedState>) -> f64 {
@@ -557,9 +574,7 @@ fn join_saves_world_and_character_before_its_first_connect_packet() {
 
     assert!(view.app.join_from_frontend(relay.address()));
 
-    let on_disk = crate::scripting::state_persistence::load_persisted_state(&saved_file(&view.app))
-        .unwrap()
-        .expect("the join wrote the save");
+    let on_disk = on_disk_state(&view.app);
     assert_eq!(
         Some(&on_disk),
         view.app.session.as_ref().unwrap().persisted_state.as_ref(),
@@ -741,8 +756,12 @@ fn entry_facts(app: &App) -> EntryFacts {
         join_password: slot(app, "session.joinPassword"),
         end_cause: slot(app, "session.endCause"),
         connection: connection(app),
-        saved: crate::scripting::state_persistence::state_path(session.data_dir.as_deref(), MOD_ID)
-            .and_then(|path| std::fs::read(path).ok()),
+        saved: session.data_dir.as_deref().and_then(|dir| {
+            std::fs::read(
+                postretro_sim::scripting::save_files::SaveDir::new(dir, MOD_ID).world_path(),
+            )
+            .ok()
+        }),
     }
 }
 

@@ -951,6 +951,12 @@ impl ScriptRuntime {
         self.committed_run_scoped_slots.clear();
     }
 
+    /// Stand in for a commit whose declarations made `slots` run-scoped.
+    #[cfg(feature = "test-support")]
+    pub fn commit_run_scoped_slots_for_test(&mut self, slots: std::collections::BTreeSet<String>) {
+        self.committed_run_scoped_slots = slots;
+    }
+
     /// Stand in for a mod init that committed `id` and `version`.
     #[cfg(feature = "test-support")]
     pub fn commit_mod_identity_for_test(&mut self, id: &str, version: &str) {

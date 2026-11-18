@@ -43,6 +43,7 @@ pub(crate) struct RoleEntry {
 pub(crate) fn enter_role(
     net_role: &netcode::NetRole,
     player_id: Option<[u8; 16]>,
+    display_name: &str,
     scripting: &mut ScriptingCore,
     seat_table: &mut Option<netcode::SeatTable>,
     mint: netcode::SessionIdSource,
@@ -52,7 +53,7 @@ pub(crate) fn enter_role(
     let client_user_data = player_id
         .map(|player_id| ConnectClaim {
             player_id: PlayerClaimId(player_id),
-            display_name: String::new(),
+            display_name: display_name.to_owned(),
         })
         .as_ref()
         .map(encode_connect_claim);

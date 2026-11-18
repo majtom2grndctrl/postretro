@@ -8,7 +8,7 @@ use postretro_foundation::Seat;
 use crate::netcode;
 use crate::scripting::state_persistence::{
     apply_join_seed, collect_per_owner_state, collected_per_owner_only_state,
-    retain_saved_per_owner_state, save_persisted_state, state_path,
+    retain_saved_per_owner_state,
 };
 
 /// Apply one host-validated join seed to an admitted seat. The host registry is
@@ -63,25 +63,11 @@ pub(crate) fn save_connected_client_per_owner_state(session: &mut super::Session
     else {
         return;
     };
-    let Some(local_player_id) = session.player_options.player_id else {
+    let (Some(local_player_id), _) = session.character_claim() else {
         // A process without a durable player identity must not manufacture a
         // per-owner key or write a document it cannot later identify.
         return;
     };
-    let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() else {
-        log::warn!("[State] no committed mod manifest; skipping persistent per-owner state save");
-        return;
-    };
-    let mod_id = mod_id.to_owned();
-    let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) else {
-        if session.state_store_lifecycle.disable_persistence() {
-            log::warn!(
-                "[State] platform data directory is unavailable; persistent state is disabled for this run"
-            );
-        }
-        return;
-    };
-
     let identity = session.scripting.script_runtime.store_identity().cloned();
     let committed_store_slots = session
         .scripting
@@ -102,21 +88,17 @@ pub(crate) fn save_connected_client_per_owner_state(session: &mut super::Session
 
     let save_state =
         collected_per_owner_only_state(session.persisted_state.as_ref(), collected.per_owner);
-    match save_persisted_state(&state_path, &save_state) {
-        Ok(()) => {
-            // Keep boot-loaded globals in memory for their own lifecycle, but
-            // advance the retained per-owner document used by future client
-            // saves and join-seed assembly.
-            retain_saved_per_owner_state(&mut session.persisted_state, save_state);
-            log::info!(
-                "[State] saved persistent per-owner slots to {}",
-                state_path.display()
-            );
-        }
-        Err(error) => log::warn!(
-            "[State] failed to save persistent per-owner slots to {}: {error}",
-            state_path.display()
-        ),
+    // The character file keeps the loadout it holds; the host returns the
+    // live one at each level start and checkpoint.
+    let Some(mut record) = session.saves.selected_character().cloned() else {
+        return;
+    };
+    record.per_owner = save_state.per_owner_for(&record.claim);
+    if session.saves.save_selected_character(record) {
+        // Advance the retained per-owner document used by future client
+        // saves and join-seed assembly; the boot world stays as it was.
+        retain_saved_per_owner_state(&mut session.persisted_state, save_state);
+        log::info!("[State] saved the character's per-owner slots");
     }
 }
 

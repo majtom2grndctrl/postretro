@@ -1,0 +1,210 @@
+// Character, world and run save slots: what is on disk, what is selected, and the run in play.
+// See: context/lib/scripting.md §5 (Durable State Store) · context/lib/networking.md §Session-state ledger
+
+mod boot;
+mod rows;
+mod store;
+
+#[cfg(test)]
+mod tests;
+
+pub(crate) use boot::{BootInputs, load_save_slots};
+pub(crate) use rows::publish_save_rows;
+pub(crate) use store::{
+    boot_restore, boot_restore_with, collect_character_record, collect_world_and_run, reload_store,
+    set_seat_zero_carry_from_selection,
+};
+
+use postretro_combat_model::CarriedState;
+use postretro_scripting_core::runtime::SavesManifest;
+use postretro_sim::scripting::save_files::{
+    LedgerDocument, SaveDir, SeatRecord, Selection, SlotFile, write_document, write_selection,
+};
+use postretro_sim::scripting::state_persistence::{PersistedState, decode_player_claim_id};
+
+/// A mod's save slots as this process holds them. Every file write goes
+/// through here, so an unreadable slot is never written.
+#[derive(Debug, Default)]
+pub(crate) struct SaveSlots {
+    dir: Option<SaveDir>,
+    /// The mod's `saves` block; `None` is a mod without one, which gets one
+    /// character and one run, selected and active for the whole process.
+    declared: Option<SavesManifest>,
+    characters: Vec<SlotFile>,
+    runs: Vec<SlotFile>,
+    world: Option<SlotFile>,
+    selection: Selection,
+    /// A run is active from Continue or `newRun` until the frontend is entered
+    /// again; always, for a mod without a `saves` block.
+    run_active: bool,
+}
+
+impl SaveSlots {
+    /// Whether a save directory was loaded for this mod.
+    pub(crate) fn is_loaded(&self) -> bool {
+        self.dir.is_some()
+    }
+
+    /// Whether the mod declared a `saves` block.
+    pub(crate) fn has_saves_block(&self) -> bool {
+        self.declared.is_some()
+    }
+
+    pub(crate) fn character_slots(&self) -> &[SlotFile] {
+        &self.characters
+    }
+
+    pub(crate) fn run_slots(&self) -> &[SlotFile] {
+        &self.runs
+    }
+
+    pub(crate) fn selection(&self) -> Selection {
+        self.selection
+    }
+
+    pub(crate) fn run_active(&self) -> bool {
+        self.run_active
+    }
+
+    pub(crate) fn set_run_active(&mut self, active: bool) {
+        // A mod without a `saves` block keeps its one run active throughout.
+        self.run_active = active || (self.declared.is_none() && self.selected_run().is_some());
+    }
+
+    fn selected_index(index: i32, slots: &[SlotFile]) -> Option<usize> {
+        usize::try_from(index)
+            .ok()
+            .filter(|&index| slots.get(index).is_some_and(|slot| slot.document().is_some()))
+    }
+
+    pub(crate) fn selected_character_index(&self) -> Option<usize> {
+        Self::selected_index(self.selection.character, &self.characters)
+    }
+
+    pub(crate) fn selected_run_index(&self) -> Option<usize> {
+        Self::selected_index(self.selection.run, &self.runs)
+    }
+
+    /// The selected character's record.
+    pub(crate) fn selected_character(&self) -> Option<&SeatRecord> {
+        let index = self.selected_character_index()?;
+        self.characters[index].document()?.seats.first()
+    }
+
+    /// The selected run's document.
+    pub(crate) fn selected_run(&self) -> Option<&LedgerDocument> {
+        let index = self.selected_run_index()?;
+        self.runs[index].document()
+    }
+
+    /// The selected character's claim: the id it joins with and the key its
+    /// per-owner rows use.
+    pub(crate) fn selected_character_id(&self) -> Option<[u8; 16]> {
+        self.selected_character()
+            .and_then(|record| decode_player_claim_id(&record.claim))
+            .map(|claim| claim.0)
+    }
+
+    pub(crate) fn selected_character_name(&self) -> &str {
+        self.selected_character()
+            .map_or("", |record| record.name.as_str())
+    }
+
+    /// The selected character's saved loadout, as seat 0 carries it.
+    pub(crate) fn selected_carry(&self) -> Option<CarriedState> {
+        let record = self.selected_character()?;
+        let mut warnings = Vec::new();
+        let carried = record.loadout.to_carried(&mut warnings);
+        for warning in warnings {
+            log::warn!("[State] character `{}`: {warning}", record.name);
+        }
+        carried
+    }
+
+    pub(crate) fn world_document(&self) -> Option<&LedgerDocument> {
+        self.world.as_ref().and_then(SlotFile::document)
+    }
+
+    /// The store document the world, the selected character and, when
+    /// `with_run`, the selected run compose into.
+    pub(crate) fn store_document(&self, with_run: bool) -> PersistedState {
+        PersistedState::from_ledger(
+            self.world_document(),
+            self.selected_run().filter(|_| with_run),
+            self.selected_character(),
+        )
+    }
+
+    /// Write the selected character's file. Refused, changing nothing, with
+    /// no selected character or no save directory.
+    pub(crate) fn save_selected_character(&mut self, record: SeatRecord) -> bool {
+        let Some(index) = self.selected_character_index() else {
+            return false;
+        };
+        let document = LedgerDocument {
+            seats: vec![record],
+            ..self.characters[index]
+                .document()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let Some(path) = self.dir.as_ref().map(|dir| dir.character_path(index)) else {
+            return false;
+        };
+        write_slot(&path, &mut self.characters[index], document)
+    }
+
+    /// Write the selected run's file.
+    pub(crate) fn save_selected_run(&mut self, document: LedgerDocument) -> bool {
+        let Some(index) = self.selected_run_index() else {
+            return false;
+        };
+        let Some(path) = self.dir.as_ref().map(|dir| dir.run_path(index)) else {
+            return false;
+        };
+        write_slot(&path, &mut self.runs[index], document)
+    }
+
+    /// Write the world file. An unreadable one is never replaced.
+    pub(crate) fn save_world(&mut self, document: LedgerDocument) -> bool {
+        let Some(path) = self.dir.as_ref().map(SaveDir::world_path) else {
+            return false;
+        };
+        let world = self.world.get_or_insert(SlotFile::Empty);
+        write_slot(&path, world, document)
+    }
+
+    /// Store the selection in the mod's save directory.
+    pub(crate) fn store_selection(&self) {
+        let Some(dir) = self.dir.as_ref() else {
+            return;
+        };
+        let path = dir.selection_path();
+        if let Err(error) = write_selection(&path, self.selection) {
+            log::warn!("[State] failed to save {}: {error}", path.display());
+        }
+    }
+}
+
+/// Write one slot's document, keeping the in-memory copy in step. An
+/// unreadable slot is never overwritten; a failed write warns and keeps the
+/// previous copy.
+fn write_slot(path: &std::path::Path, slot: &mut SlotFile, document: LedgerDocument) -> bool {
+    if matches!(slot, SlotFile::Unreadable) {
+        log::warn!(
+            "[State] {} cannot be read by this build; not overwriting it",
+            path.display()
+        );
+        return false;
+    }
+    match write_document(path, &document) {
+        Ok(()) => {
+            *slot = SlotFile::Occupied(document);
+            true
+        }
+        Err(error) => {
+            log::warn!("[State] failed to save {}: {error}", path.display());
+            false
+        }
+    }
+}

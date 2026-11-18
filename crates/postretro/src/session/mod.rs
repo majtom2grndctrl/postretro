@@ -58,6 +58,7 @@ pub(crate) mod occupancy_families;
 pub(crate) mod players;
 pub(crate) mod progress_save;
 pub(crate) mod role_state;
+pub(crate) mod saves;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;
@@ -168,6 +169,9 @@ pub(crate) struct Session {
     /// Boot-loaded state retained for per-owner saves and join-seed assembly.
     /// The document remains main-thread-only with the rest of the session.
     pub(crate) persisted_state: Option<PersistedState>,
+
+    /// The mod's character, world and run save slots.
+    pub(crate) saves: saves::SaveSlots,
 
     /// Per-tag kill-count subscriptions. See: context/lib/scripting.md §2.
     pub(crate) progress_tracker: ProgressTracker,
@@ -334,6 +338,20 @@ pub(crate) fn modal_focus_key(
 }
 
 impl Session {
+    /// The id and name this player saves under and joins with: the selected
+    /// character's. Before saves load, and with persistence unavailable, the
+    /// device's player id stands in, as it did before character saves.
+    pub(crate) fn character_claim(&self) -> (Option<[u8; 16]>, String) {
+        if self.saves.is_loaded() {
+            (
+                self.saves.selected_character_id(),
+                self.saves.selected_character_name().to_owned(),
+            )
+        } else {
+            (self.player_options.player_id, String::new())
+        }
+    }
+
     /// The focus-engine key and registry name of the tree on top: a pushed
     /// modal is keyed by name and instance, so a fresh push never inherits the
     /// focus a previous instance of the same tree had; with no modal, the
@@ -672,6 +690,7 @@ impl Session {
         let entry = net_entry::enter_role(
             &net_role,
             player_options.player_id,
+            "",
             &mut scripting,
             &mut seat_table,
             getrandom::fill,
@@ -733,6 +752,7 @@ impl Session {
             state_store_lifecycle: StateStoreLifecycle::default(),
             per_owner_save_timer: PerOwnerSaveTimer::default(),
             persisted_state: None,
+            saves: saves::SaveSlots::default(),
             progress_tracker: ProgressTracker::new(),
             pending_death_events: Vec::new(),
             crossing_detector: CrossingDetector::new(),

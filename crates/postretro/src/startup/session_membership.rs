@@ -325,7 +325,7 @@ impl App {
             &committed,
             session_seat,
             character_on_seat,
-            session.player_options.player_id,
+            session.character_claim().0,
         );
         for warning in warnings {
             log::warn!("[State] {warning}");

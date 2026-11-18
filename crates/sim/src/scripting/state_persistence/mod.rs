@@ -22,11 +22,13 @@ use postretro_scripting_core::store_identity::StoreIdentityLedger;
 
 mod client_session;
 mod join_seed;
+mod ledger;
 #[cfg(test)]
 mod tests;
 
 pub use client_session::*;
 pub use join_seed::*;
+pub use ledger::{reset_mod_slots_for_reload, run_scoped_durable_keys, split_world_and_run};
 
 /// Current on-disk state format. Increment only with an explicit migration or invalidation policy.
 pub(crate) const CURRENT_STATE_VERSION: u32 = 4;

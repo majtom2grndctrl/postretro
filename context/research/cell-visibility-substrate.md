@@ -5,9 +5,11 @@
 > `context/plans/done/cell-visibility-relation/`, built foundation-first ahead of a wired consumer
 > (that plan's *Alternatives rejected* argues the divergence from this doc's original "build with
 > the first consumer" guidance, still below). This doc now holds what's still unbuilt: the
-> sightline/anti-penumbra tightening (construction in *Sightline construction* below), the
-> dynamic-geometry/destructible design, and the generalizability gate for the four intended
-> consumers below, none of which reference the substrate yet.
+> dynamic-geometry/destructible design and the generalizability gate for audio, the remaining
+> intended consumer. A sightline tightening or any tighter id 46 is ruled out
+> (`context/lib/build_pipeline.md` §PRL section IDs, id 51): AI tick tiers, network relevance and
+> combat VFX culling read id 51 instead. *Sightline construction* and those three consumer bullets
+> below stand as rejected design.
 
 ## What it is
 
@@ -61,12 +63,11 @@ portal walk owns render visibility, and the owner has rejected Quake-style full 
   construction produces asymmetric pairs at the epsilon (a known Quake `vis` footgun), so populate each
   pair by *unioning* both directions rather than assuming they agree (detail in the graded hierarchy
   below). Store upper-triangular; consumers may rely on bidirectionality.
-- **Presentation / relevance only — never simulation authority.** Consumers may cull render, audio,
-  and replication-relevance. They must NOT cull authoritative simulation: the server still simulates
-  the distant projectile / enemy (it may round a corner into view, or matter to another co-op
+- **Presentation / relevance cull — never a simulation skip.** Consumers may cull render, audio,
+  and replication-relevance. Authoritative simulation of an unseen NPC may run coarser — its
+  whole tick at a lower rate, step scaled — but is never skipped: the server still simulates the
+  distant projectile / enemy (it may round a corner into view, or matter to another co-op
   player). Conflating "don't show" with "don't simulate" causes desync.
-  Amended (E10 AI tick scheduling): a consumer may coarsen authoritative simulation — run an unseen
-  NPC's whole tick at a lower rate with its step scaled — but never skip it.
 
 ## Graded extension: the coupling tuple
 

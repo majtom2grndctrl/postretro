@@ -14,6 +14,7 @@ pub mod entity_world_primitives;
 pub mod map_entity;
 pub mod primitives;
 pub mod reactions;
+pub mod save_files;
 pub mod state_persistence;
 pub mod state_store;
 pub mod typedef;

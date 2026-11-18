@@ -818,6 +818,15 @@ impl SeatTable {
         self.carried.get(&seat).and_then(Option::as_ref)
     }
 
+    /// Replace a seat's carry outside play: seat 0 takes the selected
+    /// character's saved loadout, or none. A seat the table does not hold is
+    /// left absent.
+    pub fn set_carried_state(&mut self, seat: Seat, carried: Option<CarriedState>) {
+        if let Some(slot) = self.carried.get_mut(&seat) {
+            *slot = carried;
+        }
+    }
+
     /// Reset live-pawn identity and level-scoped placement after actual level
     /// unload. Suspension does not call this: its world and pawn bindings remain
     /// live on resume.

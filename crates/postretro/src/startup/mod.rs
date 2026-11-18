@@ -27,6 +27,8 @@ mod ghost_links_surface_tests;
 mod grant_layer_surface_tests;
 #[cfg(test)]
 mod layer_lifecycle_surface_tests;
+#[cfg(test)]
+mod character_file_slice_tests;
 pub(crate) mod level_loads;
 mod life_state_validation;
 pub(crate) mod lifecycle;

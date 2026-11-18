@@ -1,7 +1,7 @@
 # perf-ai-tick-cost — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 6405e57a
 
 Feature branch: `claude/determined-volta-bts6r0` (claim pushed to `main` at 6405e57a).

@@ -63,7 +63,7 @@ Automated rows run as `cargo test` loopback tests over real transports, as the l
 | P-b Pre-proof parity, seed and reveal apply on admission; participates with join-seeded character (P6) | `right_password_admits_and_applies_what_was_declared_before_the_proof` (held join seed applies at admission); engine participation: `a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one` | proven |
 | P-c Distinct nonces; replayed proof refuses; stray proof changes nothing (P7) | `nonces_differ_per_connection_replays_refuse_and_stray_proofs_change_nothing` | proven |
 | P-d Wrong mod refused `refusedMod`, no challenge (P9) | `wrong_mod_is_refused_before_any_challenge` | proven |
-| P-e Live write of `session.password` takes effect only at next hosting (P10) | `a_live_password_write_takes_effect_at_the_next_hosting` | proven |
+| P-e Live write of `session.hostPassword` takes effect only at next hosting (P10) | `a_live_password_write_takes_effect_at_the_next_hosting` | proven |
 | P-f Wrong or empty-password proof refuses `refusedPassword`; client lands at frontend | `wrong_or_missing_password_is_refused_and_applies_nothing`, `a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one` | proven |
 | P-g Silent client refused within bound (P8) | `the_proof_bound_refuses_a_silent_client_and_admits_a_proof_on_its_last_poll` | proven |
 | P-h Proof on the bound's poll admits; end during challenge sends `sessionEnded`; level change admits into new level (P22) | `the_proof_bound_refuses_a_silent_client_and_admits_a_proof_on_its_last_poll`, `an_outstanding_challenge_meets_the_session_end_and_a_level_change` | proven |

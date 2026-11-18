@@ -1323,3 +1323,5 @@ mod replan_stress;
 #[path = "stage_timing_tests.rs"]
 mod stage_timing;
 
+#[path = "multi_arena_tests.rs"]
+mod multi_arena;

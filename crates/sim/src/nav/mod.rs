@@ -19,6 +19,10 @@ pub use path::{NavStart, find_path, find_path_from, find_path_gated};
 #[cfg(test)]
 mod bake_contract_tests;
 
+// A 4,216-region multi-arena level for scale proofs and the AI multi-arena row.
+#[cfg(any(test, feature = "test-support"))]
+pub mod arena_fixture;
+
 use glam::Vec3;
 #[cfg(any(test, feature = "test-support"))]
 use postretro_level_format::navmesh::NAVMESH_VERSION;

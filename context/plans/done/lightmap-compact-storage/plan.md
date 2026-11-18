@@ -1,7 +1,7 @@
 # lightmap-compact-storage — plan of record
 
 mode: resumable
-status: approved
+status: landed
 read at: f5bb5d5c8
 branch: lightmap-compact-storage
 
@@ -67,7 +67,7 @@ Baseline = commit `65aa15e0d` on this branch: `f5bb5d5c8` plus Task 0's tools an
 | 27 Bumped stage versions and fingerprint miss the cache once | cache tests | achievable as stated | pass: cache tests |
 | 28 Moving one light re-bakes only its layers; fingerprint unchanged | extend `memo_hit_rebuild_then_light_edit_rebakes_one_light` | achievable as stated | pass: light-edit rebake test |
 | M1 Report sizes, file size, id-58 MiB per pool, pack time, all-resident load time, 1-/2-core issuer busy p95/max (showcase, campaign-test) | Task 7 measurement run; section sizes from Task 0's tool | manual, measure-and-report | reported in Tasks 4–7: showcase file 3.4 GiB→531 MiB, pool 2,404→1,744 MiB, load 21.8→14.5 s, issuer busy p95 1.5–1.9→0.08–0.44 ms |
-| M2 Visual A/B at fixed poses, both maps: no visible difference | capture-mode frames at the baseline poses, side by side, for the owner | manual, owner | **outstanding, owner**: review sheet `task7/screen/ab/index.html` (mean abs diff 0.002–0.016/255) |
+| M2 Visual A/B at fixed poses, both maps: no visible difference | capture-mode frames at the baseline poses, side by side, for the owner | manual, owner | pass (owner, 2026-11-18): differences imperceptible at all eight poses (mean abs diff 0.002–0.016/255) |
 | M3 Tracy GPU frame time on showcase vs baseline | baseline batch at `f5bb5d5c8` (in progress, scratchpad `baseline/`), rerun with the same script on the feature build | manual, measure-and-report | reported: forward +0.6–1.1 ms (2–4%) at three poses, −0.2 at one; 0 of 12 runs paged (baseline 3 of 12) |
 
 ## Tasks
@@ -117,3 +117,12 @@ Commits: one per completed task, each carrying its `plan.md` row update. Sequent
 - **AC 2 restated (2026-11-17):** zstd ignores some padding bits, so a few single-byte flips decode, checksum-verified, to identical bytes. A flipped byte is rejected by name or decodes to identical bytes; never a different payload.
 - **Measure, not gate (2026-11-16):** frame time, GPU time, load time and the 0.0125 m showcase's streaming behavior (for example the slow first frames at its spawn pose) are measured and reported, not gates. They don't block a task or the landing. The brief's correctness and comparison rows (late blocks, payload identity, decode ordering) keep their stated proof.
 - **Map layout is a factor (2026-11-16):** the showcase joins two very large rooms with a short straight hallway, so both rooms' lightmaps tend to be resident together. A layout change (an L-shaped hallway, or medium rooms between large ones) would likely cut its VRAM. The owner's goal is still that the engine handles that layout. This brief is one part of a larger strategy for big playable spaces, not the whole of it. The M1/M3 report should say how much of the pool bound comes from the two big rooms being co-resident, as input to that strategy.
+
+## Landing (2026-11-18)
+The owner said "land the plane" after the M2 read. These owner questions from the results report remain open and travel with the PR, unresolved by landing:
+- AC 22, SH at emulated 1 core: `sh_late` far-point 47 vs 44 and random spawn 1,017 vs 1,010, from the single shared decode thread; accept, or give a 1-core machine a second decode thread.
+- AC 18, far-point SH off 79 vs on 78 completed late blocks; accept as a timing perturbation of the shared drain budget. `drafts/streaming-drain-budget-spike` measures that budget.
+- Decode-order wording (Corrections, P3/P4): sign-off on the clarified guarantee.
+- Pool size: 1,744 MiB kept (repacks 27 vs baseline 25); smaller pools pass late blocks with many more repacks.
+- Mask-pool first-generation floor 16 → 24 layers from the byte-based floor.
+The draft seed `lightmap-payload-split-frame-thread` is retired: the pair split now runs in the decode job.

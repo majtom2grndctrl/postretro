@@ -131,7 +131,7 @@ pub(crate) fn enter_role(
 
 /// The session facts a boot publishes, as in-app entry does: the remembered
 /// address seeds `session.joinAddress`; `--password` seeds the password
-/// slots no boot endpoint consumed (see [`boot_password_slots`]); a `--connect` endpoint reads
+/// slots no boot endpoint consumed (see [`flag_seeded_slots`]); a `--connect` endpoint reads
 /// `connecting`; a failed `--host` sets `hostFailed`, a malformed `--connect`
 /// sets `badAddress`, and a `--connect` whose endpoint failed sets
 /// `connectFailed`. `parse_error` names the flag that failed, if any.
@@ -159,7 +159,7 @@ pub(crate) fn publish_boot_facts(
     }
     if let Some(password) = cli_password {
         let live_host = matches!(&entry.endpoint, Some(netcode::NetEndpoint::Host { .. }));
-        for slot in boot_password_slots(net_role, live_host) {
+        for slot in flag_seeded_slots(net_role, live_host) {
             // The error is never logged: a validation message could quote
             // the value, and the password never reaches a log.
             if postretro_scripting_core::store_bridge::write_store_slot(
@@ -204,7 +204,7 @@ pub(crate) fn publish_boot_facts(
 /// seeds only the join slot, which admission consumes as an in-app join's
 /// does, so the password a player joined with never becomes the one they
 /// host with. With no role flag, both slots take it.
-fn boot_password_slots(net_role: &netcode::NetRole, live_host: bool) -> Vec<&'static str> {
+fn flag_seeded_slots(net_role: &netcode::NetRole, live_host: bool) -> Vec<&'static str> {
     use crate::startup::lifecycle::session_entry::{HOST_PASSWORD_SLOT, JOIN_PASSWORD_SLOT};
     match net_role {
         netcode::NetRole::SinglePlayer => vec![HOST_PASSWORD_SLOT, JOIN_PASSWORD_SLOT],
@@ -282,22 +282,19 @@ mod tests {
             addr: "127.0.0.1:27015".parse().unwrap(),
         };
         assert_eq!(
-            boot_password_slots(&netcode::NetRole::SinglePlayer, false),
+            flag_seeded_slots(&netcode::NetRole::SinglePlayer, false),
             vec![HOST_PASSWORD_SLOT, JOIN_PASSWORD_SLOT]
         );
         assert!(
-            boot_password_slots(&host, true).is_empty(),
+            flag_seeded_slots(&host, true).is_empty(),
             "hosting consumed it"
         );
         assert_eq!(
-            boot_password_slots(&host, false),
+            flag_seeded_slots(&host, false),
             vec![HOST_PASSWORD_SLOT],
             "a failed host keeps it for a retry"
         );
-        assert_eq!(
-            boot_password_slots(&connect, false),
-            vec![JOIN_PASSWORD_SLOT]
-        );
+        assert_eq!(flag_seeded_slots(&connect, false), vec![JOIN_PASSWORD_SLOT]);
     }
 
     // Regression: session-id entropy failure used to abort engine boot.

@@ -1,4 +1,4 @@
-# CodeQL advanced setup configuration. The workflow is
+# CodeQL advanced setup configuration, read by
 # .github/workflows/codeql.yml.
 name: postretro-codeql
 

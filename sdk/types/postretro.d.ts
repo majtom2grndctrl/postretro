@@ -1327,6 +1327,14 @@ declare module "postretro" {
     tree: string | ReadonlyArray<string>;
   };
 
+  /** Save slots declared via `ModManifest.saves`: how many characters and runs the frontend can keep. Each count is a whole number from 1 to the engine cap of 16; a larger count is clamped to 16 with a warning, and a missing, fractional or smaller count warns and uses 1. */
+  export type SavesManifest = {
+    /** Character save slots. A character holds its per-owner `persist: true` slots, its name and its carried gear. */
+    characterSlots: number;
+    /** Run save slots. A run holds its character, the level and checkpoint it reached, its `persist: "run"` slots and faction sentiment. */
+    runSlots: number;
+  };
+
   /** Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default. */
   export type ThemeTokens = {
     /** Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional. */
@@ -1708,6 +1716,8 @@ declare module "postretro" {
     maps?: ReadonlyArray<ModMapEntry>;
     /** Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu. */
     frontend?: Frontend;
+    /** Save slots the mod keeps. Optional; without it the mod gets one character slot and one run slot, created and selected automatically, with that run always active. The engine caps each count at 16. */
+    saves?: SavesManifest;
     /** Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors. */
     reactions?: ReadonlyArray<NamedReactionDescriptor>;
     /** Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter. */
@@ -2739,12 +2749,12 @@ declare module "postretro" {
   type StoreComputedRef<T> = ComputedRef<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedComputedRef<T> };
   type StoreRef<T> = Ref<T> & { byPlayer(owner: PlayerOwner): OwnerAddressedRef<T> };
 
-  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves global slots on clean exit. On connected clients, `perOwner: true, persist: true` saves the local owner's value every ~60 seconds and on clean exit; it travels via that player's join seed. `readonly` blocks script writes. `perOwner: true` gives each player seat an independent host-side value and permits only omitted `network` or `network: "ownerPrivate"`; `network: "shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `postretro-tool mint-identity <mod>` and keep its durable key across renames. */
+  /** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist: true` saves a global slot in the world file and a per-owner slot in the character; `persist: "run"` saves a global slot in the current run and is refused on a per-owner slot. On connected clients, `perOwner: true, persist: true` saves the local owner's value every ~60 seconds and on clean exit; it travels via that player's join seed. `readonly` blocks script writes. `perOwner: true` gives each player seat an independent host-side value and permits only omitted `network` or `network: "ownerPrivate"`; `network: "shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `postretro-tool mint-identity <mod>` and keep its durable key across renames. */
   export type StoreSlotSchema = (
-    | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; persist?: boolean | "run"; accumulate?: never }
     | { type: "number"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
-    | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; accumulate: (t: TickParams) => RuntimeValue }
-    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+    | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; persist?: boolean | "run"; accumulate: (t: TickParams) => RuntimeValue }
+    | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; persist?: boolean | "run"; accumulate?: never }
     | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
   ) & Record<string, unknown>;
 

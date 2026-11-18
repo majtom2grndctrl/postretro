@@ -248,6 +248,7 @@ pub fn rust_to_ts(ty_name: &str) -> String {
         "FontFamilyMap" => "{ readonly [token: string]: string }".to_string(),
         "ThemeSpacingMap" => "{ readonly [token: string]: number }".to_string(),
         "ModLoading" => "ModLoading".to_string(),
+        "SavesManifest" => "SavesManifest".to_string(),
         "UiImageMap" => "{ readonly [name: string]: string }".to_string(),
         // A loading-tree pool: one UI tree registry name or several.
         "LoadingTreePool" => "string | ReadonlyArray<string>".to_string(),
@@ -450,6 +451,7 @@ pub fn rust_to_luau(ty_name: &str) -> String {
         "FontFamilyMap" => "{ [string]: string }".to_string(),
         "ThemeSpacingMap" => "{ [string]: number }".to_string(),
         "ModLoading" => "ModLoading".to_string(),
+        "SavesManifest" => "SavesManifest".to_string(),
         "UiImageMap" => "{ [string]: string }".to_string(),
         "LoadingTreePool" => "string | {string}".to_string(),
         // The `defineStore` return is special-cased in

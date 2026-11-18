@@ -41,7 +41,10 @@ pub(crate) fn loading_tree_from_lua(
     ))
 }
 
-fn authored_field_lua(table: &Table, field: &str) -> Result<AuthoredValue, DescriptorError> {
+pub(super) fn authored_field_lua(
+    table: &Table,
+    field: &str,
+) -> Result<AuthoredValue, DescriptorError> {
     let raw: LuaValue = table.get(field).map_err(lua_err)?;
     authored_value_lua(raw, 0)
 }

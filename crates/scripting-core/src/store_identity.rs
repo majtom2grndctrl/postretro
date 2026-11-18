@@ -201,6 +201,20 @@ pub fn declaration_slot_names(declarations: &StoreDeclarationSet) -> BTreeSet<St
         .collect()
 }
 
+/// The subset of [`declaration_slot_names`] declared `persist: "run"`, in the
+/// same dotted form. Persistence routes these globals to the run save.
+pub fn run_scoped_slot_names(declarations: &StoreDeclarationSet) -> BTreeSet<String> {
+    declarations
+        .iter()
+        .flat_map(|declaration| {
+            declaration
+                .run_scoped
+                .iter()
+                .map(|slot_name| format!("{}.{}", declaration.namespace, slot_name))
+        })
+        .collect()
+}
+
 /// Read the ledger once and validate it against this declaration attempt.
 /// Missing-entry requirements are attempt-scoped. Durable-key changes compare
 /// every fresh mapping that still names a live slot against the prior snapshot;
@@ -368,6 +382,7 @@ mod tests {
             .add(StoreDeclaration {
                 namespace: "story".to_string(),
                 records: vec![(name.to_string(), durable_record())],
+                run_scoped: Default::default(),
             })
             .unwrap();
         declarations
@@ -455,6 +470,7 @@ mod tests {
             .add(StoreDeclaration {
                 namespace: "story".to_string(),
                 records: vec![("temporary".to_string(), non_durable)],
+                run_scoped: Default::default(),
             })
             .unwrap();
         let ledger = StoreIdentityLedger {

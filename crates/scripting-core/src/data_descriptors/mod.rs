@@ -21,7 +21,7 @@ pub use super::runtime::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
     ModBloomResolution, ModGhostAudio, ModGhostTransparency, ModInputBinding, ModInputBlock,
     ModInputCommand, ModInputGlyphs, ModLoading, ModMapEntry, ModMoverDefaults,
-    ModReflectionProfile, ModReflectionStyle, ModRenderProfile,
+    ModReflectionProfile, ModReflectionStyle, ModRenderProfile, SavesManifest,
 };
 pub use crate::ir::IrType;
 pub use crate::ui::descriptor::{
@@ -75,6 +75,7 @@ mod player_events;
 mod presentation_overlays;
 mod reaction_args;
 mod runtime_manifest;
+mod saves_manifest;
 mod swim_block;
 mod trigger_events;
 mod validate;
@@ -92,6 +93,7 @@ mod js {
     pub mod movement_view_feel;
     pub mod reactions;
     pub mod readers;
+    pub mod saves_manifest;
     pub mod trigger_events;
     pub mod ui_binds;
     pub mod ui_widgets;
@@ -108,6 +110,7 @@ mod lua {
     pub mod movement;
     pub mod movement_view_feel;
     pub mod reactions;
+    pub mod saves_manifest;
     pub mod trigger_events;
     pub mod ui_binds;
     pub mod ui_widgets;
@@ -161,6 +164,7 @@ pub use js::movement::*;
 pub use js::movement_view_feel::*;
 pub use js::reactions::*;
 pub use js::readers::*;
+pub use js::saves_manifest::*;
 pub use js::trigger_events::*;
 pub use js::ui_binds::*;
 pub use js::ui_widgets::*;
@@ -174,6 +178,7 @@ pub use lua::maps::*;
 pub use lua::movement::*;
 pub use lua::movement_view_feel::*;
 pub use lua::reactions::*;
+pub use lua::saves_manifest::*;
 pub use lua::trigger_events::*;
 pub use lua::ui_binds::*;
 pub use lua::ui_widgets::*;

@@ -1137,6 +1137,20 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         )
         .finish();
     registry
+        .register_type("SavesManifest")
+        .doc("Save slots declared via `ModManifest.saves`: how many characters and runs the frontend can keep. Each count is a whole number from 1 to the engine cap of 16; a larger count is clamped to 16 with a warning, and a missing, fractional or smaller count warns and uses 1.")
+        .field(
+            "characterSlots",
+            "u32",
+            "Character save slots. A character holds its per-owner `persist: true` slots, its name and its carried gear.",
+        )
+        .field(
+            "runSlots",
+            "u32",
+            "Run save slots. A run holds its character, the level and checkpoint it reached, its `persist: \"run\"` slots and faction sentiment.",
+        )
+        .finish();
+    registry
         .register_type("ThemeTokens")
         .doc("Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.")
         .field(

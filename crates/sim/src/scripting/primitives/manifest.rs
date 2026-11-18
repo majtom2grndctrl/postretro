@@ -323,6 +323,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu.",
         )
         .field(
+            "saves?",
+            "SavesManifest",
+            "Save slots the mod keeps. Optional; without it the mod gets one character slot and one run slot, created and selected automatically, with that run always active. The engine caps each count at 16.",
+        )
+        .field(
             "reactions?",
             "Vec<NamedReactionDescriptor>",
             "Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.",
@@ -670,6 +675,7 @@ mod tests {
             frontend: None,
             ui_images: BTreeMap::new(),
             loading: ModLoading::default(),
+            saves: None,
             fonts: ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),
@@ -705,6 +711,7 @@ mod tests {
             "frontend",
             "uiImages",
             "loading",
+            "saves",
             "fonts",
             "maps",
             "reactions",

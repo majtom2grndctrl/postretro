@@ -34,6 +34,7 @@ mod predicate_compare;
 mod presentation_overlay_drains;
 mod reactions;
 mod respawn_args;
+mod saves_manifest;
 mod sounds;
 mod stance_handles;
 mod ui_bridge;

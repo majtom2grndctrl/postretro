@@ -1,7 +1,7 @@
 # coop--in-app-host-and-join — plan of record
 
 mode: resumable
-status: approved
+status: done
 read at: 682a264a
 
 Brief read at 7ffced62. Since then only `crates/netcode/src/command_queue.rs` and `crates/sim/src/sim/{host_movement,mod}.rs` changed, none cited. Every Decision and Path symbol was re-read at this commit. No Decision premise is false.
@@ -90,10 +90,10 @@ Automated rows run as `cargo test` loopback tests over real transports, as the l
 | U6 No host or join `ui.*` action | `reserved_ui_actions_name_no_host_or_join_action` | proven |
 | U7 `networking.md` wording corrected | `networking_contract_drops_the_stale_entry_and_handshake_claims` | proven |
 | U8 Dev frontend shows a notice per end cause, list derived from the enum | `the_dev_frontend_shows_a_notice_for_every_end_cause` (derives the list from `EndCause::ALL`); fields: `a_menu_text_field_commits_into_its_own_slot` | proven |
-| M1 Two-machine LAN host and join, gamepad and hardware keyboard | owner, two machines | manual |
-| M2 Each notice on a real client, including different engine build | owner, two machines | manual |
-| M3 Joining a host at its frontend shows waiting, then plays | owner, in-engine | manual |
-| M4 SP progress survives join and leave | owner, in-engine | manual |
+| M1 Two-machine LAN host and join, gamepad and hardware keyboard | owner, two machines | outstanding: the owner's play test ran on one machine over loopback |
+| M2 Each notice on a real client, including different engine build | owner, two machines | outstanding |
+| M3 Joining a host at its frontend shows waiting, then plays | owner, in-engine | owner play test reported good; not confirmed row by row |
+| M4 SP progress survives join and leave | owner, in-engine | owner play test reported good; not confirmed row by row |
 
 ## Tasks
 
@@ -148,3 +148,12 @@ Round 2: one opus re-review of the round-1 fixes. It confirmed them and found th
 - Clippy's one warning is the pre-existing unused `postretro-net` dependency in `combat-model`, outside this brief.
 - Loopback tests pump lag-proxied endpoints, so the exchange helpers sleep 1 ms per round; closing relay clients need `step_closing`, bounded.
 - The text-entry approach changed from the brief's path: the engine copies `ui.textEntry` into the field's slot on commit (see Corrections). It needs owner sign-off.
+
+## After review
+
+Owner manual testing found a wrong-password refusal on a correct password, and asked for two UX passes. Each change below ran the full engine suite and clippy; none went through `/review-panel`.
+- Hardware Enter committed nothing: it typed the focused on-screen key. It now has its own intent that always commits (`input.md` §5).
+- The password slots split, a refusal keeps the join password, `--password` serves in-app entry, and `session.passwordProtected` publishes (see Corrections).
+- Two dev frontend UX passes: one session state per screen, a dev keyboard with a live masked preview, and one visual grammar — one layer, one way back, boxed controls by kind (`ui.md` §4). `every_dev_frontend_screen_is_one_layer_with_one_way_back` pins it.
+- Engine panels and dialogs hide the layers beneath them on every push path (`ui.md` §4.1), proven by `engine_panels_hide_the_menu_beneath_on_every_push_path` and `engine_panels_over_the_dev_options_draw_alone`.
+- Follow-up: a text field as one control, its whole row clickable, is drafted as its own brief.

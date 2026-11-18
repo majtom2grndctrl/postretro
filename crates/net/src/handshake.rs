@@ -14,9 +14,10 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// channel layout, with weapon switches moving from Control to Input, advances
 /// it to protocol 12, "PRLC". The appended spawn-pose hint advances it to
 /// protocol 13, "PRLD". The appended session-ended closing cause and final
-/// character message advance it to protocol 14, "PRLE". Independent of the
-/// baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C45; // "PRLE"
+/// character message advance it to protocol 14, "PRLE". The session-password
+/// challenge, proof and closing cause advance it to protocol 15, "PRLF".
+/// Independent of the baked PRL file format.
+pub const PROTOCOL_ID: u32 = 0x_5052_4C46; // "PRLF"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -1349,6 +1350,7 @@ mod server_vocabulary_tests {
                 ServerControlMessage::SessionRoster(_) => "SessionRoster",
                 ServerControlMessage::SpawnPoseHint(_) => "SpawnPoseHint",
                 ServerControlMessage::FinalCharacter { .. } => "FinalCharacter",
+                ServerControlMessage::PasswordChallenge { .. } => "PasswordChallenge",
             }
         }
         fn presentation(payload: &ServerPresentationPayload) -> &'static str {
@@ -1385,7 +1387,7 @@ mod server_vocabulary_tests {
             "Rumble"
         );
 
-        assert_eq!(PROTOCOL_ID, 0x_5052_4C45, "PROTOCOL_ID is still \"PRLE\"");
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C46, "PROTOCOL_ID is still \"PRLF\"");
         assert_eq!(WIRE_VERSION, 40);
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
     }

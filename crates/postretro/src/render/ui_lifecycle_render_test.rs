@@ -62,6 +62,7 @@ fn text_tree(content: &str, color: ColorValue, font: Option<String>) -> Anchored
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
@@ -514,6 +515,7 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
                     focus_neighbors: Default::default(),
                     visible_when: None,
                     role: None,
+                    mask: false,
                 }),
                 Widget::Text(TextWidget {
                     content: "C?".into(),
@@ -533,6 +535,7 @@ fn mixed_tree(scope: &str) -> AnchoredTree {
                     focus_neighbors: Default::default(),
                     visible_when: None,
                     role: None,
+                    mask: false,
                 }),
                 Widget::Panel(PanelWidget {
                     fill: ColorValue::Literal([0.0, 0.0, 0.0, 1.0]),

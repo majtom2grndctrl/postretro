@@ -395,6 +395,10 @@ pub(crate) fn build_session() -> Result<BootSession> {
         active_level_source,
         active_level_host_named: false,
         level_stopped_by_session_end: false,
+        pending_entry: None,
+        text_entry_field: None,
+        join_facts: Default::default(),
+        in_app_host_port: crate::netcode::DEFAULT_HOST_PORT,
         client_left_in_control_drain: false,
         client_participated: false,
         received_final_character: None,
@@ -430,8 +434,8 @@ pub(crate) fn build_session() -> Result<BootSession> {
 const PATH_FLAGS: [&str; 4] = ["--mod", "--baked-root", "--core-root", APP_NAME_FLAG];
 
 /// Recover the positional map-path argument (the raw-path dev bypass), skipping
-/// the values consumed by [`PATH_FLAGS`], `--pool-seed`, `--observe-live`, and
-/// the netcode role flags `--host`/`--connect`. A value-taking flag missing
+/// the values consumed by [`PATH_FLAGS`], `--pool-seed`, `--observe-live`, the
+/// netcode role flags `--host`/`--connect`, and `--password`. A value-taking flag missing
 /// from this scan has its value mistaken for the map path, so every such flag
 /// belongs here.
 ///
@@ -458,6 +462,15 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
                 .peek()
                 .is_some_and(|value| !value.is_empty() && !value.starts_with("--"))
             {
+                let _ = iter.next();
+            }
+            continue;
+        }
+        // `--password` takes the next token unless it is a flag, an empty one
+        // included, as `parse_net_config` reads it. Its value must never be
+        // taken as the map: it would name the level in load logs.
+        if arg == "--password" {
+            if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
             }
             continue;
@@ -1580,6 +1593,29 @@ mod tests {
         assert_eq!(
             resolve_map_path(&with_map).as_deref(),
             Some("content/dev/maps/campaign-test.prl"),
+        );
+    }
+
+    /// `--password`'s value, the space form included, is never the map path.
+    #[test]
+    fn password_flag_value_is_not_mistaken_for_the_map_path() {
+        let args = |rest: &[&str]| -> Vec<String> {
+            std::iter::once("postretro")
+                .chain(rest.iter().copied())
+                .map(str::to_string)
+                .collect()
+        };
+        assert_eq!(
+            resolve_map_path(&args(&["--host", "--password", "hunter2"])),
+            None
+        );
+        assert_eq!(
+            resolve_map_path(&args(&["--host", "--password", "hunter2", "maps/x.prl"])).as_deref(),
+            Some("maps/x.prl"),
+        );
+        assert_eq!(
+            resolve_map_path(&args(&["--password", "", "maps/x.prl"])).as_deref(),
+            Some("maps/x.prl"),
         );
     }
 

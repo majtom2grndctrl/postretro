@@ -227,6 +227,13 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | `getGameState().session.openSeats` | `session.openSeats` |
 | `getGameState().session.hostAddress` | `session.hostAddress` |
 | `getGameState().session.hosting` | `session.hosting` |
+| `getGameState().session.passwordProtected` | `session.passwordProtected` |
+| `getGameState().session.joinAddress` | `session.joinAddress` |
+| `getGameState().session.hostPassword` | `session.hostPassword` |
+| `getGameState().session.joinPassword` | `session.joinPassword` |
+| `getGameState().session.connection` | `session.connection` |
+| `getGameState().session.waitReason` | `session.waitReason` |
+| `getGameState().session.endCause` | `session.endCause` |
 | `getGameState().screen.flash` | `screen.flash` |
 | `getGameState().input.mode` | `input.mode` |
 | `getGameState().ui.textEntry` | `ui.textEntry` |
@@ -552,14 +559,45 @@ exception (below). Store writes and grants have already applied at dispatch
 `leaveSession` at debug. What leave and end do to the connection:
 `networking.md` §Slot lifecycle; to a client's store and saves: §5.
 
-**Session entry (decided, not yet built).** `hostSession()` and `joinSession()`
-enter a role from single-player at the frontend. They read `session.password`,
-and a join also reads `session.joinAddress`. In any other role or scene they are
-refused with a warning. A press made while a left level unloads or an ended host
-closes waits, then runs with what it captured when pressed. A later navigation
-or load cancels it. An entry verb after `leaveSession` in one reaction belongs
-to the next session, so it survives the drop and defers. Both are machine-local,
-and a late joiner skips them (`networking.md` §Role model).
+**Session entry.** `hostSession()` and `joinSession()` enter a role from
+single-player at the frontend. A host reads `session.hostPassword`; a join
+reads `session.joinPassword` and `session.joinAddress` (IPv4, port optional).
+The two passwords are separate slots, so one typed to join never becomes the
+one a game hosts with. In any other role or scene,
+or while another press waits, they are refused with a warning and change
+nothing. A press made while a left level unloads or an ended host closes waits,
+publishing `session.connection` `connecting`, then runs with the address and
+password it captured when pressed. A later navigation, load or suspend cancels
+it, publishing `offline`. An entry verb after `leaveSession` in one reaction
+belongs to the next session, so it survives the drop and defers; a press still
+queued when its level unloads survives the unload. Both are machine-local, and
+a late joiner skips them (`networking.md` §Role model).
+
+The session facts are client-local, nonpersistent engine slots. Writable:
+`session.joinAddress` (seeded at boot from the address the last admitted join
+dialed), `session.hostPassword` and `session.joinPassword` (never replicated,
+persisted or logged). The host password clears when hosting starts and stays
+on `hostFailed`. The join password clears when a host admits the join and
+stays through every ending before that, `refusedPassword` included, so the
+player can correct it. `--password` seeds the slots no boot endpoint consumed
+(`networking.md` §Role model). Readonly: `session.passwordProtected` (true on
+a live listen host whose run challenges for a password, since the host
+password slot empties once hosting starts), `session.connection` (`offline`, `connecting`,
+`waiting`, `playing`), `session.waitReason` (while `waiting`: `host`,
+`modDiffers`, `levelDiffers`; else empty) and `session.endCause` (why the last
+session or attempt ended: `sessionEnded`, `hostLost`, `connectFailed`,
+`refusedMod`, `refusedPassword`, `badAddress`, `hostFailed`; empty until one
+does and once the next press starts). Before admission every ending but an
+explicit refusal reads `connectFailed`; a client's own leave and a host's own
+`endSession` set none. The value lists are append-only data; the mod supplies
+the wording.
+
+`openTextEntry(onCommit?, target?)` takes an optional writable String slot the
+entry is for, so one screen can hold several fields. Both input paths still
+edit `ui.textEntry`: the keyboard opens with it set to the target's text,
+commit copies it into the target before `onCommit` fires and empties it, and
+cancel empties it and leaves the target as it was. A field whose tree closes
+any other way is dropped with its entry.
 
 Button `onPress` values split into two paths. Ordinary names dispatch through
 the named-reaction registry. Reserved `ui.*` values are closed engine actions

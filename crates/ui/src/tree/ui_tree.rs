@@ -562,6 +562,7 @@ impl UiTree {
                     predicate_scope,
                     last_predicate_resolved,
                     value_text,
+                    mask,
                     ..
                 }) => {
                     // A button's state-following text: a changed case re-measures
@@ -589,6 +590,7 @@ impl UiTree {
                             slot_values,
                             cell_values,
                             clock,
+                            *mask,
                         )
                     {
                         diff.content_changed = true;

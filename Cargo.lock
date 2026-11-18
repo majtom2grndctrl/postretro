@@ -4627,6 +4627,8 @@ name = "postretro-net"
 version = "0.1.0"
 dependencies = [
  "bitcode",
+ "blake3",
+ "getrandom 0.4.3",
  "log",
  "postretro-test-log-capture",
  "proptest",
@@ -4864,6 +4866,7 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
+ "unicode-segmentation",
 ]
 
 [[package]]

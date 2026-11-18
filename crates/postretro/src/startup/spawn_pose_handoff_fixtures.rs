@@ -23,7 +23,7 @@ use std::time::Duration;
 pub(super) use crate::spawn_pose::tests::{OfferOne, movement_descriptor, player_spawn};
 
 const STEP: Duration = Duration::from_millis(34);
-const MOD_ID: &str = "spawn-pose-handoff";
+pub(super) const MOD_ID: &str = "spawn-pose-handoff";
 pub(super) const LEVEL: &str = "spawn-arena";
 const PLAYER_CAPSULE_HALF_EXTENT: f32 = 0.4 + 0.8;
 
@@ -95,6 +95,9 @@ pub(super) struct Relay {
     /// The host poll the frame runs: the Running net frame, or the world-less
     /// poll a Loading, Settling or Frontend frame runs.
     pub(super) world_less: bool,
+    /// Every relay packet in both directions, once [`Self::record_packets`]
+    /// turns recording on.
+    pub(super) recorded: Option<Vec<Vec<u8>>>,
 }
 
 fn claim(client_id: u64) -> ConnectClaim {
@@ -139,6 +142,31 @@ impl Relay {
             mod_digest,
             level_digest: [0; 32],
             world_less: false,
+            recorded: None,
+        }
+    }
+
+    /// A relay around an engine that entered hosting in-app, on the endpoint
+    /// that entry built: its own port, mod identity and digest. It starts at
+    /// its frontend, so its poll is the world-less one.
+    pub(super) fn adopt(app: App) -> Self {
+        let ctx = script_ctx(&app);
+        let mod_digest =
+            crate::mod_digest::mod_compatibility_digest_from_registry(&ctx.data_registry.borrow());
+        let Some(NetEndpoint::Host { server, .. }) =
+            app.session.as_ref().unwrap().net_endpoint.as_ref()
+        else {
+            panic!("the adopted engine hosts");
+        };
+        let port = server.local_addr()[0].port();
+        Self {
+            app,
+            clients: Vec::new(),
+            server_address: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            mod_digest,
+            level_digest: [0; 32],
+            world_less: true,
+            recorded: None,
         }
     }
 
@@ -173,6 +201,18 @@ impl Relay {
             forwarded: 0,
         });
         self.client(client_id)
+    }
+
+    /// [`Self::connect_as`] for a client that answers a password challenge
+    /// with `password`.
+    pub(super) fn connect_with_password(&mut self, client_id: u64, claim_of: u64, password: &str) {
+        self.connect_as(client_id, claim_of)
+            .set_session_password(password);
+    }
+
+    /// Record every relay packet from now on.
+    pub(super) fn record_packets(&mut self) {
+        self.recorded = Some(Vec::new());
     }
 
     /// Connect `client_ids` and pump until each holds a seat.
@@ -212,6 +252,11 @@ impl Relay {
             unreachable!()
         };
         server
+    }
+
+    /// The address an engine client dials to reach this host.
+    pub(super) fn address(&self) -> SocketAddr {
+        self.server_address
     }
 
     pub(super) fn participating(&self, client_id: u64) -> bool {
@@ -265,6 +310,9 @@ impl Relay {
             let client = &mut self.clients[index].client;
             client.update_connections(STEP);
             let packets = client.packets_to_send();
+            if let Some(recorded) = self.recorded.as_mut() {
+                recorded.extend(packets.iter().cloned());
+            }
             for packet in packets {
                 self.server().process_packet_from(&packet, client_id);
             }
@@ -283,6 +331,9 @@ impl Relay {
         for index in 0..self.clients.len() {
             let client_id = self.clients[index].id;
             let packets = self.server().packets_to_send(client_id);
+            if let Some(recorded) = self.recorded.as_mut() {
+                recorded.extend(packets.iter().cloned());
+            }
             let client = &mut self.clients[index];
             for packet in packets {
                 client.client.process_packet(&packet);

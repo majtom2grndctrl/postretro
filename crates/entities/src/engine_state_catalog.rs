@@ -35,6 +35,26 @@ pub enum EngineStateValueType<'a> {
     Array,
 }
 
+/// `session.waitReason`'s values: empty unless `session.connection` reads
+/// `waiting`. Append-only.
+pub const SESSION_WAIT_REASON_VALUES: &[&str] = &["", "host", "modDiffers", "levelDiffers"];
+
+/// `session.endCause`'s values: empty until a session or attempt ends, and
+/// again once the next one starts. Append-only.
+pub const SESSION_END_CAUSE_VALUES: &[&str] = &[
+    "",
+    "sessionEnded",
+    "hostLost",
+    "connectFailed",
+    "refusedMod",
+    "refusedPassword",
+    "badAddress",
+    "hostFailed",
+];
+
+/// `session.connection`'s values, in the order a join steps through them.
+pub const SESSION_CONNECTION_VALUES: &[&str] = &["offline", "connecting", "waiting", "playing"];
+
 /// Default value metadata for a built-in engine-owned state slot.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineStateDefault<'a> {
@@ -953,6 +973,98 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "session.passwordProtected",
+        sdk_path: &["session", "passwordProtected"],
+        value_type: EngineStateValueType::Boolean,
+        // True only on a live listen host whose run challenges joiners for a
+        // password, since `session.hostPassword` empties once hosting starts.
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.joinAddress",
+        sdk_path: &["session", "joinAddress"],
+        value_type: EngineStateValueType::String,
+        // The address the next `joinSession` dials: IPv4, port optional.
+        // Seeded at boot from the address last admitted.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.hostPassword",
+        sdk_path: &["session", "hostPassword"],
+        value_type: EngineStateValueType::String,
+        // The password the next `hostSession` challenges joiners for; empty
+        // hosts without one. Never replicated, persisted or logged; cleared
+        // once hosting starts.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.joinPassword",
+        sdk_path: &["session", "joinPassword"],
+        value_type: EngineStateValueType::String,
+        // The password the next `joinSession` answers a challenge with. Never
+        // replicated, persisted or logged; cleared once a host admits the
+        // join, kept through every ending before that.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.connection",
+        sdk_path: &["session", "connection"],
+        value_type: EngineStateValueType::Enum {
+            values: SESSION_CONNECTION_VALUES,
+        },
+        // This machine's place in a session it joins. A host reads
+        // `session.hosting`.
+        default: EngineStateDefault::Enum("offline"),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.waitReason",
+        sdk_path: &["session", "waitReason"],
+        value_type: EngineStateValueType::Enum {
+            values: SESSION_WAIT_REASON_VALUES,
+        },
+        // While `waiting`: `host`, `modDiffers` or `levelDiffers`; else empty.
+        // Append-only data; content supplies the wording.
+        default: EngineStateDefault::Enum(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.endCause",
+        sdk_path: &["session", "endCause"],
+        value_type: EngineStateValueType::Enum {
+            values: SESSION_END_CAUSE_VALUES,
+        },
+        // Why the last session or attempt ended; empty until one does and
+        // again once the next host or join starts. Append-only data.
+        default: EngineStateDefault::Enum(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "session.playerCounts.connected",
         sdk_path: &["session", "playerCounts", "connected"],
         value_type: EngineStateValueType::Number,
@@ -1670,14 +1782,21 @@ mod tests {
                 "screen.flash",
                 "screen.shake",
                 "screen.vignette",
+                "session.connection",
+                "session.endCause",
                 "session.hostAddress",
+                "session.hostPassword",
                 "session.hosting",
+                "session.joinAddress",
+                "session.joinPassword",
                 "session.openSeats",
+                "session.passwordProtected",
                 "session.playerCounts.connected",
                 "session.playerCounts.down",
                 "session.playerCounts.inPlay",
                 "session.playerCounts.loading",
                 "session.playerCounts.reconnecting",
+                "session.waitReason",
                 "ui.textEntry",
                 "window.displayModeBitDepth",
                 "window.displayModeCanApply",

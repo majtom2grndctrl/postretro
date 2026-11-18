@@ -207,3 +207,35 @@ fn a_keystroke_lands_before_a_same_frame_commit_fires() {
         "the commit closed it"
     );
 }
+
+#[test]
+fn a_hardware_enter_commits_while_an_on_screen_key_holds_focus() {
+    // Regression: hardware Enter rode the queue as `nav.confirm`, which the
+    // focused key took, so it typed that key instead of committing. A pad
+    // confirm still belongs to the key.
+    let mut app = app_with_keyboard(true);
+    let confirm = [UiIntent {
+        seq: 0,
+        payload: UiIntentPayload::Nav(NavIntent::Confirm),
+    }];
+    assert!(
+        !app.resolve_text_entry_intents(&confirm),
+        "the key takes a pad confirm"
+    );
+    assert_eq!(
+        app.session.as_ref().unwrap().modal_stack.active_name(),
+        Some(KEYBOARD)
+    );
+
+    let enter = [UiIntent {
+        seq: 1,
+        payload: UiIntentPayload::Enter,
+    }];
+    assert!(app.resolve_text_entry_intents(&enter));
+    assert_eq!(activations(&app), 0, "no key fired");
+    assert_eq!(
+        app.session.as_ref().unwrap().modal_stack.active_name(),
+        None,
+        "Enter committed"
+    );
+}

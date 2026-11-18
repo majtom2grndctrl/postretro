@@ -287,9 +287,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 nav_intents.push(*nav);
             }
             input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
-            // Text / Backspace are text-entry edits, resolved above.
+            // Text, Backspace and Enter are text-entry input, resolved above.
             input::UiIntentPayload::Text(_)
             | input::UiIntentPayload::Backspace
+            | input::UiIntentPayload::Enter
             | input::UiIntentPayload::TextShortcut(_) => {}
         }
     }

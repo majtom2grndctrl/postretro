@@ -19,6 +19,7 @@ fn themed_text(color: ColorValue, font: Option<&str>) -> AnchoredTree {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,

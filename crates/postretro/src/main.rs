@@ -175,8 +175,7 @@ use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::state_persistence::{
-    apply_join_seed, collect_per_owner_state, collect_persisted_faction_sentiment,
-    collect_persisted_state, collected_per_owner_only_state, merge_per_owner_state,
+    apply_join_seed, collect_per_owner_state, collected_per_owner_only_state,
     overlay_client_local_per_owner_state, retain_saved_per_owner_state, save_persisted_state,
     state_path, sync_client_per_owner_projection,
 };
@@ -253,6 +252,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             log::debug!("[Net] {control:?} dropped: the session already ended");
             continue;
         }
+        app.observe_client_control(&control);
         match control {
             ServerControlMessage::Relevel {
                 catalog_id,
@@ -271,7 +271,16 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     "[Net] incompatible host: host runs mod {expected} ({expected_version}), this client runs {received} ({received_version}); relaunch with --mod <folder>, where content/<folder> declares mod id {expected}"
                 );
                 app.client_left_in_control_drain =
-                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused);
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused(
+                        startup::lifecycle::session_entry::EndCause::RefusedMod,
+                    ));
+            }
+            ServerControlMessage::Divergence(DivergenceReason::Closing(ClosingCause::Password)) => {
+                log::warn!("[Net] the host refused this session password");
+                app.client_left_in_control_drain =
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused(
+                        startup::lifecycle::session_entry::EndCause::RefusedPassword,
+                    ));
             }
             ServerControlMessage::Divergence(DivergenceReason::Closing(
                 ClosingCause::SessionEnded,
@@ -285,8 +294,12 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                     "[Net] incompatible host: {}",
                     DivergenceReason::Closing(cause)
                 );
+                // A different engine build reads as a failed connect: naming
+                // a version mismatch is its own roadmap item.
                 app.client_left_in_control_drain =
-                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused);
+                    app.leave_session(startup::lifecycle::session_membership::LeaveCause::Refused(
+                        startup::lifecycle::session_entry::EndCause::ConnectFailed,
+                    ));
             }
             ServerControlMessage::Divergence(DivergenceReason::Holding(cause)) => {
                 if cause.is_revealed_hold() {
@@ -360,6 +373,8 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             ServerControlMessage::FinalCharacter { slots } => {
                 app.received_final_character = Some(slots);
             }
+            // The transport answers a challenge itself and never surfaces one.
+            ServerControlMessage::PasswordChallenge { .. } => {}
             ServerControlMessage::SessionRoster(roster) => {
                 let Some(session) = app.session.as_mut() else {
                     continue;
@@ -426,6 +441,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
     // that drain brought waits for the next one.
     app.end_reveal_frame_spawn_pose_hold();
     app.client_left_in_control_drain = false;
+    // Participation is read once the batch has drained: a hold then a
+    // re-promotion in one update publishes `waiting`, then `playing`.
+    app.publish_client_participation();
     // A connection that ended without a cause in this drain (a lost host,
     // or a connect whose attempts all failed) takes the leave path too.
     app.follow_client_connection_end();
@@ -1234,6 +1252,23 @@ pub(crate) struct App {
     /// frame returns before them, until the leave's queued unload drains.
     /// Cleared by `unload_level`.
     level_stopped_by_session_end: bool,
+
+    /// A `hostSession` or `joinSession` press waiting for a left level's
+    /// unload or an ended host's close, with what it captured when pressed.
+    pending_entry: Option<startup::lifecycle::session_entry::PendingEntry>,
+
+    /// The field an open text-entry tree commits into, and the modal depth
+    /// it opened at.
+    text_entry_field: Option<app::ui_actions::TextEntryField>,
+
+    /// What this client has learned of the session it joined: admission, the
+    /// latest hold, whether its catalog lacks the host's level, and the
+    /// address its join dialed. The password goes to the endpoint, never here.
+    join_facts: startup::lifecycle::session_entry::JoinFacts,
+
+    /// The port an in-app host binds. Choosing one in-app is a non-goal:
+    /// `--host <port>` covers it.
+    in_app_host_port: u16,
 
     /// A connected client has participated on this connection, so the host
     /// has sent it a character. Cleared by the leave.
@@ -2544,74 +2579,8 @@ impl ApplicationHandler for App {
         // a valid state file with an empty or default-only snapshot. The leave
         // or end above made every role single-player, and a client's leave
         // restored its own world, so this save never writes a host's values.
-        let can_save = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.state_store_lifecycle.can_save());
-        if can_save {
-            let session = self
-                .session
-                .as_mut()
-                .expect("session installed at clean exit");
-            if let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() {
-                let mod_id = mod_id.to_owned();
-                let identity = session.scripting.script_runtime.store_identity().cloned();
-                let committed_store_slots = session
-                    .scripting
-                    .script_runtime
-                    .committed_store_slots()
-                    .clone();
-                let script_ctx = session.scripting.script_ctx.clone();
-                if let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) {
-                    let mut collected = collect_persisted_state(
-                        &script_ctx.slot_table.borrow(),
-                        identity.as_ref(),
-                        &committed_store_slots,
-                    );
-                    for warning in collected.warnings {
-                        log::warn!("[State] {warning}");
-                    }
-                    {
-                        let factions = script_ctx.data_registry.borrow();
-                        let faction_sentiment = script_ctx.faction_sentiment.borrow();
-                        for warning in collect_persisted_faction_sentiment(
-                            &mut collected.state,
-                            &faction_sentiment,
-                            &factions.factions,
-                        ) {
-                            log::warn!("[State] {warning}");
-                        }
-                    }
-                    if let Some(local_player_id) = session.player_options.player_id {
-                        let per_owner = collect_per_owner_state(
-                            &script_ctx.slot_table.borrow(),
-                            identity.as_ref(),
-                            &committed_store_slots,
-                            postretro_foundation::Seat(0),
-                            local_player_id,
-                        );
-                        for warning in per_owner.warnings {
-                            log::warn!("[State] {warning}");
-                        }
-                        merge_per_owner_state(&mut collected.state, per_owner.per_owner);
-                    }
-                    match save_persisted_state(&state_path, &collected.state) {
-                        Ok(()) => {
-                            log::info!("[State] saved persistent slots to {}", state_path.display())
-                        }
-                        Err(error) => log::warn!(
-                            "[State] failed to save persistent slots to {}: {error}",
-                            state_path.display()
-                        ),
-                    }
-                } else if session.state_store_lifecycle.disable_persistence() {
-                    log::warn!(
-                        "[State] platform data directory is unavailable; persistent state is disabled for this run"
-                    );
-                }
-            } else {
-                log::warn!("[State] no committed mod manifest; skipping persistent-state save");
-            }
+        if let Some(session) = self.session.as_mut() {
+            let _ = crate::session::progress_save::save_world_and_character(session);
         }
 
         // Release the level's sound registry at teardown too, mirroring the
@@ -3228,6 +3197,7 @@ impl App {
     /// `returnToFrontend` verb reaches it only in single-player; a leave and
     /// `ui.quitToMenu` reach it through their own membership change.
     fn navigate_to_frontend(&mut self) {
+        self.cancel_pending_entry("navigation");
         self.present_frontend_menu();
         let requests = self
             .session
@@ -3497,6 +3467,7 @@ impl App {
                 input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
                 input::UiIntentPayload::Text(_)
                 | input::UiIntentPayload::Backspace
+                | input::UiIntentPayload::Enter
                 | input::UiIntentPayload::TextShortcut(_) => {}
             }
         }
@@ -3709,15 +3680,31 @@ impl App {
                 session.seat_table.as_ref(),
             );
         }
+        // A text-entry field whose tree closed since last frame goes first.
+        self.reap_text_entry_field();
         // Once a leave lands, the rest of this drain drops: the steps queued
         // after it, the `fire` targets they reach, and whatever else this
         // frame queued in the level the leave is unloading. Store writes and
         // grants applied at dispatch, ahead of the leave.
         let mut left_this_drain = false;
         for command in script_ctx.system_commands.take() {
-            if left_this_drain {
+            // A host or join press belongs to the next session, not the world
+            // being left: it survives the leave and waits for the unload.
+            let enters_next_session = matches!(
+                command,
+                SystemReactionCommand::HostSession { .. }
+                    | SystemReactionCommand::JoinSession { .. }
+            );
+            if left_this_drain && !enters_next_session {
+                // A text edit can carry a password being typed: name its slot only.
+                let shown = match &command {
+                    SystemReactionCommand::AppendText { slot, .. } => {
+                        format!("AppendText {{ slot: {slot:?}, .. }}")
+                    }
+                    other => format!("{other:?}"),
+                };
                 log::debug!(
-                    "[Scripting] {command:?} dropped: this machine left its session earlier in this drain"
+                    "[Scripting] {shown} dropped: this machine left its session earlier in this drain"
                 );
                 continue;
             }
@@ -3839,7 +3826,11 @@ impl App {
                             .start(amplitude, duration_ms, frequency);
                     }
                 }
-                SystemReactionCommand::PushTree { tree, on_commit } => {
+                SystemReactionCommand::PushTree {
+                    tree,
+                    on_commit,
+                    commit_target,
+                } => {
                     // Resolve the registered tree by name onto the modal stack.
                     // An unknown name warns and is a no-op (no panic). The carried
                     // `on_commit` rides the stack entry; the App fires it from the
@@ -3849,8 +3840,13 @@ impl App {
                     if tree == options::OPTIONS_MENU_TREE_NAME {
                         self.seed_options_menu_slots();
                     }
-                    if let Some(session) = self.session.as_mut() {
+                    let pushed = self.session.as_mut().is_some_and(|session| {
+                        let before = session.modal_stack.len();
                         session.modal_stack.push_named(&tree, on_commit);
+                        session.modal_stack.len() > before
+                    });
+                    if pushed && let Some(slot) = commit_target {
+                        self.open_text_entry_field(slot);
                     }
                 }
                 SystemReactionCommand::LoadLevel {
@@ -3889,6 +3885,14 @@ impl App {
                     dispatch_source,
                     origin,
                 } => self.run_end_session_verb(dispatch_source, origin),
+                SystemReactionCommand::HostSession {
+                    dispatch_source,
+                    origin,
+                } => self.run_host_session_verb(dispatch_source, origin),
+                SystemReactionCommand::JoinSession {
+                    dispatch_source,
+                    origin,
+                } => self.run_join_session_verb(dispatch_source, origin),
                 SystemReactionCommand::PopTree => {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.pop();
@@ -10622,8 +10626,11 @@ mod tests {
             let Widget::VStack(select_root) = &tree("frontend.devLevelSelect").root else {
                 panic!("level select root is a vstack");
             };
-            let Some(Widget::HStack(columns)) = select_root.children.first() else {
-                panic!("level select opens with its columns");
+            let Some(columns) = select_root.children.iter().find_map(|child| match child {
+                Widget::HStack(columns) if columns.focus.is_some() => Some(columns),
+                _ => None,
+            }) else {
+                panic!("level select holds its columns under its title");
             };
             assert_eq!(
                 columns.focus.as_ref().map(|focus| focus.kind()),
@@ -10766,11 +10773,11 @@ mod tests {
             ]
         );
         assert!(
-            options_root
-                .children
-                .iter()
-                .any(|child| matches!(child, Widget::Button(button) if button.id == "optionsBack")),
-            "BACK sits outside the tab panels, so every tab reaches it"
+            options_root.children.iter().any(|child| {
+                find_button(child, "optionsBack").is_some()
+                    && find_by_id(child, "optionsPanelControls").is_none()
+            }),
+            "BACK sits in the footer, outside the tab panels, so every tab reaches it"
         );
 
         for (tab_id, key, panel_id, grid_len, controls) in [
@@ -12672,6 +12679,15 @@ mod tests {
             snapshot.get("session.hosting"),
             Some(&SlotValue::Boolean(false))
         );
+        // The five session-entry facts have defaults, so all five are present.
+        assert_eq!(
+            snapshot.get("session.connection"),
+            Some(&SlotValue::Enum("offline".to_string()))
+        );
+        assert_eq!(
+            snapshot.get("session.endCause"),
+            Some(&SlotValue::Enum(String::new()))
+        );
         // The assist progress slots default to 0 and are value-bearing.
         assert_eq!(
             snapshot.get("player.assistProgress"),
@@ -12699,7 +12715,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            72 + list_slots,
+            79 + list_slots,
             "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }

@@ -926,6 +926,24 @@ impl ScriptRuntime {
             .as_ref()
             .map(|(id, version)| (id.as_str(), version.as_str()))
     }
+
+    /// Stand in for a declaration commit that named `slots` with `ledger`'s
+    /// durable keys.
+    #[cfg(feature = "test-support")]
+    pub fn commit_store_identity_for_test(
+        &mut self,
+        ledger: crate::store_identity::StoreIdentityLedger,
+        slots: std::collections::BTreeSet<String>,
+    ) {
+        self.store_identity = Some(ledger);
+        self.committed_store_slots = slots;
+    }
+
+    /// Stand in for a mod init that committed `id` and `version`.
+    #[cfg(feature = "test-support")]
+    pub fn commit_mod_identity_for_test(&mut self, id: &str, version: &str) {
+        self.committed_mod_identity = Some((id.to_owned(), version.to_owned()));
+    }
 }
 
 #[cfg(test)]

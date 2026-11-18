@@ -369,3 +369,37 @@ fn both_bridges_reject_a_malformed_value_text() {
         assert!(result, "{lua}");
     }
 }
+
+// Regression: the bridges once dropped `mask`, so an authored password
+// field drew its text. Both runtimes carry it, and absence is unmasked.
+#[test]
+fn bridges_read_text_mask_in_both_runtimes() {
+    let js = eval_js(
+        r#"({ anchor: "center", offset: [0.0, 0.0], root: { kind: "vstack", gap: 0.0, padding: 0.0, align: "start", children: [
+            { kind: "text", content: "", fontSize: 12.0, color: [1, 1, 1, 1], mask: true },
+            { kind: "text", content: "", fontSize: 12.0, color: [1, 1, 1, 1] }
+        ] } })"#,
+        |ctx, v| anchored_tree_from_js_value(ctx, v).expect("masked tree converts"),
+    );
+    let lua = eval_lua(
+        r#"return { anchor = "center", offset = {0.0, 0.0}, root = { kind = "vstack", gap = 0.0, padding = 0.0, align = "start", children = {
+            { kind = "text", content = "", fontSize = 12.0, color = {1, 1, 1, 1}, mask = true },
+            { kind = "text", content = "", fontSize = 12.0, color = {1, 1, 1, 1} }
+        } } }"#,
+        |v| anchored_tree_from_lua_value(v).expect("masked tree converts"),
+    );
+    for (runtime, tree) in [("js", js), ("luau", lua)] {
+        let Widget::VStack(root) = &tree.root else {
+            panic!("{runtime}: root is a vstack");
+        };
+        let masks: Vec<bool> = root
+            .children
+            .iter()
+            .map(|child| match child {
+                Widget::Text(text) => text.mask,
+                other => panic!("{runtime}: {other:?}"),
+            })
+            .collect();
+        assert_eq!(masks, [true, false], "{runtime}");
+    }
+}

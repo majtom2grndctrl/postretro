@@ -155,6 +155,7 @@ pub fn tweened_text(content: &str, slot: &str, format: Option<&str>, tween: Text
         focus_neighbors: Default::default(),
         visible_when: None,
         role: None,
+        mask: false,
     })
 }
 
@@ -209,6 +210,7 @@ pub fn bound_text(content: &str, slot: &str, format: Option<&str>) -> Widget {
         focus_neighbors: Default::default(),
         visible_when: None,
         role: None,
+        mask: false,
     })
 }
 
@@ -276,6 +278,7 @@ pub fn text_id(content: &str, id: &str) -> Widget {
         style_ranges: None,
         visible_when: None,
         role: None,
+        mask: false,
     })
 }
 
@@ -294,6 +297,7 @@ pub fn text(content: &str, font_size: f32) -> Widget {
         focus_neighbors: Default::default(),
         visible_when: None,
         role: None,
+        mask: false,
     })
 }
 

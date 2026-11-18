@@ -356,6 +356,7 @@ mod tests {
                 focus_neighbors: Default::default(),
                 visible_when: None,
                 role: None,
+                mask: false,
             }),
             capture_mode: descriptor::CaptureMode::Capture,
             initial_focus: None,

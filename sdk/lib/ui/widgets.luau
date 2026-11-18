@@ -480,7 +480,9 @@ UiWidgetsSdk.resolveReactionName = resolveReactionName
 --- A `text` leaf. `content` is the literal/fallback string; `fontSize` defaults
 --- to 12 (logical px); `color` defaults to opaque white. An optional `bind`
 --- resolves the rendered string from a store slot; `styleRanges` recolors by
---- value. Mirrors `descriptor.rs` `TextWidget`.
+--- value. `mask = true` draws one `*` per character (grapheme) instead, for a
+--- password field, and keeps the content from screen readers. Mirrors
+--- `descriptor.rs` `TextWidget`.
 function UiWidgetsSdk.Text(props: any): WidgetDescriptor
   requireObject(props, "Text")
   requireString(props.content, "content", "Text")
@@ -503,6 +505,14 @@ function UiWidgetsSdk.Text(props: any): WidgetDescriptor
     out.styleRanges = styleRanges
   end
   applyA11yFields(out, props, "Text")
+  if props.mask ~= nil then
+    if type(props.mask) ~= "boolean" then
+      error("Text: `mask` must be a boolean")
+    end
+    if props.mask then
+      out.mask = true
+    end
+  end
   return out
 end
 

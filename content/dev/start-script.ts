@@ -110,10 +110,13 @@ import {
 } from "./scripts/loading-screens";
 import { devInput } from "./scripts/input";
 import {
+  devKeyboard,
   devLevelSelectMenu,
   exitConfirm,
   frontendMenu,
   frontendReactions,
+  hostMenu,
+  joinMenu,
   mapCatalog,
   optionsMenu,
   quitConfirm,
@@ -200,6 +203,9 @@ export default defineMod({
     quitConfirm,
     frontendMenu,
     devLevelSelectMenu,
+    hostMenu,
+    joinMenu,
+    devKeyboard,
     optionsMenu,
     loadingPlain,
     ...mapLoadingTrees,

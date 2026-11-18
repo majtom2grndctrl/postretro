@@ -679,12 +679,16 @@ export type TextProps = {
   focusNeighbors?: FocusNeighborsProp;
   visibleWhen?: Predicate;
   role?: WidgetRole;
+  /** Draw one `*` per character in place of the content: a password field. */
+  mask?: boolean;
 };
 
 /**
  * A `text` leaf. `content` is the literal/fallback string; `fontSize` defaults to
  * 12 (logical px); `color` defaults to opaque white. An optional `bind` resolves
  * the rendered string from a store slot; `styleRanges` recolors by value.
+ * `mask: true` draws one `*` per character (grapheme) instead, for a password
+ * field, and keeps the content from screen readers.
  * Mirrors `descriptor.rs` `TextWidget`.
  */
 export function Text(props: TextProps): WidgetDescriptor {
@@ -705,6 +709,12 @@ export function Text(props: TextProps): WidgetDescriptor {
   const styleRanges = buildStyleRanges(props.styleRanges, "Text");
   if (styleRanges !== undefined) out.styleRanges = styleRanges;
   applyA11yFields(out, props, "Text");
+  if (props.mask !== undefined) {
+    if (typeof props.mask !== "boolean") {
+      throw new TypeError("Text: `mask` must be a boolean");
+    }
+    if (props.mask) out.mask = true;
+  }
   return out;
 }
 

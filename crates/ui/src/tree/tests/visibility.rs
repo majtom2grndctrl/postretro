@@ -235,6 +235,7 @@ fn grid_container_visible_when_true_restores_display_grid_not_flex() {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         })
     };
     let grid = Widget::Grid(GridWidget {
@@ -349,6 +350,7 @@ fn visible_when_local_cell_hides_and_shows_node() {
                     compare: None,
                 }),
                 role: None,
+                mask: false,
             })],
         }),
         capture_mode: CaptureMode::Passthrough,

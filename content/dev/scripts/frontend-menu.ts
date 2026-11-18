@@ -1,12 +1,15 @@
 import {
   defineMapCatalog,
   defineReaction,
+  type CommandId,
   type ModMapEntry,
   type NamedReactionDescriptor,
 } from "postretro";
 import {
   Button,
   CLOSE_DIALOG_ACTION,
+  appendText,
+  backspaceText,
   EXIT_TO_DESKTOP_ACTION,
   Glyph,
   Grid,
@@ -14,6 +17,7 @@ import {
   OPEN_CONTROLS_ACTION,
   QUIT_TO_MENU_ACTION,
   Slider,
+  Spacer,
   Switch,
   Text,
   Tree,
@@ -22,9 +26,15 @@ import {
   bindState,
   displayModeAction,
   defineUiTree,
+  endSession,
   getGameState,
+  hostSession,
+  joinSession,
+  KEYBOARD_TREE,
+  leaveSession,
   loadLevel,
   openMenu,
+  openTextEntry,
   stateEquals,
   ui,
   updateState,
@@ -45,10 +55,151 @@ const TITLE_MENU_NAME = "frontend.menuTree";
 const LEVEL_SELECT_MENU_NAME = "frontend.devLevelSelect";
 const OPTIONS_MENU_NAME = "frontend.options";
 
-const COLOR_ACCENT: [number, number, number, number] = [0.12, 0.72, 0.4, 1.0];
-const COLOR_INACTIVE: [number, number, number, number] = [0.12, 0.16, 0.2, 1.0];
-const COLOR_MUTED: [number, number, number, number] = [0.58, 0.68, 0.72, 1.0];
-const COLOR_PANEL: [number, number, number, number] = [0.018, 0.026, 0.039, 0.94];
+type Color = [number, number, number, number];
+
+const COLOR_ACCENT: Color = [0.12, 0.72, 0.4, 1.0];
+/// An unselected choice: dimmer than the selected one, still clearly there.
+const COLOR_UNSELECTED: Color = [0.5, 0.57, 0.6, 1.0];
+const COLOR_MUTED: Color = [0.58, 0.68, 0.72, 1.0];
+const COLOR_PANEL: Color = [0.018, 0.026, 0.039, 0.94];
+
+// --- Visual grammar ------------------------------------------------------------
+// Every frontend screen is one layer that owns the screen (`hideBelow`), laid
+// out the same way, so what a thing is shows in how it looks:
+//
+// - Information is text and only text: a screen title, callouts (a tinted box
+//   under a stripe: green for status, amber for a notice), body copy in
+//   sentence case, hints muted. Nothing informational sits in a filled box.
+// - A control is CAPS in a filled box. The fill says what pressing it does:
+//   green is the screen's one primary action, slate a secondary one, red
+//   ends a session or quits, and the faint box in the footer closes this layer.
+// - An editable value is one row: its caption, its value in a dark well, and
+//   an EDIT box beside it.
+// - The footer, under a rule, holds the layer's only way back, bottom left
+//   beside its pad glyph, and the input legend on the right. A dialog's
+//   footer also holds its one action, on the right.
+//
+// The engine draws a button as its label alone, so a box is a container fill
+// around the button, and a label color is a one-band `styleRanges` over any
+// predicate: one band colors both of its values.
+
+const LABEL_WHITE: Color = [1.0, 1.0, 1.0, 1.0];
+const COLOR_BODY: Color = [0.84, 0.9, 0.92, 1.0];
+const COLOR_RULE: Color = [1.0, 1.0, 1.0, 0.1];
+const FILL_WELL: Color = [0.0, 0.0, 0.0, 0.5];
+
+type ActionKind = "primary" | "secondary" | "session" | "nav";
+
+const ACTION_FILL: Record<ActionKind, Color> = {
+  primary: [0.02, 0.2, 0.1, 1.0],
+  secondary: [0.045, 0.075, 0.13, 1.0],
+  session: [0.22, 0.03, 0.035, 1.0],
+  // A faint box with a muted label: it leaves rather than acts.
+  nav: [1.0, 1.0, 1.0, 0.08],
+};
+const ACTION_LABEL: Record<ActionKind, Color> = {
+  primary: LABEL_WHITE,
+  secondary: LABEL_WHITE,
+  session: LABEL_WHITE,
+  nav: [0.74, 0.82, 0.86, 1.0],
+};
+
+type ButtonProps = Parameters<typeof Button>[0];
+
+/// The source for a constant label color: any predicate serves.
+const STYLE_SOURCE = stateEquals(getGameState().session.connection, "offline");
+
+/// A pressable control: its button in a filled box. A `visibleWhen` moves to
+/// the box, so the box hides with its button. The pause menu shares it.
+export function action(kind: ActionKind, props: ButtonProps, padding = 7): WidgetDescriptor {
+  const { visibleWhen, ...rest } = props;
+  const label = ACTION_LABEL[kind];
+  const styled: ButtonProps =
+    label === LABEL_WHITE || rest.bind !== undefined
+      ? (rest as ButtonProps)
+      : ({ ...rest, bind: STYLE_SOURCE, styleRanges: { max: 1, entries: [{ color: label }] } } as ButtonProps);
+  return VStack(
+    { fill: ACTION_FILL[kind], padding, align: "stretch", ...(visibleWhen === undefined ? {} : { visibleWhen }) },
+    [Button(styled)],
+  );
+}
+
+/// A rule across the panel.
+function rule(): WidgetDescriptor {
+  return VStack({ fill: COLOR_RULE, padding: 0.5 }, []);
+}
+
+/// The input legend: what confirm does. Back's glyph sits beside the back box.
+function legend(): WidgetDescriptor[] {
+  return [Glyph({ command: "nav_confirm" }), Text({ content: "Select", fontSize: 13, color: COLOR_MUTED })];
+}
+
+/// A layer's footer: its one way back on the left, with the glyph that also
+/// presses it, and `right` (the legend, or a dialog's action) on the right.
+export function footer(close: WidgetDescriptor[], right: WidgetDescriptor[] = legend()): WidgetDescriptor {
+  return VStack({ gap: 12, align: "stretch" }, [
+    rule(),
+    HStack({ gap: 8, align: "center" }, [...close, Spacer({ flexGrow: 1 }), ...right]),
+  ]);
+}
+
+/// The back box that closes the layer it sits in.
+export function backAction(id: string, label = "BACK"): WidgetDescriptor[] {
+  return [action("nav", { id, label, onPress: CLOSE_DIALOG_ACTION }), Glyph({ command: "nav_cancel" })];
+}
+
+/// A screen's title: information, never pressable.
+function title(content: string, fontSize = 24): WidgetDescriptor {
+  return Text({ content, fontSize, color: COLOR_ACCENT });
+}
+
+/// Body copy, sentence case.
+function body(content: string, visibleWhen?: Predicate): WidgetDescriptor {
+  return Text({ content, fontSize: 14, color: COLOR_BODY, ...(visibleWhen === undefined ? {} : { visibleWhen }) });
+}
+
+/// A hint: what to do, or what follows. Sentence case, muted.
+function hint(content: string): WidgetDescriptor {
+  return Text({ content, fontSize: 13, color: COLOR_MUTED });
+}
+
+type Tone = "status" | "notice";
+const COLOR_NOTICE: Color = [0.98, 0.68, 0.22, 1.0];
+const TONE_STRIPE: Record<Tone, Color> = { status: COLOR_ACCENT, notice: COLOR_NOTICE };
+const TONE_FILL: Record<Tone, Color> = { status: [0.0, 0.0, 0.0, 0.28], notice: [0.12, 0.05, 0.0, 0.4] };
+
+/// A callout: a tinted box under a colored stripe, holding a headline and its
+/// details. Status is green, a notice amber. Its only control, if any, is the
+/// notice's answer, boxed like every control.
+function callout(tone: Tone, children: WidgetDescriptor[], visibleWhen?: Predicate): WidgetDescriptor {
+  return VStack(
+    { gap: 0, align: "stretch", fill: TONE_FILL[tone], ...(visibleWhen === undefined ? {} : { visibleWhen }) },
+    [VStack({ fill: TONE_STRIPE[tone], padding: 1.5 }, []), VStack({ gap: 5, padding: 10, align: "stretch" }, children)],
+  );
+}
+
+function headline(tone: Tone, content: string): WidgetDescriptor {
+  return Text({ content, fontSize: 16, color: TONE_STRIPE[tone] });
+}
+
+/// A frontend layer's panel: title, body, footer, in one linear focus group.
+function panel(
+  props: { width?: number; wrap?: boolean; localState?: NonNullable<Parameters<typeof VStack>[0]>["localState"] },
+  children: WidgetDescriptor[],
+): WidgetDescriptor {
+  return VStack(
+    {
+      gap: 14,
+      padding: 24,
+      align: "stretch",
+      fill: COLOR_PANEL,
+      focus: { policy: "linear", wrap: props.wrap ?? true },
+      ...(props.width === undefined ? {} : { width: props.width }),
+      ...(props.localState === undefined ? {} : { localState: props.localState }),
+    },
+    children,
+  );
+}
 
 export const mapCatalog = defineMapCatalog([
   {
@@ -109,7 +260,7 @@ export const frontendStartReactions = mapCatalog.map((entry) =>
 );
 
 function levelButton(entry: ModMapEntry) {
-  return Button({
+  return action("secondary", {
     id: `start-${entry.id}`,
     label: entry.name,
     onPress: startReactionName(entry),
@@ -119,21 +270,10 @@ function levelButton(entry: ModMapEntry) {
 // A column of level buttons that scrolls once it outgrows the screen. Scroll
 // opens no focus group, so both columns' buttons share the level select's
 // spatial group: Left and Right cross between columns.
-function section(title: string, entries: ModMapEntry[]) {
-  return VStack({ gap: 6, align: "stretch" }, [
-    Text({ content: title, fontSize: 16 }),
-    VStack({ gap: 6, align: "stretch", scroll: { maxHeight: 360 } }, entries.map(levelButton)),
-  ]);
-}
-
-/// Device-aware prompts: each glyph follows the player's last device and
-/// their bindings.
-function promptRow() {
-  return HStack({ gap: 8, align: "center" }, [
-    Glyph({ command: "nav_confirm" }),
-    Text({ content: "SELECT", fontSize: 14, color: COLOR_MUTED }),
-    Glyph({ command: "nav_cancel" }),
-    Text({ content: "BACK", fontSize: 14, color: COLOR_MUTED }),
+function section(caption: string, entries: ModMapEntry[]) {
+  return VStack({ gap: 8, align: "stretch" }, [
+    Text({ content: caption, fontSize: 14, color: COLOR_MUTED }),
+    VStack({ gap: 8, align: "stretch", scroll: { maxHeight: 360 } }, entries.map(levelButton)),
   ]);
 }
 
@@ -143,6 +283,7 @@ function mapsTagged(tag: string): ModMapEntry[] {
 
 export const devLevelSelectMenu = defineUiTree({
   name: LEVEL_SELECT_MENU_NAME,
+  hideBelow: true,
   tree: Tree(
     {
       anchor: "center",
@@ -152,27 +293,18 @@ export const devLevelSelectMenu = defineUiTree({
       accessibleName: "Dev level select",
       role: "group",
     },
-    VStack(
-      {
-        gap: 14,
-        padding: 18,
-        align: "stretch",
-        fill: COLOR_PANEL,
-        focus: { policy: "linear", wrap: true },
-      },
-      [
-        HStack({ gap: 18, align: "start", focus: { policy: "spatial" } }, [
-          section("Recommended", mapsTagged("recommended")),
-          section("Development Tests", mapsTagged("test")),
-        ]),
-        Button({
-          id: "levelSelectBack",
-          label: "BACK",
-          onPress: CLOSE_DIALOG_ACTION,
-        }),
-        promptRow(),
-      ],
-    ),
+    panel({}, [
+      title("PLAY"),
+      // A host's players follow it into the level it starts.
+      VStack({ align: "stretch", visibleWhen: stateEquals(getGameState().session.hosting, true) }, [
+        body("Players waiting at your menu join you in this level."),
+      ]),
+      HStack({ gap: 18, align: "start", focus: { policy: "spatial" } }, [
+        section("Recommended", mapsTagged("recommended")),
+        section("Development tests", mapsTagged("test")),
+      ]),
+      footer(backAction("levelSelectBack")),
+    ]),
   ),
 });
 
@@ -181,9 +313,12 @@ export const devLevelSelectMenu = defineUiTree({
 const EXIT_CONFIRM_NAME = "dev.exitConfirm";
 const QUIT_CONFIRM_NAME = "dev.quitConfirm";
 
-function confirmDialog(name: string, prompt: string, label: string, action: string, idPrefix: string) {
+// A dialog is a layer too: it hides what opened it. Its footer holds its way
+// back and its one action, which ends something, so it is red.
+function confirmDialog(name: string, prompt: string, label: string, onPress: string, idPrefix: string) {
   return defineUiTree({
     name,
+    hideBelow: true,
     tree: Tree(
       {
         anchor: "center",
@@ -194,22 +329,10 @@ function confirmDialog(name: string, prompt: string, label: string, action: stri
         accessibleName: prompt,
         role: "group",
       },
-      VStack(
-        {
-          gap: 14,
-          padding: 20,
-          align: "start",
-          fill: COLOR_PANEL,
-          focus: { policy: "linear" },
-        },
-        [
-          Text({ content: prompt, fontSize: 22, color: COLOR_ACCENT }),
-          HStack({ gap: 12, padding: 0, align: "start" }, [
-            Button({ id: `${idPrefix}Cancel`, label: "CANCEL", onPress: CLOSE_DIALOG_ACTION }),
-            Button({ id: `${idPrefix}Confirm`, label, onPress: action }),
-          ]),
-        ],
-      ),
+      panel({ width: 380, wrap: false }, [
+        title(prompt, 22),
+        footer(backAction(`${idPrefix}Cancel`, "CANCEL"), [action("session", { id: `${idPrefix}Confirm`, label, onPress })]),
+      ]),
     ),
   });
 }
@@ -236,9 +359,459 @@ export const askExit = defineReaction("dev.askExit", openMenu(EXIT_CONFIRM_NAME)
 export const askQuit = defineReaction("dev.askQuit", openMenu(QUIT_CONFIRM_NAME));
 
 const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_NAME));
+
+// --- Host and Join ---------------------------------------------------------
+// The engine owns entry, admission and the session facts; these menus only
+// show them. Each end cause, connection phase and wait reason is data the
+// engine publishes; the wording is the mod's.
+//
+// Each menu shows one state at a time, keyed on the session facts: the form
+// while offline, and only the status and the action that ends it while
+// connecting, waiting or hosting. That action is red and names what it ends,
+// so it never reads as the footer's BACK, which only closes the menu. The
+// status group sits first in tree order: when the focused button hides with
+// its state, focus falls back to the first visible stop, the new state's own.
+
+const HOST_MENU_NAME = "frontend.host";
+const JOIN_MENU_NAME = "frontend.join";
+const { session } = getGameState();
+
+/// The headline for each `session.endCause` value: why the last session or
+/// attempt ended. ASCII only: it renders in every bundled typeface.
+export const END_CAUSE_NOTICES = {
+  sessionEnded: "THE HOST ENDED THE SESSION",
+  hostLost: "LOST CONNECTION TO THE HOST",
+  connectFailed: "COULD NOT REACH THE HOST",
+  refusedMod: "THE HOST IS PLAYING A DIFFERENT MOD",
+  refusedPassword: "PASSWORD REFUSED",
+  badAddress: "NOT A HOST ADDRESS",
+  hostFailed: "COULD NOT START HOSTING",
+} as const;
+
+type EndCause = keyof typeof END_CAUSE_NOTICES;
+
+/// What to do about a notice, where there is something to do.
+const END_CAUSE_HINTS: Partial<Record<EndCause, string>> = {
+  connectFailed: "Check the address, and that the host runs your build.",
+  refusedMod: "Both players need the same mod.",
+  refusedPassword: "Enter the host's password, then join again.",
+  badAddress: "Use IPv4 digits, like 192.168.1.20. Names do not work.",
+  hostFailed: "Another program may be using the port.",
+};
+
+/// A cause's callout: its headline, its hint, and the press that answers it.
+function endCauseNotice(cause: EndCause, answer?: WidgetDescriptor): WidgetDescriptor {
+  const fix = END_CAUSE_HINTS[cause];
+  return callout(
+    "notice",
+    [
+      headline("notice", END_CAUSE_NOTICES[cause]),
+      ...(fix === undefined ? [] : [hint(fix)]),
+      ...(answer === undefined ? [] : [answer]),
+    ],
+    stateEquals(session.endCause, cause),
+  );
+}
+
+function endCauseNotices(causes: readonly EndCause[]): WidgetDescriptor[] {
+  return causes.map((cause) => endCauseNotice(cause));
+}
+
+const ALL_END_CAUSES = Object.keys(END_CAUSE_NOTICES) as EndCause[];
+/// Every way a join, or a session joined, ends.
+const JOIN_END_CAUSES = ALL_END_CAUSES.filter((cause) => cause !== "hostFailed");
+
+// --- Text fields and the on-screen keyboard ---------------------------------
+// The dev mod shadows the engine keyboard (`core/ui/keyboard.json`, same
+// registry name) with one that says what it is for and shows what is typed.
+// Each field's opener first tells it which layout, title, hint and masking to
+// use, through presentation cells; the cells live only while the keyboard is
+// up, so an untargeted push gets the full layout with no title. The preview
+// starts masked: only a field that says so shows its text.
+
+const keyboardState = ui.createLocalState<{
+  layout: string;
+  masked: boolean;
+  title: string;
+  hint: string;
+}>({ layout: "letters", masked: true, title: "", hint: "" });
+const kb = keyboardState.cells;
+
+type KeyboardLayout = "letters" | "address";
+
+type KeyboardField = { layout: KeyboardLayout; masked: boolean; title: string; hint: string };
+
+/// Open the keyboard for one field: the cells first, so the push shows them.
+function editFieldSteps(target: typeof session.joinPassword, field: KeyboardField) {
+  return [
+    kb.layout.set(field.layout),
+    kb.masked.set(field.masked),
+    kb.title.set(field.title),
+    kb.hint.set(field.hint),
+    openTextEntry(undefined, target),
+  ];
+}
+
+const JOIN_ADDRESS_FIELD: KeyboardField = {
+  layout: "address",
+  masked: false,
+  title: "HOST ADDRESS",
+  hint: "IPv4, like 192.168.1.20. Add :port only if the host set one.",
+};
+const JOIN_PASSWORD_FIELD: KeyboardField = {
+  layout: "letters",
+  masked: true,
+  title: "PASSWORD",
+  hint: "The host's password, exactly. Empty for none.",
+};
+const HOST_PASSWORD_FIELD: KeyboardField = {
+  layout: "letters",
+  masked: true,
+  title: "PASSWORD FOR YOUR GAME",
+  hint: "Players type this to join. Empty for an open game.",
+};
+
+const editJoinAddress = defineReaction(
+  "frontend.editJoinAddress",
+  editFieldSteps(session.joinAddress, JOIN_ADDRESS_FIELD),
+);
+const editPassword = defineReaction(
+  "frontend.editPassword",
+  editFieldSteps(session.joinPassword, JOIN_PASSWORD_FIELD),
+);
+const editHostPassword = defineReaction(
+  "frontend.editHostPassword",
+  editFieldSteps(session.hostPassword, HOST_PASSWORD_FIELD),
+);
+
+const COMMIT_TEXT_ENTRY_ACTION = "ui.commitTextEntry";
+
+/// The key reaction name for one character.
+function keyReaction(ch: string): string {
+  const named: Record<string, string> = { ".": "dot", ":": "colon", "-": "dash", _: "underscore" };
+  return `kbAppend_${named[ch] ?? ch}`;
+}
+
+/// One character key, labelled with exactly what it types: the board is
+/// lowercase, so its letters are too.
+function charKey(idPrefix: string, ch: string, padding = 5): WidgetDescriptor {
+  const name = keyReaction(ch).slice("kbAppend_".length);
+  return action("secondary", { id: `${idPrefix}_${name}`, label: ch, onPress: keyReaction(ch) }, padding);
+}
+
+/// Digits and address punctuation, phone-pad order: an address is typed in a
+/// few moves from the pad's first key.
+const ADDRESS_PAD = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", ":"];
+const LETTER_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl.", "zxcvbnm:-_"];
+
+/// An editing key with the pad shortcut that presses it beside it. The engine
+/// shortcuts find these keys by id (`key_space`, `key_backspace`, `key_done`).
+function editKey(kind: ActionKind, id: string, label: string, onPress: string, command: CommandId): WidgetDescriptor {
+  return HStack({ gap: 6, align: "center" }, [action(kind, { id, label, onPress }), Glyph({ command })]);
+}
+
+// The keyboard is its field's own layer: the title names the field, the
+// preview well looks like the field's value well, the editing keys sit under
+// the board with DONE as its primary action, and CANCEL is the footer's way
+// back, as BACK is on every menu.
+export const devKeyboard = defineUiTree({
+  name: KEYBOARD_TREE,
+  hideBelow: true,
+  tree: Tree(
+    {
+      anchor: "center",
+      offset: [0, 0],
+      captureMode: "capture",
+      // Q, as on the engine keyboard. While the address pad shows instead, Q
+      // is hidden and focus falls back to the first stop, the pad's 1.
+      initialFocus: "key_q",
+      textEntryTarget: getGameState().ui.textEntry,
+      accessibleName: "On-screen keyboard",
+      role: "group",
+    },
+    panel({ wrap: false, localState: keyboardState.scope }, [
+      Text({ content: "", fontSize: 22, color: COLOR_ACCENT, bind: kb.title.get() }),
+      HStack({ gap: 0, align: "center", fill: FILL_WELL, padding: 10 }, [
+        Text({ content: "", fontSize: 18, bind: getGameState().ui.textEntry, visibleWhen: kb.masked.is(false) }),
+        Text({
+          content: "",
+          fontSize: 18,
+          mask: true,
+          bind: getGameState().ui.textEntry,
+          visibleWhen: kb.masked.is(true),
+        }),
+        Text({ content: "_", fontSize: 18, color: COLOR_ACCENT }),
+      ]),
+      Text({ content: "", fontSize: 13, color: COLOR_MUTED, bind: kb.hint.get() }),
+      // The row keeps the pad its own size rather than the panel's width.
+      HStack({ gap: 0, align: "start", visibleWhen: kb.layout.is("address") }, [
+        VStack({ width: 240, align: "stretch" }, [
+          Grid(
+            { gap: 8, align: "stretch", cols: 3, focus: { policy: "spatial" } },
+            ADDRESS_PAD.map((ch) => charKey("pad", ch, 9)),
+          ),
+        ]),
+      ]),
+      Grid(
+        { gap: 6, align: "stretch", cols: 10, focus: { policy: "spatial" }, visibleWhen: kb.layout.is("letters") },
+        LETTER_ROWS.flatMap((row) => row.split("").map((ch) => charKey("key", ch))),
+      ),
+      HStack({ gap: 14, align: "center", focus: { policy: "linear" } }, [
+        editKey("secondary", "key_backspace", "DEL", "kbBackspace", "text_backspace"),
+        VStack({ visibleWhen: kb.layout.is("letters") }, [
+          editKey("secondary", "key_space", "SPACE", "kbAppend_space", "text_space"),
+        ]),
+        Spacer({ flexGrow: 1 }),
+        editKey("primary", "key_done", "DONE", COMMIT_TEXT_ENTRY_ACTION, "text_commit"),
+      ]),
+      footer(
+        [action("nav", { id: "key_cancel", label: "CANCEL", onPress: CLOSE_DIALOG_ACTION }), Glyph({ command: "nav_cancel" })],
+        [hint("Or type: Enter is done, Esc cancels")],
+      ),
+    ]),
+  ),
+});
+
+/// An editable value as one row: its caption, its value in a dark well (or
+/// `empty`, muted, while it is blank), and the EDIT box that opens the
+/// keyboard for it. The box is named by the caption, so it reads as "Address".
+function field(
+  id: string,
+  caption: string,
+  edit: NamedReactionDescriptor,
+  value: WidgetDescriptor,
+  slot: typeof session.joinPassword,
+  empty: string,
+): WidgetDescriptor {
+  return HStack({ gap: 10, align: "center" }, [
+    VStack({ width: 84, align: "start" }, [Text({ id: `${id}Caption`, content: caption, fontSize: 14, color: COLOR_MUTED })]),
+    HStack({ width: 220, padding: 8, gap: 0, align: "center", fill: FILL_WELL }, [
+      value,
+      Text({ content: empty, fontSize: 15, color: COLOR_MUTED, visibleWhen: stateEquals(slot, "") }),
+    ]),
+    action("secondary", { id, labelledBy: `${id}Caption`, valueText: [{ text: "EDIT" }], onPress: edit }),
+  ]);
+}
+
+function passwordField(
+  id: string,
+  edit: NamedReactionDescriptor,
+  slot: typeof session.joinPassword,
+  empty: string,
+): WidgetDescriptor {
+  return field(id, "Password", edit, Text({ content: "", fontSize: 15, mask: true, bind: bindState(slot) }), slot, empty);
+}
+
+// Host and Join buttons. hostSession reads session.hostPassword; joinSession
+// reads session.joinPassword and session.joinAddress. The two passwords are
+// separate fields, so one typed to join never becomes the one a game hosts with.
+const host = defineReaction("frontend.hostSession", hostSession());
+const join = defineReaction("frontend.joinSession", joinSession());
+const stopHosting = defineReaction("frontend.stopHosting", endSession());
+const leave = defineReaction("frontend.leaveSession", leaveSession());
+const openHost = defineReaction("frontend.openHost", openMenu(HOST_MENU_NAME));
+const openJoin = defineReaction("frontend.openJoin", openMenu(JOIN_MENU_NAME));
+// From the title menu's notice straight to the field to fix: the keyboard
+// commits into the Join menu beneath it, which then opens on JOIN.
+const retypeAddress = defineReaction("frontend.retypeAddress", [
+  openMenu(JOIN_MENU_NAME),
+  ...editFieldSteps(session.joinAddress, JOIN_ADDRESS_FIELD),
+]);
+const retypePassword = defineReaction("frontend.retypePassword", [
+  openMenu(JOIN_MENU_NAME),
+  ...editFieldSteps(session.joinPassword, JOIN_PASSWORD_FIELD),
+]);
+
+const isHosting = stateEquals(session.hosting, true);
+const notHosting = stateEquals(session.hosting, false);
+const isOffline = stateEquals(session.connection, "offline");
+const isConnecting = stateEquals(session.connection, "connecting");
+const isWaiting = stateEquals(session.connection, "waiting");
+
+/// The host's address, for players to type.
+function hostAddressLine(): WidgetDescriptor {
+  return Text({
+    content: "",
+    fontSize: 16,
+    color: COLOR_ACCENT,
+    bind: bindState(session.hostAddress, { format: "HOSTING ON {}" }),
+  });
+}
+
+/// While hosting: where players dial, whether they need a password, and what
+/// they wait for.
+function hostingStatus(): WidgetDescriptor {
+  return callout(
+    "status",
+    [
+      hostAddressLine(),
+      body("Password protected: players need your password.", stateEquals(session.passwordProtected, true)),
+      body("No password: anyone can join.", stateEquals(session.passwordProtected, false)),
+      hint("Players wait here until you start a level."),
+    ],
+    isHosting,
+  );
+}
+
+/// While admitted and held: why.
+function waitReasons(): WidgetDescriptor[] {
+  const reason = (value: string, notice: string, detail: string) =>
+    callout("status", [headline("status", notice), hint(detail)], stateEquals(session.waitReason, value));
+  return [
+    reason("host", "CONNECTED", "Waiting for the host to start a level."),
+    reason("modDiffers", "YOUR MOD DIFFERS FROM THE HOST'S", "Update it to match, then join again."),
+    reason("levelDiffers", "YOU DON'T HAVE THE HOST'S LEVEL", "Get the host's map, or wait for the next level."),
+  ];
+}
+
+/// While a dial is in flight.
+function connectingStatus(): WidgetDescriptor {
+  return callout(
+    "status",
+    [
+      Text({
+        content: "",
+        fontSize: 16,
+        color: COLOR_ACCENT,
+        bind: bindState(session.joinAddress, { format: "CONNECTING TO {}..." }),
+      }),
+    ],
+    isConnecting,
+  );
+}
+
+const SESSION_MENU_WIDTH = 480;
+
+function sessionMenu(name: string, heading: string, initialFocus: string, rows: WidgetDescriptor[]) {
+  return defineUiTree({
+    name,
+    hideBelow: true,
+    tree: Tree(
+      {
+        anchor: "center",
+        offset: [0, 0],
+        captureMode: "capture",
+        initialFocus,
+        accessibleName: heading,
+        role: "group",
+      },
+      panel({ width: SESSION_MENU_WIDTH }, [title(heading), ...rows, footer(backAction(`${name}.back`))]),
+    ),
+  });
+}
+
+// Opens on START HOSTING: the password is optional, so one press hosts.
+export const hostMenu = sessionMenu(HOST_MENU_NAME, "HOST A GAME", "hostStart", [
+  VStack({ gap: 14, align: "stretch", visibleWhen: isHosting }, [
+    hostingStatus(),
+    action("primary", { id: "hostPlay", label: "START A LEVEL", onPress: openPlay }),
+    action("session", { id: "hostStop", label: "STOP HOSTING", onPress: stopHosting }),
+  ]),
+  VStack({ gap: 14, align: "stretch", visibleWhen: notHosting }, [
+    endCauseNotice("hostFailed"),
+    body("Finishing the last session...", isConnecting),
+    passwordField("hostPassword", editHostPassword, session.hostPassword, "None: anyone can join"),
+    action("primary", { id: "hostStart", label: "START HOSTING", onPress: host }),
+  ]),
+]);
+
+// Opens on JOIN: the address is remembered from the last join, so a rejoin is
+// one press. A blank address answers with its notice, one move from the field.
+export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinStart", [
+  VStack({ gap: 14, align: "stretch", visibleWhen: isConnecting }, [
+    connectingStatus(),
+    action("session", { id: "joinCancel", label: "STOP CONNECTING", onPress: leave }),
+  ]),
+  VStack({ gap: 14, align: "stretch", visibleWhen: isWaiting }, [
+    ...waitReasons(),
+    action("session", { id: "joinLeave", label: "LEAVE GAME", onPress: leave }),
+  ]),
+  VStack({ gap: 14, align: "stretch", visibleWhen: isOffline }, [
+    ...endCauseNotices(JOIN_END_CAUSES),
+    VStack({ gap: 10, align: "stretch" }, [
+      field(
+        "joinAddress",
+        "Address",
+        editJoinAddress,
+        Text({ content: "", fontSize: 15, bind: bindState(session.joinAddress) }),
+        session.joinAddress,
+        "Not set",
+      ),
+      passwordField("joinPassword", editPassword, session.joinPassword, "None"),
+    ]),
+    action("primary", { id: "joinStart", label: "JOIN", onPress: join }),
+  ]),
+]);
+
+// Per-key named reactions the on-screen keyboard's buttons reference
+// (`onPress`): each appends its character to the writable engine slot
+// `ui.textEntry`, and backspace pops one grapheme. They are mod-wide, so the
+// keyboard types at the frontend and in every level. The keyboards name them,
+// so editing a layout needs only matching names here. The `done` key is not
+// here: its `onPress` is the reserved `ui.commitTextEntry` sentinel.
+const { textEntry } = getGameState().ui;
+const keyboardReactions: NamedReactionDescriptor[] = [
+  ..."abcdefghijklmnopqrstuvwxyz0123456789"
+    .split("")
+    .map((ch) => defineReaction(`kbAppend_${ch}`, appendText(textEntry, ch))),
+  defineReaction("kbAppend_space", appendText(textEntry, " ")),
+  // Address punctuation: an IPv4 address and its port.
+  defineReaction("kbAppend_dot", appendText(textEntry, ".")),
+  defineReaction("kbAppend_colon", appendText(textEntry, ":")),
+  defineReaction("kbAppend_dash", appendText(textEntry, "-")),
+  defineReaction("kbAppend_underscore", appendText(textEntry, "_")),
+  defineReaction("kbBackspace", backspaceText(textEntry)),
+];
+
+const sessionReactions: NamedReactionDescriptor[] = [
+  ...keyboardReactions,
+  editPassword,
+  editHostPassword,
+  editJoinAddress,
+  host,
+  join,
+  stopHosting,
+  leave,
+  openHost,
+  openJoin,
+  retypeAddress,
+  retypePassword,
+];
+
+/// The title menu's answer to a notice: rejoin, or go straight to the field
+/// that needs fixing. A wrong mod has nothing to retry.
+const END_CAUSE_ACTIONS: Partial<Record<EndCause, { label: string; onPress: NamedReactionDescriptor }>> = {
+  sessionEnded: { label: "JOIN AGAIN", onPress: openJoin },
+  hostLost: { label: "JOIN AGAIN", onPress: openJoin },
+  connectFailed: { label: "TRY AGAIN", onPress: openJoin },
+  refusedPassword: { label: "ENTER PASSWORD", onPress: retypePassword },
+  badAddress: { label: "ENTER ADDRESS", onPress: retypeAddress },
+  hostFailed: { label: "TRY AGAIN", onPress: openHost },
+};
+
+/// Each notice, with its answer as the title's primary action.
+function titleNotices(): WidgetDescriptor[] {
+  return ALL_END_CAUSES.map((cause) => {
+    const answer = END_CAUSE_ACTIONS[cause];
+    return endCauseNotice(
+      cause,
+      answer === undefined
+        ? undefined
+        : action("primary", { id: `titleNotice.${cause}`, label: answer.label, onPress: answer.onPress }),
+    );
+  });
+}
+
 /** Opens the tabbed options screen; the pause menu opens it too. */
 export const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
 
+// The title menu leads with the session: where this machine hosts, what a
+// join is doing, or why the last one ended, with the one press that answers
+// it. Its initial focus names a notice button: with none showing, focus falls
+// back to the first visible stop, PLAY for a player offline. The title is the
+// root, so nothing is beneath it to go back to: its footer's way out is EXIT.
+// While a session runs, HOST or JOIN opens that session's status and the
+// action that ends it, so it reads VIEW SESSION.
 export const frontendMenu = defineUiTree({
   name: TITLE_MENU_NAME,
   tree: Tree(
@@ -246,32 +819,48 @@ export const frontendMenu = defineUiTree({
       anchor: "center",
       offset: [0, 0],
       captureMode: "capture",
-      initialFocus: "frontendPlay",
+      initialFocus: "titleNotice.connectFailed",
       accessibleName: "PostRetro title menu",
       role: "group",
     },
-    VStack(
-      {
-        gap: 12,
-        padding: 24,
-        align: "stretch",
-        fill: COLOR_PANEL,
-        focus: { policy: "linear", wrap: true },
-      },
-      [
-        Text({ content: "POSTRETRO", fontSize: 36, color: COLOR_ACCENT }),
-        Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
-        Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
-        Button({ id: "frontendExit", label: "EXIT", onPress: askExit }),
-        Text({
-          content: "",
-          fontSize: 14,
-          color: COLOR_MUTED,
-          bind: bindState(getGameState().session.hostAddress, { format: "HOSTING ON {}" }),
-          visibleWhen: stateEquals(getGameState().session.hosting, true),
+    panel({ width: 400 }, [
+      title("POSTRETRO", 36),
+      hostingStatus(),
+      callout("status", [headline("status", "CONNECTING...")], isConnecting),
+      ...waitReasons(),
+      // A client lands here when its session ends: say why.
+      ...titleNotices(),
+      VStack({ gap: 8, align: "stretch" }, [
+        // A connected client plays the host's levels, and hosts nothing.
+        VStack({ gap: 8, align: "stretch", visibleWhen: isOffline }, [
+          action("secondary", {
+            id: "frontendPlay",
+            label: "PLAY",
+            onPress: openPlay,
+            valueText: [{ when: [isHosting], text: "START A LEVEL" }],
+          }),
+          action("secondary", {
+            id: "frontendHost",
+            label: "HOST",
+            onPress: openHost,
+            valueText: [{ when: [isHosting], text: "VIEW SESSION" }],
+          }),
+        ]),
+        // A host joins nothing.
+        action("secondary", {
+          id: "frontendJoin",
+          label: "JOIN",
+          onPress: openJoin,
+          visibleWhen: notHosting,
+          valueText: [
+            { when: [isConnecting], text: "VIEW SESSION" },
+            { when: [isWaiting], text: "VIEW SESSION" },
+          ],
         }),
-      ],
-    ),
+        action("secondary", { id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
+      ]),
+      footer([action("nav", { id: "frontendExit", label: "EXIT", onPress: askExit })]),
+    ]),
   ),
 });
 
@@ -386,7 +975,7 @@ function radioChoice(id: string, label: string, checked: Predicate, onPress: str
     bind: checked,
     styleRanges: {
       max: 1,
-      entries: [{ upTo: 0, color: COLOR_INACTIVE }, { color: COLOR_ACCENT }],
+      entries: [{ upTo: 0, color: COLOR_UNSELECTED }, { color: COLOR_ACCENT }],
     },
     onPress,
   });
@@ -471,7 +1060,7 @@ function optionsTabButton(tab: (typeof OPTIONS_TABS)[number], index: number) {
     selected: active,
     styleRanges: {
       max: 1,
-      entries: [{ upTo: 0, color: COLOR_INACTIVE }, { color: COLOR_ACCENT }],
+      entries: [{ upTo: 0, color: COLOR_UNSELECTED }, { color: COLOR_ACCENT }],
     },
     onPress: optionsTabReactions[index],
   });
@@ -487,7 +1076,15 @@ function optionsPanel(id: string, children: WidgetDescriptor[]) {
 const controlsPanel = optionsPanel("optionsPanelControls", [
   Grid({ gap: 12, align: "stretch", cols: 2, focus: { policy: "spatial" } }, [
     optionLabel("optionsRebindLabel", "BINDINGS", "Keyboard, mouse and gamepad"),
-    optionValue(Button({ id: "optionsRebind", label: "CONTROLS", onPress: OPEN_CONTROLS_ACTION })),
+    // Opens the engine controls panel: an EDIT box, as a field's is.
+    optionValue(
+      action("secondary", {
+        id: "optionsRebind",
+        labelledBy: "optionsRebindLabel",
+        valueText: [{ text: "EDIT" }],
+        onPress: OPEN_CONTROLS_ACTION,
+      }),
+    ),
     optionLabel("optionsMouseSensitivityLabel", "MOUSE SENSITIVITY"),
     optionValue(
       Slider({
@@ -824,7 +1421,7 @@ export const optionsMenu = defineUiTree({
       [
         Text({ content: "OPTIONS", fontSize: 24, color: COLOR_ACCENT }),
         HStack(
-          { gap: 6, align: "stretch", role: "tablist", focus: { policy: "linear", wrap: true } },
+          { gap: 20, align: "stretch", role: "tablist", focus: { policy: "linear", wrap: true } },
           OPTIONS_TABS.map(optionsTabButton),
         ),
         VStack(
@@ -835,8 +1432,7 @@ export const optionsMenu = defineUiTree({
             accessibility: accessibilityPanel,
           }),
         ),
-        Button({ id: "optionsBack", label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
-        promptRow(),
+        footer(backAction("optionsBack")),
       ],
     ),
   ),
@@ -844,6 +1440,7 @@ export const optionsMenu = defineUiTree({
 
 export const frontendReactions: NamedReactionDescriptor[] = [
   openPlay,
+  ...sessionReactions,
   openOptions,
   askExit,
   askQuit,

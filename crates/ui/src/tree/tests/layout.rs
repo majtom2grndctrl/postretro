@@ -256,6 +256,7 @@ fn grid_places_children_across_equal_columns() {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         })
     };
     let tree = AnchoredTree {
@@ -333,6 +334,7 @@ fn anchored_tree_centers_on_the_backbuffer_on_non_16_9() {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,

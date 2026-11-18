@@ -104,7 +104,8 @@ pub fn apply_adjust_sentiment(
 /// - Screen-space effects: `vignette`, `screenShake`
 /// - UI stack: `showDialog`, `openMenu`, `closeDialog` (push/pop `PushTree`/`PopTree`)
 /// - Game flow: `loadLevel`, `restartLevel`, `returnToFrontend`
-/// - Session membership: `leaveSession`, `endSession`
+/// - Session membership: `leaveSession`, `endSession`, `hostSession`,
+///   `joinSession`
 /// - Slot write: `setState`
 /// - Live faction sentiment writes: `setSentiment`, `adjustSentiment`
 /// - Ghost bus override: `setGhostAudio`
@@ -290,6 +291,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
         queue.push(SystemReactionCommand::PushTree {
             tree: parsed.tree,
             on_commit: parsed.on_commit,
+            commit_target: parsed.commit_target,
         });
         Ok(())
     });
@@ -302,6 +304,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
             tree: parsed.tree,
             // A menu carries no commit payload; the alias never sets `on_commit`.
             on_commit: None,
+            commit_target: None,
         });
         Ok(())
     });
@@ -348,6 +351,22 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
     registry.register("endSession", |_args, queue| {
         let context = queue.fire_context();
         queue.push(SystemReactionCommand::EndSession {
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
+        Ok(())
+    });
+    registry.register("hostSession", |_args, queue| {
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::HostSession {
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
+        Ok(())
+    });
+    registry.register("joinSession", |_args, queue| {
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::JoinSession {
             dispatch_source: context.source,
             origin: context.origin,
         });
@@ -532,6 +551,9 @@ struct ShowDialogArgs {
     tree: String,
     #[serde(default)]
     on_commit: Option<String>,
+    /// `openTextEntry`'s field slot.
+    #[serde(default)]
+    commit_target: Option<String>,
 }
 
 #[derive(serde::Deserialize)]

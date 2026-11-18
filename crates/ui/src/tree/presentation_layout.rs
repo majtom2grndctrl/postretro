@@ -237,6 +237,7 @@ impl PresentationTemplateLayout {
                     number_presentation,
                     last_resolved,
                     tween,
+                    mask,
                     ..
                 }) => {
                     if drive_text_binding(
@@ -249,6 +250,7 @@ impl PresentationTemplateLayout {
                         slot_values,
                         cell_values,
                         clock,
+                        *mask,
                     ) {
                         diff.content_changed = true;
                         self.dirty_text.push(node);
@@ -496,6 +498,7 @@ mod tests {
             style_ranges: None,
             visible_when: None,
             role: None,
+            mask: false,
         })
     }
 

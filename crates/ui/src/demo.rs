@@ -23,6 +23,23 @@ pub const CONTROLS_PANEL_NAME: &str = "controlsPanel";
 pub const CONTROLS_CAPTURE_NAME: &str = "controlsCapture";
 pub const CONTROLS_DIALOG_NAME: &str = "controlsDialog";
 
+/// The reserved names of the engine's own panels and dialogs. Only the engine
+/// tier registers under them, and each owns the screen when pushed: the layers
+/// beneath it are hidden, so a menu's way back never shows under an engine
+/// panel's own.
+pub const ENGINE_PANEL_NAMES: [&str; 5] = [
+    ACCESSIBILITY_PANEL_NAME,
+    DISPLAY_MODE_CONFIRM_NAME,
+    CONTROLS_PANEL_NAME,
+    CONTROLS_CAPTURE_NAME,
+    CONTROLS_DIALOG_NAME,
+];
+
+/// Whether `name` is reserved for an engine panel or dialog.
+pub fn is_engine_panel(name: &str) -> bool {
+    ENGINE_PANEL_NAMES.contains(&name)
+}
+
 /// Read a committed UI descriptor JSON anchored to the repo root (NOT runtime
 /// cwd, so it passes under `cargo test`, which runs from the crate dir). Mirrors
 /// the `tree_asset`/keyboard precedent: `CARGO_MANIFEST_DIR` + `../..` reaches the

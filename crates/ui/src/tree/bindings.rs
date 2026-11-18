@@ -95,6 +95,7 @@ pub fn drive_text_binding(
     slot_values: &HashMap<String, SlotValue>,
     cell_values: &CellValues,
     clock: TweenClock,
+    mask: bool,
 ) -> bool {
     let Some(cfg) = bind.tween.as_ref() else {
         // No tween config: the untweened path, byte-for-byte as before.
@@ -106,6 +107,7 @@ pub fn drive_text_binding(
             cell_values,
             number_presentation,
         );
+        let resolved = masked(mask, resolved);
         let changed = last_resolved.as_deref() != Some(resolved.as_str());
         if changed {
             *last_resolved = Some(resolved);
@@ -161,11 +163,22 @@ pub fn drive_text_binding(
         }
     };
 
+    let rendered = masked(mask, rendered);
     let changed = last_resolved.as_deref() != Some(rendered.as_str());
     if changed {
         *last_resolved = Some(rendered);
     }
     changed
+}
+
+/// A masked node's resolved string. Its fallback `content` is masked already,
+/// and masking a run of `*` changes nothing.
+fn masked(mask: bool, resolved: String) -> String {
+    if mask {
+        super::draw::mask_text(&resolved)
+    } else {
+        resolved
+    }
 }
 
 /// Advance (or initialize / retarget) an `f32` tween segment toward `target` at

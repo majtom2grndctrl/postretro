@@ -24,6 +24,8 @@ use crate::wire::{
 pub use crate::handshake::*;
 
 #[cfg(test)]
+mod password_tests;
+#[cfg(test)]
 mod protocol_gate_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +159,20 @@ type ControlMessages = (
     Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
 );
 
+/// How long a password host waits for a challenged connection's proof
+/// before refusing it with [`ClosingCause::Password`]. One round trip is well
+/// under a second even on a conditioned link; this sits well inside a seat
+/// hold. A proof drained in the poll this bound elapses still admits.
+pub const PASSWORD_PROOF_BOUND: Duration = Duration::from_secs(5);
+
+/// A pending connection's password challenge, and the declarations it sent
+/// while unproven. Nothing a client declares applies before it is admitted.
+struct OutstandingChallenge {
+    nonce: [u8; 32],
+    issued_at: Duration,
+    held: Vec<ClientControlMessage>,
+}
+
 /// Synchronous server transport. It knows only opaque declarations and slot ids.
 pub struct NetServer {
     server: RenetServer,
@@ -189,6 +205,13 @@ pub struct NetServer {
     next_participation_epoch: u64,
     participation_epochs: HashMap<ClientId, u64>,
     mod_identity: Option<(String, String)>,
+    /// The session password's key, fixed for the hosted run. `None` (no
+    /// password, or an empty one) admits without a challenge.
+    password_key: Option<[u8; 32]>,
+    /// Each pending connection's outstanding password challenge.
+    challenges: HashMap<ClientId, OutstandingChallenge>,
+    /// Host time, which [`PASSWORD_PROOF_BOUND`] is measured on.
+    password_clock: Duration,
     mod_digest: Option<[u8; 32]>,
     level_parity: Option<(String, [u8; 32])>,
     /// The level identity the host itself has revealed (finished settling).
@@ -245,6 +268,9 @@ impl NetServer {
             next_participation_epoch: 1,
             participation_epochs: HashMap::new(),
             mod_identity: None,
+            password_key: None,
+            challenges: HashMap::new(),
+            password_clock: Duration::ZERO,
             mod_digest: None,
             level_parity: None,
             revealed_level: None,
@@ -254,6 +280,12 @@ impl NetServer {
             #[cfg(feature = "dev-tools")]
             lag_proxy: None,
         })
+    }
+
+    /// Set the hosted run's password. An empty password admits anyone
+    /// without a challenge. The server keeps only the derived key.
+    pub fn set_session_password(&mut self, password: &str) {
+        self.password_key = (!password.is_empty()).then(|| wire::session_password_key(password));
     }
 
     pub fn set_mod_identity(&mut self, id: String, version: String) {
@@ -348,6 +380,7 @@ impl NetServer {
     }
 
     pub fn update(&mut self, dt: Duration) -> Result<ServerPoll, NetcodeTransportError> {
+        self.password_clock = self.password_clock.saturating_add(dt);
         self.server.update(dt);
         self.sample_heard_before_advance();
         self.transport.update(dt, &mut self.server)?;
@@ -553,7 +586,9 @@ impl NetServer {
                         mod_id,
                         mod_version,
                     } => {
-                        if !matches!(self.slots.state(client_id), Some(SlotState::Pending)) {
+                        if !matches!(self.slots.state(client_id), Some(SlotState::Pending))
+                            || self.challenges.contains_key(&client_id)
+                        {
                             continue;
                         }
                         let cause = match validate_handshake(expected_protocol, protocol) {
@@ -582,42 +617,77 @@ impl NetServer {
                                 expected_version
                             );
                         }
-                        let _ = self.slots.admit(client_id);
-                        outcomes.push(HandshakeOutcome::Admitted { client_id });
-                        declaration_moved = self.parity_declarations.contains_key(&client_id);
-                        if let Some((catalog_id, level_life)) = self.relevel.clone() {
-                            self.send_relevel(client_id, &catalog_id, level_life);
+                        if self.password_key.is_some() {
+                            if !self.challenge(client_id) {
+                                let cause = ClosingCause::Password;
+                                self.reject(client_id, cause.clone());
+                                outcomes.push(HandshakeOutcome::Rejected { client_id, cause });
+                                break;
+                            }
+                            continue;
+                        }
+                        self.admit_slot(client_id, &mut outcomes, &mut declaration_moved);
+                        if self.mod_digest.is_none() {
+                            break;
+                        }
+                    }
+                    ClientControlMessage::PasswordProof { proof } => {
+                        // A proof with no challenge outstanding (a passwordless
+                        // host, an admitted slot, a second proof) changes nothing.
+                        let Some(challenge) = self.challenges.remove(&client_id) else {
+                            continue;
+                        };
+                        // A challenge is issued only under a password; a key
+                        // cleared since refuses rather than admitting.
+                        let Some(key) = self.password_key else {
+                            let cause = ClosingCause::Password;
+                            self.reject(client_id, cause.clone());
+                            outcomes.push(HandshakeOutcome::Rejected { client_id, cause });
+                            break;
+                        };
+                        let expected =
+                            blake3::Hash::from(wire::password_proof(&key, &challenge.nonce));
+                        // `blake3::Hash` compares in constant time.
+                        if expected != blake3::Hash::from(proof) {
+                            log::warn!(
+                                "[Net] rejecting client {client_id}: {}",
+                                DivergenceReason::Closing(ClosingCause::Password)
+                            );
+                            let cause = ClosingCause::Password;
+                            self.reject(client_id, cause.clone());
+                            outcomes.push(HandshakeOutcome::Rejected { client_id, cause });
+                            break;
+                        }
+                        self.admit_slot(client_id, &mut outcomes, &mut declaration_moved);
+                        for held in challenge.held {
+                            self.apply_declaration(
+                                client_id,
+                                held,
+                                &mut join_seeds,
+                                &mut declaration_moved,
+                            );
                         }
                         if self.mod_digest.is_none() {
                             break;
                         }
                     }
-                    ClientControlMessage::Parity(declaration) => {
-                        self.parity_declarations.insert(client_id, declaration);
-                        declaration_moved = true;
-                        if self.mod_digest.is_none() {
-                            break;
+                    declaration => {
+                        if let Some(challenge) = self.challenges.get_mut(&client_id) {
+                            // Only the latest of each kind reaches admission,
+                            // so an unproven peer holds at most three.
+                            let kind = std::mem::discriminant(&declaration);
+                            challenge
+                                .held
+                                .retain(|held| std::mem::discriminant(held) != kind);
+                            challenge.held.push(declaration);
+                            continue;
                         }
-                    }
-                    ClientControlMessage::JoinSeed { slots } => {
-                        // The engine validates the durable keys against its
-                        // committed declarations and applies only eligible
-                        // per-owner values. This transport is intentionally
-                        // registry-blind, so pass the opaque map through.
-                        join_seeds.push((client_id, slots));
-                    }
-                    ClientControlMessage::Revealed(level) => {
-                        // Retained like parity: only the batch's last
-                        // declaration reaches the predicate below.
-                        match level {
-                            Some(level) => {
-                                self.revealed_declarations.insert(client_id, level);
-                            }
-                            None => {
-                                self.revealed_declarations.remove(&client_id);
-                            }
-                        }
-                        declaration_moved = true;
+                        self.apply_declaration(
+                            client_id,
+                            declaration,
+                            &mut join_seeds,
+                            &mut declaration_moved,
+                        );
                     }
                 }
                 if self.mod_digest.is_none() {
@@ -643,7 +713,107 @@ impl NetServer {
                 }
             }
         }
+        self.expire_challenges(&mut outcomes);
         (outcomes, join_seeds)
+    }
+
+    /// Issue `client_id` a password challenge with a fresh nonce. Returns
+    /// `false` when the OS RNG fails; the caller refuses the connection.
+    fn challenge(&mut self, client_id: ClientId) -> bool {
+        let mut nonce = [0; 32];
+        if let Err(err) = getrandom::fill(&mut nonce) {
+            log::error!("[Net] no password challenge nonce for client {client_id}: {err}");
+            return false;
+        }
+        self.challenges.insert(
+            client_id,
+            OutstandingChallenge {
+                nonce,
+                issued_at: self.password_clock,
+                held: Vec::new(),
+            },
+        );
+        self.send_control(
+            client_id,
+            wire::encode(&ServerControlMessage::PasswordChallenge { nonce }),
+        );
+        true
+    }
+
+    /// Refuse every challenged connection whose proof has not arrived within
+    /// [`PASSWORD_PROOF_BOUND`]. Runs after the poll's Control drain, so a
+    /// proof drained in the poll the bound elapses admits.
+    fn expire_challenges(&mut self, outcomes: &mut Vec<HandshakeOutcome>) {
+        let expired: Vec<ClientId> = self
+            .challenges
+            .iter()
+            .filter(|(_, challenge)| {
+                self.password_clock.saturating_sub(challenge.issued_at) >= PASSWORD_PROOF_BOUND
+            })
+            .map(|(client_id, _)| *client_id)
+            .collect();
+        for client_id in expired {
+            log::warn!("[Net] rejecting client {client_id}: no password proof arrived in time");
+            let cause = ClosingCause::Password;
+            self.reject(client_id, cause.clone());
+            outcomes.push(HandshakeOutcome::Rejected { client_id, cause });
+        }
+    }
+
+    /// Admit a pending slot whose immutable values (and any password) matched.
+    fn admit_slot(
+        &mut self,
+        client_id: ClientId,
+        outcomes: &mut Vec<HandshakeOutcome>,
+        declaration_moved: &mut bool,
+    ) {
+        let _ = self.slots.admit(client_id);
+        outcomes.push(HandshakeOutcome::Admitted { client_id });
+        *declaration_moved |= self.parity_declarations.contains_key(&client_id);
+        if let Some((catalog_id, level_life)) = self.relevel.clone() {
+            self.send_relevel(client_id, &catalog_id, level_life);
+        }
+    }
+
+    /// Apply one declaration a slot sent: parity, join seed or reveal.
+    fn apply_declaration(
+        &mut self,
+        client_id: ClientId,
+        declaration: ClientControlMessage,
+        join_seeds: &mut Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
+        declaration_moved: &mut bool,
+    ) {
+        match declaration {
+            ClientControlMessage::Parity(declaration) => {
+                self.parity_declarations.insert(client_id, declaration);
+                *declaration_moved = true;
+            }
+            ClientControlMessage::JoinSeed { slots } => {
+                // The engine validates the durable keys against its
+                // committed declarations and applies only eligible
+                // per-owner values. This transport is intentionally
+                // registry-blind, so pass the opaque map through.
+                join_seeds.push((client_id, slots));
+            }
+            ClientControlMessage::Revealed(level) => {
+                // Retained like parity: only the batch's last
+                // declaration reaches the predicate below.
+                match level {
+                    Some(level) => {
+                        self.revealed_declarations.insert(client_id, level);
+                    }
+                    None => {
+                        self.revealed_declarations.remove(&client_id);
+                    }
+                }
+                *declaration_moved = true;
+            }
+            // The caller routes these two itself; a peer's bytes never reach
+            // here with one, and if a caller did, ignoring it is safe.
+            ClientControlMessage::Admission { .. } | ClientControlMessage::PasswordProof { .. } => {
+                log::debug!("[Net] client {client_id}: not a declaration; ignored");
+            }
+        }
     }
 
     fn reject(&mut self, client_id: ClientId, cause: ClosingCause) {
@@ -749,6 +919,7 @@ impl NetServer {
         let was_live = matches!(self.slots.state(client_id), Some(state) if !matches!(state, SlotState::Closed { .. }));
         self.parity_declarations.remove(&client_id);
         self.revealed_declarations.remove(&client_id);
+        self.challenges.remove(&client_id);
         self.connect_claims.remove(&client_id);
         self.holding_diagnostics.remove(&client_id);
         self.participation_epochs.remove(&client_id);
@@ -1032,6 +1203,7 @@ impl NetServer {
     }
 
     pub fn update_connections(&mut self, dt: Duration) {
+        self.password_clock = self.password_clock.saturating_add(dt);
         self.server.update(dt);
     }
 
@@ -1192,6 +1364,10 @@ pub struct NetClient {
     /// until the next update, and a closing cause among them is why the
     /// connection ended.
     held_control: Vec<ControlArrival>,
+    /// The key of the password this client answers a host's challenge with,
+    /// if it has one. Without one it answers with an empty proof, which no
+    /// password host accepts.
+    password_key: Option<[u8; 32]>,
     failure_reported: bool,
     transient_error_logged: bool,
     admission_sent: bool,
@@ -1266,6 +1442,7 @@ impl NetClient {
             join_seed: BTreeMap::new(),
             revealed_sent: true,
             mod_identity: None,
+            password_key: None,
             mod_digest: None,
             level_parity: None,
             revealed_level: None,
@@ -1279,6 +1456,12 @@ impl NetClient {
 
     pub fn set_mod_identity(&mut self, id: String, version: String) {
         self.mod_identity = Some((id, version));
+    }
+
+    /// Set the password this client answers a host's challenge with; empty
+    /// clears it. The client keeps only the derived key.
+    pub fn set_session_password(&mut self, password: &str) {
+        self.password_key = (!password.is_empty()).then(|| wire::session_password_key(password));
     }
 
     pub fn set_mod_digest(&mut self, digest: Option<[u8; 32]>) {
@@ -1716,6 +1899,19 @@ impl NetClient {
                     ) && let Some(epoch) = frame.participation_epoch
                     {
                         self.retire_participation(epoch);
+                    }
+                    // The transport answers a password challenge itself.
+                    if let ServerControlMessage::PasswordChallenge { nonce } = message {
+                        // Without a password there is nothing to prove: the
+                        // empty proof is refused at once, not at the bound.
+                        let proof = self
+                            .password_key
+                            .map_or([0; 32], |key| wire::password_proof(&key, &nonce));
+                        self.client.send_message(
+                            Channel::Control,
+                            wire::encode(&ClientControlMessage::PasswordProof { proof }),
+                        );
+                        return None;
                     }
                     Some(ControlArrival::Message(message))
                 })
@@ -3141,17 +3337,25 @@ mod tests {
     // wire-36 peer the host level life on `Relevel` and `Revealed`, a wire-37
     // peer the player life-state record, a wire-38 peer the assist fields, and a
     // wire-39 peer the roster entry's name and status.
-    // A PRLC peer predates the spawn-pose hint and a PRLD peer the session-ended
-    // cause. The admission gate refuses each declaration with a typed cause,
-    // logging the protocol mismatch, and admits a PRLE / 40 one.
+    // A PRLC peer predates the spawn-pose hint, a PRLD peer the session-ended
+    // cause and a PRLE peer the session-password challenge. The admission gate
+    // refuses each declaration with a typed cause, logging the protocol
+    // mismatch, and admits a PRLF / 40 one.
     #[test]
-    fn admission_refuses_prlb_to_prld_or_wire_32_to_39_and_admits_prle_40() {
+    fn admission_refuses_prlb_to_prle_or_wire_32_to_39_and_admits_prlf_40() {
         let current = wire::ProtocolVersion {
-            app_protocol_id: 0x_5052_4C45,
+            app_protocol_id: 0x_5052_4C46,
             wire_version: 40,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C45,
+                    ..current
+                },
+                false,
+            ),
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C44,

@@ -38,7 +38,8 @@ fn sample_args(kind: SystemReactionKind) -> serde_json::Value {
         ScreenShake => json!({ "amplitude": 4, "durationMs": 100 }),
         ShowDialog => json!({ "tree": "dialog" }),
         OpenMenu => json!({ "tree": "menu" }),
-        CloseDialog | RestartLevel | ReturnToFrontend | LeaveSession | EndSession => json!({}),
+        CloseDialog | RestartLevel | ReturnToFrontend | LeaveSession | EndSession | HostSession
+        | JoinSession => json!({}),
         LoadLevel => json!({ "map": "next" }),
         SetState => json!({ "slot": "step.flag", "value": 1 }),
         SetSentiment => json!({ "from": "a", "to": "b", "value": 0.5 }),
@@ -328,7 +329,7 @@ fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_ki
                 let expected = match kind {
                     PlaySound | Rumble | FlashScreen | Vignette | ScreenShake => true,
                     ShowDialog | OpenMenu | CloseDialog | CellWrite | AppendText
-                    | BackspaceText | ClearText => true,
+                    | BackspaceText | ClearText | HostSession | JoinSession => true,
                     SetState => !replicated,
                     ReturnToFrontend | LeaveSession => role == MachineRole::Client,
                     LoadLevel | RestartLevel | EndSession | SetSentiment | AdjustSentiment
@@ -354,7 +355,10 @@ fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_ki
                         ClientLanding::Converge.keeps(kind.primitive_name(), &args, &slot_table),
                         expected
                             && !presentation
-                            && !matches!(kind, ReturnToFrontend | LeaveSession),
+                            && !matches!(
+                                kind,
+                                ReturnToFrontend | LeaveSession | HostSession | JoinSession
+                            ),
                         "late-joiner convergence: {label}"
                     );
                 } else {

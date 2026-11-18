@@ -5,6 +5,7 @@
 
 use postretro_entities::reactions::system_commands::{FireOrigin, MachineSource};
 
+use super::session_entry::EndCause;
 use crate::App;
 use crate::netcode;
 use crate::session::role_state::{RoleBoundState, SessionRole, apply_role};
@@ -19,18 +20,35 @@ pub(crate) enum LeaveCause {
     Own,
     /// The host ended the session.
     SessionEnded,
-    /// The host refused it at admission.
-    Refused,
+    /// The host refused it at admission, for the end cause named.
+    Refused(EndCause),
     /// The established connection ended without a cause from the host.
     LostHost,
     /// No connect attempt reached the host.
     NeverConnected,
 }
 
+impl LeaveCause {
+    /// The `session.endCause` this ending publishes. Before admission every
+    /// ending but an explicit refusal reads `connectFailed`: the player never
+    /// got in. A client's own leave publishes none.
+    fn end_cause(self, admitted: bool) -> Option<EndCause> {
+        match self {
+            Self::Own => None,
+            Self::Refused(cause) => Some(cause),
+            Self::SessionEnded if admitted => Some(EndCause::SessionEnded),
+            Self::LostHost if admitted => Some(EndCause::HostLost),
+            Self::SessionEnded | Self::LostHost | Self::NeverConnected => {
+                Some(EndCause::ConnectFailed)
+            }
+        }
+    }
+}
+
 /// How loudly a refused verb reports. The rule the scheduler applies to a
 /// client's dropped tail steps: a mistake when this machine's own input or
 /// state fired it, routine when the host's timeline or a shared crossing did.
-fn refusal_is_own(origin: &FireOrigin) -> bool {
+pub(super) fn refusal_is_own(origin: &FireOrigin) -> bool {
     matches!(origin, FireOrigin::EveryMachine(MachineSource::OwnState))
 }
 
@@ -58,8 +76,9 @@ impl App {
             LeaveCause::Own => log::info!("[Net] leaving the session"),
             LeaveCause::SessionEnded => log::info!("[Net] the host ended the session"),
             // The transport or the Control drain has already named the cause.
-            LeaveCause::Refused | LeaveCause::LostHost | LeaveCause::NeverConnected => {}
+            LeaveCause::Refused(_) | LeaveCause::LostHost | LeaveCause::NeverConnected => {}
         }
+        let end_cause = cause.end_cause(self.join_facts.admitted);
         let session_seat = self.save_character_on_leave();
         let Some(session) = self.session.as_mut() else {
             return false;
@@ -89,6 +108,7 @@ impl App {
             .unload_level(&mut session.scripting.script_ctx.slot_table.borrow_mut());
         self.restore_store_after_leave(session_seat);
         self.forget_host_steering();
+        self.finish_join_facts(end_cause);
         if self.level_is_installed_state() {
             self.level_stopped_by_session_end = true;
         }
@@ -453,7 +473,13 @@ impl App {
 
     /// Report a verb this role refuses: once per firing source and verb as a
     /// warning when `own`, else at debug.
-    fn report_refused_verb(&mut self, verb: &'static str, source: String, own: bool, why: &str) {
+    pub(super) fn report_refused_verb(
+        &mut self,
+        verb: &'static str,
+        source: String,
+        own: bool,
+        why: &str,
+    ) {
         let first = own
             && self.session.as_mut().is_some_and(|session| {
                 session

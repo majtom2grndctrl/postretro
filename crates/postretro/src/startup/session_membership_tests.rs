@@ -664,7 +664,7 @@ fn exit_paths_leave_or_end_before_exit() {
         .find("self.leave_or_end_for_exit();")
         .expect("`exiting` leaves or ends");
     let save = exiting
-        .find("save_persisted_state(&state_path")
+        .find("progress_save::save_world_and_character(session)")
         .expect("`exiting` saves");
     assert!(leave < save, "the leave or end runs before the exit saves");
 }

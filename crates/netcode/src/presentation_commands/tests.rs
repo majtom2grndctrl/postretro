@@ -629,6 +629,7 @@ fn routed_and_local_commands_keep_push_order_and_restore_ambient_fire_context() 
     queue.push(SystemReactionCommand::PushTree {
         tree: "menu".into(),
         on_commit: None,
+        commit_target: None,
     });
     queue.push(sound("third"));
     fire_origin(
@@ -652,7 +653,8 @@ fn routed_and_local_commands_keep_push_order_and_restore_ambient_fire_context() 
             sound("first"),
             SystemReactionCommand::PushTree {
                 tree: "menu".into(),
-                on_commit: None
+                on_commit: None,
+                commit_target: None,
             },
             sound("third"),
             sound("fourth"),

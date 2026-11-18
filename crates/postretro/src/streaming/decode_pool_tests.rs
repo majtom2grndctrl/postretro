@@ -400,8 +400,15 @@ fn a_job_panicking_in_its_cleanup_returns_its_charge_on_drop() {
     let journal = Arc::new(Journal::default());
     let pool = DecodePool::spawn(1, 8).unwrap();
     let queue = pool.queue();
-    assert!(queue.submit(TestJob::new(&journal, LightmapBlock, 0, Visible).panicking_twice()));
+    let (panicking, started, release) = TestJob::new(&journal, LightmapBlock, 0, Visible)
+        .panicking_twice()
+        .gated();
+    assert!(queue.submit(panicking));
+    // SH ranks ahead of a lightmap block, so it is queued only while the
+    // panicking job holds the pool's one thread: it then runs after the panic.
+    started.recv().unwrap();
     assert!(queue.submit(TestJob::new(&journal, Sh, 1, Visible)));
+    release.send(()).unwrap();
     wait_for(&journal, "delivered", 1);
     assert_eq!(journal.names("dropped"), ["lightmap streaming:0:Visible"]);
     assert_eq!(journal.names("delivered"), ["SH streaming:1:Visible"]);

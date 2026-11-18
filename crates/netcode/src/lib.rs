@@ -282,7 +282,7 @@ pub use replication::{
     host_register_loaded_ghost_links, host_register_loaded_movers,
     host_register_loaded_teleporters, host_register_presentation_overrides,
 };
-pub use seat::{SeatTable, finish_host_poll};
+pub use seat::{HOLD_WINDOW, SeatTable, SessionIdSource, finish_host_poll};
 pub(crate) use wire_convert::sim_command_to_input;
 
 pub const PROJECTILE_CONTACT_DESPAWN_REASON: postretro_net::replication::DespawnReason = 1;
@@ -424,18 +424,45 @@ pub fn role_suppresses_boot_player_spawn(role: &NetRole) -> bool {
     matches!(role, NetRole::Connect { .. })
 }
 
-/// Parsed net configuration. Today this is just the role; kept as a struct so
-/// future net CLI knobs (tick rate override, snapshot rate) extend it without
-/// rippling the `main.rs` call site.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Parsed net configuration: the role and the session password. Its `Debug`
+/// never shows the password.
+#[derive(Clone, PartialEq, Eq)]
 pub struct NetConfig {
     pub role: NetRole,
+    /// `--password <text>`: the session password `--host` challenges for and
+    /// `--connect` answers with. Never logged.
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for NetConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetConfig")
+            .field("role", &self.role)
+            .field("password", &self.password.as_ref().map(|_| "<set>"))
+            .finish()
+    }
 }
 
 /// Error parsing the net CLI flags. Carries an operator-facing message; `main.rs`
 /// logs it and falls back to single-player rather than aborting boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetArgError(pub String);
+
+impl NetArgError {
+    /// The role flag whose value failed to parse, when the error names one:
+    /// `--connect` for an address, `--host` for a port. A conflict between
+    /// flags, or a bad `--password`, names none.
+    #[must_use]
+    pub fn failed_role_flag(&self) -> Option<&'static str> {
+        if self.0.starts_with("--connect") {
+            Some("--connect")
+        } else if self.0.contains("--host port") {
+            Some("--host")
+        } else {
+            None
+        }
+    }
+}
 
 impl std::fmt::Display for NetArgError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -448,17 +475,37 @@ impl std::fmt::Display for NetArgError {
 /// Recognized flags, scanned independently of the positional PRL-map path (which
 /// the existing `resolve_map_path` handling owns — this parser never consumes it):
 /// - `--host [port]` — listen server; bare `--host` uses [`DEFAULT_HOST_PORT`].
-/// - `--connect <ip:port>` — client; `<ip:port>` is required and must be IPv4.
-///   The host binds IPv4 only, so an IPv6 address could never reach it; it is
-///   refused here with a clear message rather than failing on the first send.
+/// - `--connect <ip[:port]>` — client; IPv4 with an optional port, as
+///   [`parse_join_address`] reads it, which refuses IPv6 and hostnames with a
+///   clear message rather than failing on the first send.
+/// - `--password <text>` — the session password both roles use. It takes the
+///   next token unless that is a flag; an empty value is passwordless.
 ///
 /// Absent both flags, the role is [`NetRole::SinglePlayer`]. `--host` and
 /// `--connect` are mutually exclusive — supplying both is an error.
 pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
     let mut role: Option<NetRole> = None;
+    let mut password: Option<String> = None;
 
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
+        // `--password <text>` or `--password=<text>`. An empty value is a
+        // passwordless session.
+        let password_inline = arg.strip_prefix("--password=");
+        if arg == "--password" || password_inline.is_some() {
+            // The next token unless it is a flag, an empty one included: the
+            // engine's map-path scan steps over the same token.
+            let value = match password_inline {
+                Some(value) => value.to_string(),
+                None => iter
+                    .next_if(|value| !value.starts_with("--"))
+                    .cloned()
+                    .ok_or_else(|| NetArgError("--password requires a value".into()))?,
+            };
+            password = Some(value);
+            continue;
+        }
+
         // `--host` with an optional inline (`--host=PORT`) or following port.
         let host_inline = arg.strip_prefix("--host=");
         if arg == "--host" || host_inline.is_some() {
@@ -491,16 +538,12 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
             } else {
                 iter.next_if(|v| !v.is_empty() && !v.starts_with("--"))
                     .cloned()
-                    .ok_or_else(|| NetArgError("--connect requires an <ip:port> address".into()))?
+                    .ok_or_else(|| {
+                        NetArgError("--connect requires an <ip[:port]> address".into())
+                    })?
             };
-            let addr: SocketAddr = value
-                .parse()
-                .map_err(|_| NetArgError(format!("invalid --connect address: {value}")))?;
-            if addr.is_ipv6() {
-                return Err(NetArgError(format!(
-                    "--connect does not support IPv6 addresses yet; use the host's IPv4 address (got {value})"
-                )));
-            }
+            let addr = parse_join_address(&value)
+                .map_err(|err| NetArgError(format!("--connect: {err}")))?;
             role = Some(NetRole::Connect { addr });
             continue;
         }
@@ -508,7 +551,37 @@ pub fn parse_net_config(args: &[String]) -> Result<NetConfig, NetArgError> {
 
     Ok(NetConfig {
         role: role.unwrap_or(NetRole::SinglePlayer),
+        password,
     })
+}
+
+/// Parse the address a join dials: an IPv4 literal with an optional port,
+/// defaulting to [`DEFAULT_HOST_PORT`]. The `--connect` flag and in-app join
+/// share it. IPv6 is refused because the host binds IPv4 only, a hostname
+/// because DNS would be a second failure mode with its own notice, and port 0
+/// because nothing listens there.
+pub fn parse_join_address(text: &str) -> Result<SocketAddr, NetArgError> {
+    let text = text.trim();
+    let addr = match text.parse::<SocketAddr>() {
+        Ok(addr) => addr,
+        Err(_) => match text.parse::<std::net::IpAddr>() {
+            Ok(ip) => SocketAddr::new(ip, DEFAULT_HOST_PORT),
+            Err(_) => {
+                return Err(NetArgError(format!(
+                    "`{text}` is not an IPv4 address with an optional port"
+                )));
+            }
+        },
+    };
+    if addr.is_ipv6() {
+        return Err(NetArgError(format!(
+            "IPv6 addresses are not supported yet; use the host's IPv4 address (got {text})"
+        )));
+    }
+    if addr.port() == 0 {
+        return Err(NetArgError(format!("port 0 cannot be dialed (got {text})")));
+    }
+    Ok(addr)
 }
 
 /// A listen port players can be told in advance. Port 0 (an OS-chosen
@@ -8354,6 +8427,59 @@ mod tests {
         }
         let inline = parse_net_config(&argv(&["--connect=[::1]:27015"])).unwrap_err();
         assert!(inline.0.contains("IPv6"));
+    }
+
+    // AC F1: the menu and `--connect` share one grammar. A portless IPv4
+    // address dials the default; IPv6, hostnames and malformed text refuse.
+    #[test]
+    fn join_address_grammar_takes_ipv4_with_an_optional_port() {
+        assert_eq!(
+            parse_join_address("192.168.1.20").unwrap(),
+            SocketAddr::from(([192, 168, 1, 20], DEFAULT_HOST_PORT))
+        );
+        assert_eq!(
+            parse_join_address(" 10.0.0.2:30000 ").unwrap(),
+            SocketAddr::from(([10, 0, 0, 2], 30000))
+        );
+        for bad in [
+            "",
+            "10.0.0",
+            "10.0.0.2:",
+            "10.0.0.2:99999",
+            "10.0.0.2:0",
+            "::1",
+            "[::1]:27015",
+            "localhost",
+            "example.com:27015",
+        ] {
+            assert!(parse_join_address(bad).is_err(), "`{bad}` refuses");
+        }
+        let config = parse_net_config(&argv(&["--connect", "127.0.0.1"])).unwrap();
+        assert_eq!(
+            config.role,
+            NetRole::Connect {
+                addr: SocketAddr::from(([127, 0, 0, 1], DEFAULT_HOST_PORT))
+            }
+        );
+    }
+
+    // AC P-m: `--password` serves both roles, inline or as the next argument.
+    #[test]
+    fn parse_password_for_either_role() {
+        let host = parse_net_config(&argv(&["--host", "--password", "p"])).unwrap();
+        assert_eq!(
+            host.role,
+            NetRole::Host {
+                port: DEFAULT_HOST_PORT
+            }
+        );
+        assert_eq!(host.password.as_deref(), Some("p"));
+        let client = parse_net_config(&argv(&["--password=p", "--connect", "10.0.0.2"])).unwrap();
+        assert_eq!(client.password.as_deref(), Some("p"));
+        assert!(!format!("{client:?}").contains("\"p\""), "Debug hides it");
+        assert!(parse_net_config(&argv(&["--password"])).is_err());
+        assert!(parse_net_config(&argv(&["--password", "--connect", "10.0.0.2"])).is_err());
+        assert_eq!(parse_net_config(&argv(&[])).unwrap().password, None);
     }
 
     #[test]

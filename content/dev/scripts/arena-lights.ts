@@ -4,8 +4,6 @@ import {
   getMapEntities,
 } from "postretro";
 import {
-  appendText,
-  backspaceText,
   flashScreen,
   getGameState,
   onStateCrossing,
@@ -185,21 +183,6 @@ export function setupLevel(_ctx: unknown) {
     defineReaction("lowHealthShake", screenShake(12, 300)),
     defineReaction("lowHealthAlert", playSound("sfx/test_tone", { bus: "sfx" })),
   );
-
-  // Per-key named reactions the on-screen keyboard's letter/digit/space buttons
-  // reference (`onPress`). Each appends its character to the writable engine slot
-  // `ui.textEntry`; backspace pops one grapheme. These are DATA — the keyboard
-  // JSON references them by name, so editing the layout (adding/removing keys)
-  // needs no Rust change, only matching reaction names here. The `done` key does
-  // NOT appear here: its `onPress` is the reserved `ui.commitTextEntry` sentinel
-  // the engine intercepts to reach the shared commit seam (Task 3).
-  const textEntry = gameState.ui.textEntry;
-  const keyChars = "abcdefghijklmnopqrstuvwxyz0123456789".split("");
-  for (const ch of keyChars) {
-    reactions.push(defineReaction(`kbAppend_${ch}`, appendText(textEntry, ch)));
-  }
-  reactions.push(defineReaction("kbAppend_space", appendText(textEntry, " ")));
-  reactions.push(defineReaction("kbBackspace", backspaceText(textEntry)));
 
   const crossings = [
     onStateCrossing(gameState.player.health, { below: 20, max: 100 }, [

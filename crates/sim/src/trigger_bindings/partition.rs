@@ -52,6 +52,8 @@ const LIFECYCLE_PRIMITIVES: &[&str] = &[
     "returnToFrontend",
     "leaveSession",
     "endSession",
+    "hostSession",
+    "joinSession",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

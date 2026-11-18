@@ -50,6 +50,12 @@ pub enum SystemReactionCommand {
     PushTree {
         tree: String,
         on_commit: Option<String>,
+        /// A text-entry tree's field: the writable String slot that receives
+        /// the entered text when the player commits. The entry edits
+        /// `ui.textEntry` on both input paths; the engine seeds it from this
+        /// slot when the tree opens, copies it here on commit, and clears it
+        /// on commit and on cancel.
+        commit_target: Option<String>,
     },
     LoadLevel {
         map: String,
@@ -85,6 +91,23 @@ pub enum SystemReactionCommand {
     /// Membership only; role decides what it does, origin only how loudly a
     /// refusal logs.
     EndSession {
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `hostSession()`: a single-player machine at its frontend starts
+    /// hosting. Machine-local; role and boot state decide whether it runs,
+    /// waits or is refused, and origin only how loudly a refusal logs.
+    HostSession {
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `joinSession()`: a single-player machine at its frontend joins the
+    /// host `session.joinAddress` names. Machine-local, as `hostSession`.
+    JoinSession {
         /// Stable identity of the firing source for once-per-source diagnostics.
         /// It is runtime queue context only, never persistent or on the wire.
         dispatch_source: String,
@@ -500,6 +523,8 @@ pub enum SystemReactionKind {
     ReturnToFrontend,
     LeaveSession,
     EndSession,
+    HostSession,
+    JoinSession,
     SetState,
     SetSentiment,
     AdjustSentiment,
@@ -528,6 +553,8 @@ impl SystemReactionKind {
         Self::ReturnToFrontend,
         Self::LeaveSession,
         Self::EndSession,
+        Self::HostSession,
+        Self::JoinSession,
         Self::SetState,
         Self::SetSentiment,
         Self::AdjustSentiment,
@@ -553,6 +580,8 @@ impl SystemReactionKind {
             Self::ReturnToFrontend => "returnToFrontend",
             Self::LeaveSession => "leaveSession",
             Self::EndSession => "endSession",
+            Self::HostSession => "hostSession",
+            Self::JoinSession => "joinSession",
             Self::SetState => "setState",
             Self::SetSentiment => "setSentiment",
             Self::AdjustSentiment => "adjustSentiment",
@@ -584,7 +613,9 @@ impl SystemReactionKind {
             | Self::CellWrite
             | Self::AppendText
             | Self::BackspaceText
-            | Self::ClearText => SystemReactionClass::MachineLocal,
+            | Self::ClearText
+            | Self::HostSession
+            | Self::JoinSession => SystemReactionClass::MachineLocal,
             Self::LoadLevel
             | Self::RestartLevel
             | Self::ReturnToFrontend
@@ -644,7 +675,9 @@ impl SystemReactionCommand {
             | Self::CellWrite { .. }
             | Self::AppendText { .. }
             | Self::BackspaceText { .. }
-            | Self::ClearText { .. } => SystemReactionClass::MachineLocal,
+            | Self::ClearText { .. }
+            | Self::HostSession { .. }
+            | Self::JoinSession { .. } => SystemReactionClass::MachineLocal,
             Self::LoadLevel { .. }
             | Self::RestartLevel { .. }
             | Self::ReturnToFrontend { .. }

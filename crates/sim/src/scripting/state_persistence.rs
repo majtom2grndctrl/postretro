@@ -50,6 +50,13 @@ impl StateStoreLifecycle {
         self.restore_completed && !self.persistence_disabled
     }
 
+    /// Whether the store may be snapshotted in memory: the boot restore has
+    /// run (or found persistence unavailable), so the store holds this run's
+    /// values rather than declared defaults awaiting a restore.
+    pub fn can_collect(&self) -> bool {
+        self.restore_completed
+    }
+
     /// Disable persistence for the remainder of this process. Returns whether
     /// this call changed state so callers can emit the unavailable-path warning
     /// exactly once.

@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use postretro_entities::ScriptCtx;
-use postretro_net::wire::{ConnectClaim, PlayerClaimId, encode_connect_claim};
 
 use crate::impact_policy::ImpactPolicyRuntime;
 use crate::input;
@@ -54,8 +53,10 @@ use postretro_scripting_core::state_crossings::CrossingDetector;
 pub(crate) mod level_streaming;
 pub(crate) mod lightmap_residency;
 mod lightmap_streaming_diagnostics;
+pub(crate) mod net_entry;
 pub(crate) mod occupancy_families;
 pub(crate) mod players;
+pub(crate) mod progress_save;
 pub(crate) mod role_state;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
@@ -652,78 +653,40 @@ impl Session {
         //    inert) rather than blocking boot — the engine is playable without
         //    networking. The net subsystem never touches the registry.
         //    See: context/lib/networking.md.
-        let net_role = match netcode::parse_net_config(raw_args) {
-            Ok(config) => config.role,
+        let parsed = netcode::parse_net_config(raw_args);
+        let net_role = match &parsed {
+            Ok(config) => config.role.clone(),
             Err(err) => {
                 log::error!("[Net] CLI parse failed ({err}); starting single-player");
                 netcode::NetRole::SinglePlayer
             }
         };
-        let local_claim = player_options.player_id.map(|player_id| ConnectClaim {
-            player_id: PlayerClaimId(player_id),
-            display_name: String::new(),
-        });
-        let client_user_data = local_claim.as_ref().map(encode_connect_claim);
-        let mut net_endpoint = match netcode::NetEndpoint::from_role(&net_role, client_user_data) {
-            Ok(endpoint) => {
-                match &net_role {
-                    netcode::NetRole::SinglePlayer => {}
-                    netcode::NetRole::Host { port } => {
-                        log::info!("[Net] hosting (listen server) on port {port}");
-                    }
-                    netcode::NetRole::Connect { addr } => {
-                        log::info!("[Net] connecting to {addr}");
-                    }
-                }
-                endpoint
-            }
-            Err(err) => {
-                log::error!("[Net] endpoint setup failed ({err}); starting single-player");
-                None
-            }
-        };
-        // Dev builds relay every session through the lag proxy; seed it before
-        // the first poll so the handshake already runs conditioned.
-        #[cfg(feature = "dev-tools")]
-        if let Some(endpoint) = net_endpoint.as_mut() {
-            netcode::seed_lag_profile_from_environment(endpoint);
-        }
-        let seat_table = if matches!(&net_endpoint, Some(netcode::NetEndpoint::Client { .. })) {
-            None
-        } else {
-            let (seats, identity_error) =
-                authority_seat_table_or_local_only(&mut net_endpoint, netcode::SeatTable::new());
-            if let Some(err) = identity_error {
-                log::error!(
-                    "[Net] session identity setup failed ({err}); disabling networking for this session"
-                );
-            }
-            Some(seats)
-        };
-        // Every role-bound value derives in one place, which a client's
-        // leave and a host's end reuse. Identity setup above can still have
-        // demoted the endpoint to single-player, so the role reads it after.
-        // A listen host publishes the address players should dial, for the
-        // frontend to show.
-        let role = role_state::SessionRole::of(net_endpoint.as_ref());
-        let published = published_host_address(
+        // Every role-bound value derives in one place, which in-app entry, a
+        // client's leave and a host's end reuse.
+        let mut seat_table = None;
+        let cli_password = parsed
+            .as_ref()
+            .ok()
+            .and_then(|config| config.password.as_deref());
+        let entry = net_entry::enter_role(
             &net_role,
-            role == role_state::SessionRole::Host,
+            player_options.player_id,
+            &mut scripting,
+            &mut seat_table,
+            getrandom::fill,
             netcode::probe_lan_address,
+            cli_password.unwrap_or_default(),
         );
-        if let Some(address) = published {
-            log::info!("[Net] players join with --connect {address}");
-        }
-        let mut seat_table = seat_table;
-        {
-            let registry = scripting.script_ctx.registry.clone();
-            let _ = role_state::apply_role(
-                &mut scripting,
-                &mut seat_table,
-                &mut registry.borrow_mut(),
-                &role_state::RoleBoundState::derive(role, published),
-            );
-        }
+        // Boot publishes the session facts in-app entry publishes.
+        net_entry::publish_boot_facts(
+            &scripting.script_ctx,
+            parsed.as_ref().err(),
+            &net_role,
+            &entry,
+            player_options.last_join_address.as_deref(),
+            cli_password,
+        );
+        let net_endpoint = entry.endpoint;
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         let trigger_spawn_context = scripting.spawn_context.clone();
         boot_timings.record("net_endpoint_complete");
@@ -823,39 +786,6 @@ fn load_player_options(settings_path: Option<&Path>) -> options::PlayerOptions {
     options::boot::BootOptions::load(settings_path.map(Path::to_path_buf))
         .finish()
         .0
-}
-
-/// The address a live listen host publishes, else `None` (both slots keep
-/// their empty/false defaults). A host role whose endpoint failed setup has
-/// degraded to single-player and publishes nothing. `probe_lan` runs only when
-/// hosting.
-fn published_host_address(
-    role: &netcode::NetRole,
-    endpoint_is_host: bool,
-    probe_lan: impl FnOnce() -> Option<std::net::IpAddr>,
-) -> Option<std::net::SocketAddr> {
-    match role {
-        netcode::NetRole::Host { port } if endpoint_is_host => {
-            Some(netcode::dialable_host_address(*port, probe_lan()))
-        }
-        _ => None,
-    }
-}
-
-/// Preserve the local seat/carry ledger when session identity entropy fails.
-/// The returned error tells the caller to disable networking before this
-/// table's sentinel identity could reach a peer.
-fn authority_seat_table_or_local_only<T, E>(
-    net_endpoint: &mut Option<T>,
-    result: std::result::Result<netcode::SeatTable, E>,
-) -> (netcode::SeatTable, Option<E>) {
-    match result {
-        Ok(seats) => (seats, None),
-        Err(err) => {
-            *net_endpoint = None;
-            (netcode::SeatTable::local_only(), Some(err))
-        }
-    }
 }
 
 /// Construct the scripting core — the script VM runtime, script context, all
@@ -1447,56 +1377,6 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).expect("read malformed settings"),
             malformed
-        );
-    }
-
-    #[test]
-    fn host_address_is_published_only_by_a_live_host() {
-        let lan = || Some(std::net::IpAddr::from([10, 0, 0, 7]));
-        assert_eq!(
-            published_host_address(&netcode::NetRole::Host { port: 27015 }, true, lan),
-            Some("10.0.0.7:27015".parse().unwrap())
-        );
-        // A failed bind (or identity setup) left no host endpoint.
-        assert_eq!(
-            published_host_address(&netcode::NetRole::Host { port: 27015 }, false, lan),
-            None
-        );
-        let no_probe = || -> Option<std::net::IpAddr> { panic!("probed outside host role") };
-        assert_eq!(
-            published_host_address(&netcode::NetRole::SinglePlayer, false, no_probe),
-            None
-        );
-        let connect = netcode::NetRole::Connect {
-            addr: "127.0.0.1:27015".parse().unwrap(),
-        };
-        assert_eq!(published_host_address(&connect, false, no_probe), None);
-    }
-
-    // Regression: session-id entropy failure used to abort engine boot.
-    #[test]
-    fn session_identity_failure_keeps_local_carry_ledger_but_is_not_network_safe() {
-        let mut net_endpoint = Some(());
-        let (seats, identity_error) = authority_seat_table_or_local_only(
-            &mut net_endpoint,
-            std::result::Result::<netcode::SeatTable, _>::Err("entropy unavailable"),
-        );
-
-        assert_eq!(identity_error, Some("entropy unavailable"));
-        assert_eq!(net_endpoint, None, "failed identity disables the endpoint");
-        assert_eq!(
-            seats.session_id_for_test(),
-            postretro_net::wire::SessionId([0; 16])
-        );
-        assert_eq!(
-            seats.roster_entries_for_test(),
-            vec![postretro_net::wire::RosterEntry {
-                seat: 0,
-                connected: true,
-                name: String::new(),
-                status: 0,
-            }],
-            "single-player carry still owns local seat zero"
         );
     }
 }

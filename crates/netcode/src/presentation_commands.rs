@@ -73,6 +73,8 @@ pub fn presentation_command_to_wire(
         | SystemReactionCommand::ReturnToFrontend { .. }
         | SystemReactionCommand::LeaveSession { .. }
         | SystemReactionCommand::EndSession { .. }
+        | SystemReactionCommand::HostSession { .. }
+        | SystemReactionCommand::JoinSession { .. }
         | SystemReactionCommand::PopTree
         | SystemReactionCommand::SetState { .. }
         | SystemReactionCommand::SetSentiment { .. }

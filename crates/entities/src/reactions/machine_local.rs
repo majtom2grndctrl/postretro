@@ -58,9 +58,9 @@ pub fn primitive_is_machine_local(
 
 /// How a client lands a tail: every machine-local step, or, for a segment due
 /// before the host tick this client revealed at (a late joiner's), only the
-/// steps that converge state. Transient presentation, `returnToFrontend` and
-/// `leaveSession` are skipped there, since the moment they belonged to has
-/// passed: a late joiner stays connected.
+/// steps that converge state. Transient presentation, `returnToFrontend`,
+/// `leaveSession`, `hostSession` and `joinSession` are skipped there, since
+/// the moment they belonged to has passed: a late joiner stays connected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientLanding {
     Land,
@@ -82,7 +82,10 @@ impl ClientLanding {
                 kind.class() != SystemReactionClass::Presentation
                     && !matches!(
                         kind,
-                        SystemReactionKind::ReturnToFrontend | SystemReactionKind::LeaveSession
+                        SystemReactionKind::ReturnToFrontend
+                            | SystemReactionKind::LeaveSession
+                            | SystemReactionKind::HostSession
+                            | SystemReactionKind::JoinSession
                     )
             }
         }

@@ -368,8 +368,18 @@ end
 --- fired on commit (the on-screen `done` key or hardware Enter); `nav.cancel`
 --- (Escape / B) closes without firing it. The same `ui.textEntry` slot also
 --- receives the hardware-keyboard path's edits.
-function UiReactionsSdk.openTextEntry(onCommit: string?): SystemReactionStep
-  return UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
+---
+--- The optional `target` is a writable String slot the entry is for, so one
+--- screen can hold several fields. The keyboard opens with `ui.textEntry` set
+--- to the target's text; committing copies `ui.textEntry` into the target and
+--- empties it, and cancelling empties it and leaves the target as it was.
+function UiReactionsSdk.openTextEntry(onCommit: string?, target: any?): SystemReactionStep
+  local step = UiReactionsSdk.showDialog(UiReactionsSdk.KEYBOARD_TREE, onCommit)
+  if target == nil then
+    return step
+  end
+  step.args.commitTarget = stateSlot(target, "openTextEntry")
+  return step
 end
 
 --- Push a menu UI tree onto the modal stack. Pure: returns a system reaction
@@ -436,6 +446,30 @@ end
 --- `leaveSession()`); single-player ignores it.
 function UiReactionsSdk.endSession(): SystemReactionStep
   return { primitive = "endSession", args = {} }
+end
+
+--- Host a co-op session from the frontend. Pure: returns a system reaction (a
+--- body on its own or a step in a sequence or array body), no FFI. A
+--- single-player machine at its frontend starts a new hosted run, protected by
+--- `session.hostPassword` when it is not empty, and stands at its frontend with
+--- joiners waiting until it starts a level. Pressed while a left level unloads
+--- or an ended host's connections close, it waits for them, publishing
+--- `session.connection` `connecting`. Anywhere else, in another role or with a
+--- press already waiting, it warns and changes nothing. Machine-local.
+function UiReactionsSdk.hostSession(): SystemReactionStep
+  return { primitive = "hostSession", args = {} }
+end
+
+--- Join the co-op host at `session.joinAddress` (an IPv4 address, port
+--- optional) from the frontend, answering its password from `session.joinPassword`.
+--- Pure: returns a system reaction (a body on its own or a step in a sequence
+--- or array body), no FFI. It saves the world and character first, then
+--- connects; `session.connection`, `session.waitReason` and `session.endCause`
+--- say how it goes. It waits and refuses as `UI.hostSession()` does, and after
+--- a `UI.leaveSession()` in the same reaction it joins once the left level
+--- unloads. Machine-local.
+function UiReactionsSdk.joinSession(): SystemReactionStep
+  return { primitive = "joinSession", args = {} }
 end
 
 --- Set the live sentiment from faction `from` toward faction `to` at the

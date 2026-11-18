@@ -42,6 +42,9 @@ impl App {
         self.boot_load = false;
         self.boot_destination = None;
         self.end_loading_screen();
+        // A waiting host or join press waited on an unload or close this
+        // reset no longer tracks: it ends, and the player presses again.
+        self.cancel_pending_entry("a suspend");
         // The renderer holding the UI images is gone; upload them again to the
         // resumed one.
         if let Some(session) = self.session.as_mut() {
@@ -61,6 +64,10 @@ impl App {
         // a load whose bundle this frame would find ready (pin P1).
         if boot_state_drains_level_requests(&self.boot_state) {
             self.drain_level_requests();
+            // A waiting host or join press runs once the unload it waited for
+            // has drained and any ended host's close is done. Splash and the
+            // first-launch hold drain nothing, so nothing resumes there.
+            self.resume_pending_entry();
         }
 
         // A Settling reveal frame still drops here: input pressed while the
@@ -105,6 +112,7 @@ impl App {
 
         match &request {
             LevelRequest::Load(_) | LevelRequest::HostLevel(_) => {
+                self.cancel_pending_entry("a level load");
                 self.level_requests.retain(|queued| {
                     !matches!(queued, LevelRequest::Load(_) | LevelRequest::HostLevel(_))
                 });

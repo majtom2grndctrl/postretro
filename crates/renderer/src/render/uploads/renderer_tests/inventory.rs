@@ -228,6 +228,7 @@ fn real_map_steady_state_stages_binary_prewrites_and_window_only_writers() {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         Widget::Panel(PanelWidget {
             fill: ColorValue::Literal([0.2, 0.1, 0.3, 0.4]),

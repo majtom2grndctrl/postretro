@@ -71,6 +71,10 @@ local backToFrontend = Postretro.defineReaction("frontend.returnToFrontend", UI.
 local leave = Postretro.defineReaction("pause.leaveSession", UI.leaveSession())
 -- A run's end on a map-end crossing: every role runs the same steps.
 local runEnd = Postretro.defineReaction("run.end", { UI.endSession(), UI.returnToFrontend() })
+-- Host and Join buttons. hostSession reads session.hostPassword; joinSession
+-- reads session.joinPassword and session.joinAddress.
+local host = Postretro.defineReaction("frontend.host", UI.hostSession())
+local join = Postretro.defineReaction("frontend.join", UI.joinSession())
 
 local children = {
   UI.Text({ content = "Campaign" }),
@@ -98,6 +102,13 @@ table.insert(children, UI.Button({
   label = "Leave Game",
   onPress = leave,
 }))
+-- A password field and a refusal notice.
+local session = Postretro.getGameState().session
+table.insert(children, UI.Text({ content = "", mask = true, bind = UI.bindState(session.joinPassword) }))
+table.insert(children, UI.Text({
+  content = "WRONG PASSWORD",
+  visibleWhen = UI.stateEquals(session.endCause, "refusedPassword"),
+}))
 
 local levelSelect = UI.defineUiTree({
   name = "frontend.levelSelect.fixture",
@@ -124,6 +135,8 @@ table.insert(catalogStartReactions, restartCurrentLevel)
 table.insert(catalogStartReactions, backToFrontend)
 table.insert(catalogStartReactions, leave)
 table.insert(catalogStartReactions, runEnd)
+table.insert(catalogStartReactions, host)
+table.insert(catalogStartReactions, join)
 
 return Postretro.defineMod({
   name = "frontend-level-select-fixture",

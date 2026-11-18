@@ -10,6 +10,7 @@ import {
   defineMapCatalog,
   defineMod,
   defineReaction,
+  getGameState,
   type ModMapEntry,
 } from "postretro";
 import {
@@ -18,13 +19,19 @@ import {
   Text,
   Tree,
   VStack,
+  bindState,
   defineUiTree,
   endSession,
+  hostSession,
+  joinSession,
   leaveSession,
   loadLevel,
   restartLevel,
   returnToFrontend,
+  stateEquals,
 } from "postretro/ui";
+
+const { session } = getGameState();
 
 const mapCatalog = defineMapCatalog([
   {
@@ -70,6 +77,10 @@ const backToFrontend = defineReaction("frontend.returnToFrontend", returnToFront
 export const leave = defineReaction("pause.leaveSession", leaveSession());
 // A run's end on a map-end crossing: every role runs the same steps.
 export const runEnd = defineReaction("run.end", [endSession(), returnToFrontend()]);
+// Host and Join buttons. hostSession reads session.hostPassword; joinSession
+// reads session.joinPassword and session.joinAddress.
+export const host = defineReaction("frontend.host", hostSession());
+export const join = defineReaction("frontend.join", joinSession());
 
 const levelSelect = defineUiTree({
   name: "frontend.levelSelect.fixture",
@@ -109,6 +120,9 @@ const levelSelect = defineUiTree({
           label: "Leave Game",
           onPress: leave,
         }),
+        // A password field and a refusal notice.
+        Text({ content: "", mask: true, bind: bindState(session.joinPassword) }),
+        Text({ content: "WRONG PASSWORD", visibleWhen: stateEquals(session.endCause, "refusedPassword") }),
       ],
     ),
   ),
@@ -134,6 +148,8 @@ export default defineMod({
     backToFrontend,
     leave,
     runEnd,
+    host,
+    join,
     ...mapCatalog.map((entry) =>
       defineReaction(`frontend.catalog.${entry.id}`, loadLevel(entry.id)),
     ),

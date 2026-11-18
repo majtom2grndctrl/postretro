@@ -27,7 +27,7 @@ fn session_membership_fixture_lowers_to_the_engine_kinds_in_both_runtimes() {
         "fixture has a default export"
     );
     let typescript = quickjs_fixture_value(&format!(
-        "{typescript_module}\nJSON.stringify({{ leave, runEnd, mod: fixtureMod.name }});"
+        "{typescript_module}\nJSON.stringify({{ leave, runEnd, host, join, mod: fixtureMod.name }});"
     ));
     let luau = luau_fixture_value(&format!(
         r#"
@@ -42,7 +42,12 @@ fn session_membership_fixture_lowers_to_the_engine_kinds_in_both_runtimes() {
           end
           error("fixture registers no reaction " .. name)
         end
-        return {{ leave = named("pause.leaveSession"), runEnd = named("run.end") }}
+        return {{
+          leave = named("pause.leaveSession"),
+          runEnd = named("run.end"),
+          host = named("frontend.host"),
+          join = named("frontend.join"),
+        }}
         "#
     ));
 
@@ -67,7 +72,23 @@ fn session_membership_fixture_lowers_to_the_engine_kinds_in_both_runtimes() {
             ],
             "{runtime}: {run_end}"
         );
-        for step in std::iter::once(leave).chain(steps) {
+        // AC U5: `hostSession()` and `joinSession()` lower to the same
+        // argumentless steps in both runtimes.
+        let host = &value["host"];
+        assert_eq!(host["name"], "frontend.host", "{runtime}");
+        assert_eq!(
+            step_kind(host),
+            Some(SystemReactionKind::HostSession),
+            "{runtime}: {host}"
+        );
+        let join = &value["join"];
+        assert_eq!(join["name"], "frontend.join", "{runtime}");
+        assert_eq!(
+            step_kind(join),
+            Some(SystemReactionKind::JoinSession),
+            "{runtime}: {join}"
+        );
+        for step in [leave, host, join].into_iter().chain(steps) {
             let args = &step["args"];
             assert!(
                 args.as_object().is_some_and(|args| args.is_empty())

@@ -130,6 +130,9 @@ pub enum UiIntentPayload {
     /// the `Text` channel). The focus-resolution stage turns it into a
     /// `BackspaceText` edit against the tree's `text_entry_target` slot.
     Backspace,
+    /// A logical Enter inside text entry. It always commits, wherever focus
+    /// is: unlike `nav.confirm`, it never activates the focused on-screen key.
+    Enter,
 }
 
 /// A UI-captured event awaiting next-frame delivery: the kinded payload plus a

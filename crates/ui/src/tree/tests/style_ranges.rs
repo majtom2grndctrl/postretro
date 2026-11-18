@@ -20,6 +20,7 @@ fn styled_text(base: [f32; 4], slot: &str, ranges: StyleRanges) -> Widget {
         focus_neighbors: Default::default(),
         visible_when: None,
         role: None,
+        mask: false,
     })
 }
 
@@ -157,6 +158,7 @@ fn style_ranges_without_a_bind_are_dropped_and_keep_the_base_color() {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,
@@ -216,6 +218,7 @@ fn style_ranges_evaluate_the_eased_display_value_mid_tween() {
             focus_neighbors: Default::default(),
             visible_when: None,
             role: None,
+            mask: false,
         }),
         capture_mode: CaptureMode::Passthrough,
         initial_focus: None,

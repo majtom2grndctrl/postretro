@@ -92,7 +92,15 @@ Timing on time:
 - [ ] With two players, an NPC that sees only one fills only that player's meter; the other player, stepping into view later, starts from zero (P31).
 - [ ] An idle NPC hurt by a player acquires by today's damage and retaliation rules on its next decide, whatever its meter; an NPC with a target switches targets by today's ranking without a meter.
 - [ ] `brain.awareness` reads the highest meter, 0 to 1, and 1 while the NPC has a target; a guard on `brain.awareness.ge(0.5)` fires before acquisition when sight lasts past half of `fillMs`.
+- [ ] An NPC whose eight meters belong to hostile NPCs that then die and despawn still notices a player who steps into view, in the same time as with empty meters (P32).
+- [ ] An NPC with nine nearer hostile NPCs out of sight behind a wall notices a player in view at the same pace as with none; with nine passing candidates, the farthest is the one left unmetered (P33).
+- [ ] A candidate evicted from an NPC's meters with awareness 0.8, re-admitted on a later check, starts from zero; a hot reload that changes `fillMs` from 1000 to 500 when a meter reads 0.4 keeps 0.4 and then rises at the new rate from the next check (P31).
+- [ ] A guard on `brain.awareness.ge(0.5)` fires on the same decide whose check first raises the meter to 0.5 or above, not the decide after (P35).
+- [ ] Two players whose meters reach 1 on one check: the NPC acquires the nearer, and the farther one's meter stays at 1 (P36).
+- [ ] `fillMs` 0 loads, and an NPC with it notices on the same check as one with `fillMs` 30; `drainMs` 0 empties a meter on the first check that fails (P37).
 - [ ] An `alwaysActive` NPC, set on the archetype or by `always_active 1` on its placement, never enters the dormant tier; `always_active 0` on a placement overrides an archetype's true. An unseen `alwaysActive` walker crosses a trigger volume on the same tick as at 60 Hz.
+- [ ] A hot reload that sets `alwaysActive` true moves that archetype's dormant NPCs up on the next tick, timers credited once; one that sets it false moves unseen ones down only after the hold; NPCs placed with `always_active 0` stay dormant (P38).
+- [ ] An unseen `alwaysActive` NPC already on a patrol route crosses a trigger volume on the same tick as when perceived; one whose walk starts on a guard crosses within one decide interval of its 60 Hz tick (P39).
 - [ ] A map with `_ai_wake_lead` uses it as the AI lead; one above the level's baked id-51 maximum is capped to it with a warning; a map without the key uses the engine default.
 - [ ] An NPC that leaves the AI set (held, quiescent or despawning) still returns holding nothing, requesting nothing, with no wait clock; only a scheduler skip keeps its turns (P2).
 
@@ -144,6 +152,7 @@ Scale (reported per tier on `perf-ai-tick-cost`'s multi-arena row and the packed
 - [ ] Quake/Doom class (about 64 engaged in view, about 500 placed across arenas) and Serious Sam class (about 128 engaged, about 1,000 placed): the fixed step never spirals. AI and steering are reported against `perf-ai-tick-cost`'s goals and the spike's estimates; a miss is planned as an addendum, not a failed landing.
 - [ ] Per-tick cost of an NPC in each tier, as a fraction of today's 60 Hz NPC, reported.
 - [ ] Scale rows report the worst tick as well as the mean.
+- [ ] Idle-tier AI cost and line-of-sight tests per acquisition check, reported with 1 and with 8 hostile candidates in reach, against the same NPC with a target, on the multi-arena row.
 - [ ] A player teleporting into the most populated dormant arena moves every NPC there up on one tick without spiralling the fixed step; that tick's cost is reported (P14).
 - [ ] The perception union costs no per-tick allocation, and its cost per tick is reported against player and NPC counts.
 - [ ] Route queries per tick and their cost under the scaled replan budget, reported at 64 and 128 chasers on both rows; on the multi-arena row with far-band NPCs at 500 and 1,000 placed and moving targets, their route queries per tick and the replan wait of in-arena engaged NPCs are reported.

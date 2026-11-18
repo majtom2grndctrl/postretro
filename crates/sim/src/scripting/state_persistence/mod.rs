@@ -344,16 +344,40 @@ pub fn collect_per_owner_state(
     local_seat: Seat,
     local_player_id: [u8; 16],
 ) -> CollectedPerOwnerState {
-    let mut per_owner = BTreeMap::new();
-    let mut warnings = Vec::new();
     let encoded_player_id = encode_player_claim_id(&PlayerClaimId(local_player_id));
+    let (values, warnings) =
+        collect_seat_per_owner_values(table, identity, committed_store_slots, local_seat);
+    let per_owner = values
+        .into_iter()
+        .map(|(durable_key, value)| {
+            (
+                durable_key,
+                BTreeMap::from([(encoded_player_id.clone(), value)]),
+            )
+        })
+        .collect();
+    CollectedPerOwnerState {
+        per_owner,
+        warnings,
+    }
+}
 
+/// One seat's persisted per-owner values by durable key, as a seat record
+/// holds them, with a warning for each slot it had to omit.
+pub fn collect_seat_per_owner_values(
+    table: &SlotTable,
+    identity: Option<&StoreIdentityLedger>,
+    committed_store_slots: &BTreeSet<String>,
+    seat: Seat,
+) -> (BTreeMap<String, PersistedValue>, Vec<String>) {
+    let mut values = BTreeMap::new();
+    let mut warnings = Vec::new();
     for (name, record) in table.iter() {
         if !is_persisted_per_owner_slot(record) || !committed_store_slots.contains(name) {
             continue;
         }
 
-        let Some(value) = record.per_seat_value(local_seat) else {
+        let Some(value) = record.per_seat_value(seat) else {
             warnings.push(format!(
                 "persistent per-owner state slot `{name}` has no current value; omitting it"
             ));
@@ -369,26 +393,18 @@ pub fn collect_per_owner_state(
 
         match value_for_save(name, record, value) {
             Ok(value) => {
-                per_owner
-                    .entry(durable_key.to_owned())
-                    .or_insert_with(BTreeMap::new)
-                    .insert(encoded_player_id.clone(), value);
+                values.insert(durable_key.to_owned(), value);
             }
             Err(warning) => warnings.push(warning),
         }
     }
-
-    CollectedPerOwnerState {
-        per_owner,
-        warnings,
-    }
+    (values, warnings)
 }
 
 pub struct CollectedPerOwnerState {
     pub per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>,
     pub warnings: Vec<String>,
 }
-
 
 pub fn persisted_state_version_is_supported(persisted: &PersistedState) -> bool {
     (OLDEST_SUPPORTED_STATE_VERSION..=CURRENT_STATE_VERSION).contains(&persisted.version)
@@ -582,7 +598,7 @@ fn is_persisted_per_owner_slot(record: &SlotRecord) -> bool {
 }
 
 /// Encode the opaque player claim as the stable 32-character JSON map key.
-pub(crate) fn encode_player_claim_id(player_id: &PlayerClaimId) -> String {
+pub fn encode_player_claim_id(player_id: &PlayerClaimId) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let mut encoded = String::with_capacity(player_id.0.len() * 2);
@@ -594,7 +610,7 @@ pub(crate) fn encode_player_claim_id(player_id: &PlayerClaimId) -> String {
 }
 
 /// Decode a 32-character hexadecimal player-claim map key.
-pub(crate) fn decode_player_claim_id(encoded: &str) -> Option<PlayerClaimId> {
+pub fn decode_player_claim_id(encoded: &str) -> Option<PlayerClaimId> {
     if encoded.len() != 32 {
         return None;
     }

@@ -818,6 +818,30 @@ impl SeatTable {
         self.carried.get(&seat).and_then(Option::as_ref)
     }
 
+    /// The claim a seat joined with, if it asserted one.
+    #[must_use]
+    pub fn claim(&self, seat: Seat) -> Option<&ConnectClaim> {
+        self.connect_claims.get(&seat)
+    }
+
+    /// Mint a seat from a durable ledger record: its claim and carry, with no
+    /// connection, hold or placement, which are live state a record never
+    /// holds. `None` once the seat namespace is exhausted.
+    pub fn restore_durable_seat(
+        &mut self,
+        claim: Option<ConnectClaim>,
+        carried: Option<CarriedState>,
+    ) -> Option<Seat> {
+        let seat = Seat(u16::try_from(self.next_seat).ok()?);
+        self.next_seat = self.next_seat.checked_add(1)?;
+        self.carried.insert(seat, carried);
+        if let Some(claim) = claim {
+            self.connect_claims.insert(seat, claim);
+        }
+        self.roster_dirty = true;
+        Some(seat)
+    }
+
     /// Replace a seat's carry outside play: seat 0 takes the selected
     /// character's saved loadout, or none. A seat the table does not hold is
     /// left absent.
@@ -1007,6 +1031,9 @@ pub fn finish_host_poll(server: &mut NetServer, seats: &mut SeatTable) -> Vec<Se
     released_seats
 }
 
+#[cfg(test)]
+#[path = "seat/ledger_document_test.rs"]
+mod ledger_document_test;
 #[cfg(test)]
 #[path = "seat/life_state_harvest_test.rs"]
 mod life_state_harvest_test;

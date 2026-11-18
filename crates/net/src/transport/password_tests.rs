@@ -138,8 +138,9 @@ fn right_password_admits_and_applies_what_was_declared_before_the_proof() {
     assert!(server.is_participating(A));
 }
 
-// AC P-f, P-l: a wrong password and a proof made from an empty password are
-// refused with `Password`, and the refused slot applies nothing it declared.
+// AC P-f, P-l: a wrong password, and the empty proof of a client with no
+// password, are refused with `Password` in the challenge's own round, and the
+// refused slot applies nothing it declared.
 #[test]
 fn wrong_or_missing_password_is_refused_and_applies_nothing() {
     for (case, password) in [("wrong", Some("q")), ("empty", None)] {

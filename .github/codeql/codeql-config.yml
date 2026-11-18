@@ -1,0 +1,18 @@
+# CodeQL advanced setup configuration. The workflow is
+# .github/workflows/codeql.yml.
+name: postretro-codeql
+
+# Test code holds fixed passwords, nonces and digests on purpose: tests must be
+# repeatable. Alerts there, such as "Hard-coded cryptographic value", are not
+# findings about shipped code. Inline `#[cfg(test)] mod tests` blocks inside
+# production files are not covered by these patterns; dismiss any alert there
+# as "Used in tests".
+paths-ignore:
+  - "**/*_tests.rs"
+  - "**/*_test.rs"
+  - "**/tests/**"
+  - "**/*fixtures*.rs"
+  - "**/*fixture*.ts"
+  - "**/*fixture*.luau"
+  # Plan research scripts, not shipped code.
+  - "context/plans/**"

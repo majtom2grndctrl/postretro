@@ -1364,9 +1364,10 @@ pub struct NetClient {
     /// until the next update, and a closing cause among them is why the
     /// connection ended.
     held_control: Vec<ControlArrival>,
-    /// The key of the password this client answers a host's challenge with.
-    /// Without one it answers with the empty password's key.
-    password_key: [u8; 32],
+    /// The key of the password this client answers a host's challenge with,
+    /// if it has one. Without one it answers with an empty proof, which no
+    /// password host accepts.
+    password_key: Option<[u8; 32]>,
     failure_reported: bool,
     transient_error_logged: bool,
     admission_sent: bool,
@@ -1441,7 +1442,7 @@ impl NetClient {
             join_seed: BTreeMap::new(),
             revealed_sent: true,
             mod_identity: None,
-            password_key: wire::session_password_key(""),
+            password_key: None,
             mod_digest: None,
             level_parity: None,
             revealed_level: None,
@@ -1457,10 +1458,10 @@ impl NetClient {
         self.mod_identity = Some((id, version));
     }
 
-    /// Set the password this client answers a host's challenge with. The
-    /// client keeps only the derived key.
+    /// Set the password this client answers a host's challenge with; empty
+    /// clears it. The client keeps only the derived key.
     pub fn set_session_password(&mut self, password: &str) {
-        self.password_key = wire::session_password_key(password);
+        self.password_key = (!password.is_empty()).then(|| wire::session_password_key(password));
     }
 
     pub fn set_mod_digest(&mut self, digest: Option<[u8; 32]>) {
@@ -1901,7 +1902,11 @@ impl NetClient {
                     }
                     // The transport answers a password challenge itself.
                     if let ServerControlMessage::PasswordChallenge { nonce } = message {
-                        let proof = wire::password_proof(&self.password_key, &nonce);
+                        // Without a password there is nothing to prove: the
+                        // empty proof is refused at once, not at the bound.
+                        let proof = self
+                            .password_key
+                            .map_or([0; 32], |key| wire::password_proof(&key, &nonce));
                         self.client.send_message(
                             Channel::Control,
                             wire::encode(&ClientControlMessage::PasswordProof { proof }),

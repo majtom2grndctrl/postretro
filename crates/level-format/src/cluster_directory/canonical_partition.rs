@@ -104,21 +104,27 @@ pub fn canonical_cell_partition(
         }
     }
 
-    let mut unassigned: BTreeSet<u32> = (0..cell_count).collect();
+    // Seeds come from one sort of every cell by key; the cursor skips cells a
+    // cluster already took, so each seed is the least unassigned cell without
+    // rescanning the rest.
+    let mut seed_order = try_vec(cell_count, "canonical seed order")?;
+    seed_order.extend(0..cell_count);
+    seed_order.sort_unstable_by(|&left, &right| compare_cell_keys(left, right, &cells.cells));
+    let mut assigned = try_vec(cell_count, "canonical assigned cells")?;
+    assigned.resize(cell_count_usize, false);
     let mut clusters = try_vec(cell_count, "canonical clusters")?;
     let mut members = try_vec(cell_count, "canonical members")?;
-    while !unassigned.is_empty() {
-        let seed = *unassigned
-            .iter()
-            .min_by(|&&left, &&right| compare_cell_keys(left, right, &cells.cells))
-            .expect("nonempty set has a seed");
-        unassigned.remove(&seed);
+    for &seed in &seed_order {
+        if assigned[seed as usize] {
+            continue;
+        }
+        assigned[seed as usize] = true;
         let mut cluster_members = vec![seed];
         let mut primitive_count = primitive_counts[seed as usize];
         let mut frontier: BTreeSet<u32> = adjacency[seed as usize]
             .iter()
             .copied()
-            .filter(|cell| unassigned.contains(cell))
+            .filter(|&cell| !assigned[cell as usize])
             .collect();
 
         loop {
@@ -148,16 +154,17 @@ pub fn canonical_cell_partition(
                 break;
             };
             frontier.remove(&candidate);
-            if !unassigned.remove(&candidate) {
+            if assigned[candidate as usize] {
                 continue;
             }
+            assigned[candidate as usize] = true;
             cluster_members.push(candidate);
             primitive_count = candidate_primitive_count;
             frontier.extend(
                 adjacency[candidate as usize]
                     .iter()
                     .copied()
-                    .filter(|cell| unassigned.contains(cell)),
+                    .filter(|&cell| !assigned[cell as usize]),
             );
         }
 

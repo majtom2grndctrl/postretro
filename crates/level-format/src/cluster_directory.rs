@@ -26,6 +26,9 @@ use crate::{
 mod bound;
 #[path = "cluster_directory/canonical_partition.rs"]
 mod canonical_partition;
+#[cfg(test)]
+#[path = "cluster_directory/canonical_partition_prl_tests.rs"]
+mod canonical_partition_prl_tests;
 #[path = "cluster_directory/coverage.rs"]
 mod coverage;
 #[cfg(test)]

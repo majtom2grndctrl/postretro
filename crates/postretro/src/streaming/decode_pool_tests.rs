@@ -401,6 +401,9 @@ fn a_job_panicking_in_its_cleanup_returns_its_charge_on_drop() {
     let pool = DecodePool::spawn(1, 8).unwrap();
     let queue = pool.queue();
     assert!(queue.submit(TestJob::new(&journal, LightmapBlock, 0, Visible).panicking_twice()));
+    // SH ranks ahead of a lightmap block, so the next job is queued only once
+    // the panicking one is running: it then runs after the panic, not before.
+    wait_for(&journal, "start", 1);
     assert!(queue.submit(TestJob::new(&journal, Sh, 1, Visible)));
     wait_for(&journal, "delivered", 1);
     assert_eq!(journal.names("dropped"), ["lightmap streaming:0:Visible"]);

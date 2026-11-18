@@ -29,12 +29,12 @@ pub enum TextEntryEdit {
 pub enum TextEntryDisposition {
     /// No commit or cancel this pass; the entry stays open.
     Open,
-    /// `nav.confirm` (hardware Enter, with focus NOT on an activatable button)
-    /// fired: the App fires the opener's `on_commit`, then pops the tree. A confirm
-    /// that lands on a focusable button — every on-screen keyboard key, including
-    /// the `done` sentinel key — is NOT a commit here: it flows to the focus engine
-    /// so the key's `on_press` activates (typing `kbAppend_*`, or `done` routing to
-    /// the commit sentinel). See `resolve_text_entry`.
+    /// A hardware Enter, or a `nav.confirm` with focus NOT on an activatable
+    /// button, fired: the App fires the opener's `on_commit`, then pops the tree.
+    /// A confirm that lands on a focusable button — every on-screen keyboard key,
+    /// including the `done` sentinel key — is NOT a commit here: it flows to the
+    /// focus engine so the key's `on_press` activates (typing `kbAppend_*`, or
+    /// `done` routing to the commit sentinel). See `resolve_text_entry`.
     Commit,
     /// `nav.cancel` (Escape) fired: the App pops the tree without firing `on_commit`.
     Cancel,
@@ -61,8 +61,8 @@ impl TextEntryResolution {
 
 /// Resolve the drained `ui_intents` against an open text-entry surface. Walks the
 /// intents in capture order: each `Text` becomes an `Append` edit, each
-/// `Backspace` a `Backspace` edit, a `nav.confirm` commits and a `nav.cancel`
-/// cancels — and commit/cancel are terminal (resolution stops, since the tree is
+/// `Backspace` a `Backspace` edit, a hardware `Enter` or a `nav.confirm` commits
+/// and a `nav.cancel` cancels — and commit/cancel are terminal (resolution stops, since the tree is
 /// about to pop). Directional / next-prev nav and pointer clicks are left for the
 /// focus engine (the on-screen keyboard still navigates between keys).
 ///
@@ -73,9 +73,10 @@ impl TextEntryResolution {
 /// `kbAppend_*` to type, or the `done` key's commit sentinel). This is what lets a
 /// gamepad confirm type/commit *through* the keyboard instead of the confirm being
 /// swallowed as a terminal commit before the focus engine runs. A `nav.confirm`
-/// with focus NOT on a button (hardware Enter on a non-button / empty tree) still
-/// commits, the keyboardless Enter path. `nav.cancel` is unaffected — Escape always
-/// cancels regardless of focus.
+/// with focus NOT on a button (an empty tree) still commits. A hardware `Enter`
+/// commits wherever focus is: a player typing on a hardware keyboard never means
+/// the on-screen key that happens to hold focus. `nav.cancel` is unaffected —
+/// Escape always cancels regardless of focus.
 pub fn resolve_text_entry(ui_intents: &[UiIntent], confirm_on_button: bool) -> TextEntryResolution {
     let mut edits = Vec::new();
     let mut disposition = TextEntryDisposition::Open;
@@ -83,6 +84,10 @@ pub fn resolve_text_entry(ui_intents: &[UiIntent], confirm_on_button: bool) -> T
         match &intent.payload {
             UiIntentPayload::Text(text) => edits.push(TextEntryEdit::Append(text.clone())),
             UiIntentPayload::Backspace => edits.push(TextEntryEdit::Backspace),
+            UiIntentPayload::Enter => {
+                disposition = TextEntryDisposition::Commit;
+                break;
+            }
             UiIntentPayload::Nav(NavIntent::Confirm) => {
                 if confirm_on_button {
                     // Focus is on an on-screen keyboard key (or any activatable
@@ -174,7 +179,7 @@ mod tests {
             intent(1, UiIntentPayload::Nav(NavIntent::Confirm)),
             intent(2, UiIntentPayload::Text("y".to_string())),
         ];
-        // Focus NOT on a button (hardware Enter on a non-button): confirm commits.
+        // Focus NOT on a button (an empty tree): confirm commits.
         let r = resolve_text_entry(&intents, false);
         assert_eq!(r.edits, vec![TextEntryEdit::Append("x".to_string())]);
         assert_eq!(r.disposition, TextEntryDisposition::Commit);
@@ -226,6 +231,23 @@ mod tests {
             !r.consumed_commit_or_cancel(),
             "confirm on a key button is not consumed — the focus engine activates it"
         );
+    }
+
+    #[test]
+    fn a_hardware_enter_commits_even_with_an_on_screen_key_focused() {
+        // Regression: hardware Enter rode the queue as `nav.confirm`, so with
+        // the on-screen keyboard's initial key focused it typed that key (a
+        // stray "q") instead of committing. Its own intent commits wherever
+        // focus is, after the keystrokes captured before it.
+        let intents = [
+            intent(0, UiIntentPayload::Text("1".to_string())),
+            intent(1, UiIntentPayload::Enter),
+            intent(2, UiIntentPayload::Text("2".to_string())),
+        ];
+        let r = resolve_text_entry(&intents, true);
+        assert_eq!(r.edits, vec![TextEntryEdit::Append("1".to_string())]);
+        assert_eq!(r.disposition, TextEntryDisposition::Commit);
+        assert!(r.consumed_commit_or_cancel());
     }
 
     #[test]

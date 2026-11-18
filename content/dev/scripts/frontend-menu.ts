@@ -1,6 +1,7 @@
 import {
   defineMapCatalog,
   defineReaction,
+  type CommandId,
   type ModMapEntry,
   type NamedReactionDescriptor,
 } from "postretro";
@@ -24,9 +25,12 @@ import {
   bindState,
   displayModeAction,
   defineUiTree,
+  endSession,
   getGameState,
   hostSession,
   joinSession,
+  KEYBOARD_TREE,
+  leaveSession,
   loadLevel,
   openMenu,
   openTextEntry,
@@ -246,91 +250,302 @@ const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_
 // The engine owns entry, admission and the session facts; these menus only
 // show them. Each end cause, connection phase and wait reason is data the
 // engine publishes; the wording is the mod's.
+//
+// Each menu shows one state at a time, keyed on the session facts: the form
+// while offline, and only the status and its one way out while connecting,
+// waiting or hosting. Mutually exclusive groups share a place on screen, so
+// the status group sits first in tree order: when the focused button hides,
+// focus falls back to the first visible stop, the status group's own button.
 
 const HOST_MENU_NAME = "frontend.host";
 const JOIN_MENU_NAME = "frontend.join";
 const { session } = getGameState();
 
+const COLOR_NOTICE: [number, number, number, number] = [0.98, 0.68, 0.22, 1.0];
+
 /// The notice for each `session.endCause` value: why the last session or
-/// attempt ended.
+/// attempt ended. ASCII only: it renders in every bundled typeface.
 export const END_CAUSE_NOTICES = {
   sessionEnded: "THE HOST ENDED THE SESSION",
   hostLost: "LOST CONNECTION TO THE HOST",
-  connectFailed: "COULD NOT CONNECT TO THE HOST",
-  refusedMod: "THE HOST RUNS A DIFFERENT MOD",
-  refusedPassword: "WRONG PASSWORD",
-  badAddress: "ENTER AN IPV4 ADDRESS, PORT OPTIONAL",
+  connectFailed: "COULD NOT REACH THE HOST",
+  refusedMod: "THE HOST IS PLAYING A DIFFERENT MOD",
+  refusedPassword: "PASSWORD REFUSED",
+  badAddress: "ENTER THE HOST'S ADDRESS",
   hostFailed: "COULD NOT START HOSTING",
 } as const;
 
-function endCauseNotices(): WidgetDescriptor[] {
-  return Object.entries(END_CAUSE_NOTICES).map(([cause, notice]) =>
-    Text({
-      content: notice,
-      fontSize: 14,
-      color: COLOR_ACCENT,
-      visibleWhen: stateEquals(session.endCause, cause),
-    }),
-  );
-}
+type EndCause = keyof typeof END_CAUSE_NOTICES;
 
-/// What a join is doing now: dialing, or waiting and why.
-function connectionNotices(): WidgetDescriptor[] {
-  const waiting = (reason: string, content: string) =>
-    Text({
-      content,
-      fontSize: 14,
-      color: COLOR_MUTED,
-      visibleWhen: stateEquals(session.waitReason, reason),
-    });
-  return [
-    Text({
-      content: "CONNECTING...",
-      fontSize: 14,
-      color: COLOR_MUTED,
-      visibleWhen: stateEquals(session.connection, "connecting"),
-    }),
-    waiting("host", "WAITING FOR THE HOST"),
-    waiting("modDiffers", "WAITING: UPDATE YOUR MOD TO MATCH THE HOST"),
-    waiting("levelDiffers", "WAITING: YOU NEED THE HOST'S MAP"),
-  ];
-}
+/// What to do about a notice, where there is something to do.
+const END_CAUSE_HINTS: Partial<Record<EndCause, string>> = {
+  connectFailed: "CHECK THE ADDRESS, AND THAT THE HOST RUNS YOUR BUILD",
+  refusedMod: "BOTH PLAYERS NEED THE SAME MOD",
+  refusedPassword: "ENTER THE HOST'S PASSWORD, THEN JOIN AGAIN",
+  badAddress: "IPV4 DIGITS, LIKE 192.168.1.20. NAMES DO NOT WORK",
+  hostFailed: "ANOTHER PROGRAM MAY BE USING THE PORT",
+};
 
-/// A labelled field the on-screen or hardware keyboard edits.
-function textField(id: string, label: string, editReaction: string, value: WidgetDescriptor) {
-  return HStack({ gap: 10, align: "center" }, [
-    Button({ id, label, onPress: editReaction }),
-    value,
+/// A cause's headline and, if it has one, its hint.
+function endCauseNotice(cause: EndCause, action?: WidgetDescriptor): WidgetDescriptor {
+  const hint = END_CAUSE_HINTS[cause];
+  return VStack({ gap: 4, align: "stretch", visibleWhen: stateEquals(session.endCause, cause) }, [
+    Text({ content: END_CAUSE_NOTICES[cause], fontSize: 16, color: COLOR_NOTICE }),
+    ...(hint === undefined ? [] : [Text({ content: hint, fontSize: 13, color: COLOR_MUTED })]),
+    ...(action === undefined ? [] : [action]),
   ]);
 }
 
-const editPassword = defineReaction(
-  "frontend.editPassword",
-  openTextEntry(undefined, session.password),
-);
+function endCauseNotices(causes: readonly EndCause[]): WidgetDescriptor[] {
+  return causes.map((cause) => endCauseNotice(cause));
+}
+
+const ALL_END_CAUSES = Object.keys(END_CAUSE_NOTICES) as EndCause[];
+/// Every way a join, or a session joined, ends.
+const JOIN_END_CAUSES = ALL_END_CAUSES.filter((cause) => cause !== "hostFailed");
+
+// --- Text fields and the on-screen keyboard ---------------------------------
+// The dev mod shadows the engine keyboard (`core/ui/keyboard.json`, same
+// registry name) with one that says what it is for and shows what is typed.
+// Each field's opener first tells it which layout, title, hint and masking to
+// use, through presentation cells; the cells live only while the keyboard is
+// up, so an untargeted push gets the full layout with no title. The preview
+// starts masked: only a field that says so shows its text.
+
+const keyboardState = ui.createLocalState<{
+  layout: string;
+  masked: boolean;
+  title: string;
+  hint: string;
+}>({ layout: "letters", masked: true, title: "", hint: "" });
+const kb = keyboardState.cells;
+
+type KeyboardLayout = "letters" | "address";
+
+type KeyboardField = { layout: KeyboardLayout; masked: boolean; title: string; hint: string };
+
+/// Open the keyboard for one field: the cells first, so the push shows them.
+function editFieldSteps(target: typeof session.password, field: KeyboardField) {
+  return [
+    kb.layout.set(field.layout),
+    kb.masked.set(field.masked),
+    kb.title.set(field.title),
+    kb.hint.set(field.hint),
+    openTextEntry(undefined, target),
+  ];
+}
+
+const JOIN_ADDRESS_FIELD: KeyboardField = {
+  layout: "address",
+  masked: false,
+  title: "HOST ADDRESS",
+  hint: "IPV4, LIKE 192.168.1.20. ADD :PORT ONLY IF THE HOST SET ONE",
+};
+const JOIN_PASSWORD_FIELD: KeyboardField = {
+  layout: "letters",
+  masked: true,
+  title: "PASSWORD",
+  hint: "THE HOST'S PASSWORD, EXACTLY. EMPTY FOR NONE",
+};
+const HOST_PASSWORD_FIELD: KeyboardField = {
+  layout: "letters",
+  masked: true,
+  title: "PASSWORD FOR YOUR GAME",
+  hint: "PLAYERS TYPE THIS TO JOIN. EMPTY FOR AN OPEN GAME",
+};
+
 const editJoinAddress = defineReaction(
   "frontend.editJoinAddress",
-  openTextEntry(undefined, session.joinAddress),
+  editFieldSteps(session.joinAddress, JOIN_ADDRESS_FIELD),
 );
+const editPassword = defineReaction(
+  "frontend.editPassword",
+  editFieldSteps(session.password, JOIN_PASSWORD_FIELD),
+);
+const editHostPassword = defineReaction(
+  "frontend.editHostPassword",
+  editFieldSteps(session.password, HOST_PASSWORD_FIELD),
+);
+
+const COMMIT_TEXT_ENTRY_ACTION = "ui.commitTextEntry";
+
+/// The key reaction name for one character.
+function keyReaction(ch: string): string {
+  const named: Record<string, string> = { ".": "dot", ":": "colon", "-": "dash", _: "underscore" };
+  return `kbAppend_${named[ch] ?? ch}`;
+}
+
+function charKey(idPrefix: string, ch: string): WidgetDescriptor {
+  const name = keyReaction(ch).slice("kbAppend_".length);
+  return Button({ id: `${idPrefix}_${name}`, label: ch.toUpperCase(), onPress: keyReaction(ch) });
+}
+
+/// Digits and address punctuation, phone-pad order: an address is typed in a
+/// few moves from the pad's first key.
+const ADDRESS_PAD = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", ":"];
+const LETTER_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl.", "zxcvbnm:-_"];
+
+/// An action key with the pad shortcut that presses it beside it. The engine
+/// shortcuts find these keys by id (`key_space`, `key_backspace`, `key_done`).
+function actionKey(id: string, label: string, onPress: string, command: CommandId): WidgetDescriptor {
+  return HStack({ gap: 4, align: "center" }, [
+    Button({ id, label, onPress }),
+    Glyph({ command }),
+  ]);
+}
+
+export const devKeyboard = defineUiTree({
+  name: KEYBOARD_TREE,
+  hideBelow: true,
+  tree: Tree(
+    {
+      anchor: "center",
+      offset: [0, 0],
+      captureMode: "capture",
+      // Q, as on the engine keyboard. While the address pad shows instead, Q
+      // is hidden and focus falls back to the first stop, the pad's 1.
+      initialFocus: "key_q",
+      textEntryTarget: getGameState().ui.textEntry,
+      accessibleName: "On-screen keyboard",
+      role: "group",
+    },
+    VStack(
+      {
+        localState: keyboardState.scope,
+        gap: 12,
+        padding: 20,
+        align: "stretch",
+        fill: COLOR_PANEL,
+        focus: { policy: "linear" },
+      },
+      [
+        Text({ content: "", fontSize: 20, color: COLOR_ACCENT, bind: kb.title.get() }),
+        HStack({ gap: 0, align: "center", fill: COLOR_INACTIVE, padding: 8 }, [
+          Text({ content: "", fontSize: 18, bind: getGameState().ui.textEntry, visibleWhen: kb.masked.is(false) }),
+          Text({
+            content: "",
+            fontSize: 18,
+            mask: true,
+            bind: getGameState().ui.textEntry,
+            visibleWhen: kb.masked.is(true),
+          }),
+          Text({ content: "_", fontSize: 18, color: COLOR_ACCENT }),
+        ]),
+        Text({ content: "", fontSize: 13, color: COLOR_MUTED, bind: kb.hint.get() }),
+        // The row keeps the pad its own size rather than the panel's width.
+        HStack({ gap: 0, align: "start", visibleWhen: kb.layout.is("address") }, [
+          Grid(
+            { gap: 10, align: "stretch", cols: 3, focus: { policy: "spatial" } },
+            ADDRESS_PAD.map((ch) => charKey("pad", ch)),
+          ),
+        ]),
+        Grid(
+          { gap: 6, align: "stretch", cols: 10, focus: { policy: "spatial" }, visibleWhen: kb.layout.is("letters") },
+          LETTER_ROWS.flatMap((row) => row.split("").map((ch) => charKey("key", ch))),
+        ),
+        HStack({ gap: 12, align: "center", focus: { policy: "linear" } }, [
+          VStack({ visibleWhen: kb.layout.is("letters") }, [
+            actionKey("key_space", "SPACE", "kbAppend_space", "text_space"),
+          ]),
+          actionKey("key_backspace", "DEL", "kbBackspace", "text_backspace"),
+          actionKey("key_done", "DONE", COMMIT_TEXT_ENTRY_ACTION, "text_commit"),
+          actionKey("key_cancel", "CANCEL", CLOSE_DIALOG_ACTION, "nav_cancel"),
+        ]),
+        Text({ content: "OR TYPE ON A KEYBOARD: ENTER IS DONE, ESC CANCELS", fontSize: 12, color: COLOR_MUTED }),
+      ],
+    ),
+  ),
+});
+
+/// A labelled field row: the button opens the keyboard, the value beside it
+/// shows the field, or `empty` while it is blank.
+function textField(
+  id: string,
+  label: string,
+  edit: NamedReactionDescriptor,
+  value: WidgetDescriptor,
+  slot: typeof session.password,
+  empty: string,
+): WidgetDescriptor[] {
+  return [
+    Button({ id, label, onPress: edit }),
+    HStack({ gap: 0, align: "center" }, [
+      value,
+      Text({ content: empty, fontSize: 14, color: COLOR_MUTED, visibleWhen: stateEquals(slot, "") }),
+    ]),
+  ];
+}
+
+function passwordField(id: string, edit: NamedReactionDescriptor, empty: string): WidgetDescriptor[] {
+  return textField(
+    id,
+    "PASSWORD",
+    edit,
+    Text({ content: "", fontSize: 14, mask: true, bind: bindState(session.password) }),
+    session.password,
+    empty,
+  );
+}
+
+/// Field rows in two aligned columns. A grid with no focus policy opens no
+/// group: its buttons stay stops in the menu's own column.
+function fieldGrid(rows: WidgetDescriptor[]): WidgetDescriptor {
+  return Grid({ gap: 10, align: "center", cols: 2 }, rows);
+}
+
 // Host and Join buttons. Each reads session.password; joinSession also reads
 // session.joinAddress.
 const host = defineReaction("frontend.hostSession", hostSession());
 const join = defineReaction("frontend.joinSession", joinSession());
+const stopHosting = defineReaction("frontend.stopHosting", endSession());
+const leave = defineReaction("frontend.leaveSession", leaveSession());
 const openHost = defineReaction("frontend.openHost", openMenu(HOST_MENU_NAME));
 const openJoin = defineReaction("frontend.openJoin", openMenu(JOIN_MENU_NAME));
+// From the title menu's notice straight to the field to fix: the keyboard
+// commits into the Join menu beneath it, which then opens on JOIN.
+const retypeAddress = defineReaction("frontend.retypeAddress", [
+  openMenu(JOIN_MENU_NAME),
+  ...editFieldSteps(session.joinAddress, JOIN_ADDRESS_FIELD),
+]);
+const retypePassword = defineReaction("frontend.retypePassword", [
+  openMenu(JOIN_MENU_NAME),
+  ...editFieldSteps(session.password, JOIN_PASSWORD_FIELD),
+]);
 
-function passwordField(id: string) {
-  return textField(
-    id,
-    "PASSWORD",
-    editPassword.name,
-    Text({ content: "", fontSize: 14, mask: true, bind: bindState(session.password) }),
-  );
+const isHosting = stateEquals(session.hosting, true);
+const notHosting = stateEquals(session.hosting, false);
+const isOffline = stateEquals(session.connection, "offline");
+const isConnecting = stateEquals(session.connection, "connecting");
+const isWaiting = stateEquals(session.connection, "waiting");
+
+/// The host's address, for players to type.
+function hostAddressLine(fontSize: number): WidgetDescriptor {
+  return Text({
+    content: "",
+    fontSize,
+    color: COLOR_ACCENT,
+    bind: bindState(session.hostAddress, { format: "HOSTING ON {}" }),
+  });
+}
+
+/// While admitted and held: why.
+function waitReasons(): WidgetDescriptor[] {
+  const reason = (value: string, notice: string, hint: string) =>
+    VStack({ gap: 4, align: "stretch", visibleWhen: stateEquals(session.waitReason, value) }, [
+      Text({ content: notice, fontSize: 16, color: COLOR_ACCENT }),
+      Text({ content: hint, fontSize: 13, color: COLOR_MUTED }),
+    ]);
+  return [
+    reason("host", "CONNECTED", "WAITING FOR THE HOST TO START A LEVEL"),
+    reason("modDiffers", "YOUR MOD DIFFERS FROM THE HOST'S", "UPDATE IT TO MATCH, THEN JOIN AGAIN"),
+    reason("levelDiffers", "YOU DON'T HAVE THE HOST'S LEVEL", "GET THE HOST'S MAP, OR WAIT FOR THE NEXT LEVEL"),
+  ];
 }
 
 function sessionMenu(name: string, title: string, initialFocus: string, rows: WidgetDescriptor[]) {
   return defineUiTree({
     name,
+    hideBelow: true,
     tree: Tree(
       {
         anchor: "center",
@@ -351,7 +566,7 @@ function sessionMenu(name: string, title: string, initialFocus: string, rows: Wi
         [
           Text({ content: title, fontSize: 24, color: COLOR_ACCENT }),
           ...rows,
-          Button({ id: `${initialFocus}Back`, label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
+          Button({ id: `${name}.back`, label: "BACK", onPress: CLOSE_DIALOG_ACTION }),
           promptRow(),
         ],
       ),
@@ -359,38 +574,67 @@ function sessionMenu(name: string, title: string, initialFocus: string, rows: Wi
   });
 }
 
-export const hostMenu = sessionMenu(HOST_MENU_NAME, "HOST A GAME", "hostPassword", [
-  passwordField("hostPassword"),
-  Button({ id: "hostStart", label: "START HOSTING", onPress: host }),
-  Text({
-    content: "",
-    fontSize: 14,
-    color: COLOR_MUTED,
-    bind: bindState(session.hostAddress, { format: "PLAYERS JOIN AT {}" }),
-    visibleWhen: stateEquals(session.hosting, true),
-  }),
-  ...endCauseNotices(),
+// Opens on START HOSTING: the password is optional, so one press hosts.
+export const hostMenu = sessionMenu(HOST_MENU_NAME, "HOST A GAME", "hostStart", [
+  VStack({ gap: 10, align: "stretch", visibleWhen: isHosting }, [
+    hostAddressLine(18),
+    Text({ content: "PLAYERS JOIN WITH THIS ADDRESS AND WAIT", fontSize: 13, color: COLOR_MUTED }),
+    Text({ content: "HERE UNTIL YOU START A LEVEL", fontSize: 13, color: COLOR_MUTED }),
+    Button({ id: "hostPlay", label: "START A LEVEL", onPress: openPlay }),
+    Button({ id: "hostStop", label: "STOP HOSTING", onPress: stopHosting }),
+  ]),
+  VStack({ gap: 10, align: "stretch", visibleWhen: notHosting }, [
+    endCauseNotice("hostFailed"),
+    Text({
+      content: "FINISHING THE LAST SESSION...",
+      fontSize: 14,
+      color: COLOR_MUTED,
+      visibleWhen: isConnecting,
+    }),
+    fieldGrid(passwordField("hostPassword", editHostPassword, "NONE: ANYONE CAN JOIN")),
+    Button({ id: "hostStart", label: "START HOSTING", onPress: host }),
+  ]),
 ]);
 
-export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinAddress", [
-  textField(
-    "joinAddress",
-    "ADDRESS",
-    editJoinAddress.name,
-    Text({ content: "", fontSize: 14, bind: bindState(session.joinAddress) }),
-  ),
-  passwordField("joinPassword"),
-  Button({ id: "joinStart", label: "JOIN", onPress: join }),
-  ...connectionNotices(),
-  ...endCauseNotices(),
+// Opens on JOIN: the address is remembered from the last join, so a rejoin is
+// one press. A blank address answers with its notice, one move from the field.
+export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinStart", [
+  VStack({ gap: 10, align: "stretch", visibleWhen: isConnecting }, [
+    Text({
+      content: "",
+      fontSize: 16,
+      color: COLOR_ACCENT,
+      bind: bindState(session.joinAddress, { format: "CONNECTING TO {}..." }),
+    }),
+    Button({ id: "joinCancel", label: "CANCEL", onPress: leave }),
+  ]),
+  VStack({ gap: 10, align: "stretch", visibleWhen: isWaiting }, [
+    ...waitReasons(),
+    Button({ id: "joinLeave", label: "LEAVE", onPress: leave }),
+  ]),
+  VStack({ gap: 10, align: "stretch", visibleWhen: isOffline }, [
+    ...endCauseNotices(JOIN_END_CAUSES),
+    fieldGrid([
+      ...textField(
+        "joinAddress",
+        "ADDRESS",
+        editJoinAddress,
+        Text({ content: "", fontSize: 14, bind: bindState(session.joinAddress) }),
+        session.joinAddress,
+        "NOT SET",
+      ),
+      ...passwordField("joinPassword", editPassword, "NONE"),
+    ]),
+    Button({ id: "joinStart", label: "JOIN", onPress: join }),
+  ]),
 ]);
 
 // Per-key named reactions the on-screen keyboard's buttons reference
 // (`onPress`): each appends its character to the writable engine slot
 // `ui.textEntry`, and backspace pops one grapheme. They are mod-wide, so the
-// keyboard types at the frontend and in every level. The keyboard JSON names
-// them, so editing the layout needs only matching names here. The `done` key
-// is not here: its `onPress` is the reserved `ui.commitTextEntry` sentinel.
+// keyboard types at the frontend and in every level. The keyboards name them,
+// so editing a layout needs only matching names here. The `done` key is not
+// here: its `onPress` is the reserved `ui.commitTextEntry` sentinel.
 const { textEntry } = getGameState().ui;
 const keyboardReactions: NamedReactionDescriptor[] = [
   ..."abcdefghijklmnopqrstuvwxyz0123456789"
@@ -400,21 +644,56 @@ const keyboardReactions: NamedReactionDescriptor[] = [
   // Address punctuation: an IPv4 address and its port.
   defineReaction("kbAppend_dot", appendText(textEntry, ".")),
   defineReaction("kbAppend_colon", appendText(textEntry, ":")),
+  defineReaction("kbAppend_dash", appendText(textEntry, "-")),
+  defineReaction("kbAppend_underscore", appendText(textEntry, "_")),
   defineReaction("kbBackspace", backspaceText(textEntry)),
 ];
 
 const sessionReactions: NamedReactionDescriptor[] = [
   ...keyboardReactions,
   editPassword,
+  editHostPassword,
   editJoinAddress,
   host,
   join,
+  stopHosting,
+  leave,
   openHost,
   openJoin,
+  retypeAddress,
+  retypePassword,
 ];
+
+/// The title menu's answer to a notice: rejoin, or go straight to the field
+/// that needs fixing. A wrong mod has nothing to retry.
+const END_CAUSE_ACTIONS: Partial<Record<EndCause, { label: string; onPress: NamedReactionDescriptor }>> = {
+  sessionEnded: { label: "JOIN AGAIN", onPress: openJoin },
+  hostLost: { label: "JOIN AGAIN", onPress: openJoin },
+  connectFailed: { label: "TRY AGAIN", onPress: openJoin },
+  refusedPassword: { label: "ENTER PASSWORD", onPress: retypePassword },
+  badAddress: { label: "ENTER ADDRESS", onPress: retypeAddress },
+  hostFailed: { label: "TRY AGAIN", onPress: openHost },
+};
+
+function titleNotices(): WidgetDescriptor[] {
+  return ALL_END_CAUSES.map((cause) => {
+    const action = END_CAUSE_ACTIONS[cause];
+    return endCauseNotice(
+      cause,
+      action === undefined
+        ? undefined
+        : Button({ id: `titleNotice.${cause}`, label: action.label, onPress: action.onPress }),
+    );
+  });
+}
+
 /** Opens the tabbed options screen; the pause menu opens it too. */
 export const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIONS_MENU_NAME));
 
+// The title menu leads with the session: where this machine hosts, what a
+// join is doing, or why the last one ended, with the one press that answers
+// it. Its initial focus names a notice button: with none showing, focus falls
+// back to the first visible stop, PLAY for a player offline.
 export const frontendMenu = defineUiTree({
   name: TITLE_MENU_NAME,
   tree: Tree(
@@ -422,7 +701,7 @@ export const frontendMenu = defineUiTree({
       anchor: "center",
       offset: [0, 0],
       captureMode: "capture",
-      initialFocus: "frontendPlay",
+      initialFocus: "titleNotice.connectFailed",
       accessibleName: "PostRetro title menu",
       role: "group",
     },
@@ -436,22 +715,48 @@ export const frontendMenu = defineUiTree({
       },
       [
         Text({ content: "POSTRETRO", fontSize: 36, color: COLOR_ACCENT }),
-        Button({ id: "frontendPlay", label: "PLAY", onPress: openPlay }),
-        Button({ id: "frontendHost", label: "HOST", onPress: openHost }),
-        Button({ id: "frontendJoin", label: "JOIN", onPress: openJoin }),
+        VStack({ gap: 4, align: "stretch", visibleWhen: isHosting }, [
+          hostAddressLine(14),
+          Text({ content: "PLAYERS WAIT HERE UNTIL YOU START A LEVEL", fontSize: 13, color: COLOR_MUTED }),
+        ]),
+        Text({
+          content: "CONNECTING...",
+          fontSize: 14,
+          color: COLOR_ACCENT,
+          visibleWhen: isConnecting,
+        }),
+        VStack({ gap: 10, align: "stretch", visibleWhen: isWaiting }, waitReasons()),
+        // A client lands here when its session ends: say why.
+        ...titleNotices(),
+        // A connected client plays the host's levels, and hosts nothing.
+        VStack({ gap: 12, align: "stretch", visibleWhen: isOffline }, [
+          Button({
+            id: "frontendPlay",
+            label: "PLAY",
+            onPress: openPlay,
+            valueText: [{ when: [isHosting], text: "START A LEVEL" }],
+          }),
+          Button({
+            id: "frontendHost",
+            label: "HOST",
+            onPress: openHost,
+            valueText: [{ when: [isHosting], text: "HOSTING" }],
+          }),
+        ]),
+        // A host joins nothing.
+        VStack({ gap: 12, align: "stretch", visibleWhen: notHosting }, [
+          Button({
+            id: "frontendJoin",
+            label: "JOIN",
+            onPress: openJoin,
+            valueText: [
+              { when: [isConnecting], text: "JOINING" },
+              { when: [isWaiting], text: "JOINED" },
+            ],
+          }),
+        ]),
         Button({ id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
         Button({ id: "frontendExit", label: "EXIT", onPress: askExit }),
-        Text({
-          content: "",
-          fontSize: 14,
-          color: COLOR_MUTED,
-          bind: bindState(getGameState().session.hostAddress, { format: "HOSTING ON {}" }),
-          visibleWhen: stateEquals(getGameState().session.hosting, true),
-        }),
-        // A client lands here when its session ends: say why, and while a
-        // waiting press runs, what it is doing.
-        ...connectionNotices(),
-        ...endCauseNotices(),
       ],
     ),
   ),

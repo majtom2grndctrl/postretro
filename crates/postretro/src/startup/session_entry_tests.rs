@@ -1962,8 +1962,9 @@ fn a_waiting_join_answers_with_the_password_it_captured() {
     );
 }
 
-/// Install the shipped dev frontend's menus, its reactions and the engine
-/// keyboard into `app`, as mod init does. Returns each menu tree as JSON.
+/// Install the shipped dev frontend's menus, its reactions and keyboard, over
+/// the engine keyboard it shadows, into `app` as mod init does. Returns each
+/// menu tree as JSON.
 fn install_dev_frontend(app: &mut App) -> Vec<(String, serde_json::Value)> {
     use postretro_level_format::data_script::DataScriptSection;
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1973,7 +1974,7 @@ fn install_dev_frontend(app: &mut App) -> Vec<(String, serde_json::Value)> {
     std::fs::write(
         &entry,
         format!(
-            "{}\nexport function setupLevel() {{ return {{ uiTrees: [frontendMenu, hostMenu, joinMenu], reactions: frontendReactions }}; }}\n",
+            "{}\nexport function setupLevel() {{ return {{ uiTrees: [frontendMenu, hostMenu, joinMenu, devKeyboard], reactions: frontendReactions }}; }}\n",
             include_str!("../../../../content/dev/scripts/frontend-menu.ts")
         ),
     )
@@ -2057,29 +2058,247 @@ fn predicates_naming(tree: &serde_json::Value, slot: &str, out: &mut Vec<String>
     }
 }
 
-// AC U8: the dev title menu, where an ended client lands, and the Join menu
-// each show a notice for every end-cause value the engine publishes.
+// AC U8: the dev title menu, where an ended client lands, shows a notice for
+// every end-cause value the engine publishes, and so does the submenu each
+// cause concerns: Host for a failed hosting, Join for every other.
 #[test]
 fn the_dev_frontend_shows_a_notice_for_every_end_cause() {
     let mut view = entering_engine(spawn_points(3));
     let trees = install_dev_frontend(&mut view.app);
-    for menu in ["frontend.menuTree", "frontend.join"] {
+    let shows = |menu: &str, cause: EndCause| {
         let (_, tree) = trees
             .iter()
             .find(|(name, _)| name == menu)
             .unwrap_or_else(|| panic!("the dev frontend registers `{menu}`"));
         let mut predicates = Vec::new();
         predicates_naming(tree, "session.endCause", &mut predicates);
-        for cause in EndCause::ALL {
-            assert!(
-                predicates
-                    .iter()
-                    .any(|predicate| predicate.contains(&format!("\"{}\"", cause.as_str()))),
-                "`{menu}` shows no notice for `{}`: {predicates:?}",
-                cause.as_str()
-            );
-        }
+        predicates
+            .iter()
+            .any(|predicate| predicate.contains(&format!("\"{}\"", cause.as_str())))
+    };
+    for cause in EndCause::ALL {
+        assert!(
+            shows("frontend.menuTree", cause),
+            "the title menu shows no notice for `{}`",
+            cause.as_str()
+        );
+        let submenu = if cause == EndCause::HostFailed {
+            "frontend.host"
+        } else {
+            "frontend.join"
+        };
+        assert!(
+            shows(submenu, cause),
+            "`{submenu}` shows no notice for `{}`",
+            cause.as_str()
+        );
     }
+}
+
+/// Lay out the top modal tree over the session's live slots and cells, as the
+/// UI pass does: its drawn texts, and its focus stops in export order.
+fn draw_top(app: &mut App) -> (Vec<String>, Vec<String>) {
+    use postretro_ui::theme::UiTheme;
+    use postretro_ui::tree::{ImageSizes, UiTree};
+    const DEVICE: [u32; 2] = [1280, 720];
+    let session = app.session.as_mut().unwrap();
+    let snapshot = App::build_ui_read_snapshot(
+        &session.modal_stack,
+        &mut session.presentation_cells,
+        &session.scripting.script_ctx.slot_table.borrow(),
+        session.net_endpoint.as_ref(),
+        0.0,
+        session.ui_input_mode,
+        None,
+        false,
+        None,
+        None,
+    );
+    let top = snapshot.trees.last().expect("a modal is up");
+    let mut ui = UiTree::from_descriptor(&top.descriptor, &UiTheme::engine_default());
+    let drawn = ui.build_draw_data_retained(
+        DEVICE,
+        &mut session.font_system,
+        &ImageSizes::new(),
+        &snapshot.slot_values,
+        &snapshot.cell_values,
+        0.0,
+    );
+    let rects = ui.export_focus_rects(
+        &top.descriptor,
+        DEVICE,
+        &snapshot.slot_values,
+        &snapshot.cell_values,
+    );
+    (
+        drawn.texts.into_iter().map(|text| text.content).collect(),
+        rects
+            .rects
+            .into_iter()
+            .filter(|rect| !rect.disabled)
+            .map(|rect| rect.id)
+            .collect(),
+    )
+}
+
+fn has(texts: &[String], text: &str) -> bool {
+    texts.iter().any(|drawn| drawn == text)
+}
+
+fn enum_slot(app: &mut App, slot: &str, value: &str) {
+    app.write_session_slot(slot, SlotValue::Enum(value.to_string()));
+}
+
+// The dev keyboard says which field it edits, shows the entry as it is typed,
+// masks a password, offers the address pad only for an address, and keeps the
+// key ids the engine shortcuts press.
+#[test]
+fn the_dev_keyboard_titles_its_field_and_masks_a_password() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    write_text(&mut view.app, "session.joinAddress", "10.0.0.");
+
+    press(&mut view.app, "frontend.editJoinAddress");
+    press(&mut view.app, "kbAppend_2");
+    let (texts, stops) = draw_top(&mut view.app);
+    assert!(has(&texts, "HOST ADDRESS"), "{texts:?}");
+    assert!(
+        has(&texts, "10.0.0.2"),
+        "the entry shows as typed: {texts:?}"
+    );
+    for id in ["pad_1", "pad_dot", "pad_colon", "key_backspace", "key_done"] {
+        assert!(stops.iter().any(|stop| stop == id), "no `{id}`: {stops:?}");
+    }
+    assert_eq!(stops.first().map(String::as_str), Some("pad_1"));
+    assert!(
+        !stops
+            .iter()
+            .any(|stop| stop == "key_q" || stop == "key_space")
+    );
+    view.app.cancel_text_entry();
+
+    press(&mut view.app, "frontend.editPassword");
+    for key in ["kbAppend_h", "kbAppend_i"] {
+        press(&mut view.app, key);
+    }
+    let (texts, stops) = draw_top(&mut view.app);
+    assert!(has(&texts, "PASSWORD"), "{texts:?}");
+    assert!(has(&texts, "**"), "the entry shows masked: {texts:?}");
+    assert!(
+        !texts.iter().any(|text| text.contains("hi")),
+        "the password never draws: {texts:?}"
+    );
+    for id in ["key_q", "key_dot", "key_space", "key_backspace", "key_done"] {
+        assert!(stops.iter().any(|stop| stop == id), "no `{id}`: {stops:?}");
+    }
+    assert!(!stops.iter().any(|stop| stop == "pad_1"));
+    view.app.commit_text_entry();
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String("hi".to_string()))
+    );
+}
+
+// Each session menu shows one state at a time. When the focused button hides
+// with its state, the first stop left is the new state's own button, so the
+// initial-focus fallback lands there.
+#[test]
+fn the_dev_session_menus_show_one_state_at_a_time() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    let app = &mut view.app;
+
+    press(app, "frontend.openJoin");
+    let (_, stops) = draw_top(app);
+    assert_eq!(
+        stops,
+        [
+            "joinAddress",
+            "joinPassword",
+            "joinStart",
+            "frontend.join.back"
+        ]
+    );
+    enum_slot(app, "session.connection", "connecting");
+    let (texts, stops) = draw_top(app);
+    assert_eq!(stops, ["joinCancel", "frontend.join.back"]);
+    assert!(
+        texts.iter().any(|text| text.starts_with("CONNECTING TO")),
+        "{texts:?}"
+    );
+    enum_slot(app, "session.connection", "waiting");
+    enum_slot(app, "session.waitReason", "host");
+    let (texts, stops) = draw_top(app);
+    assert_eq!(stops, ["joinLeave", "frontend.join.back"]);
+    assert!(
+        has(&texts, "WAITING FOR THE HOST TO START A LEVEL"),
+        "{texts:?}"
+    );
+    enum_slot(app, "session.connection", "offline");
+    enum_slot(app, "session.waitReason", "");
+    enum_slot(app, "session.endCause", "refusedPassword");
+    let (texts, _) = draw_top(app);
+    assert!(has(&texts, "PASSWORD REFUSED"), "{texts:?}");
+    app.session.as_mut().unwrap().modal_stack.pop();
+
+    press(app, "frontend.openHost");
+    let (texts, stops) = draw_top(app);
+    assert_eq!(stops, ["hostPassword", "hostStart", "frontend.host.back"]);
+    assert!(has(&texts, "NONE: ANYONE CAN JOIN"), "{texts:?}");
+    assert!(
+        !has(&texts, "PASSWORD REFUSED"),
+        "a join's notice: {texts:?}"
+    );
+    app.write_session_slot("session.hosting", SlotValue::Boolean(true));
+    write_text(app, "session.hostAddress", "10.0.0.7:27015");
+    let (texts, stops) = draw_top(app);
+    assert_eq!(stops, ["hostPlay", "hostStop", "frontend.host.back"]);
+    assert!(has(&texts, "HOSTING ON 10.0.0.7:27015"), "{texts:?}");
+    app.session.as_mut().unwrap().modal_stack.pop();
+
+    // The title leads with the notice and its answer while there is one.
+    app.write_session_slot("session.hosting", SlotValue::Boolean(false));
+    app.session
+        .as_mut()
+        .unwrap()
+        .modal_stack
+        .push_named("frontend.menuTree", None);
+    let (_, stops) = draw_top(app);
+    assert_eq!(
+        stops.first().map(String::as_str),
+        Some("titleNotice.refusedPassword")
+    );
+    enum_slot(app, "session.endCause", "");
+    let (_, stops) = draw_top(app);
+    assert_eq!(
+        stops,
+        [
+            "frontendPlay",
+            "frontendHost",
+            "frontendJoin",
+            "frontendOptions",
+            "frontendExit"
+        ]
+    );
+}
+
+// The title's answer to a refused password opens the Join menu with the
+// password keyboard over it; committing lands back on Join.
+#[test]
+fn a_title_notice_reopens_the_field_to_fix() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    press(&mut view.app, "frontend.retypePassword");
+    press(&mut view.app, "kbAppend_p");
+    view.app.commit_text_entry();
+    assert_eq!(
+        slot(&view.app, "session.password"),
+        Some(SlotValue::String("p".to_string()))
+    );
+    assert_eq!(
+        view.app.session.as_ref().unwrap().modal_stack.active_name(),
+        Some("frontend.join")
+    );
 }
 
 // The Join menu's fields: the keyboard opens seeded with the field's text,

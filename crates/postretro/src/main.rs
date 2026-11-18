@@ -3465,6 +3465,7 @@ impl App {
                 input::UiIntentPayload::PointerClick { pos } => click_positions.push(*pos),
                 input::UiIntentPayload::Text(_)
                 | input::UiIntentPayload::Backspace
+                | input::UiIntentPayload::Enter
                 | input::UiIntentPayload::TextShortcut(_) => {}
             }
         }

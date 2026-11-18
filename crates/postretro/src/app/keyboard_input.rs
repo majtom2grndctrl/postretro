@@ -122,8 +122,9 @@ impl App {
             // Backspace/Enter/Escape first (so a `\u{8}` Backspace text or a
             // `\r` Enter text never leaks through the printable channel); only
             // a non-control printable `KeyEvent.text` becomes a `Text` intent.
-            // Enter/Escape ride the queue as `nav.confirm`/`nav.cancel`, which
-            // the focus-resolution stage intercepts for commit/cancel.
+            // Enter rides the queue as its own `Enter` intent, which commits
+            // even while an on-screen key holds focus; Escape rides it as
+            // `nav.cancel`. The focus-resolution stage acts on both.
             let text_entry_open = session.modal_stack.active_text_entry_target().is_some();
             // Text entry intentionally honors OS key-repeat (hardware-key repeat
             // comes from the OS): a held Backspace/letter
@@ -141,9 +142,7 @@ impl App {
                         Some(input::TextEntryKey::Backspace) => {
                             Some(input::UiIntentPayload::Backspace)
                         }
-                        Some(input::TextEntryKey::Commit) => {
-                            Some(input::UiIntentPayload::Nav(input::NavIntent::Confirm))
-                        }
+                        Some(input::TextEntryKey::Commit) => Some(input::UiIntentPayload::Enter),
                         Some(input::TextEntryKey::Cancel) => {
                             Some(input::UiIntentPayload::Nav(input::NavIntent::Cancel))
                         }

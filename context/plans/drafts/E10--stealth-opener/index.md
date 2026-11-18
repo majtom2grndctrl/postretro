@@ -18,6 +18,7 @@ Owner-requested capability for an anticipated need, split out of `E10--ai-tick-s
 - **Non-goals:** stealth-hit feedback (hit marker, sound, VFX): clients see only the larger damage; special damage types and critical hits are a later brief (owner).
 
 ## Open questions
+- Revalidate against E10's later rulings: on losing a target meters drain rather than zero (P49 here assumes zero), the every-third cadence beyond tactical range was dropped (P50), and meters freeze while an NPC has a target, which this brief's engaged meters would reverse.
 - **blocks build:** a general hit-time damage modifier shared with critical hits and special damage types — design it first, or with this brief, so the multiplier is one consumer rather than a stealth-only path in three damage sites (direction review).
 - **blocks build:** candidacy gating damage: authors wrote candidacy for whom to engage; this brief makes it decide damage. Confirm, or choose a separate stealth-eligibility predicate.
 - Light, stance, movement and distance modifiers, investigate states and client HUD replication of the meter: in scope here or a further brief.

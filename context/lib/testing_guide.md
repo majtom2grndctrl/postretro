@@ -145,6 +145,10 @@ Game engine code is full of floating-point math (positions, UVs, colors, interpo
 
 Game logic tests must control time. Inject a fixed delta time rather than reading wall-clock time. This makes tests reproducible and eliminates timing-dependent flakiness.
 
+### Concurrent order
+
+A test that depends on the order of work across threads fixes that order with a handshake, never with timing. A stand-in job signals that it has started, then blocks on a channel until the test releases it. In between, the test queues or triggers the competing work. A sleep guesses the order, and so does assuming a thread already picked up work: both pass on one machine and fail on another. Polling waits for a result to appear; it holds nothing back, so the work can finish before the test's next step. When order is not the contract, assert on the final state, not the sequence it arrived in.
+
 ### Resource bounds
 
 Resource proof covers the full lifetime in [Development Guide](./development_guide.md) §1.4. Observe production, buffering, serialization, persistence, return, and cleanup. A custom allocation seam proves only allocations routed through that seam.

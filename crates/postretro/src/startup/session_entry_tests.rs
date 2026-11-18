@@ -405,6 +405,7 @@ fn boot_flags_and_in_app_entry_derive_the_same_role_bound_state() {
         session.net_endpoint = enter_role(
             role,
             None,
+            "",
             &mut session.scripting,
             &mut session.seat_table,
             getrandom::fill,
@@ -548,7 +549,9 @@ fn on_disk_state(app: &App) -> crate::scripting::state_persistence::PersistedSta
     crate::scripting::state_persistence::PersistedState::from_ledger(
         world.as_ref(),
         None,
-        character.as_ref().and_then(|document| document.seats.first()),
+        character
+            .as_ref()
+            .and_then(|document| document.seats.first()),
     )
 }
 
@@ -1839,6 +1842,7 @@ fn the_password_flag_serves_host_and_connect() {
         let endpoint = enter_role(
             &role,
             None,
+            "",
             &mut session.scripting,
             &mut session.seat_table,
             getrandom::fill,
@@ -1866,6 +1870,7 @@ fn the_password_flag_serves_host_and_connect() {
         let endpoint = enter_role(
             &role,
             None,
+            "",
             &mut session.scripting,
             &mut session.seat_table,
             getrandom::fill,

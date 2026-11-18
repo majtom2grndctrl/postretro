@@ -133,6 +133,7 @@ pub(crate) fn test_app() -> App {
             host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker::default(),
             state_store_lifecycle: Default::default(),
             persisted_state: None,
+            saves: Default::default(),
             per_owner_save_timer: Default::default(),
             progress_tracker: ProgressTracker::new(),
             pending_death_events: Vec::new(),

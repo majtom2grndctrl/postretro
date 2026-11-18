@@ -180,8 +180,13 @@ fn v4_state_migrates_to_character_and_world_once() {
     assert_eq!(number(&app, GENERATOR), Some(SlotValue::Number(0.0)));
     let saves_dir = SaveDir::new(dir.path(), MOD_ID);
     let world = read_document(&saves_dir.world_path()).unwrap().unwrap();
-    assert!(!world.slots.contains_key("k-gen"), "never in the world file");
-    let character = read_document(&saves_dir.character_path(0)).unwrap().unwrap();
+    assert!(
+        !world.slots.contains_key("k-gen"),
+        "never in the world file"
+    );
+    let character = read_document(&saves_dir.character_path(0))
+        .unwrap()
+        .unwrap();
     assert_eq!(
         character.seats[0].claim,
         encode_player_claim_id(&PlayerClaimId(PLAYER))
@@ -189,9 +194,22 @@ fn v4_state_migrates_to_character_and_world_once() {
     assert!(character.seats[0].loadout.is_empty());
     assert_eq!(read_document(&saves_dir.run_path(0)).unwrap(), None);
     let session = app.session.as_ref().unwrap();
-    assert_eq!(session.saves.selection(), Selection { character: 0, run: -1 });
-    assert_eq!(session.seat_table.as_ref().unwrap().carried_state(Seat(0)), None);
-    assert_eq!(std::fs::read(&legacy).unwrap(), legacy_bytes, "the source stays");
+    assert_eq!(
+        session.saves.selection(),
+        Selection {
+            character: 0,
+            run: -1
+        }
+    );
+    assert_eq!(
+        session.seat_table.as_ref().unwrap().carried_state(Seat(0)),
+        None
+    );
+    assert_eq!(
+        std::fs::read(&legacy).unwrap(),
+        legacy_bytes,
+        "the source stays"
+    );
 
     // A second boot reads the new files and never the source again.
     std::fs::write(&legacy, br#"{"version":4,"slots":{"k-score":1000}}"#).unwrap();
@@ -251,7 +269,13 @@ fn mod_without_saves_block_gets_one_selected_active_run_holding_sentiment() {
     boot(&mut app, None);
 
     let session = app.session.as_ref().unwrap();
-    assert_eq!(session.saves.selection(), Selection { character: 0, run: 0 });
+    assert_eq!(
+        session.saves.selection(),
+        Selection {
+            character: 0,
+            run: 0
+        }
+    );
     assert!(session.saves.run_active());
     // The migrated run-scoped global and sentiment land in the implicit run.
     let run = read_document(&SaveDir::new(dir.path(), MOD_ID).run_path(0))
@@ -267,7 +291,13 @@ fn mod_without_saves_block_gets_one_selected_active_run_holding_sentiment() {
     let mut app = app_with_store(fresh.path());
     boot(&mut app, None);
     let session = app.session.as_ref().unwrap();
-    assert_eq!(session.saves.selection(), Selection { character: 0, run: 0 });
+    assert_eq!(
+        session.saves.selection(),
+        Selection {
+            character: 0,
+            run: 0
+        }
+    );
     assert!(session.saves.run_active());
     assert_eq!(session.saves.selected_character_id(), Some(PLAYER));
 }
@@ -289,22 +319,44 @@ fn selection_restores_from_save_dir_and_rejects_bad_slots() {
     write_document(&saves.character_path(0), &character).unwrap();
     std::fs::write(saves.character_path(1), b"{ not json").unwrap();
 
-    write_selection(&saves.selection_path(), Selection { character: 0, run: 1 }).unwrap();
+    write_selection(
+        &saves.selection_path(),
+        Selection {
+            character: 0,
+            run: 1,
+        },
+    )
+    .unwrap();
     let mut app = app_with_store(dir.path());
     boot(&mut app, SAVES);
     let session = app.session.as_ref().unwrap();
-    assert_eq!(session.saves.selection(), Selection { character: 0, run: -1 });
+    assert_eq!(
+        session.saves.selection(),
+        Selection {
+            character: 0,
+            run: -1
+        }
+    );
     assert_eq!(session.saves.selected_character_name(), "Vex");
     capture.assert_logged(log::Level::Warn, "stored run selection 1");
 
     for stored in [1, 5] {
-        write_selection(&saves.selection_path(), Selection { character: stored, run: -1 })
-            .unwrap();
+        write_selection(
+            &saves.selection_path(),
+            Selection {
+                character: stored,
+                run: -1,
+            },
+        )
+        .unwrap();
         let mut app = app_with_store(dir.path());
         boot(&mut app, SAVES);
         let session = app.session.as_ref().unwrap();
         assert_eq!(session.saves.selection().character, -1, "slot {stored}");
-        assert!(matches!(session.saves.character_slots()[1], SlotFile::Unreadable));
+        assert!(matches!(
+            session.saves.character_slots()[1],
+            SlotFile::Unreadable
+        ));
     }
     // The selection lives in the mod's save directory, not player options.
     assert_eq!(read_selection(&saves.selection_path()).character, 5);
@@ -340,6 +392,9 @@ fn saves_rows_match_declared_count() {
             Some(SlotValue::Boolean(false))
         );
     }
-    assert_eq!(read("saves.character".into()), Some(SlotValue::Number(-1.0)));
+    assert_eq!(
+        read("saves.character".into()),
+        Some(SlotValue::Number(-1.0))
+    );
     assert_eq!(read("saves.run".into()), Some(SlotValue::Number(-1.0)));
 }

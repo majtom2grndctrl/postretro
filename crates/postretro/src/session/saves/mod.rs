@@ -72,9 +72,11 @@ impl SaveSlots {
     }
 
     fn selected_index(index: i32, slots: &[SlotFile]) -> Option<usize> {
-        usize::try_from(index)
-            .ok()
-            .filter(|&index| slots.get(index).is_some_and(|slot| slot.document().is_some()))
+        usize::try_from(index).ok().filter(|&index| {
+            slots
+                .get(index)
+                .is_some_and(|slot| slot.document().is_some())
+        })
     }
 
     pub(crate) fn selected_character_index(&self) -> Option<usize> {

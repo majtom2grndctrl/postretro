@@ -58,7 +58,11 @@ pub(crate) fn boot_restore_with(
         session.net_endpoint.as_ref(),
         Some(crate::netcode::NetEndpoint::Client { .. })
     );
-    overlay_selection(session, session.saves.run_active() && !is_client, !is_client);
+    overlay_selection(
+        session,
+        session.saves.run_active() && !is_client,
+        !is_client,
+    );
     publish_save_rows(session);
 }
 
@@ -116,7 +120,8 @@ fn overlay_selection(session: &mut Session, with_run: bool, with_owner_state: bo
         let factions = script_ctx.data_registry.borrow();
         let mut sentiment = script_ctx.faction_sentiment.borrow_mut();
         *sentiment = Default::default();
-        for warning in overlay_persisted_faction_sentiment(&mut sentiment, &factions.factions, &document)
+        for warning in
+            overlay_persisted_faction_sentiment(&mut sentiment, &factions.factions, &document)
         {
             log::warn!("[State] {warning}");
         }
@@ -186,9 +191,11 @@ pub(crate) fn collect_world_and_run(
     {
         let factions = script_ctx.data_registry.borrow();
         let sentiment = script_ctx.faction_sentiment.borrow();
-        for warning in
-            collect_persisted_faction_sentiment(&mut collected.state, &sentiment, &factions.factions)
-        {
+        for warning in collect_persisted_faction_sentiment(
+            &mut collected.state,
+            &sentiment,
+            &factions.factions,
+        ) {
             log::warn!("[State] {warning}");
         }
     }

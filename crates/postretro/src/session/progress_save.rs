@@ -27,10 +27,16 @@ pub(crate) fn save_world_and_character(session: &mut Session) -> Option<Progress
     let character = collect_character_record(session);
     let (world, run_state) = collect_world_and_run(session);
     if session.state_store_lifecycle.can_save() {
-        if let Some(character) = character.clone() {
-            session.saves.save_selected_character(character);
+        let character_saved = character
+            .clone()
+            .is_none_or(|character| session.saves.save_selected_character(character));
+        let world_saved = session.saves.save_world(world.clone());
+        // These two lines are named by the join-save tests.
+        if character_saved && world_saved {
+            log::info!("[State] saved persistent slots to the world and character saves");
+        } else {
+            log::warn!("[State] failed to save persistent slots; the previous saves are kept");
         }
-        session.saves.save_world(world.clone());
         publish_save_rows(session);
     }
     Some(ProgressSave {

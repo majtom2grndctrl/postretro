@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
 
+use postretro_net::wire::PlayerClaimId;
 use postretro_scripting_core::runtime::SavesManifest;
 use postretro_sim::scripting::save_files::{
     LedgerDocument, RunRecord, SaveDir, SeatRecord, Selection, SlotFile, now_unix_seconds,
@@ -14,7 +15,6 @@ use postretro_sim::scripting::state_persistence::{
     encode_player_claim_id, load_persisted_state, persisted_state_version_is_supported,
     split_world_and_run,
 };
-use postretro_net::wire::PlayerClaimId;
 
 use super::{SaveSlots, write_slot};
 
@@ -85,7 +85,10 @@ fn validated_selection(slots: &SaveSlots, stored: Selection) -> Selection {
 /// A mod without a `saves` block: its one character and run exist, are
 /// selected, and its run is active for the whole process.
 fn create_implicit_slots(slots: &mut SaveSlots, inputs: &BootInputs) {
-    let claim = match slots.characters[0].document().and_then(|doc| doc.seats.first()) {
+    let claim = match slots.characters[0]
+        .document()
+        .and_then(|doc| doc.seats.first())
+    {
         Some(record) => record.claim.clone(),
         None if matches!(slots.characters[0], SlotFile::Unreadable) => {
             log::warn!("[State] the character save cannot be read; progress will not be saved");
@@ -114,7 +117,11 @@ fn create_implicit_slots(slots: &mut SaveSlots, inputs: &BootInputs) {
     }
     slots.selection = Selection {
         character: 0,
-        run: if slots.runs[0].document().is_some() { 0 } else { -1 },
+        run: if slots.runs[0].document().is_some() {
+            0
+        } else {
+            -1
+        },
     };
     slots.run_active = slots.selected_run().is_some();
 }

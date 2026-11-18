@@ -14,7 +14,13 @@ use crate::session::Session;
 /// so crossings see real changes only.
 pub(crate) fn publish_save_rows(session: &mut Session) {
     let saves = &session.saves;
-    let maps = session.scripting.script_ctx.data_registry.borrow().maps.clone();
+    let maps = session
+        .scripting
+        .script_ctx
+        .data_registry
+        .borrow()
+        .maps
+        .clone();
     let mut table = session.scripting.script_ctx.slot_table.borrow_mut();
     let characters = saves.character_slots();
     for row in 0..SAVES_CHARACTERS_LIST.capacity {
@@ -28,8 +34,14 @@ pub(crate) fn publish_save_rows(session: &mut Session) {
             |field| SAVES_CHARACTERS_LIST.slot_name(row, field),
             [
                 (LIST_PRESENT_FIELD, SlotValue::Boolean(slot.is_some())),
-                ("occupied", SlotValue::Boolean(slot.is_some_and(SlotFile::is_occupied))),
-                ("readable", SlotValue::Boolean(slot.is_some_and(|slot| slot.document().is_some()))),
+                (
+                    "occupied",
+                    SlotValue::Boolean(slot.is_some_and(SlotFile::is_occupied)),
+                ),
+                (
+                    "readable",
+                    SlotValue::Boolean(slot.is_some_and(|slot| slot.document().is_some())),
+                ),
                 ("name", SlotValue::String(name)),
             ],
         );
@@ -63,7 +75,10 @@ pub(crate) fn publish_save_rows(session: &mut Session) {
             |field| SAVES_RUNS_LIST.slot_name(row, field),
             [
                 (LIST_PRESENT_FIELD, SlotValue::Boolean(slot.is_some())),
-                ("occupied", SlotValue::Boolean(slot.is_some_and(SlotFile::is_occupied))),
+                (
+                    "occupied",
+                    SlotValue::Boolean(slot.is_some_and(SlotFile::is_occupied)),
+                ),
                 ("readable", SlotValue::Boolean(document.is_some())),
                 ("levelName", SlotValue::String(level_name)),
                 ("characterName", SlotValue::String(character_name)),

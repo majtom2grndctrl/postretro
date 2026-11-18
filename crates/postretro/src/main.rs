@@ -12586,8 +12586,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            79 + list_slots,
-            "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
+            81 + list_slots,
+            "only value-bearing player, screen, input, loading, session, saves, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 

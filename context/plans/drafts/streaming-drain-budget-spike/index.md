@@ -19,20 +19,24 @@ The `lightmap-compact-storage` build raised this as a review question; it is an 
 ## Acceptance
 
 ### Automated (honesty gates)
-- [ ] With both levers unset, completed-mode walks give the same late blocks, installs and payload hash as before the spike, on both maps.
+- [ ] With both levers unset, completed-mode walks with SH on and with SH off give the same late blocks, installs, payload hash, late SH chunks and SH installs as values recorded at the read commit from the same command, on both maps.
 - [ ] For every walk run, the lightmap cause buckets sum to the run's late blocks, and the spawn-step buckets sum to its spawn misses.
-- [ ] A drain in which the budget stops between an SH item and a lightmap item of the same class increments the counter once; a drain that stops between different classes, or admits everything, does not.
+- [ ] A drain in which the budget stops between an SH item and a lightmap item of the same class increments the counter once; a drain that stops between different classes, or admits everything, does not; nor does a drain with no items, with items of one resource only, or one in which the lightmap side offered nothing because its batch was still outstanding (pins P1, P3).
 - [ ] With the cap override set to the production value, completed-mode results equal the unset run exactly.
-- [ ] At every cap either lever sets, the lightmap in-hand cap stays at its production value.
+- [ ] At half and at twice the production cap, from either lever, a read waits at the same in-hand and band in-hand byte totals as with the levers unset.
 - [ ] A cap of zero, or one too large to represent, is refused by name from either lever, never clamped silently.
-- [ ] A drain whose first item exceeds the set cap still admits that item.
+- [ ] At a lever-set cap, a drain whose first item exceeds the cap admits that item and nothing after it.
+- [ ] With either lever set, a settling drain still admits against the settling budget, and a settling drain never increments the same-class counter (pin P2).
 - [ ] Install-cost tests report warm drains only, with each run's discarded cold drains counted separately.
+- [ ] Install-cost tests vary item size at a fixed drain byte total and item count at a fixed item size, so fixed cost per item and cost per MiB separate for each resource.
+- [ ] The cap slider builds only with dev-tools and the walk override only in test code; no player setting names the drain cap (grep gate).
 
 ### Manual (measured findings and owner reads)
 - [ ] Late lightmap blocks and late SH chunks by cause, plus same-class cuts per walk, realtime medians of 3: showcase far-point and random walks and campaign-test, at default cores and emulated 1 core, SH on.
-- [ ] The gate decision: the stated threshold, the measured share held by the budget, and which later rows therefore run.
+- [ ] The gate decision: the stated threshold, the measured share held by the budget for each resource in its own named unit, and which later rows therefore run.
 - [ ] If the gate opens: a cap sweep with at least one value below the production cap and two above, reporting late items held by the budget, other causes, largest drain in bytes, and drain CPU p95/max for each cap.
 - [ ] If the gate opens: install cost per resource, CPU and GPU, as fixed cost per item and cost per MiB, with build profile, pinned clock and VRAM state recorded.
+- [ ] SH's install cost includes the compose work its installs trigger, CPU and GPU, reported beside the install alone.
 - [ ] If same-class cuts occur: owner visual read of one forced lightmap-block miss and one forced SH-cluster miss at each fixed pose, against the no-pop-in ruling.
 - [ ] Owner read with the dev-tools slider at a showcase burst: does a smaller or larger cap change what is visible.
 - [ ] A findings note recommending, for each of the three assumptions (cap magnitude, byte unit, tie-break), keep, change, or new brief, with the numbers behind each.

@@ -22,3 +22,13 @@ Read at e0d708672. This spike builds on `lightmap-compact-storage`'s decode pool
 - Realtime late blocks 181 far-point, 306 random; SH `sh_late` far-point 44 at default cores, 47 at emulated 1 core.
 - Largest drain install 14.7 MB at baseline (the first-item rule lets a drain exceed the cap).
 - Completed mode, far-point: SH off 79 late blocks, SH on 78. SH off is the worse one, so it is not evidence of SH crowding lightmaps out; cause not isolated.
+
+## Pins
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Drains with no items; one item; items of one resource only; a cut at a class boundary; everything admitted | Any | Same-class counter unchanged |
+| P2 | Settling drain with a same-class cut, either lever set | Settling branch of the one `admit_within` call | Admits against the settling budget; counter unchanged; no miss counted on either side |
+| P3 | Lightmap batch still outstanding (the renderer skipped its drain) while SH is cut inside a class | Lightmap offers nothing that drain | Counter unchanged; a drawn ready block not offered is not held by the drain budget |
+| P4 | Completed mode: a pair deferred behind a retiring generation in drain 0, offered past the cut in drain 1 | Retirement advances once per frame, so drain 1 defers it again | Counts as deferred, not held by the budget (today's tally order) |
+| P5 | Walk spawn step | Step 0 admits at the play cap, never settling | Spawn buckets are not read as level-entry cost and stay out of the gate share |
+| P6 | One frame, SH and lightmap both drawn | SH classifies from the prior drain's outcome, before this frame's admission; lightmap classifies after this frame's outcome is applied | Each side's held-by-budget names the drain before its classification point |

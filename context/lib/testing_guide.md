@@ -147,7 +147,7 @@ Game logic tests must control time. Inject a fixed delta time rather than readin
 
 ### Concurrent order
 
-A test that depends on the order of work across threads fixes that order with a handshake, never with timing. A stand-in job signals that it has started, then blocks on a channel until the test releases it. In between, the test queues or triggers the competing work. A sleep guesses the order, and so does assuming a thread already picked up work: both pass on one machine and fail on another. Polling waits for a result to appear; it holds nothing back, so the work can finish before the test's next step. When order is not the contract, assert on the final state, not the sequence it arrived in.
+A test that depends on the order of work across threads fixes that order with a handshake, never with timing. A stand-in job signals that it has started, then blocks on a channel until the test releases it. In between, the test queues or triggers the competing work. A sleep guesses the order, and so does assuming a thread already picked up work: both pass on one machine and fail on another. Polling waits for a result to appear; it holds no work back, so it cannot keep one job in flight while the test queues the next. When order is not the contract, assert on the final state, not the sequence it arrived in.
 
 ### Resource bounds
 

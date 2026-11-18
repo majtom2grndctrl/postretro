@@ -707,3 +707,83 @@ fn the_steady_drain_of_two_pools_allocates_nothing() {
     assert_eq!(h.model.scratch_capacities(), capacities);
     assert_eq!(h.model.demand_passes, passes);
 }
+
+// A block evicted and its places re-tenanted in one drain. Mask blocks
+// here are smaller than their lightmap blocks, each plane at its own extent.
+// Each touched entry gets one write carrying both of its words, so the
+// arrival's lightmap address never sits beside the leaver's mask extents.
+#[test]
+fn an_evicted_and_retenanted_block_gets_one_32_byte_write_with_both_words() {
+    use super::super::{BLOCK_TABLE_ENTRY_BYTES, BLOCK_TABLE_ENTRY_WORDS, BlockTableEntry};
+    use postretro_level_format::lightmap_pool::BlockMasks;
+    let demand = PoolDemand::with_masks(
+        ALIGN,
+        vec![FULL, FULL],
+        Some(vec![
+            BlockMasks {
+                planes: BOTH,
+                extents: [(32, 16), (16, 16)],
+            },
+            BlockMasks {
+                planes: BOTH,
+                extents: [(32, 32), (8, 8)],
+            },
+        ]),
+    );
+    let model = LightmapPoolModel::new(
+        demand,
+        EDGE,
+        PerPool {
+            lightmap: 1,
+            mask: 1,
+        },
+    )
+    .unwrap();
+    let mut h = Pair {
+        gpu: GpuMirror::new(&model),
+        model,
+    };
+    h.drain(&[mandatory(0)], &[], &[0]);
+    let leaver = h.model.placement(0).expect("block 0 is resident");
+
+    // One lightmap layer holds one FULL block: block 1 takes block 0's place.
+    let plan = h.drain(&[mandatory(1)], &[0], &[1]);
+    assert_eq!(evicted_blocks(plan), vec![0]);
+    assert_eq!(plan.installed, vec![1]);
+    assert_eq!(
+        plan.uploads[0].plane_extents,
+        [(32, 32), (8, 8)],
+        "each plane uploads at its own extent"
+    );
+    assert_eq!(written_entries(plan), vec![0, 1], "one write per entry");
+    let [left, arrived] = [&plan.table_writes[0], &plan.table_writes[1]].map(|w| w.entry);
+    assert_eq!(BLOCK_TABLE_ENTRY_WORDS * 4, BLOCK_TABLE_ENTRY_BYTES);
+    assert_eq!(
+        left,
+        BlockTableEntry::Missing {
+            width: 64,
+            height: 64
+        }
+    );
+    assert_eq!(
+        left.to_words()[4..],
+        [0; 4],
+        "a leaver keeps no mask extents"
+    );
+    let BlockTableEntry::Resident {
+        addresses,
+        mask_extents,
+        ..
+    } = arrived
+    else {
+        panic!("block 1 is resident: {arrived:?}");
+    };
+    assert_eq!(addresses.lightmap, leaver, "re-tenanted in the same drain");
+    assert_eq!(
+        mask_extents,
+        [(32, 32), (8, 8)],
+        "the arrival's own extents"
+    );
+    let words = arrived.to_words();
+    assert_eq!((words[4], words[5]), (32 | (32 << 12), 8 | (8 << 12)));
+}

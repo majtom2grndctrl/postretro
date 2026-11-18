@@ -201,6 +201,7 @@ fn compile_adjacent_stages(
         args.working_set_max_bytes = 0;
     }
     let config = LightmapConfig {
+        section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
         lightmap_density: density,
         area_sample_count: 4,
         uncompressed_irradiance: true,

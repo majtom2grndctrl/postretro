@@ -2,6 +2,7 @@
 // report, and stale-entry validation.
 // See: context/lib/build_pipeline.md §Build Cache
 
+use postretro_level_format::coded_plane::{BlockCodec, CodecIdentity};
 use postretro_level_format::lightmap::{
     LightmapBlockIndex, LightmapBlockRecord, LightmapHeader, LightmapMode, SectionByteRange,
 };
@@ -23,7 +24,9 @@ use crate::lightmap_layer::{self, SharedAtlas};
 /// ascending spec index) its spec index, its id-40 membership and its
 /// `(light, atlas layer)` layer hashes in ascending layer order, then atlas
 /// width/height/layer-count, `estimate_params` verbatim, then `tracer_epoch`
-/// (u32 LE): the cut-face estimate traces (`ray_traversal::TRACER_EPOCH`).
+/// (u32 LE): the cut-face estimate traces (`ray_traversal::TRACER_EPOCH`),
+/// then the plane codec's identity ([`CodecIdentity::fold_into`]): the entry
+/// holds the stored planes, and zstd output may change across versions.
 /// The layer hashes fold the epoch too; folding it here keeps the dependency
 /// direct. The spec indices are hashed because they count every
 /// `!is_dynamic` light, owner-eligible or not: a static light that cannot own
@@ -39,6 +42,7 @@ pub(crate) fn shadowmask_atlas_input_hash(
     layer_count: u32,
     estimate_params: &[u8],
     tracer_epoch: u32,
+    codec: CodecIdentity,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&lightmap_layer::LAYER_FORMAT_VERSION.to_le_bytes());
@@ -61,6 +65,7 @@ pub(crate) fn shadowmask_atlas_input_hash(
     hasher.update(&(estimate_params.len() as u32).to_le_bytes());
     hasher.update(estimate_params);
     hasher.update(&tracer_epoch.to_le_bytes());
+    codec.fold_into(&mut hasher);
     *hasher.finalize().as_bytes()
 }
 
@@ -222,6 +227,8 @@ pub(super) fn extent_index(shared: &SharedAtlas<'_>) -> LightmapBlockIndex {
                 height: block.height as u16,
                 irradiance: empty,
                 direction: empty,
+                codec: BlockCodec::Raw,
+                raw_len: [0; 2],
             })
             .collect(),
     }

@@ -9,8 +9,8 @@ mod static_plan;
 
 pub use block_table::{
     BLOCK_FLAG_NO_MASK_POOL, BLOCK_FLAG_NONE, BLOCK_FLAG_PLANE_A, BLOCK_FLAG_PLANE_B,
-    BLOCK_FLAG_RESIDENT, BLOCK_TABLE_ENTRY_BYTES, BlockAddresses, BlockTableEntry, MaskAddresses,
-    block_table_bytes, placeholder_block_table,
+    BLOCK_FLAG_RESIDENT, BLOCK_TABLE_ENTRY_BYTES, BLOCK_TABLE_ENTRY_WORDS, BlockAddresses,
+    BlockTableEntry, MaskAddresses, block_table_bytes, placeholder_block_table,
 };
 pub use payload::payload_mismatch;
 pub use policy::{
@@ -19,9 +19,9 @@ pub use policy::{
     PoolState, RepackKind, TableWrite,
 };
 pub use postretro_level_format::lightmap_pool::{
-    AllResidentMasks, AllResidentPool, BlockPlacement, BlockPool, PerPool, PlanePresence,
-    PoolDemand, PoolKind, RestoreConflict, ShelfLayer, Slot, StaleFree, mask_item, mask_item_plane,
-    packing_order_key, place_all_resident,
+    AllResidentMasks, AllResidentPool, BlockMasks, BlockPlacement, BlockPool, PerPool,
+    PlanePresence, PoolDemand, PoolKind, RestoreConflict, ShelfLayer, Slot, StaleFree, mask_item,
+    mask_item_plane, packing_order_key, place_all_resident,
 };
 pub use static_plan::{
     StaticPool, StaticPoolPlan, StreamedPoolSizing, StreamingPoolPlan, plan_static_pool,

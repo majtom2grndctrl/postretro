@@ -9,10 +9,11 @@ use super::metadata::{MetadataCounts, predicted_metadata};
 
 /// Bytes per bake-layer texel of the warm per-layer accumulator
 /// (`lightmap_layer::IncrementalLayerAccumulator`): its `CompositedAtlas`
-/// plane (RGBA f32 irradiance, `Vec3` direction, `bool` coverage = 29, the
-/// whole cold plane) plus `weighted_dir` and `fallback_normal` (`Vec3` each)
-/// and `chart_index` (`u32`). One layer is live at a time.
-const LAYER_PLANE_BYTES_PER_TEXEL: u64 = (4 * 4 + 12 + 1) + 12 + 12 + 4;
+/// plane (RGBA f32 irradiance, `Vec3` direction, `bool` coverage and
+/// transposed = 30, the whole cold plane) plus `weighted_dir` and
+/// `fallback_normal` (`Vec3` each) and `chart_index` (`u32`). One layer is
+/// live at a time.
+const LAYER_PLANE_BYTES_PER_TEXEL: u64 = (4 * 4 + 12 + 1 + 1) + 12 + 12 + 4;
 /// Shadowmask raw fill (`shadowmask_bake::allocate_shadowmask_raw_fill`):
 /// four mask channels of one bake layer, plus blocks held by open cuts.
 const SHADOWMASK_FILL_BYTES_PER_TEXEL: u64 = 4;

@@ -13,7 +13,7 @@ mod repack;
 mod reservation;
 
 use postretro_level_format::lightmap_pool::{
-    PerPool, PlanePresence, PoolDemand, PoolKind, mask_item,
+    BlockMasks, PerPool, PlanePresence, PoolDemand, PoolKind, mask_item,
 };
 use postretro_level_loader::{LightmapBlockClass, LightmapPoolReport, LightmapTarget};
 
@@ -201,6 +201,12 @@ impl LightmapPoolModel {
             .then(|| self.demand.planes(block))
     }
 
+    /// Which planes `block` stores and at what extents; `None` for a level
+    /// with no mask pool.
+    pub fn masks(&self, block: u32) -> Option<BlockMasks> {
+        self.demand.block_masks(block)
+    }
+
     pub fn is_resident(&self, block: u32) -> bool {
         self.pools.lightmap.slot(block).is_some()
     }
@@ -244,6 +250,7 @@ impl LightmapPoolModel {
                 addresses,
                 width,
                 height,
+                mask_extents: self.demand.mask_extents(block),
             },
             None => BlockTableEntry::Missing { width, height },
         }
@@ -254,7 +261,10 @@ impl LightmapPoolModel {
     pub fn table_bytes(&self) -> Vec<u8> {
         let addresses: Vec<Option<BlockAddresses>> =
             (0..self.block_count()).map(|b| self.addresses(b)).collect();
-        block_table_bytes(self.demand.extents(), &addresses)
+        let mask_extents: Vec<[(u32, u32); 2]> = (0..self.block_count())
+            .map(|b| self.demand.mask_extents(b))
+            .collect();
+        block_table_bytes(self.demand.extents(), &mask_extents, &addresses)
     }
 
     /// The last drain's plan, updated by `fail_install` and cleared by
@@ -277,7 +287,8 @@ impl LightmapPoolModel {
         self.halves(block).any(|(half, _)| half == kind)
     }
 
-    /// `block`'s extent rounded to its slot, the same in either pool.
+    /// `block`'s lightmap extent rounded to its slot.
+    #[cfg(test)]
     fn slot_extent(&self, block: u32) -> (u32, u32) {
         self.pools.lightmap.alloc_extent(block)
     }

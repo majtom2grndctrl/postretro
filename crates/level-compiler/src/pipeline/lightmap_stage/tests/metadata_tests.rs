@@ -209,6 +209,11 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
         }
     }
     old_section.update(&TRACER_EPOCH.to_le_bytes());
+    // Coded planes append the codec identity.
+    postretro_level_format::coded_plane::CodecIdentity::current(
+        postretro_level_format::coded_plane::BlockCodec::Zstd,
+    )
+    .fold_into(&mut old_section);
     assert_eq!(
         *old_section.finalize().as_bytes(),
         lightmap_layer::section_input_hash(
@@ -220,6 +225,9 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
             TEXEL_STEP_THRESHOLD,
             &prepared.cut_parents,
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd
+            ),
         )
     );
 
@@ -246,6 +254,10 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
     ] {
         old_mask.update(&word.to_le_bytes());
     }
+    postretro_level_format::coded_plane::CodecIdentity::current(
+        postretro_level_format::coded_plane::BlockCodec::Zstd,
+    )
+    .fold_into(&mut old_mask);
     assert_eq!(
         *old_mask.finalize().as_bytes(),
         shadowmask_bake::shadowmask_atlas_input_hash(
@@ -257,6 +269,9 @@ fn lazy_pairs_and_streamed_memos_keep_legacy_order_and_keys() {
             prepared.layer_count,
             &[],
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd
+            ),
         )
     );
 }

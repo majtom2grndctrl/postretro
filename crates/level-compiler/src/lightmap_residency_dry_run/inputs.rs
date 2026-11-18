@@ -57,11 +57,9 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
             let index =
                 ShadowmaskBlockIndex::from_prefix(&bytes, bytes.len() as u64, &lightmap, bounds)
                     .context("parse ShadowmaskAtlas")?;
-            let block_bytes: Vec<u64> = index
-                .records
-                .iter()
-                .map(|r| u64::from(r.group_a.len) + u64::from(r.group_b.len))
-                .collect();
+            // Decoded bytes: what a block costs in hand and to upload,
+            // whatever its planes' codec.
+            let block_bytes: Vec<u64> = index.records.iter().map(|r| r.decoded_bytes()).collect();
             ShadowmaskState::Stored(ShadowmaskFormat {
                 payload_bytes: block_bytes.iter().sum(),
                 block_bytes,
@@ -86,8 +84,8 @@ pub(crate) fn read_dry_run_input(path: &Path) -> anyhow::Result<DryRunInput> {
                 cell: record.cell_id,
                 width: u32::from(record.width),
                 height: u32::from(record.height),
-                irradiance_bytes: u64::from(record.irradiance.len),
-                direction_bytes: u64::from(record.direction.len),
+                irradiance_bytes: u64::from(record.raw_len[0]),
+                direction_bytes: u64::from(record.raw_len[1]),
             })
             .collect(),
         shadowmask,

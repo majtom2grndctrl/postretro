@@ -222,6 +222,7 @@ fn analytic_and_baked_chart_walks_both_skip_non_positive_extent() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let shared = SharedAtlas {
         charts: &charts,
@@ -327,12 +328,20 @@ fn incremental_layer_fold_matches_monolithic_section_bytes() {
     };
     let warm_section = compose_section(&light_refs, &shared, &layer_bvh, &layer_prims, &layer_geo);
     assert_eq!(
-        mono_atlas.encode_section(&mono_prepared.layout, true),
+        mono_atlas.encode_section(
+            &mono_prepared.layout,
+            true,
+            postretro_level_format::coded_plane::BlockCodec::Raw
+        ),
         warm_section,
         "layer-major incremental warm fold must equal the cold monolith byte-for-byte"
     );
     assert_eq!(
-        mono_atlas.encode_section(&mono_prepared.layout, false),
+        mono_atlas.encode_section(
+            &mono_prepared.layout,
+            false,
+            postretro_level_format::coded_plane::BlockCodec::Raw
+        ),
         compose_section_with_format(
             &light_refs,
             &shared,
@@ -740,8 +749,8 @@ fn sparse_writer_uses_adjacent_values_around_coverage_epsilon() {
 
 #[test]
 fn sparse_cache_epochs_are_pinned() {
-    assert_eq!(LAYER_FORMAT_VERSION, 13);
-    assert_eq!(LIGHTMAP_SECTION_VERSION, 5);
+    assert_eq!(LAYER_FORMAT_VERSION, 14);
+    assert_eq!(LIGHTMAP_SECTION_VERSION, 7);
 }
 
 #[test]
@@ -1151,7 +1160,11 @@ fn all_sdf_fallback_encodes_every_block_uncovered() {
     uncovered.dilate();
     assert_eq!(
         warm_fallback,
-        uncovered.encode_section(shared.layout, true),
+        uncovered.encode_section(
+            shared.layout,
+            true,
+            postretro_level_format::coded_plane::BlockCodec::Raw
+        ),
         "all-Sdf warm fallback must encode every block from an uncovered plane"
     );
     assert_eq!(warm_fallback.blocks.len(), 2);
@@ -1173,6 +1186,15 @@ fn lone_chart_layout_fingerprint(
     height_texels: u32,
     uv_extent: [f32; 2],
 ) -> Vec<u8> {
+    lone_chart_layout_fingerprint_placed(width_texels, height_texels, uv_extent, false)
+}
+
+fn lone_chart_layout_fingerprint_placed(
+    width_texels: u32,
+    height_texels: u32,
+    uv_extent: [f32; 2],
+    transposed: bool,
+) -> Vec<u8> {
     let charts = [Chart {
         origin: Vec3::ZERO,
         u_axis: Vec3::X,
@@ -1191,6 +1213,7 @@ fn lone_chart_layout_fingerprint(
         x: 0,
         y: 0,
         layer: 0,
+        transposed,
     }];
     atlas_layout_fingerprint(&SharedAtlas {
         charts: &charts,
@@ -1199,6 +1222,20 @@ fn lone_chart_layout_fingerprint(
         atlas_height: 64,
         layout: &BlockLayout::whole_layers(64, 64, &placements, 2),
     })
+}
+
+/// A chart turned in place, same corner and layer, moves every texel
+/// but its corner, so every layer keyed on the layout must miss once.
+#[test]
+fn atlas_layout_fingerprint_rekeys_a_chart_turned_in_place() {
+    let upright = lone_chart_layout_fingerprint_placed(40, 20, [1.0, 1.0], false);
+    let turned = lone_chart_layout_fingerprint_placed(40, 20, [1.0, 1.0], true);
+    assert_ne!(upright, turned);
+    assert_eq!(
+        turned,
+        lone_chart_layout_fingerprint_placed(40, 20, [1.0, 1.0], true),
+        "the same turned layout keys the same"
+    );
 }
 
 #[test]
@@ -1376,6 +1413,9 @@ fn layer_and_section_keys_fold_the_penumbra_floor_switch() {
             TEXEL_STEP_THRESHOLD,
             &[],
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     assert_ne!(section(true), section(false));
@@ -1438,6 +1478,9 @@ fn lightmap_section_key_changes_with_tracer_epoch() {
             TEXEL_STEP_THRESHOLD,
             &[],
             tracer_epoch,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     assert_ne!(section(TRACER_EPOCH), section(TRACER_EPOCH + 1));
@@ -1491,6 +1534,9 @@ fn section_key_folds_the_cut_map() {
             TEXEL_STEP_THRESHOLD,
             cut_parents,
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         )
     };
     let cut = CutParent {
@@ -2064,8 +2110,73 @@ fn section_key(
         TEXEL_STEP_THRESHOLD,
         &[],
         TRACER_EPOCH,
+        postretro_level_format::coded_plane::CodecIdentity::current(
+            postretro_level_format::coded_plane::BlockCodec::Zstd,
+        ),
     );
     CacheKey::new("lightmap_section", LIGHTMAP_SECTION_VERSION, &h)
+}
+
+// The section memo key folds the codec identity, so a cached id 22
+// written by another codec, zstd level or zstd library version is never
+// reused.
+#[test]
+fn section_key_changes_with_codec_zstd_level_and_version() {
+    use postretro_level_format::coded_plane::{BlockCodec, CodecIdentity};
+    let charts = [Chart {
+        origin: Vec3::ZERO,
+        u_axis: Vec3::X,
+        v_axis: Vec3::Z,
+        uv_min: [0.0, 0.0],
+        uv_extent: [1.0, 1.0],
+        normal: Vec3::Y,
+        width_texels: 5,
+        height_texels: 5,
+        leaf_index: 0,
+        window: None,
+    }];
+    let placements = [ChartPlacement {
+        x: 0,
+        y: 0,
+        layer: 0,
+        transposed: false,
+    }];
+    let shared = SharedAtlas {
+        charts: &charts,
+        placements: &placements,
+        atlas_width: 64,
+        atlas_height: 64,
+        layout: &BlockLayout::whole_layers(64, 64, &placements, 2),
+    };
+    let key = |codec| {
+        section_input_hash(
+            [[0x5a; 32]].into_iter(),
+            &shared,
+            DENSITY,
+            false,
+            crate::lightmap_bake::DIRECTION_TEXEL_SCALE,
+            TEXEL_STEP_THRESHOLD,
+            &[],
+            TRACER_EPOCH,
+            codec,
+        )
+    };
+    let current = CodecIdentity::current(BlockCodec::Zstd);
+    let reference = key(current);
+    assert_eq!(reference, key(current));
+    for other in [
+        CodecIdentity::current(BlockCodec::Raw),
+        CodecIdentity {
+            level: current.level + 1,
+            ..current
+        },
+        CodecIdentity {
+            zstd_version: current.zstd_version + 1,
+            ..current
+        },
+    ] {
+        assert_ne!(reference, key(other), "{other:?}");
+    }
 }
 
 #[test]
@@ -2091,6 +2202,7 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let shared = SharedAtlas {
         charts: &charts,
@@ -2111,6 +2223,9 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             TEXEL_STEP_THRESHOLD,
             &[],
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         ),
     );
     let at_scale_one = CacheKey::new(
@@ -2125,6 +2240,9 @@ fn direction_texel_scale_rekeys_section_without_rekeying_light_layers() {
             TEXEL_STEP_THRESHOLD,
             &[],
             TRACER_EPOCH,
+            postretro_level_format::coded_plane::CodecIdentity::current(
+                postretro_level_format::coded_plane::BlockCodec::Zstd,
+            ),
         ),
     );
     assert_ne!(
@@ -2164,6 +2282,7 @@ fn all_sdf_section_cache_rekeys_when_prepared_dimensions_change() {
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let layout_a = SharedAtlas {
         charts: &charts,
@@ -2216,8 +2335,11 @@ fn compose_section_with_format(
     uncompressed_irradiance: bool,
 ) -> LightmapSection {
     let control = BakeControl::unrestricted();
-    let mut builder =
-        crate::lightmap_bake::BlockSectionBuilder::new(shared.layout, uncompressed_irradiance);
+    let mut builder = crate::lightmap_bake::BlockSectionBuilder::new(
+        shared.layout,
+        uncompressed_irradiance,
+        postretro_level_format::coded_plane::BlockCodec::Raw,
+    );
     for target_layer in 0..atlas_layer_count(shared) {
         let mut plane = if lights.is_empty() {
             empty_composite(shared.atlas_width, shared.atlas_height)

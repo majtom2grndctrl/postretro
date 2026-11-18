@@ -226,10 +226,14 @@ impl LightmapStreamManifest {
         self.payload_from_pair_bytes(block, lightmap, shadowmask)
     }
 
-    /// Split a pair's read buffers into the payload the pool installs. A
+    /// Split a pair's read buffers at each plane's stored length and decode
+    /// every plane: the payload the pool installs, one buffer per plane. A
     /// block with no stored plane has one buffer, and an absent plane comes
     /// back empty: with plane A absent the buffer is exactly plane B, and the
-    /// reverse. Rejects buffers whose lengths disagree with the block's ranges.
+    /// reverse. Rejects buffers whose lengths disagree with the block's
+    /// ranges, and fails by name on a plane that does not decode. Runs on the
+    /// streaming decode pool, or synchronously for capture and tests; never on
+    /// the issuer or the frame thread.
     pub fn payload_from_pair_bytes(
         &self,
         block: u32,
@@ -245,6 +249,10 @@ impl LightmapStreamManifest {
             &ranges.lightmap,
             record.irradiance.len,
         )?;
+        let (irradiance, direction) = self
+            .lightmap
+            .decode_block(block as usize, irradiance, direction)
+            .map_err(|err| lightmap_stream_error(err.to_string()))?;
         let stored = match (ranges.shadowmask, shadowmask) {
             (Some(range), Some(bytes)) => {
                 let group_a_len = self
@@ -260,10 +268,15 @@ impl LightmapStreamManifest {
                 )));
             }
         };
-        let shadowmask = self.shadowmask.is_some().then(|| {
-            let (group_a, group_b) = stored.unwrap_or_default();
-            [group_a, group_b]
-        });
+        let shadowmask = match (&self.shadowmask, stored) {
+            (Some(index), Some((group_a, group_b))) => Some(
+                index
+                    .decode_planes(block as usize, [group_a, group_b])
+                    .map_err(|err| lightmap_stream_error(err.to_string()))?,
+            ),
+            (Some(_), None) => Some([Vec::new(), Vec::new()]),
+            (None, _) => None,
+        };
         Ok(LightmapBlockPayload {
             irradiance,
             direction,
@@ -323,6 +336,10 @@ fn split_pair(
             bytes.len(),
             range.end - range.start
         )));
+    }
+    // A block with one stored plane hands its buffer over whole.
+    if first_len == 0 {
+        return Ok((Vec::new(), bytes));
     }
     let second = bytes.split_off(first_len as usize);
     Ok((bytes, second))

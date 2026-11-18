@@ -34,10 +34,16 @@ fn cell_block_holds_every_chart_of_its_cell_without_overlap() {
     assert_eq!(block.height % 4, 0, "BC-aligned height");
     assert_eq!(block.placements.len(), charts.len());
     let mut occupied = BTreeSet::new();
-    for (rect, &(x, y)) in charts.iter().zip(&block.placements) {
-        assert!(x + rect.width <= block.width && y + rect.height <= block.height);
-        for ty in y..y + rect.height {
-            for tx in x..x + rect.width {
+    for (rect, slot) in charts.iter().zip(&block.placements) {
+        let (x, y) = (slot.x, slot.y);
+        let (w, h) = if slot.transposed {
+            (rect.height, rect.width)
+        } else {
+            (rect.width, rect.height)
+        };
+        assert!(x + w <= block.width && y + h <= block.height);
+        for ty in y..y + h {
+            for tx in x..x + w {
                 assert!(occupied.insert((tx, ty)), "overlap at {tx},{ty}");
             }
         }

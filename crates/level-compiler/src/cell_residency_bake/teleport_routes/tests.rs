@@ -7,6 +7,7 @@ use postretro_level_format::cell_locator::{
 };
 use postretro_level_format::cell_visibility::CoupledPairRecord;
 use postretro_level_format::cells::{CELL_FLAG_EXTERIOR, CELL_FLAG_SOLID, CellRecord};
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::environment_volumes::EnvironmentPlane;
 use postretro_level_format::portals::PortalsSection;
 use postretro_level_format::teleporters::TeleporterRecord;
@@ -328,8 +329,14 @@ fn teleport_residency_disabled_parity_cold_warm_bytes_and_same_cell_key_mutation
     let cold = bake(&section, None);
     let warm = bake(&section, Some(&cache));
     let hit = bake(&section, Some(&cache));
-    assert_eq!(cold.to_bytes(), warm.to_bytes());
-    assert_eq!(hit.to_bytes(), cold.to_bytes());
+    assert_eq!(
+        cold.to_bytes(BlockCodec::Raw),
+        warm.to_bytes(BlockCodec::Raw)
+    );
+    assert_eq!(
+        hit.to_bytes(BlockCodec::Raw),
+        cold.to_bytes(BlockCodec::Raw)
+    );
     let mut disabled = section.clone();
     disabled.teleporters[0].enabled_on_spawn = false;
     assert_eq!(bake(&disabled, None), cold);
@@ -345,7 +352,10 @@ fn teleport_residency_disabled_parity_cold_warm_bytes_and_same_cell_key_mutation
     )
     .unwrap()
     .unwrap();
-    assert_ne!(without.to_bytes(), cold.to_bytes());
+    assert_ne!(
+        without.to_bytes(BlockCodec::Raw),
+        cold.to_bytes(BlockCodec::Raw)
+    );
     let key = |s: &TeleportersSection, t: &BspTree| {
         cell_residency_set_cache_key(&cells, &portals, &locator, s, Some(&CellHull::per_leaf(t)))
             .as_filename()

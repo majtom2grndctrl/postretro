@@ -208,19 +208,18 @@ yields the band before seam-warm work, then lower priority, then the farthest le
 least recently visible. Optional requests stop once half the stream permits are held, so
 the band never delays fresh mandatory work. This policy stops at the CPU planner: it adds
 no renderer binding, shader branch, portal traversal, or visibility behavior. One issuer
-thread, shared with lightmap blocks (below),
-performs every id-50 read from the validated open file, off the frame path: mandatory
-work before optional work, each tier in ascending file offset, with nearby chunks coalesced
-into one read. It takes new requests after every read, so fresh visible demand preempts
-queued optional work, and it skips any request whose cluster has left the target set. A small
-pool decodes and verifies chunks. A completion installs only when generation, content tag,
-target, and chunk hash still match. At the one renderer drain before SH compose, evictions
-first invalidate sample words; admitted clusters install base and sparse data, then
-compose only their affected affinity rows. Each drain admits ready clusters in priority
-order up to the decoded-byte budget it shares with lightmap blocks, always at least one,
-and stops rather than skipping
-ahead to smaller lower-priority work, so frame cost tracks bytes rather than cluster
-count. A newly installed cluster remains unavailable to sampling until the next drain,
+thread, shared with lightmap blocks (below), performs every id-50 read from the validated
+open file, off the frame path: mandatory work before optional work, each tier in ascending
+file offset, with nearby chunks coalesced into one read. It takes new requests after every
+read, so fresh visible demand preempts queued optional work, and it skips any request
+whose cluster has left the target set. The level's decode pool (below) decodes and
+verifies chunks. A completion installs only when generation, content tag, target, and
+chunk hash still match. At the one renderer drain before SH compose, evictions first
+invalidate sample words; admitted clusters install base and sparse data, then compose only
+their affected affinity rows. Each drain admits ready clusters in priority order up to the
+decoded-byte budget it shares with lightmap blocks, always at least one, and stops rather
+than skipping ahead to smaller lower-priority work, so frame cost tracks bytes rather than
+cluster count. A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
 reaches the ambient floor.
@@ -237,24 +236,27 @@ places blocks in two pools of 2048² array layers: the lightmap pool (irradiance
 and the mask pool, where each present BC5 plane is its own placement. A block's lightmap and
 its two planes can sit at three different layers and offsets. Block identity resolves in the
 forward vertex stage. Each world vertex carries block id + 1 (0 = no lightmap) and a
-block-local UV (§6). Group 6 binding 0 is a VERTEX-only storage table of one `vec4<u32>` per
-id: the lightmap address, the plane A address, the plane B address, each a packed layer and
-offset, then packed block extent and flags (RESIDENT, NONE, PLANE_A, PLANE_B, NO_MASK_POOL).
+block-local UV (§6). Group 6 binding 0 is a VERTEX-only storage table of 32 bytes per id, two
+`vec4<u32>`. The first: the lightmap address, the plane A address, the plane B address, each a
+packed layer and offset, then packed block extent and flags (RESIDENT, NONE, PLANE_A, PLANE_B,
+NO_MASK_POOL). The second: the plane A extent and the plane B extent.
 The vertex stage fetches its entry once, interpolates the block-local texel (UV × extent), and
-passes layer, flags, offset and extent flat, plus both plane addresses still packed in one
-flat varying, so no fragment binding is added. The fragment decodes a plane address only on
-the mask path. It clamps the texel to the block's half-texel rect, snaps it to 1/256 texel,
+passes layer, flags, offset and extent flat, plus both plane addresses and extents still packed
+in flat varyings, so no fragment binding is added. The fragment decodes a plane address only on
+the mask path. It clamps the texel to the block's half-texel rect (on the mask path, each
+plane's own extent), snaps it to 1/256 texel,
 then adds the pool offset (`lightmap_pool_uv`). A block therefore samples identically wherever
 the pools place it, and bilinear taps never reach a neighbour. Table writes happen on install,
 eviction and repack, never per frame.
 
-*Separate mask layout* (decided, not yet built; `plans/ready/lightmap-compact-storage`). Masks
-leave the lightmap layout. Each block's mask block holds only the charts of mask-owning faces,
-each a pure translation of its lightmap chart. Plane B is a sub-rect at the mask block's origin
-holding every chart that owns channel 2 or 3. The table entry doubles in size: today's fields,
-then per-plane mask extents. Each owned face carries its lightmap-to-mask texel offset on
-the owner stream, never on the world vertex. The fragment adds it on the mask path and clamps
-each plane to its own extent. One table write still carries both halves of an entry.
+*Separate mask layout.* Masks have their own layout, apart from the lightmap's. Each block's
+mask block holds only the charts of mask-owning faces, each a pure translation of its lightmap
+chart. Plane A spans the mask block; plane B is a sub-rect at its origin holding every chart that
+owns channel 2 or 3. Each owned face carries its lightmap-to-mask texel offset in the owner
+vertex stream (12-byte stride, the offset a packed i16 pair at location 7), never on the world
+vertex. The vertex stage passes it flat; the fragment adds it on the mask path and clamps each
+plane to its own extent. One table write carries both words of an entry, so no frame samples a
+stale mask address.
 
 In a level with blocks, entry 0 means no lightmap: zero static irradiance, neutral
 direction, all-visible shadowmask. A real block whose entry is not resident is a miss. A miss drops exactly the
@@ -306,18 +308,37 @@ up to the baked maximum of 32 m) for both resources. It is not a player setting.
 SH clusters and lightmap blocks share one read issuer thread and one per-drain byte
 budget. The issuer reads the mandatory tier (SH visible, pinned and lead; block visible,
 pinned and lead) before the optional tier (SH seam-warm, band and hysteresis; the lightmap
-band) across both resources, each tier in ascending file offset. Lightmap reads merge only
-byte-contiguous ranges, so bytes read from ids 22/42 equal the requested ranges plus the
-index. The drain admits ready work in tier order up to the shared budget, always at least
-one item. Blocks upload in their stored formats with no decode, and a pair is admitted or
-deferred whole.
+band) across both resources, each tier in ascending file offset. A pending request's tier
+is its item's live class, which each controller writes into its resource's target set
+(`crates/postretro/src/streaming/target_set.rs`) as it retargets, storing only the classes
+and membership that change; the issuer and the decode pool read it there, so an item that
+turns mandatory, or is demoted, while its read or decode waits moves in place, with no
+second submission. Every submission is therefore a read holding one of its resource's
+permits until the frame admits its completion, and the issuer's queue and the decode queue
+each hold one entry per permit, never more. Lightmap reads merge only byte-contiguous
+ranges, so bytes read from ids 22/42 equal the requested ranges plus the index. The drain
+admits ready work in tier order up to the shared budget, always at least one item. Blocks
+upload as BC data after a lossless decode off the frame thread (below), and a pair is
+admitted or deferred whole.
 
-*Lossless decode* (decided, not yet built; `plans/ready/lightmap-compact-storage`). Lightmap
-pairs and SH chunks arrive zstd-coded; uploads still take BC data unchanged. The issuer only
-reads. One decode pool serves both resources. It spawns and retires with the issuer, whether or
-not SH streams async. A thread takes the highest-tier queued job, so mandatory decode never
-queues behind optional decode of either resource. A pair counts at its decoded size against
-the drain budget and the in-hand caps, and reaches the frame thread already split per plane.
+*Lossless decode.* Lightmap pairs and SH chunks are stored raw or zstd-coded; uploads take
+BC data unchanged after decode. The issuer only reads. The level's one shared decode pool
+(`crates/postretro/src/streaming/decode_pool.rs`, `(cores/2).clamp(1,3)` threads) serves
+both resources. It spawns and retires with the issuer, whether or not SH streams async. A
+thread takes the queued job of best rank, read live from the target set at each pickup. A
+job whose item has left its targets goes first: it releases its charge and completes
+cancelled without decoding, so it never holds its permit behind queued decodes. Decodes
+follow in class order, Visible, then Pinned, then Lead, then the optional classes, with SH
+before lightmap at equal class as in the drain, then oldest first. A mandatory decode of
+either resource is therefore taken before every queued optional decode, and waits only for
+decodes already running and for more urgent mandatory work: a visible SH chunk goes ahead of
+a lead lightmap pair queued before it. A job whose item is demoted while queued loses its
+place. A pair counts at its decoded size, from the moment it queues, against the drain
+budget, the in-hand caps and the route ledger, and reaches the frame thread already split
+per plane, so admitting it copies no payload. A block whose decode fails is never uploaded
+and its read completes as failed; a decode that panics fails its item the same way. Dropping
+the pool or the issuer delivers or releases every queued pair, and the ledger returns to
+zero. An all-resident load decodes on the loading thread.
 
 The renderer owns both pools, their placement, upload, growth, repack and retirement; the
 placement policy is wgpu-free logic in `postretro-render-cpu`. One journal covers both pools,
@@ -326,7 +347,7 @@ so a pair or a whole drain undoes as one.
 **Bounded lightmap pool.** The compiler bounds worst mandatory demand, each pool is sized once at load from that bound plus a margin, and growth is a logged exception.
 
 - *Pairs.* A block is one atomic pair across both pools: its lightmap half and each present plane install in one drain or not at all, and leave together. A block with no plane takes no mask placement and no mask read. Evicting a band block frees both halves, even when only one pool needed room, and a band block one pool's repack drops leaves the other pool too.
-- *Pool size.* Each pool's first generation is its compiled bound (`build_pipeline.md` §PRL section IDs, Lightmap pool bound) times the shared 5/4 margin, rounded up, and no more than the level needs all-resident. Shelf packing is not monotone, so a bound above that all-resident count stands: a pool never starts below its bound. A pool with anything to hold takes at least one layer, so band pairs can land even at a bound of 0; a pool with nothing to hold takes none, and no spare. Each pool with layers carries one spare, and the device's array-layer limit bounds the whole. The margin holds drawn demand the bound does not model, and keeps band blocks, which cut reads and misses. The compiler prices the same figures, so the Build Summary's bytes are the bytes allocated. Only a harness overrides a first generation, one figure per pool.
+- *Pool size.* Each pool's first generation is its compiled bound (`build_pipeline.md` §PRL section IDs, Lightmap pool bound) times the shared 5/4 margin, rounded up, raised to a floor of 96 MiB in that pool's own layers (never under two), and capped at the layers the level needs all-resident times the same margin (`first_generation_layers` in `crates/level-format/src/lightmap_pool/sizing.rs`). The cap carries the margin because the all-resident count is a whole-level pack from empty that incremental placement cannot reach: a pool at exactly that count fragments and refuses band pairs and misses more blocks on realtime walks. The floor raises a small level to its cap: a small bound's margin is a layer or two, and a pool at the bare margin missed blocks on a small test level's walk where its capped pool missed none. The floor is a byte budget so it costs the same VRAM whatever the level's formats: 16 layers of the shipped BC6H lightmap pool, 24 of the mask pool, 2 of an uncompressed one. Ratio, floor and cap were chosen by late blocks on camera walks, not by the budget warning. Shelf packing is not monotone, so a bound above the cap stands: a pool never starts below its bound. A pool with anything to hold therefore takes at least two layers, so band pairs can land even at a bound of 0; a pool with nothing to hold takes none, and no spare. Each pool with layers carries one spare, and the device's array-layer limit bounds the whole. The margin holds drawn demand the bound does not model, and keeps band blocks, which cut reads and misses. The compiler prices the same figures, so the Build Summary's bytes are the bytes allocated. Only a harness overrides a first generation, one figure per pool.
 - *No second figure.* The pool's own layers, grown ones included, are the only capacity. No drain carries another, no slider sets one, and band blocks may land in any layer.
 - *Drain.* Each drain frees untargeted blocks. A mandatory or visible pair lands each half in its reserved room or anywhere in its pool's layers, evicting resident band blocks farthest lead first, then returns each victim all of whose rects are still free. A victim with any rect taken stays out whole. Band pairs take free room clear of reservations or are refused whole, naming the pools short of room, and never repack or grow a pool. A refused pair is read again only when the pool that refused it has room. A full mask pool stops band reads only for pairs with planes.
 - *Reserved room.* When targets change or a pool grows, each pool reserves room for every mandatory and visible target without any, tallest first, from free space only, never by eviction. A reservation is a real allocation and not a placement: the block stays a miss with no table write until its pair uploads, and no band pair lands there. It returns in the drain its target leaves targeted demand, by removal or by dropping to band. Band headroom leaves reserved room out. A demand arriving over several drains therefore needs at most one repack. Past the pool, a later pair may take an unready target's room through a pairs-only repack, because growth comes last.

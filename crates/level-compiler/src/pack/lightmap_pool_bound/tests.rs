@@ -64,6 +64,7 @@ fn lightmap(blocks: &[Block]) -> LightmapSection {
         blocks: blocks
             .iter()
             .map(|block| LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: block.cell,
                 width: block.extent.0,
                 height: block.extent.1,
@@ -76,13 +77,14 @@ fn lightmap(blocks: &[Block]) -> LightmapSection {
 
 /// A stored plane only has to be non-empty.
 fn shadowmask(blocks: &[Block]) -> ShadowmaskAtlasSection {
-    ShadowmaskAtlasSection {
-        owners: Vec::new(),
-        blocks: blocks
+    ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
+        blocks
             .iter()
             .map(|block| block.planes.map(|stored| vec![1; usize::from(stored)]))
             .collect(),
-    }
+        blocks.iter().map(|block| block.extent),
+    )
 }
 
 fn cell_records(flags: &[u32]) -> CellsSection {
@@ -564,8 +566,10 @@ fn test_prices() -> LayerPrices {
 fn build_summary_reports_bound_and_warns_past_threshold() {
     let capture = LogCapture::start();
 
-    // Streamed, at the threshold exactly: 32 × 6 + 48 × 4 = 384 MiB.
-    let at = priced(layers(31, 47), layers(31, 47), 3);
+    // Streamed, at the threshold exactly: 32 × 6 + 48 × 4 = 384 MiB. The
+    // whole level packs a margin under the bound (shelf packing is not
+    // monotone), so the cap holds each pool at its bound.
+    let at = priced(layers(31, 47), layers(24, 37), 3);
     let text = lines_of(&at);
     assert_eq!(
         text,
@@ -577,7 +581,7 @@ fn build_summary_reports_bound_and_warns_past_threshold() {
     capture.assert_not_logged(Level::Warn, "Lightmap pool memory");
 
     // One mask layer over.
-    let over = priced(layers(31, 48), layers(31, 48), 3);
+    let over = priced(layers(31, 48), layers(24, 38), 3);
     let text = lines_of(&over);
     assert!(
         text.starts_with("Lightmap pool memory: 388.0 MiB"),
@@ -763,22 +767,31 @@ fn assert_summary_bytes(level: &BoundLevel, bound: &LightmapPoolBound, hand: u64
 
 #[test]
 fn summary_bytes_equal_first_generation_bytes() {
-    // Below the cap: 8 × 5/4 = 10 of 20 lightmap layers and, with both planes,
-    // 16 × 5/4 = 20 of 40 mask layers. Each pool adds its spare.
+    // Below the cap: the 96 MiB floor is 16 lightmap layers and 24 mask
+    // layers. 8 × 5/4 = 10 of 20 lightmap layers rises to 16 and, with both
+    // planes, 16 × 5/4 = 20 of 40 mask layers rises to 24. Each pool adds its
+    // spare.
     let level = full_block_level(20, 8, BOTH_PLANES);
-    assert_summary_bytes(&level, &level.resolve(), 11 * 6 + 21 * 4);
+    assert_summary_bytes(&level, &level.resolve(), 17 * 6 + 25 * 4);
 
-    // At the cap: 10 × 5/4 rounds to 13, the whole level's 13 layers, and
-    // plane A alone gives the mask pool the same figures. Spares stay.
+    // At the cap: 10 × 5/4 rounds to 13 and rises toward the floor, stopping
+    // at the whole level's 12 layers × 5/4 = 15, and plane A alone gives the
+    // mask pool the same figures. Spares stay.
+    let level = full_block_level(12, 10, PLANE_A);
+    assert_summary_bytes(&level, &level.resolve(), 16 * 6 + 16 * 4);
+
+    // No id 51: the whole level, with no margin and no spare in either pool.
+    assert_summary_bytes(&level, &level.resolve_without_id_51(), 12 * 6 + 12 * 4);
+
+    // A cap between the margin and the floor: 10 × 5/4 = 13 rises to the
+    // lightmap floor of 16 under the cap of 13 × 5/4 = 17, while the mask
+    // pool's floor of 24 stops at that cap.
     let level = full_block_level(13, 10, PLANE_A);
-    assert_summary_bytes(&level, &level.resolve(), 14 * 6 + 14 * 4);
-
-    // No id 51: the whole level, with no spare in either pool.
-    assert_summary_bytes(&level, &level.resolve_without_id_51(), 13 * 6 + 13 * 4);
+    assert_summary_bytes(&level, &level.resolve(), 17 * 6 + 18 * 4);
 
     // Id 42 with no present plane: no mask pool, so no mask spare either way.
     let level = full_block_level(20, 8, NO_PLANES);
-    assert_summary_bytes(&level, &level.resolve(), 11 * 6);
+    assert_summary_bytes(&level, &level.resolve(), 17 * 6);
     assert_summary_bytes(&level, &level.resolve_without_id_51(), 20 * 6);
 }
 
@@ -810,4 +823,45 @@ fn a_cell_with_split_block_runs_fails_by_name() {
         .to_string();
     assert!(error.contains("Lightmap pool bound"), "{error}");
     assert!(error.contains("not contiguous"), "{error}");
+}
+
+// The compiler prices each mask plane at its own extent, exactly as the
+// runtime reads the written section back: a plane-B sub-rect counts at its
+// sub-rect, a block with no owned face not at all.
+#[test]
+fn pool_demand_from_the_section_equals_the_demand_of_its_parsed_indices() {
+    use postretro_level_format::shadowmask_atlas::{
+        MaskExtents, NO_FACE_OWNERS, ShadowmaskAtlasSection, ShadowmaskOwnerBounds,
+    };
+    let level = lightmap(&[block(0, (16, 8), [false; 2]), block(1, (8, 8), [false; 2])]);
+    let plane = |w: u32, h: u32, byte: u8| vec![byte; group_plane_len(w, h).unwrap() as usize];
+    let section = ShadowmaskAtlasSection {
+        owners: vec![NO_FACE_OWNERS; 2],
+        mask_offsets: vec![[0; 2]; 2],
+        blocks: vec![[plane(8, 8, 1), plane(4, 4, 2)], [Vec::new(), Vec::new()]],
+        codecs: vec![postretro_level_format::coded_plane::BlockCodec::Raw; 2],
+        extents: vec![
+            MaskExtents {
+                mask: (8, 8),
+                plane_b: (4, 4),
+            },
+            MaskExtents::NONE,
+        ],
+    };
+    let compiled = pool_demand(&level, Some(&section)).unwrap();
+    let parsed = ShadowmaskAtlasSection::from_bytes(
+        &section.to_bytes(),
+        &level.index(),
+        ShadowmaskOwnerBounds {
+            face_count: 2,
+            static_spec_light_count: 1,
+        },
+    )
+    .expect("the section parses");
+    assert_eq!(
+        compiled,
+        PoolDemand::of_indices(&level.index(), Some(&parsed.index()))
+    );
+    assert_eq!(compiled.item_extent(PoolKind::Mask, 1), (4, 4));
+    assert_eq!(compiled.items(PoolKind::Mask), vec![0, 1]);
 }

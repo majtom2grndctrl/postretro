@@ -113,6 +113,13 @@ bitflags = "2"
 # to resolve material textures to their baked handle (no hardcoded key table).
 blake3 = "1"
 
+# Lossless coding of streamed level payloads (ids 22/42 planes): checksummed
+# zstd frames, encoded by the compiler and decoded by the runtime with the same
+# libzstd bindings. Default features off: no legacy-format decoders, no
+# dictionary builder. The compiler folds the library version into its memo
+# keys, since zstd output may change across versions.
+zstd = { version = "0.14", default-features = false }
+
 # Parallelism
 rayon = "1"
 

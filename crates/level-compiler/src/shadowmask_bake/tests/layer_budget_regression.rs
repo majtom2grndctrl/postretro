@@ -2,27 +2,31 @@
 use super::*;
 
 // Frozen before production edits at 7e7614d36. The id 42 digests were recaptured
-// for `SMB8`, after these same rows passed with the old tag and every plane stored.
+// for `SMB8`, after these same rows passed with the old tag and every plane stored,
+// and again for `SMB9`, after `assert_masks_are_translations` showed every owned
+// chart's mask texels byte-equal to its lightmap-layout fill; owners and drop
+// reports kept their digests. Coded planes are pinned decoded (stored raw), so
+// the digests hold the texels, not a zstd build's frames.
 fn expected_pin(label: &str) -> (&'static str, &'static str) {
     match label {
         "one-layer" => (
-            "8b48369075929a996ba34b5e0f1e533c4832b93338d097e43678a21038197fc8",
+            "51e264dcd633b3cea1d9970025eba6dcce2744a55642de3b2513c7120fb1f574",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "three-layers" => (
-            "182a8eff47af770061df6bda93be75a02a65a86dbb152c8bc7967fc8a560bef2",
+            "20e35c8a5e46472ebccc67aa7db54be032a08232ae160c6bb07cb0310e1fbbd5",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "dark-middle-layer" => (
-            "578ffdb55b973979735fa30d7064cb4ee3d8c2c3b32102b3a517f3f7cd1dc31a",
+            "5f8f8b8ebbea7ff5690f186cbab7b6c13ca32f4d4c189ae380a3d4c67b0dd251",
             "5870c73433323b29c315e4b0abc0542c5d472273ea30e0f0f5addae00e3b3800",
         ),
         "cut-same-layer" => (
-            "56b715df9134d63649a862424b4d66e7896ec84c10055d1cfe1244cbe79dcae6",
+            "fa2a5765e92b0865904f75459cc3b7f37c5fb08fea01163191ffafc823dd8fdc",
             "0f272f137ea21210d2692c8680b9eb0db62508e8e9573a3e41a339c730ded9cb",
         ),
         "cut-first-to-last" => (
-            "f37aadd2d059eefd33e38077874874cb5bc533635eab1a9121636e996130f0ed",
+            "2a20613d8a8a60a253964642d98401c48ab5067fc9b393c1182338ff2134438f",
             "0f272f137ea21210d2692c8680b9eb0db62508e8e9573a3e41a339c730ded9cb",
         ),
         "cut-owners-baked-nothing" => (
@@ -34,11 +38,21 @@ fn expected_pin(label: &str) -> (&'static str, &'static str) {
 }
 
 fn golden(label: &str, section: Option<ShadowmaskAtlasSection>, report: OwnerReport) {
-    let bytes = section
-        .as_ref()
-        .map_or_else(Vec::new, ShadowmaskAtlasSection::to_bytes);
+    let bytes = section.as_ref().map_or_else(Vec::new, |section| {
+        section
+            .decoded()
+            .expect("the bake's coded planes decode")
+            .to_bytes()
+    });
     let report_text = format!("{report:?}");
     let expected = expected_pin(label);
+    println!(
+        "PIN_BASELINE {label} id42={} owners={:?} report={} report_digest={}",
+        blake3::hash(&bytes).to_hex(),
+        section.as_ref().map(|section| &section.owners),
+        report_text,
+        blake3::hash(report_text.as_bytes()).to_hex()
+    );
     assert_eq!(
         blake3::hash(&bytes).to_hex().as_str(),
         expected.0,
@@ -48,13 +62,6 @@ fn golden(label: &str, section: Option<ShadowmaskAtlasSection>, report: OwnerRep
         blake3::hash(report_text.as_bytes()).to_hex().as_str(),
         expected.1,
         "{label}: owner drop report"
-    );
-    println!(
-        "PIN_BASELINE {label} id42={} owners={:?} report={} report_digest={}",
-        blake3::hash(&bytes).to_hex(),
-        section.as_ref().map(|section| &section.owners),
-        report_text,
-        blake3::hash(report_text.as_bytes()).to_hex()
     );
 }
 
@@ -95,6 +102,9 @@ fn no_cut(layers: u32, dark_middle: bool) -> (Option<ShadowmaskAtlasSection>, Ow
         });
     }
     let result = fill.finish(&shared);
+    if let Some(section) = &result.0 {
+        super::assert_masks_are_translations(&shared, section);
+    }
     assert_eq!(
         probe.peak(),
         (CHART * CHART * 4) as usize,
@@ -110,6 +120,14 @@ fn no_cut(layers: u32, dark_middle: bool) -> (Option<ShadowmaskAtlasSection>, Ow
 }
 
 fn cut(spans_layers: bool, all_dark: bool) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
+    cut_dumped(spans_layers, all_dark, None)
+}
+
+fn cut_dumped(
+    spans_layers: bool,
+    all_dark: bool,
+    dump: Option<crate::chart_dump::SharedDumpWriter>,
+) -> (Option<ShadowmaskAtlasSection>, OwnerReport) {
     let mut fixture = CutAtlas::new();
     let layers = if spans_layers { 4 } else { 1 };
     fixture.atlas.layer_count = layers;
@@ -151,6 +169,7 @@ fn cut(spans_layers: bool, all_dark: bool) -> (Option<ShadowmaskAtlasSection>, O
         vec![channels],
         None,
     );
+    fill.chart_dump = dump.map(crate::chart_dump::capture::MaskCapture::new);
     let probe = fill.probe.clone();
     for layer in 0..layers {
         for (arrival, light) in eligible.iter().enumerate() {
@@ -182,6 +201,10 @@ fn cut(spans_layers: bool, all_dark: bool) -> (Option<ShadowmaskAtlasSection>, O
         }
     }
     let result = fill.finish(&shared);
+    if let Some(section) = &result.0 {
+        // A carried block's layout is fixed after its last cut face.
+        super::assert_masks_are_translations(&shared, section);
+    }
     let layer_bytes = fixture.atlas.width as usize * CHART as usize * 4;
     let carry = if spans_layers { layer_bytes } else { 0 };
     assert!(
@@ -217,4 +240,51 @@ fn raw_fill_probes_do_not_mix_simultaneous_bakes() {
         let _ = one.join().unwrap();
         let _ = three.join().unwrap();
     });
+}
+
+// The cut's first sub-face's block is carried from layer 0 to the cut's last
+// layer: the dump records it once, when the carry is encoded, holding the
+// values BC5 encodes; a chart no light owns is not recorded.
+#[test]
+fn chart_dump_records_a_carried_cut_chart_once_from_its_final_values() {
+    use crate::chart_dump::reader::DumpReader;
+    use crate::chart_dump::{ChartDumpConfig, DumpKind, SharedDumpWriter};
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = ChartDumpConfig {
+        dir: dir.path().to_path_buf(),
+        texels: true,
+    };
+    let writer = SharedDumpWriter::create(&config, DumpKind::Mask).unwrap();
+    let (section, _) = cut_dumped(true, false, Some(writer.clone()));
+    let raw = take_last_raw_fill();
+    writer.finish().expect("each chart recorded once");
+    let section = section.expect("the cut owns channels");
+
+    let reader = DumpReader::open(dir.path(), DumpKind::Mask).unwrap();
+    let owned: Vec<u32> = (0..section.owners.len() as u32)
+        .filter(|&face| section.owners[face as usize] != NO_FACE_OWNERS)
+        .collect();
+    let recorded: Vec<u32> = reader.entries.keys().map(|key| key.face).collect();
+    assert_eq!(recorded, owned);
+    assert!(recorded.contains(&0), "the carried sub-face is recorded");
+
+    let width = CutAtlas::new().atlas.width as usize;
+    let plane = width * CHART as usize * 4;
+    for entry in reader.entries.values() {
+        let meta = &entry.meta;
+        assert_eq!(meta.owners, section.owners[meta.key.face as usize]);
+        let texels = reader
+            .read_plane(entry, crate::chart_dump::format::PlaneKind::Mask)
+            .unwrap()
+            .unwrap();
+        let p = &meta.placement;
+        let mut expected = Vec::new();
+        for y in 0..meta.height as usize {
+            let start = p.layer as usize * plane
+                + ((p.layer_y as usize + y) * width + p.layer_x as usize) * 4;
+            expected.extend_from_slice(&raw[start..start + meta.width as usize * 4]);
+        }
+        assert_eq!(texels, expected, "{}: the values BC5 encodes", meta.key);
+    }
 }

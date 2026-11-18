@@ -10,8 +10,8 @@ use super::cell_blocks::POOL_LAYER_EDGE;
 use super::{ChartRect, DryRunInput, FaceSlot};
 use crate::chart_raster::ChartPlacement;
 use crate::lightmap_bake::{
-    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, pack_cell_sub_blocks, pack_layers,
-    pack_layers_with_layer_limit,
+    Chart, LightmapBakeError, MAX_ATLAS_DIMENSION, PACK_HEURISTICS, pack_cell_sub_blocks,
+    pack_layers, pack_layers_with_layer_limit,
 };
 
 /// A cell that cannot pack alone into one layer of the edge. Leaf cohesion forbids
@@ -80,6 +80,7 @@ pub(crate) fn stored_layout(input: &DryRunInput) -> Layout {
                 x: chart.x,
                 y: chart.y,
                 layer: chart.layer,
+                transposed: false,
             })
             .collect(),
     }
@@ -137,6 +138,7 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, edge: u32) -> Layout {
             x: 0,
             y: 0,
             layer: u32::MAX,
+            transposed: false,
         };
         input.charts.len()
     ];
@@ -214,7 +216,6 @@ pub(crate) fn cluster_ordered_layout(input: &DryRunInput, edge: u32) -> Layout {
 /// reuse describe the same layout.
 pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
     let formats = &input.formats;
-    let align = formats.block_alignment();
     // Faces of each cell, in face order.
     let mut cell_faces: Vec<Vec<&FaceSlot>> = vec![Vec::new(); input.cell_count()];
     for slot in &input.faces {
@@ -243,7 +244,13 @@ pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
                 FaceSlot::Placeholder { .. } => (1, 1),
             })
             .collect();
-        let packed = pack_cell_sub_blocks(&sizes, align, POOL_LAYER_EDGE);
+        let packed = pack_cell_sub_blocks(
+            &sizes,
+            formats.pack_rules(),
+            POOL_LAYER_EDGE,
+            &PACK_HEURISTICS,
+        )
+        .blocks;
         blocks_packed += packed.len();
         dims_match &= packed.len() == stored_blocks.len();
         for (sub, &block) in packed.iter().zip(stored_blocks) {
@@ -253,10 +260,10 @@ pub(crate) fn stored_repack_matches(input: &DryRunInput) -> RepackCheck {
                 .members
                 .iter()
                 .zip(&sub.block.placements)
-                .filter(|&(&member, &(x, y))| match *faces[member] {
+                .filter(|&(&member, slot)| match *faces[member] {
                     FaceSlot::Chart(index) => {
                         let chart = &input.charts[index];
-                        chart.layer as usize == block && (chart.x, chart.y) == (x, y)
+                        chart.layer as usize == block && (chart.x, chart.y) == (slot.x, slot.y)
                     }
                     FaceSlot::Placeholder { .. } => false,
                 })

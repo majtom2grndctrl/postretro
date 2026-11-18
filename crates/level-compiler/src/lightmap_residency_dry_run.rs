@@ -201,6 +201,14 @@ impl AtlasFormats {
         .alignment()
     }
 
+    /// How the bake packs a cell's charts at the stored direction scale.
+    pub(crate) fn pack_rules(&self) -> crate::lightmap_bake::PackRules {
+        crate::lightmap_bake::PackRules::lightmap(
+            self.block_alignment(),
+            self.direction_texel_scale,
+        )
+    }
+
     /// Id 22 bytes for `width × height` irradiance texels, at the stored
     /// encodings and the stored direction scale.
     pub(crate) fn lightmap_bytes_at(&self, width: u32, height: u32) -> u64 {

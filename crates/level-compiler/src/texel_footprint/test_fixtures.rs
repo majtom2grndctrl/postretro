@@ -409,6 +409,7 @@ impl Fixture {
             x: 0,
             y: 0,
             layer: 0,
+            transposed: false,
         }];
         let (atlas_width, atlas_height) = (charts[0].width_texels, charts[0].height_texels);
         let layout = BlockLayout::whole_layers(atlas_width, atlas_height, &placements, 2);
@@ -457,6 +458,7 @@ impl Fixture {
             x: 0,
             y: 0,
             layer: 0,
+            transposed: false,
         }];
         let (atlas_width, atlas_height) = (chart.width_texels, chart.height_texels);
         let layout = BlockLayout::whole_layers(atlas_width, atlas_height, &placements, 2);

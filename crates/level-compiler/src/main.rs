@@ -19,6 +19,7 @@ pub mod cache;
 pub mod cell_draw_index_bake;
 pub mod cell_residency_bake;
 pub mod cell_visibility_bake;
+pub mod chart_dump;
 pub mod chart_raster;
 pub mod chunk_light_list_bake;
 mod cli;
@@ -421,6 +422,7 @@ fn lightmap_config(args: &Args, kvp_density: Option<f32>) -> lightmap_bake::Ligh
         uncompressed_irradiance: args.uncompressed_irradiance,
         direction_texel_scale: args.direction_texel_scale,
         penumbra_floor: args.penumbra_floor,
+        section_codec: args.section_codec,
     }
 }
 
@@ -855,6 +857,19 @@ pub struct Args {
     /// changing output; without analysis it forces emitted nodes subject to
     /// the same storage/protection constraints as production classification.
     sh_density_force_scale: Option<u8>,
+    /// `--dump-chart-texels` / `--dump-chart-hashes`: write every chart's
+    /// pre-BC texels (or only their hashes) for an A/B comparison. Requires
+    /// an uncached bake; never changes the PRL.
+    chart_dump: Option<chart_dump::ChartDumpConfig>,
+    /// `--pack-heuristic`: pack every cell's lightmap blocks with this one
+    /// heuristic instead of keeping the smallest of all. A diagnostic that
+    /// forces a second layout for A/B comparisons.
+    pack_heuristic: Option<lightmap_bake::PackHeuristic>,
+    /// `--section-codec`: how ids 22 and 42 store each plane, id 50 each
+    /// chunk and id 51 its body. `raw` is a
+    /// diagnostic that writes an uncoded build of the same layout, never the
+    /// default.
+    section_codec: postretro_level_format::coded_plane::BlockCodec,
 }
 
 impl Args {
@@ -913,6 +928,10 @@ fn help_text() -> String {
          --sh-protect-aabb <AABB>   Force L0 for id-41 bricks intersecting a world-space AABB minx,miny,minz,maxx,maxy,maxz; repeatable (default: none)\n    \
          --sh-density-force-level <0|1|2> Debug base SH brick level override; storage/protection ceilings still apply (default: none)\n    \
          --sh-density-force-scale <0..3> Debug base SH hierarchy scale override; with --sh-analyze it affects analysis only, otherwise it affects emitted nodes after storage/protection clamping (default: none)\n    \
+         --dump-chart-texels <DIR>  Diagnostic: write every chart's lightmap, shadow-mask and animated weight-map texels before BC encoding to <DIR>, for an A/B comparison; needs --no-cache or --release; the PRL is unchanged (default: off)\n    \
+         --dump-chart-hashes <DIR>  As --dump-chart-texels, but only per-chart hashes: small enough for a large map, though a difference cannot be located to a texel (default: off)\n    \
+         --pack-heuristic <NAME>    Diagnostic: pack every cell's lightmap blocks with one heuristic, one of {pack_heuristics}, instead of keeping the smallest of all (default: all)\n    \
+         --section-codec <zstd|raw> Diagnostic: store lightmap and shadow-mask planes, SH payload chunks and the cell residency set raw instead of as checksummed zstd frames, for an uncoded A/B build of the same layout (default: zstd)\n    \
          -h, --help                 Print this help and exit\n",
         probe = sh_bake::DEFAULT_PROBE_SPACING,
         density = lightmap_bake::DEFAULT_TEXEL_DENSITY_METERS,
@@ -928,6 +947,7 @@ fn help_text() -> String {
         direction_texel_scale_max = lightmap_bake::MIN_ATLAS_DIMENSION,
         probe_depth_tile_max = postretro_level_format::probe_depth_tiles::MAX_PROBE_DEPTH_TILES,
         mover_payload_bar = size_options::format_size_for_help(mover_payload_resident_bar_max()),
+        pack_heuristics = lightmap_bake::PackHeuristic::names().join(", "),
     )
 }
 
@@ -1002,6 +1022,9 @@ where
     let mut sh_protect_aabbs: Vec<[f32; 6]> = Vec::new();
     let mut sh_density_force_level = None;
     let mut sh_density_force_scale = None;
+    let mut chart_dump: Option<chart_dump::ChartDumpConfig> = None;
+    let mut pack_heuristic = None;
+    let mut section_codec = postretro_level_format::coded_plane::BlockCodec::default();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1227,6 +1250,36 @@ where
                 }
                 sh_density_force_scale = Some(parsed);
             }
+            "--dump-chart-texels" | "--dump-chart-hashes" => {
+                let dir = flag_value(&mut args, &arg)?;
+                if chart_dump.is_some() {
+                    anyhow::bail!(
+                        "--dump-chart-texels and --dump-chart-hashes name one dump; pass only one"
+                    );
+                }
+                chart_dump = Some(chart_dump::ChartDumpConfig {
+                    dir: PathBuf::from(dir),
+                    texels: arg == "--dump-chart-texels",
+                });
+            }
+            "--pack-heuristic" => {
+                let name = flag_value(&mut args, "--pack-heuristic")?;
+                pack_heuristic =
+                    Some(lightmap_bake::PackHeuristic::parse(&name).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "--pack-heuristic must be one of: {}",
+                            lightmap_bake::PackHeuristic::names().join(", ")
+                        )
+                    })?);
+            }
+            "--section-codec" => {
+                use postretro_level_format::coded_plane::BlockCodec;
+                let name = flag_value(&mut args, "--section-codec")?;
+                section_codec = [BlockCodec::Zstd, BlockCodec::Raw]
+                    .into_iter()
+                    .find(|codec| codec.name() == name)
+                    .ok_or_else(|| anyhow::anyhow!("--section-codec must be zstd or raw"))?;
+            }
             _ if input.is_none() && !arg.starts_with('-') => {
                 input = Some(PathBuf::from(arg));
             }
@@ -1251,6 +1304,15 @@ where
     // did not type.
     if release && bake_fidelity.is_some() {
         anyhow::bail!("--release always bakes high fidelity; remove --bake-fidelity or --release");
+    }
+
+    // A cached stage replays its memo instead of baking, so its charts would
+    // never reach a capture site.
+    if chart_dump.is_some() && !no_cache && !release {
+        anyhow::bail!(
+            "--dump-chart-texels/--dump-chart-hashes need --no-cache or --release: \
+             a cached stage skips its bake, so its charts would not be dumped"
+        );
     }
 
     let output = output.unwrap_or_else(|| input.with_extension("prl"));
@@ -1287,6 +1349,9 @@ where
         sh_protect_aabbs,
         sh_density_force_level,
         sh_density_force_scale,
+        chart_dump,
+        pack_heuristic,
+        section_codec,
     })
 }
 

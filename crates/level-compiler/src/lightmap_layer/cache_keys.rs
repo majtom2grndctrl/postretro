@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §Build Cache
 
 use glam::{DVec3, Vec3};
+use postretro_level_format::coded_plane::CodecIdentity;
 
 use super::{
     LAYER_FORMAT_VERSION, LightmapLayer, SharedAtlas, atlas_layer_count, chart_texel_bounds,
@@ -22,7 +23,7 @@ use crate::texel_footprint::TexelFrame;
 /// changing this fingerprint.
 ///
 /// `ChartPlacement` does not derive `Serialize`, so this folds its `x`/`y`/`layer`
-/// fields directly into the digest — the deterministically-derived proxy-bytes
+/// fields and its `transposed` flag directly into the digest — the deterministically-derived proxy-bytes
 /// fingerprint the animated-weight-map stage uses for its non-`Serialize` atlas
 /// types. Every resolved per-chart sampling input is folded explicitly because
 /// a scale-region edit can change texel world positions or resize a lone chart
@@ -72,6 +73,8 @@ pub(crate) fn atlas_layout_fingerprint(atlas: &SharedAtlas<'_>) -> Vec<u8> {
         // Fold the atlas layer so a repack that moves a chart to a different
         // array layer (same x/y) still invalidates the per-light cache.
         hasher.update(&p.layer.to_le_bytes());
+        // A chart turned in place moves every texel but its corner.
+        hasher.update(&[u8::from(p.transposed)]);
     }
     let layout = atlas.layout;
     hasher.update(&layout.direction_texel_scale.to_le_bytes());
@@ -363,11 +366,9 @@ pub fn validate_layer_partition(
             continue;
         }
         let (interior_width, interior_height) = chart_interior_dims(chart);
-        let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
         for y in 0..interior_height {
             for x in 0..interior_width {
-                let atlas_x = placement.x as i32 + padding + x;
-                let atlas_y = placement.y as i32 + padding + y;
+                let (atlas_x, atlas_y) = placement.interior_texel(x, y);
                 let expected_idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;
                 covered[expected_idx as usize] = true;
             }
@@ -503,6 +504,10 @@ pub fn validate_cached_lightmap_section(
 /// 10. `tracer_epoch` (u32 LE) — the stored texel-step report traces the
 ///     segment between stepped texels (`ray_traversal::TRACER_EPOCH`). Each
 ///     layer hash folds it too; folding it here keeps the dependency direct.
+/// 11. the plane codec's identity ([`CodecIdentity::fold_into`]: codec, zstd
+///     library version, level) — the entry holds the stored planes, and zstd
+///     output may change across library versions, so a warm hit writes the
+///     bytes a cold build would.
 ///
 /// `layer_input_hashes` must be supplied in the same filtered order the warm
 /// composite loop uses; the helper does not re-derive or re-sort them.
@@ -516,6 +521,7 @@ pub fn section_input_hash(
     step_threshold: f32,
     cut_parents: &[CutParent],
     tracer_epoch: u32,
+    codec: CodecIdentity,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&LAYER_FORMAT_VERSION.to_le_bytes());
@@ -530,5 +536,6 @@ pub fn section_input_hash(
     hasher.update(&step_threshold.to_bits().to_le_bytes());
     hasher.update(&cut_map_key_bytes(cut_parents));
     hasher.update(&tracer_epoch.to_le_bytes());
+    codec.fold_into(&mut hasher);
     *hasher.finalize().as_bytes()
 }

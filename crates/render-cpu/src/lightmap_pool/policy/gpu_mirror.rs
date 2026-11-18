@@ -186,6 +186,7 @@ impl GpuMirror {
             for (plane, place) in upload.planes.iter().enumerate() {
                 if let Some(place) = place {
                     let item = mask_item(block, plane);
+                    let (width, height) = upload.plane_extents[plane];
                     self.pools.mask.upload(item, *place, width, height);
                 }
             }
@@ -217,6 +218,7 @@ impl GpuMirror {
                 addresses: BlockAddresses { lightmap, masks },
                 width,
                 height,
+                mask_extents,
             } = entry
             else {
                 continue;
@@ -235,6 +237,7 @@ impl GpuMirror {
                         "block {block} plane {plane} in the spare"
                     );
                     let item = mask_item(block, plane);
+                    let (width, height) = mask_extents[plane];
                     pools.mask.assert_holds(item, *place, width, height);
                 }
             }

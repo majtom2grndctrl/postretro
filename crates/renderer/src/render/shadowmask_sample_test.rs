@@ -13,7 +13,7 @@ use postretro_render_cpu::lightmap_pool::{
 use super::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use super::shadowmask_sample_harness::{NOT_AN_OWNER, Probe, ProbeResult, run_probes};
 
-use crate::lighting::lightmap::test_fixtures::{FixtureTexels, block_fixture};
+use crate::lighting::lightmap::test_fixtures::{FixtureTexels, block_fixture, constant_bc5_plane};
 use crate::lighting::lightmap::{
     StaticPool, StaticPoolPlan, plan_static_pool, upload_placeholder_shadowmask, upload_static_pool,
 };
@@ -77,12 +77,14 @@ fn fixture_pool(ctx: &GpuCtx) -> (wgpu::Texture, Vec<u8>) {
         },
         masks: Some(AllResidentMasks {
             planes: PLACEMENTS.iter().copied().map(plane_places).collect(),
+            extents: vec![[(BLOCK_EDGE, BLOCK_EDGE); 2]; BLOCK_COUNT as usize],
             layer_count: 2,
         }),
     };
     let textures = upload_static_pool(&ctx.device, &ctx.queue, &plan, &fixture.payloads);
     let table = block_table_bytes(
         &extents,
+        &[[(BLOCK_EDGE, BLOCK_EDGE); 2]; BLOCK_COUNT as usize],
         &PLACEMENTS.map(|place| {
             Some(BlockAddresses {
                 lightmap: place,
@@ -395,6 +397,160 @@ fn absent_plane_samples_as_stored_zero() {
                 assert_eq!(result.union_attenuation_at_entity_visibility_zero, 0.0);
             }
             _ => assert_eq!(result.union_channel, NOT_AN_OWNER, "{what}"),
+        }
+    }
+}
+
+/// A 16×8 lightmap block whose one owned face sits at lightmap x 8..16, its
+/// mask chart at mask x 0..8 (offset -8, 0). The mask block is 8×8: plane A
+/// whole, its BC column 0 the face's own padded chart and column 1 an
+/// abutting chart; plane B a 4×4 sub-rect. Plane A sits flush right of plane
+/// B in the mask pool, so a plane-B read past its sub-rect would land on plane
+/// A's texels.
+const SUB_RECT_BLOCK: (u32, u32) = (16, 8);
+const SUB_RECT_OFFSET: [i16; 2] = [-8, 0];
+const PLANE_B_PLACE: BlockPlacement = BlockPlacement {
+    layer: 0,
+    x: 64,
+    y: 8,
+};
+const PLANE_A_PLACE: BlockPlacement = BlockPlacement {
+    layer: 0,
+    x: 68,
+    y: 8,
+};
+
+fn plane_a_byte(channel: u32, bx: u32, by: u32) -> u8 {
+    (40 + channel * 30 + bx * 100 + by * 7) as u8
+}
+
+fn plane_b_byte(channel: u32) -> u8 {
+    (200 + channel * 10) as u8
+}
+
+fn sub_rect_pool(ctx: &GpuCtx) -> (wgpu::Texture, Vec<u8>) {
+    let extents = [SUB_RECT_BLOCK];
+    let mut fixture = block_fixture(
+        &extents,
+        2,
+        &FixtureTexels {
+            irradiance: &|_, _, _| [0.0; 4],
+            direction: &|_, _, _| [128, 255],
+            shadowmask: Some(&|_, _, _, _| 0),
+        },
+    );
+    fixture.payloads[0].shadowmask = Some([
+        constant_bc5_plane(8, 8, plane_a_byte),
+        constant_bc5_plane(4, 4, |channel, _, _| plane_b_byte(channel)),
+    ]);
+    let plan = StaticPoolPlan {
+        header: fixture.index.header,
+        extents: extents.to_vec(),
+        pool: AllResidentPool {
+            placements: vec![BlockPlacement {
+                layer: 0,
+                x: 0,
+                y: 0,
+            }],
+            layer_count: 1,
+        },
+        masks: Some(AllResidentMasks {
+            planes: vec![[Some(PLANE_A_PLACE), Some(PLANE_B_PLACE)]],
+            extents: vec![[(8, 8), (4, 4)]],
+            layer_count: 1,
+        }),
+    };
+    let textures = upload_static_pool(&ctx.device, &ctx.queue, &plan, &fixture.payloads);
+    (
+        textures.shadowmask.expect("the plan keeps the shadowmask"),
+        plan.table_bytes(),
+    )
+}
+
+/// The probe at lightmap texel `(x, y)` of the sub-rect fixture's block.
+fn sub_rect_probe(x: f32, y: f32) -> Probe {
+    let (width, height) = SUB_RECT_BLOCK;
+    Probe::new([x / width as f32, y / height as f32], 1, 0).offset_by(SUB_RECT_OFFSET)
+}
+
+/// Plane A's value at mask BC block `(bx, by)` and plane B's one value.
+fn sub_rect_mask(bx: u32, by: u32) -> [f32; 4] {
+    [
+        plane_a_byte(0, bx, by),
+        plane_a_byte(1, bx, by),
+        plane_b_byte(0),
+        plane_b_byte(1),
+    ]
+    .map(|byte| f32::from(byte) / 255.0)
+}
+
+// A face reads its mask through its offset, and a filtered sample at its
+// chart's border, out to its padding ring's texel centres, reads only its own
+// chart's texels, never the chart abutting it in the mask block.
+#[test]
+fn a_border_sample_reads_its_own_padding_not_the_abutting_chart() {
+    let Some(ctx) = bc_gpu_or_skip("a_border_sample_reads_its_own_padding_not_the_abutting_chart")
+    else {
+        return;
+    };
+    let (texture, table) = sub_rect_pool(&ctx);
+    // Lightmap texel x 8.5..11.5 is mask x 0.5..3.5: the face's own chart,
+    // BC column 0, out to its last padding texel's centre.
+    let cases = [
+        (
+            sub_rect_probe(8.5, 1.5),
+            sub_rect_mask(0, 0),
+            "own chart, first texel",
+        ),
+        (
+            sub_rect_probe(11.5, 1.5),
+            sub_rect_mask(0, 0),
+            "own padding ring centre",
+        ),
+        (
+            sub_rect_probe(11.5, 6.5),
+            sub_rect_mask(0, 1),
+            "own padding, lower BC row",
+        ),
+        (
+            sub_rect_probe(13.5, 6.5),
+            sub_rect_mask(1, 1),
+            "the abutting chart's texel",
+        ),
+    ];
+    let probes: Vec<Probe> = cases.iter().map(|case| case.0).collect();
+    let results = run_probes(&ctx, &texture, &table, &probes, true);
+    for (result, (_, expected, what)) in results.iter().zip(&cases) {
+        for (channel, (&actual, &want)) in result.mask[..2].iter().zip(expected).enumerate() {
+            assert_near(actual, want, &format!("{what}: channel {channel}"));
+        }
+    }
+}
+
+// Each plane clamps to its own extent. Plane B, a 4×4 sub-rect, clamps
+// to its own edge texel wherever plane A's wider extent would let a sample
+// reach, so it never reads the plane-A placement flush beside it in the pool.
+#[test]
+fn plane_b_samples_clamp_to_the_sub_rect_not_the_mask_extent() {
+    let Some(ctx) = bc_gpu_or_skip("plane_b_samples_clamp_to_the_sub_rect_not_the_mask_extent")
+    else {
+        return;
+    };
+    let (texture, table) = sub_rect_pool(&ctx);
+    let cases = [
+        // Mask x 5.5 and 7.5: inside plane A, past plane B's 4 texels.
+        (sub_rect_probe(13.5, 1.5), sub_rect_mask(1, 0)),
+        (sub_rect_probe(15.5, 7.5), sub_rect_mask(1, 1)),
+        // Driven past the block edge: plane A clamps to its column 7, plane
+        // B to its column 3.
+        (sub_rect_probe(16.0, 8.0), sub_rect_mask(1, 1)),
+        (sub_rect_probe(24.0, 3.0), sub_rect_mask(1, 0)),
+    ];
+    let probes: Vec<Probe> = cases.iter().map(|case| case.0).collect();
+    let results = run_probes(&ctx, &texture, &table, &probes, true);
+    for (index, (result, (_, expected))) in results.iter().zip(&cases).enumerate() {
+        for (channel, (&actual, &want)) in result.mask.iter().zip(expected).enumerate() {
+            assert_near(actual, want, &format!("probe {index}: channel {channel}"));
         }
     }
 }

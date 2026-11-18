@@ -2,51 +2,44 @@
 // and their baked visibility masks, stored per lightmap cell block.
 // Governing context: context/lib/build_pipeline.md §PRL section IDs
 
-use crate::lightmap::{
-    LightmapBlockIndex, SectionByteRange, eof, invalid, read_u32, read_u64, slice_range,
-};
+use crate::coded_plane::{self, BlockCodec};
+use crate::lightmap::{LightmapBlockIndex, SectionByteRange, eof, invalid, read_u32, slice_range};
 
+mod owners;
 mod planes;
+mod record;
 
-/// An empty channel in a face's owner entry.
-pub const SHADOWMASK_OWNER_EMPTY: u16 = 0xFFFF;
+use owners::OWNER_ENTRY_BYTES;
+pub use owners::{
+    FaceOwners, MaskOffset, NO_FACE_OWNERS, SHADOWMASK_OWNER_CHANNELS, SHADOWMASK_OWNER_EMPTY,
+    SpecOwnerVertex, validate_face_owners,
+};
+pub use record::{MaskExtents, SHADOWMASK_BLOCK_RECORD_BYTES};
 
-/// Owner channels per face: one per mask channel, two per BC5 group.
-pub const SHADOWMASK_OWNER_CHANNELS: usize = 4;
-
-/// A face's owners: compact static spec-light indices (the `!is_dynamic`
-/// order `pack_spec_lights` and id 23 use), ascending, empties trailing.
-/// Position `s` is channel `s`: group `s / 2`, BC5 channel `s % 2`.
-pub type FaceOwners = [u16; SHADOWMASK_OWNER_CHANNELS];
-
-/// A face no light owns.
-pub const NO_FACE_OWNERS: FaceOwners = [SHADOWMASK_OWNER_EMPTY; SHADOWMASK_OWNER_CHANNELS];
-
-/// Per-face owner table, then BC5 `.rg` per cell block with two mask groups:
-/// group 0 (channels 0/1) and group 1 (channels 2/3), each its own BC5 plane
-/// at the block's lightmap extent. A plane whose encoded bytes are all zero
-/// has no blob, and reads as the zero it would have decoded to. ASCII `SMB8`.
-pub const SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS: u32 = u32::from_le_bytes(*b"SMB8");
+/// Per-face owner table with each face's lightmap-to-mask texel offset, then
+/// BC5 `.rg` per cell block with two mask groups: group 0 (channels 0/1) at
+/// the mask block's own extent and group 1 (channels 2/3) at its plane-B
+/// sub-rect, each plane stored under its block's codec. A plane whose BC5
+/// bytes are all zero has no blob, and reads as the zero it would have
+/// decoded to. ASCII `SMB9`.
+pub const SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS: u32 = u32::from_le_bytes(*b"SMB9");
 
 /// Retired layouts, named so load can say "re-bake" instead of "unknown tag":
 /// SMB5 held whole bake layers; SMB6 held one map-wide slot per selected light;
-/// SMB7 stored every block's two planes, all-zero ones included.
+/// SMB7 stored every block's two planes, all-zero ones included; SMB8 stored
+/// each nonzero plane raw at its lightmap block's extent, in the lightmap
+/// layout, with no per-face mask offset.
 const RETIRED_SHADOWMASK_FORMAT_SMB5: u32 = u32::from_le_bytes(*b"SMB5");
 const RETIRED_SHADOWMASK_FORMAT_SMB6: u32 = u32::from_le_bytes(*b"SMB6");
 const RETIRED_SHADOWMASK_FORMAT_SMB7: u32 = u32::from_le_bytes(*b"SMB7");
+const RETIRED_SHADOWMASK_FORMAT_SMB8: u32 = u32::from_le_bytes(*b"SMB8");
 
 /// Mask groups per block.
 pub const SHADOWMASK_GROUP_COUNT: u32 = 2;
 
-/// One block record: group_a_offset u64, group_a_len u32, group_b_offset u64,
-/// group_b_len u32, reserved u32. A length of 0 is an absent plane, offset 0.
-pub const SHADOWMASK_BLOCK_RECORD_BYTES: usize = 28;
-
 const BC5_BLOCK_BYTES: u64 = 16;
 /// format tag + face_count.
 const FIXED_HEADER_BYTES: usize = 8;
-/// Four u16 owners.
-const OWNER_ENTRY_BYTES: usize = 2 * SHADOWMASK_OWNER_CHANNELS;
 
 /// What the owner table is checked against: id 17's face count and the
 /// level's static spec-light count (`!is_dynamic` AlphaLights).
@@ -72,7 +65,7 @@ impl ShadowmaskOwnerBounds {
     }
 }
 
-/// Bytes of one BC5 group plane at a `width × height` block extent.
+/// Bytes of one BC5 group plane at a `width × height` plane extent.
 pub fn group_plane_len(width: u32, height: u32) -> Option<u64> {
     u64::from(width)
         .div_ceil(4)
@@ -153,58 +146,28 @@ fn min_bytes_beside_the_owner_table(lightmap: &LightmapBlockIndex) -> crate::Res
         .ok_or_else(|| invalid("shadowmask section size overflows"))
 }
 
-/// Rejects an owner at or past `static_spec_light_count`, a duplicate owner,
-/// owners out of ascending order, and an owner after an empty channel.
-pub fn validate_face_owners(
-    face: usize,
-    owners: &FaceOwners,
-    static_spec_light_count: u32,
-) -> crate::Result<()> {
-    let mut previous: Option<u16> = None;
-    let mut ended = false;
-    for &owner in owners {
-        if owner == SHADOWMASK_OWNER_EMPTY {
-            ended = true;
-            continue;
-        }
-        if ended {
-            return Err(invalid(format!(
-                "shadowmask face {face} has owner {owner} after an empty channel"
-            )));
-        }
-        if u32::from(owner) >= static_spec_light_count {
-            return Err(invalid(format!(
-                "shadowmask face {face} owner {owner} is not below the static spec-light count \
-                 {static_spec_light_count}"
-            )));
-        }
-        match previous {
-            Some(p) if p == owner => {
-                return Err(invalid(format!(
-                    "shadowmask face {face} lists owner {owner} twice"
-                )));
-            }
-            Some(p) if p > owner => {
-                return Err(invalid(format!(
-                    "shadowmask face {face} owners {owners:?} are not ascending"
-                )));
-            }
-            _ => {}
-        }
-        previous = Some(owner);
-    }
-    Ok(())
-}
-
-/// One block's shadowmask ranges, in id-22 block order. An absent plane's
-/// range is empty, at offset 0.
+/// One block's stored shadowmask ranges, codec, raw lengths and mask extents,
+/// in id-22 block order. An absent plane's range is empty, at offset 0, with
+/// raw length 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShadowmaskBlockRecord {
     pub group_a: SectionByteRange,
     pub group_b: SectionByteRange,
+    /// How both present planes are stored.
+    pub codec: BlockCodec,
+    /// Group A then group B bytes once decoded: each present plane's BC5
+    /// length at its extent, 0 for an absent plane.
+    pub raw_len: [u32; 2],
+    pub extents: MaskExtents,
 }
 
 impl ShadowmaskBlockRecord {
+    /// Both planes' bytes once decoded: what the block's mask half costs in
+    /// hand and to upload.
+    pub fn decoded_bytes(&self) -> u64 {
+        u64::from(self.raw_len[0]) + u64::from(self.raw_len[1])
+    }
+
     /// The first and last planes this block stores, the same plane when it
     /// stores one. They bound one adjacent run, a single read. `None` for a
     /// block with no plane.
@@ -224,6 +187,9 @@ impl ShadowmaskBlockRecord {
 pub struct ShadowmaskBlockIndex {
     /// One entry per id-17 face, in face order.
     pub owners: Vec<FaceOwners>,
+    /// Each face's lightmap-to-mask texel offset, in face order; zero for a
+    /// face with no owner.
+    pub mask_offsets: Vec<MaskOffset>,
     pub records: Vec<ShadowmaskBlockRecord>,
 }
 
@@ -237,11 +203,12 @@ impl ShadowmaskBlockIndex {
     /// index it pairs with, and the level's owner bounds. Rejects an unknown or
     /// retired format tag; a face count that differs from id 17's; an owner
     /// table too large for the section; an invalid owner entry
-    /// ([`validate_face_owners`]); a block count that differs from id 22's; a
-    /// nonzero reserved field; an absent plane that keeps an offset; a present
-    /// plane whose length disagrees with its lightmap block's extent, or whose
-    /// range leaves the section blobs; present planes not adjacent in record
-    /// order; and a section whose length differs from where its last blob ends.
+    /// ([`validate_face_owners`]) or a mask offset on an unowned face; a block
+    /// count that differs from id 22's; a record whose codec, extents or raw
+    /// lengths are invalid (`record::check_record`); an absent plane that
+    /// keeps an offset; a present plane whose range leaves the section blobs;
+    /// present planes not adjacent in record order; and a section whose
+    /// length differs from where its last blob ends.
     pub fn from_prefix(
         prefix: &[u8],
         section_len: u64,
@@ -263,16 +230,16 @@ impl ShadowmaskBlockIndex {
         if prefix.len() < through_count {
             return Err(eof("shadowmask section truncated in owner table"));
         }
-        let owners: Vec<FaceOwners> = prefix[FIXED_HEADER_BYTES..through_count - 4]
+        let (owners, mask_offsets): (Vec<FaceOwners>, Vec<MaskOffset>) = prefix
+            [FIXED_HEADER_BYTES..through_count - 4]
             .as_chunks::<OWNER_ENTRY_BYTES>()
             .0
             .iter()
-            .map(|entry| {
-                std::array::from_fn(|s| u16::from_le_bytes([entry[2 * s], entry[2 * s + 1]]))
-            })
-            .collect();
-        for (face, entry) in owners.iter().enumerate() {
+            .map(owners::read_owner_entry)
+            .unzip();
+        for (face, (entry, &offset)) in owners.iter().zip(&mask_offsets).enumerate() {
             validate_face_owners(face, entry, bounds.static_spec_light_count)?;
+            owners::validate_mask_offset(face, entry, offset)?;
         }
         let block_count = read_u32(prefix, through_count - 4) as usize;
         if block_count != lightmap.records.len() {
@@ -296,34 +263,17 @@ impl ShadowmaskBlockIndex {
         }
         let mut records = Vec::with_capacity(block_count);
         let mut blobs_end = index_len;
-        for (block, lightmap_record) in lightmap.records.iter().enumerate() {
-            let at = through_count + block * SHADOWMASK_BLOCK_RECORD_BYTES;
-            let record = ShadowmaskBlockRecord {
-                group_a: SectionByteRange {
-                    offset: read_u64(prefix, at),
-                    len: read_u32(prefix, at + 8),
-                },
-                group_b: SectionByteRange {
-                    offset: read_u64(prefix, at + 12),
-                    len: read_u32(prefix, at + 20),
-                },
-            };
-            let reserved = read_u32(prefix, at + 24);
-            if reserved != 0 {
-                return Err(invalid(format!(
-                    "shadowmask block {block} has nonzero reserved field {reserved:#x}"
-                )));
-            }
-            let expected = group_plane_len(
-                u32::from(lightmap_record.width),
-                u32::from(lightmap_record.height),
-            )
-            .ok_or_else(|| invalid("shadowmask group length overflows"))?;
+        for block in 0..block_count {
+            let record = record::read_record(
+                prefix,
+                through_count + block * SHADOWMASK_BLOCK_RECORD_BYTES,
+                block,
+            )?;
+            record::check_record(block, &record)?;
             blobs_end = planes::check_block_planes(
                 block,
                 &record,
                 planes::PlaneBounds {
-                    expected_len: expected,
                     index_len,
                     section_len,
                     previous_end: blobs_end,
@@ -337,50 +287,135 @@ impl ShadowmaskBlockIndex {
                  at {blobs_end}"
             )));
         }
-        Ok(Self { owners, records })
+        Ok(Self {
+            owners,
+            mask_offsets,
+            records,
+        })
+    }
+
+    /// Decodes block `block`'s stored group A and group B planes to their BC5
+    /// bytes, as the pool uploads them; an absent plane stays empty. A raw
+    /// plane moves through uncopied. Fails by name on a frame that does not
+    /// decode, checksum verified, to exactly its declared raw length.
+    pub fn decode_planes(
+        &self,
+        block: usize,
+        [group_a, group_b]: [Vec<u8>; 2],
+    ) -> crate::Result<[Vec<u8>; 2]> {
+        let record = self
+            .records
+            .get(block)
+            .ok_or_else(|| invalid(format!("shadowmask block {block} is past the index")))?;
+        let decode = |plane: usize, what: &str, stored: Vec<u8>| {
+            if stored.is_empty() && record.raw_len[plane] == 0 {
+                return Ok(stored);
+            }
+            coded_plane::decode_plane(record.codec, stored, record.raw_len[plane] as usize).map_err(
+                |reason| {
+                    invalid(format!(
+                        "shadowmask block {block} {what} plane failed to decode: {reason}"
+                    ))
+                },
+            )
+        };
+        Ok([
+            decode(0, "group A", group_a)?,
+            decode(1, "group B", group_b)?,
+        ])
     }
 }
 
-/// A whole id-42 section in memory. Block `i` pairs with id-22 block `i` and
-/// shares its extent; the pair installs together or not at all.
+/// A whole id-42 section in memory. Block `i` pairs with id-22 block `i`; the
+/// pair installs together or not at all. Its mask block holds only the charts
+/// of mask-owning faces, each a pure translation of its lightmap chart.
 ///
 /// On-disk layout (little-endian; offsets from the payload start):
 ///
 /// ```text
-///   u32 format                (= SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS, "SMB8")
+///   u32 format                (= SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS, "SMB9")
 ///   u32 face_count            (= id 17's face count)
-///   face_count entries of 4 × u16 owners, in id-17 face order
+///   face_count entries of 4 × u16 owners, then i16 dx, i16 dy (mask texel =
+///     lightmap texel + delta; 0 for a face with no owner), in id-17 face order
 ///   u32 block_count           (= id 22's block_count)
-///   block_count records (28 bytes each), in id-22 block order:
-///     u64 group_a_offset, u32 group_a_len
-///     u64 group_b_offset, u32 group_b_len
-///     u32 reserved (= 0)
-///   Blobs, in record order: each present plane, group A before group B, each
-///   starting where the one before ends, each BC5 at the block's
-///   width × height. A plane of length 0 is absent: offset 0, no blob.
+///   block_count records (44 bytes each), in id-22 block order:
+///     u64 group_a_offset, u32 group_a_stored_len
+///     u64 group_b_offset, u32 group_b_stored_len
+///     u32 codec (0 = stored raw, 1 = one zstd frame per plane)
+///     u32 group_a_raw_len, u32 group_b_raw_len
+///     u16 mask_width, u16 mask_height, u16 plane_b_width, u16 plane_b_height
+///   Blobs, in record order: each present plane in its stored form, group A
+///   before group B, each starting where the one before ends; group A decodes
+///   to BC5 at the mask extent, group B at the plane-B extent, which lies at
+///   the mask block's origin. A plane of stored length 0 is absent: offset 0,
+///   raw length 0, no blob.
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShadowmaskAtlasSection {
     /// One entry per id-17 face, in face order.
     pub owners: Vec<FaceOwners>,
-    /// Per block: group A then group B BC5 planes; empty when absent.
+    /// Each face's lightmap-to-mask texel offset, in face order.
+    pub mask_offsets: Vec<MaskOffset>,
+    /// Per block: group A then group B BC5 planes in their stored form;
+    /// empty when absent.
     pub blocks: Vec<[Vec<u8>; 2]>,
+    /// Per block: how its planes are stored.
+    pub codecs: Vec<BlockCodec>,
+    /// Per block: its mask block's extents.
+    pub extents: Vec<MaskExtents>,
 }
 
 impl ShadowmaskAtlasSection {
+    /// A section whose mask blocks are their lightmap blocks: every plane at
+    /// its block's extent, stored raw, and every offset zero. `block_extents`
+    /// is id 22's, one per block.
+    pub fn whole_block(
+        owners: Vec<FaceOwners>,
+        blocks: Vec<[Vec<u8>; 2]>,
+        block_extents: impl IntoIterator<Item = (u16, u16)>,
+    ) -> Self {
+        let extents: Vec<MaskExtents> = block_extents
+            .into_iter()
+            .map(|(width, height)| MaskExtents::whole_block(width, height))
+            .collect();
+        assert_eq!(extents.len(), blocks.len(), "one extent per block");
+        Self {
+            mask_offsets: vec![[0; 2]; owners.len()],
+            owners,
+            codecs: vec![BlockCodec::Raw; blocks.len()],
+            blocks,
+            extents,
+        }
+    }
+
     /// The index this section serializes with.
     pub fn index(&self) -> ShadowmaskBlockIndex {
         let mut cursor = index_len(self.owners.len(), self.blocks.len()) as u64;
         let records = self
             .blocks
             .iter()
-            .map(|[a, b]| ShadowmaskBlockRecord {
-                group_a: planes::plane_range(&mut cursor, a),
-                group_b: planes::plane_range(&mut cursor, b),
+            .zip(&self.extents)
+            .zip(&self.codecs)
+            .map(|(([a, b], &extents), &codec)| {
+                let raw_len = |plane: usize, stored: &[u8]| {
+                    if stored.is_empty() {
+                        0
+                    } else {
+                        u32::try_from(extents.plane_len(plane)).expect("a mask plane fits u32")
+                    }
+                };
+                ShadowmaskBlockRecord {
+                    group_a: planes::plane_range(&mut cursor, a),
+                    group_b: planes::plane_range(&mut cursor, b),
+                    codec,
+                    raw_len: [raw_len(0, a), raw_len(1, b)],
+                    extents,
+                }
             })
             .collect();
         ShadowmaskBlockIndex {
             owners: self.owners.clone(),
+            mask_offsets: self.mask_offsets.clone(),
             records,
         }
     }
@@ -401,16 +436,12 @@ impl ShadowmaskAtlasSection {
         let mut out = Vec::with_capacity(index.index_byte_len());
         out.extend_from_slice(&SHADOWMASK_FORMAT_OWNED_BC5_RG_BLOCKS.to_le_bytes());
         out.extend_from_slice(&(self.owners.len() as u32).to_le_bytes());
-        for owner in self.owners.iter().flatten() {
-            out.extend_from_slice(&owner.to_le_bytes());
+        for (owners, &offset) in self.owners.iter().zip(&self.mask_offsets) {
+            owners::write_owner_entry(&mut out, owners, offset);
         }
         out.extend_from_slice(&(self.blocks.len() as u32).to_le_bytes());
         for record in &index.records {
-            out.extend_from_slice(&record.group_a.offset.to_le_bytes());
-            out.extend_from_slice(&record.group_a.len.to_le_bytes());
-            out.extend_from_slice(&record.group_b.offset.to_le_bytes());
-            out.extend_from_slice(&record.group_b.len.to_le_bytes());
-            out.extend_from_slice(&0u32.to_le_bytes());
+            record::write_record(&mut out, record);
         }
         out
     }
@@ -436,7 +467,7 @@ impl ShadowmaskAtlasSection {
     }
 
     /// Parse a whole section against the id-22 index it pairs with and the
-    /// level's owner bounds.
+    /// level's owner bounds. Planes stay in their stored form.
     pub fn from_bytes(
         data: &[u8],
         lightmap: &LightmapBlockIndex,
@@ -455,8 +486,52 @@ impl ShadowmaskAtlasSection {
             .collect();
         Ok(Self {
             owners: index.owners,
+            mask_offsets: index.mask_offsets,
+            codecs: index.records.iter().map(|r| r.codec).collect(),
+            extents: index.records.iter().map(|r| r.extents).collect(),
             blocks,
         })
+    }
+
+    /// This section with every block's planes decoded and stored raw.
+    pub fn decoded(&self) -> crate::Result<Self> {
+        let blocks = (0..self.blocks.len())
+            .map(|block| self.decode_block(block))
+            .collect::<crate::Result<_>>()?;
+        Ok(Self {
+            owners: self.owners.clone(),
+            mask_offsets: self.mask_offsets.clone(),
+            blocks,
+            codecs: vec![BlockCodec::Raw; self.codecs.len()],
+            extents: self.extents.clone(),
+        })
+    }
+
+    /// Block `block`'s group A and group B BC5 bytes, decoded from their
+    /// stored form; an absent plane is empty.
+    pub fn decode_block(&self, block: usize) -> crate::Result<[Vec<u8>; 2]> {
+        let stored = self
+            .blocks
+            .get(block)
+            .ok_or_else(|| invalid(format!("shadowmask block {block} is past the section")))?;
+        let (codec, extents) = (self.codecs[block], self.extents[block]);
+        let mut planes = [Vec::new(), Vec::new()];
+        for (plane, (what, bytes)) in [("group A", &stored[0]), ("group B", &stored[1])]
+            .into_iter()
+            .enumerate()
+        {
+            if bytes.is_empty() {
+                continue;
+            }
+            planes[plane] =
+                coded_plane::decode_plane_from(codec, bytes, extents.plane_len(plane) as usize)
+                    .map_err(|reason| {
+                        invalid(format!(
+                            "shadowmask block {block} {what} plane failed to decode: {reason}"
+                        ))
+                    })?;
+        }
+        Ok(planes)
     }
 }
 
@@ -471,6 +546,9 @@ fn check_format_tag(format: u32) -> crate::Result<()> {
         )),
         RETIRED_SHADOWMASK_FORMAT_SMB7 => Err(invalid(
             "shadowmask section uses the retired every-plane-stored SMB7 layout; re-bake the level",
+        )),
+        RETIRED_SHADOWMASK_FORMAT_SMB8 => Err(invalid(
+            "shadowmask section uses the retired lightmap-layout SMB8 layout; re-bake the level",
         )),
         other => Err(invalid(format!(
             "shadowmask format tag {other:#010x} is unknown"

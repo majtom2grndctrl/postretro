@@ -308,9 +308,40 @@ impl ClusterShPayloadsSection {
         Ok(expected_chunks)
     }
 
-    /// Verify one previously-read chunk and retain its single allocation for a
-    /// later renderer handoff. The caller must pass exactly this index entry's
-    /// payload bytes; no other chunk or payload data is inspected.
+    /// One stored chunk's raw form, checked against its index record (length,
+    /// hash) and decoded, with no validation plan: the raw length comes from
+    /// the chunk's block count and the index's `decoded_bytes`. For tools and
+    /// tests that edit chunk bodies; runtime reads use
+    /// [`ValidatedClusterShPayloadsSection::decode_chunk`].
+    pub fn decode_stored_chunk(
+        &self,
+        cluster_id: u32,
+        stored: Vec<u8>,
+    ) -> Result<Vec<u8>, ClusterShPayloadsError> {
+        let entry = self.index.get(cluster_id as usize).ok_or_else(|| {
+            ClusterShPayloadsError::RangeOutOfBounds(format!("unknown cluster {cluster_id}"))
+        })?;
+        if stored.len() as u64 != entry.payload_len {
+            return Err(ClusterShPayloadsError::RangeOutOfBounds(format!(
+                "cluster {cluster_id} read {} bytes, index requires {}",
+                stored.len(),
+                entry.payload_len
+            )));
+        }
+        if *blake3::hash(&stored).as_bytes() != entry.hash {
+            return Err(ClusterShPayloadsError::HashMismatch { cluster_id });
+        }
+        if stored.is_empty() {
+            return Ok(stored);
+        }
+        let raw_len = raw_chunk_len(&stored, entry.decoded_bytes)?;
+        unstore_chunk(cluster_id, stored, raw_len)
+    }
+
+    /// Verify one previously-read chunk, decode it to its raw form, and keep
+    /// that one allocation for a later renderer handoff. The caller must pass
+    /// exactly this index entry's stored bytes; no other chunk or payload data
+    /// is inspected.
     pub fn decode_chunk(
         &self,
         cluster_id: u32,
@@ -346,6 +377,13 @@ impl ClusterShPayloadsSection {
         let expected = expected_chunks.get(cluster_id as usize).ok_or_else(|| {
             ClusterShPayloadsError::RangeOutOfBounds(format!("unknown cluster {cluster_id}"))
         })?;
+        let bytes = if bytes.is_empty() {
+            bytes
+        } else {
+            let raw_len = usize::try_from(expected.raw_len)
+                .map_err(|_| ClusterShPayloadsError::SizeOverflow("raw chunk length"))?;
+            unstore_chunk(cluster_id, bytes, raw_len)?
+        };
         let blocks = validate_chunk_bytes(cluster_id, &bytes, expected)?;
         Ok(DecodedClusterShPayload {
             cluster_id,
@@ -432,8 +470,17 @@ impl ValidatedClusterShPayloadsSection {
         &self.section
     }
 
-    /// Verify only the selected chunk's length, hash, body layout, and semantic
-    /// records against the startup-retained validation plan.
+    /// A cluster's decoded chunk length: what its decode allocates and what a
+    /// ready chunk holds. 0 for an empty or unknown cluster.
+    pub fn decoded_chunk_len(&self, cluster_id: u32) -> u64 {
+        self.expected_chunks
+            .get(cluster_id as usize)
+            .map_or(0, |expected| expected.raw_len)
+    }
+
+    /// Verify only the selected chunk's length, hash, codec, body layout, and
+    /// semantic records against the startup-retained validation plan. A coded
+    /// chunk decodes to its raw form, codec word 0.
     pub fn decode_chunk(
         &self,
         cluster_id: u32,

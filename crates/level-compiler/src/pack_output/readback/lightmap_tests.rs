@@ -14,6 +14,7 @@ fn sections() -> (LightmapSection, ShadowmaskAtlasSection) {
         mode: LightmapMode::Shadowed,
         blocks: (0..3)
             .map(|cell_id| LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id,
                 width: 64,
                 height: 64,
@@ -22,12 +23,13 @@ fn sections() -> (LightmapSection, ShadowmaskAtlasSection) {
             })
             .collect(),
     };
-    let shadowmask = ShadowmaskAtlasSection {
-        owners: vec![NO_FACE_OWNERS; 3],
-        blocks: (0..3)
+    let shadowmask = ShadowmaskAtlasSection::whole_block(
+        vec![NO_FACE_OWNERS; 3],
+        (0..3)
             .map(|seed| [vec![seed; 4096], vec![seed + 1; 4096]])
             .collect(),
-    };
+        lightmap.blocks.iter().map(|b| (b.width, b.height)),
+    );
     (lightmap, shadowmask)
 }
 

@@ -2,7 +2,7 @@
 
 `sh-streaming-hinted-door.prl` is the checked-in loader fixture for
 `content/dev/maps/sh-streaming-hinted-door.map`. It is intentionally small so
-the PostRetro controller test can load real id-49 v3 and id-50 v2 metadata
+the PostRetro controller test can load real id-49 v3 and id-50 epoch-3 metadata
 without a recursive Cargo invocation.
 
 Regenerate it after changing the source map or compiler output with a built

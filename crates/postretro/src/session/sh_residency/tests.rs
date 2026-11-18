@@ -136,10 +136,7 @@ fn sync_proof_reads_fill_the_read_counters() {
         SyncReadResult::Prepared(0)
     );
 
-    let stats = session
-        .read_stats()
-        .unwrap()
-        .expect("sync-proof reports reads");
+    let stats = session.read_stats().expect("sync-proof reports reads");
     assert!(encoded_bytes > 0);
     assert_eq!(stats.reads_issued, 1);
     assert_eq!(stats.coalesced_reads, 0);

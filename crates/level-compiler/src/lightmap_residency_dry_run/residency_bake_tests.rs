@@ -46,8 +46,11 @@ fn residency_set_bake_matches_direct_evaluation() {
     )
     .expect("the bake succeeds")
     .expect("usable portals");
-    let decoded = CellResidencySetSection::from_bytes(&baked.to_bytes(), cells.cells.len())
-        .expect("the baked section decodes");
+    let decoded = CellResidencySetSection::from_bytes(
+        &baked.to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
+        cells.cells.len(),
+    )
+    .expect("the baked section decodes");
 
     // Direct evaluation from the same sections, the way the dry run reads a PRL.
     let graph = portal_graph_from_sections(&cells, &portals);
@@ -173,8 +176,11 @@ fn teleport_residency_baked_set_checks_as_superset_with_arrival_delta() {
         )
         .expect("the bake succeeds")
         .expect("usable portals");
-        CellResidencySetSection::from_bytes(&baked.to_bytes(), cells.cells.len())
-            .expect("the baked section decodes")
+        CellResidencySetSection::from_bytes(
+            &baked.to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
+            cells.cells.len(),
+        )
+        .expect("the baked section decodes")
     };
     let with_teleporter = bake(Some(TeleportResidencyInput {
         section: &section,
@@ -314,8 +320,8 @@ fn compiled_residency_set_matches_direct_evaluation_and_ignores_pins() {
         "id 51 must not depend on id-49 pins"
     );
     println!(
-        "hinted door: compile {compile_seconds:.2} s, id 51 {} bytes, {} entries",
-        baked.byte_len(),
+        "hinted door: compile {compile_seconds:.2} s, id 51 {} raw bytes, {} entries",
+        baked.raw_len(),
         baked.entries.len()
     );
 }

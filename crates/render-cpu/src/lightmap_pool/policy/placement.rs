@@ -246,6 +246,7 @@ impl LightmapPoolModel {
                     ],
                     width,
                     height,
+                    plane_extents: self.demand.mask_extents(block),
                 });
                 self.plan.installed.push(block);
             }

@@ -6,7 +6,6 @@
 use std::time::Duration;
 
 use postretro_level_format::cells::CellsSection;
-use postretro_level_format::lightmap_pool::first_generation_layers;
 
 use super::WorstDemand;
 use super::demand::{LayerPrices, PoolLayers};
@@ -58,10 +57,7 @@ impl LightmapPoolReport {
         cells: &CellsSection,
         elapsed: Duration,
     ) -> Self {
-        let layers = PoolLayers {
-            lightmap: first_generation_layers(worst.layers.lightmap, all_resident.lightmap),
-            mask: first_generation_layers(worst.layers.mask, all_resident.mask),
-        };
+        let layers = prices.first_generation(worst.layers, all_resident);
         Self {
             pools: Some(PricedPools {
                 bytes: prices.streamed_bytes(layers),

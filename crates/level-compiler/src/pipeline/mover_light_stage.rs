@@ -238,6 +238,7 @@ fn animated_rows(
             chunks,
             weight_maps,
             face_charts: animated.face_charts,
+            face_placements: animated.placements,
         },
         &wanted,
         &control,

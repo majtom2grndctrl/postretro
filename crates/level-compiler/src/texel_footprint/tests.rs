@@ -2080,6 +2080,7 @@ fn single_chart_atlas<R>(
         x: 0,
         y: 0,
         layer: 0,
+        transposed: false,
     }];
     let (w, h) = (charts[0].width_texels, charts[0].height_texels);
     let layout = crate::lightmap_bake::BlockLayout::whole_layers(w, h, &placements, 2);
@@ -2315,11 +2316,13 @@ fn a_scaled_face_ramps_over_the_same_texels_in_either_walk_order() {
             x: 0,
             y: 0,
             layer: 0,
+            transposed: false,
         },
         ChartPlacement {
             x: charts[0].width_texels,
             y: 0,
             layer: 0,
+            transposed: false,
         },
     ];
     let atlas_width = charts[0].width_texels + charts[1].width_texels;

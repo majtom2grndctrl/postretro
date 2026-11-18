@@ -6,6 +6,8 @@
 
 use glam::Vec3;
 
+use super::cores::Cores;
+use super::sh_walk::sh_requested_from_env;
 use crate::camera::RenderCamera;
 
 const HFOV_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_HFOV";
@@ -90,6 +92,10 @@ pub(super) struct WalkModes {
     /// tier's preset, and stream main visible ∪ the mirror's drawable
     /// visible cells (`mirror`).
     pub(super) planar: bool,
+    /// Stream the level's cluster SH beside the lightmap (`sh_walk`).
+    pub(super) sh: bool,
+    /// The core count every pool the walk spawns is sized for (`cores`).
+    pub(super) cores: Cores,
 }
 
 impl WalkModes {
@@ -139,12 +145,15 @@ impl WalkModes {
                 other => panic!("{PLANAR_ENV} = 1 | on | 0 | off, not {other:?}"),
             };
         }
+        modes.sh = sh_requested_from_env();
+        modes.cores = Cores::from_env();
         modes
     }
 
     /// Projection, pitch and read mode: a paired run must match all three.
     /// Planar stays out, so a planar-on run pairs with the same walk's
-    /// planar-off record: the bake-gap gate with planar on (§4).
+    /// planar-off record: the bake-gap gate with planar on (§4). SH and the
+    /// core count stay out too: the results line carries them.
     pub(super) fn label(&self) -> String {
         format!(
             "{}, pitch {} deg, {}",

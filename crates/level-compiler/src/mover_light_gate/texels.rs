@@ -9,7 +9,7 @@ use super::rows::MoverTexels;
 use super::segment::{
     BOX_SLACK_M, boxes_may_touch, point_inside_brush, point_touches_brush, sphere_touches_box,
 };
-use crate::chart_raster::{CHART_PADDING_TEXELS, chart_interior_dims, chart_texel_world_position};
+use crate::chart_raster::{chart_interior_dims, chart_texel_world_position};
 use crate::lightmap_bake::hard_ray_target;
 use crate::lightmap_layer::{LightmapLayer, SharedAtlas};
 use crate::map_data::{LightType, MapLight};
@@ -230,7 +230,9 @@ fn segment_hull(light: &MapLight, (min, max): (Vec3, Vec3)) -> Aabb {
 
 /// Each texel of chart `chart_index` the bake lit in `partition`, as its
 /// centre and the centre lifted along the chart normal as the bake lifts it.
-/// Records are sorted by atlas index, so each row is one range.
+/// Records are sorted by atlas index, so each placed row is one range; a
+/// transposed chart's placed row is one of its columns. The gate's tallies
+/// are counts, bounds and the chart's one block, so visit order is moot.
 pub(super) fn for_each_lit_texel(
     shared: &SharedAtlas<'_>,
     partition: &LightmapLayer,
@@ -243,19 +245,22 @@ pub(super) fn for_each_lit_texel(
     }
     let placement = shared.placements[chart_index];
     let (width, height) = chart_interior_dims(chart);
+    let (placed_width, placed_height) = placement.orient(width, height);
     let lift = chart.normal * RAY_EPSILON;
     let texels = &partition.texels;
     let mut cursor = 0;
-    for ty in 0..height {
-        let start = (placement.y + CHART_PADDING_TEXELS + ty as u32) * shared.atlas_width
-            + placement.x
-            + CHART_PADDING_TEXELS;
+    for row in 0..placed_height {
+        // The chart texel at the row's first placed column.
+        let (first_x, first_y) = placement.orient(0, row);
+        let (x, y) = placement.interior_texel(first_x, first_y);
+        let start = y as u32 * shared.atlas_width + x as u32;
         cursor += texels[cursor..].partition_point(|texel| texel.idx < start);
         while let Some(texel) = texels.get(cursor)
-            && texel.idx < start + width as u32
+            && texel.idx < start + placed_width as u32
         {
             if texel.raw_visibility > 0.0 {
-                let centre = chart_texel_world_position(chart, (texel.idx - start) as i32, ty);
+                let (tx, ty) = placement.orient((texel.idx - start) as i32, row);
+                let centre = chart_texel_world_position(chart, tx, ty);
                 visit(centre, centre + lift);
             }
             cursor += 1;

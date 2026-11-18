@@ -48,7 +48,9 @@ pub(super) struct ExpectedChunk {
     pub(super) affinity_patch_count: u32,
     pub(super) decoded_bytes: u64,
     pub(super) requested_resident_bytes: u64,
-    pub(super) payload_len: u64,
+    /// The chunk's decoded (raw-form) length: header, block table and
+    /// bodies. Its stored length depends on its codec.
+    pub(super) raw_len: u64,
     pub(super) blocks: Vec<ExpectedBlock>,
     pub(super) probe_patches: Vec<ExpectedProbePatch>,
     pub(super) sparse_blocks: BTreeMap<u32, ExpectedSparseBlock>,
@@ -332,7 +334,7 @@ impl<'a> ValidationPlan<'a> {
                 .checked_add(block.byte_len)
                 .ok_or(ClusterShPayloadsError::SizeOverflow("decoded block bytes"))
         })?;
-        let payload_len = if blocks.is_empty() {
+        let raw_len = if blocks.is_empty() {
             0
         } else {
             (CLUSTER_SH_CHUNK_HEADER_SIZE as u64)
@@ -358,7 +360,7 @@ impl<'a> ValidationPlan<'a> {
             affinity_patch_count,
             decoded_bytes,
             requested_resident_bytes,
-            payload_len,
+            raw_len,
             blocks,
             probe_patches,
             sparse_blocks,
@@ -545,7 +547,15 @@ pub(super) fn validate_index_against_expected(
     actual: &ClusterShPayloadsIndexRecord,
     expected: &ExpectedChunk,
 ) -> Result<(), ClusterShPayloadsError> {
-    if actual.payload_len != expected.payload_len
+    // A chunk stores its header plain, so a non-empty chunk is at least that
+    // long; its exact stored length depends on its codec and is checked
+    // when the chunk is read.
+    let stored_len_fits = if expected.raw_len == 0 {
+        actual.payload_len == 0
+    } else {
+        actual.payload_len >= CLUSTER_SH_CHUNK_HEADER_SIZE as u64
+    };
+    if !stored_len_fits
         || actual.decoded_bytes != expected.decoded_bytes
         || actual.requested_resident_bytes != expected.requested_resident_bytes
         || actual.stored_tile_count != expected.stored_tile_count

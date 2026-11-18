@@ -16,6 +16,7 @@ mod manifest;
 mod mint;
 mod model_textures;
 mod mount;
+mod prl_sections;
 mod project;
 mod run;
 mod sdk_dist;
@@ -52,6 +53,7 @@ fn try_main() -> Result<i32, String> {
         "bake-model-textures" => model_textures::run(rest),
         "solve-weapon-mount" => mount::run(rest),
         "mint-identity" => mint::run(rest),
+        "prl-sections" => prl_sections::run(rest),
         _ => Err(format!(
             "unknown command `{}`\n\nRun `postretro-tool --help` for usage.",
             command.to_string_lossy()
@@ -81,6 +83,7 @@ USAGE:
   postretro-tool solve-weapon-mount --read-muzzle-offset <viewmodel.gltf>
   postretro-tool solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [options]
   postretro-tool mint-identity <mod> [--project <dir> | --manifest <path>]
+  postretro-tool prl-sections <level.prl>
 
 COMMANDS:
   dist                 Assemble a runnable player distribution payload
@@ -93,6 +96,9 @@ COMMANDS:
                        and print the Blender bake command, or --check a baked mount
   mint-identity        Mint a mod's durable state-slot identity ledger; <mod> is
                        its name, the directory under the project's content/
+  prl-sections         Print a compiled level's sections, largest first: id,
+                       name, version, bytes and share of the file; needs no
+                       project
 
 HELPER BINARIES:
   The tool compiles nothing. Each helper defaults to a conventional path beside

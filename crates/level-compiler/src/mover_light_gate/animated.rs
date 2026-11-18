@@ -10,7 +10,7 @@ use super::pose::MoverPoses;
 use super::rows::MoverTexels;
 use super::texels::{TexelGate, light_candidates};
 use crate::bake_control::BakeControl;
-use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_world_position};
+use crate::chart_raster::{CHART_PADDING_TEXELS, ChartPlacement, chart_texel_world_position};
 use crate::light_namespaces::AnimatedBakedLights;
 use crate::lightmap_bake::Chart;
 use crate::lightmap_layer::chart_texel_bounds;
@@ -24,6 +24,9 @@ pub(crate) struct AnimatedScene<'a> {
     pub(crate) weight_maps: &'a AnimatedLightWeightMapsSection,
     /// By face index, as `AnimatedLightChunk::face_index` names them.
     pub(crate) face_charts: &'a [Chart],
+    /// The charts' bake-layer placements, by face index: a transposed chart's
+    /// chunk rects are turned.
+    pub(crate) face_placements: &'a [ChartPlacement],
 }
 
 /// One light's gated texels, per mover with a gated texel.
@@ -98,7 +101,9 @@ fn gate_chunk(gate: &mut TexelGate<'_>, scene: &AnimatedScene<'_>, index: usize,
     let weight_maps = scene.weight_maps;
     let rect = &weight_maps.chunk_rects[index];
     let block = &weight_maps.blocks[rect.block as usize];
-    let chart = &scene.face_charts[scene.chunks.chunks[index].face_index as usize];
+    let face = scene.chunks.chunks[index].face_index as usize;
+    let chart = &scene.face_charts[face];
+    let placement = &scene.face_placements[face];
     let Some(bounds) = chart_texel_bounds(chart) else {
         return;
     };
@@ -106,11 +111,15 @@ fn gate_chunk(gate: &mut TexelGate<'_>, scene: &AnimatedScene<'_>, index: usize,
         return;
     }
     // A block spans its chart's padded placement and moves whole between
-    // atlas spaces, so the rect's offset inside it, less the padding, is its
-    // first texel in chart interior coordinates.
+    // atlas spaces, so the rect's offset inside it, turned back for a
+    // transposed chart and less the padding, is its first texel in chart
+    // interior coordinates. The gate's tallies are order-free.
     let padding = CHART_PADDING_TEXELS as i64;
-    let origin_x = (i64::from(rect.compact_x) - i64::from(block.compact_x) - padding) as i32;
-    let origin_y = (i64::from(rect.compact_y) - i64::from(block.compact_y) - padding) as i32;
+    let offset_x = i64::from(rect.compact_x) - i64::from(block.compact_x);
+    let offset_y = i64::from(rect.compact_y) - i64::from(block.compact_y);
+    let (local_x, local_y) = placement.orient(offset_x, offset_y);
+    let origin_x = (local_x - padding) as i32;
+    let origin_y = (local_y - padding) as i32;
     let lift = chart.normal * RAY_EPSILON;
     for ry in 0..rect.height {
         for rx in 0..rect.width {
@@ -123,8 +132,8 @@ fn gate_chunk(gate: &mut TexelGate<'_>, scene: &AnimatedScene<'_>, index: usize,
             if !lit {
                 continue;
             }
-            let centre =
-                chart_texel_world_position(chart, origin_x + rx as i32, origin_y + ry as i32);
+            let (tx, ty) = placement.orient(rx as i32, ry as i32);
+            let centre = chart_texel_world_position(chart, origin_x + tx, origin_y + ty);
             gate.add_texel(centre, centre + lift, block.lightmap_block);
         }
     }

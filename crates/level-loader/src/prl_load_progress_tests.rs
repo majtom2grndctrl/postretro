@@ -30,6 +30,7 @@ impl Fixture {
             let (width, height) = (64u16, 64u16);
             let texels = usize::from(width) * usize::from(height);
             LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id,
                 width,
                 height,
@@ -56,7 +57,10 @@ impl Fixture {
         };
         Self(write_portal_prl_load_fixture(
             [
-                blob(SectionId::CellResidencySet, residency.to_bytes()),
+                blob(
+                    SectionId::CellResidencySet,
+                    residency.to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
+                ),
                 blob(SectionId::Lightmap, lightmap.to_bytes()),
                 blob(
                     SectionId::LightmapPoolBound,

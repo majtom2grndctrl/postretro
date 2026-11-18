@@ -170,14 +170,7 @@ pub(crate) fn pack_groups_into_layers(
 
     // Pack groups into layers. Each group tries the current layer's MaxRects
     // free list; a group that doesn't fit rolls whole to a new layer.
-    let mut placements = vec![
-        ChartPlacement {
-            x: 0,
-            y: 0,
-            layer: 0
-        };
-        sizes.len()
-    ];
+    let mut placements = vec![ChartPlacement::at(0, 0, 0); sizes.len()];
     let mut layer: u32 = 0;
     let mut packer = MaxRects::new(atlas_dim, atlas_dim);
 
@@ -302,7 +295,7 @@ fn place_group(
         }
     }
     for (i, x, y) in staged {
-        placements[i] = ChartPlacement { x, y, layer };
+        placements[i] = ChartPlacement::at(x, y, layer);
     }
     true
 }
@@ -341,33 +334,65 @@ impl MaxRects {
     /// leaving the smallest leftover short side (ties broken by long side, then
     /// position) for a deterministic, dense placement.
     pub(crate) fn insert(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
-        let mut best: Option<(usize, u32, u32)> = None; // (free idx, short leftover, long leftover)
+        self.insert_with(w, h, FreeRectRule::ShortSide, false)
+            .map(|(x, y, _)| (x, y))
+    }
+
+    /// Place a `w × h` rectangle choosing its free rect by `rule`, returning
+    /// its top-left and whether it was placed turned (`h × w`). With `rotate`
+    /// a non-square rect also scores turned; the turned fit wins only when
+    /// strictly better, so ties keep the rect upright. Ties between free rects
+    /// keep the first in free-list order, which is deterministic.
+    pub(crate) fn insert_with(
+        &mut self,
+        w: u32,
+        h: u32,
+        rule: FreeRectRule,
+        rotate: bool,
+    ) -> Option<(u32, u32, bool)> {
+        // (free idx, turned, score)
+        let mut best: Option<(usize, bool, (u64, u64))> = None;
+        let orientations: &[bool] = if rotate && w != h {
+            &[false, true]
+        } else {
+            &[false]
+        };
         for (idx, r) in self.free.iter().enumerate() {
-            if r.w >= w && r.h >= h {
-                let leftover_x = r.w - w;
-                let leftover_y = r.h - h;
-                let short = leftover_x.min(leftover_y);
-                let long = leftover_x.max(leftover_y);
-                let better = match best {
-                    None => true,
-                    Some((_, bs, bl)) => short < bs || (short == bs && long < bl),
-                };
-                if better {
-                    best = Some((idx, short, long));
+            for &turned in orientations {
+                let (rw, rh) = if turned { (h, w) } else { (w, h) };
+                if r.w < rw || r.h < rh {
+                    continue;
+                }
+                let score = rule.score(r, rw, rh);
+                if best.is_none_or(|(_, _, best_score)| score < best_score) {
+                    best = Some((idx, turned, score));
                 }
             }
         }
 
-        let (idx, _, _) = best?;
+        let (idx, turned, _) = best?;
+        let (rw, rh) = if turned { (h, w) } else { (w, h) };
         let placed = Rect {
             x: self.free[idx].x,
             y: self.free[idx].y,
-            w,
-            h,
+            w: rw,
+            h: rh,
         };
+        self.carve(placed);
+        Some((placed.x, placed.y, turned))
+    }
 
-        // Split every free rect that overlaps the placed rect into the maximal
-        // sub-rects that don't, then prune any free rect contained in another.
+    /// Take the `w × h` rectangle at `(x, y)` out of the free space, as if a
+    /// chart already sat there: later inserts never overlap it.
+    pub(crate) fn occupy(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        if w > 0 && h > 0 {
+            self.carve(Rect { x, y, w, h });
+        }
+    }
+
+    /// Split every free rect that overlaps `placed` into the maximal sub-rects
+    /// that don't, then prune any free rect contained in another.
+    fn carve(&mut self, placed: Rect) {
         let mut i = 0;
         while i < self.free.len() {
             if let Some(splits) = split_free(&self.free[i], &placed) {
@@ -378,8 +403,6 @@ impl MaxRects {
             }
         }
         self.prune();
-
-        Some((placed.x, placed.y))
     }
 
     /// Drop any free rect fully contained in another — the maximality invariant
@@ -401,6 +424,38 @@ impl MaxRects {
             if !removed {
                 i += 1;
             }
+        }
+    }
+}
+
+/// How [`MaxRects::insert_with`] picks among the free rects that fit: the
+/// lowest score wins. The classic MaxRects rules (Jylänki 2010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreeRectRule {
+    /// Smallest leftover short side, then long side.
+    ShortSide,
+    /// Smallest leftover long side, then short side.
+    LongSide,
+    /// Smallest leftover area, then short side.
+    Area,
+    /// Lowest top edge, then leftmost.
+    BottomLeft,
+}
+
+impl FreeRectRule {
+    fn score(self, free: &Rect, w: u32, h: u32) -> (u64, u64) {
+        let leftover_x = u64::from(free.w - w);
+        let leftover_y = u64::from(free.h - h);
+        let short = leftover_x.min(leftover_y);
+        let long = leftover_x.max(leftover_y);
+        match self {
+            FreeRectRule::ShortSide => (short, long),
+            FreeRectRule::LongSide => (long, short),
+            FreeRectRule::Area => (
+                u64::from(free.w) * u64::from(free.h) - u64::from(w) * u64::from(h),
+                short,
+            ),
+            FreeRectRule::BottomLeft => (u64::from(free.y) + u64::from(h), u64::from(free.x)),
         }
     }
 }

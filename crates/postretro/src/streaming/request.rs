@@ -1,7 +1,9 @@
-//! Resource-neutral read request: resource, key, tier, identity, and ranges.
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
+//! Resource-neutral read request: resource, key, class, identity, and ranges.
+//! See: context/lib/rendering_pipeline.md §4 (one issuer, one budget)
 
 use std::ops::Range;
+
+use super::drain_budget::DrainClass;
 
 /// A streamed resource that shares the one read issuer and drain budget.
 /// Declaration order is the drain tie-break at equal class: SH first.
@@ -99,7 +101,10 @@ pub(crate) struct ReadIdentity {
 ///
 /// Invariants the issuer keeps for every request, whatever its resource:
 /// - Mandatory requests of every resource are read before optional requests
-///   of any; within a tier, ranges are read in ascending file offset.
+///   of any; within a tier, ranges are read in ascending file offset. A
+///   request's tier is its key's live class (`ReadRoute::live_class`), or its
+///   own class while its key has none, so a pending request whose key turns
+///   mandatory is read in the mandatory tier with no second submission.
 /// - Ranges of one resource coalesce into one physical read under
 ///   `COALESCE_MAX_SPAN_BYTES`: SH ranges across gaps up to
 ///   `COALESCE_MAX_GAP_BYTES`, lightmap blocks only when byte-contiguous. A
@@ -113,14 +118,20 @@ pub(crate) struct ReadIdentity {
 ///   is cancelled or failed whole.
 /// - A submission identical to a request still pending at the issuer (same
 ///   resource, key, and identity) is absorbed: no second read, no second
-///   completion. It can only raise the pending request's tier. A submission
-///   the issuer has already completed is read again.
+///   completion. A submission the issuer has already completed is read
+///   again.
+///
+/// Every submission is a read that holds one of its resource's permits until
+/// the frame admits its completion, so a resource never has more requests in
+/// the issuer's queue than it has permits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReadRequest {
     pub(crate) resource: StreamResource,
     /// Resource-local key: SH cluster id, or lightmap block id.
     pub(crate) key: u32,
-    pub(crate) tier: ReadTier,
+    /// The item's class at submission, or the most urgent class among
+    /// identical submissions absorbed while it was pending.
+    pub(crate) class: DrainClass,
     pub(crate) identity: ReadIdentity,
     pub(crate) ranges: ReadRanges,
 }

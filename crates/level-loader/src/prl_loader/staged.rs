@@ -31,7 +31,7 @@ use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
-use postretro_level_format::shadowmask_atlas::{FaceOwners, ShadowmaskBlockIndex};
+use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, SpecOwnerVertex};
 use postretro_level_format::teleporters::TeleportersSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::trigger_volumes::TriggerVolumeRecord;
@@ -298,7 +298,7 @@ pub struct FinalLighting {
         Option<AnimatedBillboardDirectScatterDeltaVolumesSection>,
     pub entity_shadow_lights: Vec<u32>,
     pub shadowmask_atlas: Option<ShadowmaskBlockIndex>,
-    pub vertex_spec_owners: Vec<FaceOwners>,
+    pub vertex_spec_owners: Vec<SpecOwnerVertex>,
     pub gpu_lighting_payloads: GpuLightingPayloads,
     pub lightmap_storage: LightmapStorage,
     pub cluster_directory: Option<ClusterDirectorySection>,

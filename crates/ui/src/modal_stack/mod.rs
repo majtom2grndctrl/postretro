@@ -211,7 +211,7 @@ impl ModalStack {
             descriptor,
             tier,
             on_commit,
-            hide_below,
+            hide_below: hide_below || crate::demo::is_engine_panel(name),
         });
     }
 
@@ -236,7 +236,7 @@ impl ModalStack {
             descriptor,
             tier,
             on_commit: None,
-            hide_below,
+            hide_below: hide_below || crate::demo::is_engine_panel(name),
         });
         true
     }
@@ -267,15 +267,19 @@ impl ModalStack {
 
     /// Engine push API: push a descriptor tree directly (pause/dialog opened from
     /// Rust, not via a registered name). `name` labels the entry for diagnostics.
+    /// An engine panel or dialog name hides the layers beneath, as it does
+    /// through [`Self::push_named`].
     pub fn push(&mut self, name: impl Into<String>, descriptor: AnchoredTree) {
+        let name = name.into();
         let instance = self.new_instance();
+        let hide_below = crate::demo::is_engine_panel(&name);
         self.stack.push(StackedTree {
             instance,
-            name: name.into(),
+            name,
             descriptor,
             tier: ScopeTier::Engine,
             on_commit: None,
-            hide_below: false,
+            hide_below,
         });
     }
 
@@ -687,6 +691,54 @@ mod tests {
         stack.pop();
         assert_eq!(stack.entries().len(), 1);
         assert_eq!(stack.entries()[0].name, "title");
+    }
+
+    /// An engine panel or dialog owns the screen however it is pushed: by
+    /// name, as the accessibility panel and display-mode confirm are, or as a
+    /// built descriptor, as the controls panel and its prompt and dialog are.
+    /// Under it, a menu that never asked for `hideBelow` stops drawing.
+    #[test]
+    fn engine_panels_hide_the_menu_beneath_on_every_push_path() {
+        for name in crate::demo::ENGINE_PANEL_NAMES {
+            for by_name in [true, false] {
+                let mut stack = ModalStack::new();
+                stack
+                    .registry_mut()
+                    .register("hud", passthrough(), ScopeTier::Engine, true);
+                register_pushable(&mut stack, "options", capturing());
+                stack.push_named("options", None);
+                if by_name {
+                    register_pushable(&mut stack, name, capturing());
+                    stack.push_named(name, None);
+                } else {
+                    stack.push(name, capturing());
+                }
+                let visible: Vec<_> = stack
+                    .visible_entries()
+                    .into_iter()
+                    .map(|entry| entry.name)
+                    .collect();
+                assert_eq!(
+                    visible,
+                    vec![name.to_string()],
+                    "{name}, by name: {by_name}"
+                );
+                assert_eq!(stack.entries().len(), 2, "{name}: the menu stays retained");
+                stack.pop();
+                assert_eq!(
+                    stack.visible_entries()[0].name,
+                    "options",
+                    "{name}: closing the panel shows the menu again"
+                );
+            }
+        }
+
+        // An ordinary engine push keeps drawing over what is beneath.
+        let mut stack = ModalStack::new();
+        register_pushable(&mut stack, "options", capturing());
+        stack.push_named("options", None);
+        stack.push("someDialog", capturing());
+        assert_eq!(stack.visible_entries().len(), 2);
     }
 
     #[test]

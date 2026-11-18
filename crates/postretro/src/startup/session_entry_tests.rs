@@ -2463,6 +2463,82 @@ fn assert_one_layer_with_one_way_back(app: &mut App, screen: &str) {
     }
 }
 
+// The engine's own panels opened from the dev frontend's Options own the
+// screen as the mod's layers do: Options, and its BACK, stop drawing under
+// them, and show again once the panel closes.
+#[test]
+fn engine_panels_over_the_dev_options_draw_alone() {
+    use postretro_ui::demo::{
+        ACCESSIBILITY_PANEL_NAME, CONTROLS_PANEL_NAME, DISPLAY_MODE_CONFIRM_NAME,
+    };
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    let app = &mut view.app;
+    // The shipped engine panels, registered as boot registers them.
+    {
+        let core = postretro_ui::core_root::CoreRoot::at(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../core"),
+        );
+        let registry = app.session.as_mut().unwrap().modal_stack.registry_mut();
+        for (name, file) in [
+            (CONTROLS_PANEL_NAME, "controlsPanel.json"),
+            (ACCESSIBILITY_PANEL_NAME, "accessibilityPanel.json"),
+            (DISPLAY_MODE_CONFIRM_NAME, "displayModeConfirm.json"),
+        ] {
+            postretro_ui::tree_asset::register_tree_from_disk(registry, &core, name, file, false);
+        }
+    }
+    let open_options = |app: &mut App| {
+        let stack = &mut app.session.as_mut().unwrap().modal_stack;
+        stack.clear_pushed();
+        stack.push_named("frontend.menuTree", None);
+        press(app, "frontend.openOptions");
+    };
+    let layer_names = |app: &mut App| {
+        draw_layers(app)
+            .into_iter()
+            .map(|layer| layer.name)
+            .collect::<Vec<_>>()
+    };
+    for (panel, open) in [
+        (
+            CONTROLS_PANEL_NAME,
+            (|app: &mut App| app.open_controls_panel()) as fn(&mut App),
+        ),
+        (ACCESSIBILITY_PANEL_NAME, |app: &mut App| {
+            app.open_accessibility_panel()
+        }),
+        (DISPLAY_MODE_CONFIRM_NAME, |app: &mut App| {
+            app.session
+                .as_mut()
+                .unwrap()
+                .modal_stack
+                .push_named(DISPLAY_MODE_CONFIRM_NAME, None)
+        }),
+    ] {
+        open_options(app);
+        let options = layer_names(app);
+        assert_eq!(options.len(), 1, "fixture: Options draws alone");
+        open(app);
+        assert_eq!(
+            app.session.as_ref().unwrap().modal_stack.active_name(),
+            Some(panel),
+            "fixture: {panel} opened"
+        );
+        assert_eq!(
+            layer_names(app),
+            vec![panel.to_string()],
+            "{panel} draws alone"
+        );
+        app.session.as_mut().unwrap().modal_stack.pop();
+        assert_eq!(
+            layer_names(app),
+            options,
+            "{panel} closed: Options shows again"
+        );
+    }
+}
+
 // The rules the frontend's visual grammar rests on, over every screen and
 // session state: title, level select, options, the exit dialog, Host and Join
 // in each state, and the keyboard over each field.

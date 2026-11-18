@@ -812,3 +812,7 @@ The brief at commit 635edd536 capped every NPC at 30 Hz, stepped Engaged NPCs' s
 ## Tests pinning ticks
 
 `determinism_tests.rs` (extend its role-keyed reversed-`SpawnOrder` rows, `role_activity_rolls` and `role_hold_releases`, to phase), the clip-timed jab's tick pin, `shipped_brute_combo_lands_three_jabs_320_ms_apart_after_a_2000_ms_hold`, `release_repeat_tests`, `release_exit_tests`, `activity_speed_tests`, many AI tests set the stride counter by hand, `headless_byte_identity.rs`.
+
+## Pool key
+
+registry slots follow spawn order through the free list, and the AI's per-tick index is a snapshot position, so neither works. `BehaviorDrawSalt` carries the identity, but only its hashed seed reaches the brain; store the salt word on the NPC at seeding and hash it for phase (a Fibonacci-style multiply spreads strided ordinals). Hash the identity for phase with a mixing hash; balance stays statistical, since exact balance would need phases that depend on which other NPCs exist. The `Entity` fallback keeps the registry index (Decision).

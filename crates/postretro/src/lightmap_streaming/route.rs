@@ -2,9 +2,10 @@
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use std::ops::Range;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use postretro_level_format::lightmap::LightmapBlockPayload;
 use postretro_level_loader::PrlLoadError;
@@ -13,9 +14,11 @@ use super::controller::LIGHTMAP_COMPLETION_CAPACITY;
 use super::decode_job::LightmapDecodeJob;
 use super::source::LightmapBlockSource;
 use crate::streaming::decode_pool::DecodeQueue;
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::issuer::{ReadOutcome, ReadRecord, ReadRoute};
+use crate::streaming::latency_histogram::LatencyHistogram;
 use crate::streaming::request::ReadRequest;
-use crate::streaming::target_bitset::TargetBitset;
+use crate::streaming::target_set::TargetSet;
 
 /// A block pair as the controller receives it. The issuer only reads; the
 /// level's decode pool decodes each read pair and splits it per plane, so the
@@ -41,6 +44,16 @@ pub(crate) struct LightmapCompletion {
     pub(crate) charged_bytes: u64,
 }
 
+/// Per-pair decode timings, for measurement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LightmapDecodeStats {
+    /// Per decoded pair: submission to the decode pool to its decode
+    /// starting.
+    pub(crate) queue_wait: LatencyHistogram,
+    /// Per decoded pair: decode time on a pool thread.
+    pub(crate) decode_time: LatencyHistogram,
+}
+
 /// Route-side counters shared with the frame thread.
 #[derive(Debug, Default)]
 pub(crate) struct LightmapRouteLedger {
@@ -53,6 +66,9 @@ pub(crate) struct LightmapRouteLedger {
     /// Bytes read only to bridge ranges; lightmap reads merge only
     /// byte-contiguous ranges, so this stays 0.
     gap_bytes: AtomicU64,
+    /// Held only to record one pair's two samples; a poisoned lock is
+    /// recovered, since a sample is whole or absent.
+    decode_stats: Mutex<LightmapDecodeStats>,
 }
 
 impl LightmapRouteLedger {
@@ -81,27 +97,39 @@ impl LightmapRouteLedger {
     pub(crate) fn release(&self, bytes: u64) {
         self.in_memory_bytes.fetch_sub(bytes, Ordering::AcqRel);
     }
+
+    pub(super) fn record_decode(&self, queue_wait: Duration, decode_time: Duration) {
+        let mut stats = self
+            .decode_stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        stats.queue_wait.record(queue_wait);
+        stats.decode_time.record(decode_time);
+    }
+
+    /// Decode timings of every pair decoded so far.
+    #[cfg(test)]
+    pub(crate) fn decode_stats(&self) -> LightmapDecodeStats {
+        *self
+            .decode_stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// The session's half of a route before the level's issuer and decode pool
 /// exist: the completion sender the route and its decode jobs deliver into.
 pub(crate) struct PendingLightmapRoute {
     source: Arc<dyn LightmapBlockSource>,
-    targets: Arc<TargetBitset>,
+    targets: Arc<TargetSet>,
     ledger: Arc<LightmapRouteLedger>,
     completed: SyncSender<LightmapCompletion>,
 }
-
-/// Blocks raised to the mandatory tier after their read was delivered. A
-/// queued decode job reads its block's bit as its tier, so the pool takes it
-/// before every optional job. Each delivery clears its block's bit first.
-pub(super) type RaisedBlocks = TargetBitset;
 
 impl PendingLightmapRoute {
     /// The route over the level's decode pool.
     pub(crate) fn attach(self, decode: DecodeQueue) -> LightmapReadRoute {
         LightmapReadRoute {
-            raised: Arc::new(RaisedBlocks::new(self.source.block_count())),
             source: self.source,
             targets: self.targets,
             ledger: self.ledger,
@@ -111,13 +139,12 @@ impl PendingLightmapRoute {
     }
 }
 
-/// Reads through the level's source, checks the block target bitset, and
-/// hands each read pair to the decode pool; cancellations and failed reads
-/// complete directly.
+/// Reads through the level's source, checks the controller's block targets,
+/// and hands each read pair to the decode pool, ranked by its block's live
+/// class; cancellations and failed reads complete directly.
 pub(crate) struct LightmapReadRoute {
     source: Arc<dyn LightmapBlockSource>,
-    targets: Arc<TargetBitset>,
-    raised: Arc<RaisedBlocks>,
+    targets: Arc<TargetSet>,
     ledger: Arc<LightmapRouteLedger>,
     completed: SyncSender<LightmapCompletion>,
     decode: DecodeQueue,
@@ -129,7 +156,7 @@ pub(crate) struct LightmapReadRoute {
 /// thread ever waits on the frame.
 pub(crate) fn lightmap_route(
     source: Arc<dyn LightmapBlockSource>,
-    targets: Arc<TargetBitset>,
+    targets: Arc<TargetSet>,
     ledger: Arc<LightmapRouteLedger>,
 ) -> (PendingLightmapRoute, Receiver<LightmapCompletion>) {
     let (completed, receiver) = sync_channel(LIGHTMAP_COMPLETION_CAPACITY);
@@ -161,6 +188,10 @@ impl ReadRoute for LightmapReadRoute {
         self.targets.contains(key)
     }
 
+    fn live_class(&self, key: u32) -> Option<DrainClass> {
+        self.targets.class(key)
+    }
+
     fn read_span(&self, span: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
         self.source.read_file_span(span)
     }
@@ -184,9 +215,9 @@ impl ReadRoute for LightmapReadRoute {
     }
 
     /// A read pair is charged at its decoded size from here on, its stored
-    /// bytes released, and queued for decode at its request's tier, until a
-    /// later raise lifts it. False when the session or the decode pool is
-    /// gone; the issuer then exits.
+    /// bytes released, and queued for decode, ranked by its block's live
+    /// class. False when the session or the decode pool is gone; the issuer
+    /// then exits.
     fn deliver(&self, request: ReadRequest, outcome: ReadOutcome) -> bool {
         match outcome {
             ReadOutcome::Read(parts) => {
@@ -200,8 +231,6 @@ impl ReadRoute for LightmapReadRoute {
                 let decoded = self.source.decoded_pair_bytes(request.key);
                 self.ledger.charge(decoded);
                 self.ledger.release(stored);
-                // A raise of an earlier read of this block is spent.
-                self.raised.set(request.key, false);
                 self.decode.submit(Box::new(LightmapDecodeJob {
                     request,
                     lightmap,
@@ -209,7 +238,6 @@ impl ReadRoute for LightmapReadRoute {
                     charged_bytes: decoded,
                     source: Arc::clone(&self.source),
                     targets: Arc::clone(&self.targets),
-                    raised: Arc::clone(&self.raised),
                     ledger: Arc::clone(&self.ledger),
                     completed: Some(self.completed.clone()),
                 }))
@@ -217,12 +245,6 @@ impl ReadRoute for LightmapReadRoute {
             ReadOutcome::Failed(error) => self.complete(request, LightmapReadResult::Failed(error)),
             ReadOutcome::Cancelled => self.complete(request, LightmapReadResult::Cancelled),
         }
-    }
-
-    /// The pair's decode, if still queued, is taken before every optional
-    /// job. One already decoding or delivered needs nothing.
-    fn raise_past_read(&self, key: u32) {
-        self.raised.set(key, true);
     }
 }
 

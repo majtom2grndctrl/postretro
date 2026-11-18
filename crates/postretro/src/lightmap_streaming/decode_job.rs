@@ -4,20 +4,22 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::time::{Duration, Instant};
 
 use postretro_level_loader::PrlLoadError;
 
-use super::route::{LightmapCompletion, LightmapReadResult, LightmapRouteLedger, RaisedBlocks};
+use super::route::{LightmapCompletion, LightmapReadResult, LightmapRouteLedger};
 use super::source::LightmapBlockSource;
-use crate::streaming::decode_pool::DecodeJob;
-use crate::streaming::request::{ReadRequest, ReadTier, StreamResource};
-use crate::streaming::target_bitset::TargetBitset;
+use crate::streaming::decode_pool::{DecodeJob, DecodeRank};
+use crate::streaming::request::{ReadRequest, StreamResource};
+use crate::streaming::target_set::TargetSet;
 
 /// A pair's stored bytes, charged to the route ledger at the pair's decoded
 /// size from the moment it is queued until the frame consumes its
 /// completion. A pair whose block left its targets is not decoded. A decode
-/// that fails or panics, a departed pair, a job the pool discards, and a job
-/// that finds the pool retiring each return that charge themselves.
+/// that fails or panics, a departed pair, a job the pool discards, a job
+/// that finds the pool retiring, and a job dropped still holding it each
+/// return that charge themselves.
 pub(super) struct LightmapDecodeJob {
     pub(super) request: ReadRequest,
     pub(super) lightmap: Vec<u8>,
@@ -25,9 +27,9 @@ pub(super) struct LightmapDecodeJob {
     /// Charged and not yet released or handed to a completion.
     pub(super) charged_bytes: u64,
     pub(super) source: Arc<dyn LightmapBlockSource>,
-    /// The controller's block targets, checked before the decode.
-    pub(super) targets: Arc<TargetBitset>,
-    pub(super) raised: Arc<RaisedBlocks>,
+    /// The controller's block targets, checked before the decode; the
+    /// block's class there is the job's rank.
+    pub(super) targets: Arc<TargetSet>,
     pub(super) ledger: Arc<LightmapRouteLedger>,
     /// Taken by the pair's one completion.
     pub(super) completed: Option<SyncSender<LightmapCompletion>>,
@@ -61,31 +63,36 @@ impl LightmapDecodeJob {
 }
 
 impl DecodeJob for LightmapDecodeJob {
-    /// The request's tier, or mandatory once the block was raised after its
-    /// read was delivered.
-    fn tier(&self) -> ReadTier {
-        if self.raised.contains(self.request.key) {
-            ReadTier::Mandatory
-        } else {
-            self.request.tier
+    /// The block's live class, or its requested class once it has left the
+    /// targets (it then completes cancelled without a decode).
+    fn rank(&self) -> DecodeRank {
+        DecodeRank {
+            class: self
+                .targets
+                .class(self.request.key)
+                .unwrap_or(self.request.class),
+            resource: StreamResource::LightmapBlock,
         }
     }
 
-    fn run(&mut self, retiring: &AtomicBool) {
+    fn run(&mut self, retiring: &AtomicBool, queue_wait: Duration) {
         if retiring.load(Ordering::Acquire) {
             return self.release();
         }
         let block = self.request.key;
         if !self.targets.contains(block) {
             // Left its targets while queued (a declined session untargets
-            // every block): no decode. A block that returned by now decodes.
+            // every block): no decode. A block targeted again before this
+            // check decodes.
             return self.complete_uncharged(LightmapReadResult::Cancelled);
         }
+        let started = Instant::now();
         let decoded = self.source.payload_from_pair_bytes(
             block,
             std::mem::take(&mut self.lightmap),
             self.shadowmask.take(),
         );
+        self.ledger.record_decode(queue_wait, started.elapsed());
         if retiring.load(Ordering::Acquire) {
             return self.release();
         }
@@ -118,5 +125,14 @@ impl DecodeJob for LightmapDecodeJob {
                 message: format!("lightmap block {block} decode panicked"),
             },
         ));
+    }
+}
+
+/// Returns any charge still held: a job dropped mid-unwind, after its
+/// `panicked` cleanup panicked too. The release is an atomic subtraction, so
+/// it cannot panic while unwinding.
+impl Drop for LightmapDecodeJob {
+    fn drop(&mut self) {
+        self.release();
     }
 }

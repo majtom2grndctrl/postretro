@@ -11,6 +11,7 @@ use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
 use postretro_level_loader::PrlLoadError;
 
 use super::*;
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::schedule::COALESCE_MAX_GAP_BYTES;
 
 const MIB: u64 = 1024 * 1024;
@@ -138,12 +139,16 @@ fn request(cluster_id: u32, mandatory: bool) -> ShClusterRequest {
         content_tag: [3; 32],
         cluster_id,
         chunk_hash: [cluster_id as u8; 32],
-        mandatory,
+        class: if mandatory {
+            DrainClass::Visible
+        } else {
+            DrainClass::Prefetch
+        },
     }
 }
 
 fn publish(workers: &ShAsyncWorkers, targets: impl IntoIterator<Item = u32>) {
-    workers.publish_targets(&targets.into_iter().collect::<BTreeSet<_>>());
+    workers.publish_target_keys(&targets.into_iter().collect::<BTreeSet<_>>());
 }
 
 fn wait_completions(workers: &ShAsyncWorkers, count: usize) -> Vec<ShWorkerCompletion> {
@@ -254,7 +259,7 @@ fn chunks_within_the_gap_cap_merge_into_one_read_and_split_into_exact_bytes() {
             pattern(range)
         );
     }
-    let stats = workers.stats().unwrap();
+    let stats = workers.stats();
     assert_eq!(stats.reads_issued, 2);
     assert_eq!(stats.coalesced_reads, 1);
     assert_eq!(stats.gap_bytes, COALESCE_MAX_GAP_BYTES + 1);
@@ -300,7 +305,7 @@ fn span_cap_is_respected_and_an_oversized_chunk_is_read_alone() {
             .iter()
             .all(|completion| matches!(completion.result, ShWorkerResult::Prepared(_)))
     );
-    assert_eq!(workers.stats().unwrap().coalesced_reads, 1);
+    assert_eq!(workers.stats().coalesced_reads, 1);
     workers.stop();
 }
 
@@ -365,7 +370,7 @@ fn a_failed_coalesced_read_fails_every_member_and_releases_its_encoded_bytes() {
             completion.result
         );
     }
-    assert_eq!(workers.stats().unwrap().reads_issued, 0);
+    assert_eq!(workers.stats().reads_issued, 0);
     assert!(source.decode_threads.lock().unwrap().is_empty());
     assert_phases_drained(&workers);
     workers.stop();
@@ -381,7 +386,7 @@ fn a_canonical_empty_cluster_is_decoded_without_a_read() {
     let completions = wait_completions(&workers, 1);
     assert!(prepared_bytes(&completions, 0).is_empty());
     assert!(source.reads().is_empty());
-    assert_eq!(workers.stats().unwrap().reads_issued, 0);
+    assert_eq!(workers.stats().reads_issued, 0);
     workers.stop();
 }
 
@@ -537,7 +542,7 @@ mod positional {
             content_tag: [4; 32],
             cluster_id: 0,
             chunk_hash: [7; 32],
-            mandatory: true,
+            class: DrainClass::Visible,
         };
         workers.submit(request).unwrap();
         gate.wait_for_read();
@@ -569,7 +574,7 @@ mod positional {
             content_tag: [1; 32],
             cluster_id,
             chunk_hash: [1; 32],
-            mandatory: true,
+            class: DrainClass::Visible,
         };
         for cluster_id in 0..MAX_STREAM_PERMITS as u32 {
             workers.submit(old_request(cluster_id)).unwrap();
@@ -611,7 +616,7 @@ mod positional {
             content_tag: [2; 32],
             cluster_id: 0,
             chunk_hash: [2; 32],
-            mandatory: true,
+            class: DrainClass::Visible,
         };
         replacement.submit(new_request).unwrap();
         let completion = wait_completions(&replacement, 1).pop().unwrap();

@@ -5,20 +5,20 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use postretro_level_loader::PrlLoadError;
 
 use super::{ShWorkerCompletion, ShWorkerResult, ShWorkerSource, WorkerShared};
-use crate::sh_streaming::controller::ShClusterRequest;
-use crate::streaming::decode_pool::DecodeJob;
-use crate::streaming::request::{ReadTier, StreamResource};
+use crate::sh_streaming::controller::{ShClusterRequest, ShResidencyControllerError};
+use crate::streaming::decode_pool::{DecodeJob, DecodeRank};
+use crate::streaming::request::StreamResource;
 
 /// A read chunk's stored bytes, queued on the level's decode pool. It is
 /// charged to the decoding phase at its decoded size from the moment it is
 /// queued; the job moves that charge to the ready phase when it delivers, and
 /// releases it when it fails or panics, finds its cluster untargeted, is
-/// discarded, or finds the pool retiring.
+/// discarded, finds the pool retiring, or drops holding it.
 pub(super) struct ShDecodeJob {
     pub(super) request: ShClusterRequest,
     pub(super) bytes: Vec<u8>,
@@ -31,18 +31,23 @@ pub(super) struct ShDecodeJob {
 }
 
 impl ShDecodeJob {
+    /// Returns the decoding charge. An unbalanced ledger panics, after the
+    /// guard has dropped.
     fn release_decoding(&mut self) {
+        if let Err(error) = self.try_release_decoding() {
+            panic!("balanced decode: {error}");
+        }
+    }
+
+    fn try_release_decoding(&mut self) -> Result<(), ShResidencyControllerError> {
         let decoded_bytes = std::mem::take(&mut self.decoded_bytes);
         if decoded_bytes == 0 {
-            return;
+            return Ok(());
         }
         self.shared
-            .phases
-            .lock()
-            .expect("SH phase mutex poisoned")
+            .phases()
             .decoding
             .remove(decoded_bytes, "decoded worker bytes")
-            .expect("balanced decode");
     }
 
     fn stopped(&self, retiring: &AtomicBool) -> bool {
@@ -63,21 +68,26 @@ impl ShDecodeJob {
 }
 
 impl DecodeJob for ShDecodeJob {
-    fn tier(&self) -> ReadTier {
-        if self.request.mandatory {
-            ReadTier::Mandatory
-        } else {
-            ReadTier::Optional
+    /// The cluster's live class, or its requested class while the session
+    /// publishes none.
+    fn rank(&self) -> DecodeRank {
+        DecodeRank {
+            class: self
+                .shared
+                .targets
+                .class(self.request.cluster_id)
+                .unwrap_or(self.request.class),
+            resource: StreamResource::Sh,
         }
     }
 
-    fn run(&mut self, retiring: &AtomicBool) {
+    fn run(&mut self, retiring: &AtomicBool, queue_wait: Duration) {
         if self.stopped(retiring) {
             return self.release_decoding();
         }
         if !self.shared.targets.contains(self.request.cluster_id) {
             // Left its targets while queued: no decode. The controller frees
-            // its permit; a cluster that returned by now decodes.
+            // its permit; a cluster targeted again before this check decodes.
             self.release_decoding();
             return self.complete(ShWorkerResult::Cancelled, 0);
         }
@@ -86,25 +96,23 @@ impl DecodeJob for ShDecodeJob {
             .source
             .decode(self.request.cluster_id, std::mem::take(&mut self.bytes));
         let elapsed = started.elapsed();
-        self.shared
-            .stats
-            .lock()
-            .expect("SH stats mutex poisoned")
-            .decode_latency
-            .record(elapsed);
+        {
+            let mut stats = self.shared.stats();
+            stats.decode_queue_wait.record(queue_wait);
+            stats.decode_latency.record(elapsed);
+        }
         self.release_decoding();
         if self.stopped(retiring) {
             return;
         }
         let ready_bytes = result.as_ref().map_or(0, |chunk| chunk.bytes.len() as u64);
         if ready_bytes != 0 {
-            self.shared
-                .phases
-                .lock()
-                .expect("SH phase mutex poisoned")
+            let charged = self
+                .shared
+                .phases()
                 .ready
-                .add(ready_bytes, "worker completion bytes")
-                .expect("validated ready bound");
+                .add(ready_bytes, "worker completion bytes");
+            charged.expect("validated ready bound");
         }
         let result = match result {
             Ok(chunk) => ShWorkerResult::Prepared(chunk),
@@ -132,5 +140,14 @@ impl DecodeJob for ShDecodeJob {
             }),
             0,
         );
+    }
+}
+
+/// Returns any decoding charge still held: a job dropped mid-unwind, after
+/// its `panicked` cleanup panicked too. Never panics, since it may run while
+/// unwinding.
+impl Drop for ShDecodeJob {
+    fn drop(&mut self) {
+        let _ = self.try_release_decoding();
     }
 }

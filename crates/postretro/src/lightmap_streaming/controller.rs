@@ -19,7 +19,7 @@ use crate::streaming::cell_demand::{CellDemand, to_metres};
 use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 use crate::streaming::request::{ReadTier, StreamResource};
-use crate::streaming::target_bitset::TargetBitset;
+use crate::streaming::target_set::TargetSet;
 
 #[path = "drain.rs"]
 mod drain;
@@ -55,19 +55,22 @@ mod threaded_tests;
 /// A permit covers one block pair from request until install, refusal, or
 /// discard.
 pub(crate) const MAX_LIGHTMAP_PERMITS: usize = 32;
-/// Issuer queue slots for lightmap submissions: a read per permit, and a
-/// tier raise per permit. A pair holds its permit from its read's submission
-/// until the frame admits its completion, and is raised at most once while in
-/// flight.
-pub(crate) const LIGHTMAP_QUEUE_CAPACITY: usize = 2 * MAX_LIGHTMAP_PERMITS;
-/// Completion queue slots: one per permit. A raise is never read and never
-/// completes; every read submission completes exactly once, and its pair holds
-/// a permit until the frame admits that completion. So the completions not
-/// yet admitted never outnumber the permits, and neither the issuer nor a
-/// decode thread ever waits on a full queue. The one release ahead of the
-/// completion, [`LightmapResidencyController::cancel_in_flight`], comes with a
-/// fresh queue when the session detaches from its issuer, and with no further
-/// reads when it declines.
+/// Issuer queue slots for lightmap submissions: one per permit. Every
+/// submission is a read, and its pair holds its permit from the submission
+/// until the frame admits its completion, which the issuer sends only after
+/// taking the read off its queue. A permit therefore has at most one read
+/// waiting in the queue, however slow a physical read is. A tier change
+/// never uses the queue: the controller writes its block's class into the
+/// target set, where the issuer and the decode pool read it.
+pub(crate) const LIGHTMAP_QUEUE_CAPACITY: usize = MAX_LIGHTMAP_PERMITS;
+/// Completion queue slots: one per permit. Every read submission completes
+/// exactly once, and its pair holds a permit until the frame admits that
+/// completion. So the completions not yet admitted never outnumber the
+/// permits, and neither the issuer nor a decode thread ever waits on a full
+/// queue. The one release ahead of the completion,
+/// [`LightmapResidencyController::cancel_in_flight`], comes with a fresh queue
+/// when the session detaches from its issuer, and with no further reads when
+/// it declines.
 pub(crate) const LIGHTMAP_COMPLETION_CAPACITY: usize = MAX_LIGHTMAP_PERMITS;
 /// Pair bytes in hand (in flight, ready, or in a drain) before new requests
 /// wait: four drains' worth. The first request is always allowed, so one
@@ -165,10 +168,9 @@ struct BlockSlot {
     /// What the pair is charged against while it is in hand.
     charge: PairCharge,
     room_held: HeldRoom,
-    /// The tier the in-flight read was last submitted at.
+    /// The tier the in-flight read was requested at, or mandatory once its
+    /// block was promoted in flight; counts each raise once.
     read_tier: ReadTier,
-    /// Queued in `promotions`.
-    promotion_queued: bool,
     /// Failures this generation; the first warns.
     failures: u8,
     /// Each pool's band headroom when the pair was refused.
@@ -203,8 +205,8 @@ pub(crate) struct LightmapResidencyCounters {
     pub(crate) stale_completions: u64,
     /// Completions for a block with no read in flight; dropped.
     pub(crate) duplicate_completions: u64,
-    /// In-flight band reads raised to the mandatory tier after their block
-    /// became mandatory or visible.
+    /// In-flight band reads whose block became mandatory or visible: their
+    /// pending read or queued decode is lifted in place.
     pub(crate) tier_raises: u64,
     /// Batches the renderer failed and rolled back.
     pub(crate) aborted_drains: u64,
@@ -276,8 +278,10 @@ pub(crate) struct LightmapResidencyController {
     lead: u32,
     /// The level's baked maximum lead (id-51 header).
     max_lead: u32,
-    /// Published to the issuer's lightmap route for pre-read cancellation.
-    targets: Arc<TargetBitset>,
+    /// Every target block with its live class, written on each retarget:
+    /// the issuer's lightmap route cancels by membership, and a pending read
+    /// or queued decode takes its tier and rank from the class.
+    targets: Arc<TargetSet>,
     generation: u64,
     content_tag: [u8; 32],
     slots: Vec<BlockSlot>,
@@ -307,9 +311,6 @@ pub(crate) struct LightmapResidencyController {
     /// reserved, per pool. The renderer places them before any band pair, so
     /// they come off band headroom; a reserved pair's room is off it already.
     never_refused_texels: PerPool<u64>,
-    /// In-flight band reads whose block became mandatory or visible; their
-    /// requests are resubmitted at the mandatory tier.
-    promotions: Vec<u32>,
     pool: LightmapPoolReport,
     refused_blocks: usize,
     counters: LightmapResidencyCounters,
@@ -399,7 +400,7 @@ impl LightmapResidencyController {
             camera_cell: None,
             lead: CellDemand::new(residency_set.max_lead).lead(),
             max_lead: residency_set.max_lead,
-            targets: Arc::new(TargetBitset::new(block_count)),
+            targets: Arc::new(TargetSet::new(block_count)),
             generation,
             slots: vec![
                 BlockSlot {
@@ -410,7 +411,6 @@ impl LightmapResidencyController {
                     charge: PairCharge::None,
                     room_held: HeldRoom::default(),
                     read_tier: ReadTier::Optional,
-                    promotion_queued: false,
                     refused_headroom: PerPool::default(),
                     refused_by: PerPool::default(),
                     failures: 0,
@@ -434,7 +434,6 @@ impl LightmapResidencyController {
             band_in_hand_bytes: 0,
             band_committed_texels: PerPool::default(),
             never_refused_texels: PerPool::default(),
-            promotions: Vec::new(),
             pool: LightmapPoolReport::default(),
             refused_blocks: 0,
             counters: LightmapResidencyCounters::default(),
@@ -450,8 +449,8 @@ impl LightmapResidencyController {
         self.generation
     }
 
-    /// The block target set the issuer's lightmap route checks.
-    pub(crate) fn target_bitset(&self) -> &Arc<TargetBitset> {
+    /// The block targets and classes the issuer's lightmap route reads.
+    pub(crate) fn target_set(&self) -> &Arc<TargetSet> {
         &self.targets
     }
 
@@ -524,7 +523,6 @@ impl LightmapResidencyController {
             self.in_drain.capacity(),
             self.pending_delta.capacity(),
             self.request_order.capacity(),
-            self.promotions.capacity(),
             self.outcome_scratch.capacity(),
         ]);
         capacities
@@ -721,9 +719,8 @@ impl LightmapResidencyController {
         if next.is_some_and(|target| target.class != LightmapBlockClass::Band) {
             self.promote_in_hand(block);
         }
-        if previous.is_some() != next.is_some() {
-            self.targets.set(block, next.is_some());
-        }
+        self.targets
+            .set(block, next.map(|target| target.drain_class));
         match (next, self.slots[index].phase) {
             (None, BlockPhase::Refused) => {
                 self.refused_blocks -= 1;

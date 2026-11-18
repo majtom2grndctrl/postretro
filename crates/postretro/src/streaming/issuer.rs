@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use postretro_level_loader::PrlLoadError;
 
+use super::drain_budget::DrainClass;
 use super::issuer_busy::IssuerBusyLog;
 use super::request::{MAX_READ_RANGES, ReadRequest, StreamResource};
 use super::schedule::{RangeSlot, ReadPlan, plan_next_read, split_span};
@@ -46,11 +47,12 @@ pub(crate) trait ReadRoute: Send {
     /// Hands over a request's one outcome. False when the resource's
     /// receiver is gone; the issuer then exits.
     fn deliver(&self, request: ReadRequest, outcome: ReadOutcome) -> bool;
-    /// A raise of `key` to the mandatory tier arrived after its request was
-    /// read and delivered. A route whose items wait past the read (a queued
-    /// decode) raises the waiting item there; the default does nothing,
-    /// because the item is already on its way.
-    fn raise_past_read(&self, _key: u32) {}
+    /// `key`'s live class, read from the target set the frame thread writes;
+    /// `None` when the resource has not published one. A pending request's
+    /// tier is read from it before every plan, so a request whose key turned
+    /// mandatory after its submission is lifted, and one whose key turned
+    /// optional is lowered, without a message to the issuer.
+    fn live_class(&self, key: u32) -> Option<DrainClass>;
 }
 
 /// One successful physical read, as its route's counters see it.
@@ -131,8 +133,10 @@ pub(crate) struct ReadIssuer {
 
 impl ReadIssuer {
     /// Spawns the issuer thread. `queue_capacity` must cover every request
-    /// the routed resources can have outstanding (their permits), so a
-    /// submission never finds the queue full.
+    /// the routed resources can have outstanding: each submission is a read
+    /// holding one of its resource's permits until the frame admits its
+    /// completion, so the sum of the routed resources' permits is enough,
+    /// and a submission never finds the queue full.
     pub(crate) fn spawn(
         routes: ReadRoutes,
         queue_capacity: usize,
@@ -243,16 +247,24 @@ struct PlanScratch {
 }
 
 impl PlanScratch {
-    fn collect(&mut self, pending: &[PendingRead]) {
+    /// Each pending request's tier is its key's live class, or the class it
+    /// was submitted at when its route publishes none.
+    fn collect(&mut self, pending: &[PendingRead], routes: &ReadRoutes) {
         self.slots.clear();
         self.owners.clear();
         for (pending_index, read) in pending.iter().enumerate() {
-            for range_index in 0..read.request.ranges.len() {
+            let request = &read.request;
+            let tier = routes
+                .route(request.resource)
+                .live_class(request.key)
+                .unwrap_or(request.class)
+                .tier();
+            for range_index in 0..request.ranges.len() {
                 if read.unread & (1 << range_index) != 0 {
                     self.slots.push(RangeSlot {
-                        resource: read.request.resource,
-                        tier: read.request.tier,
-                        range: read.request.ranges.get(range_index),
+                        resource: request.resource,
+                        tier,
+                        range: request.ranges.get(range_index),
                     });
                     self.owners.push((pending_index, range_index));
                 }
@@ -304,7 +316,7 @@ fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: 
         if !cancel_departed(pending, routes) {
             return;
         }
-        scratch.collect(pending);
+        scratch.collect(pending, routes);
         let Some(plan) = plan_next_read(&scratch.slots) else {
             continue;
         };
@@ -319,23 +331,16 @@ fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: 
     }
 }
 
-/// Queues one submission. An identical pending request absorbs it; a raise
-/// with no pending request goes to its route and is never read; a request
-/// with nothing to read completes at once, unless its key has departed.
+/// Queues one submission. An identical pending request absorbs it, keeping
+/// the more urgent of the two classes; a request with nothing to read
+/// completes at once, unless its key has departed.
 fn accept(submitted: SubmittedRead, pending: &mut Vec<PendingRead>, routes: &ReadRoutes) -> bool {
     let request = submitted.request;
     if let Some(existing) = pending
         .iter_mut()
         .find(|read| read.request.same_item(&request))
     {
-        existing.request.tier = existing.request.tier.min(request.tier);
-        return true;
-    }
-    if request.raise_only {
-        // Its original came first on the same queue and is no longer
-        // pending: it was read and delivered, or completed cancelled or
-        // failed.
-        routes.route(request.resource).raise_past_read(request.key);
+        existing.request.class = existing.request.class.min(request.class);
         return true;
     }
     let mut read = PendingRead {

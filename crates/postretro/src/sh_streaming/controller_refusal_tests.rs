@@ -738,7 +738,7 @@ fn full_ready_permits_drain_then_free_mandatory_and_optional_reads() {
 
         let request = c.take_next_request().unwrap().unwrap();
         assert_eq!(request.cluster_id, 0);
-        assert_eq!(request.mandatory, !optional);
+        assert_eq!(request.mandatory(), !optional);
         assert_eq!(c.counters().rereads, 1);
         assert_ledger(&c);
     }

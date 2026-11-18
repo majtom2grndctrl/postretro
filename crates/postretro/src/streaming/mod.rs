@@ -8,9 +8,10 @@ pub(crate) mod decode_pool;
 pub(crate) mod drain_budget;
 pub(crate) mod issuer;
 pub(crate) mod issuer_busy;
+pub(crate) mod latency_histogram;
 #[cfg(test)]
 pub(crate) mod read_gate_test_fixture;
 pub(crate) mod request;
 pub(crate) mod schedule;
 pub(crate) mod shared_drain;
-pub(crate) mod target_bitset;
+pub(crate) mod target_set;

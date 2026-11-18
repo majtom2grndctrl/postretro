@@ -10,7 +10,7 @@ use super::*;
 use crate::alloc_probe::AllocSnapshot;
 use crate::lightmap_streaming::test_fixtures::*;
 use crate::streaming::drain_budget::{DrainClass, DrainItem, DrainRank};
-use crate::streaming::request::ReadTier;
+use crate::streaming::request::{ReadRequest, ReadTier};
 use crate::streaming::shared_drain::SharedDrain;
 
 fn mandatory(block: u32, lead_metres: u32) -> Option<LightmapTarget> {
@@ -234,7 +234,7 @@ fn portal_walk_path_demands_drawn_cells_outside_the_baked_set_as_visible() {
     rig.portal(0, &[0, 5]);
     assert_eq!(rig.controller.target(5), visible(5));
     assert_eq!(rig.requested_blocks(), vec![5, 0, 1, 2]);
-    assert_eq!(rig.requests[0].tier, ReadTier::Mandatory);
+    assert_eq!(rig.requests[0].class.tier(), ReadTier::Mandatory);
 }
 
 fn camera_set_only(path: VisibilityPath) {
@@ -482,7 +482,7 @@ fn drawn_cell_outside_the_baked_set_is_visible_demand_never_refused() {
         .iter()
         .find(|request| request.key == 5)
         .unwrap();
-    assert_eq!(request.tier, ReadTier::Mandatory);
+    assert_eq!(request.class.tier(), ReadTier::Mandatory);
     rig.controller.count_visible_misses();
     let counters = rig.controller.counters();
     assert_eq!(counters.last_frame_drawn_outside_baked_set, 1, "block 5");
@@ -876,7 +876,7 @@ fn held_block_whose_drain_rolled_back_is_read_at_its_demanded_class() {
         .iter()
         .find(|request| request.key == 3)
         .expect("a band block of the camera set is read again");
-    assert_eq!(request.tier, ReadTier::Optional);
+    assert_eq!(request.class.tier(), ReadTier::Optional);
 }
 
 // ---- Band reads leave mandatory work its reserve ----
@@ -919,11 +919,12 @@ fn band_reads_hold_at_most_half_the_permits_and_mandatory_reads_use_the_reserve(
     assert_eq!(rig.controller.permits_in_use(), 16 + 15);
 }
 
-// A band read promoted in flight is resubmitted at the mandatory tier, so
-// the issuer raises the pending request's tier; the permit is not taken
-// twice, and the pair installs once.
+// A band read promoted in flight is lifted in place: the retarget writes its
+// block's mandatory class into the target set, where the issuer and the
+// decode pool read it, and nothing is submitted for it. The permit is not
+// taken twice, and the pair installs once.
 #[test]
-fn band_read_promoted_in_flight_is_resubmitted_at_the_mandatory_tier() {
+fn band_read_promoted_in_flight_is_lifted_through_its_class_without_a_submission() {
     let mut rig = Rig::corridor(None);
     let batch = rig.portal(0, &[]).unwrap();
     rig.install_all(&batch, headroom(8));
@@ -932,34 +933,168 @@ fn band_read_promoted_in_flight_is_resubmitted_at_the_mandatory_tier() {
     let band: Vec<(u32, ReadTier)> = rig
         .requests
         .iter()
-        .map(|request| (request.key, request.tier))
+        .map(|request| (request.key, request.class.tier()))
         .collect();
     assert_eq!(band, vec![(3, ReadTier::Optional), (4, ReadTier::Optional)]);
     rig.install_all(&batch, headroom(8));
-    rig.requests.clear();
+    let in_flight = std::mem::take(&mut rig.requests);
 
     // Camera 2 makes blocks 3 (lead 0) and 4 (12 m) mandatory while their
     // reads are in flight; block 5 is its band.
     let batch = rig.portal(2, &[]).unwrap();
-    let raised: Vec<u32> = rig
-        .requests
-        .iter()
-        .filter(|request| request.tier == ReadTier::Mandatory)
-        .map(|request| request.key)
-        .collect();
-    assert_eq!(raised, vec![3, 4]);
+    assert_eq!(rig.requested_blocks(), vec![5], "only block 5 is submitted");
+    for block in [3, 4] {
+        assert_eq!(
+            rig.controller
+                .target_set()
+                .class(block)
+                .map(DrainClass::tier),
+            Some(ReadTier::Mandatory),
+            "block {block}'s live class lifts its read"
+        );
+    }
     assert_eq!(rig.controller.counters().tier_raises, 2);
     assert_eq!(rig.controller.phase(3), BlockPhase::InFlight);
     assert_eq!(rig.controller.permits_in_use(), 3, "blocks 3, 4 and 5");
     rig.install_all(&batch, headroom(8));
 
     let installs = rig.controller.counters().installs;
+    rig.requests.extend(in_flight);
     rig.complete_all();
     let batch = rig.portal(2, &[]).unwrap();
     rig.install_all(&batch, headroom(8));
     assert_eq!(rig.controller.phase(3), BlockPhase::Installed);
     assert_eq!(rig.controller.counters().installs, installs + 3);
     assert_eq!(rig.controller.counters().duplicate_completions, 0);
+}
+
+// A block promoted while its read was in flight carries no raise past that
+// read: once it leaves demand and returns in the band, its live class and
+// its next read are the band's.
+#[test]
+fn a_promotion_never_outlives_the_read_it_lifted() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    rig.complete_all();
+    let batch = rig.portal(0, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    assert_eq!(rig.requested_blocks(), vec![3, 4]);
+    let in_flight = std::mem::take(&mut rig.requests);
+    let batch = rig.portal(2, &[]).unwrap();
+    assert_eq!(rig.controller.counters().tier_raises, 2, "3 and 4 lifted");
+    rig.install_all(&batch, headroom(8));
+    rig.requests.clear();
+
+    // Camera 6 holds neither block, and the lifted reads complete departed.
+    let batch = rig.portal(6, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    rig.requests.extend(in_flight);
+    rig.complete_all();
+    for block in [3, 4] {
+        assert_eq!(rig.controller.target_set().class(block), None);
+        assert_eq!(rig.controller.phase(block), BlockPhase::Absent);
+    }
+
+    // Back at camera 0, both are band blocks again and read at the band's
+    // class.
+    rig.portal(0, &[]);
+    for block in [3, 4] {
+        assert_eq!(
+            rig.controller.target_set().class(block),
+            Some(DrainClass::Prefetch),
+            "block {block}"
+        );
+        let request = rig
+            .requests
+            .iter()
+            .find(|request| request.key == block)
+            .expect("the band block is read again");
+        assert_eq!(request.class, DrainClass::Prefetch);
+    }
+}
+
+// The issuer's lightmap queue holds one submission per permit. However
+// long the issuer sits in one physical read, the frames meanwhile admit
+// delivered pairs, recycle their permits into new reads, and promote reads
+// still in flight, again and again; every submission is a read of a block
+// with no read outstanding, so the queue never holds more than the permits
+// and a submission never fails.
+#[test]
+fn recycled_and_promoted_reads_never_overfill_the_issuer_queue() {
+    // Camera c holds blocks 16c..16c+16 at lead 0 and the next camera's
+    // sixteen as its band, so each step forward promotes the band reads it
+    // finds in flight.
+    const STEP: u32 = 16;
+    const CAMERAS: u32 = 7;
+    let mut rows = Vec::new();
+    for camera in 0..CAMERAS {
+        rows.extend((0..STEP).map(|i| (camera, camera * STEP + i, 0)));
+        rows.extend((0..STEP).map(|i| (camera, (camera + 1) * STEP + i, 20)));
+    }
+    let block_count = (CAMERAS + 1) * STEP;
+    let blocks = (0..block_count)
+        .map(|block| BlockSpec::standard(block, block, 64, true))
+        .collect();
+    let mut rig = Rig::new(blocks, residency_set(block_count, &rows, 32), None);
+    let room = pool_room(1 << 30);
+
+    /// The issuer's queue as the frames fill it, the blocks with a read
+    /// submitted and not yet delivered, and the most it ever held.
+    #[derive(Default)]
+    struct Model {
+        queue: std::collections::VecDeque<ReadRequest>,
+        outstanding: std::collections::BTreeSet<u32>,
+        peak: usize,
+    }
+    impl Model {
+        fn frame(&mut self, rig: &mut Rig, camera: u32, room: LightmapPoolReport) {
+            let batch = rig.portal(camera, &[]).unwrap();
+            rig.install_all(&batch, room);
+            for request in rig.requests.drain(..) {
+                assert!(
+                    self.outstanding.insert(request.key),
+                    "block {} submitted with a read outstanding",
+                    request.key
+                );
+                self.queue.push_back(request);
+            }
+            assert!(
+                self.queue.len() <= LIGHTMAP_QUEUE_CAPACITY,
+                "{} queued > {LIGHTMAP_QUEUE_CAPACITY}",
+                self.queue.len()
+            );
+            self.peak = self.peak.max(self.queue.len());
+        }
+    }
+    let mut model = Model::default();
+    for camera in 0..CAMERAS {
+        // The issuer takes everything queued, then sits in one slow read.
+        let taken: Vec<ReadRequest> = model.queue.drain(..).collect();
+        // Its earlier reads are delivered and decoded meanwhile.
+        for request in taken {
+            model.outstanding.remove(&request.key);
+            let completion = rig.source.completion(request);
+            rig.controller.admit_completion(completion).unwrap();
+        }
+        // Frames install them and recycle the permits into new reads, the
+        // band's among them; the step to the next camera promotes those
+        // band reads, all while the issuer still reads.
+        model.frame(&mut rig, camera, room);
+        model.frame(&mut rig, camera, room);
+        if camera + 1 < CAMERAS {
+            model.frame(&mut rig, camera + 1, room);
+        }
+    }
+    assert!(
+        rig.controller.counters().tier_raises >= u64::from(STEP),
+        "a step's band reads were promoted in flight"
+    );
+    assert_eq!(
+        model.peak, LIGHTMAP_QUEUE_CAPACITY,
+        "every permit's read waited in the queue at once, with raises beside \
+         them in flight"
+    );
 }
 
 // ---- Band headroom in pool slots ----

@@ -156,6 +156,8 @@ struct ChartRows<'t> {
     /// Transposed: a chart row runs down an atlas column, so chart column
     /// `tx` lies on one atlas row and keeps its own cursor there.
     row_cursors: Vec<usize>,
+    /// The lowest row `fill` may take next: the cursors only move forward.
+    next_row: u32,
 }
 
 impl<'t> ChartRows<'t> {
@@ -175,6 +177,7 @@ impl<'t> ChartRows<'t> {
             width,
             cursor: 0,
             row_cursors: Vec::new(),
+            next_row: 0,
         };
         // The placed rect's top-left and bottom-right corners bound the
         // interior's atlas indices in either orientation.
@@ -208,8 +211,14 @@ impl<'t> ChartRows<'t> {
     }
 
     /// Writes chart row `ty` into `row`, leaving absent texels untouched.
-    /// Rows must come in increasing `ty`.
+    /// Rows must come in strictly increasing `ty`, from 0.
     fn fill(&mut self, ty: u32, row: &mut [Option<f32>]) {
+        debug_assert!(
+            ty >= self.next_row,
+            "chart row {ty} after row {}: rows must strictly increase",
+            self.next_row.wrapping_sub(1)
+        );
+        self.next_row = ty + 1;
         let texels = self.texels;
         if self.placement.transposed {
             for tx in 0..self.width {

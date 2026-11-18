@@ -130,9 +130,10 @@ fn runtime_first_generation(
 }
 
 // Pool sizing. The figures are worked by hand from the bound, the 5/4 margin,
-// the 16-layer floor and the shipped layer prices; the renderer's own counters
-// confirm them where an adapter exists. This level is smaller than the floor,
-// so any bound sizes it at its cap, the all-resident layers times the margin:
+// the 96 MiB floor (16 lightmap or 24 mask layers) and the shipped layer
+// prices; the renderer's own counters confirm them where an adapter exists.
+// This level is smaller than the floor, so any bound sizes it at its cap, the
+// all-resident layers times the margin:
 // 5 × 5/4 rounds up to 7 and 4 × 5/4 is 5 (the margin alone is pinned in
 // `postretro-level-format`'s sizing tests). Spares count, and a pool with
 // nothing to hold has neither layers nor a spare.

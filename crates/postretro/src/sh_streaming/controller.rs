@@ -58,9 +58,21 @@ pub(crate) struct ShClusterRequest {
     pub(crate) content_tag: [u8; 32],
     pub(crate) cluster_id: u32,
     pub(crate) chunk_hash: [u8; 32],
-    /// The cluster's class was in the mandatory tier (`Visible`, `Pinned` or
-    /// `Lead`) when requested. Mandatory reads are served before optional ones.
-    pub(crate) mandatory: bool,
+    /// The cluster's class on the shared drain scale when requested. Its
+    /// read and decode follow the cluster's live class once the session
+    /// publishes targets; this is the fallback until then.
+    pub(crate) class: DrainClass,
+}
+
+impl ShClusterRequest {
+    /// Requested in the mandatory tier (`Visible`, `Pinned` or `Lead`).
+    #[cfg(test)]
+    pub(crate) const fn mandatory(&self) -> bool {
+        matches!(
+            self.class.tier(),
+            crate::streaming::request::ReadTier::Mandatory
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,10 +495,22 @@ impl ShResidencyController {
         self.targets.contains(&cluster_id)
     }
 
-    /// The current target set, published to the I/O issuer for pre-read
-    /// cancellation.
+    /// The current target set.
+    #[cfg(test)]
     pub(crate) fn targets(&self) -> &BTreeSet<u32> {
         &self.targets
+    }
+
+    /// Every target with its class on the shared drain scale, published
+    /// with the target set so a queued read or decode follows its cluster's
+    /// live class. Every target has a class; membership never depends on it.
+    pub(crate) fn target_classes(&self) -> impl Iterator<Item = (u32, DrainClass)> + '_ {
+        self.targets.iter().map(|&cluster_id| {
+            let class = self.states[cluster_id as usize]
+                .class
+                .map_or(DrainClass::Hysteresis, TargetClass::drain_class);
+            (cluster_id, class)
+        })
     }
 
     /// While true (Settling, capture's preload), every path demands what it

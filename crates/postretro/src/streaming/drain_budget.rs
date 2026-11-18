@@ -35,6 +35,20 @@ pub(crate) enum DrainClass {
 }
 
 impl DrainClass {
+    /// Every class, in declaration order: `ALL[class.index()] == class`.
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Visible,
+        Self::Pinned,
+        Self::Lead,
+        Self::SeamWarm,
+        Self::Prefetch,
+        Self::Hysteresis,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
     pub(crate) const fn tier(self) -> ReadTier {
         match self {
             Self::Visible | Self::Pinned | Self::Lead => ReadTier::Mandatory,

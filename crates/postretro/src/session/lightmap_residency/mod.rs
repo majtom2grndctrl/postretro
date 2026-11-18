@@ -186,7 +186,7 @@ impl LightmapStreamingSession {
         let ledger = Arc::new(LightmapRouteLedger::default());
         let (route, completions) = lightmap_route(
             Arc::clone(&source),
-            Arc::clone(controller.target_bitset()),
+            Arc::clone(controller.target_set()),
             Arc::clone(&ledger),
         );
         Self {
@@ -345,7 +345,7 @@ impl LightmapStreamingSession {
     pub(in crate::session) fn detach_from_issuer(&mut self) -> Receiver<LightmapCompletion> {
         let (route, completions) = lightmap_route(
             Arc::clone(&self.source),
-            Arc::clone(self.controller.target_bitset()),
+            Arc::clone(self.controller.target_set()),
             Arc::clone(&self.ledger),
         );
         self.route = Some(route);
@@ -467,9 +467,7 @@ impl LightmapStreamingSession {
         self.controller.cancel_in_flight();
         // Untarget every block so the shared issuer cancels this session's
         // pending reads at once instead of reading them for nothing.
-        self.controller
-            .target_bitset()
-            .publish(&std::collections::BTreeSet::new());
+        self.controller.target_set().publish([]);
     }
 
     /// A parked, declined session is an inert sink for the rest of the level:

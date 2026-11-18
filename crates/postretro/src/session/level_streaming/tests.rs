@@ -24,6 +24,7 @@ use crate::session::sh_async_workers::{ShAsyncWorkers, ShWorkerSource};
 use crate::session::sh_residency::sync_manifest_test_fixture;
 use crate::sh_streaming::controller::ShClusterRequest;
 use crate::streaming::cell_demand::{CellDemand, DemandFrame};
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::request::StreamResource;
 
 /// SH's id 49, decoded as level scope does.
@@ -153,7 +154,11 @@ fn sh_request(cluster_id: u32, mandatory: bool) -> ShClusterRequest {
         content_tag: [9; 32],
         cluster_id,
         chunk_hash: [cluster_id as u8; 32],
-        mandatory,
+        class: if mandatory {
+            DrainClass::Visible
+        } else {
+            DrainClass::Prefetch
+        },
     }
 }
 
@@ -185,7 +190,7 @@ fn level_issuer_reads_sh_and_lightmap_mandatory_first_in_ascending_offset_on_one
     )
     .unwrap();
     workers.attach_issuer(reads.issuer().clone());
-    workers.publish_targets(&(0..5).collect::<BTreeSet<_>>());
+    workers.publish_target_keys(&(0..5).collect::<BTreeSet<_>>());
 
     // Pin the issuer inside one read while both resources queue work.
     log.gate.hold(at(100).start);
@@ -971,7 +976,7 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
     use crate::lightmap_streaming::route::{
         LightmapCompletion, LightmapReadResult, LightmapRouteLedger,
     };
-    use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, ReadTier};
+    use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest};
 
     let (completions, queue) = std::sync::mpsc::sync_channel(1);
     let issuer = std::thread::spawn(move || {
@@ -979,14 +984,13 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
             let request = ReadRequest {
                 resource: StreamResource::LightmapBlock,
                 key,
-                tier: ReadTier::Mandatory,
+                class: DrainClass::Visible,
                 identity: ReadIdentity {
                     generation: 1,
                     content_tag: [0; 32],
                     item_hash: [0; 32],
                 },
                 ranges: ReadRanges::one(0..64),
-                raise_only: false,
             };
             let _ = completions.send(LightmapCompletion {
                 request,

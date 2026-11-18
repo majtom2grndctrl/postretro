@@ -20,7 +20,7 @@ use std::time::Duration;
 use anyhow::Result;
 use postretro_level_loader::{LevelWorld, ShDrainBatch, ShDrainOutcome, ShStreamingMode};
 
-use crate::session::sh_async_workers::ShWorkerCompletion;
+use crate::session::sh_async_workers::{ShWorkerCompletion, ShWorkerStats};
 use crate::session::sh_residency::ShStreamingSession;
 use crate::sh_streaming::controller::{ClusterResidencyState, ShResidencyCounters};
 use crate::streaming::cluster_hints::ClusterHints;
@@ -118,6 +118,8 @@ pub(super) struct ShRunStats {
     /// Visible misses by the end of the spawn step.
     pub(super) spawn_misses: u64,
     pub(super) counters: ShResidencyCounters,
+    /// The workers' read and decode timings over the whole run.
+    pub(super) workers: Option<ShWorkerStats>,
 }
 
 impl ShRunStats {
@@ -129,12 +131,23 @@ impl ShRunStats {
     pub(super) fn line(&self) -> String {
         let c = &self.counters;
         let b = &c.miss_buckets;
+        let timings = self.workers.map_or_else(
+            || "no worker timings".to_string(),
+            |workers| {
+                format!(
+                    "read {}; decode queue wait {}; decode {}",
+                    workers.read_latency.summary(),
+                    workers.decode_queue_wait.summary(),
+                    workers.decode_latency.summary(),
+                )
+            },
+        );
         format!(
             "late chunks (visible-miss episodes) spawn step {}, after spawn {}; by cause (whole \
              run): outside reach {}, read in flight {}, held by drain budget {}, awaiting \
              compose {}, trimmed {}, failed {}; installs {}, evictions {}, re-reads {}, \
              retries {}, cancelled {}, discarded {}; budget-limited drains {}; max drain \
-             decoded {:.2} MiB",
+             decoded {:.2} MiB; {timings}",
             self.spawn_misses,
             self.late_after_spawn(),
             b.outside_reach,

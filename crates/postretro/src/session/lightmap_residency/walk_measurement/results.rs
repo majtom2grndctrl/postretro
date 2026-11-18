@@ -22,6 +22,7 @@ use super::modes::{ReadsMode, WalkModes};
 use super::paths::WalkKind;
 use super::report::{RunReport, max_and_p95};
 use super::walk::Walk;
+use crate::streaming::latency_histogram::LatencyHistogram;
 
 const RESULTS_OUT_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_RESULTS_OUT";
 const TAG_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TAG";
@@ -118,8 +119,20 @@ pub(super) fn result_line(keys: &RunKeys<'_>, report: &RunReport) -> Value {
             sh.map(|sh| sh.counters.miss_buckets.held_by_drain_budget),
         "sh_max_drain_decoded_bytes": sh.map(|sh| sh.counters.max_drain_decoded_bytes),
     });
+    let sh_workers = sh.and_then(|sh| sh.workers);
+    let quantiles = |histogram: Option<&LatencyHistogram>| {
+        histogram.map(|h| [h.quantile_ms(0.5), h.quantile_ms(0.95), h.max_ms()])
+    };
+    let decode_part = json!({
+        "lightmap_decode_queue_wait_ms": quantiles(Some(&report.lightmap_decode.queue_wait)),
+        "lightmap_decode_ms": quantiles(Some(&report.lightmap_decode.decode_time)),
+        "lightmap_decodes": report.lightmap_decode.decode_time.samples(),
+        "sh_decode_queue_wait_ms": quantiles(sh_workers.as_ref().map(|w| &w.decode_queue_wait)),
+        "sh_decode_ms": quantiles(sh_workers.as_ref().map(|w| &w.decode_latency)),
+        "sh_read_ms": quantiles(sh_workers.as_ref().map(|w| &w.read_latency)),
+    });
     let mut line = serde_json::Map::new();
-    for part in [keys_part, lightmap_part, sh_part] {
+    for part in [keys_part, lightmap_part, sh_part, decode_part] {
         if let Value::Object(fields) = part {
             line.extend(fields);
         }
@@ -142,6 +155,11 @@ pub(super) fn print_instruments(keys: &RunKeys<'_>, report: &RunReport) {
         report.causes_play.left_behind,
     );
     println!("   issuer: {}", report.issuer_busy.line());
+    println!(
+        "   lightmap decode: queue wait {}; decode {}",
+        report.lightmap_decode.queue_wait.summary(),
+        report.lightmap_decode.decode_time.summary(),
+    );
     match (&report.sh, keys.sh) {
         (Some(sh), _) => println!("   SH on: {}", sh.line()),
         (None, ShStatus::NoId50) => {

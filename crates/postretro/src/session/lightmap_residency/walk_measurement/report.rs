@@ -11,6 +11,7 @@ use super::pool_mirror::{PoolRun, PoolStats};
 use super::sh_walk::ShRunStats;
 use super::trip_record::{GateSplit, RunRecord, SplitTotals};
 use super::{Levers, Walk};
+use crate::lightmap_streaming::route::LightmapDecodeStats;
 
 const MIB: f64 = 1024.0 * 1024.0;
 
@@ -117,6 +118,8 @@ pub(super) struct RunReport {
     pub(super) issuer_busy: BusyStats,
     /// SH beside the lightmap, when this run streamed it.
     pub(super) sh: Option<ShRunStats>,
+    /// Lightmap pairs' decode-pool queue wait and decode time.
+    pub(super) lightmap_decode: LightmapDecodeStats,
 }
 
 /// Drawn blocks still non-resident after the frame's last drain, by cause

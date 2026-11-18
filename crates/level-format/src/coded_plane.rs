@@ -1,5 +1,5 @@
-// Coded planes: one stored plane of a streamed section, raw or one checksummed
-// zstd frame, and the codec identity build caches fold.
+// Coded planes: a stored plane or whole-section frame of a coded section, raw
+// or one checksummed zstd frame, and the codec identity build caches fold.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use std::cell::RefCell;

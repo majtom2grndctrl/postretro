@@ -65,13 +65,16 @@ impl ShResidencyController {
         let state = &mut self.states[cluster_id as usize];
         state.state = ClusterResidencyState::Queued;
         state.evicted = false;
-        let mandatory = state.class.is_some_and(TargetClass::is_mandatory);
+        // A requested cluster is targeted, so it has a class.
+        let class = state
+            .class
+            .map_or(DrainClass::Hysteresis, TargetClass::drain_class);
         Ok(Some(ShClusterRequest {
             generation: self.generation,
             content_tag: self.content_tag,
             cluster_id,
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
-            mandatory,
+            class,
         }))
     }
 

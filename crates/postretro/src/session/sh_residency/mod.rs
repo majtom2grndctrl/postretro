@@ -237,15 +237,10 @@ impl ShStreamingSession {
 
     /// Read counters for the active mode: the async workers', or the
     /// session's own when sync-proof reads on the frame thread.
-    fn read_stats(&self) -> Result<Option<ShWorkerStats>> {
+    pub(in crate::session) fn read_stats(&self) -> Option<ShWorkerStats> {
         match self.mode {
-            ShStreamingMode::SyncProof => Ok(Some(self.sync_stats)),
-            _ => self
-                .workers
-                .as_ref()
-                .map(ShAsyncWorkers::stats)
-                .transpose()
-                .map_err(anyhow::Error::msg),
+            ShStreamingMode::SyncProof => Some(self.sync_stats),
+            _ => self.workers.as_ref().map(ShAsyncWorkers::stats),
         }
     }
 
@@ -294,7 +289,7 @@ impl ShStreamingSession {
     /// Reassembles the live diagnostics after the renderer has reported this
     /// frame's installs, then offers them to the periodic log.
     fn refresh_diagnostics(&mut self, renderer: Option<&ShResidencySnapshot>) -> Result<()> {
-        let worker = self.read_stats()?;
+        let worker = self.read_stats();
         assemble_live_diagnostics(
             &mut self.live,
             &self.controller.report_snapshot(),

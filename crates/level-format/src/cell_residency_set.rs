@@ -118,8 +118,11 @@ impl CellResidencySetSection {
     }
 
     /// Parse and validate against the level's cell count. Rejects an other
-    /// version, an unknown codec, a body that fails to decode to its raw
-    /// length (a corrupt frame), a camera cell count that differs from
+    /// version, an unknown codec, a raw length below the header and CSR
+    /// offsets `cell_count` needs or above what the stored bytes can decode
+    /// to ([`max_decoded_len`], checked before the decode allocates), a body
+    /// that fails to decode to its raw length (a corrupt frame), a camera
+    /// cell count that differs from
     /// `cell_count`, CSR offsets that don't start at 0, decrease, or pass
     /// `entry_count`, an entry naming a cell past `cell_count`, a lead past
     /// `max_lead`, and a camera cell's range that is unsorted or repeats a

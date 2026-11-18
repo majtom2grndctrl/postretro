@@ -608,7 +608,7 @@ fn pin_makes_only_its_cluster_resident() {
         requests.iter().map(|r| r.cluster_id).collect::<Vec<_>>(),
         vec![1]
     );
-    assert!(requests[0].mandatory);
+    assert!(requests[0].mandatory());
     assert_eq!(
         controller.admit_prepared(prepared(&controller, 1)).unwrap(),
         ShDrainAdmission::Ready

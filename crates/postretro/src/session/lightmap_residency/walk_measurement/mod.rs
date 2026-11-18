@@ -485,6 +485,7 @@ fn run(
             report.sh = Some(ShRunStats {
                 spawn_misses: counters.misses,
                 counters,
+                workers: None,
             });
         }
         let bytes = driver.session().controller.residency_bytes();
@@ -503,7 +504,9 @@ fn run(
     report.record.locate_mismatches = report.locate_mismatch_frames;
     if let (Some(sh), Some(counters)) = (&mut report.sh, driver.sh_counters()) {
         sh.counters = counters;
+        sh.workers = driver.sh_worker_stats();
     }
+    report.lightmap_decode = driver.session().ledger().decode_stats();
     let (counters, physical_reads, mirror) = driver.finish();
     report.counters = Some(counters);
     report.physical_reads = physical_reads;

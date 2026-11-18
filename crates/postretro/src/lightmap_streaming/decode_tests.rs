@@ -1,6 +1,6 @@
 //! Coded pairs through the route and the decode pool: decoded-size charges,
 //! pre-split admission, corrupt blocks, raised and departed pairs, and the
-//! completion queue bound.
+//! queue bounds.
 //! See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 
 use std::ops::Range;
@@ -18,10 +18,11 @@ use crate::lightmap_streaming::route::{
 };
 use crate::lightmap_streaming::source::BlockSummary;
 use crate::lightmap_streaming::test_fixtures::*;
-use crate::streaming::decode_pool::{DecodeJob, DecodePool};
+use crate::streaming::decode_pool::{DecodeJob, DecodePool, DecodeRank};
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::issuer::{ReadIssuer, ReadRoutes};
 use crate::streaming::request::ReadRequest;
-use crate::streaming::target_bitset::TargetBitset;
+use crate::streaming::target_set::TargetSet;
 
 const RATIO: u64 = 4;
 
@@ -240,7 +241,7 @@ impl Pipeline {
         let ledger = Arc::new(LightmapRouteLedger::default());
         let (route, completions) = lightmap_route(
             Arc::clone(source) as Arc<dyn LightmapBlockSource>,
-            Arc::clone(rig.controller.target_bitset()),
+            Arc::clone(rig.controller.target_set()),
             Arc::clone(&ledger),
         );
         let decode = DecodePool::spawn(1, LIGHTMAP_QUEUE_CAPACITY).unwrap();
@@ -359,11 +360,11 @@ fn a_corrupt_pair_fails_its_decode_and_is_never_uploaded() {
     assert_eq!(ready, vec![0, 2], "the corrupt block is never uploaded");
 }
 
-// A band pair raised to mandatory after its read was delivered
-// is never read or decoded again. The raise lifts its queued decode, which is
-// taken before the mandatory pairs read after it; the pair already decoding
-// finishes as it was. Each keeps one permit and one charge, and completes
-// once.
+// A band pair that turns mandatory after its read was delivered is never
+// read or decoded again, and nothing is submitted for it: its block's live
+// class lifts its queued decode ahead of every pair of the same or a less
+// urgent class read after it; the pair already decoding finishes as it was.
+// Each keeps one permit and one charge, and completes once.
 #[test]
 fn a_pair_raised_after_its_read_decodes_once_and_is_charged_once() {
     let mut rig = Rig::new(coded_corridor(64), corridor_set(), None);
@@ -387,32 +388,41 @@ fn a_pair_raised_after_its_read_decodes_once_and_is_charged_once() {
     // Camera 2 makes 3 and 4 mandatory while 3 decodes and 4 is queued.
     let batch = rig.portal(2, &[]).unwrap();
     rig.install_all(&batch, headroom(8));
-    let raises: Vec<(u32, ReadTier)> = rig
+    assert!(
+        rig.requests
+            .iter()
+            .all(|request| request.key != 3 && request.key != 4),
+        "nothing is submitted for the raised pairs"
+    );
+    let raised_class = rig.controller.target_set().class(4).unwrap();
+    assert_eq!(raised_class.tier(), ReadTier::Mandatory);
+    let others: Vec<(u32, DrainClass)> = rig
         .requests
         .iter()
-        .filter(|request| request.raise_only)
-        .map(|request| (request.key, request.tier))
+        .map(|request| (request.key, request.class))
         .collect();
-    assert_eq!(
-        raises,
-        vec![(3, ReadTier::Mandatory), (4, ReadTier::Mandatory)]
-    );
-    let others = rig.requests.len() - raises.len();
-    assert!(others > 0, "camera 2 reads pairs of its own");
+    assert!(!others.is_empty(), "camera 2 reads pairs of its own");
     pipeline.submit(std::mem::take(&mut rig.requests));
     wait_until(
         "camera 2's new pairs read and queued behind block 4",
-        || pipeline.ledger.in_memory_bytes() == (2 + others as u64) * decoded_pair,
+        || pipeline.ledger.in_memory_bytes() == (2 + others.len() as u64) * decoded_pair,
     );
     source.release();
 
-    pipeline.admit(&mut rig, 2 + others);
+    pipeline.admit(&mut rig, 2 + others.len());
     assert_eq!((source.decodes(3), source.decodes(4)), (1, 1));
-    assert_eq!(
-        source.order()[..2],
-        [3, 4],
-        "the raised queued pair decodes before the mandatory pairs read after it"
-    );
+    let order = source.order();
+    let position = |block: u32| order.iter().position(|&b| b == block).unwrap();
+    assert_eq!(order[0], 3, "the running decode finishes first");
+    for &(block, class) in &others {
+        if class >= raised_class {
+            assert!(
+                position(4) < position(block),
+                "raised block 4 ({raised_class:?}) decodes before block {block} \
+                 ({class:?}) read after it: {order:?}"
+            );
+        }
+    }
     assert_eq!(rig.controller.counters().duplicate_completions, 0);
     assert!(
         pipeline
@@ -423,7 +433,7 @@ fn a_pair_raised_after_its_read_decodes_once_and_is_charged_once() {
     );
     assert_eq!(
         rig.controller.in_hand_bytes() - in_hand,
-        others as u64 * decoded_pair,
+        others.len() as u64 * decoded_pair,
         "the raised pairs keep their one charge; only camera 2's new reads add"
     );
     assert_eq!(pipeline.ledger.in_memory_bytes(), 0);
@@ -498,15 +508,18 @@ fn a_pair_whose_target_returned_before_its_decode_still_decodes() {
     assert_eq!(rig.controller.counters().cancelled_reads, 0);
 }
 
-/// Another resource's mandatory decode: reports when the pool runs it.
+/// Another resource's Visible decode: reports when the pool runs it.
 struct OtherResourceJob(std::sync::mpsc::Sender<()>);
 
 impl DecodeJob for OtherResourceJob {
-    fn tier(&self) -> ReadTier {
-        ReadTier::Mandatory
+    fn rank(&self) -> DecodeRank {
+        DecodeRank {
+            class: DrainClass::Visible,
+            resource: StreamResource::Sh,
+        }
     }
 
-    fn run(&mut self, _: &AtomicBool) {
+    fn run(&mut self, _: &AtomicBool, _: std::time::Duration) {
         self.0.send(()).unwrap();
     }
 
@@ -515,16 +528,19 @@ impl DecodeJob for OtherResourceJob {
     fn panicked(self: Box<Self>, _: &AtomicBool) {}
 }
 
-/// An optional job: queued behind every mandatory and raised job.
+/// An optional job of the least urgent rank: taken after every other job.
 struct OptionalJob(OtherResourceJob);
 
 impl DecodeJob for OptionalJob {
-    fn tier(&self) -> ReadTier {
-        ReadTier::Optional
+    fn rank(&self) -> DecodeRank {
+        DecodeRank {
+            class: DrainClass::Hysteresis,
+            resource: StreamResource::LightmapBlock,
+        }
     }
 
-    fn run(&mut self, retiring: &AtomicBool) {
-        self.0.run(retiring);
+    fn run(&mut self, retiring: &AtomicBool, queue_wait: std::time::Duration) {
+        self.0.run(retiring, queue_wait);
     }
 
     fn discard(self: Box<Self>) {}
@@ -556,24 +572,25 @@ fn a_mandatory_job_behind_departed_pairs_runs_without_waiting_for_their_decodes(
     assert_eq!(pipeline.ledger.in_memory_bytes(), 0);
 }
 
-// The completion queue bound: every permit's read submitted and raised, with
-// nothing admitted, fits the completion queue. A raise never completes, so
-// the issuer and the decode thread finish every read and exit without
-// waiting on the frame.
+// The queue bounds: every permit's read submitted at once fits the issuer's
+// queue, and with nothing admitted every completion fits the completion
+// queue, so the issuer and the decode thread finish every read and exit
+// without waiting on the frame. Promoting every read meanwhile writes only
+// the target set.
 #[test]
-fn every_permit_read_and_raised_fits_the_completion_queue_undrained() {
+fn every_permit_read_and_promoted_fits_both_queues_undrained() {
     let blocks = MAX_LIGHTMAP_PERMITS as u32;
     let source = TestBlockSource::new(
         (0..blocks)
             .map(|block| BlockSpec::standard(block, block, 64, true).coded(RATIO))
             .collect(),
     );
-    let targets = Arc::new(TargetBitset::new(blocks));
-    targets.publish(&(0..blocks).collect());
+    let targets = Arc::new(TargetSet::new(blocks));
+    targets.publish((0..blocks).map(|block| (block, DrainClass::Prefetch)));
     let ledger = Arc::new(LightmapRouteLedger::default());
     let (route, completions) = lightmap_route(
         Arc::clone(&source) as Arc<dyn LightmapBlockSource>,
-        targets,
+        Arc::clone(&targets),
         Arc::clone(&ledger),
     );
     let decode = DecodePool::spawn(1, LIGHTMAP_QUEUE_CAPACITY).unwrap();
@@ -585,12 +602,12 @@ fn every_permit_read_and_raised_fits_the_completion_queue_undrained() {
         LIGHTMAP_QUEUE_CAPACITY,
     )
     .unwrap();
-    let request = |block: u32, tier: ReadTier, raise_only: bool| {
+    let request = |block: u32| {
         let spec = source.spec(block);
         ReadRequest {
             resource: StreamResource::LightmapBlock,
             key: block,
-            tier,
+            class: DrainClass::Prefetch,
             identity: crate::streaming::request::ReadIdentity {
                 generation: 1,
                 content_tag: [0; 32],
@@ -600,18 +617,11 @@ fn every_permit_read_and_raised_fits_the_completion_queue_undrained() {
                 spec.lightmap.clone(),
                 spec.shadowmask.clone().unwrap(),
             ),
-            raise_only,
         }
     };
     for block in 0..blocks {
-        issuer
-            .submit(request(block, ReadTier::Optional, false))
-            .unwrap();
-    }
-    for block in 0..blocks {
-        issuer
-            .submit(request(block, ReadTier::Mandatory, true))
-            .unwrap();
+        issuer.submit(request(block)).unwrap();
+        targets.set(block, Some(DrainClass::Visible));
     }
     let decoded_pair = 2 * 64 * RATIO;
     wait_until("every read delivered to the decode pool", || {
@@ -645,5 +655,37 @@ fn every_permit_read_and_raised_fits_the_completion_queue_undrained() {
         (0..blocks).collect::<Vec<_>>(),
         "one completion per read"
     );
+    assert_eq!(ledger.in_memory_bytes(), 0);
+}
+
+// A lightmap decode job dropped while still holding its charge (its pool's
+// `panicked` cleanup panicked too) returns that charge.
+#[test]
+fn a_decode_job_dropped_holding_its_charge_returns_it() {
+    let source = TestBlockSource::new(vec![BlockSpec::standard(0, 0, 64, true).coded(RATIO)]);
+    let ledger = Arc::new(LightmapRouteLedger::default());
+    ledger.charge(512);
+    let (completed, _completions) = std::sync::mpsc::sync_channel(1);
+    let job = crate::lightmap_streaming::decode_job::LightmapDecodeJob {
+        request: ReadRequest {
+            resource: StreamResource::LightmapBlock,
+            key: 0,
+            class: DrainClass::Visible,
+            identity: crate::streaming::request::ReadIdentity {
+                generation: 1,
+                content_tag: [0; 32],
+                item_hash: [0; 32],
+            },
+            ranges: crate::streaming::request::ReadRanges::one(0..0),
+        },
+        lightmap: Vec::new(),
+        shadowmask: None,
+        charged_bytes: 512,
+        source: source as Arc<dyn LightmapBlockSource>,
+        targets: Arc::new(TargetSet::new(1)),
+        ledger: Arc::clone(&ledger),
+        completed: Some(completed),
+    };
+    drop(job);
     assert_eq!(ledger.in_memory_bytes(), 0);
 }

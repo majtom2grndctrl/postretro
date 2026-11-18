@@ -44,7 +44,7 @@ impl ThreadedRig {
         let ledger = Arc::new(LightmapRouteLedger::default());
         let (route, completions) = lightmap_route(
             Arc::clone(&source) as Arc<dyn LightmapBlockSource>,
-            Arc::clone(controller.target_bitset()),
+            Arc::clone(controller.target_set()),
             Arc::clone(&ledger),
         );
         let decode =

@@ -1,5 +1,6 @@
-//! SH's phase ledger over the shared decode pool: a read chunk is charged at
-//! its decoded size from the moment it is queued, never its stored size.
+//! SH's phase ledger and rank over the shared decode pool: a read chunk is
+//! charged at its decoded size from the moment it is queued, never its
+//! stored size, and is taken in its cluster's live class order.
 //! See: context/lib/rendering_pipeline.md §4 (Lossless decode)
 
 use std::ops::Range;
@@ -11,27 +12,37 @@ use postretro_level_loader::PrlLoadError;
 
 use super::*;
 use crate::sh_streaming::controller::ShClusterRequest;
+use crate::streaming::drain_budget::DrainClass;
 
 const STORED: u64 = 64;
 /// A coded chunk decodes to several times its stored size.
 const DECODED: u64 = 4 * STORED;
 const WAIT: Duration = Duration::from_secs(5);
 
-/// Two far-apart clusters of `STORED` stored bytes, each decoding to
-/// `DECODED` bytes. A decode blocks until the test opens the gate, so the test can watch the
-/// ledger while the chunk sits on the pool.
+/// Far-apart clusters of `STORED` stored bytes, each decoding to `DECODED`
+/// bytes. A decode blocks until the test opens the gate, so the test can
+/// watch the ledger while the chunk sits on the pool. Decodes record their
+/// clusters in the order they begin.
 struct GatedDecodeSource {
     gate: (Mutex<bool>, Condvar),
     decoding: (Mutex<bool>, Condvar),
     fail: bool,
+    clusters: u32,
+    order: Mutex<Vec<u32>>,
 }
 
 impl GatedDecodeSource {
     fn new(fail: bool) -> Arc<Self> {
+        Self::with_clusters(fail, 2)
+    }
+
+    fn with_clusters(fail: bool, clusters: u32) -> Arc<Self> {
         Arc::new(Self {
             gate: (Mutex::new(false), Condvar::new()),
             decoding: (Mutex::new(false), Condvar::new()),
             fail,
+            clusters,
+            order: Mutex::default(),
         })
     }
 
@@ -52,7 +63,7 @@ impl GatedDecodeSource {
 
 impl ShWorkerSource for GatedDecodeSource {
     fn cluster_count(&self) -> u32 {
-        2
+        self.clusters
     }
 
     fn chunk_file_range(&self, cluster_id: u32) -> Result<Range<u64>, PrlLoadError> {
@@ -73,6 +84,7 @@ impl ShWorkerSource for GatedDecodeSource {
         cluster_id: u32,
         _bytes: Vec<u8>,
     ) -> Result<DecodedClusterShPayload, PrlLoadError> {
+        self.order.lock().unwrap().push(cluster_id);
         *self.decoding.0.lock().unwrap() = true;
         self.decoding.1.notify_all();
         let (open, _) = self
@@ -100,17 +112,30 @@ fn request() -> ShClusterRequest {
 }
 
 fn request_for(cluster_id: u32) -> ShClusterRequest {
+    request_at(cluster_id, DrainClass::Visible)
+}
+
+fn request_at(cluster_id: u32, class: DrainClass) -> ShClusterRequest {
     ShClusterRequest {
         generation: 1,
         content_tag: [1; 32],
         cluster_id,
         chunk_hash: [1; 32],
-        mandatory: true,
+        class,
+    }
+}
+
+/// Waits until `bytes` are charged to the decoding phase.
+fn wait_decoding_bytes(workers: &ShAsyncWorkers, bytes: u64) {
+    let deadline = Instant::now() + WAIT;
+    while phases(workers).decoding.current_bytes != bytes {
+        assert!(Instant::now() < deadline, "the chunks never queued");
+        std::thread::yield_now();
     }
 }
 
 fn phases(workers: &ShAsyncWorkers) -> crate::sh_streaming::budget::CpuPhaseLedger {
-    *workers.shared.phases.lock().unwrap()
+    *workers.shared.phases()
 }
 
 fn completion(workers: &ShAsyncWorkers) -> ShWorkerCompletion {
@@ -132,7 +157,7 @@ fn a_queued_chunk_is_charged_at_its_decoded_size_until_the_frame_takes_it() {
     for fail in [false, true] {
         let source = GatedDecodeSource::new(fail);
         let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();
-        workers.publish_targets(&[0].into_iter().collect());
+        workers.publish_target_keys(&[0].into_iter().collect());
         workers.submit(request()).unwrap();
         source.wait_decoding();
         let held = phases(&workers);
@@ -166,7 +191,7 @@ fn a_queued_chunk_is_charged_at_its_decoded_size_until_the_frame_takes_it() {
 fn a_chunk_discarded_on_the_pool_releases_its_decoded_charge() {
     let source = GatedDecodeSource::new(false);
     let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();
-    workers.publish_targets(&[0, 1].into_iter().collect());
+    workers.publish_target_keys(&[0, 1].into_iter().collect());
     // The pool's one thread takes cluster 0; cluster 1 queues behind it.
     workers.submit(request_for(0)).unwrap();
     source.wait_decoding();
@@ -177,11 +202,17 @@ fn a_chunk_discarded_on_the_pool_releases_its_decoded_charge() {
         std::thread::yield_now();
     }
     let mut retirement = workers.begin_retirement();
-    assert_eq!(
-        phases(&workers).decoding.current_bytes,
-        DECODED,
-        "the queued job's charge is released as the pool retires"
-    );
+    // The route charges cluster 1 just before it submits the job, so the job
+    // may meet the closed pool in `submit` rather than in the queue; either
+    // discard releases its charge while cluster 0 is still decoding.
+    let deadline = Instant::now() + WAIT;
+    while phases(&workers).decoding.current_bytes != DECODED {
+        assert!(
+            Instant::now() < deadline,
+            "the queued job's charge is released as the pool retires"
+        );
+        std::thread::yield_now();
+    }
     source.open();
     let deadline = Instant::now() + WAIT;
     while !retirement.try_finish() {
@@ -202,7 +233,7 @@ fn a_departed_queued_chunk_completes_cancelled_without_its_decode() {
     for returns in [false, true] {
         let source = GatedDecodeSource::new(false);
         let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();
-        workers.publish_targets(&[0, 1].into_iter().collect());
+        workers.publish_target_keys(&[0, 1].into_iter().collect());
         workers.submit(request_for(0)).unwrap();
         source.wait_decoding();
         workers.submit(request_for(1)).unwrap();
@@ -211,9 +242,9 @@ fn a_departed_queued_chunk_completes_cancelled_without_its_decode() {
             assert!(Instant::now() < deadline, "cluster 1 never queued");
             std::thread::yield_now();
         }
-        workers.publish_targets(&[0].into_iter().collect());
+        workers.publish_target_keys(&[0].into_iter().collect());
         if returns {
-            workers.publish_targets(&[0, 1].into_iter().collect());
+            workers.publish_target_keys(&[0, 1].into_iter().collect());
         }
         source.open();
         let completions = [completion(&workers), completion(&workers)];
@@ -231,4 +262,66 @@ fn a_departed_queued_chunk_completes_cancelled_without_its_decode() {
         assert_eq!(drained.ready.current_bytes, 0);
         workers.stop();
     }
+}
+
+// An SH chunk requested optional whose cluster turns mandatory while its
+// decode is queued is taken before older optional chunks, in its live class
+// order: the session's target publish carries each cluster's class, and the
+// job reads it at every pickup.
+#[test]
+fn an_sh_chunk_raised_while_queued_is_taken_in_its_live_class_order() {
+    use DrainClass::{Lead, Prefetch, Visible};
+    let source = GatedDecodeSource::with_clusters(false, 5);
+    let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();
+    workers.publish_targets((0..5).map(|cluster| (cluster, Prefetch)));
+    workers.submit(request_at(0, Prefetch)).unwrap();
+    source.wait_decoding();
+    for cluster in 1..5 {
+        workers.submit(request_at(cluster, Prefetch)).unwrap();
+    }
+    wait_decoding_bytes(&workers, 5 * DECODED);
+    workers.publish_targets([
+        (0, Prefetch),
+        (1, Prefetch),
+        (2, Lead),
+        (3, Prefetch),
+        (4, Visible),
+    ]);
+    source.open();
+    for _ in 0..5 {
+        completion(&workers);
+    }
+    assert_eq!(
+        *source.order.lock().unwrap(),
+        [0, 4, 2, 1, 3],
+        "the running decode, then Visible, Lead, and the optional chunks oldest first"
+    );
+    workers.stop();
+}
+
+// The phase ledger is never left poisoned: a panic while it is held (here
+// forced by the test) leaves later charges, deliveries and the frame's take
+// working, with the ledger exact.
+#[test]
+fn a_poisoned_phase_ledger_is_recovered_and_stays_exact() {
+    let source = GatedDecodeSource::new(false);
+    let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();
+    let shared = Arc::clone(&workers.shared);
+    let poisoner = std::thread::spawn(move || {
+        let _guard = shared.phases.lock().unwrap();
+        panic!("a panic while the phase ledger is held");
+    });
+    assert!(poisoner.join().is_err());
+    assert!(workers.shared.phases.is_poisoned());
+
+    workers.publish_target_keys(&[0].into_iter().collect());
+    source.open();
+    workers.submit(request()).unwrap();
+    let delivered = completion(&workers);
+    assert!(matches!(delivered.result, ShWorkerResult::Prepared(_)));
+    let drained = *workers.shared.phases();
+    assert_eq!(drained.encoded.current_bytes, 0);
+    assert_eq!(drained.decoding.current_bytes, 0);
+    assert_eq!(drained.ready.current_bytes, 0);
+    workers.stop();
 }

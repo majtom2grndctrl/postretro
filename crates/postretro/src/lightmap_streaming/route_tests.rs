@@ -13,8 +13,9 @@ use crate::lightmap_streaming::controller::LIGHTMAP_QUEUE_CAPACITY;
 use crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl;
 use crate::lightmap_streaming::source::{BlockSummary, ManifestBlockSource};
 use crate::lightmap_streaming::test_fixtures::{ReadLog, wait_until};
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::issuer::{ReadIssuer, ReadRoutes};
-use crate::streaming::request::{ReadIdentity, ReadRanges, ReadTier, StreamResource};
+use crate::streaming::request::{ReadIdentity, ReadRanges, StreamResource};
 
 const LIGHTMAP: u32 = SectionId::Lightmap as u32;
 const SHADOWMASK: u32 = SectionId::ShadowmaskAtlas as u32;
@@ -91,8 +92,8 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
         log: Arc::clone(&log),
     });
     let range = |block| source.block_file_ranges(block).unwrap().lightmap;
-    let targets = Arc::new(TargetBitset::new(manifest.block_count()));
-    targets.publish(&(0..manifest.block_count()).collect());
+    let targets = Arc::new(TargetSet::new(manifest.block_count()));
+    targets.publish((0..manifest.block_count()).map(|block| (block, DrainClass::Visible)));
     let ledger = Arc::new(LightmapRouteLedger::default());
     let (route, completions) = lightmap_route(Arc::clone(&source), targets, Arc::clone(&ledger));
     let decode =
@@ -106,14 +107,13 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
     let request = |block: u32| ReadRequest {
         resource: StreamResource::LightmapBlock,
         key: block,
-        tier: ReadTier::Mandatory,
+        class: DrainClass::Visible,
         identity: ReadIdentity {
             generation: 1,
             content_tag: manifest.content_tag(),
             item_hash: [0; 32],
         },
         ranges: ReadRanges::one(range(block)),
-        raise_only: false,
     };
 
     // Block 4's read is held while blocks 0, 2 and 3 queue behind it. Block 1

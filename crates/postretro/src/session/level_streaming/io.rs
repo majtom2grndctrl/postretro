@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 
-use crate::lightmap_streaming::controller::LIGHTMAP_QUEUE_CAPACITY;
+use crate::lightmap_streaming::controller::{LIGHTMAP_QUEUE_CAPACITY, MAX_LIGHTMAP_PERMITS};
 use crate::lightmap_streaming::route::{LightmapCompletion, LightmapRouteLedger};
 use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::session::sh_async_workers::ShWorkerRetirement;
@@ -15,9 +15,10 @@ use crate::streaming::issuer::{ReadIssuer, ReadRoute, ReadRoutes};
 use crate::streaming::issuer_busy::IssuerBusyLog;
 use crate::streaming::request::StreamResource;
 
-/// Jobs the decode pool can hold at once: every read either resource can
-/// have outstanding.
-const DECODE_QUEUE_CAPACITY: usize = MAX_STREAM_PERMITS + LIGHTMAP_QUEUE_CAPACITY;
+/// Jobs the decode pool can hold at once. A job is a delivered read, and each
+/// read holds one of its resource's permits until the frame admits its
+/// completion, so neither resource ever has more jobs queued than permits.
+const DECODE_QUEUE_CAPACITY: usize = MAX_STREAM_PERMITS + MAX_LIGHTMAP_PERMITS;
 
 /// The level's decode pool before its issuer: routes are built over its
 /// queue, then [`LevelReadIssuer::spawn`] takes both. The pool lives and
@@ -51,9 +52,11 @@ pub(crate) struct LevelReadIssuer {
 
 impl LevelReadIssuer {
     /// Spawns one issuer over the routes present, beside `decode`, the pool
-    /// their routes were built over. Its queue covers every submission the
-    /// routed resources can have outstanding, so a submission never finds it
-    /// full. `busy`, when present, receives the issuer's busy time per
+    /// their routes were built over. Its queue holds one submission per
+    /// permit of each routed resource: every submission is a read that holds
+    /// a permit until the frame admits its completion, and tier changes
+    /// travel through the target sets, never the queue. So a submission
+    /// never finds it full. `busy`, when present, receives the issuer's busy time per
     /// physical read.
     pub(crate) fn spawn(
         decode: DecodePool,

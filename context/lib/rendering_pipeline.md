@@ -306,9 +306,15 @@ up to the baked maximum of 32 m) for both resources. It is not a player setting.
 SH clusters and lightmap blocks share one read issuer thread and one per-drain byte
 budget. The issuer reads the mandatory tier (SH visible, pinned and lead; block visible,
 pinned and lead) before the optional tier (SH seam-warm, band and hysteresis; the lightmap
-band) across both resources, each tier in ascending file offset. Lightmap reads merge only
-byte-contiguous ranges, so bytes read from ids 22/42 equal the requested ranges plus the
-index. The drain admits ready work in tier order up to the shared budget, always at least
+band) across both resources, each tier in ascending file offset. A pending request's tier
+is its item's live class, which each controller writes into its resource's target set
+(`crates/postretro/src/streaming/target_set.rs`) as it retargets; the issuer and the
+decode pool read it there, so an item that turns mandatory, or is demoted, while its read
+or decode waits moves in place, with no second submission. Every submission is therefore
+a read holding one of its resource's permits until the frame admits its completion, and
+the issuer's queue and the decode queue each hold one entry per permit, never more. Lightmap
+reads merge only byte-contiguous ranges, so bytes read from ids 22/42 equal the requested
+ranges plus the index. The drain admits ready work in tier order up to the shared budget, always at least
 one item. Blocks upload as BC data after a lossless decode off the frame thread (below), and a
 pair is admitted or deferred whole.
 
@@ -316,8 +322,12 @@ pair is admitted or deferred whole.
 data unchanged after decode. The issuer only reads. The level's one shared decode pool
 (`crates/postretro/src/streaming/decode_pool.rs`, `(cores/2).clamp(1,3)` threads) serves both
 resources. It spawns and retires with the issuer, whether or not SH streams async. A thread
-takes the highest-tier queued job, so mandatory decode never queues behind optional decode of
-either resource and waits at most for the decode already running. A pair counts at its decoded
+takes the queued job of best rank, read live at each pickup: class first (visible, pinned,
+lead, then the optional classes), SH before lightmap at equal class as in the drain, oldest
+first at equal rank. A mandatory decode of either resource therefore never queues behind
+optional decode, and waits only for the decodes already running and for more urgent
+mandatory work: a visible SH chunk goes ahead of a lead lightmap pair queued before it. A
+job whose item is demoted while queued loses its place. A pair counts at its decoded
 size, from the moment it queues, against the drain budget, the in-hand caps and the route
 ledger, and reaches the frame thread already split per plane, so admitting it copies no
 payload. A block whose decode fails is never uploaded and its read completes as failed. Dropping

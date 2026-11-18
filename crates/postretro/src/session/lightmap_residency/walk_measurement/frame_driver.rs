@@ -18,6 +18,7 @@ use super::sh_walk::{ShCompletionGate, accept_all};
 use crate::cpu_timing::StreamingStage;
 use crate::lightmap_streaming::controller::LightmapResidencyCounters;
 use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
+use crate::session::sh_async_workers::ShWorkerStats;
 use crate::session::sh_residency::ShStreamingSession;
 use crate::sh_streaming::controller::ShResidencyCounters;
 use crate::streaming::issuer_busy::IssuerBusyLog;
@@ -147,6 +148,12 @@ impl FrameDriver {
         self.sh
             .as_ref()
             .map(|session| session.controller().counters())
+    }
+
+    /// SH's worker counters and decode timings, read before the workers
+    /// retire.
+    pub(super) fn sh_worker_stats(&self) -> Option<ShWorkerStats> {
+        self.sh.as_ref().and_then(ShStreamingSession::read_stats)
     }
 
     pub(super) fn session(&self) -> &LightmapStreamingSession {

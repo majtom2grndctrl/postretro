@@ -12,11 +12,10 @@ mod stats;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
 use postretro_level_format::cluster_sh_payloads::DecodedClusterShPayload;
@@ -25,8 +24,9 @@ use postretro_level_loader::{PrlLoadError, ShStreamManifest};
 use crate::sh_streaming::budget::CpuPhaseLedger;
 use crate::sh_streaming::controller::{MAX_STREAM_PERMITS, ShClusterRequest};
 use crate::streaming::decode_pool::DecodeQueue;
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::issuer::{ReadIssuer, ReadRoute};
-use crate::streaming::target_bitset::TargetBitset;
+use crate::streaming::target_set::TargetSet;
 
 pub(crate) use stats::ShWorkerStats;
 
@@ -81,14 +81,19 @@ impl ShWorkerSource for ManifestWorkerSource {
 
 /// State shared by the frame thread, SH's issuer route, and its decode jobs.
 /// Locks are held only for counter updates and handle clones, never across a
-/// read, a decode, or a send.
+/// read, a decode, or a send, and nothing panics while holding one. A
+/// poisoned lock is recovered: every update under it is a single counter
+/// change, so its data is whole.
 struct WorkerShared {
     /// Stops SH's queued and running decode jobs; the issuer has its own
     /// flag.
     cancel: AtomicBool,
     phases: Mutex<CpuPhaseLedger>,
     stats: Mutex<ShWorkerStats>,
-    targets: TargetBitset,
+    /// Targets with their live classes: the issuer cancels by membership,
+    /// and a pending read or queued decode takes its tier and rank from its
+    /// cluster's class.
+    targets: TargetSet,
     /// The level's decode pool, cloned by the route per job. Cancel takes
     /// it, so SH stops submitting even while a level-scope issuer shared
     /// with another resource outlives SH.
@@ -103,8 +108,16 @@ impl WorkerShared {
     fn decode_queue(&self) -> Option<DecodeQueue> {
         self.decode
             .lock()
-            .expect("SH decode queue mutex poisoned")
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    fn phases(&self) -> MutexGuard<'_, CpuPhaseLedger> {
+        self.phases.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn stats(&self) -> MutexGuard<'_, ShWorkerStats> {
+        self.stats.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -225,7 +238,7 @@ impl ShAsyncWorkers {
                 cancel: AtomicBool::new(false),
                 phases: Mutex::new(CpuPhaseLedger::default()),
                 stats: Mutex::new(ShWorkerStats::default()),
-                targets: TargetBitset::new(source.cluster_count()),
+                targets: TargetSet::new(source.cluster_count()),
                 decode: Mutex::new(Some(decode)),
             }),
             handles: Vec::new(),
@@ -265,10 +278,19 @@ impl ShAsyncWorkers {
         }
     }
 
-    /// Publishes the controller's current target set for pre-read
-    /// cancellation. Call after each target update, before new submissions.
-    pub(super) fn publish_targets(&self, targets: &BTreeSet<u32>) {
+    /// Publishes the controller's current targets and their classes, for
+    /// pre-read cancellation and for the tier and rank of each pending read
+    /// and queued decode. Call after each target update, before new
+    /// submissions.
+    pub(super) fn publish_targets(&self, targets: impl IntoIterator<Item = (u32, DrainClass)>) {
         self.shared.targets.publish(targets);
+    }
+
+    /// Publishes membership only: each pending read and queued decode keeps
+    /// the class it was requested at.
+    #[cfg(test)]
+    pub(super) fn publish_target_keys(&self, targets: &std::collections::BTreeSet<u32>) {
+        self.shared.targets.publish_keys(targets);
     }
 
     pub(super) fn try_completion(&self) -> Result<Option<ShWorkerCompletion>, &'static str> {
@@ -276,9 +298,7 @@ impl ShAsyncWorkers {
             Ok(completion) => {
                 if completion.ready_bytes != 0 {
                     self.shared
-                        .phases
-                        .lock()
-                        .map_err(|_| "SH worker phase ledger poisoned")?
+                        .phases()
                         .ready
                         .remove(completion.ready_bytes, "worker completion bytes")
                         .map_err(|_| "SH worker completion byte accounting underflow")?;
@@ -301,20 +321,12 @@ impl ShAsyncWorkers {
     }
 
     #[cfg(feature = "capture")]
-    pub(super) fn phase_snapshot(&self) -> Result<CpuPhaseLedger, &'static str> {
-        self.shared
-            .phases
-            .lock()
-            .map(|phases| *phases)
-            .map_err(|_| "SH worker phase ledger poisoned")
+    pub(super) fn phase_snapshot(&self) -> CpuPhaseLedger {
+        *self.shared.phases()
     }
 
-    pub(super) fn stats(&self) -> Result<ShWorkerStats, &'static str> {
-        self.shared
-            .stats
-            .lock()
-            .map(|stats| *stats)
-            .map_err(|_| "SH worker stats poisoned")
+    pub(super) fn stats(&self) -> ShWorkerStats {
+        *self.shared.stats()
     }
 
     pub(super) fn stop(&mut self) {
@@ -358,7 +370,7 @@ impl ShAsyncWorkers {
         self.shared
             .decode
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .take();
     }
 }

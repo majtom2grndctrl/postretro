@@ -12,9 +12,9 @@ use postretro_level_loader::PrlLoadError;
 
 use super::*;
 use crate::streaming::read_gate_test_fixture::ReadGate;
-use crate::streaming::request::{ReadIdentity, ReadRanges, ReadTier};
+use crate::streaming::request::{ReadIdentity, ReadRanges};
 use crate::streaming::schedule::COALESCE_MAX_GAP_BYTES;
-use crate::streaming::target_bitset::TargetBitset;
+use crate::streaming::target_set::TargetSet;
 
 /// Far enough apart that no two test ranges coalesce.
 const FAR: u64 = 4 * COALESCE_MAX_GAP_BYTES;
@@ -47,8 +47,6 @@ struct Log {
     /// Reads starting at these offsets fail.
     failing: Mutex<BTreeSet<u64>>,
     charged: AtomicU64,
-    /// Raises handed to a route past their read.
-    raises: Mutex<Vec<(StreamResource, u32)>>,
 }
 
 impl Log {
@@ -98,13 +96,17 @@ impl Log {
 
 struct TestRoute {
     resource: StreamResource,
-    targets: Arc<TargetBitset>,
+    targets: Arc<TargetSet>,
     log: Arc<Log>,
 }
 
 impl ReadRoute for TestRoute {
     fn is_targeted(&self, key: u32) -> bool {
         self.targets.contains(key)
+    }
+
+    fn live_class(&self, key: u32) -> Option<DrainClass> {
+        self.targets.class(key)
     }
 
     fn read_span(&self, span: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
@@ -146,10 +148,6 @@ impl ReadRoute for TestRoute {
             .push((self.resource, request.key, delivered));
         true
     }
-
-    fn raise_past_read(&self, key: u32) {
-        self.log.raises.lock().unwrap().push((self.resource, key));
-    }
 }
 
 /// One issuer serving both resources. Dropping it releases every held read
@@ -158,7 +156,7 @@ struct Harness {
     issuer: Option<ReadIssuer>,
     handle: Option<JoinHandle<()>>,
     log: Arc<Log>,
-    targets: BTreeMap<StreamResource, Arc<TargetBitset>>,
+    targets: BTreeMap<StreamResource, Arc<TargetSet>>,
 }
 
 impl Harness {
@@ -167,8 +165,10 @@ impl Harness {
         let mut targets = BTreeMap::new();
         let mut routes = ReadRoutes::default();
         for resource in [StreamResource::Sh, StreamResource::LightmapBlock] {
-            let bitset = Arc::new(TargetBitset::new(KEY_COUNT));
-            bitset.publish(&(0..KEY_COUNT).collect());
+            // Every key targeted with no live class: requests keep the
+            // class they were submitted at until a test sets one.
+            let bitset = Arc::new(TargetSet::new(KEY_COUNT));
+            bitset.publish_keys(&(0..KEY_COUNT).collect());
             routes = routes.with(
                 resource,
                 Box::new(TestRoute {
@@ -194,7 +194,12 @@ impl Harness {
 
     fn untarget(&self, resource: StreamResource, key: u32) {
         let keys = (0..KEY_COUNT).filter(|&other| other != key).collect();
-        self.targets[&resource].publish(&keys);
+        self.targets[&resource].publish_keys(&keys);
+    }
+
+    /// The frame thread's write of one key's live class.
+    fn set_class(&self, resource: StreamResource, key: u32, class: DrainClass) {
+        self.targets[&resource].set(key, Some(class));
     }
 
     /// Holds `blocker`'s read open so the requests submitted next all queue
@@ -220,35 +225,39 @@ impl Drop for Harness {
     }
 }
 
-fn request(resource: StreamResource, key: u32, tier: ReadTier, ranges: ReadRanges) -> ReadRequest {
+fn request(
+    resource: StreamResource,
+    key: u32,
+    class: DrainClass,
+    ranges: ReadRanges,
+) -> ReadRequest {
     ReadRequest {
         resource,
         key,
-        tier,
+        class,
         identity: ReadIdentity {
             generation: 5,
             content_tag: [5; 32],
             item_hash: [key as u8; 32],
         },
         ranges,
-        raise_only: false,
     }
 }
 
-fn sh(key: u32, tier: ReadTier, slot: u64) -> ReadRequest {
-    request(StreamResource::Sh, key, tier, ReadRanges::one(at(slot)))
+fn sh(key: u32, class: DrainClass, slot: u64) -> ReadRequest {
+    request(StreamResource::Sh, key, class, ReadRanges::one(at(slot)))
 }
 
-fn block_pair(key: u32, tier: ReadTier, first: u64, second: u64) -> ReadRequest {
+fn block_pair(key: u32, class: DrainClass, first: u64, second: u64) -> ReadRequest {
     request(
         StreamResource::LightmapBlock,
         key,
-        tier,
+        class,
         ReadRanges::pair(at(first), at(second)),
     )
 }
 
-use ReadTier::{Mandatory as M, Optional as O};
+use DrainClass::{Prefetch as O, Visible as M};
 use StreamResource::{LightmapBlock as Lm, Sh};
 
 // AC 19: with SH and lightmap block demand both pending, one issuer thread
@@ -397,42 +406,36 @@ fn shared_issuer_absorbs_repeat_submissions_of_a_pending_key_into_one_read() {
     assert_eq!(block.len(), 1);
 }
 
-// Issuer half: a raise is never read. While its request is
-// pending it lifts that request's tier; once the request has been delivered
-// the issuer hands the raise to the route, which completes nothing.
+// A pending request's tier is its key's live class, read before every plan:
+// a key that turns mandatory while its read waits is lifted ahead of older
+// optional work, and one demoted loses its place, with no submission.
 #[test]
-fn a_raise_is_never_read_and_past_the_read_goes_to_the_route() {
+fn a_pending_request_follows_its_keys_live_class_without_a_submission() {
     let harness = Harness::new();
-    let raise = |request: ReadRequest| ReadRequest {
-        tier: M,
-        raise_only: true,
-        ..request
-    };
     harness.behind_held_read(sh(0, M, 20), |harness| {
         harness.submit(sh(1, O, 2));
         harness.submit(block_pair(7, O, 4, 6));
-        harness.submit(raise(block_pair(7, O, 4, 6)));
+        harness.submit(sh(3, M, 1));
+        harness.set_class(Lm, 7, DrainClass::Lead);
+        harness.set_class(Sh, 3, DrainClass::Prefetch);
     });
-    harness.log.wait_for_deliveries(3);
+    harness.log.wait_for_deliveries(4);
     assert_eq!(
         harness.log.read_spans(),
-        vec![(Sh, at(20)), (Lm, at(4)), (Lm, at(6)), (Sh, at(2))],
-        "the pending pair is raised ahead of the optional chunk"
+        vec![
+            (Sh, at(20)),
+            (Lm, at(4)),
+            (Lm, at(6)),
+            (Sh, at(1)),
+            (Sh, at(2))
+        ],
+        "the lifted pair reads in the mandatory tier; the demoted chunk reads \
+         with the optional tier in offset order"
     );
-    assert!(harness.log.raises.lock().unwrap().is_empty());
-
-    harness.submit(raise(block_pair(7, O, 4, 6)));
-    harness.submit(raise(sh(1, O, 2)));
-    harness
-        .log
-        .wait_until("both raises reach their routes", |log| {
-            log.raises.lock().unwrap().len() == 2
-        });
-    assert_eq!(*harness.log.raises.lock().unwrap(), vec![(Lm, 7), (Sh, 1)]);
     // Nothing else is queued; give a stray read time to show.
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(harness.log.read_spans().len(), 4, "no raise is read");
-    assert_eq!(harness.log.deliveries().len(), 3, "no raise completes");
+    assert_eq!(harness.log.read_spans().len(), 5, "no read twice");
+    assert_eq!(harness.log.deliveries().len(), 4, "each completes once");
 }
 
 // Regression: cancel only set a flag, so an idle issuer blocked in its queue

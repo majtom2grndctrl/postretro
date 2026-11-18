@@ -35,8 +35,9 @@ pub const LIGHTMAP_POOL_MARGIN: PoolMargin = PoolMargin {
 /// campaign-test's completed far-point tour has 8 late blocks at its 10 margin
 /// lightmap layers and none at its 14 capped ones. Below this floor a pool
 /// takes its cap: with the spares, at most 17 × 6 + 25 × 4 = 202 MiB for the
-/// two shipped pools, well under the budget warning. Set by late blocks measured on camera walks,
-/// never by the budget (`context/lib/rendering_pipeline.md` §4, Pool size).
+/// two shipped pools, well under the budget warning. Set by late blocks
+/// measured on camera walks, never by the budget
+/// (`context/lib/rendering_pipeline.md` §4, Pool size).
 pub const FIRST_GENERATION_FLOOR_BYTES: u64 = 96 * 1024 * 1024;
 
 /// [`FIRST_GENERATION_FLOOR_BYTES`] in whole `layer_bytes` layers, never under

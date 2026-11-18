@@ -10,26 +10,22 @@ use postretro_level_loader::PrlLoadError;
 use super::decode_job::ShDecodeJob;
 use super::{ShWorkerCompletion, ShWorkerResult, ShWorkerSource, WorkerShared};
 use crate::sh_streaming::controller::ShClusterRequest;
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::issuer::{ReadOutcome, ReadRecord, ReadRoute};
-use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, ReadTier, StreamResource};
+use crate::streaming::request::{ReadIdentity, ReadRanges, ReadRequest, StreamResource};
 
 /// The shared-issuer request for one SH cluster chunk at `range`.
 pub(super) fn read_request(request: ShClusterRequest, range: Range<u64>) -> ReadRequest {
     ReadRequest {
         resource: StreamResource::Sh,
         key: request.cluster_id,
-        tier: if request.mandatory {
-            ReadTier::Mandatory
-        } else {
-            ReadTier::Optional
-        },
+        class: request.class,
         identity: ReadIdentity {
             generation: request.generation,
             content_tag: request.content_tag,
             item_hash: request.chunk_hash,
         },
         ranges: ReadRanges::one(range),
-        raise_only: false,
     }
 }
 
@@ -39,12 +35,12 @@ fn cluster_request(request: ReadRequest) -> ShClusterRequest {
         content_tag: request.identity.content_tag,
         cluster_id: request.key,
         chunk_hash: request.identity.item_hash,
-        mandatory: request.tier == ReadTier::Mandatory,
+        class: request.class,
     }
 }
 
-/// Read bytes go to the level's decode pool at the request's tier;
-/// cancellations and failures complete directly, without a decode.
+/// Read bytes go to the level's decode pool, ranked by their cluster's live
+/// class; cancellations and failures complete directly, without a decode.
 pub(in crate::session) struct ShReadRoute {
     pub(super) source: Arc<dyn ShWorkerSource>,
     pub(super) shared: Arc<WorkerShared>,
@@ -68,32 +64,36 @@ impl ReadRoute for ShReadRoute {
         self.shared.targets.contains(key)
     }
 
+    fn live_class(&self, key: u32) -> Option<DrainClass> {
+        self.shared.targets.class(key)
+    }
+
     fn read_span(&self, span: Range<u64>) -> Result<Vec<u8>, PrlLoadError> {
         self.source.read_file_span(span)
     }
 
     fn charge_read_bytes(&self, bytes: u64) {
-        self.shared
-            .phases
-            .lock()
-            .expect("SH phase mutex poisoned")
+        // Checked once the guard has dropped, so a failure never poisons the
+        // ledger.
+        let charged = self
+            .shared
+            .phases()
             .encoded
-            .add(bytes, "encoded worker bytes")
-            .expect("validated encoded bound");
+            .add(bytes, "encoded worker bytes");
+        charged.expect("validated encoded bound");
     }
 
     fn release_read_bytes(&self, bytes: u64) {
-        self.shared
-            .phases
-            .lock()
-            .expect("SH phase mutex poisoned")
+        let released = self
+            .shared
+            .phases()
             .encoded
-            .remove(bytes, "encoded worker bytes")
-            .expect("balanced encoded read");
+            .remove(bytes, "encoded worker bytes");
+        released.expect("balanced encoded read");
     }
 
     fn record_read(&self, read: &ReadRecord<'_>) {
-        let mut stats = self.shared.stats.lock().expect("SH stats mutex poisoned");
+        let mut stats = self.shared.stats();
         stats.record_read(read.span_bytes, read.ranges_served, read.gap_bytes);
         for &latency in read.latencies {
             stats.read_latency.record(latency);
@@ -116,17 +116,14 @@ impl ReadRoute for ShReadRoute {
                 // lightmap pair is; its stored bytes leave the encoded phase.
                 // A retired pool discards the job, releasing that charge.
                 let decoded_bytes = self.source.decoded_bytes(request.cluster_id);
-                {
-                    let mut phases = self.shared.phases.lock().expect("SH phase mutex poisoned");
+                let moved = {
+                    let mut phases = self.shared.phases();
                     phases
                         .encoded
                         .remove(bytes.len() as u64, "encoded worker bytes")
-                        .expect("balanced encoded read");
-                    phases
-                        .decoding
-                        .add(decoded_bytes, "decoded worker bytes")
-                        .expect("validated decode bound");
-                }
+                        .and_then(|()| phases.decoding.add(decoded_bytes, "decoded worker bytes"))
+                };
+                moved.expect("balanced encoded read within the validated decode bound");
                 decode.submit(Box::new(ShDecodeJob {
                     request,
                     bytes,

@@ -3,19 +3,24 @@
 
 // The pool spawns and retires with the level's read issuer. Routes hand it
 // jobs from the issuer thread; the issuer itself only reads. A thread takes
-// the oldest queued mandatory job before any optional one, of either
-// resource, so a mandatory decode waits at most for the decodes already
-// running. Each job owns whatever it is charged against and releases it
-// whether it runs, panics, is discarded at retirement, or finds the pool
-// retiring.
+// the queued job of best rank: class first (Visible, Pinned, Lead, then the
+// optional classes), SH before lightmap at equal class, the order the drain
+// admits in, and the oldest at equal rank. Each job reads its rank from its
+// key's live class whenever a thread picks, so a job whose key turns
+// mandatory while it waits is lifted past every optional job, and one whose
+// key is demoted loses its precedence. A mandatory decode therefore waits at
+// most for the decodes already running and for more urgent mandatory work.
+// Each job owns whatever it is charged against and releases it whether it
+// runs, panics, is discarded at retirement, or finds the pool retiring.
 
-use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-use super::request::ReadTier;
+use super::drain_budget::DrainClass;
+use super::request::StreamResource;
 
 /// Pool thread names: `stream-decode-0`, `stream-decode-1`, ….
 pub(crate) const DECODE_THREAD_NAME_PREFIX: &str = "stream-decode-";
@@ -25,65 +30,71 @@ pub(crate) fn decode_pool_size(available_parallelism: usize) -> usize {
     (available_parallelism / 2).clamp(1, 3)
 }
 
+/// A queued job's place in the pool's pickup order, compared field by field:
+/// class, then resource (SH first at equal class). Equal ranks go oldest
+/// first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct DecodeRank {
+    pub(crate) class: DrainClass,
+    pub(crate) resource: StreamResource,
+}
+
 /// One resource item's decode, handed over by its route.
 pub(crate) trait DecodeJob: Send {
-    /// Mandatory jobs of every resource are taken before optional jobs of
-    /// any. A queued optional job may become mandatory (a raise); the pool
-    /// rechecks queued optional jobs before taking one.
-    fn tier(&self) -> ReadTier;
+    /// The job's rank, read again at every pickup while it is queued: its
+    /// key's live class where the resource publishes one, otherwise the
+    /// class it was requested at.
+    fn rank(&self) -> DecodeRank;
     /// Decodes and delivers to the resource. `retiring` is set once the pool
     /// retires: a job that finds it set releases what it holds instead of
-    /// delivering.
-    fn run(&mut self, retiring: &AtomicBool);
+    /// delivering. `queue_wait` is the time from submission to this call.
+    fn run(&mut self, retiring: &AtomicBool, queue_wait: Duration);
     /// The pool retired before this job ran: release what it holds.
     fn discard(self: Box<Self>);
     /// `run` panicked: release what the job still holds and, unless the pool
     /// is retiring or the job already delivered, complete its item as failed,
-    /// so its resource frees the item and nothing waits on it.
+    /// so its resource frees the item and nothing waits on it. If this panics
+    /// too, the job drops mid-unwind: a job that holds a charge also returns
+    /// it from `Drop`, without panicking.
     fn panicked(self: Box<Self>, retiring: &AtomicBool);
 }
 
-/// A queued job and its submission order.
-type Queued = (u64, Box<dyn DecodeJob>);
+/// A queued job, its submission order, and when it was submitted.
+struct Queued {
+    order: u64,
+    submitted_at: Instant,
+    job: Box<dyn DecodeJob>,
+}
 
 #[derive(Default)]
 struct Queues {
-    mandatory: VecDeque<Queued>,
-    optional: VecDeque<Queued>,
+    jobs: Vec<Queued>,
     submitted: u64,
     closed: bool,
 }
 
 impl Queues {
     fn push(&mut self, job: Box<dyn DecodeJob>) {
-        let queued = (self.submitted, job);
+        self.jobs.push(Queued {
+            order: self.submitted,
+            submitted_at: Instant::now(),
+            job,
+        });
         self.submitted += 1;
-        match queued.1.tier() {
-            ReadTier::Mandatory => self.mandatory.push_back(queued),
-            ReadTier::Optional => self.optional.push_back(queued),
-        }
     }
 
-    /// The oldest mandatory job, counting an optional job raised to mandatory
-    /// while queued from its own submission; then the oldest optional job.
-    fn pop(&mut self) -> Option<Box<dyn DecodeJob>> {
-        let raised = self
-            .optional
+    /// The job of best live rank, oldest first at equal rank. Ranks are read
+    /// at every pickup; the queue holds at most every permit's job, so the
+    /// scan is short.
+    fn pop(&mut self) -> Option<Queued> {
+        let best = self
+            .jobs
             .iter()
-            .position(|(_, job)| job.tier() == ReadTier::Mandatory);
-        let take_raised = match (raised, self.mandatory.front()) {
-            (Some(index), Some(&(oldest, _))) => self.optional[index].0 < oldest,
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-        let queued = if take_raised {
-            raised.and_then(|index| self.optional.remove(index))
-        } else {
-            self.mandatory
-                .pop_front()
-                .or_else(|| self.optional.pop_front())
-        };
-        queued.map(|(_, job)| job)
+            .enumerate()
+            .min_by_key(|(_, queued)| (queued.job.rank(), queued.order))
+            .map(|(index, _)| index)?;
+        // Submission order travels with each job, so the swap loses nothing.
+        Some(self.jobs.swap_remove(best))
     }
 }
 
@@ -106,17 +117,15 @@ impl PoolShared {
     /// job outside the lock.
     fn close(&self) {
         self.retiring.store(true, Ordering::Release);
-        let (mandatory, optional) = {
+        let mut queued = {
             let mut queues = self.lock();
             queues.closed = true;
-            (
-                std::mem::take(&mut queues.mandatory),
-                std::mem::take(&mut queues.optional),
-            )
+            std::mem::take(&mut queues.jobs)
         };
         self.ready.notify_all();
-        for (_, job) in mandatory.into_iter().chain(optional) {
-            job.discard();
+        queued.sort_unstable_by_key(|queued| queued.order);
+        for queued in queued {
+            queued.job.discard();
         }
     }
 }
@@ -134,8 +143,8 @@ impl std::fmt::Debug for DecodeQueue {
 }
 
 impl DecodeQueue {
-    /// Queues `job` behind every job of its tier. False once the pool has
-    /// retired; the job is then discarded here.
+    /// Queues `job` behind every queued job of its rank. False once the pool
+    /// has retired; the job is then discarded here.
     pub(crate) fn submit(&self, job: Box<dyn DecodeJob>) -> bool {
         let mut queues = self.shared.lock();
         if queues.closed {
@@ -166,14 +175,14 @@ impl std::fmt::Debug for DecodePool {
 
 impl DecodePool {
     /// Spawns `threads` (at least one) decode threads. `queue_capacity`
-    /// covers every job the routed resources can have outstanding, so steady
-    /// streaming never grows a queue. On a spawn failure the threads already
+    /// covers every job the routed resources can have outstanding (one per
+    /// permit: a job is a delivered read), so steady streaming never grows
+    /// the queue. On a spawn failure the threads already
     /// spawned retire before the error returns.
     pub(crate) fn spawn(threads: usize, queue_capacity: usize) -> std::io::Result<Self> {
         let shared = Arc::new(PoolShared {
             queues: Mutex::new(Queues {
-                mandatory: VecDeque::with_capacity(queue_capacity),
-                optional: VecDeque::with_capacity(queue_capacity),
+                jobs: Vec::with_capacity(queue_capacity),
                 submitted: 0,
                 closed: false,
             }),
@@ -221,14 +230,14 @@ impl Drop for DecodePool {
 
 fn decode_loop(shared: &PoolShared) {
     loop {
-        let job = {
+        let queued = {
             let mut queues = shared.lock();
             loop {
                 if queues.closed {
                     return;
                 }
-                if let Some(job) = queues.pop() {
-                    break job;
+                if let Some(queued) = queues.pop() {
+                    break queued;
                 }
                 queues = shared
                     .ready
@@ -236,14 +245,21 @@ fn decode_loop(shared: &PoolShared) {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         };
-        run_job(shared, job);
+        run_job(shared, queued);
     }
 }
 
 /// Runs one job. A panicking job completes as failed instead of taking its
 /// thread down with its charge, its item and every job queued behind it.
-fn run_job(shared: &PoolShared, mut job: Box<dyn DecodeJob>) {
-    let Err(panic) = catch_unwind(AssertUnwindSafe(|| job.run(&shared.retiring))) else {
+fn run_job(shared: &PoolShared, queued: Queued) {
+    let Queued {
+        submitted_at,
+        mut job,
+        ..
+    } = queued;
+    let queue_wait = submitted_at.elapsed();
+    let Err(panic) = catch_unwind(AssertUnwindSafe(|| job.run(&shared.retiring, queue_wait)))
+    else {
         return;
     };
     if !shared.panic_logged.swap(true, Ordering::AcqRel) {
@@ -257,7 +273,9 @@ fn run_job(shared: &PoolShared, mut job: Box<dyn DecodeJob>) {
              keeps running (later panics are not logged)"
         );
     }
-    // A job whose own cleanup panics too leaves its thread running.
+    // A job whose own cleanup panics too leaves its thread running; the job
+    // drops during that unwind, and its `Drop` returns any charge it still
+    // holds.
     let _ = catch_unwind(AssertUnwindSafe(|| job.panicked(&shared.retiring)));
 }
 

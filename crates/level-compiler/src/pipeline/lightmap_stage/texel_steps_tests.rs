@@ -57,29 +57,81 @@ fn sparse_partition(atlas_height: u32) -> Vec<LayerTexel> {
         .collect()
 }
 
+/// The padded atlas extent of a `width × height` interior.
+fn placed_extent(placement: ChartPlacement, width: u32, height: u32) -> (u32, u32) {
+    let padding = 2 * crate::chart_raster::CHART_PADDING_TEXELS;
+    placement.placed_extent(width + padding, height + padding)
+}
+
 #[test]
 fn chart_rows_match_per_texel_search_upright_and_transposed() {
-    let texels = sparse_partition(40);
-    let (width, height) = (9, 5);
-    for transposed in [false, true] {
-        for (x, y) in [(0, 0), (6, 4), (30, 20), (ATLAS_WIDTH - 13, 26)] {
-            let placement = ChartPlacement {
-                x,
-                y,
+    let atlas_height = 40;
+    let texels = sparse_partition(atlas_height);
+    for (width, height) in [(9, 5), (1, 1), (1, 7), (7, 1), (5, 9)] {
+        for transposed in [false, true] {
+            let oriented = ChartPlacement {
+                x: 0,
+                y: 0,
                 layer: 0,
                 transposed,
             };
-            let expected = searched_rows(&texels, placement, width, height);
-            let streamed = streamed_rows(&texels, placement, width, height)
-                .expect("a sparse partition has records inside every chart");
-            assert_eq!(
-                streamed, expected,
-                "placement ({x}, {y}), transposed {transposed}"
-            );
-            assert!(expected.iter().flatten().any(Option::is_none));
-            assert!(expected.iter().flatten().any(Option::is_some));
+            let (placed_w, placed_h) = placed_extent(oriented, width, height);
+            // Corners, an interior spot, and the atlas's right and bottom
+            // edges.
+            for (x, y) in [
+                (0, 0),
+                (6, 4),
+                (30, 20),
+                (ATLAS_WIDTH - placed_w, 26),
+                (ATLAS_WIDTH - placed_w, atlas_height - placed_h),
+                (0, atlas_height - placed_h),
+            ] {
+                let placement = ChartPlacement { x, y, ..oriented };
+                let label = format!("{width}x{height} at ({x}, {y}), transposed {transposed}");
+                let expected = searched_rows(&texels, placement, width, height);
+                match streamed_rows(&texels, placement, width, height) {
+                    Some(streamed) => assert_eq!(streamed, expected, "{label}"),
+                    None => assert!(
+                        expected.iter().flatten().all(Option::is_none),
+                        "{label}: skipped a chart with records"
+                    ),
+                }
+            }
         }
     }
+}
+
+// A transposed chart's index range spans whole atlas rows, so it can hold
+// records that all belong to a neighbour sharing those rows. Every row then
+// reads empty.
+#[test]
+fn a_transposed_chart_spanning_only_a_neighbours_records_reads_empty() {
+    let placement = ChartPlacement {
+        x: 10,
+        y: 6,
+        layer: 0,
+        transposed: true,
+    };
+    let (width, height) = (4, 7);
+    let (placed_w, placed_h) = placed_extent(placement, width, height);
+    // Records on every atlas row the chart covers, left and right of it.
+    let texels: Vec<LayerTexel> = (placement.y..placement.y + placed_h)
+        .flat_map(|y| {
+            [
+                y * ATLAS_WIDTH + 2,
+                y * ATLAS_WIDTH + placement.x + placed_w + 3,
+            ]
+        })
+        .map(|idx| LayerTexel {
+            idx,
+            raw_visibility: idx as f32,
+        })
+        .collect();
+    let expected = searched_rows(&texels, placement, width, height);
+    assert!(expected.iter().flatten().all(Option::is_none));
+    let streamed = streamed_rows(&texels, placement, width, height)
+        .expect("records inside the chart's index range");
+    assert_eq!(streamed, expected);
 }
 
 #[test]

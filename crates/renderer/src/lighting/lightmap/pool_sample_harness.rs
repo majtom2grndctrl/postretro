@@ -30,12 +30,13 @@ const TARGET_COUNT: usize = 2;
 pub(super) const SCALE: u32 = 2;
 
 /// What a probe's fragment writes, after the entry point has its block's
-/// `texel`, `layer_flags`, `rect`, `plane_addresses`, its `pixel` and its
-/// `probe`.
+/// `texel`, `layer_flags`, `rect`, `mask` words, its `pixel` and its `probe`.
+/// These fixtures' mask blocks are their lightmap blocks, so every face's mask
+/// offset is zero; `shadowmask_sample_harness` drives nonzero offsets.
 const SAMPLE_BLOCK_WGSL: &str = r#"
     let irradiance = sample_lightmap_irradiance(texel, layer_flags, rect);
     let direction = sample_lightmap_direction(texel, layer_flags, rect);
-    let mask = sample_shadowmask_atlas(texel, layer_flags, rect, plane_addresses);
+    let mask = sample_shadowmask_atlas(texel, layer_flags, mask_words, 0u);
     let missing = lightmap_block_missing(layer_flags);
     // World static specular's own gate and channel select for the owner at
     // `owner_position`: the visibility it multiplies that owner's highlight
@@ -80,7 +81,7 @@ struct HarnessOut {
 pub(super) fn probe_out_wgsl() -> String {
     format!(
         "fn probe_out(probe: Probe, pixel: u32, texel: vec2<f32>, layer_flags: u32, rect: \
-         vec4<u32>, plane_addresses: vec2<u32>) -> HarnessOut {{{SAMPLE_BLOCK_WGSL}}}"
+         vec4<u32>, mask_words: vec4<u32>) -> HarnessOut {{{SAMPLE_BLOCK_WGSL}}}"
     )
 }
 
@@ -115,7 +116,7 @@ fn shader_source() -> String {
 @group(0) @binding(2) var shadowmask_atlas: texture_2d_array<f32>;
 @group(0) @binding(3) var lightmap_filtering_sampler: sampler;
 @group(0) @binding(4) var lightmap_sampler: sampler;
-@group(0) @binding(5) var<storage, read> lightmap_block_table: array<vec4<u32>>;
+@group(0) @binding(5) var<storage, read> lightmap_block_table: array<LightmapBlockEntry>;
 @group(0) @binding(6) var<storage, read> probes: array<Probe>;
 @group(0) @binding(7) var<uniform> uniforms: HarnessUniforms;
 "#;
@@ -132,7 +133,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> HarnessOut {
     let pixel = u32(position.x);
     let probe = probes[pixel / 2u];
     let block = resolve_lightmap_block(probe.block, probe.uv);
-    return probe_out(probe, pixel, block.texel, block.layer_flags, block.rect, block.plane_addresses);
+    return probe_out(probe, pixel, block.texel, block.layer_flags, block.rect, block.mask);
 }
 "#;
     let (helpers, probe_out) = (helpers_wgsl(), probe_out_wgsl());

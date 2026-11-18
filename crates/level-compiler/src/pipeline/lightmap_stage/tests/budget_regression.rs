@@ -9,16 +9,19 @@ use super::*;
 // soft_shadow_test again for the watertight tracer, whose shadow answers
 // move their texels; four-layer-cut is synthetic. The id 42 digests were
 // recaptured for `SMB8`, after these same rows passed with the old tag and
-// every plane stored.
+// every plane stored, and again for `SMB9`'s per-block mask layout with every
+// id 22 digest, owner table and drop report unchanged; the mask copy's byte
+// identity is pinned by `assert_masks_are_translations` and the chart-dump
+// comparator.
 fn expected_sections(name: &str) -> (&'static str, &'static str) {
     match name {
         "gate-heavily-lit" => (
             "9e5b6e23b38dcfa82468762518706e2a80976f759e9357d42869c5cf5c30a644",
-            "60edd6801ab97d1984d88ef010d52b6290e73bfb59b55299deac4bf3bcb0e6ec",
+            "9f79911a555d0943fda8f4767203a74261c43ce8e5822a18ca9b84ae6ac73469",
         ),
         "soft_shadow_test" => (
             "045753ebd02fff2c71287156b9549275888fcdae4e7074358868225b01724acb",
-            "e86079668b0e229a05511269d2d9cdc2c86535d0d28d973262ea72b5948df121",
+            "16a5df65d37aae78af50c63414154bbf72c78de67c7b40d9c6c1992728ae72a0",
         ),
         "test_animated_weight_maps_cap" => (
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",
@@ -26,7 +29,7 @@ fn expected_sections(name: &str) -> (&'static str, &'static str) {
         ),
         "test_animated_weight_maps_mixed" => (
             "97c932ecf437223b7a636298e9b98f9e6c3c9fa16184fe8cc0faa51c81b884ed",
-            "31aaed5aef94c5e8abd3d903d4bded5a1f9b4fe7f764378928f655e068ec5985",
+            "c18b17ee0158e3285d000be3e2746f23402eb0d9f51992e402d6ab6d41e92ca0",
         ),
         "test_animated_weight_maps_occluded" => (
             "fe87dcb8396cfeee8452cce791c76eb38bec190c3741746950c7fb629c8a114d",
@@ -38,7 +41,7 @@ fn expected_sections(name: &str) -> (&'static str, &'static str) {
         ),
         "four-layer-cut" => (
             "a6faca302b8c39846d56eddc3924eadbc5fc082b55fbddb976ddd25d9c510b12",
-            "d27f73dbf9ff6b708e6e72cd66aa6e14d6c7d6bc6cada0e7ceb2b6dda3006667",
+            "ec9dc8314d83445d9d2426b5476a72061c4b4da0f57887d214642da0cb4dadb1",
         ),
         _ => panic!("missing pre-change section baseline: {name}"),
     }

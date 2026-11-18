@@ -122,6 +122,7 @@ impl LightmapStreamState {
                 upload.placement,
                 upload.planes,
                 (upload.width, upload.height),
+                upload.plane_extents,
                 payload,
             );
             for write in writes {
@@ -143,6 +144,9 @@ impl LightmapStreamState {
             }
             executed.uploads += 1;
         }
+        // One write per entry, both words in it: a block evicted and its
+        // places re-tenanted in one drain never shows a lightmap word beside
+        // a stale mask word.
         for write in &plan.table_writes {
             let mut entry = [0u8; BLOCK_TABLE_ENTRY_BYTES];
             for (bytes, word) in entry

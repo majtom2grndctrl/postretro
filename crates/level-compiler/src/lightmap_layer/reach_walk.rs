@@ -10,7 +10,7 @@ use glam::{DVec3, Vec3};
 
 use super::chart_cull::ExactSkips;
 use super::{LayerTexel, SharedAtlas};
-use crate::chart_raster::{CHART_PADDING_TEXELS, chart_texel_world_position};
+use crate::chart_raster::chart_texel_world_position;
 use crate::lightmap_bake::Chart;
 use crate::lightmap_reach::{ChartReach, LightmapReachIndex};
 
@@ -168,9 +168,7 @@ pub(super) fn check_rewalk(
     };
     let placement = &atlas.placements[face_idx];
     let chart = &atlas.charts[face_idx];
-    let padding = CHART_PADDING_TEXELS as i32;
-    let tx = (idx % atlas.atlas_width) as i32 - placement.x as i32 - padding;
-    let ty = (idx / atlas.atlas_width) as i32 - placement.y as i32 - padding;
+    let (tx, ty) = placement.interior_of(idx % atlas.atlas_width, idx / atlas.atlas_width);
     walk.mismatch.record(
         (walk.light, face_idx, idx),
         ReachMismatch {

@@ -2,6 +2,7 @@
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use glam::Vec3;
+use postretro_level_format::coded_plane::{BlockCodec, store_plane};
 use postretro_level_format::lightmap::{
     DIRECTION_TEXEL_BYTES, IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F,
     IRRADIANCE_TEXEL_BYTES, LightmapBlock, LightmapMode, LightmapSection, encode_direction_oct,
@@ -11,28 +12,44 @@ use postretro_level_format::lightmap::{
 use super::block_layout::BlockLayout;
 use super::{CompositedAtlas, MIN_ATLAS_DIMENSION};
 use crate::bc6h;
+use crate::chart_dump::capture::LightmapCapture;
 
 /// BC texel block edge and bytes per BC6H/BC5 block.
 const BC_EDGE: u32 = 4;
 const BC_BLOCK_BYTES: usize = 16;
 
-/// Assembles a v3 section one bake layer at a time. Each layer is encoded
+/// Assembles a v4 section one bake layer at a time. Each layer is encoded
 /// whole, then every block on it is sliced out: BC6H is per 4×4 block and
 /// block origins are aligned, so a slice equals encoding the block alone.
-/// Only the current layer's encoded bytes and the finished blocks are held.
+/// Each sliced plane is coded at once, so only the current layer's encoded
+/// bytes and the finished blocks' stored planes are held.
 pub(crate) struct BlockSectionBuilder<'a> {
     layout: &'a BlockLayout,
     uncompressed_irradiance: bool,
+    codec: BlockCodec,
     blocks: Vec<Option<LightmapBlock>>,
+    /// `--dump-chart-texels`: reads each layer's encoder input; `None` costs
+    /// nothing.
+    chart_dump: Option<LightmapCapture<'a>>,
 }
 
 impl<'a> BlockSectionBuilder<'a> {
-    pub(crate) fn new(layout: &'a BlockLayout, uncompressed_irradiance: bool) -> Self {
+    pub(crate) fn new(
+        layout: &'a BlockLayout,
+        uncompressed_irradiance: bool,
+        codec: BlockCodec,
+    ) -> Self {
         Self {
             layout,
             uncompressed_irradiance,
+            codec,
             blocks: vec![None; layout.blocks.len()],
+            chart_dump: None,
         }
+    }
+
+    pub(crate) fn attach_chart_dump(&mut self, capture: LightmapCapture<'a>) {
+        self.chart_dump = Some(capture);
     }
 
     /// Encode one dilated bake-layer plane and keep its blocks.
@@ -40,6 +57,9 @@ impl<'a> BlockSectionBuilder<'a> {
         let scale = self.layout.direction_texel_scale;
         let (irradiance, direction) =
             encode_atlas_layer(plane, self.uncompressed_irradiance, scale);
+        if let Some(capture) = &self.chart_dump {
+            capture.capture_layer(layer, self.layout, plane, &direction);
+        }
         let (irr_unit, irr_unit_bytes) = if self.uncompressed_irradiance {
             (1, IRRADIANCE_TEXEL_BYTES)
         } else {
@@ -65,8 +85,9 @@ impl<'a> BlockSectionBuilder<'a> {
                 cell_id: block.cell_id,
                 width: u16::try_from(block.width).expect("blocks fit a pool layer"),
                 height: u16::try_from(block.height).expect("blocks fit a pool layer"),
-                irradiance,
-                direction,
+                codec: self.codec,
+                irradiance: store_plane(self.codec, irradiance),
+                direction: store_plane(self.codec, direction),
             });
         }
     }
@@ -126,15 +147,17 @@ impl CompositedAtlas {
         &self,
         layout: &BlockLayout,
         uncompressed_irradiance: bool,
+        codec: BlockCodec,
     ) -> LightmapSection {
         let plane = self.atlas_width as usize * self.atlas_height as usize;
-        let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance);
+        let mut builder = BlockSectionBuilder::new(layout, uncompressed_irradiance, codec);
         for layer in 0..self.layer_count {
             let offset = layer as usize * plane;
             let single = CompositedAtlas {
                 irradiance: self.irradiance[offset * 4..(offset + plane) * 4].to_vec(),
                 direction: self.direction[offset..offset + plane].to_vec(),
                 coverage: self.coverage[offset..offset + plane].to_vec(),
+                transposed: self.transposed[offset..offset + plane].to_vec(),
                 atlas_width: self.atlas_width,
                 atlas_height: self.atlas_height,
                 layer_count: 1,
@@ -173,6 +196,7 @@ pub(crate) fn encode_atlas_layer(
         let (direction, coverage) = reduce_direction_atlas(
             &atlas.direction,
             &atlas.coverage,
+            &atlas.transposed,
             atlas.atlas_width,
             atlas.atlas_height,
             1,
@@ -217,11 +241,15 @@ pub(crate) fn normalized_direction_texel_scale(scale: u32) -> u32 {
 /// Reduce full-resolution dominant directions for the static direction atlas.
 ///
 /// Each output layer reads only its matching input plane. Within a block the
-/// loop is fixed row-major, coverage is ORed, and covered cancelling vectors
-/// resolve to neutral up rather than normalizing zero.
+/// loop is fixed row-major in the chart's own orientation — column-major in
+/// the atlas when the block's top-left texel is `transposed` — coverage is
+/// ORed, and covered cancelling vectors resolve to neutral up rather than
+/// normalizing zero. Chart origins on the `factor` grid put every block inside
+/// one chart, so a transposed chart reduces bit for bit as it would upright.
 pub(super) fn reduce_direction_atlas(
     direction: &[Vec3],
     coverage: &[bool],
+    transposed: &[bool],
     atlas_width: u32,
     atlas_height: u32,
     layer_count: u32,
@@ -245,8 +273,16 @@ pub(super) fn reduce_direction_atlas(
             for x in 0..reduced_width {
                 let mut sum = Vec3::ZERO;
                 let mut covered = false;
-                for block_y in 0..factor {
-                    for block_x in 0..factor {
+                let turned = transposed[layer_start
+                    + (y * factor) as usize * atlas_width as usize
+                    + (x * factor) as usize];
+                for outer in 0..factor {
+                    for inner in 0..factor {
+                        let (block_x, block_y) = if turned {
+                            (outer, inner)
+                        } else {
+                            (inner, outer)
+                        };
                         let source_x = x * factor + block_x;
                         let source_y = y * factor + block_y;
                         let index = layer_start

@@ -16,16 +16,17 @@ use crate::prl::{LightmapMode, MapLight, PrlLoadError};
 use crate::prl_container::PrlContainer;
 use crate::prl_loader::{section_validation, section_validation_from_error};
 
-/// Id 22 as loaded: the block index the level keeps, and each block's texels
-/// in block-id order. The shadowmask groups join the payloads at the split.
+/// Id 22 as loaded: the block index the level keeps, and each block's texels,
+/// decoded, in block-id order. The shadowmask groups join the payloads at the
+/// split.
 pub(crate) struct LoadedLightmap {
     pub(crate) index: LightmapBlockIndex,
     pub(crate) blocks: Vec<LightmapBlockPayload>,
 }
 
 /// Id 42 as loaded: the per-face owner table and block records the level
-/// keeps, and each block's group A then group B planes in id-22 block order,
-/// an absent plane empty.
+/// keeps, and each block's decoded group A then group B planes in id-22 block
+/// order, an absent plane empty.
 pub(crate) struct LoadedShadowmask {
     pub(crate) index: ShadowmaskBlockIndex,
     pub(crate) groups: Vec<[Vec<u8>; 2]>,
@@ -33,7 +34,8 @@ pub(crate) struct LoadedShadowmask {
 
 /// Absent id 22 is placeholder mode: no cell blocks, and every vertex must
 /// carry block 0. Present, it parses strictly against the level's
-/// `cell_count` cells; any fault fails the load.
+/// `cell_count` cells and every block's planes decode on this, the loading,
+/// thread; any fault, a plane that fails its decode included, fails the load.
 pub(crate) fn read_lightmap(
     container: &PrlContainer,
     cell_count: usize,
@@ -45,15 +47,25 @@ pub(crate) fn read_lightmap(
     let index = LightmapBlockIndex::from_prefix(&data, data.len() as u64)
         .map_err(|err| section_validation_from_error("Lightmap", err))?;
     validate_lightmap_block_cells(&index, cell_count)?;
-    let blocks: Vec<LightmapBlockPayload> = index
+    let blocks = index
         .records
         .iter()
-        .map(|record| LightmapBlockPayload {
-            irradiance: blob(&data, record.irradiance),
-            direction: blob(&data, record.direction),
-            shadowmask: None,
+        .enumerate()
+        .map(|(block, record)| {
+            let (irradiance, direction) = index
+                .decode_block(
+                    block,
+                    blob(&data, record.irradiance),
+                    blob(&data, record.direction),
+                )
+                .map_err(|err| section_validation_from_error("Lightmap", err))?;
+            Ok(LightmapBlockPayload {
+                irradiance,
+                direction,
+                shadowmask: None,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, PrlLoadError>>()?;
     log::info!(
         "[PRL] Lightmap: {} cell block(s), {} B irradiance, {} B direction",
         blocks.len(),
@@ -133,9 +145,9 @@ pub(crate) fn shadowmask_owner_bounds(
 }
 
 /// Id 42 pairs with id 22 block for block and names id 17's faces, so every
-/// fault fails the load: a malformed section, a face count or owner the
-/// level contradicts, a block count that differs from id 22's, or a
-/// shadowmask with no lightmap to pair with.
+/// fault fails the load: a malformed section, a plane that fails its decode,
+/// a face count or owner the level contradicts, a block count that differs
+/// from id 22's, or a shadowmask with no lightmap to pair with.
 pub(crate) fn read_shadowmask_atlas(
     container: &PrlContainer,
     lightmap: Option<&LightmapBlockIndex>,
@@ -152,11 +164,19 @@ pub(crate) fn read_shadowmask_atlas(
     })?;
     let index = ShadowmaskBlockIndex::from_prefix(&data, data.len() as u64, lightmap, bounds)
         .map_err(|err| section_validation_from_error("ShadowmaskAtlas", err))?;
-    let groups: Vec<[Vec<u8>; 2]> = index
+    let groups = index
         .records
         .iter()
-        .map(|record| [blob(&data, record.group_a), blob(&data, record.group_b)])
-        .collect();
+        .enumerate()
+        .map(|(block, record)| {
+            index
+                .decode_planes(
+                    block,
+                    [blob(&data, record.group_a), blob(&data, record.group_b)],
+                )
+                .map_err(|err| section_validation_from_error("ShadowmaskAtlas", err))
+        })
+        .collect::<Result<Vec<_>, PrlLoadError>>()?;
     log::info!(
         "[PRL] ShadowmaskAtlas: {} cell block(s), {} face owner entr(y/ies), {} payload byte(s)",
         groups.len(),
@@ -164,7 +184,7 @@ pub(crate) fn read_shadowmask_atlas(
         index
             .records
             .iter()
-            .map(|record| u64::from(record.group_a.len) + u64::from(record.group_b.len))
+            .map(|record| record.decoded_bytes())
             .sum::<u64>(),
     );
     Ok(Some(LoadedShadowmask { index, groups }))

@@ -8,8 +8,9 @@ use glam::{Mat4, Vec2, Vec3};
 use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDeltaVolumesSection;
 use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_BLOCK_RECORD_SIZE, CLUSTER_SH_CHUNK_HEADER_SIZE, CLUSTER_SH_SPARSE_ROW_RECORD_SIZE,
-    ClusterShPayloadsSection, ClusterShPayloadsSourceKind,
+    ClusterShPayloadsSection, ClusterShPayloadsSourceKind, store_chunk,
 };
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::sh_reconstruct::{Level, stored_delta_tiles};
 use postretro_level_format::{SectionBlob, SectionId};
 
@@ -157,9 +158,11 @@ fn zero_animated_direct_light(section: &mut AnimatedDirectShDeltaVolumesSection,
     );
 }
 
-/// Zero this light's id-45 sparse rows inside every id-50 cluster chunk, then
-/// rehash each chunk. Block and entry offsets are unchanged, so the metadata
-/// still validates against id 49 and the id-45 section it was built from.
+/// Zero this light's id-45 sparse rows inside every id-50 cluster chunk's
+/// raw form, then store each chunk again under its own codec and re-stamp
+/// its index record. Block and entry offsets inside a chunk are unchanged,
+/// so the metadata still validates against id 49 and the id-45 section it
+/// was built from; a coded chunk's stored length may change.
 fn zero_streamed_animated_direct_light(
     data: &[u8],
     animated_direct: &AnimatedDirectShDeltaVolumesSection,
@@ -176,23 +179,31 @@ fn zero_streamed_animated_direct_light(
     );
     let metadata_len =
         ClusterShPayloadsSection::metadata_len_from_header(data).expect("id-50 metadata length");
-    let mut payload = data[metadata_len..].to_vec();
+    let stored_payload = &data[metadata_len..];
+    let mut payload = Vec::with_capacity(stored_payload.len());
     let mut changed = false;
-    for entry in &mut section.index {
+    for cluster_id in 0..section.index.len() {
+        let entry = &section.index[cluster_id];
         let range =
             entry.payload_offset as usize..(entry.payload_offset + entry.payload_len) as usize;
-        let chunk = &mut payload[range];
-        if chunk.is_empty() {
+        let stored = stored_payload[range].to_vec();
+        if stored.is_empty() {
+            section.index[cluster_id].payload_offset = payload.len() as u64;
             continue;
         }
-        let block_count = read_u32(chunk, 8) as usize;
+        // Edit the chunk's raw form, then store it again under its codec.
+        let codec = BlockCodec::from_u32(read_u32(&stored, 12)).expect("known chunk codec");
+        let mut chunk = section
+            .decode_stored_chunk(cluster_id as u32, stored)
+            .expect("decode id-50 chunk");
+        let block_count = read_u32(&chunk, 8) as usize;
         for block in 0..block_count {
             let record = CLUSTER_SH_CHUNK_HEADER_SIZE + block * CLUSTER_SH_BLOCK_RECORD_SIZE;
-            if read_u32(chunk, record) != animated_direct_id {
+            if read_u32(&chunk, record) != animated_direct_id {
                 continue;
             }
-            let body_offset = read_u64(chunk, record + 16) as usize;
-            let body_len = read_u64(chunk, record + 24) as usize;
+            let body_offset = read_u64(&chunk, record + 16) as usize;
+            let body_len = read_u64(&chunk, record + 24) as usize;
             let body = &mut chunk[body_offset..body_offset + body_len];
             // Sparse rows: 16-byte header, row records, 16-byte
             // `(light, first_f16, f16_count, 0)` entries, then f16 tiles.
@@ -213,8 +224,14 @@ fn zero_streamed_animated_direct_light(
                 values.fill(0);
             }
         }
-        entry.hash = *blake3::hash(chunk).as_bytes();
+        let stored = store_chunk(codec, chunk);
+        let entry = &mut section.index[cluster_id];
+        entry.payload_offset = payload.len() as u64;
+        entry.payload_len = stored.len() as u64;
+        entry.hash = *blake3::hash(&stored).as_bytes();
+        payload.extend_from_slice(&stored);
     }
+    section.header.payload_bytes = payload.len() as u64;
     assert!(
         changed,
         "fixture alarm must have nonzero streamed animated direct SH"

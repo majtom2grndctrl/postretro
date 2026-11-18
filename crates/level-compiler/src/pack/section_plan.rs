@@ -81,6 +81,9 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) cell_draw_index: Option<&'a CellDrawIndexSection>,
     pub(super) cell_visibility: Option<&'a CellVisibilitySection>,
     pub(super) cell_residency_set: Option<&'a CellResidencySetSection>,
+    /// How id 51 stores its body (`--section-codec`); id 50's spool is
+    /// already stored.
+    pub(super) section_codec: BlockCodec,
     pub(super) cluster_directory: &'a ClusterDirectorySection,
     /// Id 49's bound tail. Pack computes it after the directory is baked, from
     /// the node sets the chunks are encoded from.
@@ -177,6 +180,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         cell_draw_index,
         cell_visibility,
         cell_residency_set,
+        section_codec,
         cluster_directory,
         sh_mandatory_bound,
         lightmap_pool_bound,
@@ -595,11 +599,13 @@ pub(super) fn build_finalized_section_plan<'a>(
         },
     ));
     if let Some(section) = cell_residency_set {
+        // One whole-section frame, coded here so its stored length is known.
+        let bytes = section.to_bytes(section_codec);
         sections.push(PlannedSection::new(
             SectionId::CellResidencySet as u32,
             CELL_RESIDENCY_SET_CONTAINER_VERSION,
-            section.byte_len(),
-            || Ok(section.to_bytes()),
+            bytes.len(),
+            move || Ok(bytes),
         ));
     }
     if let Some(section) = lightmap_pool_bound {

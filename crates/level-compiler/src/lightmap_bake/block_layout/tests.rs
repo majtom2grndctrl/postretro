@@ -57,18 +57,23 @@ fn cell_block_pack_holds_every_chart_inside_its_cell_block_without_overlap() {
                 block.cell_id, chart.leaf_index,
                 "chart {index} sits in its cell's block"
             );
+            let (w, h) = placement.placed_extent(chart.width_texels, chart.height_texels);
             assert!(
-                block.contains(
-                    placement.layer,
-                    placement.x,
-                    placement.y,
-                    chart.width_texels,
-                    chart.height_texels
-                ),
+                block.contains(placement.layer, placement.x, placement.y, w, h),
                 "chart {index} {placement:?} leaves block {block:?}"
             );
-            for y in placement.y..placement.y + chart.height_texels {
-                for x in placement.x..placement.x + chart.width_texels {
+            assert_eq!(
+                placement.x % scale,
+                0,
+                "chart {index} origin on the direction grid"
+            );
+            assert_eq!(
+                placement.y % scale,
+                0,
+                "chart {index} origin on the direction grid"
+            );
+            for y in placement.y..placement.y + h {
+                for x in placement.x..placement.x + w {
                     assert!(
                         occupied.insert((placement.layer, x, y)),
                         "charts overlap at layer {} texel {x},{y}",
@@ -114,6 +119,7 @@ fn cell_block_order_is_cluster_major_then_cell_id() {
         BlockOrdering {
             direction_texel_scale: 2,
             cell_clusters: &clusters,
+            heuristic: None,
         },
     );
     let order: Vec<u32> = clustered.layout.blocks.iter().map(|b| b.cell_id).collect();
@@ -172,13 +178,8 @@ fn oversized_cell_packs_into_several_blocks_each_within_the_pool_edge() {
     for (index, (chart, placement)) in charts.iter().zip(&pack.placements).enumerate() {
         let block = &layout.blocks[layout.chart_blocks[index] as usize];
         assert_eq!(block.cell_id, chart.leaf_index);
-        assert!(block.contains(
-            placement.layer,
-            placement.x,
-            placement.y,
-            chart.width_texels,
-            chart.height_texels
-        ));
+        let (w, h) = placement.placed_extent(chart.width_texels, chart.height_texels);
+        assert!(block.contains(placement.layer, placement.x, placement.y, w, h));
     }
     let members = block_members(&pack);
     assert!(members.iter().all(|m| !m.is_empty()), "no empty block");
@@ -199,11 +200,19 @@ fn fitting_cells_pack_one_block_each_exactly_as_the_single_block_packer() {
         let single = super::super::cell_blocks::pack_cell_block(&sizes, align)
             .expect("a charted cell packs");
         assert_eq!((block.width, block.height), (single.width, single.height));
-        let local: Vec<(u32, u32)> = members
+        let local: Vec<(u32, u32, bool)> = members
             .iter()
-            .map(|&i| pack.layout.local_placement(i, &pack.placements[i]))
+            .map(|&i| {
+                let (x, y) = pack.layout.local_placement(i, &pack.placements[i]);
+                (x, y, pack.placements[i].transposed)
+            })
             .collect();
-        assert_eq!(local, single.placements, "block {block_id} placements");
+        let single: Vec<(u32, u32, bool)> = single
+            .placements
+            .iter()
+            .map(|slot| (slot.x, slot.y, slot.transposed))
+            .collect();
+        assert_eq!(local, single, "block {block_id} placements");
     }
 }
 
@@ -285,8 +294,16 @@ fn oversized_cell_blocks_are_trimmed_and_no_later_chart_fits_an_earlier_block() 
             .iter()
             .map(|&i| {
                 let (x, y) = layout.local_placement(i, &pack.placements[i]);
-                (x, y, charts[i].width_texels, charts[i].height_texels)
+                let (w, h) = pack.placements[i]
+                    .placed_extent(charts[i].width_texels, charts[i].height_texels);
+                (x, y, w, h)
             })
+            .collect();
+        // What MaxRects saw: every chart as its even footprint.
+        let even = |v: u32| v.div_ceil(2) * 2;
+        let footprints: Vec<(u32, u32, u32, u32)> = rects
+            .iter()
+            .map(|&(x, y, w, h)| (x, y, even(w), even(h)))
             .collect();
         // Trimmed: the block is the aligned bounding box of its charts.
         let right = rects.iter().map(|r| r.0 + r.2).max().unwrap();
@@ -305,16 +322,14 @@ fn oversized_cell_blocks_are_trimmed_and_no_later_chart_fits_an_earlier_block() 
         // Fill rule: no chart of a later block of this cell fits here.
         for &later in cell_two.iter().filter(|&&b| b > block_id) {
             for &i in &members[later] {
-                assert!(
-                    !fits_free_space(
-                        block.width,
-                        block.height,
-                        &rects,
-                        charts[i].width_texels,
-                        charts[i].height_texels
-                    ),
-                    "chart {i} in block {later} fits block {block_id}'s free space"
-                );
+                // In either orientation.
+                let (w, h) = (even(charts[i].width_texels), even(charts[i].height_texels));
+                for (w, h) in [(w, h), (h, w)] {
+                    assert!(
+                        !fits_free_space(block.width, block.height, &footprints, w, h),
+                        "chart {i} in block {later} fits block {block_id}'s free space"
+                    );
+                }
             }
         }
     }
@@ -358,6 +373,7 @@ fn multi_block_cells_are_contiguous_in_cluster_cell_sub_block_order() {
         BlockOrdering {
             direction_texel_scale: 2,
             cell_clusters: &clusters,
+            heuristic: None,
         },
         pool_edge,
         &BakeControl::unrestricted(),

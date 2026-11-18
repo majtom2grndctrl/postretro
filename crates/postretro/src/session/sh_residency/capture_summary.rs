@@ -20,8 +20,6 @@ impl ShStreamingSession {
             .workers
             .as_ref()
             .map(ShAsyncWorkers::phase_snapshot)
-            .transpose()
-            .map_err(anyhow::Error::msg)?
             .unwrap_or_default();
         let phase = |controller_phase: BytePhase, worker_phase: BytePhase, label| {
             let current = controller_phase
@@ -48,7 +46,7 @@ impl ShStreamingSession {
             phase(controller.cpu.ready, worker.ready, "ready")?;
         // Renderer fields come from the last applied outcome's snapshot.
         let mut live = self.live.clone();
-        let worker_stats = self.read_stats()?;
+        let worker_stats = self.read_stats();
         assemble_live_diagnostics(&mut live, &controller, worker_stats.as_ref(), None);
         let count = |value: usize, label: &'static str| {
             u64::try_from(value).map_err(|_| anyhow::anyhow!("[SH streaming] {label} exceeds u64"))

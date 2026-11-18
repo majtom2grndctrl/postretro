@@ -26,6 +26,7 @@ use postretro_level_loader::PrlLoadError;
 
 use super::*;
 use crate::sh_streaming::trace_fixture::assert_matches_baseline;
+use crate::streaming::drain_budget::DrainClass;
 
 const BASELINE: &str = "sh_issuer_trace_baseline.txt";
 const KIB: u64 = 1024;
@@ -213,7 +214,11 @@ fn request(cluster_id: u32, mandatory: bool) -> ShClusterRequest {
         content_tag: [1; 32],
         cluster_id,
         chunk_hash: [cluster_id as u8; 32],
-        mandatory,
+        class: if mandatory {
+            DrainClass::Visible
+        } else {
+            DrainClass::Prefetch
+        },
     }
 }
 
@@ -293,7 +298,7 @@ fn run_schedule() -> String {
         }
         .unwrap();
         if let Some(targets) = step.publish {
-            workers.publish_targets(&targets.iter().copied().collect::<BTreeSet<_>>());
+            workers.publish_target_keys(&targets.iter().copied().collect::<BTreeSet<_>>());
             writeln!(out, "  publish targets {}", ids(targets.iter().copied())).unwrap();
         }
         let mut submissions = step.submit.iter().copied();

@@ -5,7 +5,8 @@
 // lightmap session inside `LevelStreaming`, whose issuer reads real block
 // pairs through the level's manifest. The real `LightmapPoolModel` plans each
 // drain (see `pool_mirror`) without GPU work. Visibility is the runtime
-// portal walk from a jittered eye in each step's cell. SH does not stream.
+// portal walk from a jittered eye in each step's cell. SH streams beside the
+// lightmap only with `POSTRETRO_LIGHTMAP_WALK_SH=on` (`sh_walk`).
 //
 // Time model: the camera dwells in each walk cell for the frames it takes to
 // reach the next cell's centre at `RUN_SPEED` m/s at 60 Hz, turning 90° per
@@ -62,6 +63,19 @@
 // pairing compares block counts because the cell layout matches; across
 // partitions use `world_poses`, whose unit is deferred texel area.
 //
+// Decode and pool comparisons (lightmap-compact-storage): every run reports an
+// order-independent hash of every uploaded payload (`payload_hash`), the
+// issuer's busy p95/max per physical read (`busy_stats`) and the per-drain
+// uploaded-byte max. `POSTRETRO_LIGHTMAP_WALK_SH=on` streams the level's
+// cluster SH beside the lightmap through one issuer and one drain budget, and
+// reports late SH chunks (`sh_walk`). `POSTRETRO_LIGHTMAP_WALK_CORES=1|2|N`
+// sizes every pool the walk spawns for that many cores (`cores`); default is
+// this machine. Each run also prints one `walk-result {json}` line, appended
+// to `POSTRETRO_LIGHTMAP_WALK_RESULTS_OUT` when set, labelled by
+// `POSTRETRO_LIGHTMAP_WALK_TAG` (`results`). One invocation is one cell of the
+// matrix over reads × SH × cores, covering both walks; run realtime cells three
+// times, interleaved, and take medians from the results file.
+//
 // Residency gate, per projection and pitch: run the pre-change build with
 // `POSTRETRO_LIGHTMAP_WALK_READS=completed` and
 // `POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT=<file>`, which writes each run's
@@ -79,17 +93,22 @@
 // replays them in the other build, and compares deferred texel area.
 
 mod baked_set;
+mod busy_stats;
 mod completed_reads;
+mod cores;
 mod frame_driver;
 mod install_timing;
 mod levers;
 mod mirror;
 mod modes;
 mod paths;
+mod payload_hash;
 mod pool_mirror;
 #[cfg(test)]
 mod pool_sizing_tests;
 mod report;
+mod results;
+mod sh_walk;
 #[cfg(test)]
 mod tests;
 mod trip_record;
@@ -97,6 +116,7 @@ mod walk;
 mod world_poses;
 
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use postretro_level_format::SectionId;
@@ -109,10 +129,12 @@ use crate::session::level_streaming::LevelStreaming;
 use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::decode_level_hints;
+use crate::streaming::issuer_busy::IssuerBusyLog;
 use baked_set::{
     bake_identity, bake_token, cell_block_ranges, mandatory_blocks, mandatory_cells,
     mandatory_set_sizes,
 };
+use busy_stats::BusyStats;
 use frame_driver::{FrameDriver, FrameInput};
 use levers::{DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, parse_pool_layers};
 use mirror::{MirrorStats, WalkMirror};
@@ -120,6 +142,8 @@ use modes::{ReadsMode, WalkModes, render_camera};
 use paths::{SplitMix64, WALK_SEED, WalkKind};
 use pool_mirror::{PoolMirror, pool_sizing};
 use report::{RunReport, print_run, print_split};
+use results::{RunKeys, ShStatus, print_instruments};
+use sh_walk::ShRunStats;
 use trip_record::{FrameRecord, RunRecord, pose_fingerprint};
 use walk::{MAX_DWELL_FRAMES, RUN_SPEED, Walk, eye_point};
 
@@ -220,9 +244,19 @@ fn run(
     modes: &WalkModes,
     bake: &str,
     mut planar: Option<WalkMirror>,
-) -> RunReport {
+) -> (RunReport, ShStatus) {
     let mut rig = Rig::new(world, levers, modes.reads);
     let read_counters = rig.view.manifest.read_counters().clone();
+    let issuer_busy = Arc::new(IssuerBusyLog::default());
+    rig.driver.log_issuer_busy(Arc::clone(&issuer_busy));
+    let sh_status = match modes.sh.then(|| sh_walk::sh_session(world)) {
+        None => ShStatus::Off,
+        Some(None) => ShStatus::NoId50,
+        Some(Some(session)) => {
+            rig.driver.stream_sh(session);
+            ShStatus::On
+        }
+    };
 
     let mut report = RunReport {
         layer_bytes: rig.driver.mirror().layer_bytes(),
@@ -445,6 +479,15 @@ fn run(
                 }
             }
         }
+        if step == 0
+            && let Some(counters) = driver.sh_counters()
+        {
+            report.sh = Some(ShRunStats {
+                spawn_misses: counters.misses,
+                counters,
+                workers: None,
+            });
+        }
         let bytes = driver.session().controller.residency_bytes();
         report.step_bytes.push([
             bytes.resident_lightmap_bytes,
@@ -459,12 +502,19 @@ fn run(
     }
 
     report.record.locate_mismatches = report.locate_mismatch_frames;
+    if let (Some(sh), Some(counters)) = (&mut report.sh, driver.sh_counters()) {
+        sh.counters = counters;
+        sh.workers = driver.sh_worker_stats();
+    }
+    report.lightmap_decode = driver.session().ledger().decode_stats();
     let (counters, physical_reads, mirror) = driver.finish();
     report.counters = Some(counters);
     report.physical_reads = physical_reads;
     report.wall = started.elapsed();
     report.pool = mirror.stats.clone();
-    report
+    // The issuer has retired: every read it made is logged.
+    report.issuer_busy = BusyStats::of(&issuer_busy.samples());
+    (report, sh_status)
 }
 
 #[test]
@@ -477,6 +527,9 @@ fn lightmap_residency_walks_from_prl() {
         .unwrap_or(DEFAULT_STEPS);
     let runs = std::env::var(RUNS_ENV).unwrap_or_else(|_| "all".to_string());
     let modes = WalkModes::from_env();
+    // Held for the whole test: every pool the walks spawn is sized on this
+    // thread.
+    let _cores = modes.cores.apply();
     let recorded = modes.record_in.as_deref().map(|record| {
         let runs = trip_record::read_records(record).unwrap_or_else(|why| panic!("{why}"));
         (record, runs)
@@ -510,6 +563,20 @@ fn lightmap_residency_walks_from_prl() {
             mirror.candidate_planes(),
         ),
         None => println!("planar off: camera walk only"),
+    }
+
+    println!("cores: {}", modes.cores.pools_line());
+    match (modes.sh, world.sh_stream_manifest().is_some()) {
+        (false, _) => println!("SH off: lightmap only"),
+        (true, true) => println!(
+            "SH on: cluster SH streams through its production controller, issuer route and \
+             decode pool beside the lightmap; the renderer's SH drain accepts every ready \
+             cluster and composes once per frame"
+        ),
+        (true, false) => println!(
+            "SH on requested, but the level has no streamed id 50 (or loaded with \
+             POSTRETRO_SH_STREAMING=off): every run streams the lightmap alone"
+        ),
     }
 
     let bound = pool_sizing(&world, DEFAULT_LEVERS.pool_layers).bound;
@@ -556,8 +623,19 @@ fn lightmap_residency_walks_from_prl() {
             let planar = first_mirror
                 .take()
                 .or_else(|| modes.planar.then(|| WalkMirror::install(&world)));
-            let report = run(&world, &walk, levers, &modes, &bake, planar);
+            let (report, sh) = run(&world, &walk, levers, &modes, &bake, planar);
             print_run(&walk, levers, &report);
+            print_instruments(
+                &RunKeys {
+                    prl: &path,
+                    bake: &bake,
+                    walk: &walk,
+                    levers,
+                    modes: &modes,
+                    sh,
+                },
+                &report,
+            );
             let own = &report.record;
             print_split("its own trip record", &trip_record::split(own, own), false);
             if let Some((file, runs)) = &recorded {

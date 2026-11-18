@@ -26,8 +26,11 @@ type SlotEntries = Vec<(u32, TexelLight)>;
 
 /// One chunk of a face, as every light's bake on it reads it.
 struct ChunkLayout<'a> {
+    /// In bake-layer texels: turned when the chart is stored transposed.
     rect: ChunkAtlasRect,
     layer: u32,
+    /// The chart is stored transposed, so the rect's rows are its columns.
+    transposed: bool,
     lights: &'a [u32],
     /// The rect's first texel in chart interior coordinates.
     interior_origin: [i32; 2],
@@ -140,17 +143,19 @@ impl<'a> FaceSetup<'a> {
                         .all(|(i, light)| !lights[..i].contains(light)),
                     "chunk {index} lists a light twice: {lights:?}"
                 );
-                // Texels past the chart's interior (outward rounding) stay empty.
-                let interior_origin = [
-                    x as i32 - placement.x as i32 - padding,
-                    y as i32 - placement.y as i32 - padding,
-                ];
+                // Texels past the chart's interior (outward rounding) stay
+                // empty. Origin and span are chart-local, turned back from a
+                // transposed chart's placed rect.
+                let (local_x, local_y) =
+                    placement.orient(x as i32 - placement.x as i32, y as i32 - placement.y as i32);
+                let (local_width, local_height) = placement.orient(width as i32, height as i32);
+                let interior_origin = [local_x - padding, local_y - padding];
                 let span = if chart_usable {
                     [
                         interior_origin[0].max(0),
-                        (interior_origin[0] + width as i32).min(interior_w),
+                        (interior_origin[0] + local_width).min(interior_w),
                         interior_origin[1].max(0),
-                        (interior_origin[1] + height as i32).min(interior_h),
+                        (interior_origin[1] + local_height).min(interior_h),
                     ]
                 } else {
                     [0; 4]
@@ -165,6 +170,7 @@ impl<'a> FaceSetup<'a> {
                         block: 0,        // filled by the caller
                     },
                     layer: placement.layer,
+                    transposed: placement.transposed,
                     lights,
                     interior_origin,
                     span,
@@ -320,11 +326,20 @@ impl<'a> FaceSetup<'a> {
                             dir.x, dir.y, dir.z,
                         ),
                     };
-                    let rect_x = tx - chunk.interior_origin[0];
-                    let rect_y = ty - chunk.interior_origin[1];
+                    // The texel's slot in the placed rect, row-major there.
+                    let local = (tx - chunk.interior_origin[0], ty - chunk.interior_origin[1]);
+                    let (rect_x, rect_y) = if chunk.transposed {
+                        (local.1, local.0)
+                    } else {
+                        local
+                    };
                     let at = rect_y as u32 * chunk.rect.width + rect_x as u32;
                     chunk_entries.push((at, entry));
                 }
+            }
+            // Walked in chart order; stored in placed-rect order.
+            if chunk.transposed {
+                chunk_entries.sort_unstable_by_key(|&(at, _)| at);
             }
             entries.push((position, slot, chunk_entries));
         }

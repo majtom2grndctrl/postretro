@@ -2,15 +2,17 @@
 
 use super::*;
 use postretro_level_format::lightmap::{
-    IRRADIANCE_FORMAT_BC6H, LIGHTMAP_POOL_LAYER_EDGE, LightmapBlockIndex, LightmapBlockRecord,
-    LightmapHeader, LightmapMode, SectionByteRange,
+    IRRADIANCE_FORMAT_BC6H, IRRADIANCE_FORMAT_RGBA16F, LIGHTMAP_POOL_LAYER_EDGE,
+    LightmapBlockIndex, LightmapBlockRecord, LightmapHeader, LightmapMode, SectionByteRange,
 };
-use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, ShadowmaskBlockRecord};
+use postretro_level_format::shadowmask_atlas::{
+    MaskExtents, ShadowmaskBlockIndex, ShadowmaskBlockRecord,
+};
 
 /// Decode entry `index` of a block table the way the vertex stage reads it.
 fn entry(table: &[u8], index: usize) -> BlockTableEntry {
     let at = index * BLOCK_TABLE_ENTRY_BYTES;
-    let words: [u32; 4] = std::array::from_fn(|w| {
+    let words: [u32; BLOCK_TABLE_ENTRY_WORDS] = std::array::from_fn(|w| {
         u32::from_ne_bytes(table[at + w * 4..at + w * 4 + 4].try_into().unwrap())
     });
     BlockTableEntry::from_words(words)
@@ -92,7 +94,7 @@ fn block_table_maps_each_block_local_texel_to_its_placement_plus_local() {
         .copied()
         .map(|placement| Some(BlockAddresses::without_masks(placement)))
         .collect();
-    let table = block_table_bytes(&extents, &placed);
+    let table = block_table_bytes(&extents, &vec![[(0, 0); 2]; extents.len()], &placed);
     assert_eq!(table.len(), (extents.len() + 1) * BLOCK_TABLE_ENTRY_BYTES);
     assert_eq!(entry(&table, 0), BlockTableEntry::None);
 
@@ -129,7 +131,7 @@ fn a_missing_block_keeps_its_extent_and_samples_no_pool_texel() {
         })),
         None,
     ];
-    let table = block_table_bytes(&extents, &placements);
+    let table = block_table_bytes(&extents, &[[(0, 0); 2]; 2], &placements);
     assert_eq!(
         entry(&table, 2),
         BlockTableEntry::Missing {
@@ -178,6 +180,7 @@ fn entries_pack_three_addresses_and_the_extent_as_laid_out() {
         },
         width: 2048,
         height: 2048,
+        mask_extents: [(2048, 1024), (4, 2048)],
     };
     let words = entry.to_words();
     assert_eq!(words[0], 511 | (1 << 9) | (16383 << 18));
@@ -185,7 +188,36 @@ fn entries_pack_three_addresses_and_the_extent_as_laid_out() {
     assert_eq!(words[2], 3 | (4 << 9) | (2 << 18));
     let flags = BLOCK_FLAG_RESIDENT | BLOCK_FLAG_PLANE_A | BLOCK_FLAG_PLANE_B;
     assert_eq!(words[3], 2048 | (2048 << 12) | (flags << 24));
+    // The mask word: each plane's own extent, then two zero words.
+    assert_eq!(words[4], 2048 | (1024 << 12));
+    assert_eq!(words[5], 4 | (2048 << 12));
+    assert_eq!(words[6..], [0, 0]);
     assert_eq!(BlockTableEntry::from_words(words), entry);
+}
+
+// Only a resident entry carries mask extents: every other entry's mask word
+// is zero, so a non-resident block can never clamp to a stale plane.
+#[test]
+fn only_a_resident_entry_writes_its_mask_word() {
+    let missing = BlockTableEntry::Missing {
+        width: 16,
+        height: 8,
+    };
+    for entry in [BlockTableEntry::None, BlockTableEntry::Placeholder, missing] {
+        assert_eq!(entry.to_words()[4..], [0; 4], "{entry:?}");
+        assert_eq!(BlockTableEntry::from_words(entry.to_words()), entry);
+    }
+    let table = block_table_bytes(
+        &[(16, 8), (16, 8)],
+        &[[(8, 8), (4, 4)], [(16, 8), (0, 0)]],
+        &[None, Some(BlockAddresses::without_masks(place(0, 0, 0)))],
+    );
+    assert_eq!(table.len(), 3 * BLOCK_TABLE_ENTRY_BYTES);
+    assert_eq!(entry(&table, 1), missing);
+    let BlockTableEntry::Resident { mask_extents, .. } = entry(&table, 2) else {
+        panic!("block 1 is resident");
+    };
+    assert_eq!(mask_extents, [(16, 8), (0, 0)]);
 }
 
 #[test]
@@ -195,6 +227,7 @@ fn an_entry_tells_every_mask_state_apart() {
         addresses: BlockAddresses { lightmap, masks },
         width: 16,
         height: 8,
+        mask_extents: [(8, 8), (4, 4)],
     };
     let at = Some(place(0, 0, 0));
     let flag_sets = [
@@ -241,20 +274,27 @@ fn block_index(extents: &[(u16, u16)]) -> LightmapBlockIndex {
                 height,
                 irradiance: none,
                 direction: none,
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
+                raw_len: [0; 2],
             })
             .collect(),
     }
 }
 
-/// Id 42's records: each block's plane A, and plane B on the first `both`.
+/// Id 42's records for [`FULL_LAYER`] blocks, each mask block its whole
+/// lightmap block: each block's plane A, and plane B on the first `both`.
 fn mask_index(blocks: usize, both: usize) -> ShadowmaskBlockIndex {
     let plane = |len| SectionByteRange { offset: 0, len };
     ShadowmaskBlockIndex {
         owners: Vec::new(),
+        mask_offsets: Vec::new(),
         records: (0..blocks)
             .map(|block| ShadowmaskBlockRecord {
                 group_a: plane(1),
                 group_b: plane(u32::from(block < both)),
+                extents: MaskExtents::whole_block(FULL_LAYER.0, FULL_LAYER.1),
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
+                raw_len: [1, u32::from(block < both)],
             })
             .collect(),
     }
@@ -284,9 +324,9 @@ fn first_generation(
 const FULL_LAYER: (u16, u16) = (2048, 2048);
 
 #[test]
-fn first_generation_is_bound_plus_margin_capped() {
-    let index = block_index(&[FULL_LAYER; 20]);
-    let masks = mask_index(20, 4);
+fn first_generation_is_bound_plus_margin_floored_and_capped() {
+    let index = block_index(&[FULL_LAYER; 40]);
+    let masks = mask_index(40, 8);
     let sized = |lightmap, mask| {
         let bound = PerPool { lightmap, mask };
         let sizing = StreamedPoolSizing::from_bound(bound);
@@ -308,15 +348,39 @@ fn first_generation_is_bound_plus_margin_capped() {
     };
     let layers = |lightmap, mask| PerPool { lightmap, mask };
 
-    // All-resident is 20 lightmap and 24 mask layers. Each pool's bound stands
+    // All-resident is 40 lightmap and 48 mask layers. Each pool's bound stands
     // alone: the pools' worst cells can differ.
-    assert_eq!(sized(8, 4), layers(10, 5), "bound times 5/4");
-    assert_eq!(sized(7, 13), layers(9, 17), "rounded up, each its own");
-    assert_eq!(sized(18, 21), layers(20, 24), "capped at all-resident");
+    assert_eq!(sized(16, 20), layers(20, 25), "bound times 5/4");
+    assert_eq!(sized(15, 21), layers(19, 27), "rounded up, each its own");
+    assert_eq!(
+        sized(8, 14),
+        layers(16, 24),
+        "a small bound rises to the floor: one byte budget, 16 lightmap or 24 mask layers"
+    );
+    assert_eq!(
+        sized(36, 44),
+        layers(45, 55),
+        "past all-resident, under the cap"
+    );
+    assert_eq!(
+        sized(44, 52),
+        layers(50, 60),
+        "capped at all-resident × 5/4"
+    );
     assert_eq!(
         sized(0, 0),
-        layers(1, 1),
-        "a pool with data takes one layer"
+        layers(16, 24),
+        "a pool with data takes the floor"
+    );
+
+    // Uncompressed irradiance takes 34 MiB layers: the same floor bytes are
+    // two of them, not 16.
+    let mut rgba16f = index.clone();
+    rgba16f.header.irradiance_format = IRRADIANCE_FORMAT_RGBA16F;
+    let sizing = StreamedPoolSizing::from_bound(layers(0, 0));
+    assert_eq!(
+        first_generation(&rgba16f, Some(&masks), sizing, 2048),
+        layers(2, 24)
     );
 }
 
@@ -332,17 +396,21 @@ fn a_mask_pool_with_nothing_to_hold_has_no_layers() {
     });
     let absent = ShadowmaskBlockIndex {
         owners: Vec::new(),
+        mask_offsets: Vec::new(),
         records: vec![
             ShadowmaskBlockRecord {
                 group_a: SectionByteRange { offset: 0, len: 0 },
                 group_b: SectionByteRange { offset: 0, len: 0 },
+                extents: MaskExtents::NONE,
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
+                raw_len: [0; 2],
             };
             3
         ],
     };
     for masks in [None, Some(&absent)] {
         let layers = first_generation(&index, masks, sizing, 2048);
-        assert_eq!((layers.lightmap, layers.mask), (3, 0));
+        assert_eq!((layers.lightmap, layers.mask), (4, 0), "3 × 5/4 rounded up");
         let demand = PoolDemand::of_indices(&index, masks);
         let model = LightmapPoolModel::new(demand, LIGHTMAP_POOL_LAYER_EDGE, layers).unwrap();
         let mask = model.pool(PoolKind::Mask);
@@ -366,12 +434,12 @@ fn all_resident_mask_layers_count_present_planes_only() {
 // a pool beside its spare.
 #[test]
 fn a_harness_figure_sets_one_pools_first_generation() {
-    let index = block_index(&[FULL_LAYER; 6]);
-    let masks = mask_index(6, 2);
+    let index = block_index(&[FULL_LAYER; 30]);
+    let masks = mask_index(30, 2);
     let sizing = |lightmap, mask| StreamedPoolSizing {
         bound: PerPool {
-            lightmap: 4,
-            mask: 4,
+            lightmap: 16,
+            mask: 16,
         },
         first_generation_override: PerPool { lightmap, mask },
     };
@@ -379,32 +447,62 @@ fn a_harness_figure_sets_one_pools_first_generation() {
         first_generation(&index, Some(&masks), sizing(lightmap, mask), device)
     };
     let layers = |lightmap, mask| PerPool { lightmap, mask };
-    assert_eq!(sized(None, None, 2048), layers(5, 5));
+    // 16 × 5/4 = 20 lightmap layers; the mask pool rises to its 24-layer floor.
+    assert_eq!(sized(None, None, 2048), layers(20, 24));
     assert_eq!(
         sized(Some(2), None, 2048),
-        layers(2, 5),
+        layers(2, 24),
         "the lightmap pool alone"
     );
     assert_eq!(
         sized(None, Some(3), 2048),
-        layers(5, 3),
+        layers(20, 3),
         "the mask pool alone"
     );
     assert_eq!(sized(Some(9), Some(11), 2048), layers(9, 11));
     assert_eq!(
-        sized(Some(9), None, 8),
-        layers(7, 5),
+        sized(Some(40), None, 24),
+        layers(23, 23),
         "the spare fits the device"
     );
 }
 
-// The identity recorded beside measurements must change with the sizing policy.
+// The identity recorded beside measurements must change with the sizing policy,
+// and name the first generation's floor and cap.
 #[test]
 fn pool_policy_identity_changed_with_the_sizing_policy() {
-    let retired = ["demand-sized growth headroom", "4/3"].join(" ");
-    assert_ne!(POOL_POLICY_IDENTITY, retired);
+    // Each retired identity as its quoted literal, split so this file does
+    // not hold it whole.
+    let retired = [
+        ["\"demand-sized growth headroom", "4/3\""].join(" "),
+        ["\"bound-sized split pools,", "shared margin 5/4\""].join(" "),
+        [
+            "\"bound-sized split pools, shared margin 5/4,",
+            "first generation floored at 16 layers\"",
+        ]
+        .join(" "),
+        [
+            "\"bound-sized split pools, shared margin 5/4,",
+            "first generation floored at 16 layers and capped at all-resident × 5/4\"",
+        ]
+        .join(" "),
+    ];
+    for retired in retired {
+        assert_ne!(format!("{POOL_POLICY_IDENTITY:?}"), retired);
+        assert!(
+            !include_str!("policy/growth.rs").contains(&retired),
+            "the retired policy string {retired} survives in the source"
+        );
+    }
     assert!(
-        !include_str!("policy/growth.rs").contains(&retired),
-        "the retired policy string survives in the source"
+        POOL_POLICY_IDENTITY.contains(&format!(
+            "floored at {} MiB",
+            postretro_level_format::lightmap_pool::FIRST_GENERATION_FLOOR_BYTES / (1024 * 1024)
+        )),
+        "{POOL_POLICY_IDENTITY}"
+    );
+    assert!(
+        POOL_POLICY_IDENTITY.contains("capped at all-resident × 5/4"),
+        "{POOL_POLICY_IDENTITY}"
     );
 }

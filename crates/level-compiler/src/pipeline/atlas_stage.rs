@@ -29,6 +29,8 @@ pub(super) struct AtlasStageInputs<'a> {
     pub(super) animated_lights: &'a AnimatedBakedLights<'a>,
     pub(super) config: &'a LightmapConfig,
     pub(super) working_set_max_bytes: u64,
+    /// `--pack-heuristic`: `None` keeps each cell's smallest packing.
+    pub(super) pack_heuristic: Option<lightmap_bake::PackHeuristic>,
     pub(super) generated_portals: &'a [portals::Portal],
     pub(super) exterior_leaves: &'a HashSet<usize>,
     pub(super) control: &'a BakeControl,
@@ -115,6 +117,7 @@ pub(super) fn prepare_atlas_stage(
         BlockOrdering {
             direction_texel_scale: inputs.config.direction_texel_scale,
             cell_clusters: &partition.cell_clusters(),
+            heuristic: inputs.pack_heuristic,
         },
         LIGHTMAP_POOL_LAYER_EDGE,
         inputs.control,

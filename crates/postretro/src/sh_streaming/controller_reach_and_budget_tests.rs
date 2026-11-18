@@ -144,7 +144,7 @@ fn sh_mandatory_tier_is_id51_reach_within_lead() {
     );
     for request in drain_requests(&mut controller) {
         assert_eq!(
-            request.mandatory,
+            request.mandatory(),
             request.cluster_id != 2,
             "cluster {} reads in the mandatory tier only within L",
             request.cluster_id
@@ -594,7 +594,7 @@ fn requests_for_visible_and_pinned_targets_are_mandatory() {
 
     let requests: Vec<_> = drain_requests(&mut controller)
         .into_iter()
-        .map(|request| (request.cluster_id, request.mandatory))
+        .map(|request| (request.cluster_id, request.mandatory()))
         .collect();
     assert_eq!(requests, vec![(0, true), (2, true)]);
 }
@@ -623,21 +623,21 @@ fn band_requests_leave_permits_for_mandatory_work() {
         (1..=optional).collect::<Vec<_>>(),
         "band requests stop at the optional permits"
     );
-    assert!(band.iter().all(|request| !request.mandatory));
+    assert!(band.iter().all(|request| !request.mandatory()));
     assert_eq!(controller.permits_in_use(), MAX_OPTIONAL_STREAM_PERMITS);
     assert!(controller.take_next_request().unwrap().is_none());
 
     // A newly drawn cluster still gets a permit.
     reach_update(&mut controller, &stage, &set, 0, PORTAL, &[drawn], 0.1);
     let visible = controller.take_next_request().unwrap().unwrap();
-    assert_eq!((visible.cluster_id, visible.mandatory), (drawn, true));
+    assert_eq!((visible.cluster_id, visible.mandatory()), (drawn, true));
 
     // So does a band cluster that a longer L moves into the lead tier, while
     // the cluster still past L waits.
     stage.set_lead_metres((19 + optional + 1) as f32);
     reach_update(&mut controller, &stage, &set, 0, PORTAL, &[drawn], 0.2);
     let lead = controller.take_next_request().unwrap().unwrap();
-    assert_eq!((lead.cluster_id, lead.mandatory), (optional + 1, true));
+    assert_eq!((lead.cluster_id, lead.mandatory()), (optional + 1, true));
     assert_eq!(
         controller.states[*band_cells.end() as usize].class,
         Some(TargetClass::Band)

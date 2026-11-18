@@ -274,3 +274,43 @@ fn pre_flag_upgrade_round_trips_a_whole_load_sh_bake_and_loads_in_both_modes() {
         "the engine refuses the pre-flag PRL it was synthesized as"
     );
 }
+
+// `--section-codec raw` stores ids 22/42/50/51 uncoded and leaves the five
+// body sections to `--whole-load-sh`: together they write the bodies and a raw
+// id 50, and the level loads whole and streamed.
+#[test]
+fn whole_load_sh_composes_with_a_raw_section_codec() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let baked = bake_prl(
+        dir.path(),
+        "whole-raw",
+        &["--whole-load-sh", "--section-codec", "raw"],
+    );
+    let table = sections(&baked);
+    let table = by_id(&table);
+    for id in SH_BODY_SECTIONS {
+        let bytes = table
+            .get(&(id as u32))
+            .unwrap_or_else(|| panic!("the fixture must emit {id:?}"));
+        assert_eq!(
+            read_sh_body_presence(id, bytes).expect("flag reads"),
+            ShBodyPresence::Present,
+            "{id:?} under --whole-load-sh --section-codec raw"
+        );
+    }
+    assert!(
+        table.contains_key(&(SectionId::ClusterShPayloads as u32)),
+        "the raw bake still streams SH from id 50"
+    );
+    let path = baked.to_str().expect("UTF-8 temp path");
+    for mode in [ShStreamingMode::Off, ShStreamingMode::SyncProof] {
+        let world = load_prl_with_sh_streaming(path, mode).unwrap_or_else(|error| {
+            panic!("the raw whole-load bake loads under {mode:?}: {error}")
+        });
+        assert_eq!(
+            world.sh_storage.is_streaming(),
+            mode == ShStreamingMode::SyncProof,
+            "{mode:?} picks its SH storage"
+        );
+    }
+}

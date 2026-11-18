@@ -30,8 +30,9 @@ use postretro_level_format::cluster_sh_payloads::{
     CLUSTER_SH_PAYLOADS_CONTAINER_VERSION, CLUSTER_SH_PAYLOADS_VERSION,
     CLUSTER_SH_SPARSE_ROW_RECORD_SIZE, ClusterShPayloadsHeader, ClusterShPayloadsIndexRecord,
     ClusterShPayloadsSection, ClusterShPayloadsSourceRecord, ClusterShPayloadsValidationInputs,
-    cluster_sh_isolated_atlas_array_layout, source_metadata_from_sections,
+    cluster_sh_isolated_atlas_array_layout, source_metadata_from_sections, store_chunk,
 };
+use postretro_level_format::coded_plane::BlockCodec;
 use postretro_level_format::delta_sh_volumes::{AFFINITY_FACTOR, DeltaShVolumesSection};
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
@@ -718,10 +719,26 @@ fn read_file_span_rejects_ranges_outside_the_id50_payload_region() {
 
 #[derive(Clone, Copy)]
 pub(crate) enum Id50Body {
+    /// Valid, its chunk stored raw (codec 0).
     Valid,
+    /// Valid, its chunk stored as one zstd frame, as a default bake writes.
+    Coded,
+    /// Its chunk a zstd frame whose checksum fails, the index's length and
+    /// hash re-stamped over those stored bytes: only the decode can tell.
+    CorruptFrame,
     Malformed,
     /// Valid but for the previous internal version.
     OldVersion,
+}
+
+impl Id50Body {
+    /// How the fixture stores its one chunk.
+    fn chunk_codec(self) -> BlockCodec {
+        match self {
+            Self::Coded | Self::CorruptFrame => BlockCodec::Zstd,
+            Self::Valid | Self::Malformed | Self::OldVersion => BlockCodec::Raw,
+        }
+    }
 }
 
 /// What a stream fixture's id 49 differs in from a current bake.
@@ -785,8 +802,18 @@ pub(crate) fn write_stream_fixture_with_mover_channel(
     mover_channel: &MoverProbeChannelSection,
     extra_sections: Vec<SectionBlob>,
 ) -> StreamFixture {
+    write_stream_fixture_with_mover_channel_body(mover_channel, extra_sections, Id50Body::Valid)
+}
+
+/// [`write_stream_fixture_with_mover_channel`] with id 50's chunk stored as
+/// `id50_body` says.
+pub(crate) fn write_stream_fixture_with_mover_channel_body(
+    mover_channel: &MoverProbeChannelSection,
+    extra_sections: Vec<SectionBlob>,
+    id50_body: Id50Body,
+) -> StreamFixture {
     write_stream_fixture_variant(
-        Id50Body::Valid,
+        id50_body,
         DirectoryShape::default(),
         |_| {},
         extra_sections,
@@ -894,14 +921,15 @@ fn write_stream_fixture_variant(
             &direct_delta,
             &animated_direct_delta,
             mover_channel,
+            id50_body,
         )
     };
     let id50 = match id50_body {
-        Id50Body::Valid => valid_body(),
+        Id50Body::Valid | Id50Body::Coded | Id50Body::CorruptFrame => valid_body(),
         Id50Body::Malformed => vec![0],
         Id50Body::OldVersion => {
             let mut bytes = valid_body();
-            bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
+            bytes[0..4].copy_from_slice(&(CLUSTER_SH_PAYLOADS_VERSION - 1).to_le_bytes());
             bytes
         }
     };
@@ -1332,6 +1360,10 @@ fn cluster_directory(
     directory
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per source section the fixture's id 50 is built against, plus how its chunk is stored"
+)]
 fn valid_id50(
     directory: &ClusterDirectorySection,
     base: &OctahedralShVolumeSection,
@@ -1340,6 +1372,7 @@ fn valid_id50(
     direct_delta: &DirectShDeltaVolumesSection,
     animated_direct_delta: &AnimatedDirectShDeltaVolumesSection,
     mover_channel: Option<&MoverProbeChannelSection>,
+    body: Id50Body,
 ) -> Vec<u8> {
     let sources = source_metadata_from_sections(
         base,
@@ -1372,7 +1405,11 @@ fn valid_id50(
     let mover_bytes = mover_block
         .as_ref()
         .map_or(0, |(_, body)| body.len() as u64);
-    let chunk = dense_and_sparse_chunk(mover_block);
+    let mut chunk = store_chunk(body.chunk_codec(), dense_and_sparse_chunk(mover_block));
+    if let Id50Body::CorruptFrame = body {
+        // The frame's last byte is its content checksum's.
+        *chunk.last_mut().unwrap() ^= 0x5a;
+    }
     let payload = chunk.clone();
     let section = ClusterShPayloadsSection {
         header: ClusterShPayloadsHeader {

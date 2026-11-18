@@ -15,10 +15,12 @@ fn frame_writes_land_before_lightmap_drain_copies_and_later_writes_wait_for_scen
         return;
     };
     // Deliberately share the table target to make reversed command order
-    // observable: the drain's resident entry must replace these older bytes.
+    // observable: the drain's resident entry, both of its words, must replace
+    // these older bytes.
+    const ENTRY: usize = postretro_render_cpu::lightmap_pool::BLOCK_TABLE_ENTRY_BYTES;
     stream
         .queue
-        .write_buffer(stream.state.table(), 16, &[0xff; 16]);
+        .write_buffer(stream.state.table(), ENTRY as u64, &[0xff; ENTRY]);
     assert_eq!(stream.queue.counts().writes, 1);
     stream.drain(stream.reset(vec![mandatory(0)], vec![stream.prepared(0)]));
     stream.queue.assert_empty("completed lightmap drain");
@@ -26,14 +28,16 @@ fn frame_writes_land_before_lightmap_drain_copies_and_later_writes_wait_for_scen
     assert_eq!(stream.queue.counts().batches, 1);
     assert_eq!(stream.table(), stream.state.model().table_bytes());
 
-    let later = [0x5a; 16];
-    stream.queue.write_buffer(stream.state.table(), 16, &later);
+    let later = [0x5a; ENTRY];
+    stream
+        .queue
+        .write_buffer(stream.state.table(), ENTRY as u64, &later);
     assert_eq!(stream.queue.counts().writes, 2);
     assert_eq!(stream.queue.counts().batches, 1);
     stream.queue.submit(std::iter::empty());
     stream.queue.assert_empty("completed scene submit");
     assert_eq!(stream.queue.counts().batches, 2);
-    assert_eq!(&stream.table()[16..32], &later);
+    assert_eq!(&stream.table()[ENTRY..2 * ENTRY], &later);
     stream.queue.submit(std::iter::empty());
     assert_eq!(
         stream.queue.counts().batches,

@@ -108,7 +108,11 @@ pub(super) fn bake_identity(path: &str, world: &LevelWorld) -> String {
     });
     let id51 = world.cell_residency_set.as_ref().map_or_else(
         || "none".to_string(),
-        |set| blake3::hash(&set.to_bytes()).to_hex()[..16].to_string(),
+        |set| {
+            blake3::hash(&set.to_bytes(postretro_level_format::coded_plane::BlockCodec::Raw))
+                .to_hex()[..16]
+                .to_string()
+        },
     );
     format!(
         "id51={id51} walk_epoch={} size={size} mtime={mtime} prl={path}",

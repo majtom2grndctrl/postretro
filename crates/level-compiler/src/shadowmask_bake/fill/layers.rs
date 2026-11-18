@@ -1,7 +1,12 @@
 //! Layer close completes uncut faces and the cuts whose last sub-face arrives.
+use postretro_level_format::coded_plane::store_plane;
+
 use super::*;
 use crate::lightmap_bake::copy_unit_rect;
-use crate::shadowmask_bake::encode::encode_blocks_bc5;
+use crate::shadowmask_bake::encode::encode_mask_block;
+use crate::shadowmask_bake::mask_layout::{
+    assert_layout_sound, copy_owned_charts, face_offset, layout_mask_block,
+};
 
 impl OwnershipFill<'_> {
     /// The window may have future partitions resident; only ordered consumption
@@ -90,16 +95,9 @@ impl OwnershipFill<'_> {
             let block = self.blocks[block_id];
             #[cfg(test)]
             self.record_block_snapshot(block, &raw);
-            let local = CellBlock {
-                x: 0,
-                y: 0,
-                layer: 0,
-                ..block
-            };
-            self.encoded[block_id] =
-                encode_blocks_bc5(&raw, block.width, block.height, 1, &[local])
-                    .pop()
-                    .unwrap();
+            // Its last cut face finished above, so its owners and its mask
+            // layout are fixed from here on.
+            self.finish_mask_block(block_id, &raw, block.width, [block.x, block.y], shared);
             drop(raw);
         }
         #[cfg(test)]
@@ -108,7 +106,6 @@ impl OwnershipFill<'_> {
             let raw = self.data.as_ref().unwrap();
             self.raw_snapshot[start..start + raw.len()].copy_from_slice(raw);
         }
-        let mut ready = Vec::new();
         let mut ready_ids = Vec::new();
         for (block_id, &block) in self.blocks.iter().enumerate() {
             if block.layer != layer {
@@ -123,29 +120,68 @@ impl OwnershipFill<'_> {
                 );
                 self.carry[block_id] = Some(RawFillBuffer::new(raw, &self.probe));
             } else {
-                ready.push(CellBlock { layer: 0, ..block });
                 ready_ids.push(block_id);
             }
         }
-        if !ready.is_empty() {
-            let groups = encode_blocks_bc5(
-                self.data.as_ref().unwrap(),
-                self.width,
-                self.height,
-                1,
-                &ready,
-            );
-            for (block_id, groups) in ready_ids.into_iter().zip(groups) {
-                self.encoded[block_id] = groups;
-            }
+        let data = self.data.take().expect("the closing layer is open");
+        for block_id in ready_ids {
+            self.finish_mask_block(block_id, &data, self.width, [0, 0], shared);
         }
         // This release precedes the next layer's allocation, including when
         // another worker has already baked the first partition of that layer.
-        self.data = None;
+        drop(data);
         self.layer = None;
         self.next_layer = layer + 1;
         #[cfg(test)]
         self.probe.close_layer();
+    }
+
+    /// Lay out `block_id`'s mask block from its faces' final owners, copy each
+    /// owned chart into it, record each owned face's offset and the block's
+    /// extents, and encode it. `source` holds the block's raw mask, 4 bytes
+    /// per texel and `source_width` texels per row, its texel `(0, 0)` at
+    /// bake-layer `source_origin`: the working layer, or the block's carry.
+    fn finish_mask_block(
+        &mut self,
+        block_id: usize,
+        source: &[u8],
+        source_width: u32,
+        source_origin: [u32; 2],
+        shared: &SharedAtlas<'_>,
+    ) {
+        let block = self.blocks[block_id];
+        let faces = &self.block_faces[block_id];
+        let layout = layout_mask_block(&block, faces, &self.owners, shared);
+        assert_layout_sound(&layout, &self.owners, shared);
+        for &(face, mask_origin) in &layout.charts {
+            self.mask_offsets[face as usize] = face_offset(&block, face, mask_origin, shared);
+        }
+        if layout.identity {
+            self.identity_mask_blocks += 1;
+        }
+        let image = copy_owned_charts(source, source_width, source_origin, &layout, shared);
+        if let Some(capture) = &self.chart_dump {
+            capture.capture_mask_block(
+                faces,
+                &image,
+                layout.extent.0,
+                [block.x, block.y],
+                &self.mask_offsets,
+                &self.owners,
+                shared,
+            );
+        }
+        let (width, height) = layout.extent;
+        self.encoded[block_id] = encode_mask_block(&image, width, height, layout.plane_b)
+            .map(|plane| store_plane(self.codec, plane));
+        self.mask_extents[block_id] = layout.extents();
+        #[cfg(test)]
+        self.mask_snapshots
+            .push(crate::shadowmask_bake::MaskBlockSnapshot {
+                block: block_id as u32,
+                layout,
+                image,
+            });
     }
 
     fn finish_face(

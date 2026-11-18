@@ -9,11 +9,13 @@ use postretro_level_format::lightmap::LightmapBlockPayload;
 use postretro_level_loader::{LightmapBlockFileRanges, PrlLoadError};
 
 use super::*;
+use crate::lightmap_streaming::controller::LIGHTMAP_QUEUE_CAPACITY;
 use crate::lightmap_streaming::prl_test_fixture::StreamedLightmapPrl;
 use crate::lightmap_streaming::source::{BlockSummary, ManifestBlockSource};
 use crate::lightmap_streaming::test_fixtures::{ReadLog, wait_until};
+use crate::streaming::drain_budget::DrainClass;
 use crate::streaming::issuer::{ReadIssuer, ReadRoutes};
-use crate::streaming::request::{ReadIdentity, ReadRanges, ReadTier, StreamResource};
+use crate::streaming::request::{ReadIdentity, ReadRanges, StreamResource};
 
 const LIGHTMAP: u32 = SectionId::Lightmap as u32;
 const SHADOWMASK: u32 = SectionId::ShadowmaskAtlas as u32;
@@ -90,10 +92,13 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
         log: Arc::clone(&log),
     });
     let range = |block| source.block_file_ranges(block).unwrap().lightmap;
-    let targets = Arc::new(TargetBitset::new(manifest.block_count()));
-    targets.publish(&(0..manifest.block_count()).collect());
+    let targets = Arc::new(TargetSet::new(manifest.block_count()));
+    targets.publish((0..manifest.block_count()).map(|block| (block, DrainClass::Visible)));
     let ledger = Arc::new(LightmapRouteLedger::default());
     let (route, completions) = lightmap_route(Arc::clone(&source), targets, Arc::clone(&ledger));
+    let decode =
+        crate::streaming::decode_pool::DecodePool::spawn(1, LIGHTMAP_QUEUE_CAPACITY).unwrap();
+    let route = route.attach(decode.queue());
     let (issuer, handle) = ReadIssuer::spawn(
         ReadRoutes::default().with(StreamResource::LightmapBlock, Box::new(route)),
         LIGHTMAP_QUEUE_CAPACITY,
@@ -102,7 +107,7 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
     let request = |block: u32| ReadRequest {
         resource: StreamResource::LightmapBlock,
         key: block,
-        tier: ReadTier::Mandatory,
+        class: DrainClass::Visible,
         identity: ReadIdentity {
             generation: 1,
             content_tag: manifest.content_tag(),
@@ -123,8 +128,8 @@ fn issuer_reads_exactly_the_requested_lightmap_block_ranges_from_a_streamed_mani
     let mut delivered = Vec::new();
     wait_until("four completions", || {
         while let Ok(completion) = completions.try_recv() {
-            assert!(matches!(completion.result, LightmapReadResult::Read { .. }));
-            ledger.release(completion.result.read_bytes());
+            assert!(matches!(completion.result, LightmapReadResult::Decoded(_)));
+            ledger.release(completion.charged_bytes);
             delivered.push(completion.request.key);
         }
         delivered.len() == 4

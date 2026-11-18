@@ -12,6 +12,7 @@ use postretro_level_format::shadowmask_atlas::{ShadowmaskAtlasSection, Shadowmas
 use crate::render::gpu_test_harness::wgsl_function;
 
 const LIGHTMAP_SAMPLE_WGSL: &str = include_str!("../../shaders/lightmap_sample.wgsl");
+const FORWARD_WGSL: &str = include_str!("../../shaders/forward.wgsl");
 
 pub(crate) struct BlockFixture {
     pub(crate) index: LightmapBlockIndex,
@@ -40,40 +41,49 @@ impl BlockFixture {
                 groups.clone()
             })
             .collect();
-        self.shadowmask = Some(
-            ShadowmaskAtlasSection {
-                owners: Vec::new(),
-                blocks,
-            }
-            .index(),
-        );
+        let extents = self.index.records.iter().map(|r| (r.width, r.height));
+        self.shadowmask =
+            Some(ShadowmaskAtlasSection::whole_block(Vec::new(), blocks, extents).index());
         self
     }
 }
 
+/// forward.wgsl's block-table entry struct, spliced verbatim: a consumer
+/// declares `lightmap_block_table` as `array<LightmapBlockEntry>`.
+pub(crate) fn lightmap_block_entry_wgsl() -> String {
+    crate::render::gpu_test_harness::wgsl_item(FORWARD_WGSL, "struct LightmapBlockEntry {")
+        .to_string()
+}
+
 /// lightmap_sample.wgsl's block-table decode and shadowmask sampler, spliced
-/// verbatim. The consumer declares `lightmap_block_table`, `shadowmask_atlas`
-/// and `lightmap_filtering_sampler`.
+/// verbatim, after the table's entry struct. The consumer declares
+/// `lightmap_block_table`, `shadowmask_atlas` and
+/// `lightmap_filtering_sampler`.
 pub(crate) fn lightmap_block_decode_wgsl() -> String {
     let consts = LIGHTMAP_SAMPLE_WGSL
         .lines()
-        .filter(|line| line.starts_with("const LIGHTMAP_"));
+        .filter(|line| line.starts_with("const LIGHTMAP_"))
+        .map(str::to_string);
     let varyings = crate::render::gpu_test_harness::wgsl_item(
         LIGHTMAP_SAMPLE_WGSL,
         "struct LightmapBlockVaryings {",
-    );
+    )
+    .to_string();
     let functions = [
         "lightmap_address_offset",
         "lightmap_address_layer",
         "resolve_lightmap_block",
+        "lightmap_unpack_extent",
         "lightmap_block_layer",
         "lightmap_block_resident",
         "lightmap_pool_uv",
         "sample_shadowmask_plane",
+        "shadowmask_texel_offset",
         "sample_shadowmask_atlas",
     ]
-    .map(|name| wgsl_function(LIGHTMAP_SAMPLE_WGSL, name));
-    consts
+    .map(|name| wgsl_function(LIGHTMAP_SAMPLE_WGSL, name).to_string());
+    std::iter::once(lightmap_block_entry_wgsl())
+        .chain(consts)
         .chain([varyings])
         .chain(functions)
         .collect::<Vec<_>>()
@@ -105,6 +115,23 @@ fn constant_bc4(value: u8) -> [u8; 8] {
     [value, value, 0, 0, 0, 0, 0, 0]
 }
 
+/// One BC5 plane at `width × height`, each 4×4 BC block constant:
+/// `value(channel, bx, by)` for its two channels.
+pub(crate) fn constant_bc5_plane(
+    width: u32,
+    height: u32,
+    value: impl Fn(u32, u32, u32) -> u8,
+) -> Vec<u8> {
+    let mut plane = Vec::new();
+    for by in 0..height / 4 {
+        for bx in 0..width / 4 {
+            plane.extend_from_slice(&constant_bc4(value(0, bx, by)));
+            plane.extend_from_slice(&constant_bc4(value(1, bx, by)));
+        }
+    }
+    plane
+}
+
 /// Rgba16Float cell blocks of `extents` with `scale`-texel direction, built
 /// through `LightmapSection` so the index's blob ranges are the ones the wire
 /// format writes.
@@ -132,6 +159,7 @@ pub(crate) fn block_fixture(
                 }
             }
             LightmapBlock {
+                codec: postretro_level_format::coded_plane::BlockCodec::Raw,
                 cell_id: block as u32,
                 width: width as u16,
                 height: height as u16,
@@ -169,10 +197,11 @@ pub(crate) fn block_fixture(
     let shadowmask = groups.as_ref().map(|groups| {
         // The pool plans on id 42's presence and blocks; owners ride the
         // vertex stream, so a face-free table serves every pool fixture.
-        ShadowmaskAtlasSection {
-            owners: Vec::new(),
-            blocks: groups.clone(),
-        }
+        ShadowmaskAtlasSection::whole_block(
+            Vec::new(),
+            groups.clone(),
+            extents.iter().map(|&(w, h)| (w as u16, h as u16)),
+        )
         .index()
     });
     let payloads = section

@@ -51,8 +51,11 @@ fn bake_covers_every_cell_with_sorted_ranges_and_the_camera_first() {
         assert!(range.iter().all(|e| e.lead <= section.max_lead));
     }
     // The format's own validation accepts it.
-    let decoded = CellResidencySetSection::from_bytes(&section.to_bytes(), cells.cells.len())
-        .expect("the baked section decodes");
+    let decoded = CellResidencySetSection::from_bytes(
+        &section.to_bytes(postretro_level_format::coded_plane::BlockCodec::Zstd),
+        cells.cells.len(),
+    )
+    .expect("the baked section decodes");
     assert_eq!(decoded, section);
 }
 
@@ -263,5 +266,5 @@ fn cache_key_differs_from_pre_region_walk_key_and_pins_sampling_projection() {
     assert_ne!(key, PRE_REGION_WALK_CACHE_KEY);
     assert_eq!(super::pvs_sampling::CUBE_FACE_FOV_DEGREES, 94.0);
     assert_eq!(super::pvs_sampling::LATTICE_FRACTIONS, [0.1, 0.5, 0.9]);
-    assert_eq!(super::CELL_RESIDENCY_SET_STAGE_VERSION, 3);
+    assert_eq!(super::CELL_RESIDENCY_SET_STAGE_VERSION, 4);
 }

@@ -34,6 +34,7 @@ use crate::{
     },
 };
 
+mod chunk_codec;
 mod codec;
 mod decode;
 mod layout;
@@ -42,6 +43,7 @@ mod source_validation;
 mod types;
 mod wire;
 
+pub use chunk_codec::store_chunk;
 pub use codec::{
     DecodedClusterShBlock, DecodedClusterShPayload, ValidatedClusterShPayloadsSection,
 };
@@ -58,6 +60,7 @@ pub use types::{
     mover_channel_source, source_metadata_from_sections,
 };
 
+use chunk_codec::{raw_chunk_len, unstore_chunk};
 use decode::*;
 use layout::*;
 use semantic::*;

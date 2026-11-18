@@ -253,6 +253,7 @@ impl CaptureFixture {
             }
         }
         self.lightmap.blocks.push(LightmapBlock {
+            codec: postretro_level_format::coded_plane::BlockCodec::Raw,
             cell_id: 0,
             width: side,
             height: side,

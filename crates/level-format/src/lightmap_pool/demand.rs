@@ -13,16 +13,26 @@ use crate::shadowmask_atlas::ShadowmaskBlockIndex;
 /// demands nothing of the mask pool.
 pub type PlanePresence = [bool; 2];
 
-/// Each block's extent and which planes it stores. An extent is one lightmap
-/// placement and one mask placement per present plane, at the block's
-/// alignment: a plane's extent is its block's, so the two pools round alike.
+/// A block's mask demand: which planes it stores, and each plane's own
+/// extent. Plane A spans the mask block, plane B its sub-rect; neither is
+/// tied to the lightmap block's extent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockMasks {
+    pub planes: PlanePresence,
+    /// `(width, height)` of plane A, then plane B.
+    pub extents: [(u32, u32); 2],
+}
+
+/// Each block's extent, which planes it stores and at what extents. An extent
+/// is one lightmap placement, and each present plane one mask placement at
+/// its own extent, both at the block's alignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolDemand {
     alignment: u32,
     extents: Vec<(u32, u32)>,
     /// `None` for a level with no mask pool at all: no id 42. Distinct from a
     /// level whose every plane is absent, which has masks that read zero.
-    planes: Option<Vec<PlanePresence>>,
+    masks: Option<Vec<BlockMasks>>,
 }
 
 /// Every plane of a level placed at once: the all-resident mask pool.
@@ -31,6 +41,8 @@ pub struct AllResidentMasks {
     /// Where each block's planes live, indexed by block id; `None` for an
     /// absent plane.
     pub planes: Vec<[Option<BlockPlacement>; 2]>,
+    /// Each block's plane extents, plane A then plane B, indexed by block id.
+    pub extents: Vec<[(u32, u32); 2]>,
     pub layer_count: u32,
 }
 
@@ -42,19 +54,41 @@ pub struct PackScratch {
 }
 
 impl PoolDemand {
-    /// `planes` holds one entry per block, or is `None` for no mask pool.
+    /// Each present plane at its block's own extent, as when a mask block is
+    /// its lightmap block. `planes` holds one entry per block, or is `None`
+    /// for no mask pool.
     pub fn new(
         alignment: u32,
         extents: Vec<(u32, u32)>,
         planes: Option<Vec<PlanePresence>>,
     ) -> Self {
-        if let Some(planes) = &planes {
+        let masks = planes.map(|planes| {
             assert_eq!(planes.len(), extents.len(), "one presence per block");
+            planes
+                .into_iter()
+                .zip(&extents)
+                .map(|(planes, &extent)| BlockMasks {
+                    planes,
+                    extents: [extent; 2],
+                })
+                .collect()
+        });
+        Self::with_masks(alignment, extents, masks)
+    }
+
+    /// `masks` holds one entry per block, or is `None` for no mask pool.
+    pub fn with_masks(
+        alignment: u32,
+        extents: Vec<(u32, u32)>,
+        masks: Option<Vec<BlockMasks>>,
+    ) -> Self {
+        if let Some(masks) = &masks {
+            assert_eq!(masks.len(), extents.len(), "one mask entry per block");
         }
         Self {
             alignment: alignment.max(1),
             extents,
-            planes,
+            masks,
         }
     }
 
@@ -69,7 +103,7 @@ impl PoolDemand {
         lightmap: &LightmapBlockIndex,
         shadowmask: Option<&ShadowmaskBlockIndex>,
     ) -> Self {
-        Self::new(
+        Self::with_masks(
             lightmap.header.block_alignment(),
             lightmap
                 .records
@@ -80,7 +114,10 @@ impl PoolDemand {
                 index
                     .records
                     .iter()
-                    .map(|r| [r.group_a.len != 0, r.group_b.len != 0])
+                    .map(|r| BlockMasks {
+                        planes: [r.group_a.len != 0, r.group_b.len != 0],
+                        extents: [r.extents.plane(0), r.extents.plane(1)],
+                    })
                     .collect()
             }),
         )
@@ -100,13 +137,39 @@ impl PoolDemand {
     }
 
     pub fn has_mask_pool(&self) -> bool {
-        self.planes.is_some()
+        self.masks.is_some()
     }
 
     pub fn planes(&self, block: u32) -> PlanePresence {
-        self.planes
+        self.masks
             .as_ref()
-            .map_or([false; 2], |planes| planes[block as usize])
+            .map_or([false; 2], |masks| masks[block as usize].planes)
+    }
+
+    /// `block`'s planes and their extents; `None` with no mask pool.
+    pub fn block_masks(&self, block: u32) -> Option<BlockMasks> {
+        self.masks.as_ref().map(|masks| masks[block as usize])
+    }
+
+    /// `(width, height)` of `block`'s plane `plane`; `(0, 0)` with no mask
+    /// pool.
+    pub fn plane_extent(&self, block: u32, plane: usize) -> (u32, u32) {
+        self.masks
+            .as_ref()
+            .map_or((0, 0), |masks| masks[block as usize].extents[plane])
+    }
+
+    /// Both of `block`'s plane extents: plane A, then plane B.
+    pub fn mask_extents(&self, block: u32) -> [(u32, u32); 2] {
+        [self.plane_extent(block, 0), self.plane_extent(block, 1)]
+    }
+
+    /// The extent one `kind` item places at: a block's, or a plane's own.
+    pub fn item_extent(&self, kind: PoolKind, item: u32) -> (u32, u32) {
+        match kind {
+            PoolKind::Lightmap => self.extents[item as usize],
+            PoolKind::Mask => self.plane_extent(kind.block_of(item), mask_item_plane(item)),
+        }
     }
 
     /// Every mask plane the level stores.
@@ -139,12 +202,18 @@ impl PoolDemand {
         self.layers_of(&blocks, edge, &mut PackScratch::default())
     }
 
-    /// Each pool's first generation from its stored `bound`, in `edge`² layers.
-    /// `None` when a block does not fit a layer.
-    pub fn first_generation(&self, bound: PerPool<u32>, edge: u32) -> Option<PerPool<u32>> {
+    /// Each pool's first generation from its stored `bound`, in `edge`² layers
+    /// of `layer_bytes` each ([`super::pool_layer_bytes`]). `None` when a block
+    /// does not fit a layer.
+    pub fn first_generation(
+        &self,
+        bound: PerPool<u32>,
+        edge: u32,
+        layer_bytes: PerPool<u64>,
+    ) -> Option<PerPool<u32>> {
         let all_resident = self.all_resident(edge)?;
         Some(PerPool::from_fn(|kind| {
-            first_generation_layers(bound[kind], all_resident[kind])
+            first_generation_layers(bound[kind], all_resident[kind], layer_bytes[kind])
         }))
     }
 
@@ -158,11 +227,10 @@ impl PoolDemand {
         scratch.lightmap.clear();
         scratch.mask.clear();
         for &block in blocks {
-            let extent = self.extents[block as usize];
-            scratch.lightmap.push(extent);
-            for stored in self.planes(block) {
+            scratch.lightmap.push(self.extents[block as usize]);
+            for (plane, stored) in self.planes(block).into_iter().enumerate() {
                 if stored {
-                    scratch.mask.push(extent);
+                    scratch.mask.push(self.plane_extent(block, plane));
                 }
             }
         }
@@ -183,7 +251,7 @@ impl PoolDemand {
         let items = self.items(PoolKind::Mask);
         let extents: Vec<(u32, u32)> = items
             .iter()
-            .map(|&item| self.extents[PoolKind::Mask.block_of(item) as usize])
+            .map(|&item| self.item_extent(PoolKind::Mask, item))
             .collect();
         let pool = self.pack(&extents, edge)?;
         let mut planes = vec![[None; 2]; self.extents.len()];
@@ -193,6 +261,9 @@ impl PoolDemand {
         }
         Some(AllResidentMasks {
             planes,
+            extents: (0..self.extents.len() as u32)
+                .map(|block| self.mask_extents(block))
+                .collect(),
             layer_count: pool.layer_count,
         })
     }
@@ -249,6 +320,40 @@ mod tests {
         );
         let masks = demand.place_planes(32).unwrap();
         assert_ne!(masks.planes[0][0], masks.planes[0][1]);
+    }
+
+    // A plane places at its own extent, not its lightmap block's: two small
+    // masks of large blocks share one layer the blocks themselves cannot.
+    #[test]
+    fn each_plane_places_at_its_own_extent() {
+        let demand = PoolDemand::with_masks(
+            4,
+            vec![(64, 64), (64, 64)],
+            Some(vec![
+                BlockMasks {
+                    planes: [true, true],
+                    extents: [(32, 16), (16, 16)],
+                },
+                BlockMasks {
+                    planes: [true, false],
+                    extents: [(32, 32), (0, 0)],
+                },
+            ]),
+        );
+        assert_eq!(
+            demand.item_extent(PoolKind::Mask, mask_item(0, 1)),
+            (16, 16)
+        );
+        assert_eq!(demand.item_extent(PoolKind::Lightmap, 1), (64, 64));
+        let layers = demand.all_resident(64).unwrap();
+        assert_eq!(
+            layers,
+            PerPool {
+                lightmap: 2,
+                mask: 1
+            }
+        );
+        assert_eq!(layers.mask, demand.place_planes(64).unwrap().layer_count);
     }
 
     #[test]

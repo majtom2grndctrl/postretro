@@ -520,8 +520,8 @@ fn stored_repack_places_degenerate_face_placeholders_like_the_bake() {
         block.width = packed.width;
         block.height = packed.height;
     }
-    let (x0, y0) = cell0.placements[0];
-    let (x1, y1) = cell1.placements[0];
+    let (x0, y0) = (cell0.placements[0].x, cell0.placements[0].y);
+    let (x1, y1) = (cell1.placements[0].x, cell1.placements[0].y);
     let mut fixture = input(
         formats,
         &[0, 1],

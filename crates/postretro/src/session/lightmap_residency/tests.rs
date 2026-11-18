@@ -45,10 +45,11 @@ fn parked_batch_holds_later_batches_until_the_renderer_returns_its_outcome() {
     .unwrap();
     // The spawned issuer would own the route; holding it keeps the
     // completion queue connected.
+    let (_pool, queue) = crate::session::level_streaming::spawn_decode_pool().unwrap();
     let _route = session
-        .take_route()
+        .take_route(&queue)
         .expect("the issuer takes the route once");
-    assert!(session.take_route().is_none());
+    assert!(session.take_route(&queue).is_none());
 
     drain_once(&mut session, &set);
     let reset = session
@@ -144,7 +145,8 @@ fn settling_frames_count_no_lightmap_visible_miss() {
         None,
     )
     .unwrap();
-    let _route = session.take_route();
+    let (_pool, queue) = crate::session::level_streaming::spawn_decode_pool().unwrap();
+    let _route = session.take_route(&queue);
     let visible = VisibleCells::Culled(vec![0, 5]);
     let frame = |settling: bool, session: &mut LightmapStreamingSession| {
         let mut drain = SharedDrain::default();

@@ -928,6 +928,7 @@ fn run_pre_atlas_and_fused_cache_fixture(
     )
     .expect("fixture arguments");
     let config = lightmap_bake::LightmapConfig {
+        section_codec: postretro_level_format::coded_plane::BlockCodec::Zstd,
         lightmap_density,
         area_sample_count: 4,
         uncompressed_irradiance: true,

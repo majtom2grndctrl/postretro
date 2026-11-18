@@ -9,9 +9,10 @@ use postretro_level_format::lightmap::{LightmapHeader, LightmapMode, MAX_LIGHTMA
 use rayon::prelude::*;
 
 use super::atlas_pack::{GroupPackError, pack_groups_into_layers};
-use super::cell_blocks::{CellSubBlock, PackedBlock, pack_cell_sub_blocks};
+use super::cell_blocks::{CellPack, PackedBlock, pack_cell_sub_blocks};
 use super::charts::Chart;
 use super::encode::normalized_direction_texel_scale;
+use super::pack_heuristics::{PACK_HEURISTICS, PackHeuristic, PackRules};
 use super::{LightmapBakeError, MAX_ATLAS_DIMENSION};
 use crate::bake_control::BakeControl;
 use crate::chart_raster::ChartPlacement;
@@ -108,8 +109,8 @@ pub(crate) fn block_alignment(direction_texel_scale: u32) -> u32 {
     .block_alignment()
 }
 
-/// What orders and aligns blocks: the direction scale and each runtime cell's
-/// id-49 cluster.
+/// What orders, aligns and packs blocks: the direction scale, each runtime
+/// cell's id-49 cluster, and the packing heuristics.
 #[derive(Debug, Clone, Copy)]
 pub struct BlockOrdering<'a> {
     /// Configured scale; normalized to a power of two before use.
@@ -117,6 +118,9 @@ pub struct BlockOrdering<'a> {
     /// Cluster of each runtime cell, indexed by cell id. Empty orders blocks
     /// by cell id alone (tests without a partition).
     pub cell_clusters: &'a [u32],
+    /// `Some` packs every cell with this one heuristic (`--pack-heuristic`);
+    /// `None` tries them all per cell and keeps the smallest.
+    pub heuristic: Option<PackHeuristic>,
 }
 
 impl BlockOrdering<'_> {
@@ -124,6 +128,14 @@ impl BlockOrdering<'_> {
         BlockOrdering {
             direction_texel_scale,
             cell_clusters: &[],
+            heuristic: None,
+        }
+    }
+
+    fn heuristics(&self) -> &[PackHeuristic] {
+        match &self.heuristic {
+            Some(forced) => std::slice::from_ref(forced),
+            None => &PACK_HEURISTICS,
         }
     }
 
@@ -172,6 +184,10 @@ pub(crate) struct BlockedPack {
 /// fill, and cache partitions keep their layer loops. A cell's blocks are
 /// therefore contiguous in block-id order. Every chart must fit the pool
 /// layer edge (the oversize-face cut).
+///
+/// Charts may be placed transposed, and every chart origin is a multiple of
+/// the direction scale, so the direction plane's reduction groups the same
+/// chart texels wherever a chart lands.
 #[cfg(test)]
 pub(crate) fn pack_cell_blocks(
     charts: &[Chart],
@@ -191,6 +207,8 @@ pub(crate) fn pack_cell_blocks_within(
 ) -> Result<BlockedPack, LightmapBakeError> {
     let direction_texel_scale = normalized_direction_texel_scale(ordering.direction_texel_scale);
     let alignment = block_alignment(direction_texel_scale);
+    let rules = PackRules::lightmap(alignment, direction_texel_scale);
+    let heuristics = ordering.heuristics();
 
     // Charts of each cell in chart (face) order.
     let mut by_cell: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
@@ -200,7 +218,7 @@ pub(crate) fn pack_cell_blocks_within(
     let mut cells: Vec<(u32, Vec<usize>)> = by_cell.into_iter().collect();
     cells.sort_by_key(|(cell_id, _)| ordering.sort_key(*cell_id));
 
-    let per_cell: Vec<Vec<CellSubBlock>> = cells
+    let per_cell: Vec<CellPack> = cells
         .par_iter()
         .map(|(_, members)| {
             let _permit = control.governor().enter();
@@ -208,16 +226,17 @@ pub(crate) fn pack_cell_blocks_within(
                 .iter()
                 .map(|&i| (charts[i].width_texels, charts[i].height_texels))
                 .collect();
-            pack_cell_sub_blocks(&sizes, alignment, pool_edge)
+            pack_cell_sub_blocks(&sizes, rules, pool_edge, heuristics)
         })
         .collect();
+    log_pack_choices(&per_cell, heuristics);
 
     // Flatten to block-id order; members become chart indices.
     let packed: Vec<(u32, Vec<usize>, PackedBlock)> = cells
         .iter()
         .zip(per_cell)
-        .flat_map(|((cell_id, members), sub_blocks)| {
-            sub_blocks.into_iter().map(move |sub| {
+        .flat_map(|((cell_id, members), pack)| {
+            pack.blocks.into_iter().map(move |sub| {
                 let charts_of_block = sub.members.iter().map(|&m| members[m]).collect();
                 (*cell_id, charts_of_block, sub.block)
             })
@@ -242,14 +261,7 @@ pub(crate) fn pack_cell_blocks_within(
 
     let mut blocks = Vec::with_capacity(packed.len());
     let mut chart_blocks = vec![0u32; charts.len()];
-    let mut placements = vec![
-        ChartPlacement {
-            x: 0,
-            y: 0,
-            layer: 0,
-        };
-        charts.len()
-    ];
+    let mut placements = vec![ChartPlacement::at(0, 0, 0); charts.len()];
     for (block_id, ((cell_id, members, block), origin)) in
         packed.iter().zip(&layers.placements).enumerate()
     {
@@ -267,12 +279,13 @@ pub(crate) fn pack_cell_blocks_within(
             x: origin.x,
             y: origin.y,
         });
-        for (&chart, &(x, y)) in members.iter().zip(&block.placements) {
+        for (&chart, slot) in members.iter().zip(&block.placements) {
             chart_blocks[chart] = block_id as u32;
             placements[chart] = ChartPlacement {
-                x: origin.x + x,
-                y: origin.y + y,
+                x: origin.x + slot.x,
+                y: origin.y + slot.y,
                 layer: origin.layer,
+                transposed: slot.transposed,
             };
         }
     }
@@ -287,6 +300,35 @@ pub(crate) fn pack_cell_blocks_within(
         layer_dim: layers.dim,
         layer_count: layers.layer_count,
     })
+}
+
+/// One line on how the cells packed: charts placed transposed, and how many
+/// cells each heuristic won.
+fn log_pack_choices(per_cell: &[CellPack], heuristics: &[PackHeuristic]) {
+    let mut wins = vec![0usize; heuristics.len()];
+    let (mut charts, mut transposed) = (0usize, 0usize);
+    for pack in per_cell {
+        wins[pack.heuristic] += 1;
+        for sub in &pack.blocks {
+            charts += sub.block.placements.len();
+            transposed += sub
+                .block
+                .placements
+                .iter()
+                .filter(|slot| slot.transposed)
+                .count();
+        }
+    }
+    let wins: Vec<String> = heuristics
+        .iter()
+        .zip(&wins)
+        .filter(|&(_, &count)| count > 0)
+        .map(|(heuristic, count)| format!("{} {count}", heuristic.name()))
+        .collect();
+    log::info!(
+        "[Compiler] lightmap packing: {transposed} of {charts} chart(s) transposed; cells won by heuristic: {}",
+        wins.join(", ")
+    );
 }
 
 #[cfg(test)]

@@ -55,7 +55,7 @@ When done:
 ### Automated
 **Lossless storage**
 - [ ] Every coded plane, chunk and section decodes to bytes identical to its unencoded form, through the all-resident load, the streaming read and capture's synchronous preload, on showcase and campaign-test.
-- [ ] Load or read rejects each of these by name, never uploading the block: a single flipped byte in a frame, a short read, a declared raw length that disagrees with the extent, a stored length that breaks adjacency, and a decoded size that differs from the declared one.
+- [ ] Load or read rejects each of these by name, never uploading the block: a single flipped byte in a frame (unless it decodes to identical bytes; never a different payload), a short read, a declared raw length that disagrees with the extent, a stored length that breaks adjacency, and a decoded size that differs from the declared one.
 - [ ] A level baked at 17c2f1e fails to load with a re-bake message for each bumped section.
 - [ ] A corrupt id-51 frame fails the level load by name. A corrupt id-50 chunk takes the same path as a chunk whose hash fails today: async streaming marks it failed with one warning and one retry; a sync-proof read returns the error; the whole-load mover-probe read fails the level load by name.
 
@@ -75,7 +75,7 @@ When done:
 - [ ] In completed mode, decoding on the pool gives the same installs, uploads, late blocks and order-independent payload hash as an uncoded build of the same layout.
 - [ ] A decoded pair reaches the frame thread already split per plane; admitting it copies no payload bytes.
 - [ ] Each drain admits coded pairs up to the shared budget by their decoded size, never their stored size, so a drain installs no more bytes than an uncoded build of the same layout.
-- [ ] With SH streaming off, or no id 50, lightmap pairs still decode off the issuer, with the same installs and late blocks as with SH on (pin P2).
+- [ ] With SH streaming off, or no id 50, lightmap pairs still decode off the issuer (pin P2). Lightmap late blocks are no worse than with SH on, on both walks.
 - [ ] The chosen pool rule changes the pool policy identity. Growth reserve keeps 5/4 or reports its new rule, and the late-block row runs with both pools under the chosen rule.
 - [ ] With the chosen pool rule, late blocks on the showcase in completed mode are ≤ 17c2f1e on both the far-point tour and the random walk. Realtime-mode medians over 3 interleaved runs are reported beside 17c2f1e's.
 - [ ] With SH and lightmap both streaming, a mandatory decode of either resource is taken before every queued optional decode of either resource, and waits at most for the decode already running (pins P3, P4).

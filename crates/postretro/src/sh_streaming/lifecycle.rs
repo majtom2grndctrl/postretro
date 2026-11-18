@@ -22,20 +22,15 @@ impl ShResidencyController {
             .manifest
             .as_ref()
             .ok_or(ShResidencyControllerError::MissingManifest)?;
-        let index = &manifest.payloads().index[request.cluster_id as usize];
-        self.cpu.encoded.add(index.payload_len, "encoded bytes")?;
+        let stored_len = manifest.payloads().index[request.cluster_id as usize].payload_len;
+        let decoded_len = manifest.decoded_chunk_len(request.cluster_id);
+        self.cpu.encoded.add(stored_len, "encoded bytes")?;
         let decoded = manifest.read_and_decode_cluster(request.cluster_id);
-        self.cpu
-            .encoded
-            .remove(index.payload_len, "encoded bytes")?;
+        self.cpu.encoded.remove(stored_len, "encoded bytes")?;
         match decoded {
             Ok(chunk) => {
-                self.cpu
-                    .decoding
-                    .add(index.decoded_bytes, "decoding bytes")?;
-                self.cpu
-                    .decoding
-                    .remove(index.decoded_bytes, "decoding bytes")?;
+                self.cpu.decoding.add(decoded_len, "decoding bytes")?;
+                self.cpu.decoding.remove(decoded_len, "decoding bytes")?;
                 let admission = self.admit_prepared(PreparedShCluster {
                     generation: request.generation,
                     content_tag: request.content_tag,
@@ -70,13 +65,18 @@ impl ShResidencyController {
         let state = &mut self.states[cluster_id as usize];
         state.state = ClusterResidencyState::Queued;
         state.evicted = false;
-        let mandatory = state.class.is_some_and(TargetClass::is_mandatory);
+        // A requested cluster is targeted, so it has a class; Hysteresis, the
+        // least urgent targeted class, should it ever lack one.
+        debug_assert!(state.class.is_some(), "cluster {cluster_id} has a class");
+        let class = state
+            .class
+            .map_or(DrainClass::Hysteresis, TargetClass::drain_class);
         Ok(Some(ShClusterRequest {
             generation: self.generation,
             content_tag: self.content_tag,
             cluster_id,
             chunk_hash: self.topology.chunk_hashes[cluster_id as usize],
-            mandatory,
+            class,
         }))
     }
 

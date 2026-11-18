@@ -38,10 +38,11 @@ fn with_mixed_planes(sections: &mut Vec<SectionBlob>) {
             ]
         })
         .collect();
-    let section = ShadowmaskAtlasSection {
-        owners: Vec::new(),
+    let section = ShadowmaskAtlasSection::whole_block(
+        Vec::new(),
         blocks,
-    };
+        index.records.iter().map(|r| (r.width, r.height)),
+    );
     sections.push(SectionBlob {
         section_id: SectionId::ShadowmaskAtlas as u32,
         version: 1,

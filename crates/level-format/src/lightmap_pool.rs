@@ -9,11 +9,12 @@ mod per_pool;
 mod sizing;
 
 pub use block_allocator::{BlockPool, RestoreConflict, ShelfLayer, Slot, StaleFree};
-pub use demand::{AllResidentMasks, PackScratch, PlanePresence, PoolDemand};
+pub use demand::{AllResidentMasks, BlockMasks, PackScratch, PlanePresence, PoolDemand};
 pub use per_pool::{PerPool, PoolKind, mask_item, mask_item_plane};
 pub use sizing::{
-    LIGHTMAP_POOL_MARGIN, MASK_POOL_LAYER_BYTES, PoolMargin, all_resident_pool_bytes,
-    first_generation_layers, lightmap_pool_layer_bytes, streamed_pool_bytes,
+    FIRST_GENERATION_FLOOR_BYTES, LIGHTMAP_POOL_MARGIN, MASK_POOL_LAYER_BYTES, PoolMargin,
+    all_resident_pool_bytes, first_generation_floor_layers, first_generation_layers,
+    lightmap_pool_layer_bytes, pool_layer_bytes, streamed_pool_bytes,
 };
 
 /// Top-left texel of a block inside the pool: array layer plus offset.

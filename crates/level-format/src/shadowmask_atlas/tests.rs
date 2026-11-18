@@ -1,6 +1,9 @@
 use super::*;
 use crate::SectionId;
-use crate::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapBlock, LightmapMode, LightmapSection};
+use crate::coded_plane::BlockCodec;
+use crate::lightmap::{
+    IRRADIANCE_FORMAT_BC6H, LightmapBlock, LightmapMode, LightmapSection, read_u64,
+};
 
 const E: u16 = SHADOWMASK_OWNER_EMPTY;
 
@@ -18,6 +21,7 @@ fn lightmap(extents: &[(u16, u16)]) -> LightmapSection {
                     cell_id: i as u32,
                     width: w,
                     height: h,
+                    codec: BlockCodec::Raw,
                     irradiance: vec![0; (w32 / 4 * h32 / 4 * 16) as usize],
                     direction: vec![0; (w32 / 2 * h32 / 2 * 2) as usize],
                 }
@@ -39,7 +43,11 @@ fn section_for(lightmap: &LightmapSection, owners: Vec<FaceOwners>) -> Shadowmas
             ]
         })
         .collect();
-    ShadowmaskAtlasSection { owners, blocks }
+    ShadowmaskAtlasSection::whole_block(
+        owners,
+        blocks,
+        lightmap.blocks.iter().map(|b| (b.width, b.height)),
+    )
 }
 
 fn bounds(face_count: usize) -> ShadowmaskOwnerBounds {
@@ -78,17 +86,43 @@ fn shadowmask_blocks_round_trip_with_empty_partial_and_full_owner_entries() {
 }
 
 #[test]
-fn owner_entry_is_four_little_endian_u16_in_channel_order() {
+fn owner_entry_is_four_little_endian_u16_in_channel_order_then_the_mask_offset() {
     let lm = lightmap(&[(8, 4)]);
-    let bytes = section_for(&lm, vec![[3, 0x0102, E, E]]).to_bytes();
-    assert_eq!(&bytes[0..4], b"SMB8");
+    let mut section = section_for(&lm, vec![[3, 0x0102, E, E]]);
+    section.mask_offsets[0] = [-2, 0x0304];
+    let bytes = section.to_bytes();
+    assert_eq!(&bytes[0..4], b"SMB9");
     assert_eq!(read_u32(&bytes, 4), 1, "face count follows the format tag");
     assert_eq!(&bytes[8..16], &[3, 0, 2, 1, 0xFF, 0xFF, 0xFF, 0xFF]);
+    assert_eq!(&bytes[16..20], &[0xFE, 0xFF, 4, 3], "i16 dx, then i16 dy");
     assert_eq!(
-        read_u32(&bytes, 16),
+        read_u32(&bytes, 20),
         1,
         "block count follows the owner table"
     );
+    let round_trip = ShadowmaskAtlasSection::from_bytes(
+        &bytes,
+        &lm.index(),
+        ShadowmaskOwnerBounds {
+            face_count: 1,
+            static_spec_light_count: 0x0103,
+        },
+    );
+    assert_eq!(round_trip.unwrap(), section);
+}
+
+#[test]
+fn rejects_a_mask_offset_on_an_unowned_face() {
+    let lm = lightmap(&[(8, 4)]);
+    let mut section = section_for(&lm, vec![[1, E, E, E], NO_FACE_OWNERS]);
+    section.mask_offsets = vec![[4, -4], [0, 4]];
+    let message = error_message(parse(&section.to_bytes(), &lm, 2));
+    assert!(
+        message.contains("shadowmask face 1 has no owner but a mask offset [0, 4]"),
+        "{message}"
+    );
+    section.mask_offsets[1] = [0, 0];
+    parse(&section.to_bytes(), &lm, 2).expect("an owned face may carry any offset");
 }
 
 #[test]
@@ -100,10 +134,10 @@ fn index_parses_in_steps_from_the_prefix() {
     let through =
         shadowmask_prefix_len_through_block_count(&bytes[..8], section_len, &lm_index, None)
             .unwrap();
-    assert_eq!(through, 8 + 3 * 8 + 4);
+    assert_eq!(through, 8 + 3 * 12 + 4);
     assert_eq!(
         shadowmask_block_count_offset(&bytes[..8], section_len),
-        Some((8 + 3 * 8) as u64)
+        Some((8 + 3 * 12) as u64)
     );
     let index_len = section.index().index_byte_len();
     assert_eq!(index_len, through + 2 * SHADOWMASK_BLOCK_RECORD_BYTES);
@@ -179,6 +213,23 @@ fn rejects_a_payload_length_that_disagrees_with_the_block_arithmetic() {
 }
 
 #[test]
+fn rejects_retired_smb8_with_a_rebake_hint() {
+    let lm = lightmap(&[(8, 4)]);
+    let mut bytes = section_for(&lm, vec![NO_FACE_OWNERS]).to_bytes();
+    bytes[0..4].copy_from_slice(b"SMB8");
+    let message = error_message(parse(&bytes, &lm, 1));
+    assert!(
+        message.contains("retired lightmap-layout SMB8") && message.contains("re-bake"),
+        "{message}"
+    );
+    let message = error_message(ShadowmaskOwnerBounds::from_section_header(&bytes[..8]));
+    assert!(
+        message.contains("SMB8") && message.contains("re-bake"),
+        "{message}"
+    );
+}
+
+#[test]
 fn rejects_retired_smb7_with_a_rebake_hint() {
     let lm = lightmap(&[(8, 4)]);
     let mut bytes = section_for(&lm, vec![NO_FACE_OWNERS]).to_bytes();
@@ -248,15 +299,109 @@ fn rejects_fewer_blocks_than_the_lightmap_as_a_count_mismatch() {
     );
 }
 
+/// The mask extents' field offset in `block`'s record, one owner entry.
+fn extents_at(block: usize) -> usize {
+    record_at(block) + 36
+}
+
+fn put_u16s(bytes: &mut [u8], at: usize, values: &[u16]) {
+    for (i, value) in values.iter().enumerate() {
+        bytes[at + 2 * i..at + 2 * i + 2].copy_from_slice(&value.to_le_bytes());
+    }
+}
+
 #[test]
-fn rejects_group_length_that_disagrees_with_the_lightmap_extent() {
+fn rejects_a_raw_length_that_disagrees_with_the_mask_extent() {
     let lm = lightmap(&[(8, 4)]);
-    let bytes = section_for(&lm, vec![NO_FACE_OWNERS]).to_bytes();
-    let message = error_message(parse(&bytes, &lightmap(&[(4, 4)]), 1));
-    assert!(message.contains("group A blob"), "{message}");
-    let message = error_message(parse(&bytes, &lightmap(&[(12, 4)]), 1));
+    let good = section_for(&lm, vec![NO_FACE_OWNERS]).to_bytes();
+    // A mask extent wider than its 8x4 planes: the raw lengths now disagree.
+    let mut wider = good.clone();
+    put_u16s(&mut wider, extents_at(0), &[12, 4, 8, 4]);
+    let message = error_message(parse(&wider, &lm, 1));
     assert!(
-        message.contains("group A blob is 32 bytes, expected 48"),
+        message.contains(
+            "shadowmask block 0 group A raw length 32 disagrees with its 12x4 extent, expected 48"
+        ),
+        "{message}"
+    );
+    // A declared raw length that is not the stored one.
+    let mut raw = good.clone();
+    raw[record_at(0) + 28..record_at(0) + 32].copy_from_slice(&48u32.to_le_bytes());
+    let message = error_message(parse(&raw, &lm, 1));
+    assert!(
+        message.contains("group A raw length 48 disagrees"),
+        "{message}"
+    );
+}
+
+#[test]
+fn plane_b_may_be_a_sub_rect_at_its_own_extent() {
+    let lm = lightmap(&[(16, 8)]);
+    let mut section = section_for(&lm, vec![[0, 1, 2, E]]);
+    section.mask_offsets[0] = [-4, 0];
+    section.extents[0] = MaskExtents {
+        mask: (8, 8),
+        plane_b: (4, 4),
+    };
+    section.blocks[0] = [
+        vec![1; group_plane_len(8, 8).unwrap() as usize],
+        vec![2; group_plane_len(4, 4).unwrap() as usize],
+    ];
+    let bytes = section.to_bytes();
+    assert_eq!(parse(&bytes, &lm, 1).unwrap(), section);
+    assert_eq!(
+        &bytes[extents_at(0)..extents_at(0) + 8],
+        &[8, 0, 8, 0, 4, 0, 4, 0]
+    );
+}
+
+#[test]
+fn rejects_malformed_mask_extents_by_name() {
+    let lm = lightmap(&[(8, 8)]);
+    let good = section_for(&lm, vec![NO_FACE_OWNERS]).to_bytes();
+    for (extents, expected) in [
+        (
+            [8, 8, 8, 12],
+            "plane B extent (8, 12) is not inside its mask extent (8, 8)",
+        ),
+        ([8, 6, 8, 4], "mask extent 8x6 is not a multiple of 4"),
+        ([8, 0, 0, 0], "mask extent 8x0 is zero on one axis only"),
+        (
+            [2052, 8, 8, 8],
+            "mask extent 2052x8 exceeds the 2048-texel pool layer",
+        ),
+    ] {
+        let mut bytes = good.clone();
+        put_u16s(&mut bytes, extents_at(0), &extents);
+        let message = error_message(parse(&bytes, &lm, 1));
+        assert!(message.contains(expected), "{message}");
+    }
+    // A stored plane B at a zero plane-B extent.
+    let mut zero_b = good.clone();
+    put_u16s(&mut zero_b, extents_at(0), &[8, 8, 0, 0]);
+    let message = error_message(parse(&zero_b, &lm, 1));
+    assert!(
+        message.contains("shadowmask block 0 stores a group B plane at a zero extent"),
+        "{message}"
+    );
+}
+
+#[test]
+fn rejects_an_unknown_codec_and_a_raw_length_on_an_absent_plane() {
+    let lm = lightmap(&[(8, 4)]);
+    let good = with_absent(section_for(&lm, vec![NO_FACE_OWNERS]), &[(0, 1)]).to_bytes();
+    let mut coded = good.clone();
+    coded[record_at(0) + 24..record_at(0) + 28].copy_from_slice(&2u32.to_le_bytes());
+    let message = error_message(parse(&coded, &lm, 1));
+    assert!(
+        message.contains("shadowmask block 0 codec 2 is unknown"),
+        "{message}"
+    );
+    let mut absent_raw = good;
+    absent_raw[record_at(0) + 32..record_at(0) + 36].copy_from_slice(&32u32.to_le_bytes());
+    let message = error_message(parse(&absent_raw, &lm, 1));
+    assert!(
+        message.contains("absent group B plane declares raw length 32"),
         "{message}"
     );
 }
@@ -267,7 +412,7 @@ fn rejects_group_blobs_that_overlap_the_previous_block() {
     let section = section_for(&lm, vec![NO_FACE_OWNERS]);
     let mut bytes = section.to_bytes();
     let first = section.index().records[0];
-    let at = 8 + 8 + 4 + SHADOWMASK_BLOCK_RECORD_BYTES;
+    let at = record_at(1);
     let group_len = u64::from(section.index().records[1].group_a.len);
     bytes[at..at + 8].copy_from_slice(&first.group_a.offset.to_le_bytes());
     bytes[at + 12..at + 20].copy_from_slice(&(first.group_a.offset + group_len).to_le_bytes());
@@ -284,7 +429,7 @@ fn rejects_group_blobs_that_overlap_the_previous_block() {
 fn rejects_group_b_that_does_not_start_where_group_a_ends() {
     let lm = lightmap(&[(8, 4), (4, 12)]);
     let mut bytes = section_for(&lm, vec![NO_FACE_OWNERS]).to_bytes();
-    let at = 8 + 8 + 4 + 12;
+    let at = record_at(0) + 12;
     let offset = read_u64(&bytes, at) + 1;
     bytes[at..at + 8].copy_from_slice(&offset.to_le_bytes());
     let message = error_message(parse(&bytes, &lm, 1));
@@ -302,7 +447,7 @@ fn rejects_an_owner_table_that_cannot_fit_beside_the_block_records() {
     let section_len = bytes.len() as u64;
     assert_eq!(
         shadowmask_prefix_len_through_block_count(&bytes[..8], section_len, &index, None).unwrap(),
-        8 + 8 + 4
+        8 + 12 + 4
     );
     bytes[4..8].copy_from_slice(&20u32.to_le_bytes());
     let message = error_message(shadowmask_prefix_len_through_block_count(
@@ -312,21 +457,17 @@ fn rejects_an_owner_table_that_cannot_fit_beside_the_block_records() {
         None,
     ));
     assert!(
-        message.contains("cannot hold a 160-byte owner table"),
+        message.contains("cannot hold a 240-byte owner table"),
         "{message}"
     );
     assert!(message.contains("owner table too large"), "{message}");
 }
 
 #[test]
-fn rejects_nonzero_reserved_and_out_of_section_range() {
+fn rejects_an_out_of_section_range() {
     let lm = lightmap(&[(8, 4)]);
     let good = section_for(&lm, vec![NO_FACE_OWNERS]).to_bytes();
-    let records = 8 + 8 + 4;
-    let mut reserved = good.clone();
-    reserved[records + 24..records + 28].copy_from_slice(&1u32.to_le_bytes());
-    assert!(error_message(parse(&reserved, &lm, 1)).contains("reserved"));
-
+    let records = record_at(0);
     let mut outside = good.clone();
     outside[records + 12..records + 20].copy_from_slice(&(good.len() as u64).to_le_bytes());
     assert!(error_message(parse(&outside, &lm, 1)).contains("outside the section"));
@@ -335,7 +476,7 @@ fn rejects_nonzero_reserved_and_out_of_section_range() {
 /// Group A at record field offset 0, group B at 12, for `block` of a section
 /// with one owner entry.
 fn record_at(block: usize) -> usize {
-    8 + 8 + 4 + block * SHADOWMASK_BLOCK_RECORD_BYTES
+    8 + 12 + 4 + block * SHADOWMASK_BLOCK_RECORD_BYTES
 }
 
 fn with_absent(
@@ -366,25 +507,21 @@ fn absent_planes_store_no_blob_in_every_presence_combination() {
     assert_eq!(bytes.len(), section.byte_len());
     let range = |offset, len| SectionByteRange { offset, len };
     let (stored, absent) = (plane as u32, range(0, 0));
+    let extents = MaskExtents::whole_block(8, 4);
+    let record = |group_a: SectionByteRange, group_b: SectionByteRange| ShadowmaskBlockRecord {
+        group_a,
+        group_b,
+        codec: BlockCodec::Raw,
+        raw_len: [group_a.len, group_b.len],
+        extents,
+    };
     assert_eq!(
         index.records,
         [
-            ShadowmaskBlockRecord {
-                group_a: range(start, stored),
-                group_b: range(start + plane, stored),
-            },
-            ShadowmaskBlockRecord {
-                group_a: absent,
-                group_b: range(start + 2 * plane, stored),
-            },
-            ShadowmaskBlockRecord {
-                group_a: range(start + 3 * plane, stored),
-                group_b: absent,
-            },
-            ShadowmaskBlockRecord {
-                group_a: absent,
-                group_b: absent,
-            },
+            record(range(start, stored), range(start + plane, stored)),
+            record(absent, range(start + 2 * plane, stored)),
+            record(range(start + 3 * plane, stored), absent),
+            record(absent, absent),
         ]
     );
     assert_eq!(parse(&bytes, &lm, 1).unwrap(), section);
@@ -442,7 +579,7 @@ fn rejects_malformed_plane_records_by_name() {
     wrong_len[a0 + 8..a0 + 12].copy_from_slice(&16u32.to_le_bytes());
     let message = error_message(parse(&wrong_len, &lm, 1));
     assert!(
-        message.contains("shadowmask block 0 group A blob is 16 bytes, expected 32"),
+        message.contains("shadowmask block 0 group A is stored raw in 16 bytes"),
         "{message}"
     );
 
@@ -517,4 +654,74 @@ fn plane_order_follows_the_present_plane_when_group_a_is_absent() {
 fn section_id_is_pinned() {
     assert_eq!(SectionId::ShadowmaskAtlas as u32, 42);
     assert_eq!(SectionId::from_u32(42), Some(SectionId::ShadowmaskAtlas));
+}
+
+/// `section` with every block's present planes stored as zstd frames.
+fn coded(mut section: ShadowmaskAtlasSection) -> ShadowmaskAtlasSection {
+    for (planes, codec) in section.blocks.iter_mut().zip(&mut section.codecs) {
+        for plane in planes.iter_mut().filter(|plane| !plane.is_empty()) {
+            *plane = crate::coded_plane::encode_plane(BlockCodec::Zstd, plane);
+        }
+        *codec = BlockCodec::Zstd;
+    }
+    section
+}
+
+#[test]
+fn coded_planes_round_trip_stored_and_decode_to_their_bc5_bytes() {
+    let lm = lightmap(&[(16, 16), (8, 4), (16, 8)]);
+    let raw = with_absent(section_for(&lm, vec![NO_FACE_OWNERS]), &[(1, 0)]);
+    let section = coded(raw.clone());
+    let bytes = section.to_bytes();
+    let parsed = parse(&bytes, &lm, 1).unwrap();
+    assert_eq!(parsed, section);
+    let index = parsed.index();
+    for block in 0..3 {
+        let record = index.records[block];
+        assert_eq!(record.codec, BlockCodec::Zstd);
+        for plane in 0..2 {
+            let expected = raw.blocks[block][plane].len() as u32;
+            assert_eq!(
+                record.raw_len[plane], expected,
+                "block {block} plane {plane}"
+            );
+        }
+        assert_eq!(parsed.decode_block(block).unwrap(), raw.blocks[block]);
+        let stored = [
+            slice_range(&bytes, record.group_a).to_vec(),
+            slice_range(&bytes, record.group_b).to_vec(),
+        ];
+        assert_eq!(
+            index.decode_planes(block, stored).unwrap(),
+            raw.blocks[block]
+        );
+    }
+}
+
+#[test]
+fn a_flipped_byte_in_a_coded_mask_plane_fails_its_decode_by_name() {
+    let lm = lightmap(&[(16, 16)]);
+    let section = coded(section_for(&lm, vec![NO_FACE_OWNERS]));
+    let mut planes = section.blocks[0].clone();
+    let last = planes[1].len() - 1;
+    planes[1][last] ^= 0x10;
+    let message = error_message(section.index().decode_planes(0, planes));
+    assert!(
+        message.contains("shadowmask block 0 group B plane failed to decode"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_coded_planes_raw_length_must_still_match_its_extent() {
+    let lm = lightmap(&[(16, 16)]);
+    let mut bytes = coded(section_for(&lm, vec![NO_FACE_OWNERS])).to_bytes();
+    let at = record_at(0) + 28;
+    bytes[at..at + 4].copy_from_slice(&64u32.to_le_bytes());
+    let message = error_message(parse(&bytes, &lm, 1));
+    assert!(
+        message
+            .contains("shadowmask block 0 group A raw length 64 disagrees with its 16x16 extent"),
+        "{message}"
+    );
 }

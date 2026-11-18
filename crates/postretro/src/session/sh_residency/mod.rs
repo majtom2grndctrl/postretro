@@ -19,10 +19,13 @@ use super::sh_streaming_diagnostics::{ShStreamingLogWindow, assemble_live_diagno
 use crate::sh_streaming::controller::{ShLevelTopology, ShResidencyController, SyncReadResult};
 use crate::streaming::cell_demand::DemandFrame;
 use crate::streaming::cluster_hints::ClusterHints;
+use crate::streaming::decode_pool::DecodeQueue;
 use crate::streaming::issuer::ReadRoute;
 
 #[cfg(feature = "capture")]
 mod capture_summary;
+#[cfg(test)]
+mod corrupt_chunk_tests;
 #[cfg(test)]
 mod device_limit_tests;
 mod frame_drain;
@@ -165,16 +168,26 @@ impl ShStreamingSession {
         Ok(())
     }
 
-    /// The decode pool and SH's issuer route for the level-scope issuer, when
-    /// this async session has no workers yet. The workers join the session
-    /// once the owner has spawned the issuer ([`Self::attach_workers`]).
+    /// Whether this async session still needs its workers and route.
+    pub(in crate::session) fn wants_async_workers(&self) -> bool {
+        self.mode == ShStreamingMode::Async && self.workers.is_none()
+    }
+
+    /// SH's workers and issuer route for the level-scope issuer, decoding on
+    /// the level's pool through `decode`, when this async session has no
+    /// workers yet. The workers join the session once the owner has spawned
+    /// the issuer ([`Self::attach_workers`]).
     pub(in crate::session) fn prepare_async_workers(
         &self,
+        decode: &DecodeQueue,
     ) -> Result<Option<(ShAsyncWorkers, Box<dyn ReadRoute>)>> {
-        if self.mode != ShStreamingMode::Async || self.workers.is_some() {
+        if !self.wants_async_workers() {
             return Ok(None);
         }
-        Ok(Some(ShAsyncWorkers::prepare(self.manifest.clone())?))
+        Ok(Some(ShAsyncWorkers::prepare(
+            self.manifest.clone(),
+            decode.clone(),
+        )))
     }
 
     pub(in crate::session) fn attach_workers(&mut self, workers: ShAsyncWorkers) {
@@ -224,15 +237,10 @@ impl ShStreamingSession {
 
     /// Read counters for the active mode: the async workers', or the
     /// session's own when sync-proof reads on the frame thread.
-    fn read_stats(&self) -> Result<Option<ShWorkerStats>> {
+    pub(in crate::session) fn read_stats(&self) -> Option<ShWorkerStats> {
         match self.mode {
-            ShStreamingMode::SyncProof => Ok(Some(self.sync_stats)),
-            _ => self
-                .workers
-                .as_ref()
-                .map(ShAsyncWorkers::stats)
-                .transpose()
-                .map_err(anyhow::Error::msg),
+            ShStreamingMode::SyncProof => Some(self.sync_stats),
+            _ => self.workers.as_ref().map(ShAsyncWorkers::stats),
         }
     }
 
@@ -281,7 +289,7 @@ impl ShStreamingSession {
     /// Reassembles the live diagnostics after the renderer has reported this
     /// frame's installs, then offers them to the periodic log.
     fn refresh_diagnostics(&mut self, renderer: Option<&ShResidencySnapshot>) -> Result<()> {
-        let worker = self.read_stats()?;
+        let worker = self.read_stats();
         assemble_live_diagnostics(
             &mut self.live,
             &self.controller.report_snapshot(),
@@ -336,6 +344,25 @@ impl ShStreamingSession {
     /// update. See the controller's `settle_set_targets`.
     pub(crate) fn settle_set_targets(&self) -> Option<usize> {
         self.controller.settle_set_targets()
+    }
+
+    /// The controller, read by the walk measurement's completion gate and
+    /// report.
+    #[cfg(test)]
+    pub(in crate::session) fn controller(&self) -> &ShResidencyController {
+        &self.controller
+    }
+
+    /// As [`ShAsyncWorkers::interpose_completions`]; `None` before the
+    /// workers attach.
+    #[cfg(test)]
+    pub(in crate::session) fn interpose_worker_completions(
+        &mut self,
+        forward: std::sync::mpsc::Receiver<super::sh_async_workers::ShWorkerCompletion>,
+    ) -> Option<std::sync::mpsc::Receiver<super::sh_async_workers::ShWorkerCompletion>> {
+        self.workers
+            .as_mut()
+            .map(|workers| workers.interpose_completions(forward))
     }
 
     #[cfg(test)]

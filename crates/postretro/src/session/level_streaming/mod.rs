@@ -18,7 +18,7 @@ use postretro_stage_timing::StageFrame;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
 pub(crate) use hooks::{PreparedLevelStreaming, prepare_level_streaming};
-pub(crate) use io::{LevelReadIssuer, StreamingRetirement};
+pub(crate) use io::{LevelReadIssuer, StreamingRetirement, spawn_decode_pool};
 pub(crate) use level_data::{StreamingLevelData, StreamingLevelParts, decode_streaming_level_data};
 pub(crate) use sessions::WantedStreaming;
 
@@ -30,6 +30,7 @@ use crate::streaming::cluster_hints::ClusterHints;
 use crate::streaming::drain_budget::{
     MAX_INSTALL_DECODED_BYTES_PER_DRAIN, SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
 };
+use crate::streaming::issuer_busy::IssuerBusyLog;
 use crate::streaming::shared_drain::SharedDrain;
 
 /// One frame's visibility, as every streamed resource reads it.
@@ -81,6 +82,9 @@ pub(crate) struct LevelStreaming {
     /// placeholder). Its level runs without lightmap streaming. Weak, so it
     /// keeps the manifest's allocation, never the manifest.
     declined_lightmap: Option<Weak<LightmapStreamManifest>>,
+    /// Where each issuer this owner spawns logs its busy time; `None` (play)
+    /// times nothing. The walk measurement installs one.
+    issuer_busy: Option<Arc<IssuerBusyLog>>,
 }
 
 impl LevelStreaming {
@@ -135,7 +139,7 @@ impl LevelStreaming {
             retirement.retain_lightmap(lightmap.into_retained_source());
         }
         if let Some(reads) = self.reads.take() {
-            retirement.add_issuer(reads.begin_retirement());
+            retirement.add_threads(reads.begin_retirement());
         }
         if !retirement.is_empty() {
             self.retirement = Some(retirement);
@@ -159,6 +163,12 @@ impl LevelStreaming {
     #[cfg(test)]
     pub(crate) fn install_cell_demand(&mut self, stage: CellDemand) {
         self.cell_demand = Some(stage);
+    }
+
+    /// Every issuer spawned from now on logs its busy time into `busy`.
+    #[cfg(test)]
+    pub(crate) fn install_issuer_busy_log(&mut self, busy: Arc<IssuerBusyLog>) {
+        self.issuer_busy = Some(busy);
     }
 
     /// One frame's streaming work for both resources:
@@ -242,27 +252,39 @@ impl LevelStreaming {
         Ok(batch)
     }
 
-    /// Spawns the level's one issuer over every route that needs it (SH's in
-    /// async mode, the lightmap session's), once no predecessor is retiring.
+    /// Spawns the level's one issuer, and the decode pool beside it, over
+    /// every route that needs it (SH's in async mode, the lightmap
+    /// session's), once no predecessor is retiring. Every route decodes on
+    /// the pool, so it starts whenever the issuer does: lightmap decode never
+    /// waits on SH streaming async.
     fn start_reads(&mut self, sh: &mut Option<ShStreamingSession>) -> Result<()> {
         if self.reads.is_some() || self.retirement.is_some() {
             return Ok(());
         }
+        let sh_routed = sh
+            .as_ref()
+            .is_some_and(ShStreamingSession::wants_async_workers);
+        // A declined session reads nothing: the new issuer gets no route for it.
+        let lightmap_routed = self
+            .lightmap
+            .as_ref()
+            .is_some_and(|session| !session.is_declined() && session.has_route());
+        if !sh_routed && !lightmap_routed {
+            return Ok(());
+        }
+        let (decode, queue) = spawn_decode_pool()?;
         let sh_prepared = match sh.as_ref() {
-            Some(streaming) => streaming.prepare_async_workers()?,
+            Some(streaming) => streaming.prepare_async_workers(&queue)?,
             None => None,
         };
-        // A declined session reads nothing: the new issuer gets no route for it.
         let lightmap_route = self
             .lightmap
             .as_mut()
             .filter(|session| !session.is_declined())
-            .and_then(LightmapStreamingSession::take_route);
-        if sh_prepared.is_none() && lightmap_route.is_none() {
-            return Ok(());
-        }
+            .and_then(|session| session.take_route(&queue));
         let (sh_workers, sh_route) = sh_prepared.unzip();
-        let reads = LevelReadIssuer::spawn(sh_route, lightmap_route)?;
+        let reads =
+            LevelReadIssuer::spawn(decode, sh_route, lightmap_route, self.issuer_busy.clone())?;
         if let (Some(mut workers), Some(streaming)) = (sh_workers, sh.as_mut()) {
             workers.attach_issuer(reads.issuer().clone());
             streaming.attach_workers(workers);

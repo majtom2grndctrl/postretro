@@ -285,3 +285,39 @@ fn a_pair_is_charged_only_the_halves_it_holds_no_room_for() {
     rig.portal(0, &[]).unwrap();
     assert_eq!(rig.requested_blocks(), vec![3], "two plane slots more");
 }
+
+// Room the renderer reserves for a mask plane comes off the never-refused
+// charge at that plane's own extent, not its lightmap block's slot: a block
+// whose planes pack smaller than the block reserves and returns that room
+// without underflowing the charge.
+#[test]
+fn reserved_mask_room_is_charged_at_each_planes_own_extent() {
+    let blocks = corridor_blocks(64, true)
+        .into_iter()
+        .map(|block| BlockSpec {
+            mask_extents: Some([(16, 16), (32, 16)]),
+            ..block
+        })
+        .collect();
+    let mut rig = Rig::new(blocks, corridor_set(), None);
+    rig.portal(0, &[]).unwrap();
+    rig.requests.clear();
+    let plane_items = vec![mask_item(0, 0), mask_item(0, 1)];
+    for (reserved, returned) in [(plane_items.clone(), vec![]), (vec![], plane_items)] {
+        rig.controller
+            .apply_outcome(LightmapDrainOutcome {
+                room_reserved: PerPool {
+                    lightmap: Vec::new(),
+                    mask: reserved,
+                },
+                room_returned: PerPool {
+                    lightmap: Vec::new(),
+                    mask: returned,
+                },
+                pool: one_pool_room(8, 8),
+                ..LightmapDrainOutcome::default()
+            })
+            .unwrap();
+        rig.portal(0, &[]).unwrap();
+    }
+}

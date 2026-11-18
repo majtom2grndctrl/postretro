@@ -1,5 +1,5 @@
 //! The one read issuer thread: every streamed positional read, tiered, in offset order.
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
+//! See: context/lib/rendering_pipeline.md §4 (one issuer, one budget)
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 use postretro_level_loader::PrlLoadError;
 
+use super::drain_budget::DrainClass;
+use super::issuer_busy::IssuerBusyLog;
 use super::request::{MAX_READ_RANGES, ReadRequest, StreamResource};
 use super::schedule::{RangeSlot, ReadPlan, plan_next_read, split_span};
 
@@ -18,12 +20,14 @@ use super::schedule::{RangeSlot, ReadPlan, plan_next_read, split_span};
 pub(crate) const READ_ISSUER_THREAD_NAME: &str = "sh-probe-read";
 
 /// One resource's side of the shared issuer: its target membership, its
-/// reader, its in-memory byte accounting, and where its bytes go. SH hands
-/// read bytes to its decode pool; lightmap blocks, which upload as stored,
-/// hand them straight to a completion queue.
+/// reader, its in-memory byte accounting, and where its bytes go. Both SH
+/// and lightmap routes queue each read item as a job on the level's decode
+/// pool, and complete cancellations and failures straight to their
+/// resource's completion queue.
 ///
 /// Every method runs on the issuer thread. An implementor must not block
-/// except in `read_span` and in `deliver`'s bounded queue send.
+/// except in `read_span` and in `deliver`'s bounded queue send, which its
+/// resource sizes so that it never waits.
 pub(crate) trait ReadRoute: Send {
     /// Whether the resource still targets `key`. Checked before every
     /// physical read; a request whose key fails it is cancelled whole.
@@ -43,6 +47,14 @@ pub(crate) trait ReadRoute: Send {
     /// Hands over a request's one outcome. False when the resource's
     /// receiver is gone; the issuer then exits.
     fn deliver(&self, request: ReadRequest, outcome: ReadOutcome) -> bool;
+    /// `key`'s live class, read from the target set the frame thread writes;
+    /// `None` when `key` is not a member (every production publish stores a
+    /// class with each member). A pending request's tier is read from it
+    /// before every plan, so a request whose key turned mandatory after its
+    /// submission is lifted, and one whose key turned optional is lowered,
+    /// without a message to the issuer. A request whose key is not a member
+    /// keeps its own class until the membership check cancels it.
+    fn live_class(&self, key: u32) -> Option<DrainClass>;
 }
 
 /// One successful physical read, as its route's counters see it.
@@ -84,15 +96,23 @@ impl IntoIterator for ReadParts {
     }
 }
 
-/// The routes an issuer serves, one per resource at most.
+/// The routes an issuer serves, one per resource at most, and where it logs
+/// its busy time when a measurement asks.
 #[derive(Default)]
 pub(crate) struct ReadRoutes {
     routes: [Option<Box<dyn ReadRoute>>; StreamResource::COUNT],
+    busy: Option<Arc<IssuerBusyLog>>,
 }
 
 impl ReadRoutes {
     pub(crate) fn with(mut self, resource: StreamResource, route: Box<dyn ReadRoute>) -> Self {
         self.routes[resource.index()] = Some(route);
+        self
+    }
+
+    /// Times every physical read into `busy`; `None` times nothing.
+    pub(crate) fn with_busy_log(mut self, busy: Option<Arc<IssuerBusyLog>>) -> Self {
+        self.busy = busy;
         self
     }
 
@@ -115,8 +135,10 @@ pub(crate) struct ReadIssuer {
 
 impl ReadIssuer {
     /// Spawns the issuer thread. `queue_capacity` must cover every request
-    /// the routed resources can have outstanding (their permits), so a
-    /// submission never finds the queue full.
+    /// the routed resources can have outstanding: each submission is a read
+    /// holding one of its resource's permits until the frame admits its
+    /// completion, so the sum of the routed resources' permits is enough,
+    /// and a submission never finds the queue full.
     pub(crate) fn spawn(
         routes: ReadRoutes,
         queue_capacity: usize,
@@ -227,16 +249,25 @@ struct PlanScratch {
 }
 
 impl PlanScratch {
-    fn collect(&mut self, pending: &[PendingRead]) {
+    /// Each pending request's tier is its key's live class, or its own class
+    /// when its key has none (it has left the targets and is cancelled
+    /// before its next read).
+    fn collect(&mut self, pending: &[PendingRead], routes: &ReadRoutes) {
         self.slots.clear();
         self.owners.clear();
         for (pending_index, read) in pending.iter().enumerate() {
-            for range_index in 0..read.request.ranges.len() {
+            let request = &read.request;
+            let tier = routes
+                .route(request.resource)
+                .live_class(request.key)
+                .unwrap_or(request.class)
+                .tier();
+            for range_index in 0..request.ranges.len() {
                 if read.unread & (1 << range_index) != 0 {
                     self.slots.push(RangeSlot {
-                        resource: read.request.resource,
-                        tier: read.request.tier,
-                        range: read.request.ranges.get(range_index),
+                        resource: request.resource,
+                        tier,
+                        range: request.ranges.get(range_index),
                     });
                     self.owners.push((pending_index, range_index));
                 }
@@ -288,25 +319,31 @@ fn issuer_loop(requests: &Receiver<IssuerMessage>, routes: &ReadRoutes, cancel: 
         if !cancel_departed(pending, routes) {
             return;
         }
-        scratch.collect(pending);
+        scratch.collect(pending, routes);
         let Some(plan) = plan_next_read(&scratch.slots) else {
             continue;
         };
-        if !issue_read(&plan, pending, &mut scratch, routes, cancel) {
+        let started = routes.busy.as_ref().map(|_| Instant::now());
+        let issued = issue_read(&plan, pending, &mut scratch, routes, cancel);
+        if let (Some(busy), Some(started)) = (&routes.busy, started) {
+            busy.record(started.elapsed());
+        }
+        if !issued {
             return;
         }
     }
 }
 
-/// Queues one submission. An identical pending request absorbs it; a request
-/// with nothing to read completes at once, unless its key has departed.
+/// Queues one submission. An identical pending request absorbs it, keeping
+/// the more urgent of the two classes; a request with nothing to read
+/// completes at once, unless its key has departed.
 fn accept(submitted: SubmittedRead, pending: &mut Vec<PendingRead>, routes: &ReadRoutes) -> bool {
     let request = submitted.request;
     if let Some(existing) = pending
         .iter_mut()
         .find(|read| read.request.same_item(&request))
     {
-        existing.request.tier = existing.request.tier.min(request.tier);
+        existing.request.class = existing.request.class.min(request.class);
         return true;
     }
     let mut read = PendingRead {

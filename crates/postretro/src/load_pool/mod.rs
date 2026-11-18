@@ -11,15 +11,14 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
 /// The most threads the pool ever runs. Prep shares the CPU with the main
-/// thread, the upload thread and the SH decode workers, so width buys
-/// structure, not speed.
+/// thread, the upload thread and the level's decode pool threads, so width
+/// buys structure, not speed.
 pub(crate) const LOAD_POOL_WIDTH_CAP: usize = 2;
 
 /// The pool width this machine ships with: two cores left to the main and
 /// upload threads, at least one worker, never past the cap.
 pub(crate) fn shipped_load_pool_width() -> usize {
-    let parallelism = std::thread::available_parallelism().map_or(1, usize::from);
-    width_for_parallelism(parallelism)
+    width_for_parallelism(crate::parallelism::available_parallelism())
 }
 
 fn width_for_parallelism(parallelism: usize) -> usize {

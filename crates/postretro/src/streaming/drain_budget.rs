@@ -8,9 +8,8 @@ use thiserror::Error;
 use super::request::{ReadTier, StreamResource};
 
 /// Bytes handed to the renderer per drain, across every resource: SH
-/// decoded bytes, and lightmap block upload bytes (blocks upload as stored,
-/// so their decoded size is their stored size). The first item is always
-/// admitted, so one oversized item still installs.
+/// chunks' and lightmap pairs' decoded bytes, never their stored ones. The
+/// first item is always admitted, so one oversized item still installs.
 pub(crate) const MAX_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 8 * 1024 * 1024;
 
 /// The per-drain budget while a level entry is Settling. No world frame is
@@ -36,6 +35,20 @@ pub(crate) enum DrainClass {
 }
 
 impl DrainClass {
+    /// Every class, in declaration order: `ALL[class.index()] == class`.
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Visible,
+        Self::Pinned,
+        Self::Lead,
+        Self::SeamWarm,
+        Self::Prefetch,
+        Self::Hysteresis,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
     pub(crate) const fn tier(self) -> ReadTier {
         match self {
             Self::Visible | Self::Pinned | Self::Lead => ReadTier::Mandatory,

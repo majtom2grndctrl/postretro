@@ -5,13 +5,14 @@
 use crate::lightmap::{eof, invalid, read_u32};
 use crate::lightmap_pool::PerPool;
 
-/// The one layout this build reads.
-pub const LIGHTMAP_POOL_BOUND_VERSION: u32 = 1;
+/// The one layout this build reads. Version 2 prices each mask plane at its
+/// own extent (id 42 `SMB9`); version 1 priced it at its lightmap block's.
+pub const LIGHTMAP_POOL_BOUND_VERSION: u32 = 2;
 
 /// version, worst_lightmap_layers, worst_mask_layers.
 const SECTION_BYTES: usize = 12;
 
-/// On-disk layout (little-endian): `u32 version` (= 1),
+/// On-disk layout (little-endian): `u32 version` (= 2),
 /// `u32 worst_lightmap_layers`, `u32 worst_mask_layers`. Each is a maximum over
 /// every camera cell, taken per pool, so the two can come from different cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +82,7 @@ mod tests {
         let bytes = section.to_bytes();
         assert_eq!(
             bytes,
-            [1, 0, 0, 0, 4, 3, 2, 1, 15, 0, 0, 0],
+            [2, 0, 0, 0, 4, 3, 2, 1, 15, 0, 0, 0],
             "version, lightmap layers, mask layers"
         );
         assert_eq!(
@@ -97,11 +98,12 @@ mod tests {
             worst_mask_layers: 1,
         }
         .to_bytes();
-        bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+        // Version 1 priced mask planes at their lightmap block's extent.
+        bytes[0..4].copy_from_slice(&1u32.to_le_bytes());
         for len in [bytes.len(), 4] {
             let message = error_message(LightmapPoolBoundSection::from_bytes(&bytes[..len]));
             assert!(
-                message.contains("LightmapPoolBound version 2 is unknown")
+                message.contains("LightmapPoolBound version 1 is unknown")
                     && message.contains("re-bake"),
                 "{message}"
             );

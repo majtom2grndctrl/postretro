@@ -510,12 +510,12 @@ pub(crate) fn for_each_light_layer_chart_texel(
         return;
     }
 
-    let padding = crate::chart_raster::CHART_PADDING_TEXELS as i32;
     let (interior_w, interior_h) = chart_interior_dims(chart);
+    // Chart row-major whatever the placement's orientation, so every
+    // sequential per-chart state sees the same texel order.
     for ty in 0..interior_h {
         for tx in 0..interior_w {
-            let atlas_x = placement.x as i32 + padding + tx;
-            let atlas_y = placement.y as i32 + padding + ty;
+            let (atlas_x, atlas_y) = placement.interior_texel(tx, ty);
             // Within-layer index — the atlas layer lives in the enclosing
             // `LightmapLayer.target_layer`, not folded into `idx`.
             let idx = atlas_y as u32 * atlas.atlas_width + atlas_x as u32;

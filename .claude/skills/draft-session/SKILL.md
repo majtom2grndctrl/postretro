@@ -17,7 +17,7 @@ Run the conversation that precedes an artifact. The session ends in a handoff bl
 
 ## Stance
 
-**Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When the destination is clear, decide the full shape and build it in strides. Small increments earn their cost only where the path is genuinely uncertain; the session's job is to resolve that uncertainty up front. When the work lays a foundation, its first consumer ships in the same unit of work — the consumer proves the foundation and keeps it from landing as a stub nothing exercises.
+**Build more right faster.** AI coding agents produce code quickly enough that incremental baby-steps waste more time than they save. When the destination is clear, decide the full shape and build it in strides. Small increments earn their cost only where the path is genuinely uncertain; the session's job is to resolve that uncertainty up front. When the work lays a foundation, its first consumer ships in the same unit of work — the consumer proves the foundation and keeps it from landing as a stub nothing exercises. Size capacity for the genre's table stakes — hordes, large arenas, co-op — not for today's maps, so a designer's ambitious idea just works. Measuring current content never gates a table-stakes capability; measurement confirms the design.
 
 **Work as an orchestrator.** After a baseline read, dispatch bounded, read-only research agents — one question each, returning claim, symbol, and confidence. Keep your own context for decisions. Never delegate a product or architectural decision: a delegated answer is a report, and it grounds no one.
 
@@ -64,7 +64,7 @@ Usually after step 2 — a grounded question is short and a hypothetical one was
 
 State the observable evidence, split into automated and manual — visual, playtest, audio, network, runtime diagnostics. Name edges, not steady state: start, stop, reverse, zero iterations, two on one tick, a timer across a reset. Pin both sides of every predicate — the case it must refuse and the case it must permit; a guard tested only where it refuses passes while over-tight. Run each row against the Problem: if it could pass with the defect still present, it measures something adjacent.
 
-For resource-bound work, read `context/lib/testing_guide.md` §Resource bounds. Carry its proof and measurement requirements into the handoff.
+For resource-bound work, read `context/lib/testing_guide.md` §Resource bounds. Carry its proof and measurement requirements into the handoff. Capacity work proves itself on a stress fixture at the target scale.
 
 ### 6. Choose the route
 

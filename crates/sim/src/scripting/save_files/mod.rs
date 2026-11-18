@@ -3,6 +3,7 @@
 
 mod document;
 mod loadout;
+mod saved_at;
 mod slots;
 
 #[cfg(test)]
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 pub use document::{LedgerDocument, LevelRecord, RunRecord, SeatRecord};
 pub use loadout::{LayerRecord, LoadoutRecord};
+pub use saved_at::{format_saved_at, now_unix_seconds};
 pub use slots::{
     SaveDir, Selection, SlotFile, delete_slot, read_selection, read_slot, write_selection,
 };

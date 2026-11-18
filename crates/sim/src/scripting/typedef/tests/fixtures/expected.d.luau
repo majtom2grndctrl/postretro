@@ -1921,6 +1921,24 @@ export type GameStateRefs = {
     weaponCooldownMs: PlayerComputedRef<number>,
     weaponResource: ComputedRef<"none" | "ammo" | "heat" | "cell">,
   },
+  saves: {
+    character: ComputedRef<number>,
+    characters: StateList<{
+      present: ComputedRef<boolean>,
+      occupied: ComputedRef<boolean>,
+      readable: ComputedRef<boolean>,
+      name: ComputedRef<string>,
+    }>,
+    run: ComputedRef<number>,
+    runs: StateList<{
+      present: ComputedRef<boolean>,
+      occupied: ComputedRef<boolean>,
+      readable: ComputedRef<boolean>,
+      levelName: ComputedRef<string>,
+      characterName: ComputedRef<string>,
+      savedAt: ComputedRef<string>,
+    }>,
+  },
   screen: {
     flash: ComputedRef<{number}>,
     shake: ComputedRef<{number}>,

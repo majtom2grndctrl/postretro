@@ -175,8 +175,85 @@ pub const SESSION_PLAYERS_LIST: EngineStateList<'static> = EngineStateList {
     network: ReplicationScope::None,
 };
 
+/// The engine cap on a mod's character slots and on its run slots: the
+/// capacity of the `saves.characters` and `saves.runs` lists.
+pub const SAVE_SLOT_CAPACITY: usize = 16;
+
+const SAVE_CHARACTER_FIELDS: &[EngineStateField<'static>] = &[
+    EngineStateField {
+        name: LIST_PRESENT_FIELD,
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+    },
+    EngineStateField {
+        name: "occupied",
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+    },
+    EngineStateField {
+        name: "readable",
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+    },
+    EngineStateField {
+        name: "name",
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+    },
+];
+
+const SAVE_RUN_FIELDS: &[EngineStateField<'static>] = &[
+    EngineStateField {
+        name: LIST_PRESENT_FIELD,
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+    },
+    EngineStateField {
+        name: "occupied",
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+    },
+    EngineStateField {
+        name: "readable",
+        value_type: EngineStateValueType::Boolean,
+        default: EngineStateDefault::Boolean(false),
+    },
+    EngineStateField {
+        name: "levelName",
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+    },
+    EngineStateField {
+        name: "characterName",
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+    },
+    EngineStateField {
+        name: "savedAt",
+        value_type: EngineStateValueType::String,
+        default: EngineStateDefault::String(""),
+    },
+];
+
+/// One row per declared character slot, engine-written and machine-local.
+pub const SAVES_CHARACTERS_LIST: EngineStateList<'static> = EngineStateList {
+    sdk_path: &["saves", "characters"],
+    capacity: SAVE_SLOT_CAPACITY,
+    fields: SAVE_CHARACTER_FIELDS,
+    network: ReplicationScope::None,
+};
+
+/// One row per declared run slot, engine-written and machine-local.
+pub const SAVES_RUNS_LIST: EngineStateList<'static> = EngineStateList {
+    sdk_path: &["saves", "runs"],
+    capacity: SAVE_SLOT_CAPACITY,
+    fields: SAVE_RUN_FIELDS,
+    network: ReplicationScope::None,
+};
+
 pub const BUILTIN_ENGINE_STATE_FAMILIES: &[EngineStateFamily<'static>] = &[OCCUPANCY_FAMILY];
-pub const BUILTIN_ENGINE_STATE_LISTS: &[EngineStateList<'static>] = &[SESSION_PLAYERS_LIST];
+pub const BUILTIN_ENGINE_STATE_LISTS: &[EngineStateList<'static>] =
+    &[SESSION_PLAYERS_LIST, SAVES_CHARACTERS_LIST, SAVES_RUNS_LIST];
 
 /// Engine namespaces declared at run time, which no mod store may declare or
 /// overlap.

@@ -1922,6 +1922,24 @@ declare module "postretro" {
       readonly weaponCooldownMs: PlayerComputedRef<number>;
       readonly weaponResource: ComputedRef<"none" | "ammo" | "heat" | "cell">;
     };
+    readonly saves: {
+      readonly character: ComputedRef<number>;
+      readonly characters: StateList<{
+        readonly present: ComputedRef<boolean>;
+        readonly occupied: ComputedRef<boolean>;
+        readonly readable: ComputedRef<boolean>;
+        readonly name: ComputedRef<string>;
+      }>;
+      readonly run: ComputedRef<number>;
+      readonly runs: StateList<{
+        readonly present: ComputedRef<boolean>;
+        readonly occupied: ComputedRef<boolean>;
+        readonly readable: ComputedRef<boolean>;
+        readonly levelName: ComputedRef<string>;
+        readonly characterName: ComputedRef<string>;
+        readonly savedAt: ComputedRef<string>;
+      }>;
+    };
     readonly screen: {
       readonly flash: ComputedRef<ReadonlyArray<number>>;
       readonly shake: ComputedRef<ReadonlyArray<number>>;

@@ -15,7 +15,7 @@ use glam::Vec3;
 use postretro_foundation::GroundRef;
 
 use crate::collision::CollisionWorld;
-use crate::nav::{NavGraph, distance_xz};
+use crate::nav::{NavGraph, NavScratch, distance_xz};
 
 mod rotated_ring;
 mod scoring;
@@ -105,6 +105,15 @@ pub fn select_combat_position(query: &CombatQuery<'_>) -> Option<CombatCandidate
 }
 
 pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatAssignment> {
+    select_combat_positions_batch_in(queries, &mut NavScratch::new())
+}
+
+/// [`select_combat_positions_batch`] routing every candidate through
+/// `scratch`.
+pub fn select_combat_positions_batch_in(
+    queries: &[CombatQuery<'_>],
+    scratch: &mut NavScratch,
+) -> Vec<CombatAssignment> {
     struct Pending {
         query_index: usize,
         claimant_id: u32,
@@ -129,7 +138,7 @@ pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatA
             min_spacing: capsule_placement(query.nav_graph)
                 .map(dynamic_min_spacing)
                 .unwrap_or(0.0),
-            candidates: combat_candidates(query),
+            candidates: combat_candidates_in(scratch, query),
             next_candidate: 0,
             accepted: None,
         })
@@ -202,7 +211,12 @@ pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatA
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
+    combat_candidates_in(&mut NavScratch::new(), query)
+}
+
+fn combat_candidates_in(scratch: &mut NavScratch, query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
     if !query.agent_pos.is_finite()
         || !query.target_pos.is_finite()
         || !query.enemy_eye_offset.is_finite()
@@ -220,7 +234,7 @@ pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate>
         None => return Vec::new(),
     };
     if let Some(ring) = query.ring.as_ref() {
-        return rotated_ring::ring_candidates(query, ring, placement);
+        return rotated_ring::ring_candidates(scratch, query, ring, placement);
     }
 
     let mut challengers = Vec::new();
@@ -231,7 +245,7 @@ pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate>
                 .enumerate()
         {
             if let Some(candidate) =
-                score_candidate(query, placement, position, generation_index, false)
+                score_candidate(scratch, query, placement, position, generation_index, false)
             {
                 challengers.push(candidate);
             }
@@ -241,7 +255,7 @@ pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate>
 
     let incumbent = query
         .combat_slot
-        .and_then(|slot| score_candidate(query, placement, slot, usize::MAX, true));
+        .and_then(|slot| score_candidate(scratch, query, placement, slot, usize::MAX, true));
     apply_hysteresis(incumbent, challengers)
 }
 

@@ -28,7 +28,7 @@ use super::targeting::{
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
 use super::{attack_turns, clip_clock, engaged_motion, leap};
-use crate::nav::{NavStart, find_path_from};
+use crate::nav::{NavScratch, NavStart, find_path_from_in};
 use crate::weapon_controller::{WeaponAim, WeaponAttackRequest};
 use postretro_entities::components::agent::AgentComponent;
 use postretro_foundation::{ActionVerb, BRAIN_NO_TARGET_DISTANCE, GroundRef, MotionVerb};
@@ -50,6 +50,7 @@ pub(super) fn evaluate(
     turns: &attack_turns::AttackTurnRuntime,
     clips: Option<&crate::scripting_systems::hit_zones::HitZoneStore>,
     cpu: Option<&AiStageFrame>,
+    nav_scratch: &mut NavScratch,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for (slot, snap) in snapshots.into_iter().enumerate() {
@@ -342,7 +343,8 @@ pub(super) fn evaluate(
                         height,
                     };
                     brain.target_reachable =
-                        find_path_from(graph, gate, from, target.position).is_some();
+                        find_path_from_in(nav_scratch, graph, gate, from, target.position)
+                            .is_some();
                 }
                 brain.target_reachable
             }

@@ -10,7 +10,10 @@ mod region_index;
 // `find_path_gated` assumes world ground, and `find_path` also ignores gates.
 pub(crate) use gate::NavMoverBound;
 pub use gate::{MoverNav, NavGate, install_mover_records};
-pub use path::{NavStart, find_path, find_path_from, find_path_gated};
+pub use path::{
+    NavScratch, NavStart, find_path, find_path_from, find_path_from_in, find_path_gated,
+    find_path_gated_in,
+};
 
 // Bake→runtime funnel contract tests: bake fixture floors with the real
 // `navmesh_bake::bake_navmesh`, then run the real `find_path` over the result.

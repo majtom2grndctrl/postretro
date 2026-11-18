@@ -8,7 +8,9 @@ use super::{CombatCandidate, CombatQuery, path_length};
 use crate::collision::{
     CapsulePlacement, SKIN_DISTANCE, capsule_static_placement_center, line_of_sight,
 };
-use crate::nav::{NavGraph, NavStart, distance_xz, find_path_from, find_path_gated};
+use crate::nav::{
+    NavGraph, NavScratch, NavStart, distance_xz, find_path_from_in, find_path_gated_in,
+};
 
 pub(super) fn capsule_placement(nav_graph: &NavGraph) -> Option<CapsulePlacement> {
     let params = nav_graph.agent_params();
@@ -30,6 +32,7 @@ pub(super) fn capsule_placement(nav_graph: &NavGraph) -> Option<CapsulePlacement
 }
 
 pub(super) fn score_candidate(
+    scratch: &mut NavScratch,
     query: &CombatQuery<'_>,
     placement: CapsulePlacement,
     position: Vec3,
@@ -64,9 +67,9 @@ pub(super) fn score_candidate(
         ground: query.agent_ground,
         height: query.agent_height,
     };
-    let path = find_path_from(query.nav_graph, gate, from, position)?;
+    let path = find_path_from_in(scratch, query.nav_graph, gate, from, position)?;
     let target_distance = distance_xz(position, query.target_pos);
-    if !has_tactically_direct_target_path(query, placement, position, target_distance) {
+    if !has_tactically_direct_target_path(scratch, query, placement, position, target_distance) {
         return None;
     }
     let path_cost = path_length(&path);
@@ -83,6 +86,7 @@ pub(super) fn score_candidate(
 }
 
 fn has_tactically_direct_target_path(
+    scratch: &mut NavScratch,
     query: &CombatQuery<'_>,
     placement: CapsulePlacement,
     position: Vec3,
@@ -91,7 +95,8 @@ fn has_tactically_direct_target_path(
     let gate = query.mover_nav.gate;
     // The slot is a floor placement, never a mover top, so it starts on world
     // ground.
-    let Some(target_path) = find_path_gated(query.nav_graph, gate, position, query.target_pos)
+    let Some(target_path) =
+        find_path_gated_in(scratch, query.nav_graph, gate, position, query.target_pos)
     else {
         // The funnel can conservatively refuse a route when a moving endpoint
         // grazes a clearance disk, even while its regions remain connected.

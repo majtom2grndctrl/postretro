@@ -27,21 +27,14 @@ pub struct ArenaMap {
     pub triangles: Vec<[u32; 3]>,
 }
 
-pub fn multi_arena_map() -> ArenaMap {
-    let total_x = (ARENAS as f32 * ARENA + (ARENAS - 1) as f32 * GAP) as u32;
-    let total_z = ARENA as u32;
-    let (tiles_x, tiles_z) = (total_x / TILE, total_z / TILE);
-    let walkable = |tx: u32, tz: u32| -> bool {
-        let (x, z) = ((tx * TILE) as f32, (tz * TILE) as f32);
-        (0..ARENAS).any(|i| {
-            let x0 = arena_x0(i);
-            (x >= x0 && x < x0 + ARENA)
-                || (i + 1 < ARENAS
-                    && x >= x0 + ARENA
-                    && x < x0 + ARENA + GAP
-                    && CORRIDOR_Z.contains(&z))
-        })
-    };
+/// A nav section of 2×2 m tiles over `tiles_x` × `tiles_z`, one region per
+/// tile where `walkable` holds, with a portal between each pair of walkable
+/// neighbours. Region indices ascend row by row.
+pub fn tile_grid_section(
+    tiles_x: u32,
+    tiles_z: u32,
+    walkable: impl Fn(u32, u32) -> bool,
+) -> NavMeshSection {
     let mut index = vec![u32::MAX; (tiles_x * tiles_z) as usize];
     let mut regions = Vec::new();
     for tz in 0..tiles_z {
@@ -93,12 +86,12 @@ pub fn multi_arena_map() -> ArenaMap {
         }
     }
     portals.sort_by_key(|portal| (portal.region_a, portal.region_b));
-    let section = NavMeshSection {
+    NavMeshSection {
         version: NAVMESH_VERSION,
         origin: [0.0, 0.0, 0.0],
         cell_size: 1.0,
-        dim_x: total_x,
-        dim_z: total_z,
+        dim_x: tiles_x * TILE,
+        dim_z: tiles_z * TILE,
         agent_radius: 0.35,
         agent_height: 1.8,
         step_height: 0.4,
@@ -107,7 +100,24 @@ pub fn multi_arena_map() -> ArenaMap {
         portals,
         gates: Vec::new(),
         links: Vec::new(),
+    }
+}
+
+pub fn multi_arena_map() -> ArenaMap {
+    let total_x = (ARENAS as f32 * ARENA + (ARENAS - 1) as f32 * GAP) as u32;
+    let total_z = ARENA as u32;
+    let walkable = |tx: u32, tz: u32| -> bool {
+        let (x, z) = ((tx * TILE) as f32, (tz * TILE) as f32);
+        (0..ARENAS).any(|i| {
+            let x0 = arena_x0(i);
+            (x >= x0 && x < x0 + ARENA)
+                || (i + 1 < ARENAS
+                    && x >= x0 + ARENA
+                    && x < x0 + ARENA + GAP
+                    && CORRIDOR_Z.contains(&z))
+        })
     };
+    let section = tile_grid_section(total_x / TILE, total_z / TILE, walkable);
 
     // One floor quad plus low wall quads.
     let mut points = vec![

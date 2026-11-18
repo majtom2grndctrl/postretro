@@ -267,6 +267,9 @@ pub(crate) enum AttackOutcome {
 /// Their lifecycle is reconciled together before compute: newly seen graphs
 /// bind, changed descriptors cancel old execution, and dead actors are pruned.
 pub struct AiRuntime {
+    /// Route-search scratch for the pass's reachability and positioning
+    /// queries. Contents never carry between queries.
+    nav_scratch: crate::nav::NavScratch,
     /// Warn-once latch for the CONTENT-keyed diagnostics, namespaced so a given
     /// one fires once across the whole run, never each tick: `anim:<name>` for an
     /// animation state that fails to switch (`UnknownState`/`NotAnimated` — the
@@ -326,6 +329,7 @@ impl AiRuntime {
 
     pub fn new() -> Self {
         Self {
+            nav_scratch: crate::nav::NavScratch::new(),
             warned: HashSet::new(),
             blocked_warned: HashSet::new(),
             reseat_warned: HashSet::new(),
@@ -533,6 +537,7 @@ where
     // before anything reads it: this is the single lifecycle hook covering
     // spawn, despawn, and a wholesale deserialize.
     let AiRuntime {
+        nav_scratch,
         warned,
         blocked_warned,
         reseat_warned,
@@ -626,6 +631,7 @@ where
             turns,
             clips,
             cpu,
+            nav_scratch,
         )
     };
 
@@ -636,6 +642,7 @@ where
         mover_nav,
         collision_world,
         cpu,
+        nav_scratch,
     );
 
     let _apply_stage = ai_stage(cpu, SimStage::AiApply);

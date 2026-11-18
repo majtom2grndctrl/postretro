@@ -13,9 +13,9 @@ use crate::ai_host::{AiStageFrame, ai_stage};
 use crate::collision::CollisionWorld;
 use crate::combat_positioning::{
     CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
-    select_combat_positions_batch,
+    select_combat_positions_batch_in,
 };
-use crate::nav::NavGraph;
+use crate::nav::{NavGraph, NavScratch};
 use crate::sim::cpu_stages::SimStage;
 
 /// How many ticks a resolved combat slot is held for its incumbent before the
@@ -29,6 +29,7 @@ pub(super) fn resolve_combat_slots(
     mover_nav: crate::nav::MoverNav<'_>,
     collision_world: Option<&CollisionWorld>,
     cpu: Option<&AiStageFrame>,
+    nav_scratch: &mut NavScratch,
 ) {
     for outcome in outcomes.iter_mut() {
         outcome.combat_slot = None;
@@ -110,7 +111,7 @@ pub(super) fn resolve_combat_slots(
     }
 
     let assignments: HashMap<u32, Option<CombatCandidate>> =
-        select_combat_positions_batch(&queries)
+        select_combat_positions_batch_in(&queries, nav_scratch)
             .into_iter()
             .map(|assignment| (assignment.claimant_id, assignment.candidate))
             .collect();

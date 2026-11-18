@@ -1305,13 +1305,13 @@ declare function endSession(): SystemReactionStep
 
 --- System reaction: host a co-op session from the frontend. A single-player
 --- machine at its frontend starts a new hosted run, protected by
---- `session.password` when it is not empty; pressed while a left level unloads
+--- `session.hostPassword` when it is not empty; pressed while a left level unloads
 --- or an ended host's connections close, it waits. Machine-local. Pure:
 --- returns a SystemReactionStep.
 declare function hostSession(): SystemReactionStep
 
 --- System reaction: join the co-op host at `session.joinAddress` from the
---- frontend, answering its password from `session.password`. Saves the world
+--- frontend, answering its password from `session.joinPassword`. Saves the world
 --- and character first, then connects. Machine-local. Pure: returns a
 --- SystemReactionStep.
 declare function joinSession(): SystemReactionStep

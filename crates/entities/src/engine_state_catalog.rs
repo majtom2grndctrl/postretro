@@ -973,6 +973,18 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "session.passwordProtected",
+        sdk_path: &["session", "passwordProtected"],
+        value_type: EngineStateValueType::Boolean,
+        // True only on a live listen host whose run challenges joiners for a
+        // password, since `session.hostPassword` empties once hosting starts.
+        default: EngineStateDefault::Boolean(false),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "session.joinAddress",
         sdk_path: &["session", "joinAddress"],
         value_type: EngineStateValueType::String,
@@ -985,11 +997,25 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
-        wire_name: "session.password",
-        sdk_path: &["session", "password"],
+        wire_name: "session.hostPassword",
+        sdk_path: &["session", "hostPassword"],
         value_type: EngineStateValueType::String,
-        // The password the next host or join uses. Never replicated, persisted
-        // or logged; cleared once a verb consumes it.
+        // The password the next `hostSession` challenges joiners for; empty
+        // hosts without one. Never replicated, persisted or logged; cleared
+        // once hosting starts.
+        default: EngineStateDefault::String(""),
+        range: None,
+        persist: false,
+        capability: EngineStateCapability::Writable,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "session.joinPassword",
+        sdk_path: &["session", "joinPassword"],
+        value_type: EngineStateValueType::String,
+        // The password the next `joinSession` answers a challenge with. Never
+        // replicated, persisted or logged; cleared once a host admits the
+        // join, kept through every ending before that.
         default: EngineStateDefault::String(""),
         range: None,
         persist: false,
@@ -1759,10 +1785,12 @@ mod tests {
                 "session.connection",
                 "session.endCause",
                 "session.hostAddress",
+                "session.hostPassword",
                 "session.hosting",
                 "session.joinAddress",
+                "session.joinPassword",
                 "session.openSeats",
-                "session.password",
+                "session.passwordProtected",
                 "session.playerCounts.connected",
                 "session.playerCounts.down",
                 "session.playerCounts.inPlay",

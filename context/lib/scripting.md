@@ -227,8 +227,10 @@ Engine state paths are generated from an explicit catalog. The catalog owns stab
 | `getGameState().session.openSeats` | `session.openSeats` |
 | `getGameState().session.hostAddress` | `session.hostAddress` |
 | `getGameState().session.hosting` | `session.hosting` |
+| `getGameState().session.passwordProtected` | `session.passwordProtected` |
 | `getGameState().session.joinAddress` | `session.joinAddress` |
-| `getGameState().session.password` | `session.password` |
+| `getGameState().session.hostPassword` | `session.hostPassword` |
+| `getGameState().session.joinPassword` | `session.joinPassword` |
 | `getGameState().session.connection` | `session.connection` |
 | `getGameState().session.waitReason` | `session.waitReason` |
 | `getGameState().session.endCause` | `session.endCause` |
@@ -558,8 +560,10 @@ exception (below). Store writes and grants have already applied at dispatch
 `networking.md` §Slot lifecycle; to a client's store and saves: §5.
 
 **Session entry.** `hostSession()` and `joinSession()` enter a role from
-single-player at the frontend. They read `session.password`, and a join also
-reads `session.joinAddress` (IPv4, port optional). In any other role or scene,
+single-player at the frontend. A host reads `session.hostPassword`; a join
+reads `session.joinPassword` and `session.joinAddress` (IPv4, port optional).
+The two passwords are separate slots, so one typed to join never becomes the
+one a game hosts with. In any other role or scene,
 or while another press waits, they are refused with a warning and change
 nothing. A press made while a left level unloads or an ended host closes waits,
 publishing `session.connection` `connecting`, then runs with the address and
@@ -571,9 +575,14 @@ a late joiner skips them (`networking.md` §Role model).
 
 The session facts are client-local, nonpersistent engine slots. Writable:
 `session.joinAddress` (seeded at boot from the address the last admitted join
-dialed) and `session.password` (never replicated, persisted or logged; cleared
-when hosting starts, when a join is admitted and on `refusedPassword`, kept on
-every other ending). Readonly: `session.connection` (`offline`, `connecting`,
+dialed), `session.hostPassword` and `session.joinPassword` (never replicated,
+persisted or logged). The host password clears when hosting starts and stays
+on `hostFailed`. The join password clears when a host admits the join and
+stays through every ending before that, `refusedPassword` included, so the
+player can correct it. `--password` seeds the slots no boot endpoint consumed
+(`networking.md` §Role model). Readonly: `session.passwordProtected` (true on
+a live listen host whose run challenges for a password, since the host
+password slot empties once hosting starts), `session.connection` (`offline`, `connecting`,
 `waiting`, `playing`), `session.waitReason` (while `waiting`: `host`,
 `modDiffers`, `levelDiffers`; else empty) and `session.endCause` (why the last
 session or attempt ended: `sessionEnded`, `hostLost`, `connectFailed`,

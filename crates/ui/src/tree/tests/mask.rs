@@ -57,9 +57,9 @@ fn masked_text_never_draws_its_content() {
     let data = ui.build_draw_data([1280, 720], &mut fs, &no_images(), &HashMap::new());
     assert_eq!(data.texts[0].content, "***");
 
-    let bound = masked_text("", Some("session.password"));
+    let bound = masked_text("", Some("session.joinPassword"));
     for (value, drawn) in [("p4ss", "****"), ("", "")] {
-        let slots = string_slots("session.password", value);
+        let slots = string_slots("session.joinPassword", value);
         let mut fresh = UiTree::from_descriptor(&bound, &theme());
         let data = fresh.build_draw_data([1280, 720], &mut fs, &no_images(), &slots);
         let content = data.texts.first().map_or("", |text| text.content.as_str());

@@ -325,7 +325,7 @@ type KeyboardLayout = "letters" | "address";
 type KeyboardField = { layout: KeyboardLayout; masked: boolean; title: string; hint: string };
 
 /// Open the keyboard for one field: the cells first, so the push shows them.
-function editFieldSteps(target: typeof session.password, field: KeyboardField) {
+function editFieldSteps(target: typeof session.joinPassword, field: KeyboardField) {
   return [
     kb.layout.set(field.layout),
     kb.masked.set(field.masked),
@@ -360,11 +360,11 @@ const editJoinAddress = defineReaction(
 );
 const editPassword = defineReaction(
   "frontend.editPassword",
-  editFieldSteps(session.password, JOIN_PASSWORD_FIELD),
+  editFieldSteps(session.joinPassword, JOIN_PASSWORD_FIELD),
 );
 const editHostPassword = defineReaction(
   "frontend.editHostPassword",
-  editFieldSteps(session.password, HOST_PASSWORD_FIELD),
+  editFieldSteps(session.hostPassword, HOST_PASSWORD_FIELD),
 );
 
 const COMMIT_TEXT_ENTRY_ACTION = "ui.commitTextEntry";
@@ -464,7 +464,7 @@ function textField(
   label: string,
   edit: NamedReactionDescriptor,
   value: WidgetDescriptor,
-  slot: typeof session.password,
+  slot: typeof session.joinPassword,
   empty: string,
 ): WidgetDescriptor[] {
   return [
@@ -476,13 +476,18 @@ function textField(
   ];
 }
 
-function passwordField(id: string, edit: NamedReactionDescriptor, empty: string): WidgetDescriptor[] {
+function passwordField(
+  id: string,
+  edit: NamedReactionDescriptor,
+  slot: typeof session.joinPassword,
+  empty: string,
+): WidgetDescriptor[] {
   return textField(
     id,
     "PASSWORD",
     edit,
-    Text({ content: "", fontSize: 14, mask: true, bind: bindState(session.password) }),
-    session.password,
+    Text({ content: "", fontSize: 14, mask: true, bind: bindState(slot) }),
+    slot,
     empty,
   );
 }
@@ -493,8 +498,9 @@ function fieldGrid(rows: WidgetDescriptor[]): WidgetDescriptor {
   return Grid({ gap: 10, align: "center", cols: 2 }, rows);
 }
 
-// Host and Join buttons. Each reads session.password; joinSession also reads
-// session.joinAddress.
+// Host and Join buttons. hostSession reads session.hostPassword; joinSession
+// reads session.joinPassword and session.joinAddress. The two passwords are
+// separate fields, so one typed to join never becomes the one a game hosts with.
 const host = defineReaction("frontend.hostSession", hostSession());
 const join = defineReaction("frontend.joinSession", joinSession());
 const stopHosting = defineReaction("frontend.stopHosting", endSession());
@@ -509,7 +515,7 @@ const retypeAddress = defineReaction("frontend.retypeAddress", [
 ]);
 const retypePassword = defineReaction("frontend.retypePassword", [
   openMenu(JOIN_MENU_NAME),
-  ...editFieldSteps(session.password, JOIN_PASSWORD_FIELD),
+  ...editFieldSteps(session.joinPassword, JOIN_PASSWORD_FIELD),
 ]);
 
 const isHosting = stateEquals(session.hosting, true);
@@ -578,6 +584,18 @@ function sessionMenu(name: string, title: string, initialFocus: string, rows: Wi
 export const hostMenu = sessionMenu(HOST_MENU_NAME, "HOST A GAME", "hostStart", [
   VStack({ gap: 10, align: "stretch", visibleWhen: isHosting }, [
     hostAddressLine(18),
+    Text({
+      content: "PASSWORD PROTECTED: PLAYERS NEED YOUR PASSWORD",
+      fontSize: 14,
+      color: COLOR_ACCENT,
+      visibleWhen: stateEquals(session.passwordProtected, true),
+    }),
+    Text({
+      content: "NO PASSWORD: ANYONE CAN JOIN",
+      fontSize: 14,
+      color: COLOR_MUTED,
+      visibleWhen: stateEquals(session.passwordProtected, false),
+    }),
     Text({ content: "PLAYERS JOIN WITH THIS ADDRESS AND WAIT", fontSize: 13, color: COLOR_MUTED }),
     Text({ content: "HERE UNTIL YOU START A LEVEL", fontSize: 13, color: COLOR_MUTED }),
     Button({ id: "hostPlay", label: "START A LEVEL", onPress: openPlay }),
@@ -591,7 +609,7 @@ export const hostMenu = sessionMenu(HOST_MENU_NAME, "HOST A GAME", "hostStart", 
       color: COLOR_MUTED,
       visibleWhen: isConnecting,
     }),
-    fieldGrid(passwordField("hostPassword", editHostPassword, "NONE: ANYONE CAN JOIN")),
+    fieldGrid(passwordField("hostPassword", editHostPassword, session.hostPassword, "NONE: ANYONE CAN JOIN")),
     Button({ id: "hostStart", label: "START HOSTING", onPress: host }),
   ]),
 ]);
@@ -623,7 +641,7 @@ export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinStart", 
         session.joinAddress,
         "NOT SET",
       ),
-      ...passwordField("joinPassword", editPassword, "NONE"),
+      ...passwordField("joinPassword", editPassword, session.joinPassword, "NONE"),
     ]),
     Button({ id: "joinStart", label: "JOIN", onPress: join }),
   ]),

@@ -77,8 +77,8 @@ const backToFrontend = defineReaction("frontend.returnToFrontend", returnToFront
 export const leave = defineReaction("pause.leaveSession", leaveSession());
 // A run's end on a map-end crossing: every role runs the same steps.
 export const runEnd = defineReaction("run.end", [endSession(), returnToFrontend()]);
-// Host and Join buttons. Each reads session.password; joinSession also reads
-// session.joinAddress.
+// Host and Join buttons. hostSession reads session.hostPassword; joinSession
+// reads session.joinPassword and session.joinAddress.
 export const host = defineReaction("frontend.host", hostSession());
 export const join = defineReaction("frontend.join", joinSession());
 
@@ -121,7 +121,7 @@ const levelSelect = defineUiTree({
           onPress: leave,
         }),
         // A password field and a refusal notice.
-        Text({ content: "", mask: true, bind: bindState(session.password) }),
+        Text({ content: "", mask: true, bind: bindState(session.joinPassword) }),
         Text({ content: "WRONG PASSWORD", visibleWhen: stateEquals(session.endCause, "refusedPassword") }),
       ],
     ),

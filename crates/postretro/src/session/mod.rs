@@ -664,6 +664,10 @@ impl Session {
         // Every role-bound value derives in one place, which in-app entry, a
         // client's leave and a host's end reuse.
         let mut seat_table = None;
+        let cli_password = parsed
+            .as_ref()
+            .ok()
+            .and_then(|config| config.password.as_deref());
         let entry = net_entry::enter_role(
             &net_role,
             player_options.player_id,
@@ -671,6 +675,7 @@ impl Session {
             &mut seat_table,
             getrandom::fill,
             netcode::probe_lan_address,
+            cli_password.unwrap_or_default(),
         );
         // Boot publishes the session facts in-app entry publishes.
         net_entry::publish_boot_facts(
@@ -679,9 +684,9 @@ impl Session {
             &net_role,
             &entry,
             player_options.last_join_address.as_deref(),
+            cli_password,
         );
-        let mut net_endpoint = entry.endpoint;
-        net_entry::apply_cli_password(net_endpoint.as_mut(), parsed.as_ref().ok());
+        let net_endpoint = entry.endpoint;
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         let trigger_spawn_context = scripting.spawn_context.clone();
         boot_timings.record("net_endpoint_complete");

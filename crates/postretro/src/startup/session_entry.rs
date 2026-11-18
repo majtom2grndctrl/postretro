@@ -18,7 +18,10 @@ use crate::session::role_state::SessionRole;
 use crate::startup::LevelRequest;
 
 pub(crate) const JOIN_ADDRESS_SLOT: &str = "session.joinAddress";
-pub(crate) const PASSWORD_SLOT: &str = "session.password";
+/// The password the next `hostSession` challenges joiners for.
+pub(crate) const HOST_PASSWORD_SLOT: &str = "session.hostPassword";
+/// The password the next `joinSession` answers a challenge with.
+pub(crate) const JOIN_PASSWORD_SLOT: &str = "session.joinPassword";
 pub(crate) const CONNECTION_SLOT: &str = "session.connection";
 pub(crate) const WAIT_REASON_SLOT: &str = "session.waitReason";
 pub(crate) const END_CAUSE_SLOT: &str = "session.endCause";
@@ -224,10 +227,12 @@ impl App {
             return;
         }
         self.publish_end_cause(None);
-        let password = self.read_session_string(PASSWORD_SLOT);
         let entry = match verb {
-            EntryVerb::Host => PendingEntry::Host { password },
+            EntryVerb::Host => PendingEntry::Host {
+                password: self.read_session_string(HOST_PASSWORD_SLOT),
+            },
             EntryVerb::Join => {
+                let password = self.read_session_string(JOIN_PASSWORD_SLOT);
                 let text = self.read_session_string(JOIN_ADDRESS_SLOT);
                 match netcode::parse_join_address(&text) {
                     Ok(addr) => PendingEntry::Join {
@@ -330,11 +335,12 @@ impl App {
         match entry {
             PendingEntry::Host { password } => {
                 let port = self.in_app_host_port;
-                if self.host_from_frontend(port) {
-                    // The hosted run's password is fixed now. Hosting
-                    // consumes it; a failed build keeps it for a retry.
-                    self.set_endpoint_password(&password);
-                    self.consume_password();
+                if self.host_from_frontend_with(port, getrandom::fill, &password) {
+                    // The hosted run's password is fixed now, and
+                    // `session.passwordProtected` says whether it has one.
+                    // Hosting consumes it; a failed build keeps it for a
+                    // retry.
+                    self.consume_password(HOST_PASSWORD_SLOT);
                 } else {
                     self.publish_end_cause(Some(EndCause::HostFailed));
                 }
@@ -353,11 +359,9 @@ impl App {
                 };
                 self.write_session_slot(WAIT_REASON_SLOT, SlotValue::Enum(String::new()));
                 self.publish_connection(ConnectionPhase::Connecting);
-                if self.join_from_frontend(addr) {
-                    // Set before the first poll: the challenge can arrive
-                    // with the host's first reply.
-                    self.set_endpoint_password(&password);
-                } else {
+                // The endpoint takes the password before its first poll: the
+                // challenge can arrive with the host's first reply.
+                if !self.join_from_frontend_with(addr, &password) {
                     self.join_facts = JoinFacts::default();
                     self.publish_end_cause(Some(EndCause::ConnectFailed));
                     self.publish_connection(ConnectionPhase::Offline);
@@ -415,7 +419,7 @@ impl App {
             return;
         }
         self.join_facts.admitted = true;
-        self.consume_password();
+        self.consume_password(JOIN_PASSWORD_SLOT);
         self.publish_connection(ConnectionPhase::Waiting);
         self.publish_wait_reason();
         let address = self.join_facts.address.clone();
@@ -493,37 +497,23 @@ impl App {
     }
 
     /// A joined session is over: the client is offline, its wait reason
-    /// clears, and the ending's cause publishes. A password refusal consumes
-    /// the password; every other ending keeps it for a retry.
+    /// clears, and the ending's cause publishes. Only admission consumes the
+    /// join password: every ending before it, a password refusal included,
+    /// keeps it for the player to correct or retry.
     pub(crate) fn finish_join_facts(&mut self, end_cause: Option<EndCause>) {
         self.join_facts = JoinFacts::default();
         self.publish_connection(ConnectionPhase::Offline);
         self.publish_wait_reason();
         if let Some(cause) = end_cause {
-            if cause == EndCause::RefusedPassword {
-                self.consume_password();
-            }
             self.publish_end_cause(Some(cause));
         }
     }
 
-    /// A verb consumed the password: the slot empties, and an open field for
-    /// it cannot write it back.
-    fn consume_password(&mut self) {
-        self.write_session_slot(PASSWORD_SLOT, SlotValue::String(String::new()));
-        self.abandon_text_entry_field_for(PASSWORD_SLOT);
-    }
-
-    /// Hand the endpoint the password a press captured. It keeps only the
-    /// derived key.
-    fn set_endpoint_password(&mut self, password: &str) {
-        if let Some(endpoint) = self
-            .session
-            .as_mut()
-            .and_then(|session| session.net_endpoint.as_mut())
-        {
-            endpoint.set_session_password(password);
-        }
+    /// A verb consumed the password in `slot`: the slot empties, and an open
+    /// field for it cannot write it back.
+    fn consume_password(&mut self, slot: &str) {
+        self.write_session_slot(slot, SlotValue::String(String::new()));
+        self.abandon_text_entry_field_for(slot);
     }
 
     /// Publish `session.connection` when it changes.
@@ -589,45 +579,58 @@ impl App {
                 .is_some_and(|session| session.session_players.session_level())
     }
 
-    /// Join the host at `addr` from the frontend. A backdrop load in flight is
-    /// cancelled: the host's relevel would discard it. An installed backdrop
-    /// stays until the relevel reloads it as the host's level. Returns whether
-    /// a client endpoint now exists.
+    /// [`Self::join_from_frontend_with`] answering with no password.
+    #[cfg(test)]
     pub(crate) fn join_from_frontend(&mut self, addr: SocketAddr) -> bool {
+        self.join_from_frontend_with(addr, "")
+    }
+
+    /// Join the host at `addr` from the frontend, answering a challenge with
+    /// `password`. A backdrop load in flight is cancelled: the host's relevel
+    /// would discard it. An installed backdrop stays until the relevel reloads
+    /// it as the host's level. Returns whether a client endpoint now exists.
+    pub(crate) fn join_from_frontend_with(&mut self, addr: SocketAddr, password: &str) -> bool {
         if self.session_role() != SessionRole::SinglePlayer || !self.at_frontend() {
             log::warn!("[Net] join refused: entry needs a single-player machine at its frontend");
             return false;
         }
         self.cancel_backdrop_load_for_join();
         self.save_progress_for_join();
-        let Some(failure) =
-            self.enter_net_role(&netcode::NetRole::Connect { addr }, getrandom::fill)
-        else {
+        let Some(failure) = self.enter_net_role(
+            &netcode::NetRole::Connect { addr },
+            getrandom::fill,
+            password,
+        ) else {
             return true;
         };
         log::warn!("[Net] join to {addr} failed before connecting: {failure:?}");
         false
     }
 
-    /// Host on `port` from the frontend: a new hosted run with a fresh session
-    /// id and seat counter, seat 0 keeping its carried state. The machine
-    /// stands at its frontend with a live endpoint, and joiners wait there
-    /// until it starts a level. Returns whether a host endpoint now exists.
+    /// [`Self::host_from_frontend_with`] with OS entropy and no password.
+    #[cfg(test)]
     pub(crate) fn host_from_frontend(&mut self, port: u16) -> bool {
-        self.host_from_frontend_with(port, getrandom::fill)
+        self.host_from_frontend_with(port, getrandom::fill, "")
     }
 
-    /// [`Self::host_from_frontend`] with the session id drawn from `mint`.
+    /// Host on `port` from the frontend: a new hosted run with a session id
+    /// drawn from `mint`, a fresh seat counter and seat 0 keeping its carried
+    /// state, challenging joiners for `password` unless it is empty. The
+    /// machine stands at its frontend with a live endpoint, and joiners wait
+    /// there until it starts a level. Returns whether a host endpoint now
+    /// exists.
     pub(crate) fn host_from_frontend_with(
         &mut self,
         port: u16,
         mint: netcode::SessionIdSource,
+        password: &str,
     ) -> bool {
         if self.session_role() != SessionRole::SinglePlayer || !self.at_frontend() {
             log::warn!("[Net] host refused: entry needs a single-player machine at its frontend");
             return false;
         }
-        let Some(failure) = self.enter_net_role(&netcode::NetRole::Host { port }, mint) else {
+        let Some(failure) = self.enter_net_role(&netcode::NetRole::Host { port }, mint, password)
+        else {
             return true;
         };
         log::warn!("[Net] hosting on port {port} failed; staying single-player: {failure:?}");
@@ -665,6 +668,7 @@ impl App {
         &mut self,
         net_role: &netcode::NetRole,
         mint: netcode::SessionIdSource,
+        password: &str,
     ) -> Option<EntryFailure> {
         let Some(session) = self.session.as_mut() else {
             return Some(EntryFailure::Endpoint);
@@ -676,6 +680,7 @@ impl App {
             &mut session.seat_table,
             mint,
             netcode::probe_lan_address,
+            password,
         );
         netcode::clear_released_seat_slot_values(
             &mut session.scripting.script_ctx.slot_table.borrow_mut(),

@@ -71,8 +71,8 @@ local backToFrontend = Postretro.defineReaction("frontend.returnToFrontend", UI.
 local leave = Postretro.defineReaction("pause.leaveSession", UI.leaveSession())
 -- A run's end on a map-end crossing: every role runs the same steps.
 local runEnd = Postretro.defineReaction("run.end", { UI.endSession(), UI.returnToFrontend() })
--- Host and Join buttons. Each reads session.password; joinSession also reads
--- session.joinAddress.
+-- Host and Join buttons. hostSession reads session.hostPassword; joinSession
+-- reads session.joinPassword and session.joinAddress.
 local host = Postretro.defineReaction("frontend.host", UI.hostSession())
 local join = Postretro.defineReaction("frontend.join", UI.joinSession())
 
@@ -104,7 +104,7 @@ table.insert(children, UI.Button({
 }))
 -- A password field and a refusal notice.
 local session = Postretro.getGameState().session
-table.insert(children, UI.Text({ content = "", mask = true, bind = UI.bindState(session.password) }))
+table.insert(children, UI.Text({ content = "", mask = true, bind = UI.bindState(session.joinPassword) }))
 table.insert(children, UI.Text({
   content = "WRONG PASSWORD",
   visibleWhen = UI.stateEquals(session.endCause, "refusedPassword"),

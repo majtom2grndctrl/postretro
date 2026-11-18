@@ -382,7 +382,7 @@ fn failed_session_mint_at_host_entry_stays_single_player_with_its_ledger() {
     let before = session_id(&view.app);
     let hosted = view
         .app
-        .host_from_frontend_with(0, |_| Err(getrandom::Error::UNSUPPORTED));
+        .host_from_frontend_with(0, |_| Err(getrandom::Error::UNSUPPORTED), "");
     assert!(!hosted);
     assert_eq!(view.app.session_role(), SessionRole::SinglePlayer);
     assert_eq!(session_id(&view.app), before);
@@ -399,7 +399,7 @@ fn boot_flags_and_in_app_entry_derive_the_same_role_bound_state() {
         let session = app.session.as_ref().unwrap();
         RoleBoundState::observe(&session.scripting, session.seat_table.as_ref())
     }
-    fn boot(role: &NetRole) -> RoleBoundState {
+    fn boot(role: &NetRole, password: &str) -> RoleBoundState {
         let mut app = test_app();
         let session = app.session.as_mut().unwrap();
         session.net_endpoint = enter_role(
@@ -409,6 +409,7 @@ fn boot_flags_and_in_app_entry_derive_the_same_role_bound_state() {
             &mut session.seat_table,
             getrandom::fill,
             crate::netcode::probe_lan_address,
+            password,
         )
         .endpoint;
         observe(&app)
@@ -417,15 +418,25 @@ fn boot_flags_and_in_app_entry_derive_the_same_role_bound_state() {
 
     let mut host = single_player_at_menu(spawn_points(3));
     assert!(host.app.host_from_frontend(0));
-    assert_eq!(observe(&host.app), boot(&NetRole::Host { port: 0 }));
+    assert_eq!(observe(&host.app), boot(&NetRole::Host { port: 0 }, ""));
+
+    // A password-protected run says so, from either entry.
+    let mut host = single_player_at_menu(spawn_points(3));
+    assert!(host.app.host_from_frontend_with(0, getrandom::fill, "p"));
+    let protected = observe(&host.app);
+    assert!(protected.password_protected);
+    assert_eq!(protected, boot(&NetRole::Host { port: 0 }, "p"));
 
     let mut client = single_player_at_menu(spawn_points(3));
     assert!(client.app.join_from_frontend(relay.address()));
     assert_eq!(
         observe(&client.app),
-        boot(&NetRole::Connect {
-            addr: relay.address()
-        })
+        boot(
+            &NetRole::Connect {
+                addr: relay.address()
+            },
+            ""
+        )
     );
 }
 
@@ -711,7 +722,8 @@ fn entering_engine(points: Vec<MapEntity>) -> ClientView {
 struct EntryFacts {
     role: SessionRole,
     session_id: Option<SessionId>,
-    password: Option<SlotValue>,
+    host_password: Option<SlotValue>,
+    join_password: Option<SlotValue>,
     end_cause: Option<SlotValue>,
     connection: Option<SlotValue>,
     saved: Option<Vec<u8>>,
@@ -725,7 +737,8 @@ fn entry_facts(app: &App) -> EntryFacts {
             .seat_table
             .as_ref()
             .map(|seats| seats.session_id_for_test()),
-        password: slot(app, "session.password"),
+        host_password: slot(app, "session.hostPassword"),
+        join_password: slot(app, "session.joinPassword"),
         end_cause: slot(app, "session.endCause"),
         connection: connection(app),
         saved: crate::scripting::state_persistence::state_path(session.data_dir.as_deref(), MOD_ID)
@@ -739,7 +752,8 @@ fn primed_engine(points: Vec<MapEntity>, dir: &std::path::Path, address: &str) -
     let mut view = entering_engine(points);
     with_saves(&mut view, dir);
     write_world(&view.app, 42.0);
-    write_text(&mut view.app, "session.password", "hunter2");
+    write_text(&mut view.app, "session.hostPassword", "hunter2");
+    write_text(&mut view.app, "session.joinPassword", "hunter3");
     write_text(&mut view.app, "session.joinAddress", address);
     view.app
         .publish_end_cause(Some(super::session_entry::EndCause::ConnectFailed));
@@ -1054,7 +1068,7 @@ fn a_waiting_press_runs_with_what_it_captured_and_a_load_or_navigation_cancels_i
 
     // A malformed address ends the press at once, never `connecting`.
     let mut view = entering_engine(points.clone());
-    write_text(&mut view.app, "session.password", "kept");
+    write_text(&mut view.app, "session.joinPassword", "kept");
     write_text(&mut view.app, "session.joinAddress", "example.com");
     let _ = take_published_connections();
     run(&mut view.app, [join_verb()]);
@@ -1064,7 +1078,7 @@ fn a_waiting_press_runs_with_what_it_captured_and_a_load_or_navigation_cancels_i
         Some(SlotValue::Enum("badAddress".to_string()))
     );
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String("kept".to_string()))
     );
     assert_eq!(view.app.session_role(), SessionRole::SinglePlayer);
@@ -1254,8 +1268,8 @@ fn a_bad_address_opens_no_socket_writes_no_save_and_keeps_the_password() {
         assert_eq!(take_published_connections(), [], "{address}");
         assert_eq!(end_cause(&view.app), "badAddress", "{address}");
         assert_eq!(
-            slot(&view.app, "session.password"),
-            Some(SlotValue::String("hunter2".to_string())),
+            slot(&view.app, "session.joinPassword"),
+            Some(SlotValue::String("hunter3".to_string())),
             "{address}"
         );
     }
@@ -1297,6 +1311,7 @@ fn boot_and_own_endings_set_the_causes_entry_sets() {
             &NetRole::SinglePlayer,
             &entry,
             None,
+            None,
         );
         assert_eq!(end_cause(&app), expected, "{args:?}");
     }
@@ -1312,6 +1327,7 @@ fn boot_and_own_endings_set_the_causes_entry_sets() {
         None,
         &NetRole::Host { port: 27015 },
         &entry,
+        None,
         None,
     );
     assert_eq!(end_cause(&app), "hostFailed");
@@ -1574,50 +1590,67 @@ fn wait_reason_names_each_hold() {
     assert_eq!(wait_reason_of(&view.app), "modDiffers");
 }
 
-// AC F8 (P20): the password clears when hosting starts, when a join is
-// admitted and on `refusedPassword`, and stays on `connectFailed`,
-// `hostFailed` and `badAddress`.
+// AC F8 (P20, as corrected): the host password clears when hosting starts
+// and stays on `hostFailed`; the join password clears only on admission and
+// stays through `connectFailed`, `refusedPassword` and `badAddress`. Each
+// verb reads only its own slot.
 #[test]
 fn the_password_clears_when_consumed_and_stays_for_a_retry() {
     let points = spawn_points(3);
     let relay = host_in_level(&points);
-    let password = |app: &App| slot(app, "session.password");
-    let set = Some(SlotValue::String("hunter2".to_string()));
+    let host_password = |app: &App| slot(app, "session.hostPassword");
+    let join_password = |app: &App| slot(app, "session.joinPassword");
+    let host_set = Some(SlotValue::String("hunter2".to_string()));
+    let join_set = Some(SlotValue::String("hunter3".to_string()));
     let empty = Some(SlotValue::String(String::new()));
 
     let dir = tempfile::tempdir().unwrap();
     let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
     run(&mut view.app, [host_verb()]);
-    assert_eq!(password(&view.app), empty, "hosting consumes it");
+    assert_eq!(host_password(&view.app), empty, "hosting consumes it");
+    assert_eq!(
+        join_password(&view.app),
+        join_set,
+        "hosting leaves the join's"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
     run(&mut view.app, [join_verb()]);
-    assert_eq!(password(&view.app), set, "dialing keeps it");
+    assert_eq!(join_password(&view.app), join_set, "dialing keeps it");
     drain(&mut view, vec![holding(HoldingCause::HostLevelAbsent)]);
-    assert_eq!(password(&view.app), empty, "admission consumes it");
+    assert_eq!(join_password(&view.app), empty, "admission consumes it");
+    assert_eq!(
+        host_password(&view.app),
+        host_set,
+        "joining leaves the host's"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
     run(&mut view.app, [join_verb()]);
     assert!(view.app.leave_session(LeaveCause::NeverConnected));
-    assert_eq!(password(&view.app), set, "connectFailed keeps it");
+    assert_eq!(join_password(&view.app), join_set, "connectFailed keeps it");
     run(&mut view.app, [join_verb()]);
     assert!(
         view.app
             .leave_session(LeaveCause::Refused(EndCause::RefusedPassword))
     );
-    assert_eq!(password(&view.app), empty, "refusedPassword consumes it");
+    assert_eq!(
+        join_password(&view.app),
+        join_set,
+        "refusedPassword keeps it for the player to correct"
+    );
 
     let busy = std::net::UdpSocket::bind(("0.0.0.0", 0)).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let mut view = primed_engine(points, dir.path(), "1.2.3");
     run(&mut view.app, [join_verb()]);
-    assert_eq!(password(&view.app), set, "badAddress keeps it");
+    assert_eq!(join_password(&view.app), join_set, "badAddress keeps it");
     view.app.in_app_host_port = busy.local_addr().unwrap().port();
     run(&mut view.app, [host_from("named:busy-host")]);
     assert_eq!(end_cause(&view.app), "hostFailed");
-    assert_eq!(password(&view.app), set, "hostFailed keeps it");
+    assert_eq!(host_password(&view.app), host_set, "hostFailed keeps it");
 }
 
 // AC F9 (P12): the address is remembered once a join is admitted, never on
@@ -1681,6 +1714,7 @@ fn the_join_address_is_remembered_on_admission_and_seeds_the_next_boot() {
             released: Vec::new(),
         },
         restarted.last_join_address.as_deref(),
+        None,
     );
     assert_eq!(
         slot(&app, "session.joinAddress"),
@@ -1691,7 +1725,7 @@ fn the_join_address_is_remembered_on_admission_and_seeds_the_next_boot() {
 /// An engine that pressed Join toward `relay` answering with `password`.
 fn joining_with(relay: &Relay, points: &[MapEntity], password: &str) -> ClientView {
     let mut view = entering_engine(points.to_vec());
-    write_text(&mut view.app, "session.password", password);
+    write_text(&mut view.app, "session.joinPassword", password);
     write_text(
         &mut view.app,
         "session.joinAddress",
@@ -1736,22 +1770,22 @@ fn a_password_host_admits_the_right_password_and_refuses_a_wrong_or_missing_one(
             "{case}: at its frontend"
         );
         assert_eq!(
-            slot(&view.app, "session.password"),
-            Some(SlotValue::String(String::new())),
-            "{case}: the refusal consumes it"
+            slot(&view.app, "session.joinPassword"),
+            Some(SlotValue::String(password.to_string())),
+            "{case}: the refusal keeps it to correct"
         );
     }
 }
 
-// AC P-e (P10): writing `session.password` on a live host changes which
+// AC P-e (P10): writing `session.hostPassword` on a live host changes which
 // proof admits only at its next hosting.
 #[test]
 fn a_live_password_write_takes_effect_at_the_next_hosting() {
     let points = spawn_points(3);
     let mut host = entering_engine(points.clone());
-    write_text(&mut host.app, "session.password", "p");
+    write_text(&mut host.app, "session.hostPassword", "p");
     run(&mut host.app, [host_verb()]);
-    write_text(&mut host.app, "session.password", "q");
+    write_text(&mut host.app, "session.hostPassword", "q");
     let mut relay = Relay::adopt(host.app);
 
     let mut late = joining_with(&relay, &points, "q");
@@ -1774,28 +1808,25 @@ fn a_live_password_write_takes_effect_at_the_next_hosting() {
 }
 
 // AC P-m: `--host --password p` admits `p` and refuses `q`; `--connect
-// --password p` is admitted by a host holding `p`.
+// --password p` is admitted by a host holding `p`. Boot hands the flag to
+// the role builder as in-app entry hands it the slot's password.
 #[test]
 fn the_password_flag_serves_host_and_connect() {
     let points = spawn_points(3);
-    let config = |role: NetRole| crate::netcode::NetConfig {
-        role,
-        password: Some("p".to_string()),
-    };
     let mut host = entering_engine(points.clone());
     {
         let session = host.app.session.as_mut().unwrap();
         let role = NetRole::Host { port: 0 };
-        let mut endpoint = enter_role(
+        let endpoint = enter_role(
             &role,
             None,
             &mut session.scripting,
             &mut session.seat_table,
             getrandom::fill,
             crate::netcode::probe_lan_address,
+            "p",
         )
         .endpoint;
-        crate::session::net_entry::apply_cli_password(endpoint.as_mut(), Some(&config(role)));
         session.net_endpoint = endpoint;
     }
     host.app.install_network_mod_content();
@@ -1813,20 +1844,95 @@ fn the_password_flag_serves_host_and_connect() {
         let role = NetRole::Connect {
             addr: relay.address(),
         };
-        let mut endpoint = enter_role(
+        let endpoint = enter_role(
             &role,
             None,
             &mut session.scripting,
             &mut session.seat_table,
             getrandom::fill,
             crate::netcode::probe_lan_address,
+            "p",
         )
         .endpoint;
-        crate::session::net_entry::apply_cli_password(endpoint.as_mut(), Some(&config(role)));
         session.net_endpoint = endpoint;
     }
     client.app.install_network_mod_content();
     assert!(admitted_or_refused(&mut relay, &mut client));
+}
+
+/// Publish the boot facts a `--password` boot in `net_role` publishes,
+/// against `entry`.
+fn boot_with_password(app: &App, net_role: &NetRole, entry: &crate::session::net_entry::RoleEntry) {
+    crate::session::net_entry::publish_boot_facts(
+        &script_ctx_of(app),
+        None,
+        net_role,
+        entry,
+        None,
+        Some("p"),
+    );
+}
+
+fn no_endpoint() -> crate::session::net_entry::RoleEntry {
+    crate::session::net_entry::RoleEntry {
+        endpoint: None,
+        failure: None,
+        released: Vec::new(),
+    }
+}
+
+// A `--password` no boot endpoint consumed serves the in-app verbs: with no
+// role flag, a menu join answers with it and a menu host challenges for it.
+// A `--connect` boot seeds only the join's.
+#[test]
+fn the_password_flag_serves_in_app_host_and_join() {
+    let points = spawn_points(3);
+    let mut relay = host_in_level(&points);
+    relay.server().set_session_password("p");
+    let mut view = entering_engine(points.clone());
+    boot_with_password(&view.app, &NetRole::SinglePlayer, &no_endpoint());
+    write_text(
+        &mut view.app,
+        "session.joinAddress",
+        &relay.address().to_string(),
+    );
+    run(&mut view.app, [join_verb()]);
+    assert!(
+        admitted_or_refused(&mut relay, &mut view),
+        "the join answers `p`"
+    );
+
+    let mut host = entering_engine(points.clone());
+    boot_with_password(&host.app, &NetRole::SinglePlayer, &no_endpoint());
+    run(&mut host.app, [host_verb()]);
+    assert_eq!(
+        slot(&host.app, "session.passwordProtected"),
+        Some(SlotValue::Boolean(true))
+    );
+    let mut relay = Relay::adopt(host.app);
+    let mut wrong = joining_with(&relay, &points, "");
+    assert!(
+        !admitted_or_refused(&mut relay, &mut wrong),
+        "the host wants `p`"
+    );
+
+    let view = entering_engine(points);
+    boot_with_password(
+        &view.app,
+        &NetRole::Connect {
+            addr: "127.0.0.1:27015".parse().unwrap(),
+        },
+        &no_endpoint(),
+    );
+    assert_eq!(
+        slot(&view.app, "session.joinPassword"),
+        Some(SlotValue::String("p".to_string()))
+    );
+    assert_eq!(
+        slot(&view.app, "session.hostPassword"),
+        Some(SlotValue::String(String::new())),
+        "the password a player joins with is never the one they host with"
+    );
 }
 
 // AC P-i (P21): on a password host, a returning player whose proof lands on
@@ -1881,7 +1987,7 @@ fn a_password_proof_on_the_hold_deadline_reclaims_and_one_after_it_does_not() {
 
 // AC P-k: no datagram, save file, settings file, slot or captured log line
 // holds the password, no uncaptured record does either, and
-// `session.password` holds it only until a verb consumes it.
+// `session.joinPassword` holds it only until admission consumes it.
 #[test]
 fn the_password_never_leaves_the_slot_that_held_it() {
     const PROBE: &str = "zq-probe-7731-never-in-a-fixture";
@@ -1898,14 +2004,14 @@ fn the_password_never_leaves_the_slot_that_held_it() {
     let mut view = primed_engine(points.clone(), dir.path(), &relay.address().to_string());
     let settings = dir.path().join("settings.toml");
     view.app.session.as_mut().unwrap().settings_path = Some(settings.clone());
-    write_text(&mut view.app, "session.password", PROBE);
+    write_text(&mut view.app, "session.joinPassword", PROBE);
     run(&mut view.app, [join_verb()]);
     assert!(
         admitted_or_refused(&mut relay, &mut view),
         "the probe admits"
     );
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String(String::new())),
         "admission consumed it"
     );
@@ -1950,10 +2056,10 @@ fn a_waiting_join_answers_with_the_password_it_captured() {
     let mut second = host_in_level(&points);
     second.server().set_session_password("p");
     let mut view = client_in_level(&mut first, &points, &second.address().to_string());
-    write_text(&mut view.app, "session.password", "p");
+    write_text(&mut view.app, "session.joinPassword", "p");
     run(&mut view.app, [leave_verb(), join_verb()]);
     assert!(view.app.pending_entry.is_some());
-    write_text(&mut view.app, "session.password", "q");
+    write_text(&mut view.app, "session.joinPassword", "q");
     view.app.drain_level_requests();
     view.app.resume_pending_entry();
     assert!(
@@ -2194,7 +2300,7 @@ fn the_dev_keyboard_titles_its_field_and_masks_a_password() {
     assert!(!stops.iter().any(|stop| stop == "pad_1"));
     view.app.commit_text_entry();
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String("hi".to_string()))
     );
 }
@@ -2292,7 +2398,7 @@ fn a_title_notice_reopens_the_field_to_fix() {
     press(&mut view.app, "kbAppend_p");
     view.app.commit_text_entry();
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String("p".to_string()))
     );
     assert_eq!(
@@ -2349,7 +2455,7 @@ fn a_menu_text_field_commits_into_its_own_slot() {
     typed(&mut view.app, "hunter2");
     view.app.cancel_text_entry();
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String(String::new())),
         "cancel leaves the field as it was"
     );
@@ -2361,12 +2467,85 @@ fn a_menu_text_field_commits_into_its_own_slot() {
     typed(&mut view.app, "hunter2");
     view.app.commit_text_entry();
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String("hunter2".to_string()))
     );
     assert_eq!(
         text_entry(&view.app),
         Some(SlotValue::String(String::new()))
+    );
+}
+
+/// Type `text` on the dev keyboard's on-screen keys, then commit.
+fn type_on_keys(app: &mut App, text: &str) {
+    for ch in text.chars() {
+        let key = match ch {
+            '.' => "kbAppend_dot".to_string(),
+            ':' => "kbAppend_colon".to_string(),
+            other => format!("kbAppend_{other}"),
+        };
+        press(app, &key);
+    }
+    app.commit_text_entry();
+}
+
+// Both sides in-app, every field typed on the dev keyboard: the host's
+// password field protects its run, the joiner's admits it, and neither
+// side's other password slot is touched.
+#[test]
+fn a_menu_host_and_a_menu_join_typed_on_the_keyboard_meet() {
+    let points = spawn_points(3);
+    let mut host = entering_engine(points.clone());
+    let _ = install_dev_frontend(&mut host.app);
+    press(&mut host.app, "frontend.editHostPassword");
+    type_on_keys(&mut host.app, "pw");
+    assert_eq!(
+        slot(&host.app, "session.hostPassword"),
+        Some(SlotValue::String("pw".to_string()))
+    );
+    assert_eq!(
+        slot(&host.app, "session.joinPassword"),
+        Some(SlotValue::String(String::new())),
+        "the host field types into the host's slot only"
+    );
+    press(&mut host.app, "frontend.hostSession");
+    assert_eq!(host.app.session_role(), SessionRole::Host);
+    assert_eq!(
+        slot(&host.app, "session.passwordProtected"),
+        Some(SlotValue::Boolean(true))
+    );
+    let mut relay = Relay::adopt(host.app);
+    let address = relay.address().to_string();
+
+    let join = |password: &str| {
+        let mut view = entering_engine(points.clone());
+        let _ = install_dev_frontend(&mut view.app);
+        write_text(&mut view.app, "session.joinAddress", "");
+        press(&mut view.app, "frontend.editJoinAddress");
+        type_on_keys(&mut view.app, &address);
+        press(&mut view.app, "frontend.editPassword");
+        type_on_keys(&mut view.app, password);
+        assert_eq!(
+            slot(&view.app, "session.hostPassword"),
+            Some(SlotValue::String(String::new())),
+            "the join field types into the join's slot only"
+        );
+        press(&mut view.app, "frontend.joinSession");
+        assert_eq!(view.app.session_role(), SessionRole::Client);
+        view
+    };
+    let mut wrong = join("pq");
+    assert!(!admitted_or_refused(&mut relay, &mut wrong));
+    assert_eq!(end_cause(&wrong.app), "refusedPassword");
+    let mut right = join("pw");
+    assert!(admitted_or_refused(&mut relay, &mut right));
+
+    // Ending the run clears the protected flag with the hosting.
+    relay.app.end_session();
+    close_out(&mut relay.app);
+    assert_eq!(
+        slot(&relay.app, "session.passwordProtected"),
+        Some(SlotValue::Boolean(false))
     );
 }
 
@@ -2420,7 +2599,7 @@ fn a_field_closed_another_way_is_dropped_with_its_text() {
     press(&mut view.app, "kbAppend_x");
     view.app.commit_text_entry();
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String(String::new())),
         "an untargeted entry never reaches the old field"
     );
@@ -2439,7 +2618,7 @@ fn an_open_password_field_cannot_restore_a_consumed_password() {
     press(&mut view.app, "kbAppend_x");
     view.app.commit_text_entry();
     assert_eq!(
-        slot(&view.app, "session.password"),
+        slot(&view.app, "session.joinPassword"),
         Some(SlotValue::String(String::new()))
     );
     assert_eq!(

@@ -34,8 +34,9 @@ pub(crate) struct RoleEntry {
 }
 
 /// Build the endpoint for `net_role`, then the seat ledger and every
-/// role-bound value. A failed endpoint or identity leaves the machine
-/// single-player. A machine that already holds a seat ledger and enters a
+/// role-bound value. The endpoint takes `password` before its first poll: a
+/// host challenges every joiner for a non-empty one, and a client answers
+/// with it. A failed endpoint or identity leaves the machine single-player. A machine that already holds a seat ledger and enters a
 /// hosted run mints a fresh session identity and seat counter in place from
 /// `mint`, keeping seat 0's carried state; if that mint fails, the ledger is
 /// untouched.
@@ -46,6 +47,7 @@ pub(crate) fn enter_role(
     seat_table: &mut Option<netcode::SeatTable>,
     mint: netcode::SessionIdSource,
     probe_lan: impl FnOnce() -> Option<IpAddr>,
+    password: &str,
 ) -> RoleEntry {
     let client_user_data = player_id
         .map(|player_id| ConnectClaim {
@@ -104,6 +106,10 @@ pub(crate) fn enter_role(
             failure.get_or_insert(EntryFailure::Identity);
         }
     }
+    // The endpoint keeps only the key derived from the password.
+    if let Some(endpoint) = endpoint.as_mut() {
+        endpoint.set_session_password(password);
+    }
     // Identity setup above can still have demoted the endpoint to
     // single-player, so the role reads it after. A listen host publishes the
     // address players should dial, for the frontend to show.
@@ -112,13 +118,10 @@ pub(crate) fn enter_role(
     if let Some(address) = published {
         log::info!("[Net] players join with --connect {address}");
     }
+    let mut state = RoleBoundState::derive(role, published);
+    state.password_protected = state.hosting && !password.is_empty();
     let registry = scripting.script_ctx.registry.clone();
-    let released = apply_role(
-        scripting,
-        seat_table,
-        &mut registry.borrow_mut(),
-        &RoleBoundState::derive(role, published),
-    );
+    let released = apply_role(scripting, seat_table, &mut registry.borrow_mut(), &state);
     RoleEntry {
         endpoint,
         failure,
@@ -126,22 +129,9 @@ pub(crate) fn enter_role(
     }
 }
 
-/// `--password`: the hosted run's password for `--host`, the answer for
-/// `--connect`. The endpoint keeps only the derived key.
-pub(crate) fn apply_cli_password(
-    endpoint: Option<&mut netcode::NetEndpoint>,
-    config: Option<&netcode::NetConfig>,
-) {
-    if let (Some(endpoint), Some(password)) = (
-        endpoint,
-        config.and_then(|config| config.password.as_deref()),
-    ) {
-        endpoint.set_session_password(password);
-    }
-}
-
 /// The session facts a boot publishes, as in-app entry does: the remembered
-/// address seeds `session.joinAddress`; a `--connect` endpoint reads
+/// address seeds `session.joinAddress`; `--password` seeds the password
+/// slots no boot endpoint consumed (see [`boot_password_slots`]); a `--connect` endpoint reads
 /// `connecting`; a failed `--host` sets `hostFailed`, a malformed `--connect`
 /// sets `badAddress`, and a `--connect` whose endpoint failed sets
 /// `connectFailed`. `parse_error` names the flag that failed, if any.
@@ -151,6 +141,7 @@ pub(crate) fn publish_boot_facts(
     net_role: &netcode::NetRole,
     entry: &RoleEntry,
     remembered_address: Option<&str>,
+    cli_password: Option<&str>,
 ) {
     use crate::startup::lifecycle::session_entry::{
         CONNECTION_SLOT, ConnectionPhase, END_CAUSE_SLOT, EndCause, JOIN_ADDRESS_SLOT,
@@ -165,6 +156,12 @@ pub(crate) fn publish_boot_facts(
     };
     if let Some(address) = remembered_address {
         write(JOIN_ADDRESS_SLOT, SlotValue::String(address.to_string()));
+    }
+    if let Some(password) = cli_password {
+        let live_host = matches!(&entry.endpoint, Some(netcode::NetEndpoint::Host { .. }));
+        for slot in boot_password_slots(net_role, live_host) {
+            write(slot, SlotValue::String(password.to_string()));
+        }
     }
     let end_cause = match (
         parse_error.and_then(netcode::NetArgError::failed_role_flag),
@@ -188,6 +185,22 @@ pub(crate) fn publish_boot_facts(
             CONNECTION_SLOT,
             SlotValue::Enum(ConnectionPhase::Connecting.as_str().to_string()),
         );
+    }
+}
+
+/// The password slots `--password` seeds at boot: the ones a later in-app
+/// press uses that no boot endpoint consumed. A live `--host` consumed it as
+/// hosting does; a failed one keeps it for an in-app retry. `--connect`
+/// seeds only the join slot, which admission consumes as an in-app join's
+/// does, so the password a player joined with never becomes the one they
+/// host with. With no role flag, both slots take it.
+fn boot_password_slots(net_role: &netcode::NetRole, live_host: bool) -> Vec<&'static str> {
+    use crate::startup::lifecycle::session_entry::{HOST_PASSWORD_SLOT, JOIN_PASSWORD_SLOT};
+    match net_role {
+        netcode::NetRole::SinglePlayer => vec![HOST_PASSWORD_SLOT, JOIN_PASSWORD_SLOT],
+        netcode::NetRole::Host { .. } if live_host => Vec::new(),
+        netcode::NetRole::Host { .. } => vec![HOST_PASSWORD_SLOT],
+        netcode::NetRole::Connect { .. } => vec![JOIN_PASSWORD_SLOT],
     }
 }
 
@@ -249,6 +262,32 @@ mod tests {
             addr: "127.0.0.1:27015".parse().unwrap(),
         };
         assert_eq!(published_host_address(&connect, false, no_probe), None);
+    }
+
+    #[test]
+    fn password_flag_seeds_only_the_slots_no_boot_endpoint_consumed() {
+        use crate::startup::lifecycle::session_entry::{HOST_PASSWORD_SLOT, JOIN_PASSWORD_SLOT};
+        let host = netcode::NetRole::Host { port: 27015 };
+        let connect = netcode::NetRole::Connect {
+            addr: "127.0.0.1:27015".parse().unwrap(),
+        };
+        assert_eq!(
+            boot_password_slots(&netcode::NetRole::SinglePlayer, false),
+            vec![HOST_PASSWORD_SLOT, JOIN_PASSWORD_SLOT]
+        );
+        assert!(
+            boot_password_slots(&host, true).is_empty(),
+            "hosting consumed it"
+        );
+        assert_eq!(
+            boot_password_slots(&host, false),
+            vec![HOST_PASSWORD_SLOT],
+            "a failed host keeps it for a retry"
+        );
+        assert_eq!(
+            boot_password_slots(&connect, false),
+            vec![JOIN_PASSWORD_SLOT]
+        );
     }
 
     // Regression: session-id entropy failure used to abort engine boot.

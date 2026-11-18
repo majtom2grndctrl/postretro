@@ -347,7 +347,7 @@ Role is selected at startup from CLI flags, or at runtime from the frontend; def
 | *(none)* | Single-player. Net inert. |
 | `--host [port]` | Listen server. Bare `--host` uses the default port. |
 | `--connect <ip[:port]>` | Client connecting to an explicit IPv4 address; the port defaults to the host default. Menu joins parse addresses the same way (`parse_join_address`). |
-| `--password <text>` | The session password: `--host` challenges for it, `--connect` answers with it. Never logged. |
+| `--password <text>` | The session password: `--host` challenges for it, `--connect` answers with it. Never logged. A password no boot endpoint consumed seeds the in-app slots: with no role flag, `session.hostPassword` and `session.joinPassword`; after a failed `--host`, the host one; with `--connect`, the join one (`scripting.md` §10.4). |
 
 **No endpoint, no gate.** Single-player constructs no endpoint, so no compatibility value is computed, no gate runs, and a level change announces nothing. Nothing branches on player count — the absent endpoint *is* the branch, which is why the compatibility digests are computed inside that check rather than unconditionally and discarded.
 

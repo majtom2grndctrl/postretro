@@ -14,6 +14,7 @@ use crate::scripting_systems::reaction_scheduler::SchedulerRole;
 
 pub(crate) const HOST_ADDRESS_SLOT: &str = "session.hostAddress";
 pub(crate) const HOSTING_SLOT: &str = "session.hosting";
+pub(crate) const PASSWORD_PROTECTED_SLOT: &str = "session.passwordProtected";
 /// A client's projection of its host's roster; absent hides it.
 pub(crate) const OPEN_SEATS_SLOT: &str = "session.openSeats";
 
@@ -55,6 +56,10 @@ pub(crate) struct RoleBoundState {
     pub(crate) hosting: bool,
     /// `session.hostAddress`: the address players dial, else empty.
     pub(crate) host_address: String,
+    /// `session.passwordProtected`: true only on a live listen host whose run
+    /// challenges joiners for a password. [`Self::derive`] leaves it false;
+    /// the role builder sets it from the password it hands the endpoint.
+    pub(crate) password_protected: bool,
     /// `session.openSeats`: absent until a client's first roster names it.
     pub(crate) open_seats: Option<SlotValue>,
     /// The seat ledger's seats. The authority keeps a ledger; a client has
@@ -78,6 +83,7 @@ impl RoleBoundState {
             },
             owner_slot_writes_enabled: authority,
             hosting: published.is_some(),
+            password_protected: false,
             open_seats: None,
             host_address: published
                 .map(|address| address.to_string())
@@ -106,6 +112,12 @@ impl RoleBoundState {
             Some(SlotValue::String(address)) => address.clone(),
             _ => String::new(),
         };
+        let password_protected = matches!(
+            slots
+                .get(PASSWORD_PROTECTED_SLOT)
+                .and_then(|record| record.value.as_ref()),
+            Some(SlotValue::Boolean(true))
+        );
         Self {
             runtime_spawn_authority: scripting.spawn_context.runtime_spawn_authority(),
             auto_close_timers_enabled: scripting.auto_close_timers.is_enabled(),
@@ -113,6 +125,7 @@ impl RoleBoundState {
             owner_slot_writes_enabled: scripting.script_ctx.owner_slot_writes_enabled.get(),
             hosting,
             host_address,
+            password_protected,
             open_seats: slots
                 .get(OPEN_SEATS_SLOT)
                 .and_then(|record| record.value.clone()),
@@ -149,6 +162,10 @@ pub(crate) fn apply_role(
             SlotValue::String(state.host_address.clone()),
         ),
         (HOSTING_SLOT, SlotValue::Boolean(state.hosting)),
+        (
+            PASSWORD_PROTECTED_SLOT,
+            SlotValue::Boolean(state.password_protected),
+        ),
     ] {
         if let Err(err) = postretro_scripting_core::store_bridge::write_store_slot(
             &scripting.script_ctx,

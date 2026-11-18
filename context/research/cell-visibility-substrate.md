@@ -65,6 +65,8 @@ portal walk owns render visibility, and the owner has rejected Quake-style full 
   and replication-relevance. They must NOT cull authoritative simulation: the server still simulates
   the distant projectile / enemy (it may round a corner into view, or matter to another co-op
   player). Conflating "don't show" with "don't simulate" causes desync.
+  Amended (E10 AI tick scheduling): a consumer may coarsen authoritative simulation — run an unseen
+  NPC's whole tick at a lower rate with its step scaled — but never skip it.
 
 ## Graded extension: the coupling tuple
 

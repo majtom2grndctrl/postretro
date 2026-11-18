@@ -197,7 +197,7 @@ Game logic owns entities exclusively. No other subsystem creates, modifies, or d
 
 ### Cell Linkage
 
-Runtime cells are visibility IDs, not entity ownership. `LevelWorld::locate_cell` maps a point to a cell for camera visibility, render-side entity/particle culling, and diagnostics. The entity registry stores no cell index and runs no per-entity cell update. BSP is compile-only scaffolding and is not part of the entity runtime model.
+Runtime cells are visibility IDs, not entity ownership. `LevelWorld::locate_cell` maps a point to a cell for camera visibility, render-side entity/particle culling, and diagnostics. The entity registry stores no cell index and runs no per-entity cell update. A subsystem that needs entity cells keeps its own table and re-locates on every move; the AI tier scheduler does (`plans/ready/E10--ai-tick-scheduling`). BSP is compile-only scaffolding and is not part of the entity runtime model.
 
 ---
 
@@ -273,6 +273,8 @@ A player pawn is present only when the first resolving spawn names a movement de
 ---
 
 ## 7c. Enemy Brain Component
+
+**NPC** is the umbrella term for brain-bearing actors that are not player-controlled, enemies and allies alike. Rules here apply to every NPC.
 
 Enemy behavior is an **authored hierarchical statechart**, not an engine-closed state enum. A graph declares named activities and ordered guarded transitions. Activities may be leaves or compose nested graph layers and stateless selector layers. A leaf selects motion, an optional action, and its animation. Transition guards are IR expressions (`scripting.md` §11) over a brain-local binding scope; the engine binds them when the graph is installed and evaluates them every tick.
 

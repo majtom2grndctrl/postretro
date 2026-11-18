@@ -174,7 +174,7 @@ A per-kind occupancy index lands last, as its own brief, not here:
 
 ## Route query cost (spike, 2026-11-17)
 
-From `drafts/E10--ai-tick-scheduling/spike-visible-rates.md`, on a four-arena map of 4,216 regions and about 8.3k portals.
+From `ready/E10--ai-tick-scheduling/spike-visible-rates.md`, on a four-arena map of 4,216 regions and about 8.3k portals.
 - Each multi-region A* query allocates and fills `g_score` and `came_from` (one entry per node: each directed portal crossing and link end) and `rode_from` (one per link) before it searches. A same-region query skips A*.
 - One spread wave of 64 cost about 20 ms of AI per tick with the nav index in, 128 about 45 ms; 70% of instructions were allocation and zeroing. About 100 far-targeted enemies cost about 485 ms per tick at 500 placed, about 1.1 s for 218 at 1,000; 96% was route search, about a third of it zeroing.
 - The path length positioning scores is the walked XZ length of the returned points. It is not bounded below by the straight agent-to-slot distance: a ride truncates it at the boarding point, an agent on a lift it can ride gets a zero-length path, clearance repair can move endpoints to standoffs, and f32 sums can fall one ulp short. Any later pruning needs a bound that survives these.

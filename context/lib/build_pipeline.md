@@ -533,6 +533,14 @@ a cell. Decided, not yet built (`plans/ready/lightmap-compact-storage`): the sec
 becomes one checksummed zstd frame, decoded whole at load; a corrupt frame fails the load
 by name.
 
+**Runtime value from bake metadata (owner ground rule).** Runtime relations come from what the bake
+already emits — cells, portals, sampled visibility — even after their source, such as the BSP, is
+dropped. PostRetro adds no Quake-style sightline PVS bake and no tighter id 46. A visible cell a
+consumer misses is a residency miss lighting and probes would show too; fix it by refining id 51.
+Id 51 stays streaming-owned. Other consumers read it through an engine-owned per-player step
+(player pawn → cell → id-51 set), apply their own lead, and each decides its own miss tolerance:
+AI tiers (`plans/ready/E10--ai-tick-scheduling`); later network relevance and combat VFX culling.
+
 **Coarsened delta sections (ids 27, 41, 45):** The wire representation supports an independent L0/L1/L2 level for every affinity cell in each section. L0 stores every valid probe tile. L1 stores valid brick-corner tiles. L2 stores one synthesized mean tile over the brick's valid probes. Payload size and order follow kept probes and kept rank, not dense probe index. Production adaptively classifies id 41 only. Ids 27 and 45 intentionally emit uniform L0 until animation and script amplitudes have bounded runtime contracts. Protection AABBs force intersecting bricks to L0 in an adaptively classified section before one-level seam smoothing.
 
 **Coloured-bounce dependency.** Id 41 stores direct-light transport, but its adaptive classifier and runtime-safe repair evaluate reconstruction against composed illumination, including indirect. Changing diffuse bounce colour can therefore change id-41 storage levels and payload bytes without changing its dense direct samples. Regression proof compares direct samples against a pre-colour bake with the same uniform-storage setting, and separately checks the existing adaptive error, protection and seam rules. This is offline storage selection; runtime composition and visibility are unchanged. Ids 27 and 45 keep their existing uniform-L0 policy.

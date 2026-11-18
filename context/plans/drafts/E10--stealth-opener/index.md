@@ -1,6 +1,6 @@
 # E10--stealth-opener
 
-Brief · draft, not yet validated · Epic 10 · reads: `context/lib/entity_model.md` §7c, §9 · `context/lib/scripting.md` §1, §11 · `drafts/E10--ai-tick-scheduling/` (its notice meter) · read at 909a0bdbc
+Brief · draft, not yet validated · Epic 10 · reads: `context/lib/entity_model.md` §7c, §9 · `context/lib/scripting.md` §1, §11 · `ready/E10--ai-tick-scheduling/` (its notice meter) · read at 909a0bdbc
 
 **Sequence:** after `E10--ai-tick-scheduling`, whose per-candidate, per-player notice meter for NPCs without a target this extends. Design it with, or after, a general hit-time damage modifier shared with special damage types and critical hits.
 

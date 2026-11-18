@@ -4,6 +4,7 @@
 
 mod gate;
 mod path;
+mod region_index;
 // One-shot path queries. `find_path_from` is the production entry: steering, AI
 // reachability and combat scoring route from a body's position and ground.
 // `find_path_gated` assumes world ground, and `find_path` also ignores gates.
@@ -18,6 +19,8 @@ pub use path::{NavStart, find_path, find_path_from, find_path_gated};
 // own sibling module (not `path.rs`) so it stays disjoint from the query code.
 #[cfg(test)]
 mod bake_contract_tests;
+#[cfg(test)]
+mod region_index_tests;
 
 // A 4,216-region multi-arena level for scale proofs and the AI multi-arena row.
 #[cfg(any(test, feature = "test-support"))]
@@ -107,6 +110,9 @@ pub struct NavGraph {
     region_links: Vec<Vec<usize>>,
     /// Waypoint heights of each mover with records, once validated.
     mover_heights: Vec<(u32, Vec<f32>)>,
+    /// Point-to-region buckets; `None` keeps every lookup linear (an empty or
+    /// non-finite level).
+    region_index: Option<region_index::RegionIndex>,
 }
 
 /// Per-region link lists from the link table.
@@ -149,6 +155,60 @@ fn portal_gates(gates: &[NavMoverGate], portal_count: usize) -> Vec<Vec<(u32, u3
         }
     }
     by_portal
+}
+
+/// See [`NavGraph::region_snap_tolerance`].
+fn snap_tolerance(agent: NavAgentParams, grid: NavGrid) -> f32 {
+    agent.radius + 1.5 * grid.cell_size
+}
+
+/// Distance from `y` to a region's floor band; 0 within it.
+fn band_distance(region: &NavRegionRecord, y: f32) -> f32 {
+    if y < region.floor_y_min {
+        region.floor_y_min - y
+    } else if y > region.floor_y_max {
+        y - region.floor_y_max
+    } else {
+        0.0
+    }
+}
+
+/// The off-mesh snap fold. Fed regions in ascending index, it returns what
+/// a scan over every region returns: a region it never sees lies beyond the
+/// tolerance.
+#[derive(Default)]
+struct SnapBest {
+    best: Option<(usize, f32, f32)>,
+}
+
+impl SnapBest {
+    fn consider(&mut self, i: usize, region: &NavRegionRecord, position: Vec3, tolerance: f32) {
+        region_index::count_examined();
+        let dx = (region.world_min_xz[0] - position.x)
+            .max(position.x - region.world_max_xz[0])
+            .max(0.0);
+        let dz = (region.world_min_xz[1] - position.z)
+            .max(position.z - region.world_max_xz[1])
+            .max(0.0);
+        let dist_xz = (dx * dx + dz * dz).sqrt();
+        if dist_xz > tolerance {
+            return;
+        }
+        let dy = band_distance(region, position.y);
+        let better = match self.best {
+            Some((_, best_dist, best_dy)) => {
+                dist_xz < best_dist || (dist_xz == best_dist && dy < best_dy)
+            }
+            None => true,
+        };
+        if better {
+            self.best = Some((i, dist_xz, dy));
+        }
+    }
+
+    fn region(&self) -> Option<usize> {
+        self.best.map(|(i, _, _)| i)
+    }
 }
 
 impl NavGraph {
@@ -250,7 +310,10 @@ impl NavGraph {
             }
         }
 
+        let region_index =
+            region_index::RegionIndex::build(&regions, grid.cell_size, snap_tolerance(agent, grid));
         Self {
+            region_index,
             grid,
             agent,
             regions,
@@ -443,20 +506,42 @@ impl NavGraph {
     /// equidistant in Y, the lower-index region wins (first-wins by iteration
     /// order). `None` when no region covers the point.
     pub fn region_at(&self, position: Vec3) -> Option<usize> {
+        match self
+            .region_index
+            .as_ref()
+            .and_then(|index| index.containing_candidates(position))
+        {
+            Some(candidates) => {
+                self.nearest_band_region(candidates.iter().map(|&region| region as usize), position)
+            }
+            None => self.region_at_linear(position),
+        }
+    }
+
+    /// [`Self::region_at`] over every region: the non-finite fallback and the
+    /// test reference the index must match.
+    pub(crate) fn region_at_linear(&self, position: Vec3) -> Option<usize> {
+        self.nearest_band_region(0..self.regions.len(), position)
+    }
+
+    /// The containment rule over `candidates`, which ascend: a non-candidate
+    /// never contains the point, so any ascending superset of the containing
+    /// regions returns what the full scan returns.
+    fn nearest_band_region(
+        &self,
+        candidates: impl Iterator<Item = usize>,
+        position: Vec3,
+    ) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
-        for (i, region) in self.regions.iter().enumerate() {
+        for i in candidates {
+            region_index::count_examined();
+            let region = &self.regions[i];
             if !region.contains_xz(position.x, position.z) {
                 continue;
             }
             // Distance from the query Y to the region's floor band; 0 when the
             // point sits within the band.
-            let dy = if position.y < region.floor_y_min {
-                region.floor_y_min - position.y
-            } else if position.y > region.floor_y_max {
-                position.y - region.floor_y_max
-            } else {
-                0.0
-            };
+            let dy = band_distance(region, position.y);
             match best {
                 Some((_, best_dy)) if best_dy <= dy => {}
                 _ => best = Some((i, dy)),
@@ -486,7 +571,7 @@ impl NavGraph {
     /// nearer the band's own region than anything across the solid geometry that
     /// caused the erosion.
     pub(crate) fn region_snap_tolerance(&self) -> f32 {
-        self.agent.radius + 1.5 * self.grid.cell_size
+        snap_tolerance(self.agent, self.grid)
     }
 
     /// [`region_at`], with off-mesh tolerance: a position outside every region
@@ -506,38 +591,33 @@ impl NavGraph {
         if let Some(region) = self.region_at(position) {
             return Some(region);
         }
-
         let tolerance = self.region_snap_tolerance();
-        let mut best: Option<(usize, f32, f32)> = None;
-        for (i, region) in self.regions.iter().enumerate() {
-            let dx = (region.world_min_xz[0] - position.x)
-                .max(position.x - region.world_max_xz[0])
-                .max(0.0);
-            let dz = (region.world_min_xz[1] - position.z)
-                .max(position.z - region.world_max_xz[1])
-                .max(0.0);
-            let dist_xz = (dx * dx + dz * dz).sqrt();
-            if dist_xz > tolerance {
-                continue;
-            }
-            let dy = if position.y < region.floor_y_min {
-                region.floor_y_min - position.y
-            } else if position.y > region.floor_y_max {
-                position.y - region.floor_y_max
-            } else {
-                0.0
-            };
-            let better = match best {
-                Some((_, best_dist, best_dy)) => {
-                    dist_xz < best_dist || (dist_xz == best_dist && dy < best_dy)
-                }
-                None => true,
-            };
-            if better {
-                best = Some((i, dist_xz, dy));
-            }
+        let mut snap = SnapBest::default();
+        let indexed = self.region_index.as_ref().is_some_and(|index| {
+            index.for_each_snap_candidate(position, tolerance, |i| {
+                snap.consider(i, &self.regions[i], position, tolerance);
+            })
+        });
+        if !indexed {
+            return self.snap_region_linear(position);
         }
-        best.map(|(i, _, _)| i)
+        snap.region()
+    }
+
+    /// [`Self::resolve_region_at`] over every region: the test reference.
+    #[cfg(test)]
+    pub(crate) fn resolve_region_at_linear(&self, position: Vec3) -> Option<usize> {
+        self.region_at_linear(position)
+            .or_else(|| self.snap_region_linear(position))
+    }
+
+    fn snap_region_linear(&self, position: Vec3) -> Option<usize> {
+        let tolerance = self.region_snap_tolerance();
+        let mut snap = SnapBest::default();
+        for (i, region) in self.regions.iter().enumerate() {
+            snap.consider(i, region, position, tolerance);
+        }
+        snap.region()
     }
 
     /// Whether a route query can resolve `position` to a region: it lies on

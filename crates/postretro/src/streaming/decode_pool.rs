@@ -3,15 +3,19 @@
 
 // The pool spawns and retires with the level's read issuer. Routes hand it
 // jobs from the issuer thread; the issuer itself only reads. A thread takes
-// the queued job of best rank: class first (Visible, Pinned, Lead, then the
-// optional classes), SH before lightmap at equal class, the order the drain
-// admits in, and the oldest at equal rank. Each job reads its rank from its
-// key's live class whenever a thread picks, so a job whose key turns
-// mandatory while it waits is lifted past every optional job, and one whose
-// key is demoted loses its precedence. A mandatory decode therefore waits at
-// most for the decodes already running and for more urgent mandatory work.
-// Each job owns whatever it is charged against and releases it whether it
-// runs, panics, is discarded at retirement, or finds the pool retiring.
+// the queued job of best rank, read live from the job's key at every pickup.
+// A job whose key has left its targets goes first: it releases its charge
+// and completes cancelled without decoding, so it costs almost nothing and
+// its resource gets the item's permit back sooner.
+// Decodes follow in class order (Visible, then Pinned, then Lead, then the
+// optional classes), SH before lightmap at equal class as the drain admits,
+// then oldest first. A mandatory decode is therefore taken before every
+// queued optional decode, and waits only for decodes already running and
+// for more urgent mandatory work. A job whose key turns mandatory while it
+// waits is lifted past every optional job, and one whose key is demoted
+// loses its precedence. Each job owns whatever it is charged against and
+// releases it whether it runs, panics, is discarded at retirement, or finds
+// the pool retiring.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use super::drain_budget::DrainClass;
 use super::request::StreamResource;
+use super::target_set::TargetSet;
 
 /// Pool thread names: `stream-decode-0`, `stream-decode-1`, ….
 pub(crate) const DECODE_THREAD_NAME_PREFIX: &str = "stream-decode-";
@@ -30,20 +35,42 @@ pub(crate) fn decode_pool_size(available_parallelism: usize) -> usize {
     (available_parallelism / 2).clamp(1, 3)
 }
 
-/// A queued job's place in the pool's pickup order, compared field by field:
-/// class, then resource (SH first at equal class). Equal ranks go oldest
+/// A queued job's place in the pool's pickup order. Equal ranks go oldest
 /// first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct DecodeRank {
-    pub(crate) class: DrainClass,
-    pub(crate) resource: StreamResource,
+pub(crate) enum DecodeRank {
+    /// The job's key has left its targets: its run releases its charge and
+    /// completes it cancelled without decoding, so it is taken before every
+    /// decode and its resource gets the item's permit back sooner.
+    Departed,
+    /// A decode, compared by class, then resource (SH first at equal class).
+    Decode {
+        class: DrainClass,
+        resource: StreamResource,
+    },
+}
+
+impl DecodeRank {
+    /// The rank of a job for `key` in `targets`: departed when `key` is not
+    /// a member, otherwise a decode at its live class (or `requested` where
+    /// a test published membership without classes).
+    pub(crate) fn live(
+        targets: &TargetSet,
+        key: u32,
+        requested: DrainClass,
+        resource: StreamResource,
+    ) -> Self {
+        match targets.class_or(key, requested) {
+            Some(class) => Self::Decode { class, resource },
+            None => Self::Departed,
+        }
+    }
 }
 
 /// One resource item's decode, handed over by its route.
 pub(crate) trait DecodeJob: Send {
-    /// The job's rank, read again at every pickup while it is queued: its
-    /// key's live class where the resource publishes one, otherwise the
-    /// class it was requested at.
+    /// The job's rank, read again at every pickup while it is queued:
+    /// usually [`DecodeRank::live`] over its resource's target set.
     fn rank(&self) -> DecodeRank;
     /// Decodes and delivers to the resource. `retiring` is set once the pool
     /// retires: a job that finds it set releases what it holds instead of
@@ -53,9 +80,10 @@ pub(crate) trait DecodeJob: Send {
     fn discard(self: Box<Self>);
     /// `run` panicked: release what the job still holds and, unless the pool
     /// is retiring or the job already delivered, complete its item as failed,
-    /// so its resource frees the item and nothing waits on it. If this panics
-    /// too, the job drops mid-unwind: a job that holds a charge also returns
-    /// it from `Drop`, without panicking.
+    /// so its resource frees the item and nothing waits on it. Must not
+    /// panic. If it panics anyway, the job drops mid-unwind: a job that holds
+    /// a charge returns it from `Drop`, but its item never completes and its
+    /// resource never frees it.
     fn panicked(self: Box<Self>, retiring: &AtomicBool);
 }
 
@@ -273,9 +301,10 @@ fn run_job(shared: &PoolShared, queued: Queued) {
              keeps running (later panics are not logged)"
         );
     }
-    // A job whose own cleanup panics too leaves its thread running; the job
-    // drops during that unwind, and its `Drop` returns any charge it still
-    // holds.
+    // `panicked` completes the item without panicking. One that panics
+    // anyway leaves its thread running; the job drops during that unwind and
+    // its `Drop` returns any charge it still holds, but its item gets no
+    // completion.
     let _ = catch_unwind(AssertUnwindSafe(|| job.panicked(&shared.retiring)));
 }
 

@@ -506,9 +506,11 @@ impl ShResidencyController {
     /// live class. Every target has a class; membership never depends on it.
     pub(crate) fn target_classes(&self) -> impl Iterator<Item = (u32, DrainClass)> + '_ {
         self.targets.iter().map(|&cluster_id| {
-            let class = self.states[cluster_id as usize]
-                .class
-                .map_or(DrainClass::Hysteresis, TargetClass::drain_class);
+            let class = self.states[cluster_id as usize].class;
+            debug_assert!(class.is_some(), "target {cluster_id} has a class");
+            // Hysteresis, the least urgent targeted class, should a target
+            // ever lack one: it never displaces another target's work.
+            let class = class.map_or(DrainClass::Hysteresis, TargetClass::drain_class);
             (cluster_id, class)
         })
     }

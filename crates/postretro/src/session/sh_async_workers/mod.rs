@@ -82,8 +82,8 @@ impl ShWorkerSource for ManifestWorkerSource {
 /// State shared by the frame thread, SH's issuer route, and its decode jobs.
 /// Locks are held only for counter updates and handle clones, never across a
 /// read, a decode, or a send, and nothing panics while holding one. A
-/// poisoned lock is recovered: every update under it is a single counter
-/// change, so its data is whole.
+/// poisoned lock is recovered: every update under it checks all it changes
+/// before changing anything, so its data is whole.
 struct WorkerShared {
     /// Stops SH's queued and running decode jobs; the issuer has its own
     /// flag.

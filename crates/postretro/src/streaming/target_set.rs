@@ -1,5 +1,5 @@
 //! Atomic per-resource target set with each target's live drain class.
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
+//! See: context/lib/rendering_pipeline.md §4 (one issuer, one budget)
 
 // The frame thread writes it; the issuer and the decode pool read it. The
 // issuer checks membership before every physical read and reads a pending
@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use super::drain_budget::DrainClass;
 
-/// A targeted key whose class its resource has not published. Readers fall
-/// back to the class the item was requested at.
+/// A targeted key published without a class. Only tests publish membership
+/// alone; readers then fall back to the class the item was requested at.
 const CLASS_UNPUBLISHED: u8 = 0;
 
 #[derive(Debug)]
@@ -41,43 +41,69 @@ impl TargetSet {
         }
     }
 
-    /// Replaces the whole set. Each target's class is stored before any
-    /// membership word, so a newly targeted key never reads an older class.
-    /// A reader racing a publish sees every key as either its old or its new
-    /// membership. Keys beyond the resource's key count are ignored.
+    /// Replaces the whole set without allocating, and stores only the
+    /// classes and membership words that change. Each target's class is
+    /// stored before its membership bit, so a newly targeted key never reads
+    /// an older class. A reader racing a publish sees each key with either
+    /// its old or its new membership and class; the set as a whole is not
+    /// swapped atomically, so it may see some keys already published and
+    /// others not yet. Keys in ascending order store each word once; any
+    /// order is accepted. Keys beyond the resource's key count are ignored.
     pub(crate) fn publish(&self, targets: impl IntoIterator<Item = (u32, DrainClass)>) {
-        let mut next = vec![0u64; self.words.len()];
-        for (key, class) in targets {
-            if let Some(slot) = self.classes.get(key as usize) {
-                slot.store(encode(class), Ordering::Release);
-                next[key as usize / 64] |= 1 << (key % 64);
-            }
-        }
-        for (word, value) in self.words.iter().zip(next) {
-            word.store(value, Ordering::Release);
-        }
+        self.replace(targets.into_iter().map(|(key, class)| (key, encode(class))));
     }
 
     /// Replaces the whole set with keys whose class is unpublished: readers
     /// use each item's requested class.
     #[cfg(test)]
     pub(crate) fn publish_keys(&self, targets: &std::collections::BTreeSet<u32>) {
-        let mut next = vec![0u64; self.words.len()];
-        for &key in targets {
-            if let Some(slot) = self.classes.get(key as usize) {
-                slot.store(CLASS_UNPUBLISHED, Ordering::Release);
-                next[key as usize / 64] |= 1 << (key % 64);
+        self.replace(targets.iter().map(|&key| (key, CLASS_UNPUBLISHED)));
+    }
+
+    /// [`Self::publish`] over encoded classes. Builds the membership word in
+    /// progress locally and stores it once the keys move past it; a key
+    /// whose word was already stored joins it in place.
+    fn replace(&self, targets: impl Iterator<Item = (u32, u8)>) {
+        let mut word_index = 0;
+        let mut word = 0u64;
+        for (key, encoded) in targets {
+            let Some(slot) = self.classes.get(key as usize) else {
+                continue;
+            };
+            // Only the frame thread writes, so a relaxed load sees its own
+            // last store.
+            if slot.load(Ordering::Relaxed) != encoded {
+                slot.store(encoded, Ordering::Release);
             }
+            let index = key as usize / 64;
+            let bit = 1u64 << (key % 64);
+            if index < word_index {
+                self.words[index].fetch_or(bit, Ordering::AcqRel);
+                continue;
+            }
+            while word_index < index {
+                self.store_word(word_index, std::mem::take(&mut word));
+                word_index += 1;
+            }
+            word |= bit;
         }
-        for (word, value) in self.words.iter().zip(next) {
+        while word_index < self.words.len() {
+            self.store_word(word_index, std::mem::take(&mut word));
+            word_index += 1;
+        }
+    }
+
+    fn store_word(&self, index: usize, value: u64) {
+        let word = &self.words[index];
+        if word.load(Ordering::Relaxed) != value {
             word.store(value, Ordering::Release);
         }
     }
 
     /// Targets `key` at `class`, or untargets it with `None`, without
-    /// touching other keys, so a resource that tracks target changes
-    /// incrementally publishes without allocating. Keys beyond the
-    /// resource's key count are ignored.
+    /// touching other keys, for a resource that tracks its target changes
+    /// itself. The class is stored before the membership bit. Keys beyond
+    /// the resource's key count are ignored.
     pub(crate) fn set(&self, key: u32, class: Option<DrainClass>) {
         let (Some(word), Some(slot)) = (
             self.words.get(key as usize / 64),
@@ -103,16 +129,33 @@ impl TargetSet {
             .is_some_and(|word| word.load(Ordering::Acquire) & (1 << (key % 64)) != 0)
     }
 
-    /// `key`'s live class: `None` when it is untargeted or its class is
-    /// unpublished.
+    /// `key`'s live class: `None` when it is not a member. Every production
+    /// publish stores a class with each member, so there `None` means only
+    /// that; a member published by a test without a class also reads `None`.
     pub(crate) fn class(&self, key: u32) -> Option<DrainClass> {
+        self.member_class(key, None).flatten()
+    }
+
+    /// `None` when `key` is not a member; otherwise its live class, or
+    /// `requested` when its class is unpublished.
+    pub(crate) fn class_or(&self, key: u32, requested: DrainClass) -> Option<DrainClass> {
+        self.member_class(key, Some(requested)).flatten()
+    }
+
+    fn member_class(
+        &self,
+        key: u32,
+        unpublished: Option<DrainClass>,
+    ) -> Option<Option<DrainClass>> {
         if !self.contains(key) {
             return None;
         }
-        match self.classes.get(key as usize)?.load(Ordering::Acquire) {
-            CLASS_UNPUBLISHED => None,
-            encoded => DrainClass::ALL.get(usize::from(encoded - 1)).copied(),
-        }
+        Some(
+            match self.classes.get(key as usize)?.load(Ordering::Acquire) {
+                CLASS_UNPUBLISHED => unpublished,
+                encoded => DrainClass::ALL.get(usize::from(encoded - 1)).copied(),
+            },
+        )
     }
 }
 
@@ -150,6 +193,41 @@ mod tests {
         assert_eq!(set.class(1), Some(DrainClass::Lead));
         assert!(!set.contains(0) && !set.contains(129));
         assert_eq!(set.class(0), None, "an untargeted key has no class");
+    }
+
+    // Keys out of order, and keys landing in a word already stored, still
+    // publish exactly the given set.
+    #[test]
+    fn publish_accepts_keys_in_any_order() {
+        let set = TargetSet::new(200);
+        set.publish(keys_at(&BTreeSet::from([1, 2, 130]), DrainClass::Lead));
+        set.publish([
+            (129, DrainClass::Visible),
+            (3, DrainClass::Pinned),
+            (70, DrainClass::Prefetch),
+            (2, DrainClass::Hysteresis),
+        ]);
+        let members: Vec<u32> = (0..200).filter(|&key| set.contains(key)).collect();
+        assert_eq!(members, [2, 3, 70, 129]);
+        assert_eq!(set.class(2), Some(DrainClass::Hysteresis));
+        assert_eq!(set.class(3), Some(DrainClass::Pinned));
+        assert_eq!(set.class(129), Some(DrainClass::Visible));
+    }
+
+    #[test]
+    fn class_or_falls_back_only_for_a_member_without_a_class() {
+        let set = TargetSet::new(8);
+        set.publish_keys(&BTreeSet::from([1]));
+        set.set(2, Some(DrainClass::Lead));
+        assert_eq!(
+            set.class_or(1, DrainClass::Prefetch),
+            Some(DrainClass::Prefetch)
+        );
+        assert_eq!(
+            set.class_or(2, DrainClass::Prefetch),
+            Some(DrainClass::Lead)
+        );
+        assert_eq!(set.class_or(3, DrainClass::Prefetch), None, "not a member");
     }
 
     #[test]

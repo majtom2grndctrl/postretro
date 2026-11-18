@@ -205,19 +205,18 @@ yields the band before seam-warm work, then lower priority, then the farthest le
 least recently visible. Optional requests stop once half the stream permits are held, so
 the band never delays fresh mandatory work. This policy stops at the CPU planner: it adds
 no renderer binding, shader branch, portal traversal, or visibility behavior. One issuer
-thread, shared with lightmap blocks (below),
-performs every id-50 read from the validated open file, off the frame path: mandatory
-work before optional work, each tier in ascending file offset, with nearby chunks coalesced
-into one read. It takes new requests after every read, so fresh visible demand preempts
-queued optional work, and it skips any request whose cluster has left the target set. A small
-level's decode pool (below) decodes and verifies chunks. A completion installs only when generation, content tag,
-target, and chunk hash still match. At the one renderer drain before SH compose, evictions
-first invalidate sample words; admitted clusters install base and sparse data, then
-compose only their affected affinity rows. Each drain admits ready clusters in priority
-order up to the decoded-byte budget it shares with lightmap blocks, always at least one,
-and stops rather than skipping
-ahead to smaller lower-priority work, so frame cost tracks bytes rather than cluster
-count. A newly installed cluster remains unavailable to sampling until the next drain,
+thread, shared with lightmap blocks (below), performs every id-50 read from the validated
+open file, off the frame path: mandatory work before optional work, each tier in ascending
+file offset, with nearby chunks coalesced into one read. It takes new requests after every
+read, so fresh visible demand preempts queued optional work, and it skips any request
+whose cluster has left the target set. The level's decode pool (below) decodes and
+verifies chunks. A completion installs only when generation, content tag, target, and
+chunk hash still match. At the one renderer drain before SH compose, evictions first
+invalidate sample words; admitted clusters install base and sparse data, then compose only
+their affected affinity rows. Each drain admits ready clusters in priority order up to the
+decoded-byte budget it shares with lightmap blocks, always at least one, and stops rather
+than skipping ahead to smaller lower-priority work, so frame cost tracks bytes rather than
+cluster count. A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
 reaches the ambient floor.
@@ -308,31 +307,35 @@ budget. The issuer reads the mandatory tier (SH visible, pinned and lead; block 
 pinned and lead) before the optional tier (SH seam-warm, band and hysteresis; the lightmap
 band) across both resources, each tier in ascending file offset. A pending request's tier
 is its item's live class, which each controller writes into its resource's target set
-(`crates/postretro/src/streaming/target_set.rs`) as it retargets; the issuer and the
-decode pool read it there, so an item that turns mandatory, or is demoted, while its read
-or decode waits moves in place, with no second submission. Every submission is therefore
-a read holding one of its resource's permits until the frame admits its completion, and
-the issuer's queue and the decode queue each hold one entry per permit, never more. Lightmap
-reads merge only byte-contiguous ranges, so bytes read from ids 22/42 equal the requested
-ranges plus the index. The drain admits ready work in tier order up to the shared budget, always at least
-one item. Blocks upload as BC data after a lossless decode off the frame thread (below), and a
-pair is admitted or deferred whole.
+(`crates/postretro/src/streaming/target_set.rs`) as it retargets, storing only the classes
+and membership that change; the issuer and the decode pool read it there, so an item that
+turns mandatory, or is demoted, while its read or decode waits moves in place, with no
+second submission. Every submission is therefore a read holding one of its resource's
+permits until the frame admits its completion, and the issuer's queue and the decode queue
+each hold one entry per permit, never more. Lightmap reads merge only byte-contiguous
+ranges, so bytes read from ids 22/42 equal the requested ranges plus the index. The drain
+admits ready work in tier order up to the shared budget, always at least one item. Blocks
+upload as BC data after a lossless decode off the frame thread (below), and a pair is
+admitted or deferred whole.
 
-*Lossless decode.* Lightmap pairs and SH chunks are stored raw or zstd-coded; uploads take BC
-data unchanged after decode. The issuer only reads. The level's one shared decode pool
-(`crates/postretro/src/streaming/decode_pool.rs`, `(cores/2).clamp(1,3)` threads) serves both
-resources. It spawns and retires with the issuer, whether or not SH streams async. A thread
-takes the queued job of best rank, read live at each pickup: class first (visible, pinned,
-lead, then the optional classes), SH before lightmap at equal class as in the drain, oldest
-first at equal rank. A mandatory decode of either resource therefore never queues behind
-optional decode, and waits only for the decodes already running and for more urgent
-mandatory work: a visible SH chunk goes ahead of a lead lightmap pair queued before it. A
-job whose item is demoted while queued loses its place. A pair counts at its decoded
-size, from the moment it queues, against the drain budget, the in-hand caps and the route
-ledger, and reaches the frame thread already split per plane, so admitting it copies no
-payload. A block whose decode fails is never uploaded and its read completes as failed. Dropping
-the pool or the issuer delivers or releases every queued pair, and the ledger returns to zero.
-An all-resident load decodes on the loading thread.
+*Lossless decode.* Lightmap pairs and SH chunks are stored raw or zstd-coded; uploads take
+BC data unchanged after decode. The issuer only reads. The level's one shared decode pool
+(`crates/postretro/src/streaming/decode_pool.rs`, `(cores/2).clamp(1,3)` threads) serves
+both resources. It spawns and retires with the issuer, whether or not SH streams async. A
+thread takes the queued job of best rank, read live from the target set at each pickup. A
+job whose item has left its targets goes first: it releases its charge and completes
+cancelled without decoding, so it never holds its permit behind queued decodes. Decodes
+follow in class order, Visible, then Pinned, then Lead, then the optional classes, with SH
+before lightmap at equal class as in the drain, then oldest first. A mandatory decode of
+either resource is therefore taken before every queued optional decode, and waits only for
+decodes already running and for more urgent mandatory work: a visible SH chunk goes ahead of
+a lead lightmap pair queued before it. A job whose item is demoted while queued loses its
+place. A pair counts at its decoded size, from the moment it queues, against the drain
+budget, the in-hand caps and the route ledger, and reaches the frame thread already split
+per plane, so admitting it copies no payload. A block whose decode fails is never uploaded
+and its read completes as failed; a decode that panics fails its item the same way. Dropping
+the pool or the issuer delivers or releases every queued pair, and the ledger returns to
+zero. An all-resident load decodes on the loading thread.
 
 The renderer owns both pools, their placement, upload, growth, repack and retirement; the
 placement policy is wgpu-free logic in `postretro-render-cpu`. One journal covers both pools,

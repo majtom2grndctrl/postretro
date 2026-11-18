@@ -116,13 +116,10 @@ impl ReadRoute for ShReadRoute {
                 // lightmap pair is; its stored bytes leave the encoded phase.
                 // A retired pool discards the job, releasing that charge.
                 let decoded_bytes = self.source.decoded_bytes(request.cluster_id);
-                let moved = {
-                    let mut phases = self.shared.phases();
-                    phases
-                        .encoded
-                        .remove(bytes.len() as u64, "encoded worker bytes")
-                        .and_then(|()| phases.decoding.add(decoded_bytes, "decoded worker bytes"))
-                };
+                let moved = self
+                    .shared
+                    .phases()
+                    .move_encoded_to_decoding(bytes.len() as u64, decoded_bytes);
                 moved.expect("balanced encoded read within the validated decode bound");
                 decode.submit(Box::new(ShDecodeJob {
                     request,

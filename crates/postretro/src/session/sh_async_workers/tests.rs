@@ -310,7 +310,7 @@ fn span_cap_is_respected_and_an_oversized_chunk_is_read_alone() {
 }
 
 #[test]
-fn a_request_cleared_from_the_target_bitset_is_never_read_and_completes_cancelled() {
+fn a_request_cleared_from_the_target_set_is_never_read_and_completes_cancelled() {
     let ranges = vec![0..64, 10 * MIB..10 * MIB + 64, 20 * MIB..20 * MIB + 64];
     let source = RecordingSource::new(ranges.clone(), true);
     let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();

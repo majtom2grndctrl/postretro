@@ -168,9 +168,9 @@ struct BlockSlot {
     /// What the pair is charged against while it is in hand.
     charge: PairCharge,
     room_held: HeldRoom,
-    /// The tier the in-flight read was requested at, or mandatory once its
-    /// block was promoted in flight; counts each raise once.
-    read_tier: ReadTier,
+    /// The in-flight read was requested optional and its block has not been
+    /// promoted since: a promotion clears it and counts one in-flight lift.
+    optional_in_flight: bool,
     /// Failures this generation; the first warns.
     failures: u8,
     /// Each pool's band headroom when the pair was refused.
@@ -205,9 +205,11 @@ pub(crate) struct LightmapResidencyCounters {
     pub(crate) stale_completions: u64,
     /// Completions for a block with no read in flight; dropped.
     pub(crate) duplicate_completions: u64,
-    /// In-flight band reads whose block became mandatory or visible: their
-    /// pending read or queued decode is lifted in place.
-    pub(crate) tier_raises: u64,
+    /// Reads requested optional whose block became mandatory or visible
+    /// while in flight, each counted once: their pending read or queued
+    /// decode is lifted in place. Promotions of pairs in hand count nothing
+    /// here.
+    pub(crate) lifted_in_flight: u64,
     /// Batches the renderer failed and rolled back.
     pub(crate) aborted_drains: u64,
     /// Visible misses, in two buckets of block-frames drawn on any frame
@@ -410,7 +412,7 @@ impl LightmapResidencyController {
                     pending_delta: false,
                     charge: PairCharge::None,
                     room_held: HeldRoom::default(),
-                    read_tier: ReadTier::Optional,
+                    optional_in_flight: false,
                     refused_headroom: PerPool::default(),
                     refused_by: PerPool::default(),
                     failures: 0,

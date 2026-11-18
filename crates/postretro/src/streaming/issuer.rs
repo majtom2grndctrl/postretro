@@ -1,5 +1,5 @@
 //! The one read issuer thread: every streamed positional read, tiered, in offset order.
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
+//! See: context/lib/rendering_pipeline.md §4 (one issuer, one budget)
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -48,10 +48,12 @@ pub(crate) trait ReadRoute: Send {
     /// receiver is gone; the issuer then exits.
     fn deliver(&self, request: ReadRequest, outcome: ReadOutcome) -> bool;
     /// `key`'s live class, read from the target set the frame thread writes;
-    /// `None` when the resource has not published one. A pending request's
-    /// tier is read from it before every plan, so a request whose key turned
-    /// mandatory after its submission is lifted, and one whose key turned
-    /// optional is lowered, without a message to the issuer.
+    /// `None` when `key` is not a member (every production publish stores a
+    /// class with each member). A pending request's tier is read from it
+    /// before every plan, so a request whose key turned mandatory after its
+    /// submission is lifted, and one whose key turned optional is lowered,
+    /// without a message to the issuer. A request whose key is not a member
+    /// keeps its own class until the membership check cancels it.
     fn live_class(&self, key: u32) -> Option<DrainClass>;
 }
 
@@ -247,8 +249,9 @@ struct PlanScratch {
 }
 
 impl PlanScratch {
-    /// Each pending request's tier is its key's live class, or the class it
-    /// was submitted at when its route publishes none.
+    /// Each pending request's tier is its key's live class, or its own class
+    /// when its key has none (it has left the targets and is cancelled
+    /// before its next read).
     fn collect(&mut self, pending: &[PendingRead], routes: &ReadRoutes) {
         self.slots.clear();
         self.owners.clear();

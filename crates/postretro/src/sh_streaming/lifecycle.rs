@@ -65,7 +65,9 @@ impl ShResidencyController {
         let state = &mut self.states[cluster_id as usize];
         state.state = ClusterResidencyState::Queued;
         state.evicted = false;
-        // A requested cluster is targeted, so it has a class.
+        // A requested cluster is targeted, so it has a class; Hysteresis, the
+        // least urgent targeted class, should it ever lack one.
+        debug_assert!(state.class.is_some(), "cluster {cluster_id} has a class");
         let class = state
             .class
             .map_or(DrainClass::Hysteresis, TargetClass::drain_class);

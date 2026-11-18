@@ -953,7 +953,7 @@ fn band_read_promoted_in_flight_is_lifted_through_its_class_without_a_submission
             "block {block}'s live class lifts its read"
         );
     }
-    assert_eq!(rig.controller.counters().tier_raises, 2);
+    assert_eq!(rig.controller.counters().lifted_in_flight, 2);
     assert_eq!(rig.controller.phase(3), BlockPhase::InFlight);
     assert_eq!(rig.controller.permits_in_use(), 3, "blocks 3, 4 and 5");
     rig.install_all(&batch, headroom(8));
@@ -982,7 +982,11 @@ fn a_promotion_never_outlives_the_read_it_lifted() {
     assert_eq!(rig.requested_blocks(), vec![3, 4]);
     let in_flight = std::mem::take(&mut rig.requests);
     let batch = rig.portal(2, &[]).unwrap();
-    assert_eq!(rig.controller.counters().tier_raises, 2, "3 and 4 lifted");
+    assert_eq!(
+        rig.controller.counters().lifted_in_flight,
+        2,
+        "3 and 4 lifted"
+    );
     rig.install_all(&batch, headroom(8));
     rig.requests.clear();
 
@@ -1087,7 +1091,7 @@ fn recycled_and_promoted_reads_never_overfill_the_issuer_queue() {
         }
     }
     assert!(
-        rig.controller.counters().tier_raises >= u64::from(STEP),
+        rig.controller.counters().lifted_in_flight >= u64::from(STEP),
         "a step's band reads were promoted in flight"
     );
     assert_eq!(

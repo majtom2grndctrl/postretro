@@ -299,6 +299,44 @@ fn an_sh_chunk_raised_while_queued_is_taken_in_its_live_class_order() {
     workers.stop();
 }
 
+// An optional SH chunk whose cluster leaves its targets while its decode is
+// queued is taken before older mandatory chunks: it completes cancelled
+// without a decode and returns its charge, so the controller gets its permit
+// back without waiting for the mandatory decodes.
+#[test]
+fn a_departed_optional_chunk_is_taken_before_older_mandatory_chunks() {
+    use DrainClass::{Prefetch, Visible};
+    let source = GatedDecodeSource::with_clusters(false, 4);
+    let mut workers = ShAsyncWorkers::with_source(source.clone(), 1).unwrap();
+    let targets = [(0, Prefetch), (1, Visible), (2, Visible), (3, Prefetch)];
+    workers.publish_targets(targets);
+    workers.submit(request_at(0, Prefetch)).unwrap();
+    source.wait_decoding();
+    for (cluster, class) in &targets[1..] {
+        workers.submit(request_at(*cluster, *class)).unwrap();
+    }
+    wait_decoding_bytes(&workers, 4 * DECODED);
+    workers.publish_targets(targets[..3].iter().copied());
+    source.open();
+    let completed: Vec<(u32, bool)> = (0..4)
+        .map(|_| {
+            let completion = completion(&workers);
+            let cancelled = matches!(completion.result, ShWorkerResult::Cancelled);
+            (completion.request.cluster_id, cancelled)
+        })
+        .collect();
+    assert_eq!(
+        completed,
+        [(0, false), (3, true), (1, false), (2, false)],
+        "the running decode, then the departed chunk, then the mandatory chunks"
+    );
+    assert_eq!(*source.order.lock().unwrap(), [0, 1, 2], "3 never decodes");
+    let drained = phases(&workers);
+    assert_eq!(drained.decoding.current_bytes, 0);
+    assert_eq!(drained.ready.current_bytes, 0);
+    workers.stop();
+}
+
 // The phase ledger is never left poisoned: a panic while it is held (here
 // forced by the test) leaves later charges, deliveries and the frame's take
 // working, with the ledger exact.

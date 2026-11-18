@@ -47,6 +47,25 @@ pub(crate) struct CpuPhaseLedger {
     pub(crate) ready: BytePhase,
 }
 
+impl CpuPhaseLedger {
+    /// Moves a read chunk from the encoded phase (`encoded_bytes`) to the
+    /// decoding phase (`decoded_bytes`) as one change: both are checked
+    /// before either phase changes, so a failure leaves the ledger as it was.
+    pub(crate) fn move_encoded_to_decoding(
+        &mut self,
+        encoded_bytes: u64,
+        decoded_bytes: u64,
+    ) -> Result<(), ShResidencyControllerError> {
+        let mut encoded = self.encoded;
+        let mut decoding = self.decoding;
+        encoded.remove(encoded_bytes, "encoded worker bytes")?;
+        decoding.add(decoded_bytes, "decoded worker bytes")?;
+        self.encoded = encoded;
+        self.decoding = decoding;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,6 +85,29 @@ mod tests {
         assert_eq!(cpu.decoding.high_water_bytes, 9);
         assert_eq!(cpu.ready.current_bytes, 11);
         assert_eq!(cpu.ready.high_water_bytes, 11);
+    }
+
+    #[test]
+    fn a_refused_encoded_to_decoding_move_changes_neither_phase() {
+        let mut cpu = CpuPhaseLedger::default();
+        cpu.encoded.add(10, "encoded").unwrap();
+        cpu.decoding.add(u64::MAX, "decoding").unwrap();
+        let before = cpu;
+        assert!(
+            cpu.move_encoded_to_decoding(10, 1).is_err(),
+            "decoding full"
+        );
+        assert!(
+            cpu.move_encoded_to_decoding(11, 0).is_err(),
+            "too few encoded"
+        );
+        assert_eq!(cpu, before);
+
+        let mut cpu = CpuPhaseLedger::default();
+        cpu.encoded.add(10, "encoded").unwrap();
+        cpu.move_encoded_to_decoding(10, 40).unwrap();
+        assert_eq!(cpu.encoded.current_bytes, 0);
+        assert_eq!(cpu.decoding.current_bytes, 40);
     }
 
     #[test]

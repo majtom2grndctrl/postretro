@@ -1,5 +1,5 @@
 //! Fixed-bucket latency histogram for streaming diagnostics (no per-sample storage).
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency".
+//! See: context/lib/rendering_pipeline.md §4 (one issuer, one budget)
 
 use std::time::Duration;
 

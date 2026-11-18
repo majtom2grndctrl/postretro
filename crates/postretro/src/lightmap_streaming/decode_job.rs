@@ -28,7 +28,7 @@ pub(super) struct LightmapDecodeJob {
     pub(super) charged_bytes: u64,
     pub(super) source: Arc<dyn LightmapBlockSource>,
     /// The controller's block targets, checked before the decode; the
-    /// block's class there is the job's rank.
+    /// block's membership and class there are the job's rank.
     pub(super) targets: Arc<TargetSet>,
     pub(super) ledger: Arc<LightmapRouteLedger>,
     /// Taken by the pair's one completion.
@@ -63,16 +63,15 @@ impl LightmapDecodeJob {
 }
 
 impl DecodeJob for LightmapDecodeJob {
-    /// The block's live class, or its requested class once it has left the
-    /// targets (it then completes cancelled without a decode).
+    /// Departed once the block leaves its targets (its run then completes
+    /// cancelled without a decode), otherwise the block's live class.
     fn rank(&self) -> DecodeRank {
-        DecodeRank {
-            class: self
-                .targets
-                .class(self.request.key)
-                .unwrap_or(self.request.class),
-            resource: StreamResource::LightmapBlock,
-        }
+        DecodeRank::live(
+            &self.targets,
+            self.request.key,
+            self.request.class,
+            StreamResource::LightmapBlock,
+        )
     }
 
     fn run(&mut self, retiring: &AtomicBool, queue_wait: Duration) {
@@ -113,7 +112,9 @@ impl DecodeJob for LightmapDecodeJob {
     }
 
     /// The decode panicked before delivering: the pair fails like a corrupt
-    /// one and is never uploaded.
+    /// one and is never uploaded. Never panics: the release is an atomic
+    /// subtraction and a send to a gone session is ignored, so the pair
+    /// completes unless the pool is retiring.
     fn panicked(mut self: Box<Self>, retiring: &AtomicBool) {
         if retiring.load(Ordering::Acquire) {
             return self.release();
@@ -128,9 +129,9 @@ impl DecodeJob for LightmapDecodeJob {
     }
 }
 
-/// Returns any charge still held: a job dropped mid-unwind, after its
-/// `panicked` cleanup panicked too. The release is an atomic subtraction, so
-/// it cannot panic while unwinding.
+/// Returns any charge still held by a job dropped without its cleanup having
+/// run. The release is an atomic subtraction, so it cannot panic while
+/// unwinding.
 impl Drop for LightmapDecodeJob {
     fn drop(&mut self) {
         self.release();

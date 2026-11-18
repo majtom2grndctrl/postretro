@@ -68,17 +68,15 @@ impl ShDecodeJob {
 }
 
 impl DecodeJob for ShDecodeJob {
-    /// The cluster's live class, or its requested class while the session
-    /// publishes none.
+    /// Departed once the cluster leaves its targets (its run then completes
+    /// cancelled without a decode), otherwise the cluster's live class.
     fn rank(&self) -> DecodeRank {
-        DecodeRank {
-            class: self
-                .shared
-                .targets
-                .class(self.request.cluster_id)
-                .unwrap_or(self.request.class),
-            resource: StreamResource::Sh,
-        }
+        DecodeRank::live(
+            &self.shared.targets,
+            self.request.cluster_id,
+            self.request.class,
+            StreamResource::Sh,
+        )
     }
 
     fn run(&mut self, retiring: &AtomicBool, queue_wait: Duration) {
@@ -126,13 +124,20 @@ impl DecodeJob for ShDecodeJob {
     }
 
     /// The decode panicked before delivering: the chunk takes the failed
-    /// chunk path.
+    /// chunk path. Never panics, so the chunk always completes and the
+    /// controller frees its permit: an unbalanced decoding charge is logged
+    /// instead.
     fn panicked(mut self: Box<Self>, retiring: &AtomicBool) {
-        self.release_decoding();
+        let cluster_id = self.request.cluster_id;
+        if let Err(error) = self.try_release_decoding() {
+            log::error!(
+                "[SH streaming] cluster {cluster_id}: decoding charge not returned after its \
+                 decode panicked: {error}"
+            );
+        }
         if self.stopped(retiring) {
             return;
         }
-        let cluster_id = self.request.cluster_id;
         self.complete(
             ShWorkerResult::Failed(PrlLoadError::SectionValidation {
                 section: StreamResource::Sh.label(),
@@ -143,9 +148,8 @@ impl DecodeJob for ShDecodeJob {
     }
 }
 
-/// Returns any decoding charge still held: a job dropped mid-unwind, after
-/// its `panicked` cleanup panicked too. Never panics, since it may run while
-/// unwinding.
+/// Returns any decoding charge still held by a job dropped without its
+/// cleanup having run. Never panics, since it may run while unwinding.
 impl Drop for ShDecodeJob {
     fn drop(&mut self) {
         let _ = self.try_release_decoding();

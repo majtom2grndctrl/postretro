@@ -115,13 +115,12 @@ impl Drop for TestJob {
 
 impl DecodeJob for TestJob {
     fn rank(&self) -> DecodeRank {
-        DecodeRank {
-            class: self
-                .live
-                .as_ref()
-                .and_then(|live| live.class(self.key))
-                .unwrap_or(self.class),
-            resource: self.resource,
+        match &self.live {
+            Some(live) => DecodeRank::live(live, self.key, self.class, self.resource),
+            None => DecodeRank::Decode {
+                class: self.class,
+                resource: self.resource,
+            },
         }
     }
 
@@ -258,7 +257,7 @@ fn pool_threads_are_named_for_the_shared_pool() {
     struct Named(Arc<Journal>);
     impl DecodeJob for Named {
         fn rank(&self) -> DecodeRank {
-            DecodeRank {
+            DecodeRank::Decode {
                 class: DrainClass::Visible,
                 resource: StreamResource::Sh,
             }

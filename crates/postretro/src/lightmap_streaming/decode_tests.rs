@@ -513,7 +513,7 @@ struct OtherResourceJob(std::sync::mpsc::Sender<()>);
 
 impl DecodeJob for OtherResourceJob {
     fn rank(&self) -> DecodeRank {
-        DecodeRank {
+        DecodeRank::Decode {
             class: DrainClass::Visible,
             resource: StreamResource::Sh,
         }
@@ -533,7 +533,7 @@ struct OptionalJob(OtherResourceJob);
 
 impl DecodeJob for OptionalJob {
     fn rank(&self) -> DecodeRank {
-        DecodeRank {
+        DecodeRank::Decode {
             class: DrainClass::Hysteresis,
             resource: StreamResource::LightmapBlock,
         }
@@ -656,6 +656,119 @@ fn every_permit_read_and_promoted_fits_both_queues_undrained() {
         "one completion per read"
     );
     assert_eq!(ledger.in_memory_bytes(), 0);
+}
+
+/// Holds the pool's one thread until its gate opens.
+struct BlockingJob {
+    started: std::sync::mpsc::Sender<()>,
+    gate: Receiver<()>,
+}
+
+impl DecodeJob for BlockingJob {
+    fn rank(&self) -> DecodeRank {
+        DecodeRank::Decode {
+            class: DrainClass::Visible,
+            resource: StreamResource::Sh,
+        }
+    }
+
+    fn run(&mut self, _: &AtomicBool, _: std::time::Duration) {
+        self.started.send(()).unwrap();
+        self.gate.recv().unwrap();
+    }
+
+    fn discard(self: Box<Self>) {}
+
+    fn panicked(self: Box<Self>, _: &AtomicBool) {}
+}
+
+/// A mandatory decode that reports the route ledger's charge when it runs.
+struct LedgerProbeJob {
+    ledger: Arc<LightmapRouteLedger>,
+    seen: std::sync::mpsc::Sender<u64>,
+}
+
+impl DecodeJob for LedgerProbeJob {
+    fn rank(&self) -> DecodeRank {
+        DecodeRank::Decode {
+            class: DrainClass::Visible,
+            resource: StreamResource::LightmapBlock,
+        }
+    }
+
+    fn run(&mut self, _: &AtomicBool, _: std::time::Duration) {
+        self.seen.send(self.ledger.in_memory_bytes()).unwrap();
+    }
+
+    fn discard(self: Box<Self>) {}
+
+    fn panicked(self: Box<Self>, _: &AtomicBool) {}
+}
+
+// An optional pair whose block has left its targets is taken before older
+// mandatory decodes: it returns its charge and completes cancelled without
+// decoding, so its permit comes back without waiting behind them.
+#[test]
+fn a_departed_optional_pair_is_taken_before_older_mandatory_work_and_completes_cancelled() {
+    let source = DecodeProbe::new(
+        TestBlockSource::new(vec![BlockSpec::standard(0, 0, 64, true).coded(RATIO)]),
+        None,
+        None,
+    );
+    let ledger = Arc::new(LightmapRouteLedger::default());
+    let pool = DecodePool::spawn(1, 8).unwrap();
+    let queue = pool.queue();
+    let (started, running) = std::sync::mpsc::channel();
+    let (open, gate) = std::sync::mpsc::channel();
+    assert!(queue.submit(Box::new(BlockingJob { started, gate })));
+    running.recv().unwrap();
+
+    let (seen, probes) = std::sync::mpsc::channel();
+    for _ in 0..2 {
+        assert!(queue.submit(Box::new(LedgerProbeJob {
+            ledger: Arc::clone(&ledger),
+            seen: seen.clone(),
+        })));
+    }
+    ledger.charge(512);
+    let (completed, completions) = std::sync::mpsc::sync_channel(1);
+    assert!(queue.submit(Box::new(
+        crate::lightmap_streaming::decode_job::LightmapDecodeJob {
+            request: ReadRequest {
+                resource: StreamResource::LightmapBlock,
+                key: 0,
+                class: DrainClass::Prefetch,
+                identity: crate::streaming::request::ReadIdentity {
+                    generation: 1,
+                    content_tag: [0; 32],
+                    item_hash: [0; 32],
+                },
+                ranges: crate::streaming::request::ReadRanges::one(0..0),
+            },
+            lightmap: Vec::new(),
+            shadowmask: None,
+            charged_bytes: 512,
+            source: source.clone() as Arc<dyn LightmapBlockSource>,
+            // Block 0 is not a member: it has left its targets.
+            targets: Arc::new(TargetSet::new(1)),
+            ledger: Arc::clone(&ledger),
+            completed: Some(completed),
+        }
+    )));
+    open.send(()).unwrap();
+    let wait = std::time::Duration::from_secs(10);
+    for _ in 0..2 {
+        assert_eq!(
+            probes.recv_timeout(wait).unwrap(),
+            0,
+            "the departed pair ran and returned its charge before each older mandatory job"
+        );
+    }
+    let completion = completions.recv_timeout(wait).unwrap();
+    assert!(matches!(completion.result, LightmapReadResult::Cancelled));
+    assert_eq!(completion.charged_bytes, 0);
+    assert_eq!(source.decodes(0), 0, "never decoded");
+    drop(pool);
 }
 
 // A lightmap decode job dropped while still holding its charge (its pool's

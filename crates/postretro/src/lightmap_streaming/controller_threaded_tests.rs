@@ -197,7 +197,11 @@ fn held_lightmap_read_keeps_the_pair_unready_when_the_shadowmask_lands_first() {
 }
 
 // P4: a block leaving demand while its one-range read is in flight is
-// discarded when the read lands, and its buffers are released.
+// discarded when the read lands, and its buffers are released. Its read
+// lands after it left the targets, so its decode is skipped and it completes
+// cancelled. Whether block 5, read before the retarget, completes decoded
+// (a departed read) or cancelled depends on when the decode thread reaches
+// it, so the test counts block 6 either way.
 #[test]
 fn block_leaving_demand_mid_read_is_discarded_and_released() {
     let mut rig = ThreadedRig::new(corridor_blocks(64, false));
@@ -207,10 +211,16 @@ fn block_leaving_demand_mid_read_is_discarded_and_released() {
     rig.source.log.wait_for_reads(2);
     rig.frame(0);
     assert_eq!(rig.controller.target(6), None);
+    assert_eq!(rig.controller.phase(6), BlockPhase::InFlight);
     rig.source.log.gate.release(held);
     rig.pump_until(0, "the departed read", |rig| {
-        rig.controller.counters().departed_reads >= 1
+        rig.controller.phase(6) == BlockPhase::Absent
     });
+    let counters = rig.controller.counters();
+    assert!(
+        counters.cancelled_reads + counters.departed_reads >= 2,
+        "blocks 5 and 6 both discarded: {counters:?}"
+    );
     rig.pump_until(0, "camera 0's targets", |rig| rig.all_installed(0..5));
     assert_eq!(rig.controller.phase(6), BlockPhase::Absent);
     assert_eq!(rig.installs_of(6), 0);

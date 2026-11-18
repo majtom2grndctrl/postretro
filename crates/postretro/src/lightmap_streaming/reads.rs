@@ -89,7 +89,7 @@ impl LightmapResidencyController {
             .map_err(LightmapResidencyError::Submit)?;
             let slot = &mut self.slots[block as usize];
             slot.phase = BlockPhase::InFlight;
-            slot.read_tier = target.drain_class.tier();
+            slot.optional_in_flight = target.drain_class.tier() == ReadTier::Optional;
             self.take_permit(
                 block,
                 if band {
@@ -147,7 +147,7 @@ impl LightmapResidencyController {
     /// never-refused charge. A band read in flight needs no message: its
     /// block's class in the target set, written by the retarget, lifts its
     /// pending read at the issuer or its queued decode in the pool. It is
-    /// counted once as a tier raise.
+    /// counted once as an in-flight lift.
     pub(super) fn promote_in_hand(&mut self, block: u32) {
         let slot = &mut self.slots[block as usize];
         if slot.charge == PairCharge::Band {
@@ -158,9 +158,9 @@ impl LightmapResidencyController {
             self.band_committed_texels -= facts.texels;
             self.never_refused_texels += slot.room_held.unheld_texels(&facts);
         }
-        if slot.phase == BlockPhase::InFlight && slot.read_tier == ReadTier::Optional {
-            slot.read_tier = ReadTier::Mandatory;
-            self.counters.tier_raises += 1;
+        if slot.phase == BlockPhase::InFlight && slot.optional_in_flight {
+            slot.optional_in_flight = false;
+            self.counters.lifted_in_flight += 1;
         }
     }
 

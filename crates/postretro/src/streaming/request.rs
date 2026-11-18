@@ -1,5 +1,5 @@
 //! Resource-neutral read request: resource, key, class, identity, and ranges.
-//! See: context/lib/rendering_pipeline.md §"Cluster SH residency"
+//! See: context/lib/rendering_pipeline.md §4 (one issuer, one budget)
 
 use std::ops::Range;
 
@@ -102,10 +102,9 @@ pub(crate) struct ReadIdentity {
 /// Invariants the issuer keeps for every request, whatever its resource:
 /// - Mandatory requests of every resource are read before optional requests
 ///   of any; within a tier, ranges are read in ascending file offset. A
-///   request's tier is its key's live class when its resource publishes one
-///   (`ReadRoute::live_class`), otherwise the class it was submitted at, so
-///   a pending request whose key turns mandatory is read in the mandatory
-///   tier with no second submission.
+///   request's tier is its key's live class (`ReadRoute::live_class`), or its
+///   own class while its key has none, so a pending request whose key turns
+///   mandatory is read in the mandatory tier with no second submission.
 /// - Ranges of one resource coalesce into one physical read under
 ///   `COALESCE_MAX_SPAN_BYTES`: SH ranges across gaps up to
 ///   `COALESCE_MAX_GAP_BYTES`, lightmap blocks only when byte-contiguous. A
@@ -130,7 +129,8 @@ pub(crate) struct ReadRequest {
     pub(crate) resource: StreamResource,
     /// Resource-local key: SH cluster id, or lightmap block id.
     pub(crate) key: u32,
-    /// The item's class when it was requested.
+    /// The item's class at submission, or the most urgent class among
+    /// identical submissions absorbed while it was pending.
     pub(crate) class: DrainClass,
     pub(crate) identity: ReadIdentity,
     pub(crate) ranges: ReadRanges,

@@ -17,7 +17,7 @@
 //      component, no script surface)
 //      context/lib/scripting.md §1 (scripts declare, Rust executes)
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 use glam::Vec3;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -27,7 +27,10 @@ use crate::data_descriptors::{
     BehaviorLayerDescriptor, MAX_BEHAVIOR_NESTING_DEPTH,
 };
 use crate::registry::{EntityId, EntityRegistry, RegistryError};
-use postretro_foundation::BRAIN_NO_TARGET_DISTANCE;
+use postretro_foundation::{
+    BRAIN_NO_TARGET_DISTANCE, BehaviorDrawStream, BehaviorDraws, RateScaledStates,
+    RateScaledStatesMemo, hold_release_range, release_draw,
+};
 
 use super::mesh::MeshComponent;
 
@@ -37,7 +40,7 @@ pub use attack_turns::{
     AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
     MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
 };
-pub use clip_clock::{ClipClock, ClipFacts, note_replaced_mesh};
+pub use clip_clock::{ClipClock, ClipFacts, Stagger, note_replaced_mesh};
 
 /// Maximum number of distinct damagers remembered by one brain. Entries age to
 /// the shared damage-recency sentinel and remain until this bounded ledger must
@@ -249,6 +252,13 @@ pub struct BrainComponent {
     /// restore re-enters fresh, recording new bounds and re-picking direction.
     #[serde(skip)]
     pub engaged_motion: EngagedMotionMemory,
+    /// The landing spot a `leap` fixed on entry: its standoff short of where
+    /// the target stood then. Kept while the path's motion is `leap`, never
+    /// re-aimed. Serialized beside the clip clock, so a restore mid-leap
+    /// keeps its spot and its moment; old brains have none and fix one on
+    /// their next tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leap_spot: Option<Vec3>,
     /// Attack turns held, the pending request and the wait clock. Transient:
     /// a restored brain holds nothing and arbitrates from scratch.
     #[serde(skip)]
@@ -317,6 +327,12 @@ pub struct BrainComponent {
     /// deserialized brain gets its own allocation, which is why `sync`'s
     /// pointer test correctly rebinds after a load.
     pub graph: Arc<BehaviorGraphDescriptor>,
+    /// [`Self::graph`]'s rate-scaled animation states, derived once for the
+    /// per-tick playback-rate pass ([`Self::rate_scaled_states`]). Derived
+    /// data: never serialized, so a restored brain derives it on first read,
+    /// and ignored by equality.
+    #[serde(skip)]
+    rate_scaled_states: RateScaledStatesMemo,
     /// One resolved activity index for every active envelope from root to the
     /// current nested activity. The descriptor validator caps nesting, so this
     /// is a fixed array rather than a per-tick-growing `Vec`.
@@ -338,6 +354,34 @@ pub struct BrainComponent {
     /// envelope's rows. This host-only state does not alter snapshot payloads.
     #[serde(default = "default_activity_attack_counts")]
     pub attacks_fired_in_activity: [u32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// Scope-relative `@brain.activityRoll` for the matching active activity:
+    /// drawn from [`Self::behavior_draws`] on that level's entry and fixed
+    /// until the level's activity is left. Host-only: clients never evaluate
+    /// guards, and no roll crosses the wire. Old brains read `0.0` until a
+    /// level is next entered.
+    #[serde(default = "default_activity_rolls")]
+    pub activity_roll: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// Scope-relative `@brain.damageInActivity` for the matching active
+    /// activity: the points every hit dealt (layer-absorbed plus health loss)
+    /// since that level's activity was entered. Fed once per landed hit at the
+    /// damage chokepoint, so every producer counts. Host-only: clients never
+    /// evaluate guards. Old brains read `0.0`.
+    #[serde(default = "default_activity_damage")]
+    pub damage_in_activity: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// The hidden release time, in milliseconds of its pose, of the stance
+    /// hold active at each depth: drawn from its release row's `releaseAfter`
+    /// range on every entry of that hold, a pose-mate's included, from the
+    /// release stream, never the roll's. No guard reads it; the release row
+    /// compares the level's carried time in activity against it. `0.0` where
+    /// the active activity has no release row. Host-only, never on the wire.
+    /// Old brains read `0.0`, so a restored hold releases on its next
+    /// evaluation.
+    #[serde(default = "default_hold_release_ms")]
+    pub hold_release_ms: [f32; MAX_BEHAVIOR_NESTING_DEPTH],
+    /// The per-instance seed and per-stream counters every host-only behavior
+    /// draw comes from. Serialized so a restore keeps drawing the same values.
+    #[serde(default)]
+    pub behavior_draws: BehaviorDraws,
     /// An initial descent, transition, gate reset, or graph reseat seats a path
     /// atomically and marks its newly entered suffix for one entry-dependent
     /// presentation pass. This is consumed by the AI tick after timers are zeroed.
@@ -359,6 +403,7 @@ impl BrainComponent {
     /// Materialize a fresh brain from an authored `components.behavior` graph.
     /// Seeded in the graph's `initial` state with every timer at rest.
     pub fn from_graph(graph: &BehaviorGraphDescriptor) -> Self {
+        let graph = Arc::new(graph.clone());
         let mut brain = Self {
             time_since_damage_ms: default_time_since_damage_ms(),
             damage_bearing: 0.0,
@@ -376,6 +421,7 @@ impl BrainComponent {
             presented_travel_variant: TravelVariant::Base,
             clip_clock: ClipClock::default(),
             engaged_motion: EngagedMotionMemory::None,
+            leap_spot: None,
             attack_turns: AttackTurnState::default(),
             attack_pool: None,
             aggro_armed: true,
@@ -384,17 +430,30 @@ impl BrainComponent {
             retaliation_acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
-            graph: Arc::new(graph.clone()),
+            rate_scaled_states: RateScaledStatesMemo::of(&graph),
+            graph,
             active_activity_path: default_active_activity_path(),
             active_activity_path_len: 0,
             time_in_activity_ms: default_activity_timers(),
             attacks_fired_in_activity: default_activity_attack_counts(),
+            activity_roll: default_activity_rolls(),
+            damage_in_activity: default_activity_damage(),
+            hold_release_ms: default_hold_release_ms(),
+            behavior_draws: BehaviorDraws::default(),
             entry_pending: false,
             entry_pending_start_depth: 0,
             entry_event_pending: false,
         };
         brain.reseat_to_initial_without_event();
         brain
+    }
+
+    /// The animation states [`Self::graph`] rate-scales by steered travel
+    /// speed (foundation `any_rate_scaled_animation`), the set a remote client
+    /// derives from the same descriptor. Lent from a set derived once per
+    /// graph, so a per-tick read walks a handful of names, not the graph.
+    pub fn rate_scaled_states(&self) -> Cow<'_, RateScaledStates> {
+        self.rate_scaled_states.get(&self.graph)
     }
 
     /// The root activity name. Kept as the single-name convenience for legacy
@@ -460,6 +519,79 @@ impl BrainComponent {
             Some(self.attacks_fired_in_activity[depth])
         } else {
             None
+        }
+    }
+
+    /// The roll the activity active at `depth` drew on entry.
+    pub fn activity_roll(&self, depth: usize) -> Option<f32> {
+        if depth < self.active_depth() {
+            Some(self.activity_roll[depth])
+        } else {
+            None
+        }
+    }
+
+    /// Points dealt to this enemy since the activity active at `depth` was
+    /// entered.
+    pub fn damage_in_activity(&self, depth: usize) -> Option<f32> {
+        if depth < self.active_depth() {
+            Some(self.damage_in_activity[depth])
+        } else {
+            None
+        }
+    }
+
+    /// The hidden release time the stance hold active at `depth` drew on
+    /// entry, in milliseconds of its pose; `0.0` for an activity with no
+    /// release row. Engine-only: no guard reads it.
+    pub fn hold_release_ms(&self, depth: usize) -> Option<f32> {
+        if depth < self.active_depth() {
+            Some(self.hold_release_ms[depth])
+        } else {
+            None
+        }
+    }
+
+    /// Whether the activity active at `depth` has lasted its drawn release
+    /// time. Its time in activity carries across its pose, so this reads how
+    /// long the pose has been held, not the hold alone. A release row passes
+    /// only while this holds.
+    pub fn hold_release_due(&self, depth: usize) -> bool {
+        depth < self.active_depth()
+            && self.time_in_activity_ms[depth] >= self.hold_release_ms[depth]
+    }
+
+    /// Add one landed hit's points dealt to every active level's sum. The
+    /// damage chokepoint calls this once per hit on a live target, so two hits
+    /// on one tick both count. A hit landing before the AI pass counts toward
+    /// the activity held then; one landing after it counts toward the activity
+    /// that pass entered. Non-finite or non-positive points add nothing, and
+    /// each sum saturates at `f32::MAX`.
+    pub fn record_damage_in_activity(&mut self, points: f32) {
+        if points.is_nan() || points <= 0.0 {
+            return;
+        }
+        let points = points.min(f32::MAX);
+        let active_depth = self.active_depth();
+        for sum in self.damage_in_activity[..active_depth].iter_mut() {
+            *sum = (*sum + points).min(f32::MAX);
+        }
+    }
+
+    /// Salt this brain's behavior draws with its per-instance seed. Spawn
+    /// seats the initial path in [`Self::from_graph`] before the spawn path
+    /// knows the enemy's placement, so this restarts the streams and redraws
+    /// every seated level's roll and release time: the first evaluation reads
+    /// this enemy's own salted draws, and seeding twice is the same as seeding
+    /// once.
+    pub fn seed_behavior_draws(&mut self, seed: u64) {
+        self.behavior_draws.reseed(seed);
+        let active_depth = self.active_depth();
+        for depth in 0..active_depth {
+            self.activity_roll[depth] = self
+                .behavior_draws
+                .next_unit(BehaviorDrawStream::ActivityRoll);
+            self.draw_hold_release(depth);
         }
     }
 
@@ -568,7 +700,9 @@ impl BrainComponent {
             .activities
             .keys()
             .position(|name| name == &self.graph.envelope.initial);
-        initial_index.is_some_and(|index| self.enter_activity_at_inner(0, index, emit_event))
+        // A reseat seats the graph afresh, a pose included: it never carries
+        // a pose's facts, even onto a pose-mate of the activity it replaces.
+        initial_index.is_some_and(|index| self.enter_activity_at_inner(0, index, emit_event, false))
     }
 
     /// Whether every live path slot resolves through the retained graph and
@@ -635,12 +769,18 @@ impl BrainComponent {
     }
 
     /// Enter `target_index` in the envelope at `depth`, discard all inactive
-    /// descendants, zero their timers and attack counters, then atomically
-    /// descend nested initials.
-    /// A parser-validated graph cannot fail this; `false` is the safe answer for
-    /// malformed hand-built/restored data.
+    /// descendants, zero their scope-relative facts, then atomically descend
+    /// nested initials. Every level entered starts its timer, attack count and
+    /// damage sum at zero and draws its own roll, in root-to-leaf order.
+    ///
+    /// A move between two activities of one pose at `depth` is one activity
+    /// to the engine (`entity_model.md` §7c, Stances and attacks): that level
+    /// keeps its timer, roll, damage sum and attack count, and the move raises
+    /// no entry event. Either way, an entered stance hold draws its release
+    /// time. A parser-validated graph cannot fail this; `false` is the safe
+    /// answer for malformed hand-built/restored data.
     pub fn enter_activity_at(&mut self, depth: usize, target_index: usize) -> bool {
-        self.enter_activity_at_inner(depth, target_index, true)
+        self.enter_activity_at_inner(depth, target_index, true, true)
     }
 
     fn enter_activity_at_inner(
@@ -648,24 +788,33 @@ impl BrainComponent {
         mut depth: usize,
         mut target_index: usize,
         emit_event: bool,
+        carry_pose: bool,
     ) -> bool {
         if depth >= MAX_BEHAVIOR_NESTING_DEPTH {
             return false;
         }
+        // Read against the path as it stands, before this entry rewrites it.
+        let pose_move = carry_pose && self.moves_within_pose(depth, target_index);
         let entry_start_depth = self
             .entry_pending
             .then_some(self.entry_pending_start_depth)
             .map_or(depth, |pending_depth| pending_depth.min(depth));
-        let emit_event = self.entry_event_pending || emit_event;
+        // A pose move announces nothing of its own, but keeps an entry this
+        // pass already owes (a reseat earlier in the tick).
+        let emit_event = self.entry_event_pending || (emit_event && !pose_move);
+        // Every entry leaves the activity a release gate or a flinch belonged
+        // to: the entered one starts its own.
+        self.clip_clock.release_elapsed = 0.0;
+        self.clip_clock.release_resolved = false;
+        self.clip_clock.release_moments = 0;
+        self.clip_clock.stagger = None;
         self.entry_pending = false;
         self.entry_event_pending = false;
         self.active_activity_path_len = depth;
-        for timer in self.time_in_activity_ms[depth..].iter_mut() {
-            *timer = 0.0;
-        }
-        for count in self.attacks_fired_in_activity[depth..].iter_mut() {
-            *count = 0;
-        }
+        // Inactive descendants hold no scope-relative facts; each level the
+        // loop enters starts its own below.
+        self.clear_scope_relative_facts_from(depth + 1);
+        let carried_depth = pose_move.then_some(depth);
 
         loop {
             let Some(envelope) = self.envelope_at_depth_for_prefix(depth) else {
@@ -683,8 +832,10 @@ impl BrainComponent {
                     .position(|name| name == &child.initial)
             });
             self.active_activity_path[depth] = target_index;
-            self.time_in_activity_ms[depth] = 0.0;
-            self.attacks_fired_in_activity[depth] = 0;
+            if carried_depth != Some(depth) {
+                self.start_scope_relative_facts(depth);
+            }
+            self.draw_hold_release(depth);
             self.active_activity_path_len = depth + 1;
 
             let Some(initial) = child_initial else {
@@ -701,6 +852,84 @@ impl BrainComponent {
         self.entry_pending_start_depth = entry_start_depth;
         self.entry_event_pending = emit_event;
         true
+    }
+
+    /// Whether entering `target_index` at `depth` moves between two
+    /// activities of one pose: the activity active there now and the target
+    /// differ and carry the same `pose`.
+    fn moves_within_pose(&self, depth: usize, target_index: usize) -> bool {
+        if depth >= self.active_depth() {
+            return false;
+        }
+        let current_index = self.active_activity_path[depth];
+        if current_index == target_index {
+            return false;
+        }
+        let Some(envelope) = self.envelope_at_depth_for_prefix(depth) else {
+            return false;
+        };
+        let pose_of = |index: usize| {
+            envelope
+                .activities
+                .values()
+                .nth(index)
+                .and_then(|activity| activity.pose.as_deref())
+        };
+        pose_of(current_index).is_some_and(|pose| pose_of(target_index) == Some(pose))
+    }
+
+    /// Draw the release time of the activity just seated at `depth` when it
+    /// is a stance hold, from the release stream; otherwise clear it. Every
+    /// entry of a hold draws, including one from its pose's rest.
+    fn draw_hold_release(&mut self, depth: usize) {
+        let range = self
+            .envelope_at_depth_for_prefix(depth)
+            .and_then(|envelope| {
+                let name = envelope
+                    .activities
+                    .keys()
+                    .nth(self.active_activity_path[depth])?;
+                hold_release_range(envelope, name)
+            });
+        self.hold_release_ms[depth] = match range {
+            Some(range) => release_draw(
+                range,
+                self.behavior_draws
+                    .next_unit(BehaviorDrawStream::HoldRelease),
+            ),
+            None => 0.0,
+        };
+    }
+
+    /// Start the scope-relative facts of the level entered at `depth` fresh:
+    /// timer, attack count and damage sum at zero, and a new roll. Every
+    /// level an entry seats runs this, root to leaf, so rolls draw in that
+    /// order. A move within one pose skips it for the level it enters.
+    fn start_scope_relative_facts(&mut self, depth: usize) {
+        self.time_in_activity_ms[depth] = 0.0;
+        self.attacks_fired_in_activity[depth] = 0;
+        self.damage_in_activity[depth] = 0.0;
+        self.activity_roll[depth] = self
+            .behavior_draws
+            .next_unit(BehaviorDrawStream::ActivityRoll);
+    }
+
+    /// Zero every scope-relative fact from `depth` down, for levels that are
+    /// no longer active.
+    fn clear_scope_relative_facts_from(&mut self, depth: usize) {
+        let depth = depth.min(MAX_BEHAVIOR_NESTING_DEPTH);
+        self.time_in_activity_ms[depth..].fill(0.0);
+        self.attacks_fired_in_activity[depth..].fill(0);
+        self.damage_in_activity[depth..].fill(0.0);
+        self.activity_roll[depth..].fill(0.0);
+        self.hold_release_ms[depth..].fill(0.0);
+    }
+
+    /// The depth [`Self::take_entry_pending`] would report, without consuming
+    /// the latch: for work that runs before the tick consumes it.
+    pub fn entry_pending_depth(&self) -> Option<usize> {
+        self.entry_pending
+            .then_some(self.entry_pending_start_depth.min(self.active_depth()))
     }
 
     /// Consume the atomic-entry latch after the tick captures entry-dependent
@@ -796,6 +1025,18 @@ const fn default_activity_timers() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
 
 const fn default_activity_attack_counts() -> [u32; MAX_BEHAVIOR_NESTING_DEPTH] {
     [0; MAX_BEHAVIOR_NESTING_DEPTH]
+}
+
+const fn default_activity_rolls() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
+    [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
+}
+
+const fn default_activity_damage() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
+    [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
+}
+
+const fn default_hold_release_ms() -> [f32; MAX_BEHAVIOR_NESTING_DEPTH] {
+    [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
 }
 
 /// The index of `name` in the root envelope's activity map, or `None` when the
@@ -1024,6 +1265,9 @@ mod tests {
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         }
     }
@@ -1042,6 +1286,9 @@ mod tests {
                     (
                         "rest".to_string(),
                         BehaviorActivityDescriptor {
+                            pose: None,
+                            stagger_to: None,
+                            passes: None,
                             sound: None,
                             animation: Some("idle".to_string()),
                             motion: Some(MotionVerb::Hold),
@@ -1050,12 +1297,16 @@ mod tests {
                             facing: None,
                             reposition: None,
                             attack_turn: None,
+                            speed: None,
                             layers: std::collections::BTreeMap::new(),
                         },
                     ),
                     (
                         "charge".to_string(),
                         BehaviorActivityDescriptor {
+                            pose: None,
+                            stagger_to: None,
+                            passes: None,
                             sound: None,
                             animation: Some("walk".to_string()),
                             motion: Some(MotionVerb::ChaseTarget),
@@ -1064,6 +1315,7 @@ mod tests {
                             facing: None,
                             reposition: None,
                             attack_turn: None,
+                            speed: None,
                             layers: std::collections::BTreeMap::new(),
                         },
                     ),
@@ -1071,6 +1323,9 @@ mod tests {
                 transitions: std::collections::BTreeMap::from([(
                     "rest".to_string(),
                     vec![GuardedRow {
+                        release_after: None,
+                        queue: None,
+                        after_moment: false,
                         to: "charge".to_string(),
                         when: IrNode::Le {
                             a: Box::new(IrNode::Input {
@@ -1097,6 +1352,7 @@ mod tests {
                     cooldown_ms: Some(900.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -1237,6 +1493,43 @@ mod tests {
 
         brain.record_successful_attack_fire();
         assert_eq!(brain.activity_attack_count(0), Some(1));
+    }
+
+    // Every hit adds its points to each active level's sum; entry zeroes the
+    // entered level. Non-finite and non-positive points add nothing, and the
+    // sum saturates rather than overflowing.
+    #[test]
+    fn damage_sums_follow_active_scopes_reset_on_entry_and_stay_finite() {
+        let graph = authored_graph();
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert_eq!(brain.damage_in_activity(0), Some(0.0));
+
+        brain.record_damage_in_activity(7.5);
+        brain.record_damage_in_activity(2.5);
+        assert_eq!(
+            brain.damage_in_activity(0),
+            Some(10.0),
+            "two hits both count"
+        );
+        for ignored in [0.0, -3.0, f32::NAN] {
+            brain.record_damage_in_activity(ignored);
+        }
+        assert_eq!(brain.damage_in_activity(0), Some(10.0));
+        assert_eq!(brain.damage_in_activity(1), None, "inactive depth");
+
+        assert!(brain.enter_activity_at(
+            0,
+            graph_activity_index(&graph, "charge").expect("charge is declared"),
+        ));
+        assert_eq!(brain.damage_in_activity(0), Some(0.0), "entry zeroes");
+
+        brain.record_damage_in_activity(f32::INFINITY);
+        brain.record_damage_in_activity(f32::MAX);
+        assert_eq!(
+            brain.damage_in_activity(0),
+            Some(f32::MAX),
+            "saturates finite"
+        );
     }
 
     #[test]
@@ -1625,6 +1918,54 @@ mod tests {
         assert_eq!(back, brain);
         assert_eq!(back.state_name(), Some("charge"));
         assert_eq!(*back.graph, authored_graph());
+    }
+
+    // The rate-scaled set is derived data: a fresh brain holds its graph's,
+    // a restored brain derives the same on its first read, and a graph
+    // swapped in place is never served the old graph's states.
+    #[test]
+    fn a_restored_brain_reads_the_same_rate_scaled_states_as_a_fresh_one() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "investigate": { "animation": "walk", "motion": "moveToLastKnown" },
+                "engage": { "animation": "run", "motion": "chaseTarget" }
+            },
+            "transitions": { "idle": [] }
+        }))
+        .expect("graph deserializes");
+        let names = |brain: &BrainComponent| {
+            let mut names: Vec<String> = brain
+                .rate_scaled_states()
+                .iter()
+                .map(str::to_string)
+                .collect();
+            names.sort();
+            names
+        };
+        let brain = BrainComponent::from_graph(&graph);
+        assert_eq!(names(&brain), ["run", "walk"]);
+
+        let json = serde_json::to_value(&brain).expect("brain serializes");
+        assert!(
+            json.get("rate_scaled_states").is_none(),
+            "derived data stays out of the save"
+        );
+        let restored: BrainComponent = serde_json::from_value(json).expect("brain restores");
+        assert_eq!(names(&restored), ["run", "walk"]);
+        assert_eq!(restored, brain);
+
+        let mut swapped = brain.clone();
+        let mut replacement = graph.clone();
+        replacement
+            .envelope
+            .activities
+            .remove("investigate")
+            .expect("declared");
+        swapped.graph = Arc::new(replacement);
+        assert_eq!(names(&swapped), ["run"]);
     }
 
     #[test]
@@ -2035,5 +2376,202 @@ mod tests {
         brain.active_activity_path[0] = 99;
         assert_eq!(brain.state_name(), None);
         assert_eq!(graph_activity_index(&brain.graph, "sprint"), None);
+    }
+
+    // Sp7: a brain saved before rolls and damage sums existed restores. Its
+    // sums read 0 and count the next hit; its next entry draws a roll in
+    // [0, 1).
+    #[test]
+    fn brain_serialized_before_activity_rolls_restores_and_draws_on_next_entry() {
+        let graph = authored_graph();
+        let mut legacy =
+            serde_json::to_value(BrainComponent::from_graph(&graph)).expect("brain serializes");
+        let fields = legacy.as_object_mut().expect("brain is an object");
+        fields.remove("activity_roll");
+        fields.remove("behavior_draws");
+        fields.remove("damage_in_activity");
+        let mut restored: BrainComponent =
+            serde_json::from_value(legacy).expect("pre-roll brain deserializes");
+        assert_eq!(restored.activity_roll(0), Some(0.0));
+        assert_eq!(restored.behavior_draws, BehaviorDraws::default());
+        assert_eq!(restored.damage_in_activity(0), Some(0.0));
+        assert_eq!(
+            restored.damage_in_activity,
+            [0.0; MAX_BEHAVIOR_NESTING_DEPTH]
+        );
+        restored.record_damage_in_activity(6.5);
+        assert_eq!(restored.damage_in_activity(0), Some(6.5));
+
+        let charge = graph_activity_index(&graph, "charge").expect("charge is declared");
+        let draws = (0..8)
+            .map(|_| {
+                assert!(restored.enter_activity_at(0, charge));
+                restored.activity_roll(0).expect("charge is active")
+            })
+            .collect::<Vec<_>>();
+        assert!(draws.iter().all(|roll| (0.0..1.0).contains(roll)));
+        assert!(
+            draws.windows(2).any(|pair| pair[0] != pair[1]),
+            "each entry draws again: {draws:?}"
+        );
+    }
+
+    // P13: spawn seats the initial activity before it knows the placement;
+    // seeding then redraws the seated roll, so the first evaluation reads this
+    // enemy's own salted roll whatever was drawn at seating.
+    #[test]
+    fn seeding_redraws_the_seated_roll_from_the_seed_alone() {
+        use postretro_foundation::{BehaviorDrawSalt, behavior_draw_seed};
+
+        let graph = authored_graph();
+        let seed = |ordinal| behavior_draw_seed("brute", BehaviorDrawSalt::Placement(ordinal));
+        let seeded = |ordinal| {
+            let mut brain = BrainComponent::from_graph(&graph);
+            brain.seed_behavior_draws(seed(ordinal));
+            brain
+        };
+
+        let first = seeded(3);
+        let mut twice = seeded(3);
+        twice.seed_behavior_draws(seed(3));
+        assert_eq!(
+            first.activity_roll(0),
+            twice.activity_roll(0),
+            "reseeding replays rather than advancing the stream"
+        );
+        assert_eq!(first.behavior_draws, twice.behavior_draws);
+        assert_ne!(
+            first.activity_roll(0),
+            seeded(4).activity_roll(0),
+            "two same-descriptor placements draw different seated rolls"
+        );
+    }
+    /// A stance in its lowered shape: the `overhead` rest (the initial) and
+    /// `slam_overhead` hold share a pose; the hold's release row draws from
+    /// [500, 1200]; `flinch` is outside the pose.
+    fn stance_graph() -> BehaviorGraphDescriptor {
+        serde_json::from_value(serde_json::json!({
+            "initial": "overhead",
+            "moveSpeed": 3.0,
+            "activities": {
+                "overhead": { "animation": "idle", "motion": "hold", "pose": "overhead" },
+                "slam_overhead": { "animation": "idle", "motion": "hold", "pose": "overhead" },
+                "slam_release": { "animation": "attack", "motion": "hold" },
+                "flinch": { "animation": "flinch", "motion": "hold" }
+            },
+            "transitions": {
+                "overhead": [{ "to": "slam_overhead" }],
+                "slam_overhead": [{ "to": "slam_release", "releaseAfter": [500.0, 1200.0] }]
+            }
+        }))
+        .expect("the lowered stance deserializes")
+    }
+
+    fn enter(brain: &mut BrainComponent, name: &str) {
+        let index = graph_activity_index(&brain.graph, name).expect("declared");
+        assert!(brain.enter_activity_at(0, index));
+    }
+
+    /// Consume one entry's presentation latches: (entry pass, entry event).
+    fn take_entry(brain: &mut BrainComponent) -> (bool, bool) {
+        let pass = brain.take_entry_pending().is_some();
+        (pass, brain.take_entry_event_pending())
+    }
+
+    // P30 / P34 at the component: a move between pose-mates keeps the level's
+    // timer, roll, damage sum and attack count and raises no entry event, while
+    // each hold entry draws its release time; leaving the pose and returning,
+    // or a reseat onto a pose-mate, starts everything fresh and announces it.
+    #[test]
+    fn a_move_within_a_pose_carries_the_level_and_announces_nothing() {
+        let mut brain = BrainComponent::from_graph(&stance_graph());
+        take_entry(&mut brain);
+        brain.tick_activity_timers(100.0);
+        brain.record_damage_in_activity(5.0);
+        brain.record_successful_attack_fire();
+        let roll = brain.activity_roll(0).unwrap();
+        let rolls_drawn = brain.behavior_draws.counters[BehaviorDrawStream::ActivityRoll as usize];
+
+        enter(&mut brain, "slam_overhead");
+        assert_eq!(
+            take_entry(&mut brain),
+            (true, false),
+            "a presentation pass, but no entry event"
+        );
+        assert_eq!(brain.activity_timer(0), Some(100.0));
+        assert_eq!(brain.activity_roll(0), Some(roll));
+        assert_eq!(brain.damage_in_activity(0), Some(5.0));
+        assert_eq!(brain.activity_attack_count(0), Some(1));
+        assert_eq!(
+            brain.behavior_draws.counters[BehaviorDrawStream::ActivityRoll as usize],
+            rolls_drawn,
+            "the move draws no roll"
+        );
+        let release = brain.hold_release_ms(0).unwrap();
+        assert!((500.0..=1200.0).contains(&release), "{release}");
+        assert!(!brain.hold_release_due(0));
+        brain.tick_activity_timers(release - 100.0);
+        assert!(brain.hold_release_due(0), "due once the pose has lasted it");
+
+        enter(&mut brain, "overhead");
+        assert_eq!(take_entry(&mut brain), (true, false));
+        assert_eq!(brain.hold_release_ms(0), Some(0.0), "a rest draws nothing");
+        enter(&mut brain, "slam_overhead");
+        take_entry(&mut brain);
+        assert_ne!(
+            brain.hold_release_ms(0),
+            Some(release),
+            "every hold entry draws again, a pose-mate's included"
+        );
+
+        enter(&mut brain, "flinch");
+        assert_eq!(
+            take_entry(&mut brain),
+            (true, true),
+            "leaving the pose announces"
+        );
+        brain.tick_activity_timers(50.0);
+        enter(&mut brain, "overhead");
+        assert_eq!(
+            take_entry(&mut brain),
+            (true, true),
+            "entering from outside announces"
+        );
+        assert_eq!(brain.activity_timer(0), Some(0.0));
+        assert_eq!(brain.damage_in_activity(0), Some(0.0));
+        assert_ne!(brain.activity_roll(0), Some(roll));
+
+        enter(&mut brain, "slam_overhead");
+        take_entry(&mut brain);
+        brain.tick_activity_timers(80.0);
+        assert!(brain.reseat_to_initial());
+        assert_eq!(
+            take_entry(&mut brain),
+            (true, true),
+            "a reseat onto the hold's rest is a fresh entry"
+        );
+        assert_eq!(brain.activity_timer(0), Some(0.0));
+    }
+
+    // Sp7 for the release draw: a brain saved before hold release draws
+    // existed restores with none drawn, and its next hold entry draws one.
+    #[test]
+    fn brain_serialized_before_hold_release_draws_restores_and_draws_on_next_hold_entry() {
+        let mut brain = BrainComponent::from_graph(&stance_graph());
+        enter(&mut brain, "slam_overhead");
+        let mut legacy = serde_json::to_value(&brain).expect("brain serializes");
+        legacy
+            .as_object_mut()
+            .expect("brain is an object")
+            .remove("hold_release_ms");
+        let mut restored: BrainComponent =
+            serde_json::from_value(legacy).expect("a pre-release-draw brain deserializes");
+        assert_eq!(restored.hold_release_ms(0), Some(0.0));
+
+        enter(&mut restored, "flinch");
+        enter(&mut restored, "overhead");
+        enter(&mut restored, "slam_overhead");
+        let release = restored.hold_release_ms(0).unwrap();
+        assert!((500.0..=1200.0).contains(&release), "{release}");
     }
 }

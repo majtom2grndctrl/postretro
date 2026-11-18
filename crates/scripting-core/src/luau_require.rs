@@ -394,7 +394,8 @@ mod tests {
                 assert(root.defineTheme == nil, "root module must not expose UI theme helpers")
                 assert(root.getDesignTokens == nil, "root module must not expose UI theme helpers")
                 assert(UI.getGameState().player.health.slot == "player.health", "UI getGameState must expose refs")
-                assert(type(ui) == "nil", "bare global ui must not be installed")
+                -- Strict globals raise on an undeclared read; probe the SDK globals.
+                assert(rawget(_G, "ui") == nil, "bare global ui must not be installed")
                 assert(root.ui == nil, "root module must not expose UI state helpers")
                 assert(type(UI.ui.createLocalState) == "function", "UI.ui.createLocalState must be available through postretro/ui")
 
@@ -459,6 +460,8 @@ mod tests {
                 "defineDamageType",
                 "defineAttackToken",
                 "defaultToken",
+                "defineAttack",
+                "defineStance",
                 "read",
                 "fromRuntime",
                 "set",
@@ -593,7 +596,7 @@ mod tests {
                 local root = require("postretro")
                 assert(Audio.shadow == nil, "mod-root postretro/audio.luau shadowed the engine module")
                 assert(root.setGhostAudio == nil, "root module must not expose setGhostAudio")
-                assert(setGhostAudio == nil, "setGhostAudio must not be a bare global")
+                assert(rawget(_G, "setGhostAudio") == nil, "setGhostAudio must not be a bare global")
                 local fields = { volume = 0.9, periodMs = 1500 }
                 local body = Audio.setGhostAudio(fields)
                 fields.volume = 0.1

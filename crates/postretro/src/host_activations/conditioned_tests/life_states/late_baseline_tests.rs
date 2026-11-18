@@ -50,6 +50,9 @@ fn life_state_late_join_full_baseline_carries_downed_teammate_and_presents_crouc
                         crossfade_ms: 50.0,
                         interrupt: InterruptPolicy::Smooth,
                         travel_speed: None,
+                        max_playback_rate: None,
+                        scale_with_speed: true,
+                        playback_rate: None,
                         clip_index: Some(index),
                     },
                 )

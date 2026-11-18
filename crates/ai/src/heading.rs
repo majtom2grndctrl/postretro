@@ -65,7 +65,13 @@ pub(super) fn resolve(
         query.motion,
         || {
             verb_facing_policy(
-                query.steering,
+                // A leap faces as a chase does: its travel while it moves,
+                // its target once it stands on its spot.
+                if query.motion == Some(MotionVerb::Leap) {
+                    SteeringIntent::Chase
+                } else {
+                    query.steering
+                },
                 query.engaged,
                 committed_aim,
                 steering_velocity

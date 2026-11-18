@@ -25,6 +25,8 @@ pub(crate) use refresh::RefreshView;
 
 #[cfg(test)]
 pub(crate) use budget::{BudgetTable, TokenBudget};
+#[cfg(test)]
+pub(crate) use lifecycle::{RequestSources, next_request};
 
 use std::sync::Arc;
 

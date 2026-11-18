@@ -234,7 +234,60 @@ pub fn build_lua_state_with_require_tracking(
             reason: e.to_string(),
         })?;
 
+    // 8. Strict globals for the mod-rooted data-script VMs (mod init, staged
+    //    reload, level data). After the sandbox swaps in the per-thread
+    //    globals table, so author globals still land there.
+    if mod_root.is_some() {
+        install_strict_globals(&lua)?;
+    }
+
     Ok(lua)
+}
+
+/// The sandboxed globals' `__index`: a read of a global nothing declared
+/// raises at the read, naming it and the script line. `fallback` is the frozen
+/// `_G` every SDK and builtin global reads through.
+const STRICT_GLOBALS_INDEX_LUAU: &str = r#"
+local fallback, raise, describe = ...
+return function(_, key)
+  local value = fallback[key]
+  if value == nil then
+    raise("undeclared global `" .. describe(key) .. "`; check the spelling, or declare it with `local`", 2)
+  end
+  return value
+end
+"#;
+
+/// Make a read of an undeclared global raise in a data-script VM, so a
+/// misspelled handle or guard-builder global fails load naming the global
+/// instead of reading `nil` as an absent field. Only global reads raise: a
+/// misspelled table field still reads `nil`. Writes are unaffected: a
+/// script's own globals (`setupLevel`, top-level functions) still define.
+fn install_strict_globals(lua: &Lua) -> Result<(), ScriptError> {
+    let err = |e: mlua::Error| ScriptError::InvalidArgument {
+        reason: format!("failed to install strict globals: {e}"),
+    };
+    let globals = lua.globals();
+    let fallback: Table = globals
+        .metatable()
+        .ok_or_else(|| ScriptError::InvalidArgument {
+            reason: "failed to install strict globals: the sandboxed globals have no metatable"
+                .to_string(),
+        })?
+        .get("__index")
+        .map_err(err)?;
+    let raise: Function = fallback.get("error").map_err(err)?;
+    let describe: Function = fallback.get("tostring").map_err(err)?;
+    let index: Function = lua
+        .load(STRICT_GLOBALS_INDEX_LUAU)
+        .set_name("postretro/strict_globals")
+        .call((fallback, raise, describe))
+        .map_err(err)?;
+    let metatable = lua.create_table().map_err(err)?;
+    metatable.set("__index", index).map_err(err)?;
+    metatable.set_readonly(true);
+    globals.set_metatable(Some(metatable)).map_err(err)?;
+    Ok(())
 }
 
 fn apply_denylist(lua: &Lua) -> Result<(), ScriptError> {

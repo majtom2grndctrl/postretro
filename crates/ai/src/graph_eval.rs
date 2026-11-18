@@ -1,18 +1,20 @@
 // Recursive behavior-statechart evaluation and the verb resolvers used by the
 // AI tick. The transition ordering contract lives entirely in
-// `select_transition`.
+// `select_transitions`.
 
+use postretro_entities::EntityId;
 use postretro_entities::components::brain::BrainComponent;
 #[cfg(test)]
 use postretro_foundation::BehaviorGraphDescriptor;
 use postretro_foundation::{
-    ActionVerb, BehaviorActivityDescriptor, BehaviorLayerDescriptor, BehaviorSelectorEntry,
-    FacingPolicy, IrValue, MotionVerb, RepositionParams, eval_value, is_locomotion_activity,
-    rest_animation,
+    ActionVerb, BehaviorActivityDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
+    BehaviorSelectorEntry, FacingPolicy, IrValue, MotionVerb, RepositionParams, eval_value,
+    is_locomotion_activity, rest_animation,
 };
 
 use super::brain_programs::{BoundLayer, BrainEntityPrograms};
 use super::brain_scope::{BrainScope, ScopeRelativeValues};
+use super::clip_clock;
 use super::engine_floor::SteeringIntent;
 
 type SelectorLayer<'a> = (
@@ -20,35 +22,70 @@ type SelectorLayer<'a> = (
     &'a [Option<postretro_foundation::BoundProgram<BrainScope>>],
 );
 
-/// Evaluate each active envelope outer-to-inner. At a level, `"*"` rows run
-/// before the active activity's own rows. A winning edge seats its target and
-/// complete initial descent immediately, then ends this pass so an entered
-/// node cannot evaluate its own row until the following tick.
+/// Test wrapper over [`select_transitions`]: whether the pass entered an
+/// activity, with the brain's acquired target standing in for the target
+/// compute selects this tick.
+#[cfg(test)]
 pub(super) fn select_transition_path(
     bound: &BrainEntityPrograms,
     scope: &mut BrainScope,
     brain: &mut BrainComponent,
 ) -> bool {
+    let target = brain.acquired_target;
+    select_transitions(bound, scope, brain, target).transitioned
+}
+
+/// What one transition pass did: whether it entered an activity, and the
+/// attack the active path's first waiting queued row asks a turn for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct TransitionPass {
+    pub(super) transitioned: bool,
+    /// The attack index of the first queued row, in path and row order, whose
+    /// `when`, range and cooldown pass while its turn is not yet held. Only a
+    /// level the pass left standing requests: a row winning at the
+    /// candidate's own level leaves the rest it waited in.
+    pub(super) queued: Option<u16>,
+}
+
+/// Evaluate each active envelope outer-to-inner. At a level, `"*"` rows run
+/// before the active activity's own rows. A winning edge seats its target and
+/// complete initial descent immediately, then ends this pass so an entered
+/// node cannot evaluate its own row until the following tick.
+///
+/// The pass also reports the queued request the standing path makes. Compute
+/// hands that request to arbitration: the row walk is the one place that
+/// already knows the path, its rows and their guards, so the request and the
+/// row gate read one evaluation and never disagree. `target` is the target
+/// selected this tick, against which a hold's release row reads its turn.
+pub(super) fn select_transitions(
+    bound: &BrainEntityPrograms,
+    scope: &mut BrainScope,
+    brain: &mut BrainComponent,
+    target: Option<EntityId>,
+) -> TransitionPass {
+    let mut queued = None;
     let mut envelope_index = 0;
     for depth in 0..brain.active_depth() {
         let Some(activity_index) = brain.active_activity_index(depth) else {
-            return false;
+            return TransitionPass::default();
         };
         let Some(envelope) = brain.envelope_at_depth(depth) else {
-            return false;
+            return TransitionPass::default();
         };
         let Some(bound_envelope) = bound.envelope(envelope_index) else {
-            return false;
+            return TransitionPass::default();
         };
-        let Some((current_name, _)) = envelope.activities.iter().nth(activity_index) else {
-            return false;
+        let Some((current_name, current)) = envelope.activities.iter().nth(activity_index) else {
+            return TransitionPass::default();
         };
         let Some(bound_activity) = bound_envelope.activities.get(activity_index) else {
-            return false;
+            return TransitionPass::default();
         };
         scope.repoint_scope_relative(ScopeRelativeValues {
             time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
             attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+            activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
+            damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
         });
 
         let wildcard = envelope
@@ -61,13 +98,62 @@ pub(super) fn select_transition_path(
             .get(current_name)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        if let Some(target) =
-            first_enabled_target(wildcard, &bound_envelope.wildcard, current_name, scope)
-                .or_else(|| first_enabled_target(local, &bound_activity.rows, current_name, scope))
-            && let Some(target_index) = envelope.activities.keys().position(|name| name == target)
+        // A `"*"` row into the pose the enemy already holds is skipped like a
+        // row to the current activity; the level's own rows between a rest
+        // and its holds still pass. A release row also waits out the pose's
+        // drawn release time and its turn on the current target, a queued
+        // row its attack's turn, and a release's own rows its moment.
+        let wildcard_rows = RowSelection {
+            envelope,
+            current_name,
+            current_pose: current.pose.as_deref(),
+            release_due: brain.hold_release_due(depth),
+            moment_resolved: brain.clip_clock.release_resolved,
+            turns: TurnGate {
+                brain: &*brain,
+                target,
+            },
+        };
+        let local_rows = RowSelection {
+            current_pose: None,
+            ..wildcard_rows
+        };
+        // A flinch over a release or recover closes the activity's own rows
+        // (its `ms` no longer holds it, and it never reaches its recover):
+        // once the reaction plays out, the flinch route is taken instead. The
+        // level's `"*"` rows, like every ancestor's, still leave at once.
+        let staggered = current.stagger_to.is_some() && brain.clip_clock.stagger.is_some();
+        let mut level_queued = None;
+        if let Some(target) = first_enabled_target(
+            wildcard,
+            &bound_envelope.wildcard,
+            wildcard_rows,
+            scope,
+            &mut level_queued,
+        )
+        .or_else(|| {
+            if staggered {
+                current
+                    .stagger_to
+                    .as_deref()
+                    .filter(|_| clip_clock::stagger_due(&brain.clip_clock))
+            } else {
+                first_enabled_target(
+                    local,
+                    &bound_activity.rows,
+                    local_rows,
+                    scope,
+                    &mut level_queued,
+                )
+            }
+        }) && let Some(target_index) = envelope.activities.keys().position(|name| name == target)
         {
-            return brain.enter_activity_at(depth, target_index);
+            return TransitionPass {
+                transitioned: brain.enter_activity_at(depth, target_index),
+                queued,
+            };
         }
+        queued = queued.or(level_queued);
 
         // AC18 makes this unambiguous: a composite has at most one stateful
         // layer, while any number of selectors remain orthogonal/stateless.
@@ -75,26 +161,198 @@ pub(super) fn select_transition_path(
             BoundLayer::Graph(index) => Some(*index),
             BoundLayer::Selector(_) => None,
         }) else {
-            return false;
+            return TransitionPass {
+                transitioned: false,
+                queued,
+            };
         };
         envelope_index = child;
     }
-    false
+    TransitionPass {
+        transitioned: false,
+        queued,
+    }
 }
 
+/// What one level's row walk needs about the activity active there.
+#[derive(Clone, Copy)]
+struct RowSelection<'e> {
+    envelope: &'e BehaviorGraphEnvelope,
+    current_name: &'e str,
+    /// Skip rows into this pose: set for the `"*"` rows only.
+    current_pose: Option<&'e str>,
+    /// The current activity has lasted its drawn release time.
+    release_due: bool,
+    /// The current release's moment resolved, or its clip played one pass,
+    /// on an earlier evaluation: its `afterMoment` rows may pass.
+    moment_resolved: bool,
+    turns: TurnGate<'e>,
+}
+
+impl RowSelection<'_> {
+    /// A row the walk passes over without evaluating its guard: one to the
+    /// current activity, one into the pose being skipped, a hold's release
+    /// row before its time or without its turn on the current target, or a
+    /// release's own row before its moment.
+    fn skips(&self, row: &postretro_foundation::GuardedRow) -> bool {
+        if row.to == self.current_name {
+            return true;
+        }
+        if row.release_after.is_some()
+            && !(self.release_due && self.turns.release_held(self.envelope, &row.to))
+        {
+            return true;
+        }
+        if row.after_moment && !self.moment_resolved {
+            return true;
+        }
+        self.current_pose.is_some_and(|pose| {
+            self.envelope
+                .activities
+                .get(&row.to)
+                .is_some_and(|target| target.pose.as_deref() == Some(pose))
+        })
+    }
+}
+
+/// The engine's turn gates on a level's rows, a queued row's (`queue`) and a
+/// hold's release row's (`releaseAfter`), read from the brain as this tick's
+/// evaluation sees it: its turns as the previous tick's arbitration left them
+/// (what `attackTurnHeld` reads), its cooldowns already ticked for this tick,
+/// the target distance guards read, and the target selected now.
+#[derive(Clone, Copy)]
+struct TurnGate<'e> {
+    brain: &'e BrainComponent,
+    target: Option<EntityId>,
+}
+
+/// Where a queued row stands before its `when` is read.
+enum QueueState {
+    /// Out of range or cooling down: the row neither passes nor requests.
+    Closed,
+    /// Open, no turn granted to its request: on its `when` the row requests
+    /// that turn. A turn a burst carried in from the strike, under no mark on
+    /// the path naming it, reads so too: no request is made while it holds,
+    /// and it ends with the burst.
+    Waiting(u16),
+    /// Open with its turn granted on the previous tick, held under the path's
+    /// own mark for that attack, or no queue at all: the row passes on its
+    /// `when`.
+    Open,
+}
+
+impl TurnGate<'_> {
+    fn state(&self, attack: &str, scope: &BrainScope) -> QueueState {
+        let graph = &self.brain.graph;
+        let (Some(index), Some(params)) = (
+            crate::attack_turns::attack_index(graph, attack),
+            graph.attacks.get(attack),
+        ) else {
+            return QueueState::Closed;
+        };
+        // The attack's own cooldown, never the path's `attackCooldownMs`.
+        let cooling = self
+            .brain
+            .attack_cooldown_remaining_ms
+            .get(attack)
+            .is_some_and(|remaining| *remaining > 0.0);
+        // How far out the row waits in line (`queueRange`, else `maxRange`);
+        // the strike itself still hits only within `maxRange`.
+        let out_of_range = params.queue_distance().is_some_and(|queue_range| {
+            scope
+                .target_distance()
+                .is_none_or(|distance| distance > queue_range)
+        });
+        if cooling || out_of_range {
+            QueueState::Closed
+        } else if self.granted_last_tick(index) || self.held_under_mark(index) {
+            QueueState::Open
+        } else {
+            QueueState::Waiting(index)
+        }
+    }
+
+    /// A rest's own grant lives one evaluation, as a mark's would: its row
+    /// passes on a turn granted on the previous tick, whatever its target
+    /// (after a switch the hold is still entered, and its mark re-requests).
+    /// An older turn opens the row only under the path's own mark for its
+    /// attack ([`Self::held_under_mark`]). Without that mark it was carried in
+    /// by a burst outlasting the strike's recover; were it to open the row,
+    /// the hold's mark would keep it across the repeat: it would never end and
+    /// refresh, and waiters would starve.
+    fn granted_last_tick(&self, attack: u16) -> bool {
+        let turns = &self.brain.attack_turns;
+        turns.held().any(|turn| {
+            turn.attack == attack && turn.granted_tick.wrapping_add(1) == turns.seen_tick
+        })
+    }
+
+    /// The turn of `attack` is held and the active path's own mark names it:
+    /// an ancestor marked for the attack the stance strikes keeps that turn
+    /// across the whole stance by design (no turn time limit), and no new
+    /// grant comes while it holds, so its rest's row opens on it at any age.
+    fn held_under_mark(&self, attack: u16) -> bool {
+        crate::attack_turns::path_mark(self.brain) == Some(attack)
+            && self.brain.attack_turns.holds_attack(attack)
+    }
+
+    /// Whether the enemy holds the turn of the attack marked on `release`
+    /// against the target selected now; true when `release` is unmarked. On
+    /// a switch tick the hold's turn still reads held on the old target until
+    /// arbitration ends it, and a release entered on it would whiff.
+    fn release_held(&self, envelope: &BehaviorGraphEnvelope, release: &str) -> bool {
+        let Some(attack) = envelope
+            .activities
+            .get(release)
+            .and_then(|activity| activity.attack_turn.as_deref())
+        else {
+            return true;
+        };
+        let Some(index) = crate::attack_turns::attack_index(&self.brain.graph, attack) else {
+            return false;
+        };
+        self.target.is_some_and(|target| {
+            self.brain
+                .attack_turns
+                .held()
+                .any(|turn| turn.attack == index && turn.target == target)
+        })
+    }
+}
+
+/// The first row, in order, the walk takes. A queued row whose gates and
+/// `when` pass while its turn is not held is passed over, and the first such
+/// row's attack is left in `queued` as this level's request.
 fn first_enabled_target<'a>(
     rows: &'a [postretro_foundation::GuardedRow],
     programs: &'a [Option<postretro_foundation::BoundProgram<BrainScope>>],
-    current_name: &str,
+    selection: RowSelection<'_>,
     scope: &BrainScope,
+    queued: &mut Option<u16>,
 ) -> Option<&'a str> {
     rows.iter()
         .zip(programs)
-        .filter(|(row, _)| row.to != current_name)
-        .find(|(_, program)| {
-            program
+        .filter(|(row, _)| !selection.skips(row))
+        .find(|(row, program)| {
+            let gate = match row.queue.as_deref() {
+                None => QueueState::Open,
+                Some(attack) => selection.turns.state(attack, scope),
+            };
+            if matches!(gate, QueueState::Closed) {
+                return false;
+            }
+            let enabled = program
                 .as_ref()
-                .is_some_and(|program| eval_value(program, scope) == IrValue::Bool(true))
+                .is_some_and(|program| eval_value(program, scope) == IrValue::Bool(true));
+            match gate {
+                QueueState::Waiting(attack) => {
+                    if enabled {
+                        queued.get_or_insert(attack);
+                    }
+                    false
+                }
+                _ => enabled,
+            }
         })
         .map(|(row, _)| row.to.as_str())
 }
@@ -157,6 +415,16 @@ pub(super) fn authored_facing(brain: &BrainComponent) -> Option<FacingPolicy> {
         .find_map(|depth| brain.activity_at_depth(depth)?.1.facing)
 }
 
+/// The `speed` multiplier of the deepest active activity that sets one, so an
+/// inner activity overrides an outer one and one without a `speed` inherits
+/// its nearest ancestor's; 1 when none on the path sets one.
+pub(super) fn speed_for_path(brain: &BrainComponent) -> f32 {
+    (0..brain.active_depth())
+        .rev()
+        .find_map(|depth| brain.activity_at_depth(depth)?.1.speed)
+        .unwrap_or(1.0)
+}
+
 pub(super) fn action_for_path<'a>(
     bound: &'a BrainEntityPrograms,
     scope: &mut BrainScope,
@@ -198,11 +466,11 @@ pub(super) fn engages_path(
 }
 
 /// Motion that engages the target by itself, with or without an action:
-/// pursuit and the two combat-slot verbs.
+/// pursuit, the two combat-slot verbs and the leap.
 fn is_engaged_motion(motion: MotionVerb) -> bool {
     matches!(
         motion,
-        MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition
+        MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition | MotionVerb::Leap
     )
 }
 
@@ -210,12 +478,24 @@ fn is_engaged_motion(motion: MotionVerb) -> bool {
 /// verb a selector resolves this tick. An in-range selector may intentionally
 /// hold through an actionless committed phase and still need target facts next
 /// tick.
+///
+/// A stance's pose and any activity marked for an attack retain too, wherever
+/// they sit: a strike beside a chase, outside any engaging ancestor, keeps its
+/// target and committed aim through a co-op re-rank inside the switch margin
+/// and a tick out of sight, so its turn holds and it releases. Retention is
+/// hysteresis, not a lock: a player nearer by more than the margin still
+/// takes the target.
 pub(super) fn engages_active(brain: &BrainComponent) -> bool {
     (0..brain.active_depth()).any(|depth| {
-        brain
-            .activity_at_depth(depth)
-            .is_some_and(|(_, activity)| activity_can_engage(activity))
+        brain.activity_at_depth(depth).is_some_and(|(_, activity)| {
+            activity_can_engage(activity) || commits_to_target(activity)
+        })
     })
+}
+
+/// A stance's rest or hold, or an activity marked for an attack.
+fn commits_to_target(activity: &BehaviorActivityDescriptor) -> bool {
+    activity.pose.is_some() || activity.attack_turn.is_some()
 }
 
 /// Retention cannot depend only on a selector's current row: before fact
@@ -261,6 +541,8 @@ fn selector_motion(
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+        activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
+        damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });
     for (entry, program) in entries.iter().zip(programs) {
         match entry {
@@ -289,6 +571,8 @@ fn selector_action<'a>(
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
+        activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
+        damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });
     entries
         .iter()
@@ -346,11 +630,18 @@ fn selector_layer<'a>(
 /// Resolve the one mesh animation state driven by the active path. A nested
 /// phase's clip wins even when that phase has no action (windup/recover), then
 /// the active composite supplies locomotion, and a root leaf supplies the
-/// degenerate one-level fallback.
+/// degenerate one-level fallback. A locomotion state yields to the rest clip
+/// at a standstill: a root leaf that pursues without acting, and a nested
+/// leaf that only replays its moving ancestor's travel cycle (see
+/// [`replays_ancestor_travel`]).
 pub(super) fn animation_for_path(brain: &BrainComponent, moving: bool) -> Option<&str> {
     if brain.active_depth() > 1 {
-        let (_, leaf) = brain.activity_at_depth(brain.active_depth() - 1)?;
+        let leaf_depth = brain.active_depth() - 1;
+        let (_, leaf) = brain.activity_at_depth(leaf_depth)?;
         if leaf.animation.is_some() {
+            if !moving && replays_ancestor_travel(brain, leaf_depth, leaf) {
+                return rest_animation(&brain.graph);
+            }
             return leaf.animation.as_deref();
         }
     }
@@ -367,6 +658,39 @@ pub(super) fn animation_for_path(brain: &BrainComponent, moving: bool) -> Option
     leaf.animation.as_deref()
 }
 
+/// Whether a nested leaf is locomotion by inheritance: it declares no motion,
+/// action, layer, pose or attack mark of its own, and plays the same clip as
+/// the nearest ancestor that supplies its motion, when that ancestor pursues
+/// or travels (its own locomotion motion, or a `move` selector that can
+/// engage). Such a leaf is that ancestor's travel cycle under another name,
+/// so it rests at a standstill as the ancestor would. A leaf with a clip of
+/// its own (a hand-written windup or recover) is a phase, and keeps it.
+fn replays_ancestor_travel(
+    brain: &BrainComponent,
+    leaf_depth: usize,
+    leaf: &BehaviorActivityDescriptor,
+) -> bool {
+    if leaf.motion.is_some()
+        || leaf.action.is_some()
+        || !leaf.layers.is_empty()
+        || commits_to_target(leaf)
+    {
+        return false;
+    }
+    let Some(supplier) = (0..leaf_depth).rev().find_map(|depth| {
+        let (_, activity) = brain.activity_at_depth(depth)?;
+        (activity.motion.is_some() || activity.layers.contains_key("move")).then_some(activity)
+    }) else {
+        return false;
+    };
+    let travels = is_locomotion_activity(supplier)
+        || supplier
+            .layers
+            .get("move")
+            .is_some_and(|layer| selector_can_engage("move", layer));
+    travels && supplier.animation.is_some() && supplier.animation == leaf.animation
+}
+
 pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
     match motion {
         MotionVerb::ChaseTarget => SteeringIntent::Chase,
@@ -379,6 +703,9 @@ pub(super) fn steering_for(motion: MotionVerb) -> SteeringIntent {
         // `engaged_motion::settle` replaces this with `MoveTo` that slot, or
         // leaves it standing when none is claimed.
         MotionVerb::Strafe | MotionVerb::Reposition => SteeringIntent::Clear,
+        // Its goal is the spot it fixes on entry: `leap::steer` replaces this
+        // with `MoveTo` that spot.
+        MotionVerb::Leap => SteeringIntent::Clear,
     }
 }
 
@@ -389,8 +716,9 @@ mod statechart_tests {
 
     use postretro_entities::components::brain::BrainComponent;
     use postretro_foundation::{
-        ActionVerb, AttackParams, BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BehaviorGraphEnvelope,
-        BehaviorSelectorRow, GuardedRow, IrNode, IrValue,
+        ActionVerb, AttackParams, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
+        BRAIN_TIME_IN_ACTIVITY_MS_INPUT, BehaviorDrawSalt, BehaviorGraphEnvelope,
+        BehaviorSelectorRow, GuardedRow, IrNode, IrValue, behavior_draw_seed,
     };
 
     use super::*;
@@ -405,6 +733,9 @@ mod statechart_tests {
         layers: BTreeMap<String, BehaviorLayerDescriptor>,
     ) -> BehaviorActivityDescriptor {
         BehaviorActivityDescriptor {
+            pose: None,
+            stagger_to: None,
+            passes: None,
             sound: None,
             animation: Some(animation.to_string()),
             motion,
@@ -413,6 +744,7 @@ mod statechart_tests {
             facing: None,
             reposition: None,
             attack_turn: None,
+            speed: None,
             layers,
         }
     }
@@ -451,6 +783,7 @@ mod statechart_tests {
                         Some(ActionVerb::Attack {
                             name: "slam".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                         BTreeMap::new(),
                     ),
@@ -464,6 +797,9 @@ mod statechart_tests {
                 (
                     "windup".to_string(),
                     vec![GuardedRow {
+                        release_after: None,
+                        queue: None,
+                        after_moment: false,
                         to: "commit".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -471,6 +807,9 @@ mod statechart_tests {
                 (
                     "commit".to_string(),
                     vec![GuardedRow {
+                        release_after: None,
+                        queue: None,
+                        after_moment: false,
                         to: "recover".to_string(),
                         when: elapsed_at_least(10.0),
                     }],
@@ -516,6 +855,9 @@ mod statechart_tests {
                     BTreeMap::from([(
                         "*".to_string(),
                         vec![GuardedRow {
+                            release_after: None,
+                            queue: None,
+                            after_moment: false,
                             to: "rest".to_string(),
                             when: constant(true),
                         }],
@@ -537,6 +879,7 @@ mod statechart_tests {
                     cooldown_ms: Some(100.0),
                     engagement_radius: None,
                     standoff_distance: None,
+                    queue_range: None,
                     damage_type: None,
                     draws: None,
                 },
@@ -551,10 +894,12 @@ mod statechart_tests {
     /// the one focused ordering branch below; this parsed fixture carries the
     /// complete windup → commit → recover path used by the end-to-end checks.
     fn parsed_nested_fixture() -> BehaviorGraphDescriptor {
-        const SOURCE: &str = r#"({ components: { behavior: {
+        // The attack is a handle as `defineAttack` builds it; this raw VM has
+        // no SDK.
+        const SOURCE: &str = r#"const slam = { kind: "attack", name: "slam", damage: 8, maxRange: 2, cooldownMs: 100 };
+        ({ components: { behavior: {
             initial: "engage",
             moveSpeed: 3.5,
-            attacks: { slam: { damage: 8, maxRange: 2, cooldownMs: 100 } },
             activities: {
                 engage: {
                     animation: "locomotion",
@@ -567,7 +912,7 @@ mod statechart_tests {
                             initial: "windup",
                             activities: {
                                 windup: { animation: "windup" },
-                                commit: { animation: "commit", action: { attack: "slam" } },
+                                commit: { animation: "commit", action: { attack: slam } },
                                 recover: { animation: "recover" }
                             },
                             transitions: {
@@ -696,7 +1041,8 @@ mod statechart_tests {
             action_for_path(&programs, &mut scope, &brain),
             Some(&ActionVerb::Attack {
                 name: "slam".to_string(),
-                at: None
+                at: None,
+                at_default: false
             }),
             "AC7/AC17: the active offense leaf supplies the one edge-fired action"
         );
@@ -759,6 +1105,7 @@ mod statechart_tests {
                         action: Some(ActionVerb::Attack {
                             name: "slam".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                     },
                 )]),
@@ -769,5 +1116,472 @@ mod statechart_tests {
             !activity_can_engage(&custom),
             "only selectors named move/offense feed AI engagement semantics"
         );
+    }
+
+    fn roll_input() -> Box<IrNode> {
+        Box::new(IrNode::Input {
+            name: BRAIN_ACTIVITY_ROLL_INPUT.to_string(),
+            owner: None,
+        })
+    }
+
+    fn half() -> Box<IrNode> {
+        Box::new(IrNode::Const {
+            value: IrValue::Number(0.5),
+        })
+    }
+
+    fn roll_below_half() -> IrNode {
+        IrNode::Lt {
+            a: roll_input(),
+            b: half(),
+        }
+    }
+
+    fn roll_at_least_half() -> IrNode {
+        IrNode::Ge {
+            a: roll_input(),
+            b: half(),
+        }
+    }
+
+    fn and(a: IrNode, b: IrNode) -> IrNode {
+        IrNode::And {
+            a: Box::new(a),
+            b: Box::new(b),
+        }
+    }
+
+    fn row(to: &str, when: IrNode) -> GuardedRow {
+        GuardedRow {
+            release_after: None,
+            queue: None,
+            after_moment: false,
+            to: to.to_string(),
+            when,
+        }
+    }
+
+    fn flat_graph(
+        activities: &[&str],
+        transitions: BTreeMap<String, Vec<GuardedRow>>,
+    ) -> BehaviorGraphDescriptor {
+        BehaviorGraphDescriptor {
+            knockback: Default::default(),
+            envelope: BehaviorGraphEnvelope {
+                initial: activities[0].to_string(),
+                activities: activities
+                    .iter()
+                    .map(|name| {
+                        (
+                            name.to_string(),
+                            activity(name, Some(MotionVerb::Hold), None, BTreeMap::new()),
+                        )
+                    })
+                    .collect(),
+                transitions,
+            },
+            candidate_filter: None,
+            retaliation: None,
+            patrol: None,
+            attacks: BTreeMap::new(),
+            engagement_radius: None,
+            move_speed: 3.5,
+        }
+    }
+
+    fn seeded(graph: &BehaviorGraphDescriptor, placement: u32) -> BrainComponent {
+        let mut brain = BrainComponent::from_graph(graph);
+        brain.seed_behavior_draws(behavior_draw_seed(
+            "roller",
+            BehaviorDrawSalt::Placement(placement),
+        ));
+        brain
+    }
+
+    // R3 (P3) and R6: one entry holds one roll that every row at its level
+    // reads; each re-entry draws again.
+    #[test]
+    fn activity_roll_is_fixed_for_one_entry_shared_by_its_rows_and_redrawn_on_reentry() {
+        // `decide` branches on the roll once its dwell passes. A trailing
+        // always-true row catches branch rows that disagree about the roll: if
+        // they read different values, neither may pass.
+        let graph = flat_graph(
+            &["decide", "high", "low", "stuck"],
+            BTreeMap::from([
+                (
+                    "decide".to_string(),
+                    vec![
+                        row("low", and(roll_below_half(), elapsed_at_least(10.0))),
+                        row("high", and(roll_at_least_half(), elapsed_at_least(10.0))),
+                        row("stuck", elapsed_at_least(10.0)),
+                    ],
+                ),
+                (
+                    "low".to_string(),
+                    vec![row("decide", elapsed_at_least(10.0))],
+                ),
+                (
+                    "high".to_string(),
+                    vec![row("decide", elapsed_at_least(10.0))],
+                ),
+            ]),
+        );
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = seeded(&graph, 1);
+
+        let mut entry_rolls = Vec::new();
+        for _ in 0..200 {
+            assert_eq!(brain.active_path_names(), ["decide"]);
+            let roll = brain.activity_roll(0).expect("decide is active");
+            assert!((0.0..1.0).contains(&roll), "roll {roll} lies in [0, 1)");
+            entry_rolls.push(roll);
+
+            // Fixed for the entry: evaluating while it holds never redraws.
+            for _ in 0..3 {
+                assert!(!select_transition_path(&programs, &mut scope, &mut brain));
+                brain.tick_activity_timers(2.0);
+                assert_eq!(brain.activity_roll(0), Some(roll), "fixed until left");
+            }
+
+            brain.tick_activity_timers(10.0);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+            let expected = if roll < 0.5 { "low" } else { "high" };
+            assert_eq!(
+                brain.active_path_names(),
+                [expected],
+                "both branch rows read this entry's roll {roll}"
+            );
+
+            brain.tick_activity_timers(10.0);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        }
+
+        let mut distinct = entry_rolls.clone();
+        distinct.sort_by(f32::total_cmp);
+        distinct.dedup();
+        assert!(
+            distinct.len() > 190,
+            "re-entry draws again: {} distinct rolls over 200 entries",
+            distinct.len()
+        );
+        assert!(entry_rolls.iter().any(|roll| *roll < 0.5));
+        assert!(entry_rolls.iter().any(|roll| *roll >= 0.5));
+    }
+
+    // S5: a row authored without `when` is always enabled: it passes on the
+    // first evaluation, and an earlier guarded row still outranks it.
+    #[test]
+    fn a_row_without_when_is_always_enabled() {
+        let graph: BehaviorGraphDescriptor = serde_json::from_value(serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.5,
+            "activities": {
+                "idle": { "animation": "idle", "motion": "hold" },
+                "early": { "animation": "early", "motion": "hold" },
+                "walk": { "animation": "walk", "motion": "hold" }
+            },
+            "transitions": {
+                "idle": [
+                    { "to": "early", "when": { "op": "ge", "a": { "op": "input", "name": "@brain.timeInActivityMs" }, "b": { "op": "const", "value": 1000 } } },
+                    { "to": "walk" }
+                ],
+                "walk": [{ "to": "idle" }]
+            }
+        }))
+        .expect("rows without `when` deserialize");
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = seeded(&graph, 0);
+
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(
+            brain.active_path_names(),
+            ["walk"],
+            "the unguarded row passes"
+        );
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["idle"]);
+
+        brain.tick_activity_timers(1000.0);
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(
+            brain.active_path_names(),
+            ["early"],
+            "an earlier guarded row that passes still wins"
+        );
+    }
+
+    // R3 (P3): a graph reseat seats `decide` and its own row leaves it in the
+    // same pass, so the rows read the roll the reseat drew, not the one the
+    // replaced activity held.
+    #[test]
+    fn an_activity_reseated_and_left_on_one_tick_reads_its_own_fresh_roll() {
+        let graph = flat_graph(
+            &["decide", "high", "low"],
+            BTreeMap::from([(
+                "decide".to_string(),
+                vec![
+                    row("low", roll_below_half()),
+                    row("high", roll_at_least_half()),
+                ],
+            )]),
+        );
+        let (programs, mut scope) = bound(&graph);
+        let mut discriminating = 0;
+        for placement in 0..64 {
+            let mut brain = seeded(&graph, placement);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+            for _ in 0..8 {
+                let stale = brain.activity_roll(0).expect("a branch is active");
+                // The AI pass reseats, then evaluates, on one tick.
+                assert!(brain.reseat_to_initial());
+                let fresh = brain.activity_roll(0).expect("decide is reseated");
+                assert!(select_transition_path(&programs, &mut scope, &mut brain));
+                let expected = if fresh < 0.5 { "low" } else { "high" };
+                assert_eq!(brain.active_path_names(), [expected]);
+                if (stale < 0.5) != (fresh < 0.5) {
+                    discriminating += 1;
+                }
+            }
+        }
+        assert!(
+            discriminating > 0,
+            "some reseat must replace a roll on the other side of 0.5"
+        );
+    }
+
+    // R4 (P4): levels seated by one descent draw independent rolls, and a
+    // nested transition redraws and zeroes only the nested level.
+    #[test]
+    fn nested_levels_draw_independent_rolls_and_a_nested_transition_redraws_only_its_level() {
+        let graph = nested_fixture(false);
+        let (programs, mut scope) = bound(&graph);
+        let mut opposite_sides = [false; 2];
+        for placement in 0..64 {
+            let mut brain = seeded(&graph, placement);
+            assert_eq!(brain.active_path_names(), ["engage", "windup"]);
+            let outer = brain.activity_roll(0).expect("engage is seated");
+            let inner = brain.activity_roll(1).expect("windup is seated");
+            assert_ne!(outer, inner, "one descent draws one roll per level");
+            if (outer < 0.5) != (inner < 0.5) {
+                opposite_sides[usize::from(outer < 0.5)] = true;
+            }
+
+            brain.tick_activity_timers(20.0);
+            assert!(select_transition_path(&programs, &mut scope, &mut brain));
+            assert_eq!(brain.active_path_names(), ["engage", "commit"]);
+            assert_eq!(
+                brain.activity_roll(0),
+                Some(outer),
+                "the parent keeps its roll"
+            );
+            assert_eq!(brain.activity_timer(0), Some(20.0), "and its timer");
+            assert_eq!(
+                brain.activity_timer(1),
+                Some(0.0),
+                "the entered level zeroes"
+            );
+            let redrawn = brain.activity_roll(1).expect("commit is seated");
+            assert_ne!(redrawn, inner, "the entered level draws again");
+        }
+        assert_eq!(
+            opposite_sides,
+            [true, true],
+            "the levels' rolls are uncorrelated: each falls either side of the other"
+        );
+    }
+
+    // R5 (P5): move and offense selectors read their own level's roll, not the
+    // roll of the level the transition pass evaluated last.
+    #[test]
+    fn selector_guards_read_their_own_levels_roll() {
+        let inner = BehaviorGraphEnvelope {
+            initial: "idle".to_string(),
+            activities: BTreeMap::from([(
+                "idle".to_string(),
+                activity("idle", None, None, BTreeMap::new()),
+            )]),
+            transitions: BTreeMap::new(),
+        };
+        let layers = BTreeMap::from([
+            (
+                "move".to_string(),
+                BehaviorLayerDescriptor::Selector(vec![
+                    BehaviorSelectorEntry::Row(BehaviorSelectorRow {
+                        when: Some(roll_below_half()),
+                        motion: Some(MotionVerb::ChaseTarget),
+                        action: None,
+                    }),
+                    BehaviorSelectorEntry::Motion(MotionVerb::Hold),
+                ]),
+            ),
+            (
+                "offense".to_string(),
+                BehaviorLayerDescriptor::Selector(vec![BehaviorSelectorEntry::Row(
+                    BehaviorSelectorRow {
+                        when: Some(roll_below_half()),
+                        motion: None,
+                        action: Some(ActionVerb::Attack {
+                            name: "slam".to_string(),
+                            at: None,
+                            at_default: false,
+                        }),
+                    },
+                )]),
+            ),
+            ("inner".to_string(), BehaviorLayerDescriptor::Graph(inner)),
+        ]);
+        let mut graph = nested_fixture(false);
+        graph.envelope = BehaviorGraphEnvelope {
+            initial: "engage".to_string(),
+            activities: BTreeMap::from([(
+                "engage".to_string(),
+                activity("locomotion", None, None, layers),
+            )]),
+            transitions: BTreeMap::new(),
+        };
+        let (programs, mut scope) = bound(&graph);
+
+        let mut discriminating = 0;
+        for placement in 0..64 {
+            let mut brain = seeded(&graph, placement);
+            assert_eq!(brain.active_path_names(), ["engage", "idle"]);
+            let outer = brain.activity_roll(0).expect("engage is seated");
+            let inner = brain.activity_roll(1).expect("idle is seated");
+            // The transition pass leaves the scope pointing at the inner level.
+            assert!(!select_transition_path(&programs, &mut scope, &mut brain));
+
+            let expected_motion = if outer < 0.5 {
+                MotionVerb::ChaseTarget
+            } else {
+                MotionVerb::Hold
+            };
+            assert_eq!(
+                motion_for_path(&programs, &mut scope, &brain),
+                Some(expected_motion),
+                "the move selector reads engage's roll {outer}"
+            );
+            assert_eq!(
+                action_for_path(&programs, &mut scope, &brain).is_some(),
+                outer < 0.5,
+                "the offense selector reads engage's roll {outer}"
+            );
+            if (outer < 0.5) != (inner < 0.5) {
+                discriminating += 1;
+            }
+        }
+        assert!(
+            discriminating > 0,
+            "some seed must put the two levels' rolls on opposite sides of 0.5"
+        );
+    }
+    fn damage_at_least(points: f32) -> IrNode {
+        IrNode::Ge {
+            a: Box::new(IrNode::Input {
+                name: BRAIN_DAMAGE_IN_ACTIVITY_INPUT.to_string(),
+                owner: None,
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(points),
+            }),
+        }
+    }
+
+    // Scope-relative damage: a nested entry zeroes only the entered level's
+    // sum, and the outer level keeps counting across it.
+    #[test]
+    fn a_nested_entry_zeroes_only_its_levels_damage_sum_and_the_outer_level_keeps_counting() {
+        let graph = nested_fixture(false);
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert_eq!(brain.active_path_names(), ["engage", "windup"]);
+
+        brain.record_damage_in_activity(12.0);
+        assert_eq!(brain.damage_in_activity(0), Some(12.0));
+        assert_eq!(brain.damage_in_activity(1), Some(12.0));
+
+        brain.tick_activity_timers(20.0);
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["engage", "commit"]);
+        assert_eq!(
+            brain.damage_in_activity(0),
+            Some(12.0),
+            "engage keeps its sum"
+        );
+        assert_eq!(brain.damage_in_activity(1), Some(0.0), "commit starts at 0");
+
+        brain.record_damage_in_activity(5.0);
+        assert_eq!(brain.damage_in_activity(0), Some(17.0));
+        assert_eq!(brain.damage_in_activity(1), Some(5.0));
+    }
+
+    // A row reads its own level's sum: chip damage below the threshold holds,
+    // and the hit that reaches it passes the row on the next evaluation.
+    #[test]
+    fn a_damage_row_passes_at_its_threshold_and_never_below_it() {
+        let graph = flat_graph(
+            &["hold", "flinch"],
+            BTreeMap::from([(
+                "hold".to_string(),
+                vec![row("flinch", damage_at_least(25.0))],
+            )]),
+        );
+        let (programs, mut scope) = bound(&graph);
+        let mut brain = BrainComponent::from_graph(&graph);
+
+        brain.record_damage_in_activity(20.0);
+        assert!(!select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["hold"]);
+
+        brain.record_damage_in_activity(5.0);
+        assert!(select_transition_path(&programs, &mut scope, &mut brain));
+        assert_eq!(brain.active_path_names(), ["flinch"]);
+        assert_eq!(brain.damage_in_activity(0), Some(0.0));
+    }
+
+    /// The nested fixture resting in `rest`, its offense windup playing
+    /// `windup` clip, seated in `engage` → `windup`.
+    fn seated_windup(windup: &str) -> BrainComponent {
+        let mut graph = nested_fixture(false);
+        graph.envelope.initial = "rest".to_string();
+        let BehaviorLayerDescriptor::Graph(offense) = graph
+            .envelope
+            .activities
+            .get_mut("engage")
+            .unwrap()
+            .layers
+            .get_mut("offense")
+            .unwrap()
+        else {
+            panic!("the offense is a graph");
+        };
+        offense.activities.get_mut("windup").unwrap().animation = Some(windup.to_string());
+        let engage = graph
+            .envelope
+            .activities
+            .keys()
+            .position(|name| name == "engage")
+            .unwrap();
+        let mut brain = BrainComponent::from_graph(&graph);
+        assert!(brain.enter_activity_at(0, engage));
+        assert_eq!(brain.active_path_names(), ["engage", "windup"]);
+        brain
+    }
+
+    // A nested actionless leaf that replays its chasing ancestor's travel
+    // cycle is locomotion: stopped, it plays the rest clip, not a run in place.
+    #[test]
+    fn a_stopped_nested_leaf_replaying_its_ancestors_travel_cycle_plays_rest() {
+        let brain = seated_windup("locomotion");
+        assert_eq!(animation_for_path(&brain, false), Some("idle"));
+        assert_eq!(animation_for_path(&brain, true), Some("locomotion"));
+    }
+
+    // A nested leaf with a clip of its own is a phase: it plays still.
+    #[test]
+    fn a_stopped_nested_phase_with_its_own_clip_keeps_it() {
+        let brain = seated_windup("windup");
+        assert_eq!(animation_for_path(&brain, false), Some("windup"));
+        assert_eq!(animation_for_path(&brain, true), Some("windup"));
     }
 }

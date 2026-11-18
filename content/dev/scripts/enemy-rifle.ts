@@ -1,5 +1,5 @@
 import { activation, defineEntity } from "postretro";
-import type { ProjectileDescriptor } from "postretro";
+import type { ProjectileDescriptor, WeaponDescriptor } from "postretro";
 import { ballistic } from "./damage-types";
 
 // DEMO CONTENT — the enemy rifles: projectile weapons enemy attacks resolve by
@@ -7,26 +7,37 @@ import { ballistic } from "./damage-types";
 // the slow, dodgeable enemy shot remains visible on combat-demo without new art
 // assets.
 
-// The single shot projectile traps volley.
+// The single shot: projectile traps volley it.
 export const enemyRifleEntity = defineEntity({
   canonicalName: "enemy_rifle",
-  components: {
-    weapon: {
-      damage: 10,
-      damageType: ballistic,
-      range: 12,
-      primary: { trigger: "hold", recoveryMs: 750, steps: [activation.shot()] },
-      resolution: "projectile",
-      // The limitator's shot, heard where it fires (sounds/weapons/CREDITS.txt).
-      sounds: { fire: "weapons/enemy_rifle_fire" },
-      projectile: enemyRifleProjectile(),
-      creditSource: "enemy.rifle",
-    },
-  },
+  components: { weapon: rifleShot(12) },
 });
 
-// The limitator's and rifle squads' `shoot`: three shots 120 ms apart, then a
-// second's recovery. The squad's turn holds through the burst.
+// The same shot reaching 20 m: the limitator's careful long shot. Its shot
+// flies 20 m/s for 2 s, 40 m, so it carries the whole reach.
+export const enemyRifleLongEntity = defineEntity({
+  canonicalName: "enemy_rifle_long",
+  components: { weapon: rifleShot(20) },
+});
+
+// One shot reaching `range` m, then 750 ms of recovery.
+function rifleShot(range: number): WeaponDescriptor {
+  return {
+    damage: 10,
+    damageType: ballistic,
+    range,
+    primary: { trigger: "hold", recoveryMs: 750, steps: [activation.shot()] },
+    resolution: "projectile",
+    // The limitator's shot, heard where it fires (sounds/weapons/CREDITS.txt).
+    sounds: { fire: "weapons/enemy_rifle_fire" },
+    projectile: enemyRifleProjectile(),
+    creditSource: "enemy.rifle",
+  };
+}
+
+// The limitator's and rifle squads' bursts, the aim's and the panicked
+// strafe's: three shots 120 ms apart, then a second's recovery. The squad's
+// turn holds through the burst.
 export const enemyRifleBurstEntity = defineEntity({
   canonicalName: "enemy_rifle_burst",
   components: {

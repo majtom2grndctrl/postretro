@@ -1079,8 +1079,15 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
             "emitted `MotionVerb` union does not match `MotionVerb::ALL`"
         );
         assert!(
-            output.contains("export type ActionVerb = {") && output.contains("attack: string"),
-            "emitted `ActionVerb` must preserve its named attack payload"
+            output.contains("export type ActionVerb = {")
+                && (output.contains("attack: Attack;") || output.contains("attack: Attack,")),
+            "emitted `ActionVerb` must carry its attack handle payload"
+        );
+        assert!(
+            !output.contains("attack: string")
+                && !output.contains("attackTurn?: string")
+                && !output.contains("attackTurn: string?"),
+            "no emitted behavior type takes an attack as a string"
         );
         assert_eq!(
             union_members(output, "PatrolMode"),
@@ -1111,6 +1118,7 @@ fn behavior_descriptor_typedefs_match_the_foundation_enums() {
         [ActionVerb::Attack {
             name: "attack".to_string(),
             at: None,
+            at_default: false,
         }],
         "`ActionVerb::all()` must retain its representative named payload"
     );

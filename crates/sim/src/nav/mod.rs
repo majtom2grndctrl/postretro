@@ -536,6 +536,14 @@ impl NavGraph {
         best.map(|(i, _, _)| i)
     }
 
+    /// Whether a route query can resolve `position` to a region: it lies on
+    /// one, or within the off-mesh snap tolerance of one
+    /// ([`Self::resolve_region_at`]). A destination that does not resolve has
+    /// no route to it.
+    pub fn resolves(&self, position: Vec3) -> bool {
+        self.resolve_region_at(position).is_some()
+    }
+
     /// Whether two resolved endpoints connect through the portals and links
     /// open now. Deliberately weaker than [`find_path_from`]: it ignores funnel
     /// clearance and link surfaces, so it tells a genuinely disconnected

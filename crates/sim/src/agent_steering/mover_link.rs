@@ -207,6 +207,8 @@ fn standing_on(agent: &AgentComponent) -> Option<u32> {
     }
 }
 
+/// Boarding and exit walks keep the base speed: a ride is an engine maneuver
+/// timed against the dock, not the activity's authored pace.
 fn walk_towards(agent: &AgentComponent, position: Vec3, target: Vec3) -> RideStep {
     let offset = Vec3::new(target.x - position.x, 0.0, target.z - position.z);
     RideStep::Walk(offset.normalize_or_zero() * agent.move_speed)

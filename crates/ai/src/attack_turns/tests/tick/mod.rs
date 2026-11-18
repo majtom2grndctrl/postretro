@@ -7,6 +7,7 @@ mod budget;
 mod facts;
 mod lifetime;
 mod pools;
+mod queued_rows;
 mod refresh;
 mod release;
 mod reload;
@@ -37,7 +38,7 @@ fn attacker_spot(index: usize) -> Vec3 {
 }
 
 /// Run every enemy under per-token `limits`, none refreshing.
-fn set_limits(runtime: &mut AiRuntime, limits: &[u32]) {
+pub(super) fn set_limits(runtime: &mut AiRuntime, limits: &[u32]) {
     runtime.turns.budgets = AttackBudgets::new(BudgetTable::new(
         limits
             .iter()
@@ -62,7 +63,7 @@ fn draws(list: &[(u16, u32)]) -> ResolvedDraws {
 
 /// Make `attack` on `enemy` draw `list`, standing in for authored `draws`.
 /// Binds every brain now against `descriptors`, as the next tick would.
-fn set_draws(
+pub(super) fn set_draws(
     reg: &EntityRegistry,
     runtime: &mut AiRuntime,
     descriptors: &[EntityTypeDescriptor],
@@ -86,7 +87,7 @@ fn turns(reg: &EntityRegistry, enemy: EntityId) -> AttackTurnState {
 }
 
 /// The attacks `enemy` holds turns for, by name.
-fn held(reg: &EntityRegistry, enemy: EntityId) -> Vec<String> {
+pub(super) fn held(reg: &EntityRegistry, enemy: EntityId) -> Vec<String> {
     let brain = reg.get_component::<BrainComponent>(enemy).unwrap();
     brain
         .attack_turns
@@ -125,6 +126,7 @@ fn contact(damage: f32, cooldown_ms: f32) -> AttackParams {
         cooldown_ms: Some(cooldown_ms),
         engagement_radius: None,
         standoff_distance: None,
+        queue_range: None,
         damage_type: None,
         draws: None,
     }
@@ -139,6 +141,7 @@ fn weapon(name: &str) -> AttackParams {
         cooldown_ms: None,
         engagement_radius: None,
         standoff_distance: None,
+        queue_range: None,
         damage_type: None,
         draws: None,
     }
@@ -152,6 +155,7 @@ fn striking(attack: &str) -> BehaviorActivityDescriptor {
         Some(ActionVerb::Attack {
             name: attack.to_string(),
             at: None,
+            at_default: false,
         }),
     )
 }
@@ -405,6 +409,8 @@ fn engaged_outcome(
         prior_acquired_target: Some(target.entity),
         brain,
         steering: SteeringIntent::Chase,
+        leap: None,
+        leap_spot_off_mesh: false,
         engaged: true,
         facing_direction: None,
         travel_variant: Default::default(),
@@ -415,6 +421,8 @@ fn engaged_outcome(
         attack: None,
         weapon_aim: None,
         entered: None,
+        queued_attack: None,
         fresh_unmarked_grant: None,
+        flinched: false,
     }
 }

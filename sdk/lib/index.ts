@@ -156,6 +156,8 @@ export {
   defineDamageType,
   defineAttackToken,
   defaultToken,
+  defineAttack,
+  defineStance,
   read,
   fromRuntime,
   set,

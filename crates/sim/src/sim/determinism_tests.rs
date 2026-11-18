@@ -59,9 +59,9 @@ use postretro_entities::{
 use postretro_entities::{SequenceStep, SequenceTarget};
 use postretro_foundation::pose::{FootProbe, MAX_FEET};
 use postretro_foundation::{
-    AirParams, CapsuleParams, FallParams, ForgivenessParams, GroundParams, IrNode, IrValue,
-    PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode, SpeedParams,
-    WeaponDescriptor,
+    AirParams, BehaviorLayerDescriptor, CapsuleParams, FallParams, ForgivenessParams, GroundParams,
+    GuardedRow, IrNode, IrValue, PlayerMovementComponent, PlayerMovementDescriptor, ResolutionMode,
+    SpeedParams, WeaponDescriptor,
 };
 use postretro_scripting_core::reaction_dispatch::{
     ProgressTracker, fire_named_event_with_sequences,
@@ -190,6 +190,8 @@ struct PawnOutcome {
 enum EntityLabel {
     Pawn(Role),
     Enemy,
+    RollEnemy(Role),
+    HoldEnemy(Role),
     Weapon,
     TriggerSource,
     TriggerArmTarget,
@@ -256,6 +258,13 @@ struct RecordedTick {
     trigger_command_fires: Vec<RecordedCommandFire>,
     predicate_crossing_fires: Vec<(String, bool)>,
     accumulator_slot: Option<SlotValue>,
+    /// Each roll enemy's `activityRoll` per active level after this tick, as
+    /// f32 bits, keyed by role so a reversed spawn order compares like for
+    /// like.
+    activity_rolls: Vec<(Role, Vec<u32>)>,
+    /// Each hold enemy's hidden stance release draw per active level after
+    /// this tick, as f32 bits, keyed by role (`0.0` outside a hold).
+    hold_releases: Vec<(Role, Vec<u32>)>,
 }
 
 #[derive(Debug)]
@@ -295,6 +304,12 @@ struct SimHarness {
     slot_accumulator_bindings: SlotAccumulatorBindings,
     tick_index: usize,
     role_ids: Vec<(Role, EntityId)>,
+    /// Two same-descriptor enemies whose graph branches and dwells on
+    /// `activityRoll`, spawned in `SpawnOrder`.
+    roll_enemies: Vec<(Role, EntityId)>,
+    /// Two same-descriptor enemies cycling a stance whose hold draws its
+    /// release time, spawned in `SpawnOrder`.
+    hold_enemies: Vec<(Role, EntityId)>,
     labels: HashMap<EntityId, EntityLabel>,
     selected_player: EntityId,
     remote_player: EntityId,
@@ -317,6 +332,8 @@ impl SimHarness {
     pub(crate) fn new(spawn_order: SpawnOrder, fixture: SimFixture) -> Self {
         let registry = Rc::new(RefCell::new(EntityRegistry::new()));
         let mut role_ids = Vec::new();
+        let mut roll_enemies = Vec::new();
+        let mut hold_enemies = Vec::new();
         let (active_wieldable, enemy) = {
             let mut registry = registry.borrow_mut();
             for role in spawn_order.roles() {
@@ -333,6 +350,15 @@ impl SimHarness {
                 role_ids.push((role, id));
             }
             let enemy = spawn_enemy(&mut registry, Vec3::new(-1.0, 1.0, 0.0));
+            // The roll enemies spawn in `SpawnOrder`, so a reversal swaps
+            // their registry ids; a roll salted by id would swap roles.
+            for role in spawn_order.roles() {
+                roll_enemies.push((role, spawn_roll_enemy(&mut registry, role)));
+            }
+            // Likewise for the release draws, on the release stream.
+            for role in spawn_order.roles() {
+                hold_enemies.push((role, spawn_hold_enemy(&mut registry, role)));
+            }
             let weapon = spawn_determinism_weapon(&mut registry);
             let secondary_weapon = spawn_determinism_weapon(&mut registry);
             let alpha = role_ids
@@ -557,6 +583,12 @@ impl SimHarness {
             labels.insert(*id, EntityLabel::Pawn(*role));
         }
         labels.insert(enemy, EntityLabel::Enemy);
+        for (role, id) in &roll_enemies {
+            labels.insert(*id, EntityLabel::RollEnemy(*role));
+        }
+        for (role, id) in &hold_enemies {
+            labels.insert(*id, EntityLabel::HoldEnemy(*role));
+        }
         labels.insert(active_wieldable, EntityLabel::Weapon);
         labels.insert(trigger_source, EntityLabel::TriggerSource);
         labels.insert(trigger_arm_target, EntityLabel::TriggerArmTarget);
@@ -651,6 +683,8 @@ impl SimHarness {
             slot_accumulator_bindings,
             tick_index: 0,
             role_ids,
+            roll_enemies,
+            hold_enemies,
             labels,
             selected_player,
             remote_player,
@@ -889,7 +923,57 @@ impl SimHarness {
                 .borrow()
                 .get("determinism.accumulated")
                 .and_then(|record| record.value.clone()),
+            activity_rolls: self.role_activity_rolls(),
+            hold_releases: self.role_hold_releases(),
         }
+    }
+
+    fn role_hold_releases(&self) -> Vec<(Role, Vec<u32>)> {
+        let registry = self.registry.borrow();
+        let mut draws = self
+            .hold_enemies
+            .iter()
+            .map(|(role, id)| {
+                let brain = registry
+                    .get_component::<BrainComponent>(*id)
+                    .expect("hold enemy keeps its brain");
+                let levels = (0..brain.active_depth())
+                    .map(|depth| {
+                        brain
+                            .hold_release_ms(depth)
+                            .expect("an active level holds a release slot")
+                            .to_bits()
+                    })
+                    .collect();
+                (*role, levels)
+            })
+            .collect::<Vec<_>>();
+        draws.sort_by_key(|(role, _)| *role);
+        draws
+    }
+
+    fn role_activity_rolls(&self) -> Vec<(Role, Vec<u32>)> {
+        let registry = self.registry.borrow();
+        let mut rolls = self
+            .roll_enemies
+            .iter()
+            .map(|(role, id)| {
+                let brain = registry
+                    .get_component::<BrainComponent>(*id)
+                    .expect("roll enemy keeps its brain");
+                let levels = (0..brain.active_depth())
+                    .map(|depth| {
+                        brain
+                            .activity_roll(depth)
+                            .expect("an active level holds a roll")
+                            .to_bits()
+                    })
+                    .collect();
+                (*role, levels)
+            })
+            .collect::<Vec<_>>();
+        rolls.sort_by_key(|(role, _)| *role);
+        rolls
     }
 
     fn record_trigger_fire(&self, event: &TriggerEvent) -> RecordedTriggerFire {
@@ -1128,7 +1212,7 @@ fn deterministic_trigger_activator_damage(amount: f32) -> NamedReaction {
     }
 }
 
-fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
+pub(super) fn spawn_player(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
     let id = registry.spawn(Transform {
         position,
         ..Transform::default()
@@ -1194,6 +1278,221 @@ fn spawn_enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
         )
         .expect("enemy health component should attach");
     id
+}
+
+/// A same-descriptor enemy for the roll rows of the gate. Its brain is built
+/// the gate's way, then salted as descriptor attach salts a map placement: by
+/// its authored entity index, here one per role. It carries no Health, so the
+/// pawns' shots never reach it and the rest of the gate is unchanged.
+fn spawn_roll_enemy(registry: &mut EntityRegistry, role: Role) -> EntityId {
+    let (position, placement) = match role {
+        Role::Alpha => (Vec3::new(-30.0, 1.0, 30.0), 101),
+        Role::Beta => (Vec3::new(30.0, 1.0, 30.0), 102),
+    };
+    let id = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    let mut brain = BrainComponent::from_graph(&roll_enemy_graph());
+    brain.home_anchor = position;
+    brain.seed_behavior_draws(postretro_foundation::behavior_draw_seed(
+        "roller",
+        postretro_foundation::BehaviorDrawSalt::Placement(placement),
+    ));
+    registry
+        .set_component(id, brain)
+        .expect("roll enemy brain attaches");
+    id
+}
+
+/// A same-descriptor stance enemy for the release-draw rows of the gate,
+/// salted by its own authored entity index as `spawn_roll_enemy` is. No
+/// Health, so nothing else in the gate reaches it.
+fn spawn_hold_enemy(registry: &mut EntityRegistry, role: Role) -> EntityId {
+    let (position, placement) = match role {
+        Role::Alpha => (Vec3::new(-30.0, 1.0, -30.0), 201),
+        Role::Beta => (Vec3::new(30.0, 1.0, -30.0), 202),
+    };
+    let id = registry.spawn(Transform {
+        position,
+        ..Transform::default()
+    });
+    let mut brain = BrainComponent::from_graph(&hold_enemy_graph());
+    brain.home_anchor = position;
+    brain.seed_behavior_draws(postretro_foundation::behavior_draw_seed(
+        "holder",
+        postretro_foundation::BehaviorDrawSalt::Placement(placement),
+    ));
+    registry
+        .set_component(id, brain)
+        .expect("hold enemy brain attaches");
+    id
+}
+
+/// The release range the hold enemies draw from, in milliseconds.
+const HOLD_RELEASE_RANGE: [f32; 2] = [32.0, 480.0];
+
+/// One stance in its lowered shape: the `brace` rest takes its hold after a
+/// fixed dwell, so both enemies enter their first hold on one tick; the hold
+/// releases on its drawn time; the release returns to the rest.
+fn hold_enemy_graph() -> BehaviorGraphDescriptor {
+    let leaf = |pose: Option<&str>| BehaviorActivityDescriptor {
+        pose: pose.map(str::to_string),
+        stagger_to: None,
+        passes: None,
+        sound: None,
+        animation: Some("idle".to_string()),
+        motion: Some(MotionVerb::Hold),
+        action: None,
+        on_enter: None,
+        facing: None,
+        reposition: None,
+        attack_turn: None,
+        speed: None,
+        layers: BTreeMap::new(),
+    };
+    let after = |to: &str, ms: f32| GuardedRow {
+        release_after: None,
+        queue: None,
+        after_moment: false,
+        to: to.to_string(),
+        when: IrNode::Ge {
+            a: Box::new(IrNode::Input {
+                name: postretro_foundation::BRAIN_TIME_IN_ACTIVITY_MS_INPUT.to_string(),
+                owner: None,
+            }),
+            b: Box::new(IrNode::Const {
+                value: IrValue::Number(ms),
+            }),
+        },
+    };
+    BehaviorGraphDescriptor {
+        knockback: Default::default(),
+        envelope: BehaviorGraphEnvelope {
+            initial: "brace".to_string(),
+            activities: BTreeMap::from([
+                ("brace".to_string(), leaf(Some("brace"))),
+                ("brace_hold".to_string(), leaf(Some("brace"))),
+                ("lunge".to_string(), leaf(None)),
+            ]),
+            transitions: BTreeMap::from([
+                ("brace".to_string(), vec![after("brace_hold", 48.0)]),
+                (
+                    "brace_hold".to_string(),
+                    vec![GuardedRow {
+                        release_after: Some(HOLD_RELEASE_RANGE),
+                        ..after("lunge", 0.0)
+                    }],
+                ),
+                ("lunge".to_string(), vec![after("brace", 32.0)]),
+            ]),
+        },
+        candidate_filter: None,
+        retaliation: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: 0.0,
+    }
+}
+
+/// Two root activities that hand off after a roll-scaled dwell, each nesting
+/// two leaves that do the same: every entry at either level draws, and the
+/// draws decide when the next entry comes.
+fn roll_enemy_graph() -> BehaviorGraphDescriptor {
+    fn input(name: &str) -> Box<IrNode> {
+        Box::new(IrNode::Input {
+            name: name.to_string(),
+            owner: None,
+        })
+    }
+    fn number(value: f32) -> Box<IrNode> {
+        Box::new(IrNode::Const {
+            value: IrValue::Number(value),
+        })
+    }
+    // `timeInActivityMs >= base + span * activityRoll`
+    fn rolled_dwell(base: f32, span: f32) -> IrNode {
+        IrNode::Ge {
+            a: input(postretro_foundation::BRAIN_TIME_IN_ACTIVITY_MS_INPUT),
+            b: Box::new(IrNode::Add {
+                a: number(base),
+                b: Box::new(IrNode::Mul {
+                    a: number(span),
+                    b: input(postretro_foundation::BRAIN_ACTIVITY_ROLL_INPUT),
+                }),
+            }),
+        }
+    }
+    fn leaf() -> BehaviorActivityDescriptor {
+        BehaviorActivityDescriptor {
+            pose: None,
+            stagger_to: None,
+            passes: None,
+            sound: None,
+            animation: Some("idle".to_string()),
+            motion: None,
+            action: None,
+            on_enter: None,
+            facing: None,
+            reposition: None,
+            attack_turn: None,
+            speed: None,
+            layers: BTreeMap::new(),
+        }
+    }
+    fn swap(from: &str, to: &str, base: f32, span: f32) -> (String, Vec<GuardedRow>) {
+        (
+            from.to_string(),
+            vec![GuardedRow {
+                release_after: None,
+                queue: None,
+                after_moment: false,
+                to: to.to_string(),
+                when: rolled_dwell(base, span),
+            }],
+        )
+    }
+    let inner = BehaviorGraphEnvelope {
+        initial: "glance".to_string(),
+        activities: BTreeMap::from([
+            ("glance".to_string(), leaf()),
+            ("shift".to_string(), leaf()),
+        ]),
+        transitions: BTreeMap::from([
+            swap("glance", "shift", 50.0, 200.0),
+            swap("shift", "glance", 50.0, 200.0),
+        ]),
+    };
+    let composite = || BehaviorActivityDescriptor {
+        pose: None,
+        motion: Some(MotionVerb::Hold),
+        layers: BTreeMap::from([(
+            "fidget".to_string(),
+            BehaviorLayerDescriptor::Graph(inner.clone()),
+        )]),
+        ..leaf()
+    };
+    BehaviorGraphDescriptor {
+        knockback: Default::default(),
+        envelope: BehaviorGraphEnvelope {
+            initial: "wait".to_string(),
+            activities: BTreeMap::from([
+                ("wait".to_string(), composite()),
+                ("pace".to_string(), composite()),
+            ]),
+            transitions: BTreeMap::from([
+                swap("wait", "pace", 300.0, 600.0),
+                swap("pace", "wait", 300.0, 600.0),
+            ]),
+        },
+        candidate_filter: None,
+        retaliation: None,
+        patrol: None,
+        attacks: BTreeMap::new(),
+        engagement_radius: None,
+        move_speed: 0.0,
+    }
 }
 
 fn spawn_target(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
@@ -1365,7 +1664,7 @@ fn player_descriptor() -> PlayerMovementDescriptor {
     }
 }
 
-fn floor_world() -> CollisionWorld {
+pub(super) fn floor_world() -> CollisionWorld {
     sloped_floor_world(0.0)
 }
 
@@ -1404,7 +1703,7 @@ fn sloped_floor_world(slope: f32) -> CollisionWorld {
     CollisionWorld::from_triangles_for_test(points, triangles)
 }
 
-fn open_floor_nav_graph() -> NavGraph {
+pub(super) fn open_floor_nav_graph() -> NavGraph {
     NavGraph::from_section(&NavMeshSection {
         version: NAVMESH_VERSION,
         origin: [0.0, 0.0, 0.0],
@@ -1579,6 +1878,9 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 (
                     "idle".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("idle".to_string()),
                         motion: Some(MotionVerb::Hold),
@@ -1587,12 +1889,16 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
                 (
                     ALERT_STATE.to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some(locomotion_animation.to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
@@ -1601,29 +1907,38 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
                 (
                     ATTACK_STATE.to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("attack".to_string()),
                         motion: Some(MotionVerb::ChaseTarget),
                         action: Some(ActionVerb::Attack {
                             name: "attack".to_string(),
                             at: None,
+                            at_default: false,
                         }),
                         on_enter: None,
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
                 (
                     "death".to_string(),
                     BehaviorActivityDescriptor {
+                        pose: None,
+                        stagger_to: None,
+                        passes: None,
                         sound: None,
                         animation: Some("death".to_string()),
                         motion: Some(MotionVerb::Freeze),
@@ -1632,6 +1947,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                         facing: None,
                         reposition: None,
                         attack_turn: None,
+                        speed: None,
                         layers: BTreeMap::new(),
                     },
                 ),
@@ -1651,6 +1967,7 @@ fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDesc
                 cooldown_ms: Some(1000.0),
                 engagement_radius: None,
                 standoff_distance: None,
+                queue_range: None,
                 damage_type: None,
                 draws: None,
             },
@@ -1671,6 +1988,9 @@ fn driven_agent_mesh(current_state: &str) -> MeshComponent {
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: Some(clip_index),
     };
     let mut states = std::collections::HashMap::new();
@@ -1742,7 +2062,7 @@ fn determinism_enemy_helpers_seed_home_anchor_from_spawn_position() {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_driven_agent_sim_tick(
+pub(super) fn run_driven_agent_sim_tick(
     registry: Rc<RefCell<EntityRegistry>>,
     world: &CollisionWorld,
     hit_zones: &HitZoneStore,
@@ -1853,18 +2173,15 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let mut mover_states = MoverTickStateTable::default();
     let empty_hit_zones = HitZoneStore::new();
 
-    // Attack is not the alert-mapped locomotion state, so the sim-tick path
-    // must restore its previously scaled playback rate to one.
+    // `idle` is played by no steering activity, so it is no rate-scaled state
+    // and the sim-tick path must restore its previously scaled playback rate
+    // to one. (The chasing `attack` state is rate-scaled: a moving attack
+    // strides at its speed.)
     let non_walk_registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let non_walk_enemy = {
         let mut registry = non_walk_registry.borrow_mut();
         spawn_player(&mut registry, Vec3::new(7.0, 1.21, 5.0));
-        let enemy = spawn_driven_agent(
-            &mut registry,
-            Vec3::new(5.0, 1.21, 5.0),
-            ATTACK_STATE,
-            "attack",
-        );
+        let enemy = spawn_driven_agent(&mut registry, Vec3::new(5.0, 1.21, 5.0), "idle", "idle");
         let mut mesh = registry
             .get_component::<MeshComponent>(enemy)
             .expect("driven agent keeps mesh")
@@ -2033,10 +2350,21 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
 fn no_locomotion_graph_restores_authored_playback_rate_through_sim_tick() {
     let mut graph = enemy_graph(3.5, "unused-locomotion");
     graph.envelope.activities.remove(ALERT_STATE);
+    // A chasing attack is rate-scaled, so plant it.
+    graph
+        .envelope
+        .activities
+        .get_mut(ATTACK_STATE)
+        .expect("the graph declares the attack")
+        .motion = Some(MotionVerb::Hold);
     assert_eq!(
         postretro_foundation::locomotion_animation(&graph),
         None,
-        "a graph containing only rest, attack, and death has no locomotion activity",
+        "a graph containing only rest, a planted attack, and death has no locomotion activity",
+    );
+    assert!(
+        !postretro_foundation::any_rate_scaled_animation(&graph, |_| true),
+        "nor any other rate-scaled state",
     );
 
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
@@ -2406,6 +2734,9 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: None,
         },
     );
@@ -2419,6 +2750,9 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
         .insert(
             "walk".to_string(),
             BehaviorActivityDescriptor {
+                pose: None,
+                stagger_to: None,
+                passes: None,
                 sound: None,
                 animation: Some("walk".to_string()),
                 motion: Some(MotionVerb::ChaseTarget),
@@ -2427,6 +2761,7 @@ fn spawner_path_first_rate_pass_uses_derived_clip_calibration_before_index_resol
                 facing: None,
                 reposition: None,
                 attack_turn: None,
+                speed: None,
                 layers: BTreeMap::new(),
             },
         );
@@ -2604,10 +2939,8 @@ fn pose_inputs_fallbacks_and_vertical_targets_remain_finite() {
             }
             target
         });
-        let brain = BrainComponent {
-            acquired_target,
-            ..brain_in_state(&driven_agent_graph(), ATTACK_STATE)
-        };
+        let mut brain = brain_in_state(&driven_agent_graph(), ATTACK_STATE);
+        brain.acquired_target = acquired_target;
         registry.set_component(entity, brain).unwrap();
 
         super::update_pose_inputs(
@@ -2706,6 +3039,9 @@ fn connected_client_own_pawn_shadow_folds_with_the_host_sent_backward_clip() {
         crossfade_ms: 50.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: Some(clip_index),
     };
     animation
@@ -3073,6 +3409,9 @@ fn leg_probe_fixture(position: Vec3, yaw: f32) -> (EntityRegistry, EntityId, Hit
             crossfade_ms: 0.0,
             interrupt: InterruptPolicy::Smooth,
             travel_speed: None,
+            max_playback_rate: None,
+            scale_with_speed: true,
+            playback_rate: None,
             clip_index: Some(0),
         },
     );
@@ -3639,6 +3978,93 @@ fn assert_trigger_positive_anchors(run: &SimRun) {
     );
 }
 
+/// R7: the roll rows of the gate compare something. Both roll enemies draw
+/// at both levels, keep drawing as they re-enter, and draw differently from
+/// each other, so a seed that ignored placement, or a roll that never
+/// redrew, would fail here rather than match trivially.
+fn assert_activity_roll_positive_anchors(run: &SimRun) {
+    let first = &run.events[0].activity_rolls;
+    assert_eq!(
+        first.iter().map(|(role, _)| *role).collect::<Vec<_>>(),
+        [Role::Alpha, Role::Beta]
+    );
+    assert!(
+        first.iter().all(|(_, levels)| levels.len() == 2),
+        "each roll enemy holds a roll at both levels: {first:?}"
+    );
+    assert_ne!(
+        first[0].1, first[1].1,
+        "two same-descriptor enemies draw differently"
+    );
+    for (role_index, (role, _)) in first.iter().enumerate() {
+        let mut root_rolls = run
+            .events
+            .iter()
+            .map(|tick| tick.activity_rolls[role_index].1[0])
+            .collect::<Vec<_>>();
+        root_rolls.dedup();
+        assert!(
+            root_rolls.len() >= 10,
+            "{role:?} re-enters and redraws across the run: {} root rolls",
+            root_rolls.len()
+        );
+        for bits in &root_rolls {
+            assert!((0.0..1.0).contains(&f32::from_bits(*bits)));
+        }
+    }
+}
+
+/// R10 / P38: the release-draw rows of the gate compare something. Both hold
+/// enemies enter their first hold on one tick and draw different release
+/// times there, and each keeps drawing within its range as it re-enters, so a
+/// seed that ignored placement, or a hold that never drew, would fail here
+/// rather than match trivially.
+fn assert_hold_release_positive_anchors(run: &SimRun) {
+    let first_hold = |role_index: usize| {
+        run.events
+            .iter()
+            .position(|tick| tick.hold_releases[role_index].1[0] != 0)
+            .expect("each hold enemy enters a hold")
+    };
+    assert_eq!(
+        run.events[0]
+            .hold_releases
+            .iter()
+            .map(|(role, _)| *role)
+            .collect::<Vec<_>>(),
+        [Role::Alpha, Role::Beta]
+    );
+    let entry = first_hold(0);
+    assert_eq!(
+        entry,
+        first_hold(1),
+        "both enter their first hold on one tick"
+    );
+    let draws = &run.events[entry].hold_releases;
+    assert_ne!(
+        draws[0].1, draws[1].1,
+        "two same-descriptor enemies entering holds on one tick draw differently"
+    );
+    for (role_index, (role, _)) in draws.iter().enumerate() {
+        let mut role_draws = run
+            .events
+            .iter()
+            .map(|tick| tick.hold_releases[role_index].1[0])
+            .filter(|bits| *bits != 0)
+            .collect::<Vec<_>>();
+        role_draws.dedup();
+        assert!(
+            role_draws.len() >= 5,
+            "{role:?} re-enters its hold and redraws: {} draws",
+            role_draws.len()
+        );
+        let [min, max] = HOLD_RELEASE_RANGE;
+        for bits in &role_draws {
+            assert!((min..=max).contains(&f32::from_bits(*bits)));
+        }
+    }
+}
+
 fn assert_sustained_bloom_burst_positive_anchors(run: &SimRun) {
     let fired_shells = run
         .events
@@ -3823,6 +4249,8 @@ fn simulate_tick_determinism_harness_matches_run_to_run_and_spawn_order() {
 
     assert_trigger_positive_anchors(&baseline);
     assert_sustained_bloom_burst_positive_anchors(&baseline);
+    assert_activity_roll_positive_anchors(&baseline);
+    assert_hold_release_positive_anchors(&baseline);
     assert_runs_match(&rerun, &baseline);
     assert_runs_match(&reversed_spawn, &baseline);
 }
@@ -4495,6 +4923,9 @@ fn simulate_tick_noops_weapon_fire_for_non_finite_callback_aim_origin() {
 fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
     let mut graph = enemy_graph(0.0, "locomotion");
     let activity = |animation: &str, action| BehaviorActivityDescriptor {
+        pose: None,
+        stagger_to: None,
+        passes: None,
         sound: None,
         animation: Some(animation.to_string()),
         motion: Some(MotionVerb::Hold),
@@ -4503,6 +4934,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
         facing: None,
         reposition: None,
         attack_turn: None,
+        speed: None,
         layers: BTreeMap::new(),
     };
     let mut jab = activity(
@@ -4510,6 +4942,7 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
         Some(ActionVerb::Attack {
             name: "attack".to_string(),
             at: Some("hit".to_string()),
+            at_default: false,
         }),
     );
     // The mark descriptor load implies for an `at` action.
@@ -4528,6 +4961,9 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
             (
                 "jab".to_string(),
                 vec![postretro_foundation::GuardedRow {
+                    release_after: None,
+                    queue: None,
+                    after_moment: false,
                     to: "rest".to_string(),
                     when: input(postretro_foundation::BRAIN_ANIMATION_DONE_INPUT),
                 }],
@@ -4535,6 +4971,9 @@ fn clip_timed_jab_graph() -> BehaviorGraphDescriptor {
             (
                 "rest".to_string(),
                 vec![postretro_foundation::GuardedRow {
+                    release_after: None,
+                    queue: None,
+                    after_moment: false,
                     to: "jab".to_string(),
                     when: IrNode::Ge {
                         a: Box::new(input(postretro_foundation::BRAIN_TIME_IN_ACTIVITY_MS_INPUT)),
@@ -4583,6 +5022,9 @@ fn clip_timed_fire_ticks(ticks_per_frame: usize, time_scale: f64, ticks: usize) 
         crossfade_ms: 0.0,
         interrupt: InterruptPolicy::Smooth,
         travel_speed: None,
+        max_playback_rate: None,
+        scale_with_speed: true,
+        playback_rate: None,
         clip_index: model.clips.iter().position(|loaded| loaded.name == clip),
     };
     let states = HashMap::from([

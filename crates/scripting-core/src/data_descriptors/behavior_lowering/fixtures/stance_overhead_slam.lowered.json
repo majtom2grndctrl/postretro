@@ -1,0 +1,83 @@
+{
+  "initial": "approach",
+  "moveSpeed": 3,
+  "attacks": {
+    "slam": { "damage": 14, "maxRange": 3.5, "cooldownMs": 1800 }
+  },
+  "activities": {
+    "approach": { "animation": "walk", "motion": "chaseTarget" },
+    "flinch": { "animation": "flinch", "motion": "hold" },
+    "overhead": {
+      "animation": "smash_windup", "sound": "brute/stance_overhead",
+      "motion": "hold", "pose": "overhead"
+    },
+    "slam_overhead": {
+      "animation": "smash_windup",
+      "motion": "hold", "pose": "overhead", "attackTurn": "slam"
+    },
+    "slam_release": {
+      "animation": "smash_strike",
+      "action": { "attack": "slam", "at": "hit", "atDefault": true },
+      "attackTurn": "slam", "motion": "hold", "staggerTo": "overhead"
+    },
+    "slam_recover": {
+      "animation": "smash_strike",
+      "attackTurn": "slam", "motion": "hold", "staggerTo": "overhead"
+    }
+  },
+  "transitions": {
+    "approach": [
+      {
+        "to": "overhead",
+        "when": { "op": "le", "a": { "op": "input", "name": "@brain.targetDistance" }, "b": { "op": "const", "value": 3.5 } }
+      }
+    ],
+    "overhead": [
+      {
+        "to": "flinch",
+        "when": { "op": "ge", "a": { "op": "input", "name": "@brain.damageInActivity" }, "b": { "op": "const", "value": 25 } }
+      },
+      {
+        "to": "slam_overhead", "queue": "slam",
+        "when": { "op": "lt", "a": { "op": "input", "name": "@brain.activityRoll" }, "b": { "op": "const", "value": 0.5 } }
+      },
+      {
+        "to": "approach",
+        "when": { "op": "gt", "a": { "op": "input", "name": "@brain.targetDistance" }, "b": { "op": "const", "value": 4.5 } }
+      }
+    ],
+    "slam_overhead": [
+      {
+        "to": "flinch",
+        "when": { "op": "ge", "a": { "op": "input", "name": "@brain.damageInActivity" }, "b": { "op": "const", "value": 25 } }
+      },
+      {
+        "to": "overhead",
+        "when": { "op": "not", "x": { "op": "input", "name": "@attackTurnHeld.slam" } }
+      },
+      { "to": "slam_release", "releaseAfter": [800, 800] }
+    ],
+    "slam_release": [
+      {
+        "to": "slam_recover", "afterMoment": true,
+        "when": { "op": "ge", "a": { "op": "input", "name": "@brain.timeInActivityMs" }, "b": { "op": "const", "value": 900 } }
+      }
+    ],
+    "slam_recover": [
+      {
+        "to": "overhead",
+        "when": {
+          "op": "or",
+          "a": { "op": "input", "name": "@brain.animationDone" },
+          "b": { "op": "ge", "a": { "op": "input", "name": "@brain.timeInActivityMs" }, "b": { "op": "const", "value": 600 } }
+        }
+      }
+    ],
+    "flinch": [
+      {
+        "to": "approach",
+        "when": { "op": "ge", "a": { "op": "input", "name": "@brain.timeInActivityMs" }, "b": { "op": "const", "value": 450 } }
+      }
+    ]
+  }
+}

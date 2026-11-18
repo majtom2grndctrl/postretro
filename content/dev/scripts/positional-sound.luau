@@ -48,6 +48,8 @@ M.positionalSoundShotgunEntity = defineEntity({
 -- Landing and jumping, adopted by the dev player's movement block.
 M.positionalSoundMovementSounds = { land = "fixtures/land", jump = "fixtures/jump" }
 
+local bite = defineAttack("bite", { damage = 10, maxRange = 2, cooldownMs = 800, sound = "fixtures/bite" })
+
 -- An attack that sounds as it fires, and a state that sounds on entry with no `onEnter`.
 M.positionalSoundGruntEntity = defineEntity({
   canonicalName = M.POSITIONAL_SOUND_GRUNT,
@@ -56,13 +58,12 @@ M.positionalSoundGruntEntity = defineEntity({
     behavior = {
       initial = "idle",
       moveSpeed = 3,
-      attacks = { bite = { damage = 10, maxRange = 2, cooldownMs = 800, sound = "fixtures/bite" } },
       activities = {
         idle = { animation = "idle", motion = "hold" },
         alerted = {
           animation = "idle",
           motion = "chaseTarget",
-          action = { attack = "bite" },
+          action = { attack = bite },
           sound = "fixtures/growl",
         },
       },

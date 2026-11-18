@@ -104,9 +104,10 @@ pub fn canonical_cell_partition(
         }
     }
 
-    // Seeds come from one sort of every cell by key; the cursor skips cells a
+    // Seeds come from one sort of every cell by key; the loop skips cells a
     // cluster already took, so each seed is the least unassigned cell without
-    // rescanning the rest.
+    // rescanning the rest. The key ends in the cell id, so no two cells tie and
+    // the unstable sort is deterministic.
     let mut seed_order = try_vec(cell_count, "canonical seed order")?;
     seed_order.extend(0..cell_count);
     seed_order.sort_unstable_by(|&left, &right| compare_cell_keys(left, right, &cells.cells));
@@ -225,3 +226,7 @@ fn compare_cell_keys(
         .then_with(|| left_bounds[0].total_cmp(&right_bounds[0]))
         .then_with(|| left.cmp(&right))
 }
+
+#[cfg(test)]
+#[path = "canonical_partition_oracle_tests.rs"]
+mod oracle_tests;

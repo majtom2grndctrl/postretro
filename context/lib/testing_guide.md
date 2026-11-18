@@ -174,7 +174,8 @@ Some suites are expensive and must not be run reflexively:
 
 A blanket `--ignored` also selects manual measurements and historical comparisons.
 Read their ignore reasons and provide their inputs, or exclude them explicitly with
-`--skip`. The cluster and lightmap residency dry runs need compiled PRL paths.
+`--skip`. The cluster and lightmap residency dry runs need compiled PRL paths, as does
+the canonical partition check (`POSTRETRO_PARTITION_PRL`).
 A test that loads a compiled PRL under `POSTRETRO_SH_STREAMING=off`, such as the
 mover frame captures, or decodes one of ids 27/34/35/41/45 whole (`from_bytes`, or a
 compiler test's volume readers), needs it baked with `prl-build --whole-load-sh`; a

@@ -9,12 +9,14 @@ use postretro_entities::components::agent::AgentComponent;
 use postretro_foundation::GroundRef;
 
 use super::{EnemyOutcome, engaged_motion};
+use crate::ai_host::{AiStageFrame, ai_stage};
 use crate::collision::CollisionWorld;
 use crate::combat_positioning::{
     CombatAgentSnapshot, CombatCandidate, CombatQuery, PATH_LENGTH_SCORE_WEIGHT,
     select_combat_positions_batch,
 };
 use crate::nav::NavGraph;
+use crate::sim::cpu_stages::SimStage;
 
 /// How many ticks a resolved combat slot is held for its incumbent before the
 /// batch solver is free to reassign it to a challenger.
@@ -26,6 +28,7 @@ pub(super) fn resolve_combat_slots(
     nav_graph: Option<&NavGraph>,
     mover_nav: crate::nav::MoverNav<'_>,
     collision_world: Option<&CollisionWorld>,
+    cpu: Option<&AiStageFrame>,
 ) {
     for outcome in outcomes.iter_mut() {
         outcome.combat_slot = None;
@@ -48,6 +51,9 @@ pub(super) fn resolve_combat_slots(
         return;
     }
 
+    // Opened past the early returns: a tick with no engaged enemy builds no
+    // batch and reports no positioning stage.
+    let positioning_stage = ai_stage(cpu, SimStage::AiPositioning);
     let other_agents: Vec<CombatAgentSnapshot> = outcomes
         .iter()
         .map(|outcome| CombatAgentSnapshot {
@@ -108,6 +114,8 @@ pub(super) fn resolve_combat_slots(
             .into_iter()
             .map(|assignment| (assignment.claimant_id, assignment.candidate))
             .collect();
+    drop(positioning_stage);
+    let _apply_stage = ai_stage(cpu, SimStage::AiApply);
 
     for outcome in outcomes.iter_mut() {
         if !outcome.engaged {

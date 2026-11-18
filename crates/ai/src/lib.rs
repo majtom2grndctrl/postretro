@@ -76,7 +76,8 @@ mod alloc_probe_tests {
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::ai_host::SimAiHost;
-use crate::ai_host::{AiHost, AiTickInputs, AiTickResult};
+use crate::ai_host::{AiHost, AiTickInputs, AiTickResult, ai_stage};
+use crate::sim::cpu_stages::SimStage;
 #[cfg(any(test, feature = "test-support"))]
 use crate::{collision::CollisionWorld, nav::NavGraph};
 use brain_programs::BrainPrograms;
@@ -386,6 +387,9 @@ macro_rules! test_tick_runner {
                 // so the caller's cannot cross this bridge: without one built
                 // in AI's build, every clip runs unresolved.
                 clips: $clips,
+                // The stage frame is the other build's `SimStage` too: AI
+                // sub-stages report only through the same-build runner.
+                cpu: None,
             };
             let mut on_impact = |registry: &mut $crate::__postretro_entities::EntityRegistry| {
                 host.on_impact(registry)
@@ -480,6 +484,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             factions: &factions,
             faction_sentiment: &faction_sentiment,
             clips: None,
+            cpu: None,
         },
         |_| {},
     )
@@ -520,6 +525,7 @@ where
         factions,
         faction_sentiment,
         clips,
+        cpu,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -619,6 +625,7 @@ where
             &live_factions,
             turns,
             clips,
+            cpu,
         )
     };
 
@@ -628,8 +635,10 @@ where
         nav_graph,
         mover_nav,
         collision_world,
+        cpu,
     );
 
+    let _apply_stage = ai_stage(cpu, SimStage::AiApply);
     attack_turns::arbitrate_attack_turns(&mut outcomes, programs, turns, weapons);
 
     apply::apply_outcomes(

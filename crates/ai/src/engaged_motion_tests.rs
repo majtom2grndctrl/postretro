@@ -1319,3 +1319,7 @@ mod alloc;
 
 #[path = "replan_stress_tests.rs"]
 mod replan_stress;
+
+#[path = "stage_timing_tests.rs"]
+mod stage_timing;
+

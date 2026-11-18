@@ -233,6 +233,7 @@ fn held_world_participation_rechecks_later_actor_and_target_after_contact_callba
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: None,
+                cpu: None,
             },
             |registry| {
                 callbacks += 1;

@@ -57,6 +57,21 @@ pub enum SimStage {
     /// Defense-layer clamp and recharge at tick start, after the respawn
     /// drain. Runs outside `Tick`, so it reports beside it.
     DefenseLayers,
+    /// Inside `Ai`: target offers and due-tick selection, candidate line of
+    /// sight included. Entered once per evaluated enemy.
+    AiTargeting,
+    /// Inside `Ai`: the combat-positioning batch and the queries it is built
+    /// from. Absent on a tick with no engaged enemy.
+    AiPositioning,
+    /// Inside `Ai`: the selected target's debounced perception query.
+    /// Entered once per enemy with a target.
+    AiPerception,
+    /// Inside `Ai`: clocks, guard facts (reachability included), transitions,
+    /// steering intent and the attack proposal. Entered per enemy.
+    AiGraph,
+    /// Inside `Ai`: combat-slot write-back, attack-turn arbitration and
+    /// applying every outcome to the registry.
+    AiApply,
 }
 
 impl StageSet for SimStage {
@@ -78,6 +93,11 @@ impl StageSet for SimStage {
         Self::OverlapCheck,
         Self::PlayerEvents,
         Self::DefenseLayers,
+        Self::AiTargeting,
+        Self::AiPositioning,
+        Self::AiPerception,
+        Self::AiGraph,
+        Self::AiApply,
     ];
 
     fn index(self) -> usize {
@@ -103,6 +123,11 @@ impl StageSet for SimStage {
             Self::OverlapCheck => "sim_overlap_check",
             Self::PlayerEvents => "sim_player_events",
             Self::DefenseLayers => "sim_defense_layers",
+            Self::AiTargeting => "sim_ai_targeting",
+            Self::AiPositioning => "sim_ai_positioning",
+            Self::AiPerception => "sim_ai_perception",
+            Self::AiGraph => "sim_ai_graph",
+            Self::AiApply => "sim_ai_apply",
         }
     }
 
@@ -111,6 +136,11 @@ impl StageSet for SimStage {
             Self::Tick | Self::PlayerEvents | Self::DefenseLayers => None,
             Self::SteerAgents | Self::SteerPose | Self::SteerMovers => Some(Self::Steering),
             Self::WeaponFluidCrossings => Some(Self::Weapons),
+            Self::AiTargeting
+            | Self::AiPositioning
+            | Self::AiPerception
+            | Self::AiGraph
+            | Self::AiApply => Some(Self::Ai),
             _ => Some(Self::Tick),
         }
     }

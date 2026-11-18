@@ -6,6 +6,8 @@ use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment};
 
 use super::{FACTION_STATE_FIELD, heading, perception};
+use crate::ai_host::{AiStageFrame, ai_stage};
+use crate::sim::cpu_stages::SimStage;
 
 pub(super) fn entity_faction(registry: &EntityRegistry, entity: EntityId) -> f32 {
     registry
@@ -47,6 +49,7 @@ pub(super) fn evaluate(
     factions: &LiveFactionSentiment<'_>,
     turns: &attack_turns::AttackTurnRuntime,
     clips: Option<&crate::scripting_systems::hit_zones::HitZoneStore>,
+    cpu: Option<&AiStageFrame>,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for (slot, snap) in snapshots.into_iter().enumerate() {
@@ -90,6 +93,7 @@ pub(super) fn evaluate(
         // work.
         let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
         let prior_acquired_target = brain.acquired_target;
+        let targeting_stage = ai_stage(cpu, SimStage::AiTargeting);
         let (target_selection, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
             // — chasing one, or acting on one. A resting brain re-ranks
@@ -202,6 +206,8 @@ pub(super) fn evaluate(
         } else {
             (None, false)
         };
+        drop(targeting_stage);
+        let graph_stage = ai_stage(cpu, SimStage::AiGraph);
         let target = target_selection.map(|selection| selection.target);
 
         // (1) Every named cooldown ticks down before the aggro gate and before
@@ -244,6 +250,11 @@ pub(super) fn evaluate(
         // Stride bookkeeping advances every tick so the gate is deterministic.
         brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
 
+        drop(graph_stage);
+        let perception_stage = target_selection
+            .is_some()
+            .then(|| ai_stage(cpu, SimStage::AiPerception))
+            .flatten();
         // The FINALLY selected pawn's identity and distance, or `None` with no
         // target. This one binding feeds the guard facts and attack range gate,
         // so neither can disagree about which target they describe.
@@ -261,6 +272,8 @@ pub(super) fn evaluate(
                 },
             )
         });
+        drop(perception_stage);
+        let _graph_stage = ai_stage(cpu, SimStage::AiGraph);
         if target.is_none() {
             los_grace.remove(&snap.id);
         }

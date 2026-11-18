@@ -35,6 +35,9 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::sim::TimingGate;
+use crate::sim::cpu_stages::SimStage;
+use postretro_stage_timing::StageSet;
 
 const CHASERS: usize = 8;
 const WARM_TICKS: usize = 60;
@@ -239,13 +242,34 @@ fn fold_tick(chain: &mut Digest, reg: &EntityRegistry, agents: &[(EntityId, usiz
     }
 }
 
-fn run_wave(scenario: &Scenario, wave_size: usize) {
-    run_wave_with(scenario, wave_size, true);
+/// What one wave run prints.
+#[derive(Clone, Copy, PartialEq)]
+enum Report {
+    /// Nothing: the digest run.
+    Silent,
+    /// The row: waits, replans and the timing-off AI and steering medians.
+    Row,
+    /// AI sub-stage medians from a timing-on run. Its scopes would inflate the
+    /// row's medians, so they come from this second run.
+    SubStages,
 }
 
-/// Run one wave. With `report` it prints the row; it always returns the
-/// digest chain's checkpoints, one every [`DIGEST_INTERVAL`] ticks from tick 0.
-fn run_wave_with(scenario: &Scenario, wave_size: usize, report: bool) -> Vec<u64> {
+const AI_SUB_STAGES: [SimStage; 5] = [
+    SimStage::AiTargeting,
+    SimStage::AiPositioning,
+    SimStage::AiPerception,
+    SimStage::AiGraph,
+    SimStage::AiApply,
+];
+
+fn run_wave(scenario: &Scenario, wave_size: usize) {
+    run_wave_with(scenario, wave_size, Report::Row);
+    run_wave_with(scenario, wave_size, Report::SubStages);
+}
+
+/// Run one wave and print per `report`. It always returns the digest chain's
+/// checkpoints, one every [`DIGEST_INTERVAL`] ticks from tick 0.
+fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u64> {
     let floor = OpenFloor::new();
     let world = floor.collision_world();
     let nav = floor.nav_graph();
@@ -312,6 +336,8 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: bool) -> Vec<u64
     let budget = agent_steering::REPLAN_BUDGET_PER_TICK;
     let mut chain = Digest::new();
     let mut checkpoints = Vec::new();
+    let timing = TimingGate::new(report == Report::SubStages);
+    let mut sub_stage_nanos: [Vec<u64>; AI_SUB_STAGES.len()] = Default::default();
 
     for tick in 0..WARM_TICKS + SAMPLED_TICKS {
         let t = tick as f32 * STEER_DT;
@@ -326,6 +352,7 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: bool) -> Vec<u64
             land_peer_hits(&mut reg, &wave, tick / HIT_PERIOD_TICKS);
         }
 
+        let ai_cpu = crate::ai_host::AiStageFrame::new(timing);
         let ai_start = Instant::now();
         run_ai_tick_with_navigation_and_impact(
             &mut reg,
@@ -340,10 +367,17 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: bool) -> Vec<u64
                 factions: &factions,
                 faction_sentiment: &faction_sentiment,
                 clips: None,
+                cpu: Some(&ai_cpu),
             },
             |_| {},
         );
         let ai_elapsed = ai_start.elapsed();
+        if tick >= WARM_TICKS && timing.is_enabled() {
+            for (nanos, stage) in sub_stage_nanos.iter_mut().zip(AI_SUB_STAGES) {
+                // Absent is a tick the stage did not run: zero time.
+                nanos.push(ai_cpu.value(stage).unwrap_or(0));
+            }
+        }
 
         let owed_now: Vec<bool> = agents
             .iter()
@@ -418,8 +452,26 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: bool) -> Vec<u64
             }
         }
     }
-    if !report {
-        return checkpoints;
+    match report {
+        Report::Silent => return checkpoints,
+        Report::SubStages => {
+            let medians: Vec<String> = sub_stage_nanos
+                .iter_mut()
+                .zip(AI_SUB_STAGES)
+                .map(|(nanos, stage)| {
+                    nanos.sort_unstable();
+                    let p50 = nanos[(nanos.len() - 1) / 2] as f64 / 1e3;
+                    format!("{} {p50:.1}", stage.label())
+                })
+                .collect();
+            eprintln!(
+                "[ReplanStress] {} {wave_size}: timing-on ai sub-stage µs p50: {}",
+                scenario.label,
+                medians.join(" | ")
+            );
+            return checkpoints;
+        }
+        Report::Row => {}
     }
     for (slot, &(_, class)) in agents.iter().enumerate() {
         if let Some(wait) = open_wait[slot] {
@@ -557,7 +609,7 @@ fn digest_lines() -> Vec<String> {
             .find(|scenario| scenario.label == label)
             .expect("pinned scenario exists");
         for size in DIGEST_SIZES {
-            let checkpoints = run_wave_with(scenario, size, false);
+            let checkpoints = run_wave_with(scenario, size, Report::Silent);
             let hex: Vec<String> = checkpoints.iter().map(|c| format!("{c:016x}")).collect();
             lines.push(format!("{label}|{size}|{}", hex.join(" ")));
         }
@@ -606,6 +658,9 @@ fn replan_stress_digest() {
             .zip(got_hex.split(' '))
             .position(|(a, b)| a != b)
             .map_or(0, |checkpoint| checkpoint * DIGEST_INTERVAL);
-        panic!("{label}: AI outcome diverged within ticks {tick}..{}", tick + DIGEST_INTERVAL);
+        panic!(
+            "{label}: AI outcome diverged within ticks {tick}..{}",
+            tick + DIGEST_INTERVAL
+        );
     }
 }

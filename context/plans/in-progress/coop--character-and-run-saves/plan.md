@@ -1,7 +1,7 @@
 # coop--character-and-run-saves — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 6c3f41ed
 
 ## Corrections

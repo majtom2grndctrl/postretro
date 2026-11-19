@@ -17,6 +17,7 @@ use postretro_net::wire::{ComponentPayload, WireMeshAnimationState};
 
 use super::candidate_scope::CandidateScope;
 use super::combat_slots::COMBAT_SLOT_HOLD_TICKS;
+use super::decide::identity_deciding_on;
 use super::engine_floor::TARGET_SWITCH_HYSTERESIS_DISTANCE;
 use super::facing::{FACING_TURN_RATE, slew_yaw, yaw_from_rotation, yaw_rotation_toward};
 use super::graph_eval::animation_for_path;
@@ -1632,7 +1633,7 @@ fn select_target_for_test(
     let live_factions = LiveFactionSentiment::with_empty_overlay(&factions);
     let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
     let index = crate::pawn_index::PawnIndex::for_test(registry);
-    let offers = target_offers(
+    let offers = scanned_offers(
         &index,
         &live_factions,
         from,
@@ -14180,14 +14181,4 @@ fn horizontal_shove_keeps_ground_clip() {
             "tick {tick}: knockback never sets the stride latch"
         );
     }
-}
-
-/// A schedule identity whose production decides fall on AI ticks `first`,
-/// `first + 4`, and so on. A brain also decides on its first run.
-fn identity_deciding_on(first: u64) -> u64 {
-    (0..)
-        .find(|&identity| {
-            crate::decide::decides_on(first, identity, crate::decide::DECIDE_INTERVAL_TICKS)
-        })
-        .expect("some identity takes every phase")
 }

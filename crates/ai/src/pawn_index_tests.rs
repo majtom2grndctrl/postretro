@@ -169,7 +169,7 @@ fn due_selection_log(
     let live = LiveFactionSentiment::with_empty_overlay(&factions);
     let index = PawnIndex::for_test(registry);
     let faction = crate::compute::entity_faction(registry, enemy);
-    let offers = targeting::target_offers(&index, &live, Vec3::ZERO, faction, Some(enemy), None);
+    let offers = targeting::scanned_offers(&index, &live, Vec3::ZERO, faction, Some(enemy), None);
     let mut sighted = Vec::new();
     let mut perception = |target: TargetPawn| {
         sighted.push(target.entity);

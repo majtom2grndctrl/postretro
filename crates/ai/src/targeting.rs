@@ -47,16 +47,30 @@ pub(super) struct TargetSelection {
     pub(super) retaliation_acquired_target: Option<EntityId>,
 }
 
-/// Pure nearest sentiment-hostile candidate plus the origin and exclusion a
-/// decide needs to walk the pass's hostile buckets again. `nearest` no longer
-/// prices anything (the distance stride is retired); the hostile-bucket
-/// proofs read it.
+/// The origin and exclusion a decide walks the pass's hostile buckets from.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TargetOffers {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) nearest: Option<TargetCandidate>,
     from: Vec3,
     exclude: Option<EntityId>,
+}
+
+/// [`TargetOffers`] beside the pure nearest hostile the same buckets hold:
+/// the index proofs compare it with the linear reference scan. Production
+/// never computes it; the distance stride it once priced is retired.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScannedOffers {
+    pub(super) offers: TargetOffers,
+    pub(super) nearest: Option<TargetCandidate>,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for ScannedOffers {
+    type Target = TargetOffers;
+
+    fn deref(&self) -> &TargetOffers {
+        &self.offers
+    }
 }
 
 /// A stable engine-owned retaliation preference. Its scalar score lets content
@@ -134,18 +148,24 @@ pub(super) fn target_candidate(
     })
 }
 
-/// Find the pure nearest hostile target from the pass's pawn index: the pawns
-/// in buckets the evaluating faction is hostile to, nearest by raw XZ
-/// distance, ties to the earlier in scan order. `nearest` once priced the
-/// acquisition stride; a due selection walks the same buckets again.
-pub(super) fn target_offers(
+/// The offers a decide walks from `from`, leaving `exclude` (the retained
+/// target) out.
+pub(super) fn target_offers(from: Vec3, exclude: Option<EntityId>) -> TargetOffers {
+    TargetOffers { from, exclude }
+}
+
+/// [`target_offers`] with the pure nearest hostile from the pass's pawn index:
+/// the pawns in buckets the evaluating faction is hostile to, nearest by raw
+/// XZ distance, ties to the earlier in scan order.
+#[cfg(test)]
+pub(super) fn scanned_offers(
     index: &PawnIndex,
     factions: &LiveFactionSentiment<'_>,
     from: Vec3,
     enemy_faction: f32,
     evaluating_enemy: Option<EntityId>,
     exclude: Option<EntityId>,
-) -> TargetOffers {
+) -> ScannedOffers {
     let mut nearest: Option<(TargetCandidate, u32)> = None;
     for position in index.hostile_pawns(factions, enemy_faction) {
         let pawn = index.pawn(position);
@@ -163,10 +183,9 @@ pub(super) fn target_offers(
             nearest = Some((candidate, position));
         }
     }
-    TargetOffers {
+    ScannedOffers {
+        offers: target_offers(from, exclude),
         nearest: nearest.map(|(candidate, _)| candidate),
-        from,
-        exclude,
     }
 }
 
@@ -201,7 +220,7 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 }
 
 /// Choose from the pass's pawn index on an acquisition tick. Authored candidacy and
-/// engine-floor LOS both narrow fresh eligibility, while `offers.nearest` stays
+/// engine-floor LOS both narrow fresh eligibility, while the pure nearest stays
 /// untouched for stride pricing. The retained candidate is deliberately supplied
 /// separately and never passes either fresh-acquisition gate.
 #[cfg(test)]
@@ -598,7 +617,7 @@ mod tests {
     ) -> (Option<TargetCandidate>, Option<TargetPawn>) {
         let factions = FactionRegistry::default();
         let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
-        let offers = target_offers(
+        let offers = scanned_offers(
             &PawnIndex::for_test(registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             from,
@@ -643,7 +662,7 @@ mod tests {
     ) -> (Option<TargetCandidate>, Option<TargetSelection>) {
         let retained =
             retained_target.and_then(|entity| target_candidate(registry, entity, Vec3::ZERO));
-        let offers = target_offers(
+        let offers = scanned_offers(
             &PawnIndex::for_test(registry),
             factions,
             Vec3::ZERO,
@@ -741,7 +760,7 @@ mod tests {
             .expect("fresh peer has entity state")
             .set(super::super::FACTION_STATE_FIELD, 1.0);
         let factions = FactionRegistry::default();
-        let hostile_offers = target_offers(
+        let hostile_offers = scanned_offers(
             &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -768,7 +787,7 @@ mod tests {
             .entity_state_mut(peer)
             .expect("fresh peer has entity state")
             .set(super::super::FACTION_STATE_FIELD, 0.0);
-        let default_faction_offers = target_offers(
+        let default_faction_offers = scanned_offers(
             &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -833,7 +852,7 @@ mod tests {
             .expect("pawn has state")
             .set(super::super::FACTION_STATE_FIELD, 3.0);
 
-        let cabal_offers = target_offers(
+        let cabal_offers = scanned_offers(
             &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -852,7 +871,7 @@ mod tests {
             .entity_state_mut(resistance)
             .expect("pawn remains live")
             .set(super::super::FACTION_STATE_FIELD, 2.0);
-        let resistance_offers = target_offers(
+        let resistance_offers = scanned_offers(
             &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -872,7 +891,7 @@ mod tests {
             "neutral sentiment cannot price the pure hostile stride"
         );
         assert_eq!(
-            target_offers(
+            scanned_offers(
                 &PawnIndex::for_test(&registry),
                 &LiveFactionSentiment::with_empty_overlay(&factions),
                 Vec3::ZERO,
@@ -904,7 +923,7 @@ mod tests {
         let mut registry = EntityRegistry::new();
         let pawn = pawn(&mut registry, 4.0);
         let factions = FactionRegistry::default();
-        let offers = target_offers(
+        let offers = scanned_offers(
             &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -941,7 +960,7 @@ mod tests {
         assert_eq!(selected.fresh_perception, Some(expected));
 
         let retained = target_candidate(&registry, pawn, Vec3::ZERO).expect("retained target");
-        let empty_offers = target_offers(
+        let empty_offers = scanned_offers(
             &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -974,7 +993,7 @@ mod tests {
         let retained =
             target_candidate(&registry, retained_entity, Vec3::ZERO).expect("retained target");
         let factions = FactionRegistry::default();
-        let offers = target_offers(
+        let offers = scanned_offers(
             &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -1240,7 +1259,7 @@ mod tests {
 
         // Warm the exact path before measuring so the probe covers one normal
         // due scan rather than one-time test/TLS initialization.
-        let warm_offers = target_offers(
+        let warm_offers = scanned_offers(
             &index,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
@@ -1266,7 +1285,7 @@ mod tests {
         );
 
         let snapshot = AllocSnapshot::arm();
-        let offers = target_offers(
+        let offers = scanned_offers(
             &index,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,

@@ -138,14 +138,7 @@ pub(super) fn evaluate(
                 let target = if evaluate_acquisition {
                     let (candidate_filter, candidate_scope) =
                         programs.candidate_filter_context(snap.id);
-                    let offers = target_offers(
-                        pawns,
-                        factions,
-                        snap.position,
-                        enemy_faction,
-                        Some(snap.id),
-                        Some(retained.target.entity),
-                    );
+                    let offers = target_offers(snap.position, Some(retained.target.entity));
                     let enemy_eye =
                         perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
                     let mut candidate_perception = |candidate| {
@@ -187,14 +180,7 @@ pub(super) fn evaluate(
                 // nothing and scans nothing.
                 (None, false)
             } else {
-                let offers = target_offers(
-                    pawns,
-                    factions,
-                    snap.position,
-                    enemy_faction,
-                    Some(snap.id),
-                    None,
-                );
+                let offers = target_offers(snap.position, None);
                 let evaluate_acquisition = true;
                 let (candidate_filter, candidate_scope) =
                     programs.candidate_filter_context(snap.id);

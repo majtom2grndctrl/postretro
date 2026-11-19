@@ -24,6 +24,15 @@ pub(crate) fn phase(identity: u64, interval: u64) -> u64 {
     ((u128::from(fraction) * u128::from(interval.max(1))) >> 64) as u64
 }
 
+/// A schedule identity whose decides fall on AI ticks `tick`, `tick + 4`,
+/// and so on at production cadence. A brain also decides on its first run.
+#[cfg(test)]
+pub(crate) fn identity_deciding_on(tick: u64) -> u64 {
+    (0..)
+        .find(|&identity| decides_on(tick, identity, DECIDE_INTERVAL_TICKS))
+        .expect("some identity takes every phase")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

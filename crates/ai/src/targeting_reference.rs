@@ -44,7 +44,7 @@ pub(crate) fn target_offers(
     enemy_faction: f32,
     evaluating_enemy: Option<EntityId>,
     exclude: Option<EntityId>,
-) -> TargetOffers {
+) -> ScannedOffers {
     let mut nearest = None;
     for candidate in target_candidates(registry, from, evaluating_enemy, exclude) {
         // Hostility alone contributes to the pure-distance stride price. The
@@ -64,10 +64,9 @@ pub(crate) fn target_offers(
             nearest = Some(candidate);
         }
     }
-    TargetOffers {
+    ScannedOffers {
+        offers: super::target_offers(from, exclude),
         nearest,
-        from,
-        exclude,
     }
 }
 

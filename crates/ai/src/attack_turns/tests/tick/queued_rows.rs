@@ -1327,11 +1327,7 @@ fn a_queued_grant_opens_at_the_next_decide_and_the_waiter_follows_at_every_phase
         [0.0, 0.0],
     );
     let interval = crate::decide::DECIDE_INTERVAL_TICKS;
-    let identity_on = |phase: u64| {
-        (0..)
-            .find(|&identity| crate::decide::decides_on(phase, identity, interval))
-            .unwrap()
-    };
+    let identity_on = crate::decide::identity_deciding_on;
     for first_phase in 0..interval {
         for second_phase in 0..interval {
             let mut reg = EntityRegistry::new();

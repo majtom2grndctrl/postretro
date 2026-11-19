@@ -114,7 +114,7 @@ use postretro_entities::components::health::{
 #[cfg(test)]
 use postretro_foundation::DamagePayload;
 #[cfg(test)]
-use targeting::{select_target, target_candidate, target_offers};
+use targeting::{scanned_offers, select_target, target_candidate};
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the

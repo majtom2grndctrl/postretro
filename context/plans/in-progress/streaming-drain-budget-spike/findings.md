@@ -85,19 +85,19 @@ CPU only. GPU time needs a Metal System Trace with the owner present, and is out
 | Resource | Fixed per item | Per MiB | Runs | Spread |
 |---|---|---|---|---|
 | Lightmap pair | 15 µs | 0.19–0.20 ms | 4 | within about 4%; residual rms about 0.3 ms |
-| SH chunk, install alone | 43–76 µs | 0.95–1.33 ms | 5 | about ±20%; one run 25% slow throughout |
-| SH chunk, install + compose | 44–76 µs | 1.18–1.53 ms | 5 (compose final in runs 4–5) | as above |
+| SH chunk, install alone | 43–76 µs | 0.95–1.33 ms | 7 | about ±20%; one run 25% slow throughout |
+| SH chunk, drain + compose | 64–72 µs | 1.00–1.16 ms | 2 (runs 6–7, batch built outside the timed span) | runs disagree by about 15% |
 
-The lightmap per-drain term is small and unstable (−47 to 185 µs). SH fits with a per-drain term give a negative intercept, so the SH model is per item plus per MiB. Compose adds about 0.3–0.5 ms per drain. Within one SH shape the slowest of its 12 warm drains is often 2–3× the median; with 12 samples per shape that is one outlier, not a p95, and the cause was not found. Debug build: lightmap 642 µs per drain + 21 µs per pair + 0.17 ms/MiB; SH 120 µs per chunk + 1.05 ms/MiB, 1.21 with compose.
+The lightmap per-drain term is small and unstable (−47 to 185 µs). SH fits with a per-drain term give a negative intercept, so the SH model is per item plus per MiB. The whole drain costs the same as the install counter once the batch is built outside the timed span, and compose adds about 0.2–0.4 ms per drain. Runs 1–5 timed a payload copy production never makes, inside the drain and drain + compose series; those series were re-measured in runs 6–7, and the install-alone series, which never included the copy, agrees across all seven runs. Within one SH shape the slowest of its 12 warm drains is often 2–3× the median; with 12 samples per shape that is one outlier, not a p95, and the cause was not found. Debug build: lightmap 642 µs per drain + 21 µs per pair + 0.17 ms/MiB; SH install 120 µs per chunk + 1.05 ms/MiB (runs 1–5; debug drain + compose not re-measured).
 
 **Priced at the fit** (release, range over runs):
 
-| Drain | Lightmap | SH install | SH install + compose |
+| Drain | Lightmap | SH install (runs 1–5) | SH drain + compose (runs 6–7, per item + per MiB fit) |
 |---|---|---|---|
-| 8 × 1 MiB (production cap) | 1.7–1.9 ms | 7.3–11.2 ms | 9.0–12.9 ms |
+| 8 × 1 MiB (production cap) | 1.7–1.9 ms | 7.3–11.2 ms | 8.5–9.9 ms |
 | One 14 MiB pair (the showcase's largest) | 2.8–2.9 ms | — | — |
-| 16 × 1 MiB (16 MiB cap) | 3.4–3.6 ms | 16.1–22.1 ms | 19.7–25.3 ms |
-| 26 items, 32 MiB | 6.8–6.9 ms warm; often cold at about 55–75 ms | 32–44 ms | 39–50 ms |
+| 16 × 1 MiB (16 MiB cap) | 3.4–3.6 ms | 16.1–22.1 ms | 17.0–19.7 ms |
+| 26 items, 32 MiB | 6.8–6.9 ms warm; often cold at about 55–75 ms | 32–44 ms | 33.6–39.0 ms |
 
 **Cold rate.** Lightmap cold drains run at 1.7–2.7 ms/MiB, about ten times the warm rate, as the brief expected. Each lightmap run has the same 52 cold drains: the first, and 51 near 32 MiB from the staging-pool behaviour under *Answer*. At 16 MiB the staging buffers are 16 and 20 MiB, which the pool keeps together, so no drain after the first runs cold. SH runs have 2–5 cold drains at 1.3–3.6 ms/MiB.
 

@@ -525,6 +525,11 @@ impl LightmapStreamingSession {
         &self.controller
     }
 
+    #[cfg(test)]
+    pub(crate) fn controller_mut(&mut self) -> &mut LightmapResidencyController {
+        &mut self.controller
+    }
+
     /// Drops everything but the source, which the retiring issuer's route may
     /// still read through until its thread joins.
     pub(in crate::session) fn into_retained_source(self) -> Arc<dyn LightmapBlockSource> {

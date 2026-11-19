@@ -6,7 +6,8 @@
 // the matrix as separate interleaved invocations into one file and take
 // medians per cell. `POSTRETRO_LIGHTMAP_WALK_TAG` labels an invocation (a
 // repeat index, a build name). Matrix keys: prl, walk, reads, sh, cores,
-// lead_m, pools, drain_cap_mib (null at production), planar, modes.
+// lead_m, pools, drain_cap_mib and in_hand_cap_mib (each null at
+// production), planar, modes.
 //
 // `late_blocks` is the after-spawn total of drawn blocks still not resident
 // after each frame's last drain, in block-frames (deferred + left behind);
@@ -101,6 +102,7 @@ pub(super) fn result_line(keys: &RunKeys<'_>, report: &RunReport) -> Value {
         "lead_m": keys.levers.lead_metres,
         "pools": keys.levers.pools_label(),
         "drain_cap_mib": keys.levers.drain_cap.map(|cap| cap.mib),
+        "in_hand_cap_mib": keys.levers.in_hand_cap.map(|cap| cap.mib),
         "planar": keys.modes.planar,
         "modes": keys.modes.label(),
     });
@@ -204,7 +206,7 @@ pub(super) fn print_instruments(keys: &RunKeys<'_>, report: &RunReport) {
 #[cfg(test)]
 mod tests {
     use super::super::cores::Cores;
-    use super::super::levers::{DEFAULT_LEVERS, parse_drain_cap};
+    use super::super::levers::{DEFAULT_LEVERS, parse_drain_cap, parse_in_hand_cap};
     use super::super::modes::Projection;
     use super::*;
 
@@ -247,5 +249,17 @@ mod tests {
             ..DEFAULT_LEVERS
         };
         assert_eq!(line_with(capped)["drain_cap_mib"], json!(16.0));
+    }
+
+    #[test]
+    fn result_line_carries_the_in_hand_cap_and_null_at_production() {
+        assert_eq!(line_with(DEFAULT_LEVERS)["in_hand_cap_mib"], Value::Null);
+        let capped = Levers {
+            in_hand_cap: Some(parse_in_hand_cap("64").unwrap()),
+            ..DEFAULT_LEVERS
+        };
+        let line = line_with(capped);
+        assert_eq!(line["in_hand_cap_mib"], json!(64.0));
+        assert_eq!(line["drain_cap_mib"], Value::Null);
     }
 }

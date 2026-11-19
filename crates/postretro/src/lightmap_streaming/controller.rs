@@ -340,6 +340,10 @@ pub(crate) struct LightmapResidencyController {
     miss_epoch: u32,
     /// Where the latest request pass stopped, for the miss causes.
     request_verdict: RequestPassVerdict,
+    /// The walk harness's in-hand pair byte total in place of
+    /// [`MAX_IN_HAND_PAIR_BYTES`]; the band takes half. `None` is production.
+    #[cfg(test)]
+    in_hand_cap_override: Option<u64>,
 }
 
 impl std::fmt::Debug for LightmapResidencyController {
@@ -461,6 +465,8 @@ impl LightmapResidencyController {
             outcome_scratch: Vec::new(),
             miss_epoch: 0,
             request_verdict: RequestPassVerdict::default(),
+            #[cfg(test)]
+            in_hand_cap_override: None,
         }
     }
 
@@ -538,6 +544,37 @@ impl LightmapResidencyController {
     #[cfg(test)]
     pub(crate) fn band_in_hand_bytes(&self) -> u64 {
         self.band_in_hand_bytes
+    }
+
+    /// Sets the in-hand pair byte total new requests wait at, and the band's
+    /// half of it; `None` restores production. The walk harness's lever.
+    #[cfg(test)]
+    pub(crate) fn set_in_hand_cap_override(&mut self, bytes: Option<u64>) {
+        self.in_hand_cap_override = bytes;
+        self.requests_due = true;
+    }
+
+    /// Pair bytes in hand before new requests wait.
+    #[cfg(not(test))]
+    fn in_hand_cap(&self) -> u64 {
+        MAX_IN_HAND_PAIR_BYTES
+    }
+
+    #[cfg(test)]
+    fn in_hand_cap(&self) -> u64 {
+        self.in_hand_cap_override.unwrap_or(MAX_IN_HAND_PAIR_BYTES)
+    }
+
+    /// Band pair bytes in hand before new band requests wait.
+    #[cfg(not(test))]
+    fn band_in_hand_cap(&self) -> u64 {
+        MAX_BAND_IN_HAND_PAIR_BYTES
+    }
+
+    #[cfg(test)]
+    fn band_in_hand_cap(&self) -> u64 {
+        self.in_hand_cap_override
+            .map_or(MAX_BAND_IN_HAND_PAIR_BYTES, |bytes| bytes / 2)
     }
 
     /// Capacities of every per-frame buffer, for the steady-frame proof.

@@ -50,10 +50,15 @@
 // grow where a walk of mandatory demand alone cannot.
 // `POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP` (MiB, a positive decimal: `4`, `16`,
 // `0.5`) replaces the play drain cap in every run through the seam the
-// dev-tools slider sets; settling and the lightmap in-hand caps keep
-// production. Zero, negatives and non-numbers are refused by name. A capped
-// run's label and `walk-result` line (`drain_cap_mib`, null when unset) carry
-// the cap. Leave `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
+// dev-tools slider sets; settling keeps production, and so do the lightmap
+// in-hand caps unless the next lever sets them. Zero, negatives and
+// non-numbers are refused by name. A capped run's label and `walk-result`
+// line (`drain_cap_mib`, null when unset) carry the cap.
+// `POSTRETRO_LIGHTMAP_WALK_IN_HAND_CAP` (MiB, the same form and refusals)
+// replaces the lightmap controller's in-hand pair byte total in every run; the
+// band cap is half of it, as in production. The label and `walk-result` line
+// (`in_hand_cap_mib`, null when unset) carry it. It has no dev-tools slider.
+// Leave `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
 // `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
 // stays fixed) and `POSTRETRO_LIGHTMAP_WALK_PITCH` (degrees, up positive,
@@ -153,7 +158,10 @@ use baked_set::{
 };
 use busy_stats::BusyStats;
 use frame_driver::{FrameDriver, FrameInput};
-use levers::{DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, drain_cap_from_env, parse_pool_layers};
+use levers::{
+    DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, drain_cap_from_env, in_hand_cap_from_env,
+    parse_pool_layers,
+};
 use mirror::{MirrorStats, WalkMirror};
 use modes::{ReadsMode, WalkModes, render_camera};
 use paths::{SplitMix64, WALK_SEED, WalkKind};
@@ -179,11 +187,12 @@ fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
 
 fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
     format!(
-        "{} | L {} m | {}{} | {}",
+        "{} | L {} m | {}{}{} | {}",
         walk.kind.label(),
         levers.lead_metres,
         levers.pools_label(),
         levers.drain_cap_label(),
+        levers.in_hand_cap_label(),
         modes.label()
     )
 }
@@ -221,6 +230,9 @@ impl<'w> Rig<'w> {
         stage.set_lead_metres(levers.lead_metres);
         let lead = stage.lead();
         session.controller.set_lead(lead);
+        if let Some(cap) = levers.in_hand_cap {
+            cap.apply(&mut session.controller);
+        }
         let mirror = PoolMirror::new(
             view.manifest,
             pool_sizing(world, levers.pool_layers),
@@ -635,14 +647,22 @@ fn lightmap_residency_walks_from_prl() {
     let drain_cap = drain_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
     match drain_cap {
         Some(cap) => println!(
-            "play drain cap: {} MiB ({} bytes) in every run; settling and the in-hand caps keep \
-             production",
+            "play drain cap: {} MiB ({} bytes) in every run; settling keeps production",
             cap.mib, cap.bytes
         ),
         None => println!("play drain cap: production"),
     }
+    let in_hand_cap = in_hand_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
+    match in_hand_cap {
+        Some(cap) => println!(
+            "lightmap in-hand cap: {} MiB ({} bytes) in every run, the band half of it",
+            cap.mib, cap.bytes
+        ),
+        None => println!("lightmap in-hand cap: production"),
+    }
     for config in &mut configs {
         config.drain_cap = drain_cap;
+        config.in_hand_cap = in_hand_cap;
     }
     let mut records = Vec::new();
     for kind in WalkKind::ALL {

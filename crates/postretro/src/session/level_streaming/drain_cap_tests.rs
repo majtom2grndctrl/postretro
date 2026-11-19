@@ -1,6 +1,7 @@
 //! The play drain cap levers: the dev-tools slider and the walk measurement
 //! override set one seam on the level's drain step. Play drains admit against
-//! it; settling drains and the lightmap in-hand caps never read it.
+//! it; settling drains and the lightmap in-hand caps never read it. The walk's
+//! test-only in-hand lever moves the in-hand caps alone.
 //! See: context/lib/rendering_pipeline.md §4 · context/lib/testing_guide.md §3
 
 use std::num::NonZeroU64;
@@ -15,7 +16,9 @@ use super::*;
 use crate::lightmap_streaming::controller::{MAX_BAND_IN_HAND_PAIR_BYTES, MAX_IN_HAND_PAIR_BYTES};
 use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::lightmap_streaming::test_fixtures::*;
-use crate::session::lightmap_residency::walk_measurement::levers::parse_drain_cap;
+use crate::session::lightmap_residency::walk_measurement::levers::{
+    parse_drain_cap, parse_in_hand_cap,
+};
 use crate::streaming::drain_budget::{
     DrainClass, DrainItem, DrainRank, MAX_INSTALL_DECODED_BYTES_PER_DRAIN,
     SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
@@ -326,6 +329,65 @@ fn a_band_read_waits_at_the_production_band_total_at_every_lever_value() {
     }
 }
 
+/// Sets the walk's in-hand lever on `level`'s controller, through its parser.
+fn set_walk_in_hand_cap(level: &mut LevelStreaming, mib: &str) {
+    let cap = parse_in_hand_cap(mib).unwrap();
+    cap.apply(level.lightmap_mut().unwrap().controller_mut());
+}
+
+// The walk's in-hand lever moves the full total. Five 8 MiB mandatory pairs
+// at lead 32 m: unset, four submit and the fifth waits at the 32 MiB
+// production total; at 16 MiB, two submit and the third waits.
+#[test]
+fn a_read_waits_at_the_walk_in_hand_cap_and_at_production_unset() {
+    for (lever, cap) in [(None, MAX_IN_HAND_PAIR_BYTES), (Some("16"), 16 * MIB)] {
+        let (mut level, _source) = corridor_level(4 * MIB, 32.0, None);
+        if let Some(mib) = lever {
+            set_walk_in_hand_cap(&mut level, mib);
+        }
+        play_frame_at_cell_0(&mut level);
+        let (bytes, _, permits) = in_hand(&level);
+        assert_eq!(bytes, cap, "{lever:?}");
+        assert_eq!(permits as u64, cap / (8 * MIB), "{lever:?}");
+        level.retire(&mut None);
+    }
+}
+
+// The band takes half the walk's total. At lead 0 m the two mandatory 3 MiB
+// pairs submit first; with pool room, unset, all three band pairs follow
+// (9 MiB, under the 16 MiB production band total). At 16 MiB the band cap is
+// 8: two band pairs submit (6 MiB) and the third waits on the band half, with
+// the full 16 MiB total not reached.
+#[test]
+fn a_band_read_waits_at_half_the_walk_in_hand_cap_and_at_production_unset() {
+    for (lever, band_cap, band_pairs) in [
+        (None, MAX_BAND_IN_HAND_PAIR_BYTES, 3),
+        (Some("16"), 8 * MIB, 2),
+    ] {
+        let (mut level, _source) = corridor_level(3 * MIB / 2, 0.0, None);
+        if let Some(mib) = lever {
+            set_walk_in_hand_cap(&mut level, mib);
+        }
+        play_frame_at_cell_0(&mut level);
+        assert_eq!(in_hand(&level), (6 * MIB, 0, 2), "{lever:?}");
+        renderer_returns_batch(&mut level);
+        play_frame_at_cell_0(&mut level);
+        let (bytes, band, permits) = in_hand(&level);
+        let band_bytes = band_pairs * 3 * MIB;
+        assert_eq!(
+            (bytes, band, permits),
+            (6 * MIB + band_bytes, band_bytes, 2 + band_pairs as usize),
+            "{lever:?}"
+        );
+        assert!(band <= band_cap);
+        if band_pairs < 3 {
+            assert!(band + 3 * MIB > band_cap);
+            assert!(bytes + 3 * MIB <= 16 * MIB);
+        }
+        level.retire(&mut None);
+    }
+}
+
 // --- AC 14 grep gate --------------------------------------------------------
 
 const DEV_TOOLS: &str = r#"#[cfg(feature = "dev-tools")]"#;
@@ -550,24 +612,29 @@ fn drain_cap_slider_builds_only_with_dev_tools() {
     assert!(in_engine.is_empty(), "{in_engine:#?}");
 }
 
-// AC 14: the walk override lives only in the walk harness, which is test
-// code.
+// AC 14: the walk overrides, the drain cap and the test-only in-hand lever,
+// live only in the walk harness, which is test code.
 #[test]
 fn walk_drain_cap_override_lives_only_in_the_test_walk_harness() {
-    let env = concat!("POSTRETRO_LIGHTMAP_WALK_", "DRAIN_CAP");
     let harness = Path::new("lightmap_residency").join("walk_measurement");
     let crates = workspace_root().join("crates");
-    let named: Vec<PathBuf> = rust_sources(&crates)
-        .into_iter()
-        .filter(|(_, source)| source.contains(env))
-        .map(|(path, _)| path)
-        .collect();
-    assert!(!named.is_empty(), "the walk harness names {env}");
-    let outside: Vec<&PathBuf> = named
-        .iter()
-        .filter(|path| !path.parent().is_some_and(|dir| dir.ends_with(&harness)))
-        .collect();
-    assert!(outside.is_empty(), "{outside:#?}");
+    let sources = rust_sources(&crates);
+    for env in [
+        concat!("POSTRETRO_LIGHTMAP_WALK_", "DRAIN_CAP"),
+        concat!("POSTRETRO_LIGHTMAP_WALK_", "IN_HAND_CAP"),
+    ] {
+        let named: Vec<&PathBuf> = sources
+            .iter()
+            .filter(|(_, source)| source.contains(env))
+            .map(|(path, _)| path)
+            .collect();
+        assert!(!named.is_empty(), "the walk harness names {env}");
+        let outside: Vec<&&PathBuf> = named
+            .iter()
+            .filter(|path| !path.parent().is_some_and(|dir| dir.ends_with(&harness)))
+            .collect();
+        assert!(outside.is_empty(), "{env}: {outside:#?}");
+    }
 
     let residency = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session/lightmap_residency/mod.rs"),
@@ -614,6 +681,31 @@ fn play_drain_cap_override_seam_is_test_or_dev_tools_only() {
     let gates = [DEV_TOOLS, TEST, TEST_OR_DEV_TOOLS, TEST_WITH_DEV_TOOLS];
     let ungated = ungated_mentions(&engine, &gates, &[seam]);
     assert!(ungated.is_empty(), "{ungated:#?}");
+}
+
+// AC 14: the in-hand lever's controller override, its setter and the
+// session's mutable controller view build only for tests; a production
+// build waits at the in-hand constants alone.
+#[test]
+fn in_hand_cap_override_seam_is_test_only() {
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let seams = ["in_hand_cap_override", "fn controller_mut"];
+    let controller =
+        std::fs::read_to_string(engine.join("lightmap_streaming/controller.rs")).unwrap();
+    assert!(controller.contains(seams[0]));
+    let ungated = ungated_mentions(&engine, &[TEST], &seams);
+    assert!(ungated.is_empty(), "{ungated:#?}");
+    let production = strip_gated(&controller, &[TEST]);
+    for (accessor, constant) in [
+        ("in_hand_cap", "MAX_IN_HAND_PAIR_BYTES"),
+        ("band_in_hand_cap", "MAX_BAND_IN_HAND_PAIR_BYTES"),
+    ] {
+        let body = format!("fn {accessor}(&self) -> u64 {{\n        {constant}\n    }}");
+        assert!(
+            production.contains(&body),
+            "production {accessor} is {constant}"
+        );
+    }
 }
 
 // AC 14: no player setting names the drain cap: nothing in the options,

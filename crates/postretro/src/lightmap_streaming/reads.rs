@@ -70,7 +70,7 @@ impl LightmapResidencyController {
             }
             let facts = *self.map.facts(block);
             if self.permits_in_use > 0
-                && self.in_hand_bytes + facts.pair_bytes() > MAX_IN_HAND_PAIR_BYTES
+                && self.in_hand_bytes + facts.pair_bytes() > self.in_hand_cap()
             {
                 self.request_verdict
                     .stop(RequestWait::InHandCap, target.rank(block));
@@ -125,7 +125,7 @@ impl LightmapResidencyController {
             return Some(RequestWait::Permit);
         }
         let fits = self.band_permits == 0
-            || self.band_in_hand_bytes + facts.pair_bytes() <= MAX_BAND_IN_HAND_PAIR_BYTES;
+            || self.band_in_hand_bytes + facts.pair_bytes() <= self.band_in_hand_cap();
         (!fits).then_some(RequestWait::InHandCap)
     }
 

@@ -45,6 +45,13 @@ impl App {
         // A waiting host or join press waited on an unload or close this
         // reset no longer tracks: it ends, and the player presses again.
         self.cancel_pending_entry("a suspend");
+        // The resume lands on the frontend, which ends any run in play and
+        // its queued load, as every frontend entry does.
+        if self.session_role() != crate::session::role_state::SessionRole::Client
+            && let Some(session) = self.session.as_mut()
+        {
+            crate::session::saves::end_run_at_frontend(session);
+        }
         // The renderer holding the UI images is gone; upload them again to the
         // resumed one.
         if let Some(session) = self.session.as_mut() {

@@ -312,10 +312,17 @@ impl App {
         self.boot_state = BootState::Frontend;
         // Landing on the frontend ends a run whose level failed to load, as
         // any frontend entry does; the run file still names that level.
+        // Continue and New game cleared the menu to start that level, so it
+        // comes back: without it no verb, Host or Join can be pressed.
+        let mut run_load_failed = false;
         if self.session_role() != crate::session::role_state::SessionRole::Client
             && let Some(session) = self.session.as_mut()
         {
+            run_load_failed = session.saves.run_load_queued();
             crate::session::saves::end_run_at_frontend(session);
+        }
+        if run_load_failed && !self.frontend_menu_is_present() {
+            self.present_frontend_menu();
         }
         // A connected client's failed host-named load puts the menu back,
         // whose install would have cleared it, with no backdrop load: the

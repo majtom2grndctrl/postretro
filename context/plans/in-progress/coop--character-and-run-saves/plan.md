@@ -126,6 +126,10 @@ Round 1: 3 correctness tracers, 1 adversarial tester, 2 contract verifiers (opus
 - Comment and doc drift: applied in a follow-up commit (owner rulings written into the modder docs and SDK comments).
 - Left, with reason: the build-time light-membership pass does not mirror the save-verb argument check (a malformed save-verb step reserves light slots it never uses; harmless, filed below); a `saves` block changed by hot reload takes effect at the next boot (dev-only); the server append guard mirrors but does not assert every shipped server variant (test-strength nit).
 
+Round 2 (fix commit only): 1 correctness tracer, 1 adversarial tester (opus).
+- 🟡 fixed: a failed Continue/newRun load now brings the frontend menu back (`failed_run_load_ends_the_run_and_frees_the_verbs` no longer presents it by hand); a suspend's resume ends a queued or running run (`suspend_resume_ends_a_queued_run`); frontend entry keeps harvested gear when the character write fails and resets seat 0 only when saves loaded with no character selected (`frontend_entry_keeps_harvested_gear_when_the_character_write_fails`).
+- Left, with reason: a `--connect` boot admitted under the device id before its reconnect leaves a held ghost seat on the host until the hold expires (dev boot path; the adversarial pass found the reconcile runs before the first transport poll, so it should not arise); the save-verb refusal latch keys on the formatted reason and so grows with distinct script arguments until a role change (bounded by what scripts pass).
+
 ## Follow-ups (not in this brief)
 - `prl-build`'s `find_scripts_build` does not know Cargo 1.100's build-dir layout (`target/<profile>/build/<pkg>/<hash>/out/`), so four data-script tests fail on current stable. Unrelated to this branch.
 - An asynchronous pending leave would avoid the up-to-2 s frame hold when a host never answers the final-character request.

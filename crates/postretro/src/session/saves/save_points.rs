@@ -50,14 +50,20 @@ pub(crate) fn save_on_frontend_entry(session: &mut Session, played_level_unloade
     end_run_at_frontend(session);
 }
 
-/// The frontend is entered by any path, a failed run load included: the run
-/// in play ends, its queued-load latch and arrival clear, and seat 0 carries
-/// the selected character again.
+/// The frontend is entered by any path, a failed run load or a resume
+/// included: the run in play ends and its queued-load latch and arrival
+/// clear. With a selected character seat 0 keeps what it carries: the gear a
+/// played level's unload just harvested, which its save wrote, or keeps for
+/// the next save point to retry if that write failed. With saves loaded and
+/// no character selected, seat 0 carries nothing, so a dev-picker level's
+/// pickups never reach the next level.
 pub(crate) fn end_run_at_frontend(session: &mut Session) {
     session.saves.set_run_active(false);
     session.saves.set_run_load_queued(false);
     session.saves.set_spawn_checkpoint(None);
     session.saves.clear_continue_arrival();
-    super::set_seat_zero_carry_from_selection(session);
+    if session.saves.is_loaded() && session.saves.selected_character().is_none() {
+        super::set_seat_zero_carry_from_selection(session);
+    }
     publish_save_rows(session);
 }

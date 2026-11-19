@@ -1113,7 +1113,10 @@ fn failed_run_load_ends_the_run_and_frees_the_verbs() {
     let run_before = std::fs::read(saves(dir.path()).run_path(0)).unwrap();
 
     app.finish_level_failure("prl parse failed".to_string(), &NoExit);
-    present_frontend(&mut app);
+    assert!(
+        app.at_frontend(),
+        "the menu comes back after a failed run load"
+    );
 
     let session = app.session.as_ref().unwrap();
     assert!(!session.saves.run_active());
@@ -1333,4 +1336,38 @@ fn boot_connect_without_a_selected_character_leaves() {
 
     capture.assert_logged(log::Level::Warn, "--connect refused");
     assert_eq!(app.session_role(), SessionRole::SinglePlayer);
+}
+
+// Review round 2: a suspend before a run's level loads resumes at the
+// frontend, which ends the run and frees the verbs.
+#[test]
+fn suspend_resume_ends_a_queued_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+
+    app.reset_boot_state_after_suspend();
+
+    let session = app.session.as_ref().unwrap();
+    assert!(!session.saves.run_active());
+    assert!(!session.saves.run_load_queued());
+}
+
+// Review round 2: a frontend entry whose character write failed keeps the
+// gear the unload harvested, for the next save point to retry.
+#[test]
+fn frontend_entry_keeps_harvested_gear_when_the_character_write_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    load_and_play(&mut app, "next", 31);
+    let blocker = saves(dir.path())
+        .character_path(0)
+        .with_extension("json.tmp");
+    std::fs::create_dir_all(&blocker).unwrap();
+
+    back_to_frontend(&mut app);
+
+    assert_eq!(carry(&app).unwrap().reserve.available("shells"), 31);
 }

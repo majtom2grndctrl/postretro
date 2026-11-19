@@ -1,50 +1,101 @@
 //! The budget each drain admits against, and the developer override of the
-//! play cap: one seam the dev-tools slider and the walk measurement both set.
+//! play budget: one seam the dev-tools slider and the walk measurement both set.
 //! See: context/lib/rendering_pipeline.md §4 · context/lib/experimental_spikes.md §Tuning levers
 
 #[cfg(any(test, feature = "dev-tools"))]
 use std::num::NonZeroU64;
 
 use super::LevelStreaming;
-use crate::streaming::drain_budget::{
-    DrainBytesOverflow, MAX_INSTALL_DECODED_BYTES_PER_DRAIN,
-    SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
-};
+#[cfg(feature = "dev-tools")]
+use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
+use crate::streaming::drain_budget::{DrainBudget, DrainBytesOverflow};
+
+/// A developer lever's play budget in place of production. The byte cap is
+/// the dev-tools slider's and the walk's; the time budget is the walk's alone
+/// and builds only for tests.
+#[cfg(any(test, feature = "dev-tools"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlayBudgetOverride {
+    /// A decoded-byte cap.
+    DecodedBytes(NonZeroU64),
+    /// An estimated install-time budget in µs.
+    #[cfg(test)]
+    EstimatedMicros(NonZeroU64),
+}
+
+#[cfg(any(test, feature = "dev-tools"))]
+impl PlayBudgetOverride {
+    fn budget(self) -> DrainBudget {
+        match self {
+            Self::DecodedBytes(cap) => DrainBudget::DecodedBytes(cap.get()),
+            #[cfg(test)]
+            Self::EstimatedMicros(micros) => DrainBudget::EstimatedMicros(micros.get()),
+        }
+    }
+
+    fn decoded_bytes(self) -> Option<NonZeroU64> {
+        match self {
+            Self::DecodedBytes(cap) => Some(cap),
+            #[cfg(test)]
+            Self::EstimatedMicros(_) => None,
+        }
+    }
+}
 
 impl LevelStreaming {
     /// Admits the drain's offered items once, against the settling budget
-    /// while Settling and the play cap otherwise.
+    /// while Settling and the play budget otherwise.
     pub(super) fn admit_offered(&mut self, settling: bool) -> Result<(), DrainBytesOverflow> {
         let budget = if settling {
-            SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN
+            DrainBudget::SETTLING
         } else {
-            self.play_drain_cap()
+            self.play_drain_budget()
         };
         self.drain.admit_within(budget)
     }
 
     #[cfg(not(any(test, feature = "dev-tools")))]
-    fn play_drain_cap(&self) -> u64 {
-        MAX_INSTALL_DECODED_BYTES_PER_DRAIN
+    fn play_drain_budget(&self) -> DrainBudget {
+        DrainBudget::PLAY
     }
 
     #[cfg(any(test, feature = "dev-tools"))]
-    fn play_drain_cap(&self) -> u64 {
-        self.play_drain_cap_override
-            .map_or(MAX_INSTALL_DECODED_BYTES_PER_DRAIN, NonZeroU64::get)
+    fn play_drain_budget(&self) -> DrainBudget {
+        self.play_budget_override
+            .map_or(DrainBudget::PLAY, PlayBudgetOverride::budget)
     }
 
-    /// The play cap override; `None` is the production cap.
+    /// The play byte cap override; `None` is production or a time override.
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn play_drain_cap_override(&self) -> Option<NonZeroU64> {
-        self.play_drain_cap_override
+        self.play_budget_override
+            .and_then(PlayBudgetOverride::decoded_bytes)
     }
 
-    /// Replaces the play cap for every later play drain; `None` restores
-    /// production. Settling and the lightmap in-hand caps never read it.
+    /// Replaces the play budget with a byte cap for every later play drain;
+    /// `None` restores production. Settling and the lightmap in-hand caps
+    /// never read it.
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn set_play_drain_cap_override(&mut self, cap: Option<NonZeroU64>) {
-        self.play_drain_cap_override = cap;
+        self.play_budget_override = cap.map(PlayBudgetOverride::DecodedBytes);
+    }
+
+    /// The play time budget override in µs; `None` is production or a byte
+    /// override.
+    #[cfg(test)]
+    pub(crate) fn play_drain_time_override(&self) -> Option<NonZeroU64> {
+        match self.play_budget_override {
+            Some(PlayBudgetOverride::EstimatedMicros(micros)) => Some(micros),
+            _ => None,
+        }
+    }
+
+    /// Replaces the play budget with an estimated install-time budget in µs
+    /// for every later play drain; `None` restores production. Settling and
+    /// the lightmap in-hand caps never read it.
+    #[cfg(test)]
+    pub(crate) fn set_play_drain_time_override(&mut self, micros: Option<NonZeroU64>) {
+        self.play_budget_override = micros.map(PlayBudgetOverride::EstimatedMicros);
     }
 }
 

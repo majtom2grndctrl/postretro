@@ -173,9 +173,7 @@ impl DrainTally {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::streaming::drain_budget::{
-        DrainClass, DrainRank, MAX_INSTALL_DECODED_BYTES_PER_DRAIN, admit_drain,
-    };
+    use crate::streaming::drain_budget::{DrainBudget, DrainClass, DrainRank, admit_drain};
 
     const MIB: u64 = 1024 * 1024;
 
@@ -195,9 +193,7 @@ mod tests {
 
     /// Admits `items` at the production play cap and reports the cut.
     fn cut(mut items: Vec<DrainItem>) -> (usize, bool) {
-        let admitted = admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN)
-            .unwrap()
-            .admitted;
+        let admitted = admit_drain(&mut items, DrainBudget::PLAY).unwrap().admitted;
         (admitted, same_class_cut(&items, admitted))
     }
 

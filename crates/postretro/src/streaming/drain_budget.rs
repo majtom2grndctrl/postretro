@@ -17,6 +17,88 @@ pub(crate) const MAX_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 8 * 1024 * 1024;
 /// the hold.
 pub(crate) const SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN: u64 = 32 * 1024 * 1024;
 
+const MIB: u64 = 1024 * 1024;
+
+/// One resource's estimated frame-thread install CPU: a fixed cost per item
+/// plus a cost per MiB of decoded bytes, in whole microseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InstallCost {
+    per_item_us: u64,
+    per_mib_us: u64,
+}
+
+// Coefficients: the warm CPU fit (release, Radeon Pro 5300M Mac) in
+// `context/plans/done/streaming-drain-budget-spike/findings.md` §Install cost,
+// at the midpoint of each fitted range. A lightmap pair is 15 µs per pair and
+// 0.19–0.20 ms/MiB, so 15 µs + 195 µs/MiB. An SH item is a whole cluster
+// (`DrainRank::sh` keys on cluster id), so the fit's per-chunk term is per
+// item; the "drain + compose" row is used, since compose is work an SH
+// install triggers: 64–72 µs per chunk and 1.00–1.16 ms/MiB, so
+// 68 µs + 1,080 µs/MiB. Forced drain work (SH eviction, repack, pool growth)
+// is not admitted and is not charged.
+const LIGHTMAP_PAIR_INSTALL_COST: InstallCost = InstallCost {
+    per_item_us: 15,
+    per_mib_us: 195,
+};
+const SH_CLUSTER_INSTALL_COST: InstallCost = InstallCost {
+    per_item_us: 68,
+    per_mib_us: 1_080,
+};
+
+/// Estimated frame-thread install CPU of one ready item of `resource`
+/// holding `decoded_bytes`, in whole microseconds: the resource's fixed cost
+/// plus its per-MiB cost, the byte term rounded up. Integer math only, so
+/// admission against it is deterministic; saturates rather than overflows.
+pub(crate) fn estimated_install_us(resource: StreamResource, decoded_bytes: u64) -> u64 {
+    let cost = match resource {
+        StreamResource::Sh => SH_CLUSTER_INSTALL_COST,
+        StreamResource::LightmapBlock => LIGHTMAP_PAIR_INSTALL_COST,
+    };
+    let byte_term =
+        (u128::from(decoded_bytes) * u128::from(cost.per_mib_us)).div_ceil(u128::from(MIB));
+    cost.per_item_us
+        .saturating_add(u64::try_from(byte_term).unwrap_or(u64::MAX))
+}
+
+/// What one drain admits against. Production charges decoded bytes; the
+/// estimated-time unit is the walk measurement's sweep lever
+/// (`plans/drafts/streaming-drain-time-budget`). Both run the same admission:
+/// see [`admit_drain`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainBudget {
+    /// Each item is charged its decoded bytes.
+    DecodedBytes(u64),
+    /// Each item is charged [`estimated_install_us`]; the limit is in µs.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the time budget is a test-only walk lever until its play value is chosen"
+        )
+    )]
+    EstimatedMicros(u64),
+}
+
+impl DrainBudget {
+    /// The in-play budget.
+    pub(crate) const PLAY: Self = Self::DecodedBytes(MAX_INSTALL_DECODED_BYTES_PER_DRAIN);
+    /// The Settling budget.
+    pub(crate) const SETTLING: Self = Self::DecodedBytes(SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN);
+
+    const fn limit(self) -> u64 {
+        match self {
+            Self::DecodedBytes(limit) | Self::EstimatedMicros(limit) => limit,
+        }
+    }
+
+    fn charge(self, item: &DrainItem) -> u64 {
+        match self {
+            Self::DecodedBytes(_) => item.bytes,
+            Self::EstimatedMicros(_) => item.estimated_install_us(),
+        }
+    }
+}
+
 /// A ready item's class on the one scale every resource shares. Declaration
 /// order is admission order; `Visible` through `Lead` form the mandatory
 /// tier, the rest the optional tier.
@@ -136,9 +218,15 @@ impl DrainItem {
                 .ok_or(DrainBytesOverflow)?,
         })
     }
+
+    /// This item's [`estimated_install_us`].
+    pub(crate) fn estimated_install_us(&self) -> u64 {
+        estimated_install_us(self.rank.resource(), self.bytes)
+    }
 }
 
-/// The leading `admitted` items of the ordered list install this drain.
+/// The leading `admitted` items of the ordered list install this drain, and
+/// their decoded bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DrainAdmission {
     pub(crate) admitted: usize,
@@ -150,41 +238,39 @@ pub(crate) struct DrainAdmission {
 pub(crate) struct DrainBytesOverflow;
 
 /// Orders a merged ready list for admission, then admits the leading items
-/// that fit `budget` (normally [`MAX_INSTALL_DECODED_BYTES_PER_DRAIN`]). The
-/// first always fits whatever its size, so an oversized item cannot stall
-/// residency. Admission stops at the first item over budget rather than
-/// skipping ahead to smaller, lower-ranked work, so frame cost tracks bytes,
-/// not item count.
+/// whose summed charge fits `budget` (normally [`DrainBudget::PLAY`]), each
+/// charged in the budget's unit. The first always fits whatever its charge,
+/// so an oversized item cannot stall residency. Admission stops at the first
+/// item over budget rather than skipping ahead to smaller, lower-ranked work,
+/// so frame cost tracks the charged unit, not item count.
 ///
 /// Every rank is unique (resource plus key), so the unstable sort orders
 /// exactly as a stable one would, without the stable sort's buffer.
 pub(crate) fn admit_drain(
     items: &mut [DrainItem],
-    budget: u64,
+    budget: DrainBudget,
 ) -> Result<DrainAdmission, DrainBytesOverflow> {
     items.sort_unstable_by_key(|item| item.rank);
-    let mut total = 0u64;
+    let (mut charged, mut bytes) = (0u64, 0u64);
     for (admitted, item) in items.iter().enumerate() {
-        let next = total.checked_add(item.bytes).ok_or(DrainBytesOverflow)?;
-        if admitted > 0 && next > budget {
-            return Ok(DrainAdmission {
-                admitted,
-                bytes: total,
-            });
+        let next = charged
+            .checked_add(budget.charge(item))
+            .ok_or(DrainBytesOverflow)?;
+        if admitted > 0 && next > budget.limit() {
+            return Ok(DrainAdmission { admitted, bytes });
         }
-        total = next;
+        charged = next;
+        bytes = bytes.checked_add(item.bytes).ok_or(DrainBytesOverflow)?;
     }
     Ok(DrainAdmission {
         admitted: items.len(),
-        bytes: total,
+        bytes,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const MIB: u64 = 1024 * 1024;
 
     fn sh(class: DrainClass, cluster_id: u32, bytes: u64) -> DrainItem {
         DrainItem {
@@ -221,7 +307,7 @@ mod tests {
             sh(DrainClass::Visible, 3, 1),
             sh(DrainClass::Hysteresis, 1, 1),
         ];
-        admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
+        admit_drain(&mut items, DrainBudget::PLAY).unwrap();
 
         use StreamResource::{LightmapBlock as Lm, Sh};
         assert_eq!(
@@ -255,7 +341,7 @@ mod tests {
             bytes: 1,
         };
         let mut items = [near, ranked];
-        admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
+        admit_drain(&mut items, DrainBudget::PLAY).unwrap();
         assert_eq!(items[0], ranked);
     }
 
@@ -269,7 +355,7 @@ mod tests {
             pair(DrainClass::Visible, 0, 7, 3 * MIB),
             sh(DrainClass::Pinned, 1, MIB),
         ];
-        let admission = admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
+        let admission = admit_drain(&mut items, DrainBudget::PLAY).unwrap();
         assert_eq!(
             admission,
             DrainAdmission {
@@ -295,7 +381,7 @@ mod tests {
                 MAX_INSTALL_DECODED_BYTES_PER_DRAIN,
             ),
         ];
-        let admission = admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
+        let admission = admit_drain(&mut items, DrainBudget::PLAY).unwrap();
         assert_eq!(
             admission,
             DrainAdmission {
@@ -314,13 +400,135 @@ mod tests {
             pair(DrainClass::Visible, 0, 7, 2 * MIB),
             sh(DrainClass::Prefetch, 1, 1),
         ];
-        let admission = admit_drain(&mut items, MAX_INSTALL_DECODED_BYTES_PER_DRAIN).unwrap();
+        let admission = admit_drain(&mut items, DrainBudget::PLAY).unwrap();
         assert_eq!(
             admission,
             DrainAdmission {
                 admitted: 2,
                 bytes: MAX_INSTALL_DECODED_BYTES_PER_DRAIN
             }
+        );
+    }
+
+    /// The time budget the sweep starts from: a quarter of a 60 Hz frame.
+    const FOUR_MS: DrainBudget = DrainBudget::EstimatedMicros(4_000);
+
+    #[test]
+    fn install_estimate_is_each_resources_fixed_cost_plus_its_per_mib_cost() {
+        use StreamResource::{LightmapBlock as Lm, Sh};
+        for (resource, cost) in [
+            (Lm, LIGHTMAP_PAIR_INSTALL_COST),
+            (Sh, SH_CLUSTER_INSTALL_COST),
+        ] {
+            assert_eq!(estimated_install_us(resource, 0), cost.per_item_us);
+            assert_eq!(
+                estimated_install_us(resource, 4 * MIB),
+                cost.per_item_us + 4 * cost.per_mib_us,
+                "{resource:?}"
+            );
+            assert_eq!(
+                estimated_install_us(resource, 1),
+                cost.per_item_us + 1,
+                "{resource:?}: a partial microsecond rounds up"
+            );
+        }
+        assert_eq!(estimated_install_us(Lm, MIB), 15 + 195);
+        assert_eq!(estimated_install_us(Sh, MIB), 68 + 1_080);
+    }
+
+    #[test]
+    fn equal_decoded_bytes_cost_differently_per_resource() {
+        let cluster = sh(DrainClass::Visible, 0, 2 * MIB);
+        let block_pair = pair(DrainClass::Visible, 0, 7, MIB);
+        assert_eq!(cluster.bytes, block_pair.bytes);
+        assert_eq!(cluster.estimated_install_us(), 68 + 2 * 1_080);
+        assert_eq!(block_pair.estimated_install_us(), 15 + 2 * 195);
+    }
+
+    // The time charge runs the byte path's admission: the same order, the
+    // first item always, and a stop at the first item over budget even when
+    // a later, smaller one would fit.
+    #[test]
+    fn time_admission_keeps_the_order_and_stops_at_the_first_item_over_budget() {
+        let mut items = [
+            pair(DrainClass::Prefetch, 0, 70, MIB / 2),
+            sh(DrainClass::Visible, 1, 2 * MIB),
+            pair(DrainClass::Visible, 0, 7, MIB / 2),
+            sh(DrainClass::Visible, 0, 2 * MIB),
+        ];
+        let admission = admit_drain(&mut items, FOUR_MS).unwrap();
+        use StreamResource::{LightmapBlock as Lm, Sh};
+        assert_eq!(
+            keys(&items),
+            vec![(Sh, 0), (Sh, 1), (Lm, 7), (Lm, 70)],
+            "the byte path's order"
+        );
+        // 2,228 µs, then 4,456 µs passes 4 ms: the 210 µs pair behind it
+        // would fit but is not reached.
+        assert_eq!(
+            admission,
+            DrainAdmission {
+                admitted: 1,
+                bytes: 2 * MIB
+            }
+        );
+    }
+
+    #[test]
+    fn time_admission_admits_an_over_budget_first_item_alone() {
+        let mut items = [
+            sh(DrainClass::Visible, 0, 8 * MIB),
+            pair(DrainClass::Visible, 0, 7, 1024),
+        ];
+        assert!(items[0].estimated_install_us() > 4_000);
+        let admission = admit_drain(&mut items, FOUR_MS).unwrap();
+        assert_eq!(
+            admission,
+            DrainAdmission {
+                admitted: 1,
+                bytes: 8 * MIB
+            }
+        );
+    }
+
+    // Lightmap pairs fit far more bytes under a time budget than the byte
+    // cap lets in; SH fits fewer.
+    #[test]
+    fn a_lightmap_drain_past_8_mib_fits_4_ms_whole_and_an_sh_drain_over_it_is_cut() {
+        let pairs = || (0..16).map(|block| pair(DrainClass::Visible, 0, block, MIB / 2));
+        let mut lightmap: Vec<DrainItem> = pairs().collect();
+        assert_eq!(
+            admit_drain(&mut lightmap, FOUR_MS).unwrap(),
+            DrainAdmission {
+                admitted: 16,
+                bytes: 16 * MIB
+            },
+            "16 × 210 µs = 3,360 µs"
+        );
+        let mut lightmap: Vec<DrainItem> = pairs().collect();
+        assert_eq!(
+            admit_drain(&mut lightmap, DrainBudget::PLAY)
+                .unwrap()
+                .admitted,
+            8
+        );
+
+        let clusters = || (0..4).map(|cluster| sh(DrainClass::Visible, cluster, MIB));
+        let mut sh_items: Vec<DrainItem> = clusters().collect();
+        assert_eq!(
+            admit_drain(&mut sh_items, FOUR_MS).unwrap(),
+            DrainAdmission {
+                admitted: 3,
+                bytes: 3 * MIB
+            },
+            "3 × 1,148 µs fit; the fourth would reach 4,592 µs"
+        );
+        let mut sh_items: Vec<DrainItem> = clusters().collect();
+        assert_eq!(
+            admit_drain(&mut sh_items, DrainBudget::PLAY)
+                .unwrap()
+                .admitted,
+            4
         );
     }
 }

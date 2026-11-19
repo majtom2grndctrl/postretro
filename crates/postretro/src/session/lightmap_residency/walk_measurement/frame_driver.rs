@@ -23,6 +23,7 @@ use crate::session::level_streaming::{LevelStreaming, StreamingFrame};
 use crate::session::sh_async_workers::ShWorkerStats;
 use crate::session::sh_residency::ShStreamingSession;
 use crate::sh_streaming::controller::ShResidencyCounters;
+use crate::streaming::drain_budget::DrainItem;
 use crate::streaming::issuer_busy::IssuerBusyLog;
 
 /// Drains per frame in the completed-reads mode: drain 0 admits earlier reads
@@ -119,6 +120,9 @@ pub(super) struct FrameDriver {
     sh: Option<ShStreamingSession>,
     /// Completed-reads mode with SH on, once SH's workers have attached.
     sh_gate: Option<ShCompletionGate>,
+    /// The latest frame's admitted items, per drain in drain order; reused
+    /// across frames.
+    admitted: [Vec<DrainItem>; COMPLETED_READS_DRAINS as usize],
 }
 
 impl FrameDriver {
@@ -140,6 +144,7 @@ impl FrameDriver {
             cell_blocks,
             sh: None,
             sh_gate: None,
+            admitted: Default::default(),
         }
     }
 
@@ -175,6 +180,12 @@ impl FrameDriver {
         &self.mirror
     }
 
+    /// The latest frame's admitted items, per drain in drain order; its
+    /// outcome's `drains` leading entries are that frame's.
+    pub(super) fn admitted_items(&self) -> &[Vec<DrainItem>] {
+        &self.admitted
+    }
+
     /// The session and the mirror together, for the settled-entry preload.
     pub(super) fn session_and_mirror(
         &mut self,
@@ -196,6 +207,9 @@ impl FrameDriver {
             ..FrameOutcome::default()
         };
         let growths = self.mirror.stats.growths();
+        for items in &mut self.admitted {
+            items.clear();
+        }
         let cpu = StageFrame::<StreamingStage>::new(TimingGate::ON);
         for drain in 0..self.reads.drains_per_frame() {
             if let Some(gate) = &mut self.gate {
@@ -233,6 +247,8 @@ impl FrameDriver {
                 .expect("prepare streaming drains");
             out.prepare_nanos += elapsed_nanos(part);
             out.drain_samples[drain as usize] = DrainSample::of(self.level.shared_drain());
+            let (items, admitted) = self.level.shared_drain().ordered_items();
+            self.admitted[drain as usize].extend_from_slice(&items[..admitted]);
             if drain == 0 {
                 out.sh_miss_frames = self
                     .sh

@@ -12,10 +12,12 @@
 use postretro_renderer::{LightmapMissBuckets, ShMissBuckets};
 use serde_json::{Value, json};
 
+use super::drain_estimate::{DrainEstimateTally, LoneItemReference};
 use super::drain_tally::DrainTally;
 use super::frame_driver::FrameOutcome;
 use super::sh_walk::ShRunStats;
 use crate::lightmap_streaming::controller::LightmapResidencyCounters;
+use crate::streaming::drain_budget::DrainItem;
 
 const LIGHTMAP_CAUSES: [&str; 9] = [
     "outside_reach",
@@ -126,16 +128,20 @@ struct StepTallies {
     lightmap: LightmapLate,
     sh: ShLateFrames,
     drains: DrainTally,
+    estimates: DrainEstimateTally,
 }
 
 impl StepTallies {
-    fn add(&mut self, outcome: &FrameOutcome) {
+    fn add(&mut self, outcome: &FrameOutcome, admitted: &[Vec<DrainItem>]) {
         self.lightmap.add(outcome);
         if let Some(frame) = &outcome.sh_miss_frames {
             add(&mut self.sh.buckets, sh_causes(frame));
         }
         for &sample in &outcome.drain_samples[..outcome.drains as usize] {
             self.drains.add(sample);
+        }
+        for items in &admitted[..outcome.drains as usize] {
+            self.estimates.add(items);
         }
     }
 }
@@ -148,11 +154,18 @@ pub(super) struct BudgetTallies {
 }
 
 impl BudgetTallies {
-    pub(super) fn add(&mut self, spawn_step: bool, outcome: &FrameOutcome) {
+    /// One frame: its outcome, and each of its drains' admitted items in
+    /// drain order.
+    pub(super) fn add(
+        &mut self,
+        spawn_step: bool,
+        outcome: &FrameOutcome,
+        admitted: &[Vec<DrainItem>],
+    ) {
         if spawn_step {
-            self.spawn.add(outcome);
+            self.spawn.add(outcome, admitted);
         } else {
-            self.play.add(outcome);
+            self.play.add(outcome, admitted);
         }
     }
 
@@ -191,7 +204,7 @@ impl BudgetTallies {
         );
     }
 
-    pub(super) fn print(&self, sh: Option<&ShRunStats>) {
+    pub(super) fn print(&self, sh: Option<&ShRunStats>, reference: LoneItemReference) {
         for (label, step) in [("after spawn", &self.play), ("spawn step", &self.spawn)] {
             let lightmap = &step.lightmap;
             println!(
@@ -216,6 +229,9 @@ impl BudgetTallies {
         );
         println!("   drains after spawn: {}", self.play.drains.line());
         println!("   drains, spawn step: {}", self.spawn.drains.line());
+        for line in self.play.estimates.lines("after spawn", reference) {
+            println!("   {line}");
+        }
         let Some(sh) = sh else {
             return;
         };
@@ -236,9 +252,15 @@ impl BudgetTallies {
 
     /// The result keys: lightmap buckets as `lm_late_<cause>`, SH's per-frame
     /// tally as `sh_frames_<cause>` and its episodes as `sh_episodes_<cause>`
-    /// (null with SH off), and the drain keys; each also with `_spawn`.
-    pub(super) fn json(&self, sh: Option<&ShRunStats>) -> serde_json::Map<String, Value> {
+    /// (null with SH off), and the drain and drain-estimate keys; each also
+    /// with `_spawn`. The lone-item reference's keys appear once.
+    pub(super) fn json(
+        &self,
+        sh: Option<&ShRunStats>,
+        reference: LoneItemReference,
+    ) -> serde_json::Map<String, Value> {
         let mut keys = serde_json::Map::new();
+        reference.json(&mut keys);
         let episodes = sh.map(episodes);
         for (suffix, step, sh_episodes) in [
             ("", &self.play, episodes.map(|(after, _)| after)),
@@ -270,6 +292,7 @@ impl BudgetTallies {
                 );
             }
             step.drains.json(suffix, &mut keys);
+            step.estimates.json(suffix, reference, &mut keys);
         }
         keys
     }
@@ -288,7 +311,16 @@ fn episodes(sh: &ShRunStats) -> ([u64; 8], [u64; 8]) {
 #[cfg(test)]
 mod tests {
     use super::super::drain_tally::DrainSample;
+    use super::super::levers::DEFAULT_LEVERS;
     use super::*;
+    use crate::streaming::drain_budget::{DrainClass, DrainRank};
+
+    /// No drain admitted anything, for either of a frame's drains.
+    const NO_ITEMS: [Vec<DrainItem>; 2] = [Vec::new(), Vec::new()];
+
+    fn reference() -> LoneItemReference {
+        LoneItemReference::of(&DEFAULT_LEVERS)
+    }
 
     fn frame(misses: LightmapMissBuckets, deferred: u32, left_behind: u32) -> FrameOutcome {
         FrameOutcome {
@@ -315,9 +347,9 @@ mod tests {
             ..LightmapMissBuckets::default()
         };
         let mut tallies = BudgetTallies::default();
-        tallies.add(true, &frame(budget, 0, 3));
-        tallies.add(false, &frame(held, 0, 2));
-        tallies.add(false, &frame(budget, 1, 2));
+        tallies.add(true, &frame(budget, 0, 3), &NO_ITEMS);
+        tallies.add(false, &frame(held, 0, 2), &NO_ITEMS);
+        tallies.add(false, &frame(budget, 1, 2), &NO_ITEMS);
 
         let counters = LightmapResidencyCounters {
             drawn_not_resident: 8,
@@ -330,7 +362,7 @@ mod tests {
         };
         tallies.assert_sums(&counters);
 
-        let keys = tallies.json(None);
+        let keys = tallies.json(None, reference());
         assert_eq!(keys["lm_late_held_by_drain_budget"], json!(3));
         assert_eq!(keys["lm_late_held_by_drain_budget_spawn"], json!(3));
         assert_eq!(keys["lm_late_read_in_flight"], json!(2));
@@ -350,8 +382,11 @@ mod tests {
             ..LightmapMissBuckets::default()
         };
         let mut tallies = BudgetTallies::default();
-        tallies.add(false, &frame(held, 0, 5));
-        assert_eq!(tallies.json(None)["lm_held_frame_uncounted"], json!(3));
+        tallies.add(false, &frame(held, 0, 5), &NO_ITEMS);
+        assert_eq!(
+            tallies.json(None, reference())["lm_held_frame_uncounted"],
+            json!(3)
+        );
         tallies.assert_sums(&LightmapResidencyCounters {
             drawn_not_resident: 2,
             miss_buckets: held,
@@ -363,7 +398,11 @@ mod tests {
     #[should_panic(expected = "the frames read cover")]
     fn a_frame_the_walk_never_read_fails_the_sum() {
         let mut tallies = BudgetTallies::default();
-        tallies.add(false, &frame(LightmapMissBuckets::default(), 0, 0));
+        tallies.add(
+            false,
+            &frame(LightmapMissBuckets::default(), 0, 0),
+            &NO_ITEMS,
+        );
         tallies.assert_sums(&LightmapResidencyCounters {
             drawn_not_resident: 1,
             ..LightmapResidencyCounters::default()
@@ -390,10 +429,18 @@ mod tests {
             drain_samples: [cut, DrainSample::default()],
             ..FrameOutcome::default()
         };
+        // Drain 0 admits one SH cluster; drain 1 admits nothing.
+        let admitted = [
+            vec![DrainItem {
+                rank: DrainRank::sh(DrainClass::Visible, 0, 0),
+                bytes: 9,
+            }],
+            Vec::new(),
+        ];
         let mut tallies = BudgetTallies::default();
-        tallies.add(true, &outcome);
+        tallies.add(true, &outcome, &admitted);
         for _ in 0..4 {
-            tallies.add(false, &outcome);
+            tallies.add(false, &outcome, &admitted);
         }
         let sh = ShRunStats {
             spawn_buckets: ShMissBuckets {
@@ -410,7 +457,7 @@ mod tests {
             },
             ..ShRunStats::default()
         };
-        let keys = tallies.json(Some(&sh));
+        let keys = tallies.json(Some(&sh), reference());
         assert_eq!(keys["sh_frames_held_by_drain_budget"], json!(4));
         assert_eq!(keys["sh_frames_held_by_drain_budget_spawn"], json!(1));
         assert_eq!(keys["sh_episodes_read_in_flight"], json!(1));
@@ -421,5 +468,8 @@ mod tests {
         assert_eq!(keys["drains"], json!(8));
         assert_eq!(keys["drains_admitting"], json!(4));
         assert_eq!(keys["drain_admitted_bytes_max"], json!(10));
+        assert_eq!(keys["sh_items_admitted"], json!(4));
+        assert_eq!(keys["sh_items_admitted_spawn"], json!(1));
+        assert_eq!(keys["lone_reference_us"], json!(4_000));
     }
 }

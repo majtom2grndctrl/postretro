@@ -6,8 +6,8 @@
 // the matrix as separate interleaved invocations into one file and take
 // medians per cell. `POSTRETRO_LIGHTMAP_WALK_TAG` labels an invocation (a
 // repeat index, a build name). Matrix keys: prl, walk, reads, sh, cores,
-// lead_m, pools, drain_cap_mib and in_hand_cap_mib (each null
-// when unset), planar, modes.
+// lead_m, pools, drain_cap_mib, drain_time_us and in_hand_cap_mib (each
+// null when unset), planar, modes.
 //
 // `late_blocks` is the after-spawn total of drawn blocks still not resident
 // after each frame's last drain, in block-frames (deferred + left behind);
@@ -32,11 +32,21 @@
 //   `largest_drains`: the five largest by decoded bytes admitted, each with
 //   `bytes`, `sh_bytes`, `lightmap_bytes` and `items`. Completed mode counts
 //   both of a frame's drains.
+// - Priced by `drain_budget::estimated_install_us` (`drain_estimate`), in
+//   every run whatever its budget: `drain_estimate_us_p95` / `_max` over
+//   admitting drains; per resource (`sh_`, `lightmap_`) `drains_admitting`,
+//   `drain_estimate_us_p95` / `_max` (that resource's share, over drains
+//   admitting it), `items_admitted`, `item_bytes_p50` / `_p95` / `_max`
+//   (null without items), and `lone_over_reference` with
+//   `lone_over_reference_max_us`: drains admitting that resource's item
+//   alone whose estimate passes `lone_reference_us` (`lone_reference`: the
+//   run's `time_budget`, or `byte_run_4000us` in a byte-budget run).
 
 use std::io::Write;
 
 use serde_json::{Value, json};
 
+use super::drain_estimate::LoneItemReference;
 use super::levers::Levers;
 use super::modes::{ReadsMode, WalkModes};
 use super::paths::WalkKind;
@@ -101,7 +111,8 @@ pub(super) fn result_line(keys: &RunKeys<'_>, report: &RunReport) -> Value {
         "cores_label": keys.modes.cores.label(),
         "lead_m": keys.levers.lead_metres,
         "pools": keys.levers.pools_label(),
-        "drain_cap_mib": keys.levers.drain_cap.map(|cap| cap.mib),
+        "drain_cap_mib": keys.levers.drain_cap_mib(),
+        "drain_time_us": keys.levers.drain_time_us(),
         "in_hand_cap_mib": keys.levers.in_hand_cap.map(|cap| cap.mib),
         "planar": keys.modes.planar,
         "modes": keys.modes.label(),
@@ -153,7 +164,7 @@ pub(super) fn result_line(keys: &RunKeys<'_>, report: &RunReport) -> Value {
         "sh_decode_ms": quantiles(sh_workers.as_ref().map(|w| &w.decode_latency)),
         "sh_read_ms": quantiles(sh_workers.as_ref().map(|w| &w.read_latency)),
     });
-    let tallies_part = Value::Object(report.tallies.json(sh));
+    let tallies_part = Value::Object(report.tallies.json(sh, LoneItemReference::of(&keys.levers)));
     let mut line = serde_json::Map::new();
     for part in [keys_part, lightmap_part, sh_part, decode_part, tallies_part] {
         if let Value::Object(fields) = part {
@@ -190,7 +201,9 @@ pub(super) fn print_instruments(keys: &RunKeys<'_>, report: &RunReport) {
         }
         (None, _) => println!("   SH off"),
     }
-    report.tallies.print(report.sh.as_ref());
+    report
+        .tallies
+        .print(report.sh.as_ref(), LoneItemReference::of(&keys.levers));
     let line = result_line(keys, report);
     println!("walk-result {line}");
     if let Ok(path) = std::env::var(RESULTS_OUT_ENV) {
@@ -206,7 +219,7 @@ pub(super) fn print_instruments(keys: &RunKeys<'_>, report: &RunReport) {
 #[cfg(test)]
 mod tests {
     use super::super::cores::Cores;
-    use super::super::levers::{DEFAULT_LEVERS, parse_drain_cap, parse_in_hand_cap};
+    use super::super::levers::{DEFAULT_LEVERS, drain_budget_from, parse_in_hand_cap};
     use super::super::modes::Projection;
     use super::*;
 
@@ -240,15 +253,31 @@ mod tests {
         result_line(&keys, &RunReport::default())
     }
 
-    // Tagged results tell a capped run from a production one.
+    // Tagged results tell a capped run and a timed run from a production
+    // one, and every run carries the drain estimate keys.
     #[test]
-    fn result_line_carries_the_drain_cap_and_null_at_production() {
-        assert_eq!(line_with(DEFAULT_LEVERS)["drain_cap_mib"], Value::Null);
+    fn result_line_carries_the_drain_budget_and_null_at_production() {
+        let production = line_with(DEFAULT_LEVERS);
+        assert_eq!(production["drain_cap_mib"], Value::Null);
+        assert_eq!(production["drain_time_us"], Value::Null);
+        assert_eq!(production["lone_reference"], json!("byte_run_4000us"));
+        assert_eq!(production["sh_drain_estimate_us_max"], json!(0));
         let capped = Levers {
-            drain_cap: Some(parse_drain_cap("16").unwrap()),
+            drain_budget: drain_budget_from(Some("16"), None).unwrap(),
             ..DEFAULT_LEVERS
         };
-        assert_eq!(line_with(capped)["drain_cap_mib"], json!(16.0));
+        let capped = line_with(capped);
+        assert_eq!(capped["drain_cap_mib"], json!(16.0));
+        assert_eq!(capped["drain_time_us"], Value::Null);
+        let timed = Levers {
+            drain_budget: drain_budget_from(None, Some("6000")).unwrap(),
+            ..DEFAULT_LEVERS
+        };
+        let timed = line_with(timed);
+        assert_eq!(timed["drain_time_us"], json!(6_000));
+        assert_eq!(timed["drain_cap_mib"], Value::Null);
+        assert_eq!(timed["lone_reference"], json!("time_budget"));
+        assert_eq!(timed["lone_reference_us"], json!(6_000));
     }
 
     #[test]

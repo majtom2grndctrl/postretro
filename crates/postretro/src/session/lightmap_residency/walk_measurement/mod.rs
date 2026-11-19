@@ -56,6 +56,12 @@
 // in-hand caps stay at production unless the next lever sets them. Zero,
 // negatives and non-numbers are refused by name. A capped run's label and
 // `walk-result` line (`drain_cap_mib`, null when unset) carry the cap.
+// `POSTRETRO_LIGHTMAP_WALK_DRAIN_TIME_US` (a positive whole number of µs:
+// `4000`) instead replaces the play budget with an estimated install-time
+// budget, each item charged `drain_budget::estimated_install_us`, under the
+// same rules; it is test-only, with no dev-tools slider. Setting it with the
+// drain cap is refused naming both. Its label and `walk-result` line
+// (`drain_time_us`, null when unset) carry it.
 // `POSTRETRO_LIGHTMAP_WALK_IN_HAND_CAP` (MiB, the same form and refusals)
 // replaces the lightmap controller's in-hand pair byte total in every walk run
 // (not the bake-gap replay, as above); the band cap is half of it, as in
@@ -119,6 +125,7 @@ mod budget_tallies;
 mod busy_stats;
 mod completed_reads;
 mod cores;
+mod drain_estimate;
 mod drain_tally;
 mod frame_driver;
 mod install_timing;
@@ -153,6 +160,7 @@ use crate::session::level_streaming::LevelStreaming;
 use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::decode_level_hints;
+use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 use crate::streaming::issuer_busy::IssuerBusyLog;
 use baked_set::{
     bake_identity, bake_token, cell_block_ranges, mandatory_blocks, mandatory_cells,
@@ -161,8 +169,8 @@ use baked_set::{
 use busy_stats::BusyStats;
 use frame_driver::{FrameDriver, FrameInput};
 use levers::{
-    DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, drain_cap_from_env, in_hand_cap_from_env,
-    parse_pool_layers,
+    DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, WalkDrainBudget, drain_budget_from_env,
+    in_hand_cap_from_env, parse_pool_layers,
 };
 use mirror::{MirrorStats, WalkMirror};
 use modes::{ReadsMode, WalkModes, render_camera};
@@ -193,7 +201,7 @@ fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
         walk.kind.label(),
         levers.lead_metres,
         levers.pools_label(),
-        levers.drain_cap_label(),
+        levers.drain_budget_label(),
         levers.in_hand_cap_label(),
         modes.label()
     )
@@ -241,8 +249,8 @@ impl<'w> Rig<'w> {
             reads.retire_clock(),
         );
         let mut level = LevelStreaming::default();
-        if let Some(cap) = levers.drain_cap {
-            cap.apply(&mut level);
+        if let Some(budget) = levers.drain_budget {
+            budget.apply(&mut level);
         }
         level.install_cell_demand(stage);
         level.install_lightmap(session);
@@ -447,7 +455,9 @@ fn run(
                     }
                 }
             }
-            report.tallies.add(step == 0, &outcome);
+            report
+                .tallies
+                .add(step == 0, &outcome, driver.admitted_items());
             let (outside, not_resident) = (outcome.outside, outcome.not_resident);
             if step == 0 {
                 report.spawn.add(outside, not_resident, outside_missing);
@@ -645,14 +655,21 @@ fn lightmap_residency_walks_from_prl() {
             })
             .collect();
     }
-    let drain_cap = drain_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
-    match drain_cap {
-        Some(cap) => println!(
+    let drain_budget = drain_budget_from_env().unwrap_or_else(|why| panic!("{why}"));
+    match drain_budget {
+        Some(WalkDrainBudget::Cap(cap)) => println!(
             "play drain cap: {} MiB ({} bytes) in every walk run; the spawn step admits at \
              this cap, the walk has no settling",
             cap.mib, cap.bytes
         ),
-        None => println!("play drain cap: production"),
+        Some(WalkDrainBudget::Time(time)) => println!(
+            "play drain time budget: {} µs of estimated install CPU in every walk run; the \
+             spawn step admits at this budget, the walk has no settling",
+            time.micros
+        ),
+        None => println!(
+            "play drain budget: production ({MAX_INSTALL_DECODED_BYTES_PER_DRAIN} decoded bytes)"
+        ),
     }
     let in_hand_cap = in_hand_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
     match in_hand_cap {
@@ -663,7 +680,7 @@ fn lightmap_residency_walks_from_prl() {
         None => println!("lightmap in-hand cap: production"),
     }
     for config in &mut configs {
-        config.drain_cap = drain_cap;
+        config.drain_budget = drain_budget;
         config.in_hand_cap = in_hand_cap;
     }
     let mut records = Vec::new();

@@ -19,7 +19,7 @@ use crate::lightmap_streaming::route::{
 use crate::lightmap_streaming::source::BlockSummary;
 use crate::lightmap_streaming::test_fixtures::*;
 use crate::streaming::decode_pool::{DecodeJob, DecodePool, DecodeRank};
-use crate::streaming::drain_budget::DrainClass;
+use crate::streaming::drain_budget::{DrainBudget, DrainClass};
 use crate::streaming::issuer::{ReadIssuer, ReadRoutes};
 use crate::streaming::request::ReadRequest;
 use crate::streaming::target_set::TargetSet;
@@ -60,7 +60,9 @@ fn pairs_are_charged_at_decoded_size_in_hand_and_in_the_drain() {
         rig.controller.offer_ready(&mut rig.drain).unwrap();
         // Room for two decoded pairs: a stored-size charge would admit all
         // three.
-        rig.drain.admit_within(2 * decoded_pair).unwrap();
+        rig.drain
+            .admit_within(DrainBudget::DecodedBytes(2 * decoded_pair))
+            .unwrap();
     }
     let admitted = |rig: &Rig| rig.drain.admission(StreamResource::LightmapBlock);
     assert_eq!(admitted(&coded).admitted, 2);

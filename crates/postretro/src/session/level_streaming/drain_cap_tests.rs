@@ -1,7 +1,9 @@
 //! The play drain cap levers: the dev-tools slider and the walk measurement
 //! override set one seam on the level's drain step. Play drains admit against
 //! it; settling drains and the lightmap in-hand caps never read it. The walk's
-//! test-only in-hand lever moves the in-hand caps alone.
+//! test-only in-hand lever moves the in-hand caps alone. The walk's test-only
+//! time lever replaces the play budget with an estimated install-time budget
+//! under the same rules.
 //! See: context/lib/rendering_pipeline.md §4 · context/lib/testing_guide.md §3
 
 use std::num::NonZeroU64;
@@ -17,7 +19,7 @@ use crate::lightmap_streaming::controller::{MAX_BAND_IN_HAND_PAIR_BYTES, MAX_IN_
 use crate::lightmap_streaming::source::LightmapBlockSource;
 use crate::lightmap_streaming::test_fixtures::*;
 use crate::session::lightmap_residency::walk_measurement::levers::{
-    parse_drain_cap, parse_in_hand_cap,
+    parse_drain_cap, parse_drain_time, parse_in_hand_cap,
 };
 use crate::streaming::drain_budget::{
     DrainClass, DrainItem, DrainRank, MAX_INSTALL_DECODED_BYTES_PER_DRAIN,
@@ -121,6 +123,7 @@ fn two_mib_items(count: u32) -> Vec<DrainItem> {
 fn unset_levers_admit_against_the_production_budgets() {
     let mut level = LevelStreaming::default();
     assert_eq!(level.play_drain_cap_override(), None);
+    assert_eq!(level.play_drain_time_override(), None);
     let play = two_mib_items(5);
     assert_eq!(admit(&mut level, false, &play), (4, PRODUCTION));
     let settling = two_mib_items(17);
@@ -384,6 +387,101 @@ fn a_band_read_waits_at_half_the_walk_in_hand_cap_and_at_production_unset() {
             assert!(band + 3 * MIB > band_cap);
             assert!(bytes + 3 * MIB <= 16 * MIB);
         }
+        level.retire(&mut None);
+    }
+}
+
+// --- The walk's time lever -----------------------------------------------
+
+/// A fresh level owner with the walk's time lever at `micros`, through its
+/// parser, checked at the seam.
+fn level_at_time(micros: u64) -> LevelStreaming {
+    let mut level = LevelStreaming::default();
+    parse_drain_time(&micros.to_string())
+        .unwrap()
+        .apply(&mut level);
+    assert_eq!(level.play_drain_time_override(), NonZeroU64::new(micros));
+    assert_eq!(level.play_drain_cap_override(), None);
+    level
+}
+
+/// `count` lightmap pairs of `bytes` each.
+fn pairs(count: u32, bytes: u64) -> Vec<DrainItem> {
+    (0..count).map(|block| pair(block, bytes)).collect()
+}
+
+// Through the walk's time lever, a play drain admits by estimated install
+// time: sixteen 1 MiB pairs (16 MiB, 3,360 µs) fit 4 ms whole where the
+// production byte cap takes eight, and four 1 MiB SH clusters (4,592 µs)
+// are cut after three where the byte cap takes all four.
+#[test]
+fn a_play_drain_admits_by_estimated_time_through_the_walk_time_lever() {
+    let lightmap = pairs(16, MIB);
+    let sh_items: Vec<DrainItem> = (0..4).map(|cluster| sh(cluster, MIB)).collect();
+    let mut unset = LevelStreaming::default();
+    assert_eq!(admit(&mut unset, false, &lightmap), (8, PRODUCTION));
+    assert_eq!(admit(&mut unset, false, &sh_items), (4, 4 * MIB));
+
+    let mut timed = level_at_time(4_000);
+    assert_eq!(admit(&mut timed, false, &lightmap), (16, 16 * MIB));
+    assert_eq!(admit(&mut timed, false, &sh_items), (3, 3 * MIB));
+    // A lone first item over the budget still admits, alone.
+    let oversized = [sh(0, 8 * MIB), pair(0, 1024)];
+    assert_eq!(admit(&mut timed, false, &oversized), (1, 8 * MIB));
+}
+
+// With the time lever set, a settling drain still admits against the
+// settling byte budget.
+#[test]
+fn settling_drains_ignore_the_walk_time_lever() {
+    let items = two_mib_items(17);
+    for micros in [1_000, 1_000_000] {
+        let mut level = level_at_time(micros);
+        assert_eq!(
+            admit(&mut level, true, &items),
+            (16, SETTLING),
+            "{micros} µs"
+        );
+    }
+}
+
+// One override at a time: setting the byte cap replaces a time budget, and
+// unsetting either restores production.
+#[test]
+fn the_byte_cap_and_the_time_budget_replace_each_other() {
+    let mut level = level_at_time(4_000);
+    parse_drain_cap("16").unwrap().apply(&mut level);
+    assert_eq!(level.play_drain_time_override(), None);
+    assert_eq!(level.play_drain_cap_override(), NonZeroU64::new(16 * MIB));
+    parse_drain_time("4000").unwrap().apply(&mut level);
+    assert_eq!(level.play_drain_cap_override(), None);
+    level.set_play_drain_time_override(None);
+    assert_eq!(admit(&mut level, false, &two_mib_items(5)), (4, PRODUCTION));
+}
+
+// The in-hand and band caps keep their production totals with the time
+// lever set, as in the byte-lever cases above.
+#[test]
+fn reads_wait_at_the_production_in_hand_totals_with_the_time_lever_set() {
+    for micros in [1_000, 1_000_000] {
+        let (mut level, _source) = corridor_level(5 * MIB, 32.0, None);
+        level.set_play_drain_time_override(NonZeroU64::new(micros));
+        play_frame_at_cell_0(&mut level);
+        let (bytes, _, permits) = in_hand(&level);
+        assert_eq!((bytes, permits), (30 * MIB, 3), "{micros} µs");
+        level.retire(&mut None);
+
+        let (mut level, _source) = corridor_level(3 * MIB, 0.0, None);
+        level.set_play_drain_time_override(NonZeroU64::new(micros));
+        play_frame_at_cell_0(&mut level);
+        renderer_returns_batch(&mut level);
+        play_frame_at_cell_0(&mut level);
+        let (bytes, band, permits) = in_hand(&level);
+        assert_eq!(
+            (bytes, band, permits),
+            (24 * MIB, 12 * MIB, 4),
+            "{micros} µs"
+        );
         level.retire(&mut None);
     }
 }
@@ -735,6 +833,7 @@ fn walk_drain_cap_override_lives_only_in_the_test_walk_harness() {
     let sources = rust_sources(&crates);
     for env in [
         concat!("POSTRETRO_LIGHTMAP_WALK_", "DRAIN_CAP"),
+        concat!("POSTRETRO_LIGHTMAP_WALK_", "DRAIN_TIME_US"),
         concat!("POSTRETRO_LIGHTMAP_WALK_", "IN_HAND_CAP"),
     ] {
         let named: Vec<&PathBuf> = sources
@@ -791,12 +890,31 @@ fn walk_tallies_and_their_seams_are_test_only() {
 #[test]
 fn play_drain_cap_override_seam_is_test_or_dev_tools_only() {
     let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let seam = "play_drain_cap_override";
+    let seams = [
+        "play_budget_override",
+        "PlayBudgetOverride",
+        "play_drain_cap_override",
+    ];
     let level_streaming =
         std::fs::read_to_string(engine.join("session/level_streaming/mod.rs")).unwrap();
-    assert!(level_streaming.contains(seam));
+    assert!(level_streaming.contains(seams[0]));
     let gates = [DEV_TOOLS, TEST, TEST_OR_DEV_TOOLS, TEST_WITH_DEV_TOOLS];
-    let ungated = ungated_mentions(&engine, &gates, &[seam]);
+    let ungated = ungated_mentions(&engine, &gates, &seams);
+    assert!(ungated.is_empty(), "{ungated:#?}");
+}
+
+// The time override builds only for tests: no dev-tools build, the slider
+// included, can set it.
+#[test]
+fn play_drain_time_override_seam_is_test_only() {
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let seams = ["play_drain_time_override", "EstimatedMicros(NonZeroU64)"];
+    let drain_cap =
+        std::fs::read_to_string(engine.join("session/level_streaming/drain_cap.rs")).unwrap();
+    for seam in seams {
+        assert!(drain_cap.contains(seam), "{seam}");
+    }
+    let ungated = ungated_mentions(&engine, &[TEST], &seams);
     assert!(ungated.is_empty(), "{ungated:#?}");
 }
 

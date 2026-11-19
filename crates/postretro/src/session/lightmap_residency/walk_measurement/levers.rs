@@ -1,5 +1,5 @@
-//! A residency walk's levers: the lead, each pool's size, the play drain cap
-//! and the lightmap in-hand cap.
+//! A residency walk's levers: the lead, each pool's size, the play drain
+//! budget (a byte cap or a time budget) and the lightmap in-hand cap.
 //! See: context/lib/rendering_pipeline.md §4
 
 use std::num::NonZeroU64;
@@ -18,6 +18,10 @@ const AT_THE_BOUND: &str = "bound";
 /// Every run's play drain cap in place of production: see [`parse_drain_cap`].
 pub(crate) const DRAIN_CAP_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP";
 
+/// Every run's play drain time budget in µs in place of production: see
+/// [`parse_drain_time`]. Exclusive with [`DRAIN_CAP_ENV`].
+pub(crate) const DRAIN_TIME_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_DRAIN_TIME_US";
+
 /// Every run's lightmap in-hand pair byte total in place of production: see
 /// [`parse_in_hand_cap`].
 pub(crate) const IN_HAND_CAP_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_IN_HAND_CAP";
@@ -30,8 +34,8 @@ pub(super) struct Levers {
     /// A pool's first generation in layers, taken as given. `None` sizes that
     /// pool as the runtime does, from the level's id 58.
     pub(super) pool_layers: PerPool<Option<u32>>,
-    /// The play drain cap; `None` is production.
-    pub(super) drain_cap: Option<WalkDrainCap>,
+    /// The play drain budget; `None` is production.
+    pub(super) drain_budget: Option<WalkDrainBudget>,
     /// The lightmap in-hand total, the band taking half; `None` is
     /// production.
     pub(super) in_hand_cap: Option<WalkInHandCap>,
@@ -44,7 +48,7 @@ pub(super) const DEFAULT_LEVERS: Levers = Levers {
         lightmap: None,
         mask: None,
     },
-    drain_cap: None,
+    drain_budget: None,
     in_hand_cap: None,
 };
 
@@ -62,11 +66,30 @@ impl Levers {
         )
     }
 
-    /// The run label's drain cap part: empty at production, so an unset run's
-    /// label is unchanged.
-    pub(super) fn drain_cap_label(&self) -> String {
-        self.drain_cap
-            .map_or_else(String::new, |cap| format!(" | drain cap {} MiB", cap.mib))
+    /// The run label's drain budget part: empty at production, so an unset
+    /// run's label is unchanged.
+    pub(super) fn drain_budget_label(&self) -> String {
+        match self.drain_budget {
+            None => String::new(),
+            Some(WalkDrainBudget::Cap(cap)) => format!(" | drain cap {} MiB", cap.mib),
+            Some(WalkDrainBudget::Time(time)) => format!(" | drain time {} µs", time.micros),
+        }
+    }
+
+    /// The byte cap's MiB, when the run set one.
+    pub(super) fn drain_cap_mib(&self) -> Option<f64> {
+        match self.drain_budget {
+            Some(WalkDrainBudget::Cap(cap)) => Some(cap.mib),
+            _ => None,
+        }
+    }
+
+    /// The time budget's µs, when the run set one.
+    pub(super) fn drain_time_us(&self) -> Option<u64> {
+        match self.drain_budget {
+            Some(WalkDrainBudget::Time(time)) => Some(time.micros.get()),
+            _ => None,
+        }
     }
 
     /// The run label's in-hand cap part: empty at production, so an unset
@@ -74,6 +97,37 @@ impl Levers {
     pub(super) fn in_hand_cap_label(&self) -> String {
         self.in_hand_cap
             .map_or_else(String::new, |cap| format!(" | in-hand cap {} MiB", cap.mib))
+    }
+}
+
+/// A walk's play drain budget: a decoded-byte cap or an estimated
+/// install-time budget, never both.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum WalkDrainBudget {
+    Cap(WalkDrainCap),
+    Time(WalkDrainTime),
+}
+
+impl WalkDrainBudget {
+    /// Sets `level`'s play budget override.
+    pub(crate) fn apply(self, level: &mut LevelStreaming) {
+        match self {
+            Self::Cap(cap) => cap.apply(level),
+            Self::Time(time) => time.apply(level),
+        }
+    }
+}
+
+/// A walk's play drain time budget in whole µs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WalkDrainTime {
+    pub(crate) micros: NonZeroU64,
+}
+
+impl WalkDrainTime {
+    /// Sets `level`'s play time override.
+    pub(crate) fn apply(self, level: &mut LevelStreaming) {
+        level.set_play_drain_time_override(Some(self.micros));
     }
 }
 
@@ -106,23 +160,63 @@ impl WalkInHandCap {
     }
 }
 
-/// The play drain cap from [`DRAIN_CAP_ENV`], when set.
-pub(super) fn drain_cap_from_env() -> Result<Option<WalkDrainCap>, String> {
-    mib_from_env(DRAIN_CAP_ENV, parse_drain_cap)
+/// The play drain budget from [`DRAIN_CAP_ENV`] or [`DRAIN_TIME_ENV`], when
+/// one is set: see [`drain_budget_from`].
+pub(super) fn drain_budget_from_env() -> Result<Option<WalkDrainBudget>, String> {
+    let raw = |env: &str| lever_from_env(env, |value| Ok(value.to_string()));
+    drain_budget_from(
+        raw(DRAIN_CAP_ENV)?.as_deref(),
+        raw(DRAIN_TIME_ENV)?.as_deref(),
+    )
+}
+
+/// The play drain budget from the cap's and the time budget's raw values.
+/// Both set is refused naming both, since one run admits in one unit.
+pub(super) fn drain_budget_from(
+    cap: Option<&str>,
+    time: Option<&str>,
+) -> Result<Option<WalkDrainBudget>, String> {
+    match (cap, time) {
+        (Some(_), Some(_)) => Err(format!(
+            "{DRAIN_CAP_ENV} and {DRAIN_TIME_ENV} are both set: a run admits against a byte cap \
+             or a time budget, not both; unset one"
+        )),
+        (Some(cap), None) => parse_drain_cap(cap).map(|cap| Some(WalkDrainBudget::Cap(cap))),
+        (None, Some(time)) => parse_drain_time(time).map(|time| Some(WalkDrainBudget::Time(time))),
+        (None, None) => Ok(None),
+    }
 }
 
 /// The lightmap in-hand cap from [`IN_HAND_CAP_ENV`], when set.
 pub(super) fn in_hand_cap_from_env() -> Result<Option<WalkInHandCap>, String> {
-    mib_from_env(IN_HAND_CAP_ENV, parse_in_hand_cap)
+    lever_from_env(IN_HAND_CAP_ENV, parse_in_hand_cap)
 }
 
 /// `env` through `parse` when set; `None` when unset.
-fn mib_from_env<T>(env: &str, parse: fn(&str) -> Result<T, String>) -> Result<Option<T>, String> {
+fn lever_from_env<T>(
+    env: &str,
+    parse: impl Fn(&str) -> Result<T, String>,
+) -> Result<Option<T>, String> {
     match std::env::var(env) {
         Ok(value) => parse(&value).map(Some),
         Err(std::env::VarError::NotPresent) => Ok(None),
         Err(why) => Err(format!("{env}: {why}")),
     }
+}
+
+/// A play drain time budget: a positive whole number of µs (`4000`). Zero,
+/// a negative, a fraction, a non-number and a value past `u64` are refused
+/// by name, never clamped.
+pub(crate) fn parse_drain_time(value: &str) -> Result<WalkDrainTime, String> {
+    let refuse = |why: &str| format!("{DRAIN_TIME_ENV}={value:?}: {why}");
+    let micros: u64 = value
+        .trim()
+        .parse()
+        .map_err(|_| refuse("not a whole number of µs"))?;
+    let micros = NonZeroU64::new(micros).ok_or_else(|| {
+        refuse("a zero budget admits only each drain's first item; unset it for production")
+    })?;
+    Ok(WalkDrainTime { micros })
 }
 
 /// A play drain cap: see [`parse_mib`].
@@ -297,13 +391,63 @@ mod tests {
     }
 
     #[test]
-    fn run_label_names_a_drain_cap_only_when_set() {
-        assert_eq!(DEFAULT_LEVERS.drain_cap_label(), "");
-        let levers = Levers {
-            drain_cap: Some(parse_drain_cap("16").unwrap()),
+    fn run_label_names_the_drain_budget_only_when_set() {
+        assert_eq!(DEFAULT_LEVERS.drain_budget_label(), "");
+        let capped = Levers {
+            drain_budget: drain_budget_from(Some("16"), None).unwrap(),
             ..DEFAULT_LEVERS
         };
-        assert_eq!(levers.drain_cap_label(), " | drain cap 16 MiB");
+        assert_eq!(capped.drain_budget_label(), " | drain cap 16 MiB");
+        let timed = Levers {
+            drain_budget: drain_budget_from(None, Some("4000")).unwrap(),
+            ..DEFAULT_LEVERS
+        };
+        assert_eq!(timed.drain_budget_label(), " | drain time 4000 µs");
+    }
+
+    #[test]
+    fn drain_time_accepts_positive_whole_micros() {
+        for (value, micros) in [("4000", 4_000), (" 12000 ", 12_000), ("1", 1)] {
+            assert_eq!(parse_drain_time(value).unwrap().micros.get(), micros);
+        }
+    }
+
+    #[test]
+    fn drain_time_refuses_zero_negative_fractions_and_non_numbers_by_name() {
+        for (value, why) in [
+            ("0", "zero budget"),
+            ("-4000", "not a whole number"),
+            ("4.5", "not a whole number"),
+            ("4ms", "not a whole number"),
+            ("", "not a whole number"),
+            ("18446744073709551616", "not a whole number"),
+        ] {
+            let refusal = parse_drain_time(value).unwrap_err();
+            assert!(
+                refusal.contains(DRAIN_TIME_ENV) && refusal.contains(why),
+                "{value:?}: {refusal}"
+            );
+        }
+    }
+
+    // One run admits in one unit: the cap and the time budget together are
+    // refused naming both; either alone, or neither, is taken.
+    #[test]
+    fn drain_cap_and_drain_time_together_are_refused_naming_both() {
+        let refusal = drain_budget_from(Some("8"), Some("4000")).unwrap_err();
+        assert!(
+            refusal.contains(DRAIN_CAP_ENV) && refusal.contains(DRAIN_TIME_ENV),
+            "{refusal}"
+        );
+        assert_eq!(drain_budget_from(None, None).unwrap(), None);
+        assert_eq!(
+            drain_budget_from(Some("8"), None).unwrap(),
+            Some(WalkDrainBudget::Cap(parse_drain_cap("8").unwrap()))
+        );
+        assert_eq!(
+            drain_budget_from(None, Some("4000")).unwrap(),
+            Some(WalkDrainBudget::Time(parse_drain_time("4000").unwrap()))
+        );
     }
 
     #[test]

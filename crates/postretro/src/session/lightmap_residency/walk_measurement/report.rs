@@ -245,8 +245,13 @@ pub(super) fn max_and_p95(mut values: Vec<u64>) -> (u64, u64) {
         return (0, 0);
     }
     values.sort_unstable();
-    let p95 = values[((values.len() as f64 * 0.95).ceil() as usize).clamp(1, values.len()) - 1];
+    let p95 = nearest_rank(&values, 0.95);
     (*values.last().expect("non-empty"), p95)
+}
+
+/// The nearest-rank `quantile` of non-empty ascending `sorted`.
+pub(super) fn nearest_rank(sorted: &[u64], quantile: f64) -> u64 {
+    sorted[((sorted.len() as f64 * quantile).ceil() as usize).clamp(1, sorted.len()) - 1]
 }
 
 pub(super) fn mib(bytes: u64) -> f64 {

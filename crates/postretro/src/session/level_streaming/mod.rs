@@ -85,11 +85,11 @@ pub(crate) struct LevelStreaming {
     /// Where each issuer this owner spawns logs its busy time; `None` (play)
     /// times nothing. The walk measurement installs one.
     issuer_busy: Option<Arc<IssuerBusyLog>>,
-    /// The dev-tools slider's or the walk measurement's play drain cap;
-    /// `None` is the production cap. Outlives the level, as a developer
+    /// The dev-tools slider's or the walk measurement's play budget;
+    /// `None` is the production budget. Outlives the level, as a developer
     /// lever, until set back.
     #[cfg(any(test, feature = "dev-tools"))]
-    play_drain_cap_override: Option<std::num::NonZeroU64>,
+    play_budget_override: Option<drain_cap::PlayBudgetOverride>,
 }
 
 impl LevelStreaming {

@@ -2223,10 +2223,10 @@ mod tests {
         assert_eq!(luau, expected);
     }
 
-    // V5 through the SDK builders in both VMs: `persist: "run"` lands in the
-    // declaration's run-scoped set on a global slot and fails the build on a
-    // per-owner one, naming the slot. The `saves` block rides the same
-    // manifest drain.
+    // The run-scope rule through the SDK builders in both VMs: `persist: "run"`
+    // lands in the declaration's run-scoped set on a global slot and fails the
+    // build on a per-owner one, naming the slot. The `saves` block rides the
+    // same manifest drain.
     #[test]
     fn staged_manifest_carries_run_scope_and_saves_in_both_vms() {
         let accepted = [

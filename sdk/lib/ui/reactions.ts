@@ -638,8 +638,9 @@ export function selectCharacter(index: number): import("../data_script").SystemR
  * Create a new character in empty slot `index` and select it. Its name is
  * taken from `ui.textEntry`, so open the text entry with no target field
  * (`openTextEntry(onCommit)`) and fire this from its commit; a target field
- * would receive the text and empty `ui.textEntry` before this runs. Pure — returns a system reaction (a body on
- * its own or a step in a sequence or array body), no FFI. `index` is the
+ * would receive the text and empty `ui.textEntry` before this runs. Pure —
+ * returns a system reaction (a body on its own or a step in a sequence or
+ * array body), no FFI. `index` is the
  * 0-based `forEach` row index of `getGameState().saves.characters`. A new
  * character starts with an empty loadout. Creating into an occupied slot is
  * refused with a warning.
@@ -667,11 +668,11 @@ export function deleteCharacter(index: number): import("../data_script").SystemR
 }
 
 /**
- * Reach checkpoint `name`: save the run at this checkpoint, and the
- * character. Pure — returns a system reaction (a body on its own or a step in
+ * Reach checkpoint `name`: save the run at this checkpoint, then the
+ * character and the world file. Pure — returns a system reaction (a body on its own or a step in
  * a sequence or array body), no FFI. Run by the host or single player; on a
- * connected client it changes nothing. Outside an active run it saves only the
- * character, and in the frontend backdrop nothing.
+ * connected client it changes nothing. Outside an active run it saves the
+ * character and the world file, never a run; in the frontend backdrop nothing.
  *
  * The `player_spawn`s with `checkpoint=<name>` form its arrival set: Continue
  * arrives there, and once the checkpoint fires, respawns and late joiners use

@@ -1,4 +1,5 @@
-// The host's join-seed apply and a connected client's own character saves.
+// The host's join-seed and join-loadout apply, final-character answers and
+// loadout sends, and a connected client's own character saves.
 // See: context/lib/scripting.md §5 (Durable State Store) · context/lib/networking.md §Slot lifecycle
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -196,6 +197,7 @@ pub(crate) fn save_connected_client_per_owner_state(session: &mut super::Session
     // with, which the character file already holds: never the boot file's
     // once the host has sent one.
     let Some(mut record) = session.saves.selected_character().cloned() else {
+        // No selected character means no claim to key a save by.
         return;
     };
     record.per_owner = save_state.per_owner_for(&record.claim);

@@ -299,6 +299,8 @@ fn net_loadout_wire_is_names_only() {
     let source = std::fs::read_to_string(root.join("crates/net/src/wire/control.rs"))
         .expect("net control wire");
     let fields = struct_fields(&source, "CarriedLoadoutWire");
+    // A new field must also be appended in `control.rs` and bump
+    // `WIRE_VERSION`.
     assert_eq!(
         fields.len(),
         7,

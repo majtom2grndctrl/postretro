@@ -102,8 +102,9 @@ pub struct HostGear<'a> {
 }
 
 impl<'a> HostGear<'a> {
-    /// The host's gear vocabulary. `spawn_points` are the installed level's;
-    /// with none (a host at its frontend), the `player` descriptor stands in.
+    /// The host's gear vocabulary. `spawn_points` are the installed level's,
+    /// which may be the frontend backdrop's; their first joinable spawn's class
+    /// names the player maximums. With none, the `player` descriptor stands in.
     #[must_use]
     pub fn new(
         descriptors: &'a [EntityTypeDescriptor],

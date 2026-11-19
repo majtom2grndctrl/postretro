@@ -613,8 +613,10 @@ impl SeatTable {
     }
 
     /// Build a deterministic seat-keyed roster snapshot from the table's own
-    /// lifecycle bindings. Carried contents and a claim's player id never leave
-    /// this table: each seat projects its connection, display name and status.
+    /// lifecycle bindings. The roster carries no carried contents and no claim
+    /// player id: each seat projects its connection, display name and status.
+    /// A seat's carried loadout goes only to that seat's own client
+    /// (`host_loadout.rs`).
     #[must_use]
     pub(crate) fn roster_entries(&self) -> Vec<RosterEntry> {
         let mut seats: Vec<Seat> = self.carried.keys().copied().collect();

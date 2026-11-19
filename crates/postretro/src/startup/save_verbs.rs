@@ -208,6 +208,8 @@ impl App {
             Some(_) => {}
             None => return Err(format!("character slot {index} is not declared")),
         }
+        // The second arm catches an unreadable selected slot, which
+        // `selected_character_index` skips.
         let selected = session.saves.selected_character_index() == Some(index)
             || session.saves.selection().character == index as i32;
         if !session.saves.delete_character(index) {

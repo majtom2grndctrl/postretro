@@ -118,7 +118,7 @@ pub(crate) struct PendingSessionInit {
     /// See: context/lib/networking.md.
     raw_args: Vec<String>,
     /// Per-user directories resolved once at stage 1; every settings and
-    /// `state.json` read and write takes them from here, never re-resolving.
+    /// save-file read and write takes them from here, never re-resolving.
     app_dirs: AppDirs,
     boot_options: crate::options::boot::BootOptions,
 }

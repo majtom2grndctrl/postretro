@@ -568,11 +568,11 @@ function UiReactionsSdk.deleteCharacter(index: number): SystemReactionStep
   return { primitive = "deleteCharacter", args = { index = wireRow(index) } }
 end
 
---- Reach checkpoint `name`: save the run at this checkpoint, and the
---- character. Pure: returns a system reaction (a body on its own or a step in a
+--- Reach checkpoint `name`: save the run at this checkpoint, then the
+--- character and the world file. Pure: returns a system reaction (a body on its own or a step in a
 --- sequence or array body), no FFI. Run by the host or single player; on a
---- connected client it changes nothing. Outside an active run it saves only the
---- character, and in the frontend backdrop nothing.
+--- connected client it changes nothing. Outside an active run it saves the
+--- character and the world file, never a run; in the frontend backdrop nothing.
 ---
 --- The `player_spawn`s with `checkpoint=<name>` form its arrival set: Continue
 --- arrives there, and once the checkpoint fires, respawns and late joiners use

@@ -3624,7 +3624,7 @@ declare module "postretro/ui" {
   export function createCharacter(index: number): SystemReactionStep;
   /** Delete the character in slot `index` (0-based `forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function deleteCharacter(index: number): SystemReactionStep;
-  /** Reach checkpoint `name`: the host or single player saves the run at it, and the character; a connected client changes nothing. The `player_spawn`s with `checkpoint=<name>` form its arrival set for Continue, respawns and late joiners. */
+  /** Reach checkpoint `name`: the host or single player saves the run at it, then the character and the world file (outside an active run, the character and world file only); a connected client changes nothing. The `player_spawn`s with `checkpoint=<name>` form its arrival set for Continue, respawns and late joiners. */
   export function checkpoint(name: string): SystemReactionStep;
   /** Set the live sentiment from `from` toward `to` at frame end. The pair is directional and baseline content remains immutable. Negative values degrade the relationship; positive values bond it. Unknown faction names warn and no-op. */
   export function setSentiment(from: string, to: string, value: number): SystemReactionStep;

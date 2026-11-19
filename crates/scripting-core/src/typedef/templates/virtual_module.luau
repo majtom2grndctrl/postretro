@@ -129,7 +129,7 @@ export type PostretroUiModule = {
   createCharacter: (index: number) -> SystemReactionStep,
   --- Delete the character in slot `index` (1-based `UI.forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
   deleteCharacter: (index: number) -> SystemReactionStep,
-  --- Reach checkpoint `name`: the host or single player saves the run at it, and the character; a connected client changes nothing. The `player_spawn`s with `checkpoint=<name>` form its arrival set for Continue, respawns and late joiners.
+  --- Reach checkpoint `name`: the host or single player saves the run at it, then the character and the world file (outside an active run, the character and world file only); a connected client changes nothing. The `player_spawn`s with `checkpoint=<name>` form its arrival set for Continue, respawns and late joiners.
   checkpoint: (name: string) -> SystemReactionStep,
   --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
   setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,

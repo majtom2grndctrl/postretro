@@ -159,7 +159,7 @@ pub(crate) struct Session {
     /// Selection and lifetime stay independent of local rendering.
     pub(crate) host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker,
 
-    /// Gates the one-time persistence overlay and clean-exit save.
+    /// Gates the one-time restore and every save point.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
 
     /// Connected-client cadence for private per-owner state. It advances only
@@ -278,10 +278,12 @@ pub(crate) struct Session {
     /// See: context/lib/player_options.md
     pub(crate) settings_path: Option<PathBuf>,
 
-    /// Per-user data directory each mod's `state.json` lives under, resolved with
-    /// `settings_path` from the one app name at boot stage 1 so per-player rows
-    /// stay keyed by this settings file's `player_id`. `None` when the platform
-    /// exposes no data directory; persistence is then disabled for the run.
+    /// Per-user data directory each mod's save files live under
+    /// (`<data_dir>/<mod_id>/`; `state.json` there is only a migration source),
+    /// resolved with `settings_path` from the one app name at boot stage 1.
+    /// Per-owner rows key by the selected character's claim. `None` when the
+    /// platform exposes no data directory; persistence is then disabled for the
+    /// run.
     /// See: context/lib/build_pipeline.md §Distribution packaging
     pub(crate) data_dir: Option<PathBuf>,
 
@@ -347,8 +349,8 @@ pub(crate) fn modal_focus_key(
 
 impl Session {
     /// The id and name this player saves under and joins with: the selected
-    /// character's. Before saves load, and with persistence unavailable, the
-    /// device's player id stands in, as it did before character saves.
+    /// character's. Before saves load, and with no data directory, the
+    /// device's player id stands in as the claim, with an empty name.
     pub(crate) fn character_claim(&self) -> (Option<[u8; 16]>, String) {
         if self.saves.is_loaded() {
             (

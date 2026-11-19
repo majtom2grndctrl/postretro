@@ -92,7 +92,8 @@ pub struct StagedManifest {
     /// `frontend`; a failed or stale build leaves the committed pool alone.
     pub loading: ModLoading,
     /// Declared save-slot counts; `None` when the manifest has no `saves`
-    /// block. Commits with this generation, like `loading`.
+    /// block. Carried with the staged manifest; the app reads it from the
+    /// committed manifest at boot, not on a staged reload.
     pub saves: Option<SavesManifest>,
     pub store_declarations: StoreDeclarationSet,
     /// The registered damage vocabulary; see `ModManifestResult::defense`.

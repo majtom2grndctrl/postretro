@@ -1,5 +1,5 @@
 // The dev frontend's save screens: characters, runs, the host lobby, and the
-// confirmation each DELETE opens. They follow the visual grammar at the top of
+// confirmation each DELETE opens. They follow the `Visual grammar` block in
 // `frontend-menu.ts`, with its helpers. Every reaction they press lives there,
 // in `frontendReactions`, so this module only lays the screens out.
 //

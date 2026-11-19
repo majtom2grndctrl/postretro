@@ -298,8 +298,8 @@ impl App {
     }
 
     /// Harvest the live pawns into their seats' carry without unbinding
-    /// them, so a save point mid-level writes the loadout held now. Only a played level
-    /// on the host or in single player: a backdrop's pawn is never
+    /// them, so a save point mid-level writes the loadout held now. Only a
+    /// played level on the host or in single player: a backdrop's pawn is never
     /// harvested, and a client's carry comes from its host.
     pub(crate) fn harvest_bound_pawns_for_save(&mut self) {
         if !self.played_level_present()

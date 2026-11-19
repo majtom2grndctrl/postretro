@@ -310,7 +310,7 @@ export const devLevelSelectMenu = defineUiTree({
       role: "group",
     },
     panel({}, [
-      title("PLAY"),
+      title("LEVEL SELECT"),
       // A host's players follow it into the level it starts.
       VStack({ align: "stretch", visibleWhen: stateEquals(getGameState().session.hosting, true) }, [
         body("Players waiting at your menu join you in this level."),

@@ -18,10 +18,10 @@ const DEFAULT_APP_NAME: &str = "postretro";
 
 /// The one place the platform's per-user directories are resolved.
 ///
-/// Settings and saved state resolve together because `state.json`'s per-player
-/// rows are keyed by the claim id derived from `settings.toml`'s `player_id`
-/// (`player_options.md` §2): two resolutions that disagreed would orphan every
-/// per-player save. Each inner `Option` is genuine runtime absence — a platform
+/// Settings and saved state resolve together because the mod's save files key
+/// per-player rows by a claim id, and a migrated or implicit character's claim
+/// is `settings.toml`'s `player_id` (`player_options.md` §2): two resolutions
+/// that disagreed would orphan those saves. Each inner `Option` is genuine runtime absence — a platform
 /// with no such directory runs without that persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AppDirs {
@@ -58,7 +58,7 @@ impl AppDirs {
             .map(|config_dir| config_dir.join(SETTINGS_FILENAME))
     }
 
-    /// The directory each mod's `state.json` lives under.
+    /// The directory each mod's save files live under.
     pub(crate) fn data_dir(&self) -> Option<&Path> {
         self.data_dir.as_deref()
     }
@@ -260,7 +260,7 @@ mod tests {
     }
 
     /// Grep gate: the bare-launch default names a directory only here. The
-    /// engine and sim crates — every settings and `state.json` consumer — take
+    /// engine and sim crates — every settings and save-file consumer — take
     /// the directories resolved once at stage 1 instead of naming one.
     #[test]
     fn the_default_app_name_literal_appears_only_in_the_chokepoint() {

@@ -1349,7 +1349,8 @@ declare function createCharacter(index: number): SystemReactionStep
 declare function deleteCharacter(index: number): SystemReactionStep
 
 --- System reaction: reach checkpoint `name`. The host or single player saves
---- the run at it and the character; the `player_spawn`s with
+--- the run at it, then the character and the world file; outside an active run
+--- it saves the character and the world file only. The `player_spawn`s with
 --- `checkpoint=<name>` form its arrival set. Pure: returns a
 --- SystemReactionStep.
 declare function checkpoint(name: string): SystemReactionStep

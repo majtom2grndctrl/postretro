@@ -126,8 +126,8 @@ pub enum JoinSeedValue {
 /// arrival; this crate never interprets it.
 ///
 /// Health and layer values are hundredths, rounded. Positional fields follow
-/// the engine's wieldable slots; trailing empty slots may be omitted. Fields
-/// are positional in bitcode, so new ones must be appended.
+/// the engine's wieldable slots; trailing empty slots may be omitted. Any field
+/// change alters the bitcode layout and bumps `WIRE_VERSION`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
 pub struct CarriedLoadoutWire {
     /// Current health in hundredths; `None` keeps the spawn default.
@@ -426,8 +426,8 @@ pub enum ServerControlMessage {
     PasswordChallenge {
         nonce: [u8; 32],
     },
-    /// The seat's carried loadout, sent to that seat's own client alone at
-    /// every host level start and checkpoint, so the player saves its gear.
+    /// The seat's carried loadout, sent to that seat's own client alone, to
+    /// each seat that carries a loadout, so the player saves its gear.
     /// No other peer ever receives a seat's loadout.
     CharacterLoadout {
         loadout: CarriedLoadoutWire,

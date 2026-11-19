@@ -11,8 +11,7 @@ use postretro_sim::scripting::state_persistence::{
 use super::{BootInputs, load_save_slots, publish_save_rows};
 use crate::session::Session;
 
-/// Load the mod's saves once its declarations commit, in place of the old
-/// single-file restore: migrate, select, set seat 0's carry, overlay the
+/// Load the mod's saves once its declarations commit: migrate, select, set seat 0's carry, overlay the
 /// store and publish the `saves.*` rows. A connected client overlays only its
 /// world and character, never the run's world state.
 pub(crate) fn boot_restore(session: &mut Session) {

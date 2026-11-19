@@ -43,7 +43,7 @@ pub(crate) const PER_OWNER_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 const PERSISTED_PLAYER_FACTION_KEY: &str = "@postretro.player";
 const PERSISTED_DEFAULT_ENEMY_FACTION_KEY: &str = "@postretro.default-enemy";
 
-/// Process-lifetime gate for the one-time restore and clean-exit save.
+/// Process-lifetime gate for the one-time restore and every save point.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StateStoreLifecycle {
     restore_completed: bool,

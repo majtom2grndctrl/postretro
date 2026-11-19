@@ -1219,7 +1219,7 @@ mod tests {
         }
     }
 
-    // V5: run scope is a global-only `persist` value. Both scopes keep
+    // Run scope is a global-only `persist` value. Both scopes keep
     // `SlotSchema.persist` true; only `run_scoped` membership tells them apart.
     #[test]
     fn persist_run_scope_declaration_rules() {

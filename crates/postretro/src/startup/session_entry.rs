@@ -407,7 +407,8 @@ impl App {
             }
             ServerControlMessage::SpawnPoseHint(_)
             | ServerControlMessage::SessionRoster(_)
-            | ServerControlMessage::FinalCharacter { .. } => self.note_client_admitted(),
+            | ServerControlMessage::FinalCharacter { .. }
+            | ServerControlMessage::CharacterLoadout { .. } => self.note_client_admitted(),
             _ => {}
         }
     }
@@ -692,8 +693,7 @@ impl App {
         let (claim_id, claim_name) = session.character_claim();
         let entry = enter_role(
             net_role,
-            claim_id,
-            &claim_name,
+            claim_id.map(|id| (id, claim_name.as_str())),
             &mut session.scripting,
             &mut session.seat_table,
             mint,

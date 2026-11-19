@@ -263,6 +263,8 @@ impl App {
     /// holding its character, and whether that seat holds it, for the restore.
     fn save_character_on_leave(&mut self) -> (Option<postretro_foundation::Seat>, bool) {
         let final_character = self.received_final_character.take();
+        // A later session never reads this host's loadout.
+        self.received_host_loadout = None;
         let participated_before = std::mem::take(&mut self.client_participated);
         let Some(session) = self.session.as_mut() else {
             return (None, false);
@@ -275,7 +277,11 @@ impl App {
             return (None, false);
         };
         let participated = participated_before || participating || final_character.is_some();
-        if let (Some(slots), Some(seat)) = (final_character, local_seat) {
+        if let (
+            Some(crate::session::store_saves::ReceivedFinalCharacter { slots, .. }),
+            Some(seat),
+        ) = (final_character, local_seat)
+        {
             let identity = session.scripting.script_runtime.store_identity().cloned();
             let committed = session
                 .scripting

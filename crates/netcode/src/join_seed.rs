@@ -1,18 +1,17 @@
 // Host-side join-seed buffering across parity and participation.
 // See: context/lib/networking.md
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use postretro_net::slots::SlotEvent;
-use postretro_net::transport::ServerPoll;
-use postretro_net::wire::JoinSeedValue;
+use postretro_net::transport::{ReceivedJoinSeed, ServerPoll};
 
 /// Per-connection join seeds held until the host knows the player's durable
 /// seat. The buffer belongs in the binary because only engine code can validate
 /// durable keys and mutate per-seat slot values.
 #[derive(Debug, Default)]
 pub struct HostJoinSeeds {
-    pending: HashMap<u64, BTreeMap<String, JoinSeedValue>>,
+    pending: HashMap<u64, ReceivedJoinSeed>,
     consumed: HashSet<u64>,
     reclaimed: HashSet<u64>,
     /// Connections that have participated on this connection, including one
@@ -23,14 +22,14 @@ pub struct HostJoinSeeds {
 
 pub enum JoinSeedArrival {
     Buffered,
-    Apply(BTreeMap<String, JoinSeedValue>),
+    Apply(ReceivedJoinSeed),
     DroppedConsumed,
     DroppedReclaimed,
 }
 
 pub enum ParticipationSeed {
     None,
-    Apply(BTreeMap<String, JoinSeedValue>),
+    Apply(ReceivedJoinSeed),
     DroppedReclaimed,
 }
 
@@ -46,7 +45,7 @@ impl HostJoinSeeds {
         self.prepare_lifecycle(&poll.lifecycle);
         poll.join_seeds
             .iter()
-            .map(|(client_id, slots)| {
+            .map(|(client_id, seed)| {
                 let entering_participation = poll.lifecycle.iter().any(|event| {
                     matches!(
                         event,
@@ -57,7 +56,7 @@ impl HostJoinSeeds {
                 });
                 let arrival = self.receive(
                     *client_id,
-                    slots.clone(),
+                    seed.clone(),
                     is_participating(*client_id) && !entering_participation,
                 );
                 (*client_id, arrival)
@@ -94,7 +93,7 @@ impl HostJoinSeeds {
     pub(crate) fn receive(
         &mut self,
         client_id: u64,
-        slots: BTreeMap<String, JoinSeedValue>,
+        seed: ReceivedJoinSeed,
         participating: bool,
     ) -> JoinSeedArrival {
         if self.reclaimed.contains(&client_id) {
@@ -107,9 +106,9 @@ impl HostJoinSeeds {
         }
         if participating {
             self.consumed.insert(client_id);
-            return JoinSeedArrival::Apply(slots);
+            return JoinSeedArrival::Apply(seed);
         }
-        self.pending.insert(client_id, slots);
+        self.pending.insert(client_id, seed);
         JoinSeedArrival::Buffered
     }
 
@@ -124,11 +123,11 @@ impl HostJoinSeeds {
             self.consumed.insert(client_id);
             return ParticipationSeed::DroppedReclaimed;
         }
-        let Some(slots) = self.pending.remove(&client_id) else {
+        let Some(seed) = self.pending.remove(&client_id) else {
             return ParticipationSeed::None;
         };
         self.consumed.insert(client_id);
-        ParticipationSeed::Apply(slots)
+        ParticipationSeed::Apply(seed)
     }
 
     /// Whether this connection has participated, whether or not it is held
@@ -159,11 +158,17 @@ mod tests {
     use postretro_foundation::Seat;
     use postretro_scripting_core::store_identity::StoreIdentityLedger;
 
-    fn seed(value: f64) -> BTreeMap<String, JoinSeedValue> {
-        BTreeMap::from([(
-            "kplayer0000000001".to_string(),
-            JoinSeedValue::Number(value),
-        )])
+    use postretro_net::wire::JoinSeedValue;
+    use std::collections::BTreeMap;
+
+    fn seed(value: f64) -> ReceivedJoinSeed {
+        ReceivedJoinSeed {
+            slots: BTreeMap::from([(
+                "kplayer0000000001".to_string(),
+                JoinSeedValue::Number(value),
+            )]),
+            loadout: None,
+        }
     }
 
     fn persistent_per_owner_fixture() -> (SlotTable, StoreIdentityLedger, BTreeSet<String>) {
@@ -360,7 +365,7 @@ mod tests {
             panic!("initial poll must apply its buffered seed at participation");
         };
         assert!(
-            apply_join_seed(&mut table, Some(&identity), &membership, seat, values)
+            apply_join_seed(&mut table, Some(&identity), &membership, seat, values.slots)
                 .warnings
                 .is_empty()
         );
@@ -430,7 +435,7 @@ mod tests {
         };
         assert_eq!(routed_client, client_id);
         assert!(
-            apply_join_seed(&mut table, Some(&identity), &membership, seat, values)
+            apply_join_seed(&mut table, Some(&identity), &membership, seat, values.slots)
                 .warnings
                 .is_empty()
         );

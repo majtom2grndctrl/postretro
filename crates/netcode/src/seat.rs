@@ -813,6 +813,19 @@ impl SeatTable {
         }
     }
 
+    /// Harvest `seat`'s bound pawn, if it has one, without unbinding it: a
+    /// leaving client's final character holds what that pawn holds now.
+    pub fn harvest_seat(
+        &mut self,
+        registry: &EntityRegistry,
+        seat: Seat,
+        life_state_names: &[String],
+    ) {
+        if let Some(pawn) = self.pawn_bindings.get(&seat).copied() {
+            self.harvest_pawn_inner(registry, pawn, life_state_names);
+        }
+    }
+
     #[must_use]
     pub fn carried_state(&self, seat: Seat) -> Option<&CarriedState> {
         self.carried.get(&seat).and_then(Option::as_ref)

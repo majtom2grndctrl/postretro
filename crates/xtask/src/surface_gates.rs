@@ -215,6 +215,114 @@ fn network_id_stays_out_of_every_scripting_layer() {
     );
 }
 
+/// The dependency names a `Cargo.toml` section lists, in order.
+fn section_dependencies(manifest: &str, section: &str) -> Vec<String> {
+    let header = format!("[{section}]");
+    let mut in_section = false;
+    let mut names = Vec::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_section = line == header;
+            continue;
+        }
+        if !in_section || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _)) = line.split_once('=') {
+            names.push(name.trim().trim_matches('"').to_owned());
+        }
+    }
+    names
+}
+
+/// Each `(field, type)` of `pub struct <name>` in `source`, comments and
+/// attributes skipped.
+fn struct_fields(source: &str, name: &str) -> Vec<(String, String)> {
+    let opening = format!("pub struct {name} {{");
+    let start = source
+        .find(&opening)
+        .unwrap_or_else(|| panic!("`{opening}` is in the source"))
+        + opening.len();
+    let body = &source[start..start + source[start..].find("\n}").expect("struct closes")];
+    body.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with("#["))
+        .map(|line| {
+            let field = line.trim_start_matches("pub ").trim_end_matches(',');
+            let (name, ty) = field
+                .split_once(':')
+                .expect("a `name: Type` field per line");
+            (name.trim().to_owned(), ty.trim().to_owned())
+        })
+        .collect()
+}
+
+/// Whether a field type is built only from strings and integers, through
+/// `Option`, `Vec` and tuples.
+fn is_names_and_integers(ty: &str) -> bool {
+    const ALLOWED: &[&str] = &[
+        "String", "Option", "Vec", "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
+    ];
+    ty.split(|c: char| !is_identifier_char(c))
+        .filter(|word| !word.is_empty())
+        .all(|word| ALLOWED.contains(&word))
+        && ty
+            .chars()
+            .all(|c| is_identifier_char(c) || "<>(), ".contains(c))
+}
+
+// The carried loadout crosses the wire as a names-only mirror: `crates/net`
+// takes no engine crate as a dependency, and `CarriedLoadoutWire` holds only
+// strings and integers, so no engine id or float layout reaches the wire.
+// Dev-dependencies are test-only and never enter the layering.
+#[test]
+fn net_loadout_wire_is_names_only() {
+    let root = workspace_root();
+    let manifest =
+        std::fs::read_to_string(root.join("crates/net/Cargo.toml")).expect("net manifest");
+    for section in ["dependencies", "build-dependencies"] {
+        let engine: Vec<String> = section_dependencies(&manifest, section)
+            .into_iter()
+            .filter(|name| name.starts_with("postretro") || name == "glam")
+            .collect();
+        assert!(
+            engine.is_empty(),
+            "crates/net [{section}] names an engine crate: {engine:?}"
+        );
+    }
+    assert!(
+        section_dependencies(&manifest, "dependencies").contains(&"bitcode".to_owned()),
+        "the manifest parse found net's dependencies"
+    );
+
+    let source = std::fs::read_to_string(root.join("crates/net/src/wire/control.rs"))
+        .expect("net control wire");
+    let fields = struct_fields(&source, "CarriedLoadoutWire");
+    assert_eq!(
+        fields.len(),
+        7,
+        "every carried loadout field is checked: {fields:?}"
+    );
+    let offending: Vec<&(String, String)> = fields
+        .iter()
+        .filter(|(_, ty)| !is_names_and_integers(ty))
+        .collect();
+    assert!(
+        offending.is_empty(),
+        "CarriedLoadoutWire fields must hold only strings and integers: {offending:?}"
+    );
+}
+
+#[test]
+fn names_and_integers_gate_refuses_floats_and_engine_types() {
+    assert!(is_names_and_integers("Vec<(String, u32)>"));
+    assert!(is_names_and_integers("Option<i32>"));
+    assert!(!is_names_and_integers("Option<f32>"));
+    assert!(!is_names_and_integers("Vec<EntityId>"));
+    assert!(!is_names_and_integers("[u8; 16]"));
+}
+
 fn wire_version(handshake_source: &str) -> u32 {
     let line = handshake_source
         .lines()

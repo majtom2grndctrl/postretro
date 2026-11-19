@@ -689,8 +689,7 @@ impl Session {
             .and_then(|config| config.password.as_deref());
         let entry = net_entry::enter_role(
             &net_role,
-            player_options.player_id,
-            "",
+            player_options.player_id.map(|id| (id, "")),
             &mut scripting,
             &mut seat_table,
             getrandom::fill,

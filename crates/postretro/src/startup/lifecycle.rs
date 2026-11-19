@@ -2,6 +2,9 @@
 //! declares the `lifecycle_*` siblings that load, install, finish and rebuild a level.
 //! See: context/lib/boot_sequence.md §1 · §4
 
+#[cfg(test)]
+#[path = "character_loadout_wire_tests.rs"]
+mod character_loadout_wire_tests;
 #[path = "host_named_level.rs"]
 mod host_named_level;
 #[cfg(test)]

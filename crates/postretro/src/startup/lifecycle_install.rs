@@ -221,14 +221,17 @@ impl App {
                 &mut script_ctx.slot_table.borrow_mut(),
             );
         }
-        let join_seed = {
+        let (join_seed, join_loadout) = {
             let session = self
                 .session
                 .as_ref()
                 .expect("session installed before level install");
-            crate::scripting::state_persistence::join_seed_from_persisted_state(
-                session.persisted_state.as_ref(),
-                session.character_claim().0,
+            (
+                crate::scripting::state_persistence::join_seed_from_persisted_state(
+                    session.persisted_state.as_ref(),
+                    session.character_claim().0,
+                ),
+                crate::session::store_saves::join_seed_loadout(session),
             )
         };
         // A host's frontend backdrop names no level to its clients: no parity,
@@ -260,7 +263,7 @@ impl App {
                 .active_level_source
                 .as_ref()
                 .expect("active level source retained before parity installation");
-            endpoint.set_join_seed(join_seed);
+            endpoint.set_join_seed(join_seed, join_loadout);
             let identity = level_identity(source, &self.content_root);
             self.published_level_identity = Some(identity.clone());
             endpoint.set_level_parity(Some((identity, level_content_digest)));

@@ -56,6 +56,9 @@ mod host;
 mod host_address;
 mod host_assist_facts;
 mod host_input;
+// The host returns each seat's loadout to its own client.
+mod host_loadout;
+pub use host_loadout::{answer_final_character_requests, send_character_loadouts};
 // Weapon-switch declarations: intake into the ordered switch lane, then
 // validation, application and reply on the fixed tick that releases them.
 mod host_switch;
@@ -66,6 +69,12 @@ pub use host_switch_timing::{host_resolve_remote_commands_with_switches, host_se
 mod host_presentation;
 mod interpolation;
 mod join_seed;
+// A carried loadout across the wire, and the host's join-time gear check.
+mod loadout_wire;
+pub use loadout_wire::{
+    HostGear, carried_from_wire, carried_to_wire, check_join_loadout, loadout_record_from_wire,
+    loadout_record_to_wire,
+};
 // Dev-tools `POSTRETRO_NET_LAG` launch seed for the lag proxy.
 #[cfg(feature = "dev-tools")]
 mod lag_seed;

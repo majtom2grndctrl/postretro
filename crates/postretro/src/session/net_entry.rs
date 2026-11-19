@@ -42,16 +42,15 @@ pub(crate) struct RoleEntry {
 /// untouched.
 pub(crate) fn enter_role(
     net_role: &netcode::NetRole,
-    player_id: Option<[u8; 16]>,
-    display_name: &str,
+    claim: Option<([u8; 16], &str)>,
     scripting: &mut ScriptingCore,
     seat_table: &mut Option<netcode::SeatTable>,
     mint: netcode::SessionIdSource,
     probe_lan: impl FnOnce() -> Option<IpAddr>,
     password: &str,
 ) -> RoleEntry {
-    let client_user_data = player_id
-        .map(|player_id| ConnectClaim {
+    let client_user_data = claim
+        .map(|(player_id, display_name)| ConnectClaim {
             player_id: PlayerClaimId(player_id),
             display_name: display_name.to_owned(),
         })

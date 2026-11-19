@@ -292,6 +292,8 @@ impl App {
         }
         if let Some(session) = self.session.as_mut() {
             crate::session::saves::save_on_level_start(session, load.entry.catalog_id.as_deref());
+            // Each guest's loadout, harvested by the unload, returns to it.
+            crate::session::store_saves::send_character_loadouts(session);
         }
     }
 

@@ -21,10 +21,10 @@ use crate::App;
 use crate::startup::lifecycle::tests::script_ctx;
 
 fn sentiment(app: &App) -> Option<f32> {
-    script_ctx(app).faction_sentiment.borrow().get(
-        PLAYER_FACTION_INDEX as f32,
-        DEFAULT_ENEMY_FACTION_INDEX as f32,
-    )
+    script_ctx(app)
+        .faction_sentiment
+        .borrow()
+        .get(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX)
 }
 
 /// A version-4 `state.json`: a world global, a now run-scoped global, this

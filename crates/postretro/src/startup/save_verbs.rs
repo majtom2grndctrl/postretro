@@ -306,6 +306,10 @@ impl App {
             return;
         }
         self.harvest_seat_zero_for_save();
+        // Each guest's loadout, harvested just now, returns to it.
+        if let Some(session) = self.session.as_mut() {
+            crate::session::store_saves::send_character_loadouts(session);
+        }
         self.apply_spawn_checkpoint(Some(name.to_owned()));
         let catalog_id = match self.active_level_source.as_ref() {
             Some(LevelSource::Catalog(id)) => Some(id.clone()),

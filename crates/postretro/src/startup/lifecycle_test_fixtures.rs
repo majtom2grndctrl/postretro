@@ -264,6 +264,7 @@ pub(crate) fn test_app() -> App {
         client_left_in_control_drain: false,
         client_participated: false,
         received_final_character: None,
+        received_host_loadout: None,
         boot_host_level_missing: false,
         last_relevel: None,
         level_load: None,

@@ -141,7 +141,7 @@ mod scripting_systems;
 #[global_allocator]
 static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -178,8 +178,8 @@ use crate::scripting::state_persistence::{
     overlay_client_local_per_owner_state, sync_client_per_owner_projection,
 };
 pub(crate) use crate::session::store_saves::{
-    apply_host_join_seed, maybe_save_connected_client_per_owner_state,
-    save_connected_client_per_owner_state,
+    answer_final_character_requests, apply_host_join_seed,
+    maybe_save_connected_client_per_owner_state, save_connected_client_per_owner_state,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -372,8 +372,14 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             ServerControlMessage::SpawnPoseHint(hint) => app.receive_spawn_pose_hint(hint),
             // Held until the leave saves it: a snapshot the host sent before
             // its end may still apply after this, and must not win.
-            ServerControlMessage::FinalCharacter { slots } => {
-                app.received_final_character = Some(slots);
+            ServerControlMessage::FinalCharacter { slots, loadout } => {
+                app.received_final_character =
+                    Some(crate::session::store_saves::ReceivedFinalCharacter { slots, loadout });
+            }
+            // The latest loadout this client's host returned, at a level
+            // start or checkpoint: what its character saves carry.
+            ServerControlMessage::CharacterLoadout { loadout } => {
+                app.received_host_loadout = Some(loadout);
             }
             // The transport answers a challenge itself and never surfaces one.
             ServerControlMessage::PasswordChallenge { .. } => {}
@@ -1286,9 +1292,15 @@ pub(crate) struct App {
     /// left the session, so the rest of that batch is dropped.
     client_left_in_control_drain: bool,
 
-    /// The final character values a closing host returned to this client,
-    /// held until its leave saves them. Cleared by the leave.
-    received_final_character: Option<BTreeMap<String, postretro_net::wire::JoinSeedValue>>,
+    /// The final character a closing host returned to this client (its
+    /// per-owner values and loadout), held until its leave saves it. Cleared
+    /// by the leave.
+    received_final_character: Option<crate::session::store_saves::ReceivedFinalCharacter>,
+
+    /// The loadout this client's host last sent at a level start or
+    /// checkpoint, retained for the client's character saves. Cleared by the
+    /// leave, so a later session never reads a previous host's.
+    received_host_loadout: Option<postretro_net::wire::CarriedLoadoutWire>,
 
     /// Before boot left the splash or the first-launch hold, the host named
     /// a catalog level this client lacks. The boot-destination step consumes
@@ -2777,7 +2789,7 @@ impl App {
             {
                 match arrival {
                     netcode::JoinSeedArrival::Buffered => {}
-                    netcode::JoinSeedArrival::Apply(slots) => {
+                    netcode::JoinSeedArrival::Apply(seed) => {
                         let Some(seat) = seat_table
                             .as_deref()
                             .and_then(|seats| seats.seat_for_client(client_id))
@@ -2793,7 +2805,15 @@ impl App {
                             join_seed_identity.as_ref(),
                             &join_seed_membership,
                             seat,
-                            slots,
+                            seed.slots,
+                        );
+                        crate::session::store_saves::apply_host_join_loadout(
+                            &script_ctx,
+                            &registry,
+                            seat_table.as_deref_mut(),
+                            &self.host_spawn_points,
+                            seat,
+                            seed.loadout,
                         );
                     }
                     netcode::JoinSeedArrival::DroppedConsumed => log::warn!(
@@ -2849,14 +2869,24 @@ impl App {
                         };
                         match join_seed_state.on_participating(*client_id) {
                             netcode::ParticipationSeed::None => {}
-                            netcode::ParticipationSeed::Apply(slots) => apply_host_join_seed(
-                                &script_ctx,
-                                &mut registry,
-                                join_seed_identity.as_ref(),
-                                &join_seed_membership,
-                                seat,
-                                slots,
-                            ),
+                            netcode::ParticipationSeed::Apply(seed) => {
+                                apply_host_join_seed(
+                                    &script_ctx,
+                                    &mut registry,
+                                    join_seed_identity.as_ref(),
+                                    &join_seed_membership,
+                                    seat,
+                                    seed.slots,
+                                );
+                                crate::session::store_saves::apply_host_join_loadout(
+                                    &script_ctx,
+                                    &registry,
+                                    seat_table.as_deref_mut(),
+                                    &self.host_spawn_points,
+                                    seat,
+                                    seed.loadout,
+                                );
+                            }
                             netcode::ParticipationSeed::DroppedReclaimed => log::info!(
                                 "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
                             ),
@@ -2865,6 +2895,16 @@ impl App {
                 }
             }
             if let Some(seats) = seat_table {
+                answer_final_character_requests(
+                    &script_ctx,
+                    server,
+                    join_seed_state,
+                    seats,
+                    &registry,
+                    join_seed_identity.as_ref(),
+                    &join_seed_membership,
+                    &host_poll.final_character_requests,
+                );
                 netcode::clear_released_seat_slot_values(
                     &mut script_ctx.slot_table.borrow_mut(),
                     netcode::finish_host_poll(server, seats),
@@ -4051,6 +4091,7 @@ impl App {
                             || !poll.handshakes.is_empty()
                             || !poll.lifecycle.is_empty()
                             || !poll.join_seeds.is_empty()
+                            || !poll.final_character_requests.is_empty()
                         {
                             let mut registry = script_ctx.registry.borrow_mut();
                             // A transport disconnect ends the short-lived client-id
@@ -4169,7 +4210,7 @@ impl App {
                             {
                                 match arrival {
                                     netcode::JoinSeedArrival::Buffered => {}
-                                    netcode::JoinSeedArrival::Apply(slots) => {
+                                    netcode::JoinSeedArrival::Apply(seed) => {
                                         let Some(seat) = seat_table
                                             .as_deref()
                                             .and_then(|seats| seats.seat_for_client(client_id))
@@ -4185,7 +4226,15 @@ impl App {
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,
-                                            slots,
+                                            seed.slots,
+                                        );
+                                        crate::session::store_saves::apply_host_join_loadout(
+                                            &script_ctx,
+                                            &registry,
+                                            seat_table.as_deref_mut(),
+                                            &host_spawn_points,
+                                            seat,
+                                            seed.loadout,
                                         );
                                     }
                                     netcode::JoinSeedArrival::DroppedConsumed => log::warn!(
@@ -4289,14 +4338,22 @@ impl App {
                                 };
                                 match join_seed_state.on_participating(*client_id) {
                                     netcode::ParticipationSeed::None => {}
-                                    netcode::ParticipationSeed::Apply(slots) => {
+                                    netcode::ParticipationSeed::Apply(seed) => {
                                         apply_host_join_seed(
                                             &script_ctx,
                                             &mut registry,
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,
-                                            slots,
+                                            seed.slots,
+                                        );
+                                        crate::session::store_saves::apply_host_join_loadout(
+                                            &script_ctx,
+                                            &registry,
+                                            seat_table.as_deref_mut(),
+                                            &host_spawn_points,
+                                            seat,
+                                            seed.loadout,
                                         );
                                     }
                                     netcode::ParticipationSeed::DroppedReclaimed => log::info!(
@@ -4439,6 +4496,18 @@ impl App {
                                     last_sent_tuning,
                                     *client_id,
                                     payload,
+                                );
+                            }
+                            if let Some(seats) = seat_table.as_deref_mut() {
+                                answer_final_character_requests(
+                                    &script_ctx,
+                                    server,
+                                    join_seed_state,
+                                    seats,
+                                    &registry,
+                                    join_seed_identity.as_ref(),
+                                    &join_seed_membership,
+                                    &poll.final_character_requests,
                                 );
                             }
                         }

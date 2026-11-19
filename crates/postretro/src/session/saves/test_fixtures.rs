@@ -90,3 +90,25 @@ pub(crate) fn xp(app: &App) -> Option<SlotValue> {
         .per_seat_value(Seat(0))
         .cloned()
 }
+
+/// Register a frontend menu and present it, as boot does for a mod with a
+/// frontend: the machine then stands at its frontend.
+pub(crate) fn present_frontend(app: &mut App) {
+    let session = app.session.as_mut().unwrap();
+    session.modal_stack.registry_mut().register(
+        "mainMenu",
+        postretro_ui::demo::build_frontend_menu_descriptor(),
+        postretro_ui::modal_stack::ScopeTier::Mod,
+        false,
+    );
+    session.frontend = Some(postretro_scripting_core::runtime::Frontend {
+        menu_tree: "mainMenu".to_string(),
+        background_level: None,
+        camera: postretro_scripting_core::runtime::MenuCamera {
+            position: [0.0; 3],
+            yaw: 0.0,
+            pitch: 0.0,
+        },
+    });
+    app.present_frontend_menu();
+}

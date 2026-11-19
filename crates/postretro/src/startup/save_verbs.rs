@@ -22,24 +22,36 @@ impl App {
     /// Run one save verb, or refuse it with a warning, changing nothing.
     pub(crate) fn handle_save_verb(&mut self, command: SystemReactionCommand) {
         let (verb, result) = match command {
-            SystemReactionCommand::SelectCharacter { index, .. } => {
-                ("selectCharacter", self.gate("selectCharacter").and_then(|()| self.select_character_verb(index)))
-            }
-            SystemReactionCommand::CreateCharacter { index, .. } => {
-                ("createCharacter", self.gate("createCharacter").and_then(|()| self.create_character_verb(index)))
-            }
-            SystemReactionCommand::DeleteCharacter { index, .. } => {
-                ("deleteCharacter", self.gate("deleteCharacter").and_then(|()| self.delete_character_verb(index)))
-            }
-            SystemReactionCommand::ContinueRun { index, .. } => {
-                ("continueRun", self.gate("continueRun").and_then(|()| self.continue_run_verb(index)))
-            }
-            SystemReactionCommand::NewRun { index, map, .. } => {
-                ("newRun", self.gate("newRun").and_then(|()| self.new_run_verb(index, &map)))
-            }
-            SystemReactionCommand::DeleteRun { index, .. } => {
-                ("deleteRun", self.gate("deleteRun").and_then(|()| self.delete_run_verb(index)))
-            }
+            SystemReactionCommand::SelectCharacter { index, .. } => (
+                "selectCharacter",
+                self.gate("selectCharacter")
+                    .and_then(|()| self.select_character_verb(index)),
+            ),
+            SystemReactionCommand::CreateCharacter { index, .. } => (
+                "createCharacter",
+                self.gate("createCharacter")
+                    .and_then(|()| self.create_character_verb(index)),
+            ),
+            SystemReactionCommand::DeleteCharacter { index, .. } => (
+                "deleteCharacter",
+                self.gate("deleteCharacter")
+                    .and_then(|()| self.delete_character_verb(index)),
+            ),
+            SystemReactionCommand::ContinueRun { index, .. } => (
+                "continueRun",
+                self.gate("continueRun")
+                    .and_then(|()| self.continue_run_verb(index)),
+            ),
+            SystemReactionCommand::NewRun { index, map, .. } => (
+                "newRun",
+                self.gate("newRun")
+                    .and_then(|()| self.new_run_verb(index, &map)),
+            ),
+            SystemReactionCommand::DeleteRun { index, .. } => (
+                "deleteRun",
+                self.gate("deleteRun")
+                    .and_then(|()| self.delete_run_verb(index)),
+            ),
             SystemReactionCommand::Checkpoint { name, .. } => {
                 log::debug!("[State] checkpoint `{name}` not yet handled");
                 return;
@@ -86,7 +98,9 @@ impl App {
         let session = self.session.as_mut().expect("gated on a session");
         match session.saves.character_slots().get(index) {
             Some(SlotFile::Occupied(_)) => {}
-            Some(SlotFile::Unreadable) => return Err(format!("character slot {index} cannot be read")),
+            Some(SlotFile::Unreadable) => {
+                return Err(format!("character slot {index} cannot be read"));
+            }
             Some(SlotFile::Empty) => return Err(format!("character slot {index} is empty")),
             None => return Err(format!("character slot {index} is not declared")),
         }
@@ -196,7 +210,9 @@ impl App {
             .iter()
             .any(|entry| entry.id == level);
         if !known {
-            return Err(format!("run slot {index}'s level `{level}` is not in this mod's catalog"));
+            return Err(format!(
+                "run slot {index}'s level `{level}` is not in this mod's catalog"
+            ));
         }
         if !hosting {
             session.saves.select_character(Some(character));
@@ -212,7 +228,10 @@ impl App {
 
     fn new_run_verb(&mut self, index: usize, map: &str) -> Result<(), String> {
         let session = self.session.as_mut().expect("gated on a session");
-        let Some(claim) = session.saves.selected_character().map(|record| record.claim.clone())
+        let Some(claim) = session
+            .saves
+            .selected_character()
+            .map(|record| record.claim.clone())
         else {
             return Err("no character is selected".into());
         };

@@ -7,14 +7,14 @@ use postretro_entities::SystemReactionCommand;
 use postretro_entities::reactions::system_commands::{FireOrigin, MachineSource};
 use postretro_entities::slot_table::SlotValue;
 use postretro_foundation::{ModMapEntry, Seat};
-use postretro_scripting_core::runtime::{Frontend, MenuCamera, SavesManifest};
+use postretro_scripting_core::runtime::SavesManifest;
 use postretro_sim::scripting::save_files::{
     LedgerDocument, SaveDir, Selection, SlotFile, read_document, read_selection,
 };
 
 use crate::App;
 use crate::session::saves::test_fixtures::{
-    GENERATOR, MOD_ID, SCORE, app_with_store, boot, number, xp,
+    GENERATOR, MOD_ID, SCORE, app_with_store, boot, number, present_frontend, xp,
 };
 use crate::startup::lifecycle::tests::script_ctx;
 
@@ -32,16 +32,32 @@ fn src() -> String {
 }
 
 fn select(index: usize) -> SystemReactionCommand {
-    SystemReactionCommand::SelectCharacter { index, dispatch_source: src(), origin: origin() }
+    SystemReactionCommand::SelectCharacter {
+        index,
+        dispatch_source: src(),
+        origin: origin(),
+    }
 }
 fn create(index: usize) -> SystemReactionCommand {
-    SystemReactionCommand::CreateCharacter { index, dispatch_source: src(), origin: origin() }
+    SystemReactionCommand::CreateCharacter {
+        index,
+        dispatch_source: src(),
+        origin: origin(),
+    }
 }
 fn delete_character(index: usize) -> SystemReactionCommand {
-    SystemReactionCommand::DeleteCharacter { index, dispatch_source: src(), origin: origin() }
+    SystemReactionCommand::DeleteCharacter {
+        index,
+        dispatch_source: src(),
+        origin: origin(),
+    }
 }
 fn continue_run(index: usize) -> SystemReactionCommand {
-    SystemReactionCommand::ContinueRun { index, dispatch_source: src(), origin: origin() }
+    SystemReactionCommand::ContinueRun {
+        index,
+        dispatch_source: src(),
+        origin: origin(),
+    }
 }
 fn new_run(index: usize, map: &str) -> SystemReactionCommand {
     SystemReactionCommand::NewRun {
@@ -52,7 +68,11 @@ fn new_run(index: usize, map: &str) -> SystemReactionCommand {
     }
 }
 fn delete_run(index: usize) -> SystemReactionCommand {
-    SystemReactionCommand::DeleteRun { index, dispatch_source: src(), origin: origin() }
+    SystemReactionCommand::DeleteRun {
+        index,
+        dispatch_source: src(),
+        origin: origin(),
+    }
 }
 
 /// A booted mod with a `saves` block of two characters and two runs, its
@@ -73,16 +93,7 @@ fn frontend(dir: &std::path::Path) -> App {
             });
         }
     }
-    app.session.as_mut().unwrap().frontend = Some(Frontend {
-        menu_tree: "menu".into(),
-        background_level: None,
-        camera: MenuCamera {
-            position: [0.0; 3],
-            yaw: 0.0,
-            pitch: 0.0,
-        },
-    });
-    app.present_frontend_menu();
+    present_frontend(&mut app);
     assert!(app.at_frontend());
     app
 }
@@ -100,7 +111,10 @@ fn name_entry(app: &App, name: &str) {
 fn character(app: &mut App, index: usize, name: &str) {
     name_entry(app, name);
     app.handle_save_verb(create(index));
-    assert_eq!(app.session.as_ref().unwrap().saves.selection().character, index as i32);
+    assert_eq!(
+        app.session.as_ref().unwrap().saves.selection().character,
+        index as i32
+    );
 }
 
 fn set(app: &App, name: &str, value: f32) {
@@ -183,7 +197,10 @@ fn create_character_refuses_occupied_slot() {
     app.handle_save_verb(create(0));
 
     capture.assert_logged(log::Level::Warn, "createCharacter refused");
-    assert_eq!(std::fs::read(saves(dir.path()).character_path(0)).unwrap(), before);
+    assert_eq!(
+        std::fs::read(saves(dir.path()).character_path(0)).unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -194,7 +211,11 @@ fn select_character_replaces_per_owner_values() {
     set_xp(&app, 5.0);
     save(&mut app);
     character(&mut app, 1, "Ash");
-    assert_eq!(xp(&app), Some(SlotValue::Number(0.0)), "B starts at the default");
+    assert_eq!(
+        xp(&app),
+        Some(SlotValue::Number(0.0)),
+        "B starts at the default"
+    );
     set_xp(&app, 2.0);
     save(&mut app);
 
@@ -211,13 +232,22 @@ fn deleting_selection_stores_minus_one() {
     character(&mut app, 0, "Vex");
     app.handle_save_verb(new_run(1, "next"));
     back_to_frontend(&mut app);
-    assert_eq!(selection(&app), Selection { character: 0, run: 1 });
+    assert_eq!(
+        selection(&app),
+        Selection {
+            character: 0,
+            run: 1
+        }
+    );
 
     app.handle_save_verb(delete_run(1));
     assert_eq!(selection(&app).run, -1);
     app.handle_save_verb(delete_character(0));
     assert_eq!(selection(&app), Selection::default());
-    assert_eq!(read_selection(&saves(dir.path()).selection_path()), Selection::default());
+    assert_eq!(
+        read_selection(&saves(dir.path()).selection_path()),
+        Selection::default()
+    );
     let table = script_ctx(&app).slot_table.clone();
     assert_eq!(
         table.borrow().get("saves.character").unwrap().value,
@@ -257,14 +287,23 @@ fn new_run_slot_ownership() {
 
     app.handle_save_verb(new_run(0, "second"));
     capture.assert_logged(log::Level::Warn, "another character's run");
-    assert_eq!(std::fs::read(saves(dir.path()).run_path(0)).unwrap(), before);
+    assert_eq!(
+        std::fs::read(saves(dir.path()).run_path(0)).unwrap(),
+        before
+    );
 
     app.handle_save_verb(new_run(1, "second"));
-    assert_eq!(run_file(dir.path(), 1).unwrap().level.unwrap().catalog_id, "second");
+    assert_eq!(
+        run_file(dir.path(), 1).unwrap().level.unwrap().catalog_id,
+        "second"
+    );
     back_to_frontend(&mut app);
     // Into the selected character's own run: permitted.
     app.handle_save_verb(new_run(1, "next"));
-    assert_eq!(run_file(dir.path(), 1).unwrap().level.unwrap().catalog_id, "next");
+    assert_eq!(
+        run_file(dir.path(), 1).unwrap().level.unwrap().catalog_id,
+        "next"
+    );
 }
 
 #[test]
@@ -286,7 +325,11 @@ fn new_run_resets_run_scope_and_keeps_world_and_character() {
     assert_eq!(carry(&app).unwrap().reserve.available("shells"), 9);
     let run = run_file(dir.path(), 0).expect("written before its load begins");
     assert_eq!(run.level.unwrap().catalog_id, "next");
-    assert!(!run.slots.contains_key("k-gen") || run.slots["k-gen"] == postretro_sim::scripting::state_persistence::PersistedValue::Number(0.0));
+    assert!(
+        !run.slots.contains_key("k-gen")
+            || run.slots["k-gen"]
+                == postretro_sim::scripting::state_persistence::PersistedValue::Number(0.0)
+    );
     assert!(app.level_load_in_flight() || !app.level_requests.is_empty());
 }
 
@@ -311,7 +354,13 @@ fn continue_installs_run_with_its_character() {
 
     app.handle_save_verb(continue_run(0));
 
-    assert_eq!(selection(&app), Selection { character: 0, run: 0 });
+    assert_eq!(
+        selection(&app),
+        Selection {
+            character: 0,
+            run: 0
+        }
+    );
     assert_eq!(number(&app, GENERATOR), Some(SlotValue::Number(5.0)));
     assert_eq!(carry(&app).unwrap().reserve.available("shells"), 9);
     assert!(
@@ -332,19 +381,26 @@ fn continue_refuses_orphaned_or_unknown_level_runs() {
     app.handle_save_verb(new_run(0, "next"));
     back_to_frontend(&mut app);
     app.handle_save_verb(delete_character(0));
+    let before = selection(&app);
 
     app.handle_save_verb(continue_run(0));
     capture.assert_logged(log::Level::Warn, "character was deleted");
+    assert_eq!(selection(&app), before, "refused, changing nothing");
     // A new character in the same slot is a different character.
     character(&mut app, 0, "Vex again");
+    let before = selection(&app);
     app.handle_save_verb(continue_run(0));
     assert!(app.at_frontend(), "still refused");
-    assert_eq!(selection(&app).run, -1);
+    assert_eq!(selection(&app), before);
 
     // A run whose level the mod no longer defines.
     app.handle_save_verb(new_run(1, "second"));
     back_to_frontend(&mut app);
-    script_ctx(&app).data_registry.borrow_mut().maps.retain(|entry| entry.id != "second");
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .maps
+        .retain(|entry| entry.id != "second");
     app.handle_save_verb(continue_run(1));
     capture.assert_logged(log::Level::Warn, "not in this mod's catalog");
     assert!(app.at_frontend());
@@ -358,19 +414,27 @@ fn verb_after_queued_run_load_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = frontend(dir.path());
     character(&mut app, 0, "Vex");
-    character(&mut app, 1, "Ash");
     app.handle_save_verb(new_run(0, "next"));
     back_to_frontend(&mut app);
-    app.handle_save_verb(select(1));
+    character(&mut app, 1, "Ash");
 
+    // Continue selects Vex, the run's character; the select queued after it
+    // in the same reaction is refused.
     app.handle_save_verb(continue_run(0));
     app.handle_save_verb(select(1));
-    assert_eq!(selection(&app).character, 0, "the select after Continue changed nothing");
+    assert_eq!(
+        selection(&app).character,
+        0,
+        "the select after Continue changed nothing"
+    );
 
     back_to_frontend(&mut app);
     app.handle_save_verb(new_run(0, "second"));
     app.handle_save_verb(delete_run(0));
-    assert!(run_file(dir.path(), 0).is_some(), "the delete after newRun changed nothing");
+    assert!(
+        run_file(dir.path(), 0).is_some(),
+        "the delete after newRun changed nothing"
+    );
 }
 
 #[test]
@@ -428,10 +492,19 @@ fn hosting_frontend_verb_gate() {
     capture.assert_logged(log::Level::Warn, "selectCharacter refused");
     capture.assert_logged(log::Level::Warn, "deleteRun refused");
     capture.assert_logged(log::Level::Warn, "belongs to another character");
-    assert_eq!(selection(&app), Selection { character: 0, run: 0 });
+    assert_eq!(
+        selection(&app),
+        Selection {
+            character: 0,
+            run: 0
+        }
+    );
 
     app.handle_save_verb(continue_run(0));
-    assert!(!app.at_frontend(), "the host's own Continue starts its level");
+    assert!(
+        !app.at_frontend(),
+        "the host's own Continue starts its level"
+    );
 }
 
 #[test]
@@ -461,7 +534,10 @@ fn store_reload_resets_mod_slots_and_keeps_engine_slots() {
 
     assert_eq!(number(&app, "scratch.temp"), Some(SlotValue::Number(0.0)));
     assert_eq!(number(&app, SCORE), Some(SlotValue::Number(7.0)));
-    assert_eq!(number(&app, "ui.textEntry"), Some(SlotValue::String("typed".into())));
+    assert_eq!(
+        number(&app, "ui.textEntry"),
+        Some(SlotValue::String("typed".into()))
+    );
 }
 
 #[test]
@@ -481,7 +557,10 @@ fn selecting_another_character_never_takes_prior_gear() {
     app.handle_save_verb(continue_run(1));
 
     assert_eq!(carry(&app), None, "B spawns empty");
-    assert_eq!(std::fs::read(saves(dir.path()).character_path(0)).unwrap(), a_before);
+    assert_eq!(
+        std::fs::read(saves(dir.path()).character_path(0)).unwrap(),
+        a_before
+    );
 }
 
 #[test]
@@ -503,4 +582,68 @@ fn failed_load_still_continues_at_destination() {
         request,
         super::LevelRequest::Load(super::LevelSource::Catalog(id)) if id == "second"
     )));
+}
+
+/// Seat 0's pawn in an installed level holding `shells`; `played` false is
+/// the frontend backdrop.
+fn install_pawn(app: &mut App, played: bool, shells: u32) {
+    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::data_descriptors::HealthDescriptor;
+    use postretro_entities::{AmmoReserve, Transform};
+    app.boot_state = super::BootState::Running;
+    app.backdrop_installed = !played;
+    let ctx = script_ctx(app);
+    let session = app.session.as_mut().unwrap();
+    let mut registry = ctx.registry.borrow_mut();
+    let pawn = registry.spawn(Transform::default());
+    registry
+        .set_component(
+            pawn,
+            HealthComponent::from_descriptor(&HealthDescriptor {
+                max: 100.0,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let mut reserve = AmmoReserve::new();
+    reserve.set_exact("shells", shells);
+    registry.set_component(pawn, reserve).unwrap();
+    let seats = session.seat_table.as_mut().unwrap();
+    seats.bind_pawn(&mut registry, Seat(0), pawn);
+    session.session_players.begin_level(
+        played,
+        Some(seats),
+        None,
+        &registry,
+        &mut ctx.slot_table.borrow_mut(),
+    );
+}
+
+#[test]
+fn new_character_carries_gear_and_second_starts_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    // The dev mod's backdrop spawns a pawn bound to seat 0 under the menu.
+    install_pawn(&mut app, false, 50);
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+    app.drain_level_requests();
+    assert_eq!(carry(&app), None, "the backdrop's pawn is never harvested");
+
+    // The first level: a pickup, then the level start of the second.
+    install_pawn(&mut app, true, 9);
+    app.enqueue_level_request(super::LevelRequest::Load(super::LevelSource::Catalog(
+        "second".into(),
+    )));
+    app.drain_level_requests();
+    assert_eq!(carry(&app).unwrap().reserve.available("shells"), 9);
+    let saved = read_document(&saves(dir.path()).character_path(0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.seats[0].loadout.reserve.get("shells"), Some(&9));
+
+    back_to_frontend(&mut app);
+    character(&mut app, 1, "Ash");
+    app.handle_save_verb(new_run(1, "next"));
+    assert_eq!(carry(&app), None, "a second new character starts with none");
 }

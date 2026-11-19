@@ -210,16 +210,8 @@ fn path_load_leaves_run_file_untouched_and_writes_character() {
 fn backdrop_pawn_is_never_harvested() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = booted(dir.path());
-    app.session.as_mut().unwrap().frontend = Some(postretro_scripting_core::runtime::Frontend {
-        menu_tree: "menu".into(),
-        background_level: None,
-        camera: postretro_scripting_core::runtime::MenuCamera {
-            position: [0.0; 3],
-            yaw: 0.0,
-            pitch: 0.0,
-        },
-    });
-    app.present_frontend_menu();
+    crate::session::saves::test_fixtures::present_frontend(&mut app);
+    assert!(app.frontend_menu_is_present());
     install(&mut app, false, 40.0, 9);
 
     // A played load from the frontend clears the menu, as `loadLevel` does.

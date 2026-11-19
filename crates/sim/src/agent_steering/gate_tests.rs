@@ -1124,3 +1124,6 @@ fn a_chaser_against_a_door_that_never_rests_still_recovers() {
     }
     assert!(fired >= 1, "stuck recovery never fired");
 }
+
+#[path = "positioning_equivalence_tests.rs"]
+mod positioning_equivalence;

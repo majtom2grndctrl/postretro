@@ -6,10 +6,9 @@
 use glam::{Quat, Vec3};
 use postretro_foundation::COMBAT_RING_STEP_DEG;
 
-use super::scoring::score_candidate;
-use super::{CombatCandidate, CombatQuery, compare_candidates};
+use super::{CombatCandidate, CombatQuery, ScoreFn, compare_candidates};
 use crate::collision::CapsulePlacement;
-use crate::nav::{NavScratch, distance_xz};
+use crate::nav::distance_xz;
 
 /// Slots on a rotated ring, one every 45°.
 pub const RING_SLOT_COUNT: u8 = 8;
@@ -144,10 +143,10 @@ impl SlotRing {
 /// Score the ring's slots. Each candidate's `generation_index` is its ring
 /// index. Keep-aways reject before the scorer pays for routing.
 pub(super) fn ring_candidates(
-    scratch: &mut NavScratch,
     query: &CombatQuery<'_>,
     ring: &SlotRing,
     placement: CapsulePlacement,
+    score: &mut ScoreFn<'_>,
 ) -> Vec<CombatCandidate> {
     let bearing_len_sq = ring.bearing.length_squared();
     if !bearing_len_sq.is_finite() || (bearing_len_sq - 1.0).abs() > 1.0e-3 {
@@ -159,14 +158,7 @@ pub(super) fn ring_candidates(
         if !ring.keeps_away(position) {
             continue;
         }
-        if let Some(candidate) = score_candidate(
-            scratch,
-            query,
-            placement,
-            position,
-            usize::from(index),
-            false,
-        ) {
+        if let Some(candidate) = score(query, placement, position, usize::from(index), false) {
             candidates.push(candidate);
         }
     }

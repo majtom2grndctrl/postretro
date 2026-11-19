@@ -1,166 +1,92 @@
 # Mover-Relative Rider Presentation — Research
 
-## Current ownership
+Read at 8489a1fe. Symbols, not lines; the executor re-verifies.
 
-| Data | Current owner | Current consumer |
+## Who reads which mover pose today
+
+| Consumer | Pose it reads | Where |
 |---|---|---|
-| Remote transform samples | `ClientReplication.interp` (`RemoteInterpolationBuffer`) | `ClientReplication::sample_into_registry` |
-| Remote ground reference | `WirePlayerMovementState.ground` | Local movement apply; remote presentation discards it after validation |
-| Authoritative mover history | `ClientReplication.mover_history` (`MoverHistoryBuffer`) | Prediction/replay through `MoverPoseSource` |
-| Current fixed-tick mover pose | `App.kinematic_mover_tick_states` (`MoverTickStateTable`) | Movement collision, carry, connected-client foot probes |
-| Local camera interpolation endpoints | `FrameTiming.previous_state/current_state` (`InterpolableState`) | `FrameTiming::interpolated_state` |
-| Mesh world transform | `EntityRegistry` current + previous transform columns | `MeshRenderCollector::collect_inner` via `interpolated_transform` |
-| Mover beauty/shadow transform | `EntityRegistry` current + previous transform columns | `KinematicMoverRenderCollector::collect` |
-| Foot contacts | `sim::update_foot_ground_probes` | `PoseInputs::feet` consumed by mesh pose sampling |
+| Mover beauty, shadow instances, occluder AABBs | `registry.interpolated_transform(id, alpha)` | `KinematicMoverRenderCollector::collect_with_mirror` (`crates/postretro/src/runtime_movers.rs`); visibility cull uses the current fixed-tick bounds |
+| Mover-attached lights | registry interpolated transform | `crates/postretro/src/light_bridge.rs` |
+| Foot probes, single-player and host own pawn | `MoverTickStateTable`, end of this tick, no alpha | `simulate_started_tick_with_presentation_aim` → `update_foot_ground_probes` (`crates/sim/src/sim/mod.rs`) |
+| Foot probes, connected client | `App.kinematic_mover_tick_states`, no alpha | `App::update_client_presentation_pose_inputs` (`main.rs`) |
+| Foot probes, host seat (client pawns) | live tick table ("deliberately live, not delayed") | `host_presentation::probe_presented_client_pawn_feet` |
+| Local camera yaw | tick table + `tick_rotation_delta * alpha` residual | `effective_render_yaw`, `mover_yaw_render_residual` (`main.rs`) |
+| Local camera position, local pawn mesh | world-space lerp of tick endpoints | `InterpolableState::lerp` (`crates/sim/src/sim/frame_timing.rs`); `MeshRenderCollector::collect_inner` |
+| Remote riders, client view | delayed world-space sample, no ground | `ClientReplication::sample_into_registry` → `RemoteInterpolationBuffer::presented_pose` |
+| Remote riders, host seat | delayed world-space sample, `newest_recorded_tick − PRESENTATION_DELAY_TICKS + alpha` | `host_presentation::present_client_pawns` |
 
-`WireGroundRef::Mover` already carries the compile-time mover id. The static-kinematic
-handshake already proves mover path, collision, spin, and `carry_yaw` parity. This plan
-adds no wire field or version bump.
+`MoverPoseSource` (`crates/physics/src/collision/moving.rs`) is implemented by `MoverTickStateTable`, `MoverTickPoseSource`, `EmptyMoverPoseSource`, `MoverHistoryBuffer` (newest sample only), `ReplayCollisionSource` and `OneMoverPose`. No per-frame shared presentation pose exists.
 
-## Remote rider lifecycle
+## Remote riders
 
-```mermaid
-sequenceDiagram
-    participant Host as "Host fixed tick"
-    participant Wire as "SnapshotMessage"
-    participant Apply as "ClientReplication::apply_components_to"
-    participant Actor as "RemoteInterpolationBuffer::presented_pose"
-    participant History as "MoverHistoryBuffer"
-    participant Visual as "Render-time mover pose table (proposed)"
-    participant Pose as "sim::update_presentation_pose_inputs"
-    participant Mesh as "MeshRenderCollector::collect_inner"
-
-    Host->>Wire: "collect_payloads reads Transform + PlayerMovementState.ground"
-    Wire->>Apply: "client_receive_and_apply validates and applies snapshot"
-    Apply->>Actor: "record TransformSample at server_tick"
-    Apply->>History: "record MoverHistorySample at server_tick"
-    Actor->>Actor: "presented_pose samples delayed render_server_tick"
-    Actor->>History: "read historical mover transform at the same fractional tick"
-    History-->>Actor: "historical mover frame"
-    Visual->>Actor: "read current frame's visual mover frame"
-    Actor->>Actor: "historical world -> mover local -> current visual world"
-    Actor->>Apply: "set_presentation_transform writes rebased remote pose"
-    Apply->>Pose: "update_client_presentation_pose_inputs reads displayed transform"
-    Visual->>Pose: "foot probes read the same visual mover frame"
-    Pose->>Mesh: "pose inputs + rebased transform"
-    Mesh->>Mesh: "collect displayed rider instance"
-```
-
-The current break is between `presented_pose` and mover rendering: the actor samples
-`estimated_server_tick - interpolation_delay`, while
-`client_predict_loaded_movers_tick` advances the mover to estimated current time and
-`KinematicMoverRenderCollector::collect` draws that current predicted mover.
+- `TransformSample` and `MovementOnlySample` carry no ground. The client reads `WireGroundRef::Mover` only to reject unknown movers (`unknown_ground_mover_id`) and to set the grounded stance bit (`wire_ground_ref_to_foundation_checked`).
+- Movers on a client are predicted, not delayed. `prepare_mover_apply` fast-forwards the received phase to `floor(estimated_server_tick)`, and `client_predict_loaded_movers_tick` advances them each fixed tick. Remotes sample `estimated_server_tick − interpolation_delay`, so they run one delay behind their mover.
+- The host seat has the same split at a smaller delay (`PRESENTATION_DELAY_TICKS` = `INPUT_BUFFER_TARGET`). Its movers are drawn at the registry blend of the current tick. Its client pawns sample the delayed buffer the host records each tick (`record_client_pawn_poses`). The host owns each client pawn's authoritative movement state, so ground is available where the pose is recorded.
+- `MoverHistoryBuffer` (`crates/netcode/src/client.rs`) is keyed by mover id and capped at `MOVER_HISTORY_LIMIT`. It records the authoritative sample and one predicted sample at the fast-forward tick on each apply, not every predicted tick. It answers whole ticks only, through `resolve_replay_tick` / `replay_pose` (`client/replay_poses.rs`). A fractional read resolves the two whole-tick poses around it by replay and blends them.
 
 ### Rebase contract
 
-- Rebase only a remote player whose sampled ground reference is stably
-  `Mover(mover_id)` across the interpolation interval.
-- Compute the rider's local position in the historical mover frame sampled at the
-  same fractional server tick as the rider.
-- Compose that local position onto the current render-time mover frame.
-- Preserve player scale.
-- Preserve replicated player rotation when `carry_yaw` is false.
-- When `carry_yaw` is true, apply only the world-up yaw between historical and current
-  mover frames. The historical player rotation already contains yaw carry up to the
-  historical tick; applying the frame delta once advances it to presentation time.
-  Never compose the full mover rotation into player orientation.
-- An interval that lands on or detaches from a mover uses ordinary world interpolation.
-  The first interval whose two endpoints name the same mover may attach. The first
-  interval whose endpoints differ must detach. This prevents an old mover from
-  dragging an airborne rider.
-- Missing actor ground history, missing mover history, a missing current mover, or a
-  non-invertible/non-finite frame falls back to the sampled world pose.
-
-## Local rider lifecycle
-
 ```mermaid
 sequenceDiagram
-    participant Tick as "Fixed tick"
-    participant Mover as "run_kinematic_mover_tick"
-    participant Move as "movement + follow_camera_to_local_pawn"
-    participant Timing as "FrameTiming::push_state"
-    participant Visual as "Render-time mover pose table (proposed)"
-    participant Camera as "RenderCamera::new"
-    participant Mesh as "MeshRenderCollector::collect_inner"
-
-    Tick->>Mover: "snapshot_transform then advance mover"
-    Mover->>Move: "MoverTickStateTable supplies carry/collision pose"
-    Move->>Move: "pawn settles; camera follows pawn eye"
-    Move->>Timing: "capture world endpoints + mover-local pawn point when grounded"
-    Timing->>Timing: "retain previous/current attachment samples"
-    Visual->>Timing: "read mover transform at frame alpha"
-    Timing->>Timing: "interpolate pawn-local point, then compose through mover"
-    Timing->>Camera: "add world-up eye height + world-space reconcile offset"
-    Timing->>Mesh: "supply local pawn position override"
-    Camera->>Camera: "build view from mover-arc eye"
-    Mesh->>Mesh: "draw pawn at mover-arc position"
+    participant Rec as "record (client apply / host tick)"
+    participant Buf as "delayed rider buffer"
+    participant Hist as "mover history at the rider's tick"
+    participant Now as "render-time mover pose"
+    participant Out as "presentation transform"
+    Rec->>Buf: "pose + ground at tick t"
+    Buf->>Buf: "sample at delayed fractional tick τ"
+    Buf->>Hist: "same mover on both bracketing samples?"
+    Hist-->>Buf: "mover frame at τ"
+    Buf->>Now: "local = frame(τ)⁻¹ · pos"
+    Now-->>Out: "pos' = frame(now) · local; yaw += Δyaw_up if carry_yaw"
 ```
 
-`InterpolableState::lerp` currently linearly blends world positions. On a rotating base,
-that is a chord. The mover draw uses quaternion interpolation, so an attached point on
-the mover follows an arc. The two paths disagree at every mid-tick alpha.
+The historical rider yaw already includes carry up to τ, so adding the world-up yaw from τ to now advances it once. Composing the full mover rotation into orientation would tilt the player.
 
-The local attachment sample must keep three terms separate:
+## Local eye
 
-1. Pawn capsule-center position in mover-local space. This rotates/translates with the
-   mover.
-2. Eye height in world-up. This never tilts with mover pitch/roll.
-3. Client reconciliation presentation offset in world space. It stays on the existing
-   correction path and is never rotated by the mover.
+- `InterpolableState` holds only `position`. `lerp` is `Vec3::lerp`. Every `push_state` site pushes the eye after `follow_camera_to_local_pawn`.
+- `interpolated_transform` lerps position and slerps rotation, so a point fixed to the mover sweeps an arc while the eye sweeps the chord. The gap at mid-tick is r·θ²/8 for a turn of θ per tick at radius r. On the carousel (45°/s, 60 Hz, θ ≈ 0.013 rad) it is about 0.1 mm at 4–6 m. At 360°/s it is about 8 mm at 6 m. That is the owner's warrant for leaving the arc out.
+- The local pawn mesh is `shadowOnly` in first person (`content/dev/scripts/player.ts`).
+- `ClientPrediction::presentation_offset` (`crates/netcode/src/prediction.rs`) is added inside `pawn_eye_position` before `push_state`, so both endpoints already include it.
+- `apply_authoritative_mover_corrections` turns a carried rider's camera yaw by the correction's yaw at apply. Under smoothing, the view yaw has to take the presented correction's world-up yaw, or the view turns while the deck holds still.
 
-Arc interpolation applies only when both tick endpoints name the same mover. Landing,
-detach, mover change, fly-camera, and missing-pawn frames retain world-space lerp.
+## Where the pose lives
 
-## Mover reconciliation lifecycle
+`interpolated_transform` is the render-time accessor every per-entity visual pass reads (`entity_model.md` §5). Presentation writers that resolve a final pose, such as the remote buffer and the host seat, write it through `set_presentation_transform`. A mover's current `Transform` is simulation truth, so smoothing cannot use that writer. It has to be a correction the accessor applies on read.
 
-```mermaid
-sequenceDiagram
-    participant Frame as "App::window_event RedrawRequested"
-    participant Apply as "run_snapshot_apply_stage"
-    participant Client as "ClientReplication::apply_components_to"
-    participant Registry as "EntityRegistry"
-    participant Visual as "Render-time mover pose table (proposed)"
-    participant Consumers as "rider, camera, foot IK, mover collectors"
+A per-frame mover pose table was the earlier shape. Whenever smoothing runs, every reader not handed the table draws a different mover than the beauty pass:
+- ghosts (`ghost_presented_transform`)
+- sound anchors (`sound_events/anchors.rs`)
+- E21 attachments and the `E22--kinematic-assemblies` draft
+- `mover-aware-reflection-captures`
 
-    Frame->>Frame: "begin_frame computes ticks + alpha"
-    Frame->>Apply: "net poll/apply runs before fixed ticks"
-    Apply->>Client: "received mover phase + Transform"
-    Client->>Registry: "read pre-apply interpolated mover at this alpha"
-    Client->>Registry: "write reconciled mover phase/current Transform"
-    Client->>Registry: "read raw post-apply interpolated mover at same alpha"
-    Client->>Client: "record raw position/angular correction and visual step"
-    Client->>Visual: "if fixed harness crosses gate, seed render-only correction"
-    Visual->>Consumers: "publish one coherent mover pose for this frame"
-    Consumers->>Consumers: "all presentation reads share that pose"
-    Frame->>Visual: "decay correction once after frame consumption"
-```
+The registry correction costs one sparse lookup per accessor call and nothing for an entity without a correction. The table cached poses once per frame, but each consumer had to be wired to it.
 
-Current apply writes the mover's current `Transform` before the catch-up tick loop. Its
-previous transform may still describe the predicted pre-snapshot path. The render
-accessor can therefore blend an unmatched pair on a zero-tick frame.
+## Mover corrections
 
-The measurement gate is fixed:
+- `ClientReplication::apply_components_to` writes phase and `Transform` with `set_component`, which writes the current slot only. `previous_transforms` keeps the predicted pre-snapshot pose. `run_snapshot_apply_stage` runs before the tick loop, and the client refreshes previous only in `client_predict_loaded_movers_tick`. A zero-tick frame therefore blends an unmatched pair. A frame that ticks still jumps by about the correction.
+- `MoverCorrection` records position magnitude only. `apply_authoritative_mover_corrections` uses it to adjust a carried rider's yaw and to publish to `MoverTickStateTable`.
+- No test measures the drawn step. `moving_platform_reconciles_under_mandated_profile_without_accumulating_drift` allows corrections up to 0.16 m, eighty times the 0.002 m step the earlier draft would have tolerated. This led the owner to build smoothing outright and use measurement as proof.
 
-- Run the existing rotating-platform fixed-seed conditioned-link profile and a
-  synthetic zero-tick correction at several alphas.
-- Measure the same-frame pre/post visual step, not only the simulation correction.
-- A worst raw step above 0.002 m or 0.1 degrees requires render-only smoothing.
-- If neither threshold is crossed, ship diagnostics and the harness without a
-  correction store.
-- If crossed, preserve the pre-apply visual pose exactly on the correction frame,
-  decay toward the reconciled pose at render rate, and prove the immediate
-  discontinuity is at most `1e-4` m / `1e-4` rad. Simulation transforms, mover phase,
-  collision, and wire state never read the correction.
+### Own-pawn share of a mover correction
 
-The gate decides whether smoothing exists. It does not leave an algorithm choice open.
+The ordinary arm of `reconcile.rs` seeds `presentation_offset` with predicted-minus-reconciled pawn position. Replay carries the pawn on the corrected mover history, so a mover correction d under a standing pawn produces a pawn correction of about d. Suppose the eye stayed on today's path while the drawn deck held its old pose. The eye would glide at the pawn offset's rate and the deck at the mover's, and the rider would slide across the deck in between. The brief keeps the mover-explained share out of the pawn offset, and applies the mover's presented correction at the eye instead. On leaving the mover, whatever correction remains at the eye moves into the world offset, so nothing steps.
 
-## Oversized-source seams
+## Commitments touched
 
-| Source | Production size / concern | Split before extension |
+- `networking.md` §Host-side remote-pawn presentation: host-seat foot probes use the live mover pose. This brief moves them to the render-time pose. Update the section at promotion.
+- `movement.md` §6, Moving bases (Agents): "co-op presentation of NPCs on moving geometry is not built". It stays unbuilt, and the roadmap item owns it.
+- `plans/done/E17--rotating-movers/`: intrinsic velocity drives remote locomotion, fixed-tick yaw stays authoritative with an alpha residual, and `carry_yaw` never crosses the wire. All are kept.
+- `entity_model.md` §5: the registry accessor stays the one presented pose. It gains a render-only correction term, which goes into §5 at promotion.
+- `E22--kinematic-assemblies` (draft): members render at their holder's interpolated transform, so they follow smoothing with no change.
+
+## Oversized sources
+
+| Source | Lines at read | Action |
 |---|---|---|
-| `netcode/client.rs` | ~2,200 production lines; apply, interpolation presentation, animation playback, and mover history | Extract remote presentation state and mover history |
-| `main.rs` | ~6,000 production lines; event loop plus camera helpers | Extract player-camera follow/yaw/attachment helpers |
-| `sim/mod.rs` | Foot-probe subsystem is a distinct ~230-line responsibility inside a large sim module | Extract foot-ground probing |
-| `netcode/interpolation.rs` | ~675 production lines; remainder is tests | No split; additions stay in its interpolation responsibility |
-| `scripting/systems/mesh_render.rs` | ~580 production lines; remainder is tests | No split; add only the local-pawn position override at the collector boundary |
-| `runtime_movers.rs` | ~500 production lines; remainder is tests | No split; consume the shared presentation pose at its collector boundary |
+| `crates/netcode/src/client.rs` | ~8,700 | Split remote presentation and mover history out first |
+| `crates/postretro/src/main.rs` | ~13,100 | Split camera follow and yaw carry helpers out first |
+| `crates/sim/src/sim/mod.rs` | ~4,700 | Split foot probing out first |
+| `crates/netcode/src/interpolation.rs`, `scripting/frame_systems/mesh_render.rs`, `runtime_movers.rs` | 2,100–2,800, mostly tests | Extend at the boundary |

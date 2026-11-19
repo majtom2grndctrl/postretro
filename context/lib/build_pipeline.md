@@ -659,6 +659,8 @@ Walkable navigation is baked offline into a `NavMesh` PRL section (SectionId 36)
 
 **Query contract.** Runtime consumes convex walkable **regions joined by portals** — the pathfinding query surface (A* over regions, funnel over portal segments). The shape is the durable contract; the bake *algorithm* swaps behind it (rectangular decomposition first, a contour tracer later). Off-mesh links and hints (jump links, cover) extend it as further record kinds / region attachments; a new record kind appends a table and bumps the section version. Seed of a broader baked spatial-AI layer.
 
+**Query cost.** A query costs what it visits, never the graph's size. Point-to-region lookup visits only regions near the point and answers as a scan of every region would, stacked floors, ties and off-mesh snap included. A route search reuses caller-owned state and touches only the nodes it visits; no result depends on an earlier query.
+
 **Navmesh ↔ collision.** The bake reads the same surface the collision trimesh uses, so it never marks walkable what collision rejects. The navmesh bakes from pre-cut triangles; collision reads the oversize-face cut's coplanar sub-faces. The navmesh **routes** (which regions connect); `CollisionWorld` owns ground height and final movement (agents sweep real static and mover collision along a region path).
 
 **Scope.** One graph per map, one canonical agent. The section records the agent parameters it was baked with (radius, height, step, slope), so multi-agent support is an explicit migration, not a silent reinterpretation.

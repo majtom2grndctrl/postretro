@@ -74,6 +74,15 @@
         0 : "Off (hold aggro)"
         1 : "On"
     ]
+    // Leave unset to follow the archetype's `alwaysActive`. 1 keeps this NPC
+    // at full-rate AI even when no player can perceive it (escorts, races,
+    // scripted walkers); 0 lets it go dormant even if its archetype says
+    // otherwise. Any other value fails the build.
+    always_active(choices) : "Always active (unset = archetype)" =
+    [
+        0 : "Off (may go dormant unseen)"
+        1 : "On (full rate unseen)"
+    ]
 ]
 
 @BaseClass = Light

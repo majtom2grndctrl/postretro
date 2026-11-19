@@ -2121,7 +2121,7 @@ export type BrainInputs = {
   timeInActivityMs: RuntimeGuardNode,
   --- Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number).
   attackCooldownMs: RuntimeGuardNode,
-  --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).
+  --- `true` on the enemy's decide ticks, where acquisition is checked: 15 times a second in view or engaged, every 2 s dormant (boolean).
   acquisitionDue: RuntimeGuardNode,
   --- The enemy's current hit points (number).
   health: RuntimeGuardNode,

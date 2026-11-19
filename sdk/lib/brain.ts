@@ -115,6 +115,10 @@ export interface BrainInputs {
    * level, and its selectors, read their own sum, which resets to 0 when that
    * level is entered (number). */
   readonly damageInActivity: RuntimeGuardNode;
+  /** Highest awareness of any candidate, 0 to 1; 1 once it has a target. A
+   * guard on a decide reads the value that decide's acquisition check
+   * produced (number). */
+  readonly awareness: RuntimeGuardNode;
 }
 
 /** Facts about one offered target, evaluated during acquisition. */
@@ -168,6 +172,7 @@ export const brain: BrainInputs = Object.freeze({
   animationDone: input("@brain.animationDone"),
   activityRoll: input("@brain.activityRoll"),
   damageInActivity: input("@brain.damageInActivity"),
+  awareness: input("@brain.awareness"),
 });
 
 /** Pre-wrapped leaves for graph candidate eligibility. */

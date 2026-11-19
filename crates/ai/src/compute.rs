@@ -24,8 +24,8 @@ use super::graph_eval::{
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
-    TargetSelection, is_hostile, select_target_with_attacker_ledger, selected_target_alive,
-    target_candidate, target_distance, target_offers,
+    TargetSelection, is_hostile, notice_target, select_target_with_attacker_ledger,
+    selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
 use super::{attack_turns, clip_clock, engaged_motion, leap};
@@ -55,6 +55,7 @@ pub(super) fn evaluate(
     pawns: &super::pawn_index::PawnIndex,
     selector_memo: &mut std::collections::HashMap<EntityId, SelectorChoices>,
     decide_interval: u64,
+    notice_on_sight: bool,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for (slot, snap) in snapshots.into_iter().enumerate() {
@@ -113,6 +114,9 @@ pub(super) fn evaluate(
         // exactly once so `@candidate.timeSinceDamageFromCandidate` sees the
         // same post-tick age that `@brain.timeSinceDamageMs` later publishes.
         brain.age_recent_attackers_over(dt_ms, one_tick_dt_ms);
+        // Awareness meters age with the run the same way: a meter a hit set
+        // since the last run drains from the hit's tick.
+        brain.awareness.age(dt_ms, one_tick_dt_ms);
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -126,8 +130,9 @@ pub(super) fn evaluate(
         let targeting_stage = ai_stage(cpu, SimStage::AiTargeting);
         let (target_selection, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
-            // — chasing one, or acting on one. A resting brain re-ranks
-            // candidates instead of honoring a stale acquired id.
+            // — chasing one, or acting on one. A resting brain notices through
+            // its awareness meters on each check instead of honoring a stale
+            // acquired id.
             let retained_target = engages_active(&brain)
                 .then_some(brain.acquired_target)
                 .flatten();
@@ -153,7 +158,7 @@ pub(super) fn evaluate(
                             collision_world,
                         )
                     };
-                    select_target_with_attacker_ledger(
+                    let selection = select_target_with_attacker_ledger(
                         Some(retained),
                         &offers,
                         pawns,
@@ -168,7 +173,18 @@ pub(super) fn evaluate(
                         brain.graph.retaliation(),
                         dt_ms,
                         &mut candidate_perception,
-                    )
+                    );
+                    // Switching to a different target is a new acquisition;
+                    // re-selecting the retained one is not.
+                    if let Some(selection) = selection
+                        && selection.target.entity != retained.target.entity
+                    {
+                        brain.awareness.acquire(
+                            selection.target.entity,
+                            target_distance(selection.target, snap.position),
+                        );
+                    }
+                    selection
                 } else {
                     Some(TargetSelection {
                         target: retained.target,
@@ -184,24 +200,28 @@ pub(super) fn evaluate(
                 // nothing and scans nothing.
                 (None, false)
             } else {
-                let offers = target_offers(snap.position, None);
-                let evaluate_acquisition = true;
+                // Without a retained target the decide's check notices
+                // through the awareness meters: a candidate is selected only
+                // once its meter is full.
+                let rates = programs
+                    .get(snap.id)
+                    .map_or_else(|| brain.graph.awareness(), |entry| entry.awareness());
                 let (candidate_filter, candidate_scope) =
                     programs.candidate_filter_context(snap.id);
-                let target = evaluate_acquisition.then(|| {
-                    let enemy_eye =
-                        perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
-                    let mut candidate_perception = |candidate| {
-                        perception::raw_target_perception(
-                            registry,
-                            enemy_eye,
-                            candidate,
-                            collision_world,
-                        )
-                    };
+                let enemy_eye = perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
+                let mut candidate_perception = |candidate| {
+                    perception::raw_target_perception(
+                        registry,
+                        enemy_eye,
+                        candidate,
+                        collision_world,
+                    )
+                };
+                let retaliation = brain.graph.retaliation();
+                let target = if notice_on_sight {
                     select_target_with_attacker_ledger(
                         None,
-                        &offers,
+                        &target_offers(snap.position, None),
                         pawns,
                         registry,
                         factions,
@@ -211,12 +231,29 @@ pub(super) fn evaluate(
                         candidate_scope,
                         &brain.recent_attackers,
                         brain.retaliation_acquired_target,
-                        brain.graph.retaliation(),
+                        retaliation,
                         dt_ms,
                         &mut candidate_perception,
                     )
-                });
-                (target.flatten(), evaluate_acquisition)
+                } else {
+                    notice_target(
+                        snap.position,
+                        pawns,
+                        registry,
+                        factions,
+                        Some(snap.id),
+                        enemy_faction,
+                        candidate_filter,
+                        candidate_scope,
+                        &brain.recent_attackers,
+                        retaliation,
+                        dt_ms,
+                        &mut brain.awareness,
+                        rates,
+                        &mut candidate_perception,
+                    )
+                };
+                (target, true)
             };
             (target, evaluate_acquisition)
         } else {
@@ -446,6 +483,12 @@ pub(super) fn evaluate(
                     attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
                     has_attack_turn,
                     animation_done,
+                    // The value this decide's check produced.
+                    awareness: if target.is_some() {
+                        1.0
+                    } else {
+                        brain.awareness.highest()
+                    },
                 };
                 programs.scope_mut().refresh(registry, snap.id, facts);
                 let attack_cooldown_ms = programs
@@ -579,6 +622,10 @@ pub(super) fn evaluate(
             Some(target) if retains_target => Some(target.entity),
             _ => None,
         };
+        // No meter changes while the NPC holds a target.
+        if let Some(target) = brain.acquired_target {
+            brain.awareness.hold_target(target);
+        }
         brain.retaliation_acquired_target = match target_selection {
             Some(selection)
                 if retains_target

@@ -399,3 +399,103 @@ fn clip_timed_surface_example_lowers_identically_in_both_runtimes() {
         }
     );
 }
+
+const TICK_SCHEDULING_TS: &str = r#"
+import { brain, defineMod } from "postretro";
+
+const sentry = {
+  initial: "idle",
+  moveSpeed: 3,
+  engagementRadius: 4,
+  tacticalRange: 60,      // optional, metres, default 100: beyond it the NPC heads for its target
+  awareness: { fillMs: 300, drainMs: 4000 },  // optional: a sharp-eyed sentry that stays suspicious
+  alwaysActive: false,    // optional: true keeps it simulated at full rate when unseen
+  activities: {
+    idle: { animation: "idle", motion: "hold" },
+    lookAround: { animation: "look", motion: "hold" },
+  },
+  transitions: {
+    // a guard reading the meter: turn to look while half aware, before the NPC acquires
+    idle: [{ to: "lookAround", when: brain.awareness.ge(0.5) }],
+  },
+};
+
+export default defineMod({
+  name: "Tick scheduling", id: "e10.tick-scheduling", version: "1",
+  entities: [{ canonicalName: "sentry", components: { behavior: sentry } }],
+});
+"#;
+
+const TICK_SCHEDULING_LUAU: &str = r#"
+local sentry = {
+  initial = "idle",
+  moveSpeed = 3,
+  engagementRadius = 4,
+  tacticalRange = 60,
+  awareness = { fillMs = 300, drainMs = 4000 },
+  alwaysActive = false,
+  activities = {
+    idle = { animation = "idle", motion = "hold" },
+    lookAround = { animation = "look", motion = "hold" },
+  },
+  transitions = {
+    idle = { { to = "lookAround", when = brain.awareness:ge(0.5) } },
+  },
+}
+
+return defineMod({
+  name = "Tick scheduling", id = "e10.tick-scheduling", version = "1",
+  entities = { { canonicalName = "sentry", components = { behavior = sentry } } },
+})
+"#;
+
+// AC 5, 23, 36: the AI tick scheduling surface example (tactical range,
+// awareness, always active, and a guard on `brain.awareness`) lowers to the
+// same descriptor in TypeScript and Luau.
+#[test]
+fn the_ai_tick_scheduling_surface_example_lowers_identically_in_both_authorings() {
+    let ts = built(
+        "tick_scheduling_ts",
+        &[(
+            "start-script.js",
+            &bundle_typescript(
+                "tick_scheduling",
+                &[("start-script.ts", TICK_SCHEDULING_TS)],
+            ),
+        )],
+    );
+    let luau = built(
+        "tick_scheduling_luau",
+        &[("start-script.luau", TICK_SCHEDULING_LUAU)],
+    );
+    assert_eq!(ts.entities, luau.entities);
+
+    let behavior = ts.entities[0]
+        .behavior
+        .as_ref()
+        .expect("the sentry has a behavior");
+    assert_eq!(behavior.ai.tactical_range, Some(60.0));
+    assert_eq!(
+        behavior.ai.awareness,
+        Some(postretro_foundation::AwarenessDescriptor {
+            fill_ms: 300.0,
+            drain_ms: 4000.0,
+        })
+    );
+    assert!(!behavior.ai.always_active);
+    assert_eq!(behavior.engagement_radius, Some(4.0));
+    let guard = &behavior.envelope.transitions["idle"][0];
+    assert_eq!(guard.to, "lookAround");
+    assert_eq!(
+        guard.when,
+        IrNode::Ge {
+            a: Box::new(IrNode::Input {
+                name: postretro_foundation::BRAIN_AWARENESS_INPUT.to_string(),
+                owner: None,
+            }),
+            b: Box::new(IrNode::Const {
+                value: postretro_foundation::IrValue::Number(0.5),
+            }),
+        }
+    );
+}

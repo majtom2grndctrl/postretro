@@ -35,10 +35,15 @@ use postretro_foundation::{
 use super::mesh::MeshComponent;
 
 mod attack_turns;
+mod awareness;
 mod clip_clock;
 pub use attack_turns::{
     AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
     MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
+};
+pub use awareness::{
+    AWARENESS_FULL_EPSILON, AWARENESS_METER_CAPACITY, AwarenessCheck, AwarenessMeter,
+    AwarenessMeters,
 };
 pub use clip_clock::{ClipClock, ClipFacts, Stagger, note_replaced_mesh};
 
@@ -192,6 +197,11 @@ pub struct BrainComponent {
     /// brains predate this field and begin with no remembered attackers.
     #[serde(default = "default_recent_attackers")]
     pub recent_attackers: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
+    /// Per-candidate awareness meters, bound to the nearest few: how an NPC
+    /// without a target notices each candidate. Old serialized brains predate
+    /// this field and begin noticing no one.
+    #[serde(default)]
+    pub awareness: AwarenessMeters,
     /// World position of the most recent visible target or damage attacker.
     /// This host-only memory lets authored behavior choose how to investigate
     /// a stimulus without making its source a selectable target.
@@ -453,6 +463,7 @@ impl BrainComponent {
             damage_bearing: 0.0,
             damage_source_known: false,
             recent_attackers: default_recent_attackers(),
+            awareness: AwarenessMeters::default(),
             last_known_target_pos: None,
             time_since_target_visible: default_time_since_target_visible(),
             home_anchor: Vec3::ZERO,
@@ -727,6 +738,16 @@ impl BrainComponent {
             entry.time_since_damage_ms =
                 age_damage_clock(entry.time_since_damage_ms, span_dt_ms, tick_dt_ms);
         }
+    }
+
+    /// Open or close the aggro gate. Closing it empties every awareness
+    /// meter at the close itself, even if it reopens before the NPC next
+    /// runs: the next sighting of anyone is a first sighting.
+    pub fn set_aggro_armed(&mut self, armed: bool) {
+        if !armed {
+            self.awareness.empty();
+        }
+        self.aggro_armed = armed;
     }
 
     /// Lookup used by the allocation-free candidate refresh path.

@@ -14,7 +14,7 @@ const SKIPPED: usize = 29;
 fn a_skipped_holder_keeps_capacity_and_starts_no_refresh() {
     let graph = striker(100_000.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
     set_limits(&mut runtime, &[1]);
     spawn_player(&mut reg, player_spot());
     let enemies: Vec<EntityId> = (0..2)
@@ -51,7 +51,7 @@ fn a_skipped_holder_keeps_capacity_and_starts_no_refresh() {
 fn a_turn_ending_while_skipped_releases_on_next_run() {
     let graph = striker(160.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player_spot());
     let enemies: Vec<EntityId> = (0..2)

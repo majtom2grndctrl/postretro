@@ -144,6 +144,10 @@ pub const BRAIN_ACTIVITY_ROLL_INPUT: &str = "@brain.activityRoll";
 /// hit landing before the AI pass counts toward the activity the brain holds
 /// then; a hit landing after it counts toward the activity the pass entered.
 pub const BRAIN_DAMAGE_IN_ACTIVITY_INPUT: &str = "@brain.damageInActivity";
+/// The highest awareness meter of any candidate, 0 to 1, as the acquisition
+/// check on this decide left it; 1 while the enemy has a target. Guards on a
+/// decide read the value that decide's check produced.
+pub const BRAIN_AWARENESS_INPUT: &str = "@brain.awareness";
 
 /// Prefix of the named Bool read `attackTurnHeld(attack)`: a turn is held for
 /// that attack, as of the previous tick.
@@ -183,7 +187,7 @@ pub const BRAIN_NO_TARGET_DISTANCE: f32 = 1.0e9;
 /// it, so refresh must write the same slots in the same order. Names use the
 /// camelCase idiom of the script surface (scripting.md §4) inside the
 /// `@`-reserved ephemeral-dispatch-input namespace (scripting.md §5).
-pub const BRAIN_INPUTS: [(&str, IrType); 24] = [
+pub const BRAIN_INPUTS: [(&str, IrType); 25] = [
     (BRAIN_HAS_TARGET_INPUT, IrType::Bool),
     (BRAIN_TARGET_DISTANCE_INPUT, IrType::Number),
     (BRAIN_TIME_IN_ACTIVITY_MS_INPUT, IrType::Number),
@@ -208,6 +212,7 @@ pub const BRAIN_INPUTS: [(&str, IrType); 24] = [
     (BRAIN_ANIMATION_DONE_INPUT, IrType::Bool),
     (BRAIN_ACTIVITY_ROLL_INPUT, IrType::Number),
     (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
+    (BRAIN_AWARENESS_INPUT, IrType::Number),
 ];
 
 /// What a brain input name resolves to, independent of where the values live.
@@ -480,6 +485,15 @@ mod tests {
         assert_eq!(
             BRAIN_INPUTS[23],
             (BRAIN_DAMAGE_IN_ACTIVITY_INPUT, IrType::Number),
+            "new brain facts append; they never repoint existing guard handles"
+        );
+    }
+
+    #[test]
+    fn awareness_appends_at_fixed_slot_twenty_four() {
+        assert_eq!(
+            BRAIN_INPUTS[24],
+            (BRAIN_AWARENESS_INPUT, IrType::Number),
             "new brain facts append; they never repoint existing guard handles"
         );
     }

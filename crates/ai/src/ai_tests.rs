@@ -672,6 +672,7 @@ fn step_graph(
         enemy,
         BrainFacts {
             target: Some((enemy, distance, Vec3::ZERO)),
+            awareness: 1.0,
             attack_cooldown_ms: 0.0,
             time_since_damage_ms: BRAIN_NO_TARGET_DISTANCE,
             time_since_target_visible: BRAIN_NO_TARGET_DISTANCE,
@@ -1237,7 +1238,7 @@ fn target_reachability_cache_holds_until_the_next_acquisition_tick() {
     let mut brain = BrainComponent::from_graph(&graph);
     brain.schedule_identity = Some(identity_deciding_on(1));
     let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
 
     // The first tick decides, so the reachable starting location seeds the
     // cache.
@@ -5041,7 +5042,7 @@ fn between_decides_detection_waits_but_attack_still_fires() {
     // next decide, not before.
     {
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::noticing_on_sight();
         let mut brain = brain_with(test_graph_with(40.0, 41.0), TEST_IDLE_STATE);
         brain.schedule_identity = Some(identity_deciding_on(1));
         let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
@@ -9816,6 +9817,7 @@ fn step_reference_enemy_graph_with_hostility(
         enemy,
         BrainFacts {
             target: target_distance.map(|distance| (enemy, distance, Vec3::ZERO)),
+            awareness: if target_distance.is_some() { 1.0 } else { 0.0 },
             attack_cooldown_ms: 0.0,
             time_since_damage_ms,
             damage_source_known,
@@ -13742,6 +13744,9 @@ mod clip_timed;
 
 #[path = "decide_tests.rs"]
 mod decide;
+
+#[path = "awareness_tests.rs"]
+mod awareness;
 
 #[path = "tier_tests.rs"]
 mod tier;

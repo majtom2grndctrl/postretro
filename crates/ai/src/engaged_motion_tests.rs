@@ -309,7 +309,7 @@ fn slot_verbs_keep_walking_to_their_slot_between_decides() {
     for verb in [MotionVerb::Strafe, MotionVerb::Reposition] {
         let graph = engaged_graph("wait", vec![("wait", activity("walk", verb, None))]);
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::noticing_on_sight();
         let _player = spawn_player(&mut reg, target_pos());
         let enemy = spawn_engaged(
             &mut reg,
@@ -1424,7 +1424,7 @@ fn tactical_range_beyond_routes_to_the_target_under_every_engaged_verb() {
         MotionVerb::Reposition,
     ] {
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::noticing_on_sight();
         let target = west_of_enemy(TACTICAL_LINE + 5.0);
         spawn_player(&mut reg, target);
         let enemy = spawn_engaged(
@@ -1458,7 +1458,7 @@ fn tactical_range_chooses_slots_the_margin_inside_and_holds_across_the_band() {
     let world = floor.collision_world();
     let nav = floor.nav_graph();
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
     let player = spawn_player(&mut reg, west_of_enemy(TACTICAL_LINE + 5.0));
     let enemy = spawn_engaged(
         &mut reg,
@@ -1508,7 +1508,7 @@ fn reposition_entered_far_measures_its_arc_from_slot_start() {
     let world = floor.collision_world();
     let nav = floor.nav_graph();
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
     let player = spawn_player(&mut reg, west_of_enemy(TACTICAL_LINE + 5.0));
     let enemy = spawn_engaged(
         &mut reg,

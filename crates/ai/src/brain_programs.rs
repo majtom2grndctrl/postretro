@@ -13,9 +13,9 @@ use postretro_entities::{
 };
 use postretro_foundation::attack_budget::AttackBudgetVocabulary;
 use postretro_foundation::{
-    BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
-    BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType, ResolutionMode,
-    bind,
+    AwarenessDescriptor, BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+    BehaviorLayerDescriptor, BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow,
+    IrType, ResolutionMode, bind,
 };
 
 use super::attack_turns::{ATTACK_DRAW_WARNING, live_behavior, resolve_graph_draws};
@@ -102,6 +102,8 @@ pub(crate) struct BrainEntityPrograms {
     clips_checked: bool,
     /// Its tactical line in metres, from the live descriptor.
     tactical_range_m: f32,
+    /// Its awareness rates, from the live descriptor.
+    awareness: AwarenessDescriptor,
 }
 
 impl BrainEntityPrograms {
@@ -130,6 +132,12 @@ impl BrainEntityPrograms {
     /// raised to its largest attack standoff plus the margin.
     pub(crate) fn tactical_range_m(&self) -> f32 {
         self.tactical_range_m
+    }
+
+    /// The live archetype's awareness rates: a reload keeps every meter's
+    /// value and applies its rates from the next check.
+    pub(crate) fn awareness(&self) -> AwarenessDescriptor {
+        self.awareness
     }
 
     /// What the attack at `attack` (its index in the graph's attacks) draws.
@@ -297,6 +305,9 @@ impl BrainPrograms {
                         descriptor_generation,
                         warned,
                     );
+                    entry.awareness = live_behavior(registry, entity, descriptors)
+                        .unwrap_or(&brain.graph)
+                        .awareness();
                 }
                 continue;
             }
@@ -313,6 +324,9 @@ impl BrainPrograms {
                     descriptor_generation,
                     warned,
                 );
+                entry.awareness = live_behavior(registry, entity, descriptors)
+                    .unwrap_or(&brain.graph)
+                    .awareness();
                 entry.resolved_projectile_attacks =
                     resolve_projectile_attacks(&brain.graph, descriptors, warned);
                 entry.descriptor_generation = descriptor_generation;
@@ -360,6 +374,7 @@ pub(super) fn bind_graph(
         attack_draws,
         clips_checked: false,
         tactical_range_m: BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M,
+        awareness: AwarenessDescriptor::default(),
     }
 }
 

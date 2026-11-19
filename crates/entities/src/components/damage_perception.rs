@@ -33,6 +33,22 @@ pub(crate) fn record_damage_perception(
         if let Some(attacker) = attacker {
             brain.record_attacker_damage(attacker, amount);
         }
+        // On an NPC without a target, a hit sets its attacker's awareness
+        // meter to 1, draining from this hit. One holding a target changes
+        // no meter; damage with no attacker changes none.
+        if let Some(attacker) = attacker
+            && attacker != id
+            && brain.acquired_target.is_none()
+        {
+            let distance = match (attacker_transform, damaged_transform) {
+                (Some(attacker), Some(damaged)) => {
+                    let delta = attacker.position - damaged.position;
+                    (delta.x * delta.x + delta.z * delta.z).sqrt()
+                }
+                _ => f32::INFINITY,
+            };
+            brain.awareness.record_hit(attacker, distance);
+        }
         // Bearing is meaningful only for this hit. A contextless hit must not
         // make an older directional stimulus look recent again.
         brain.damage_bearing = 0.0;

@@ -216,6 +216,48 @@ pub struct BehaviorAiTuning {
     /// [`BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tactical_range: Option<f32>,
+    /// How fast an NPC without a target notices each candidate. `None` is
+    /// [`AwarenessDescriptor::default`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awareness: Option<AwarenessDescriptor>,
+}
+
+/// The `awareness` block: an NPC without a target fills one meter per
+/// candidate over `fill_ms` while it sees them on consecutive acquisition
+/// checks and they pass its candidacy, drains it over `drain_ms` otherwise,
+/// and acquires a candidate whose meter reaches 1. Each is finite and
+/// `>= 0`; 0 acts as one check interval.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AwarenessDescriptor {
+    #[serde(default = "default_awareness_fill_ms")]
+    pub fill_ms: f32,
+    #[serde(default = "default_awareness_drain_ms")]
+    pub drain_ms: f32,
+}
+
+impl AwarenessDescriptor {
+    /// `fillMs` when unauthored.
+    pub const DEFAULT_FILL_MS: f32 = 1_000.0;
+    /// `drainMs` when unauthored.
+    pub const DEFAULT_DRAIN_MS: f32 = 2_000.0;
+}
+
+impl Default for AwarenessDescriptor {
+    fn default() -> Self {
+        Self {
+            fill_ms: Self::DEFAULT_FILL_MS,
+            drain_ms: Self::DEFAULT_DRAIN_MS,
+        }
+    }
+}
+
+fn default_awareness_fill_ms() -> f32 {
+    AwarenessDescriptor::DEFAULT_FILL_MS
+}
+
+fn default_awareness_drain_ms() -> f32 {
+    AwarenessDescriptor::DEFAULT_DRAIN_MS
 }
 
 /// An archetype's resolved tactical line.
@@ -305,6 +347,8 @@ struct RawBehaviorGraphDescriptor {
     always_active: bool,
     #[serde(default)]
     tactical_range: Option<f32>,
+    #[serde(default)]
+    awareness: Option<AwarenessDescriptor>,
 }
 
 impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
@@ -329,6 +373,7 @@ impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
             ai: BehaviorAiTuning {
                 always_active: raw.always_active,
                 tactical_range: raw.tactical_range,
+                awareness: raw.awareness,
             },
         })
     }
@@ -441,6 +486,11 @@ impl BehaviorGraphDescriptor {
         }
     }
 
+    /// The archetype's awareness rates: the authored block, else the defaults.
+    pub fn awareness(&self) -> AwarenessDescriptor {
+        self.ai.awareness.unwrap_or_default()
+    }
+
     pub fn standoff_distance_for_action(&self, action: Option<&ActionVerb>) -> f32 {
         match action {
             Some(ActionVerb::Attack { name, .. }) => self
@@ -461,6 +511,10 @@ impl BehaviorGraphDescriptor {
         }
         if let Some(range) = self.ai.tactical_range {
             validate_positive("tacticalRange", range)?;
+        }
+        if let Some(awareness) = self.ai.awareness {
+            validate_non_negative("awareness.fillMs", awareness.fill_ms)?;
+            validate_non_negative("awareness.drainMs", awareness.drain_ms)?;
         }
         if let Some(retaliation) = self.retaliation {
             validate_non_negative("retaliation.windowMs", retaliation.window_ms)?;
@@ -1617,6 +1671,76 @@ mod tests {
                 graph(serde_json::json!({ "alwaysActive": bad })).is_err(),
                 "`alwaysActive: {bad}` must be rejected"
             );
+        }
+    }
+
+    // AC 5, 26 (P31, P37): `awareness` is an optional root block whose
+    // fields default to 1000 and 2000 ms; each is finite and >= 0, 0 accepted.
+    #[test]
+    fn awareness_is_an_optional_root_block_that_keeps_default_bytes() {
+        let graph = |extra: serde_json::Value| {
+            let mut json = serde_json::json!({
+                "initial": "idle",
+                "moveSpeed": 3.0,
+                "activities": { "idle": { "animation": "idle", "motion": "hold" } },
+                "transitions": {},
+            });
+            json.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<BehaviorGraphDescriptor>(json)
+        };
+        let absent = graph(serde_json::json!({})).expect("absent `awareness` parses");
+        assert_eq!(absent.ai.awareness, None);
+        assert_eq!(absent.awareness(), AwarenessDescriptor::default());
+        assert_eq!(absent.awareness().fill_ms, 1_000.0);
+        assert_eq!(absent.awareness().drain_ms, 2_000.0);
+        assert!(
+            serde_json::to_value(&absent)
+                .unwrap()
+                .get("awareness")
+                .is_none(),
+            "an unauthored `awareness` adds no bytes"
+        );
+        let partial = graph(serde_json::json!({ "awareness": { "fillMs": 300.0 } }))
+            .expect("a partial block parses");
+        assert_eq!(partial.awareness().fill_ms, 300.0);
+        assert_eq!(partial.awareness().drain_ms, 2_000.0);
+        let authored = graph(serde_json::json!({
+            "awareness": { "fillMs": 300.0, "drainMs": 4000.0 }
+        }))
+        .expect("an authored block parses");
+        assert_eq!(
+            serde_json::to_value(&authored).unwrap()["awareness"],
+            serde_json::json!({ "fillMs": 300.0, "drainMs": 4000.0 })
+        );
+        let zero = graph(serde_json::json!({ "awareness": { "fillMs": 0.0, "drainMs": 0.0 } }))
+            .expect("zero parses")
+            .validate()
+            .expect("zero durations are accepted");
+        assert_eq!(zero.awareness().fill_ms, 0.0);
+        assert!(
+            graph(serde_json::json!({ "awareness": { "fillMs": 1.0, "rate": 2.0 } })).is_err(),
+            "an unknown awareness field is rejected"
+        );
+        for field in ["fillMs", "drainMs"] {
+            for bad in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut parsed = graph(serde_json::json!({})).unwrap();
+                let mut block = AwarenessDescriptor::default();
+                if field == "fillMs" {
+                    block.fill_ms = bad;
+                } else {
+                    block.drain_ms = bad;
+                }
+                parsed.ai.awareness = Some(block);
+                let error = parsed
+                    .validate()
+                    .expect_err("a bad awareness duration is rejected");
+                assert!(
+                    error.to_string().contains(&format!("awareness.{field}")),
+                    "{error}"
+                );
+            }
         }
     }
 

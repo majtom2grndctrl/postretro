@@ -286,6 +286,10 @@ pub struct AiRuntime {
     /// Ticks between a brain's decides: [`decide::DECIDE_INTERVAL_TICKS`]
     /// outside unit suites that pin graph semantics a tick at a time.
     decide_interval: u64,
+    /// An NPC without a target takes the best candidate on sight instead of
+    /// noticing through its awareness meters: today's 60 Hz semantics, which
+    /// the graph, turn and clip unit suites pin. Production always meters.
+    notice_on_sight: bool,
     /// Each brain's selector rows from its last decide, for the ticks between.
     /// Host-only, pruned with live brains.
     selector_memo: HashMap<EntityId, brain_scope::SelectorChoices>,
@@ -367,19 +371,32 @@ impl AiRuntime {
             skipped: Vec::new(),
             selector_memo: HashMap::new(),
             decide_interval: decide::DECIDE_INTERVAL_TICKS,
+            notice_on_sight: false,
         }
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl AiRuntime {
-    /// A runtime whose brains decide every tick: the 60 Hz granularity the
-    /// graph, turn and clip unit suites pin. Production decides every
-    /// [`decide::DECIDE_INTERVAL_TICKS`]; the decide rows and the stress rows
-    /// run that.
+    /// A runtime whose brains decide every tick and take the best candidate
+    /// on sight: the 60 Hz granularity and first-sight acquisition the graph,
+    /// turn and clip unit suites pin. Production decides every
+    /// [`decide::DECIDE_INTERVAL_TICKS`] and notices through the awareness
+    /// meters; the decide, awareness and stress rows run that.
     pub fn deciding_every_tick() -> Self {
         Self {
             decide_interval: 1,
+            notice_on_sight: true,
+            ..Self::new()
+        }
+    }
+
+    /// A production-cadence runtime whose brains take the best candidate on
+    /// sight: for rows about decide cadence, turns or engaged motion that
+    /// predate the awareness meters and are not about noticing.
+    pub fn noticing_on_sight() -> Self {
+        Self {
+            notice_on_sight: true,
             ..Self::new()
         }
     }
@@ -597,6 +614,7 @@ where
         skipped,
         selector_memo,
         decide_interval,
+        notice_on_sight,
     } = runtime;
     turns.begin_tick(dt_ms, registry);
     turns.sync_pools(attack_turns::running_attack_pools(registry));
@@ -757,6 +775,7 @@ where
             pawns,
             selector_memo,
             *decide_interval,
+            *notice_on_sight,
         )
     };
 

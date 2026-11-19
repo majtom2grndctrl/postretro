@@ -85,6 +85,9 @@ pub(crate) struct BrainFacts {
     /// Whether the animation the active path selects has played through.
     /// Entity-wide: one value for every level's guards.
     pub animation_done: bool,
+    /// The highest awareness meter, 0 to 1, as this decide's acquisition
+    /// check left it; 1 while the enemy has a target.
+    pub awareness: f32,
 }
 
 /// A resolved read handle: an index into one of the scope's two snapshots.
@@ -409,6 +412,7 @@ impl BrainScope {
             IrValue::Number(0.0),
             // Scope-relative, like the activity timer: re-pointed per level.
             IrValue::Number(0.0),
+            IrValue::Number(facts.awareness),
         ];
 
         self.defense.seed(registry, Some(entity));
@@ -557,7 +561,7 @@ mod tests {
     use postretro_foundation::{
         BRAIN_ACQUISITION_DUE_INPUT, BRAIN_ACTIVITY_ROLL_INPUT, BRAIN_ANIMATION_DONE_INPUT,
         BRAIN_ATTACK_COOLDOWN_MS_INPUT, BRAIN_ATTACKS_FIRED_IN_ACTIVITY_INPUT,
-        BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
+        BRAIN_AWARENESS_INPUT, BRAIN_DAMAGE_BEARING_INPUT, BRAIN_DAMAGE_IN_ACTIVITY_INPUT,
         BRAIN_DAMAGE_SOURCE_KNOWN_INPUT, BRAIN_DISTANCE_FROM_ANCHOR_INPUT,
         BRAIN_DISTANCE_TO_LAST_KNOWN_INPUT, BRAIN_HAS_ATTACK_TURN_INPUT, BRAIN_HAS_TARGET_INPUT,
         BRAIN_HEALTH_INPUT, BRAIN_MAX_HEALTH_INPUT, BRAIN_TARGET_DIED_INPUT,
@@ -649,6 +653,7 @@ mod tests {
             attacks_fired_in_activity: 3,
             has_attack_turn: true,
             animation_done: true,
+            awareness: 1.0,
         }
     }
 
@@ -788,6 +793,7 @@ mod tests {
             BRAIN_ANIMATION_DONE_INPUT => IrValue::Bool(facts.animation_done),
             BRAIN_ACTIVITY_ROLL_INPUT => IrValue::Number(0.0),
             BRAIN_DAMAGE_IN_ACTIVITY_INPUT => IrValue::Number(0.0),
+            BRAIN_AWARENESS_INPUT => IrValue::Number(facts.awareness),
             other => panic!(
                 "`{other}` is in BRAIN_INPUTS but `expected_fixed_value` has no case for it \
                  — add one alongside the new `refresh` slot"

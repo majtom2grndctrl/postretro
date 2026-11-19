@@ -1829,7 +1829,7 @@ fn test_tick_runner_nav_bridge_preserves_section_and_path_queries() {
     }
     let world = floor_world();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let mut mover_states = MoverTickStateTable::default();
     run_driven_agent_sim_tick(
         registry.clone(),
@@ -2172,7 +2172,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let mut mover_states = MoverTickStateTable::default();
     let empty_hit_zones = HitZoneStore::new();
 
@@ -2226,7 +2226,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     // values as the non-walk setup above. A runtime cache is registry-scoped,
     // so use a fresh one rather than intentionally treating this new entity as
     // a hot graph replacement.
-    ai_runtime = postretro_ai::AiRuntime::new();
+    ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
@@ -5039,7 +5039,7 @@ fn clip_timed_fire_ticks(ticks_per_frame: usize, time_scale: f64, ticks: usize) 
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let mut mover_states = MoverTickStateTable::default();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let player = {

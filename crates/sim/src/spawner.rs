@@ -821,7 +821,7 @@ mod tests {
             );
         }
 
-        let mut warned = postretro_ai::AiRuntime::new();
+        let mut warned = postretro_ai::AiRuntime::noticing_on_sight();
         let dt_secs = 0.05;
         let windup_ticks = (seed / (dt_secs * 1000.0)).ceil() as usize;
         for tick in 1..windup_ticks {

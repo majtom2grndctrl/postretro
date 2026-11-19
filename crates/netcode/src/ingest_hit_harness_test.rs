@@ -78,7 +78,7 @@ impl HostSimulation {
             hit_zones: HitZoneStore::new(),
             descriptors,
             progress: ProgressTracker::new(),
-            ai: AiRuntime::new(),
+            ai: AiRuntime::noticing_on_sight(),
             movers: MoverTickStateTable::default(),
             touch: TouchSystem::default(),
             factions: FactionRegistry::default(),
@@ -890,6 +890,8 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
     let mut owners = MovementOwners::new();
     owners.set(attacker, CLIENT_ID);
     let mut host = HostSimulation::new(registry.clone(), CollisionWorld::new(), Vec::new());
+    // The row pins same-tick ordering: the victim decides on every tick.
+    host.ai = AiRuntime::deciding_every_tick();
     host.tick(&[], |_, _| {});
     assert_eq!(
         registry

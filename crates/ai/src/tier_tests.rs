@@ -21,13 +21,27 @@ struct Tiered {
     scheduler: NpcScheduler,
     level: Row,
     pawn: EntityId,
+    /// A wall between arena 0 and arena 2, standing while `screened`.
+    wall: CollisionWorld,
+    open: CollisionWorld,
+    screened: bool,
+    ticks: u64,
 }
 
 impl Tiered {
     fn new() -> Self {
+        Self::with_pawn(spawn_at)
+    }
+
+    /// The perceiving pawn is a player NPCs can acquire.
+    fn with_player() -> Self {
+        Self::with_pawn(spawn_player)
+    }
+
+    fn with_pawn(spawn: impl FnOnce(&mut EntityRegistry, Vec3) -> EntityId) -> Self {
         let level = three_arenas();
         let mut reg = EntityRegistry::new();
-        let pawn = spawn_at(&mut reg, centre(&level, 3));
+        let pawn = spawn(&mut reg, centre(&level, 3));
         let lead = resolve_ai_lead(None, level.residency.as_ref().map(|set| set.max_lead));
         Self {
             reg,
@@ -35,6 +49,10 @@ impl Tiered {
             scheduler: NpcScheduler::new(NpcPerception::new(30, lead, GhostLinkCells::default())),
             level,
             pawn,
+            wall: wall_world(30.0, -50.0, 50.0),
+            open: CollisionWorld::new(),
+            screened: false,
+            ticks: 0,
         }
     }
 
@@ -71,7 +89,11 @@ impl Tiered {
             AiTickInputs {
                 mover_nav: crate::nav::MoverNav::none(),
                 nav_graph: None,
-                collision_world: Some(&CollisionWorld::new()),
+                collision_world: Some(if self.screened {
+                    &self.wall
+                } else {
+                    &self.open
+                }),
                 descriptors: &[],
                 descriptor_generation: 0,
                 factions: &FactionRegistry::default(),
@@ -83,6 +105,7 @@ impl Tiered {
             |_| {},
         );
         tiers.settle_after_ai(&self.reg);
+        self.ticks += 1;
     }
 
     fn brain(&self, id: EntityId) -> &BrainComponent {
@@ -271,4 +294,252 @@ fn unseen_always_active_npc_runs_every_tick_as_its_seen_twin() {
             tiered.brain(seen).time_in_activity_ms
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Awareness under the tiers (AC 9, 16, 49; P20, P44, P57, P61)
+// ---------------------------------------------------------------------------
+
+fn dormant_check(tiered: &Tiered, id: EntityId) -> bool {
+    tiered.scheduler.tiers.ai_run(id) == crate::ai_host::AiRun::RunDormant { decide: true }
+}
+
+fn meter(tiered: &Tiered, id: EntityId) -> f32 {
+    tiered.brain(id).awareness.value(tiered.pawn)
+}
+
+/// Tick until `id`'s next dormant check has run; its tick.
+fn to_dormant_check(tiered: &mut Tiered, id: EntityId) -> u64 {
+    for _ in 0..8 * DORMANT_INTERVAL_TICKS {
+        tiered.tick();
+        if dormant_check(tiered, id) {
+            return tiered.ticks;
+        }
+    }
+    panic!("no dormant check");
+}
+
+/// Whether `id`, deciding at 15 Hz on `identity`, checks on `tick`.
+fn idle_check(identity: u64, tick: u64) -> bool {
+    postretro_sim::npc_tiers::decides_on(tick, identity, DECIDE_INTERVAL_TICKS)
+}
+
+// P20 / AC 49: an unperceived NPC whose candidacy admits a player, with line
+// of sight to them from outside the player's set, notices them through its
+// meter on its dormant checks: a first sighting gains nothing, so with the
+// default `fillMs` the second dormant check that sees them acquires; then it
+// moves up.
+#[test]
+fn unperceived_npc_with_sight_notices_on_dormant_checks() {
+    let graph = super::awareness::noticing_graph(1_000.0, 2_000.0);
+    let mut tiered = Tiered::with_player();
+    tiered.screened = true;
+    let npc = tiered.npc(25, 5, &graph);
+    for _ in 0..3 * DORMANT_INTERVAL_TICKS {
+        tiered.tick();
+    }
+    assert_eq!(tiered.tier(npc), Some(NpcTier::Dormant));
+    assert!(
+        tiered.brain(npc).awareness.is_empty(),
+        "screened, unmetered"
+    );
+    tiered.screened = false;
+    let first = to_dormant_check(&mut tiered, npc);
+    assert_eq!(meter(&tiered, npc), 0.0, "a first sighting gains nothing");
+    assert_eq!(tiered.brain(npc).acquired_target, None);
+    assert_eq!(tiered.tier(npc), Some(NpcTier::Dormant));
+    let second = to_dormant_check(&mut tiered, npc);
+    assert!(second - first >= 60, "a dormant check every 2 s");
+    assert_eq!(
+        tiered.brain(npc).acquired_target,
+        Some(tiered.pawn),
+        "the second dormant check that sees them"
+    );
+    assert_eq!(tiered.tier(npc), Some(NpcTier::Engaged), "then it moves up");
+}
+
+// P44 / AC 9: a dormant NPC with `fillMs` 3000 sights a player on a dormant
+// check and moves up 0.5 s later: moving up adds nothing to the meter, and
+// it acquires on the first check at least 3 s after that dormant check.
+#[test]
+fn move_up_adds_nothing_to_a_meter() {
+    let graph = super::awareness::noticing_graph(3_000.0, 2_000.0);
+    let identity = 6;
+    let mut tiered = Tiered::with_player();
+    tiered.screened = true;
+    let npc = tiered.npc(25, identity, &graph);
+    for _ in 0..3 * DORMANT_INTERVAL_TICKS {
+        tiered.tick();
+    }
+    tiered.screened = false;
+    let sighted = to_dormant_check(&mut tiered, npc);
+    assert_eq!(meter(&tiered, npc), 0.0);
+    for _ in 0..30 {
+        tiered.tick();
+    }
+    tiered.place(npc, 8);
+    tiered.tick();
+    assert_eq!(tiered.tier(npc), Some(NpcTier::Idle));
+    assert_eq!(meter(&tiered, npc), 0.0, "moving up adds nothing");
+    let mut acquired = None;
+    for _ in 0..240 {
+        tiered.tick();
+        if tiered.brain(npc).acquired_target.is_some() {
+            acquired = Some(tiered.ticks);
+            break;
+        }
+    }
+    let acquired = acquired.expect("noticed");
+    assert!(idle_check(identity, acquired), "on a check");
+    assert!(
+        acquired >= sighted + 180,
+        "no sooner than 3 s after the sighting"
+    );
+    assert!(
+        acquired - DECIDE_INTERVAL_TICKS < sighted + 180,
+        "the first check at least 3 s after the sighting"
+    );
+}
+
+/// A dormant NPC hit from out of sight about 1.9 s after its last dormant
+/// check: the hit's tick, its last dormant check, and the tiered world.
+fn grenade_on_a_dormant_npc(identity: u64) -> (Tiered, EntityId, u64) {
+    let graph = super::awareness::noticing_graph(1_000.0, 2_000.0);
+    let mut tiered = Tiered::with_player();
+    tiered.screened = true;
+    let npc = tiered.npc(25, identity, &graph);
+    for _ in 0..3 * DORMANT_INTERVAL_TICKS {
+        tiered.tick();
+    }
+    let last = to_dormant_check(&mut tiered, npc);
+    // About 1.9 s later, after a tick its idle phase checks on, so later
+    // checks fall a whole number of intervals after the hit.
+    while tiered.ticks < last + 114 || !idle_check(identity, tiered.ticks) {
+        tiered.tick();
+        assert!(!dormant_check(&tiered, npc), "no check before the hit");
+    }
+    let mut context = DamageContext::new("test.grenade", DamageProducer::InTick);
+    context.attacker = Some(tiered.pawn);
+    assert!(apply_damage_with_context(
+        &mut tiered.reg,
+        npc,
+        &DamagePayload {
+            amount: 1.0,
+            impulse: glam::Vec3::ZERO,
+            damage_type: None,
+        },
+        context,
+    ));
+    (tiered, npc, last)
+}
+
+// P57 / AC 16: the thrower's meter drains from the hit's tick, not from the
+// NPC's last dormant check; it holds near 1 at the first idle check.
+// Reappearing 0.1 s after the hit, the thrower is acquired on the second check
+// in a row that sees them; reappearing on the first check after a last missed
+// check 1 s after the hit (meter 0.5), on the first check at least 0.5 s after
+// that first sighting.
+#[test]
+fn dormant_hit_drains_from_the_hit_tick() {
+    let identity = 7;
+    // The first idle check: near 1, drained from the hit.
+    let (mut tiered, npc, last) = grenade_on_a_dormant_npc(identity);
+    let hit = tiered.ticks;
+    assert_eq!(meter(&tiered, npc), 1.0);
+    tiered.tick();
+    while !idle_check(identity, tiered.ticks) {
+        tiered.tick();
+    }
+    assert_eq!(tiered.tier(npc), Some(NpcTier::Idle), "the hit moved it up");
+    let drained = 1.0 - (tiered.ticks - hit) as f32 / 120.0;
+    assert!(
+        (meter(&tiered, npc) - drained).abs() < 1.0e-3,
+        "drained from the hit: {} != {drained} (from the last check: {})",
+        meter(&tiered, npc),
+        1.0 - (tiered.ticks - last) as f32 / 120.0
+    );
+
+    // Back in view 0.1 s after the hit: the second check in a row.
+    let (mut tiered, npc, _) = grenade_on_a_dormant_npc(identity);
+    let hit = tiered.ticks;
+    while tiered.ticks < hit + 6 {
+        tiered.tick();
+    }
+    tiered.screened = false;
+    let mut sightings = 0;
+    loop {
+        tiered.tick();
+        if idle_check(identity, tiered.ticks) {
+            sightings += 1;
+        }
+        if tiered.brain(npc).acquired_target.is_some() {
+            break;
+        }
+        assert!(sightings < 2, "not acquired on the second sighting");
+    }
+    assert_eq!(sightings, 2, "acquired on the second check in a row");
+
+    // Back in view after a last missed check 1 s after the hit.
+    let (mut tiered, npc, _) = grenade_on_a_dormant_npc(identity);
+    let hit = tiered.ticks;
+    while tiered.ticks < hit + 60 {
+        tiered.tick();
+    }
+    assert!(
+        idle_check(identity, tiered.ticks),
+        "a check 1 s after the hit"
+    );
+    assert!((meter(&tiered, npc) - 0.5).abs() < 1.0e-3, "0.5 at it");
+    tiered.screened = false;
+    tiered.tick();
+    while !idle_check(identity, tiered.ticks) {
+        tiered.tick();
+    }
+    let first_sighting = tiered.ticks;
+    assert!(
+        (meter(&tiered, npc) - 0.5).abs() < 1.0e-3,
+        "no gain, no drain"
+    );
+    loop {
+        tiered.tick();
+        if tiered.brain(npc).acquired_target.is_some() {
+            break;
+        }
+    }
+    let acquired = tiered.ticks;
+    assert!(acquired >= first_sighting + 30, "at least 0.5 s after");
+    assert!(
+        acquired < first_sighting + 30 + DECIDE_INTERVAL_TICKS,
+        "on the first check at least 0.5 s after"
+    );
+}
+
+// P61 / AC 46 (meter credit): an NPC moving down is credited, at its first
+// dormant check, by the time since its last idle check, once.
+#[test]
+fn move_down_credits_meters_once_by_the_time_since_the_last_idle_check() {
+    let graph = super::awareness::noticing_graph(60_000.0, 2_000.0);
+    let identity = 8;
+    let mut tiered = Tiered::with_player();
+    let npc = tiered.npc(6, identity, &graph);
+    for _ in 0..20 {
+        tiered.tick();
+    }
+    tiered.place(npc, 25);
+    let mut last_idle = (0, 0.0);
+    while tiered.tier(npc) != Some(NpcTier::Dormant) {
+        tiered.tick();
+        if tiered.tier(npc) == Some(NpcTier::Idle) && idle_check(identity, tiered.ticks) {
+            last_idle = (tiered.ticks, meter(&tiered, npc));
+        }
+        assert!(tiered.ticks < 400, "moved down after the hold");
+    }
+    assert!(last_idle.1 > 0.0, "the meter was filling while idle");
+    let first_dormant = to_dormant_check(&mut tiered, npc);
+    let expected = last_idle.1 + (first_dormant - last_idle.0) as f32 / 3_600.0;
+    assert!(
+        (meter(&tiered, npc) - expected).abs() < 1.0e-4,
+        "credited once: {} != {expected}",
+        meter(&tiered, npc)
+    );
 }

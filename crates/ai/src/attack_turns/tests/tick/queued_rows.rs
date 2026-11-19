@@ -1332,7 +1332,7 @@ fn a_queued_grant_opens_at_the_next_decide_and_the_waiter_follows_at_every_phase
         for second_phase in 0..interval {
             let mut reg = EntityRegistry::new();
             budgets(&mut reg, (1, 0.0), (1, 0.0));
-            let mut runtime = AiRuntime::new();
+            let mut runtime = AiRuntime::noticing_on_sight();
             let pawn = spawn_player(&mut reg, player_spot());
             let enemies = [(0, first_phase), (1, second_phase)].map(|(index, phase)| {
                 let enemy = spawn_resting(&mut reg, index, &graph);

@@ -154,7 +154,7 @@ impl Arena {
             nav_graph: open_floor_nav_graph(),
             hit_zones: HitZoneStore::new(),
             progress: ProgressTracker::new(),
-            ai_runtime: postretro_ai::AiRuntime::new(),
+            ai_runtime: postretro_ai::AiRuntime::noticing_on_sight(),
             mover_states: MoverTickStateTable::default(),
             ticks: 0,
         }

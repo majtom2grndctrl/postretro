@@ -89,7 +89,7 @@ fn acquisition_and_guards_run_exactly_on_decide_ticks_for_every_spawn_offset() {
 #[test]
 fn acquisition_runs_every_decide_at_any_distance() {
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
     let graph = test_graph_with(200.0, 200.0);
     spawn_player(&mut reg, Vec3::new(40.0, 0.0, 0.0));
     // A second, farther candidate keeps every later decide's scan observable

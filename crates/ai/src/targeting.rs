@@ -8,13 +8,16 @@ use super::engine_floor::is_meaningfully_closer;
 use super::perception::RawTargetPerception;
 use crate::nav::distance_xz;
 use postretro_entities::components::brain::{
-    BrainComponent, RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker,
+    AWARENESS_METER_CAPACITY, AwarenessCheck, AwarenessMeters, BrainComponent,
+    RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker,
 };
 #[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
 use postretro_entities::{EntityId, EntityRegistry, LiveFactionSentiment, Transform};
-use postretro_foundation::{BoundProgram, IrValue, RetaliationDescriptor, eval_value};
+use postretro_foundation::{
+    AwarenessDescriptor, BoundProgram, IrValue, RetaliationDescriptor, eval_value,
+};
 
 use super::candidate_scope::{CandidateFacts, CandidateRefreshContext, CandidateScope};
 use super::pawn_index::{IndexedPawn, PawnIndex};
@@ -219,6 +222,70 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
         && crate::scripting_systems::health::is_damage_target_eligible(registry, target)
 }
 
+/// A candidate through the offer floor, authored candidacy and line of sight.
+#[derive(Clone, Copy)]
+struct EligibleCandidate {
+    candidate: TargetCandidate,
+    perception: RawTargetPerception,
+    retaliation: Option<RetaliationRank>,
+}
+
+/// What one scan evaluates every candidate against.
+#[derive(Clone, Copy)]
+struct CandidateGates<'a> {
+    context: CandidateRefreshContext<'a>,
+    retaliation: RetaliationDescriptor,
+    tick_ms: f32,
+    candidate_filter: Option<&'a BoundProgram<CandidateScope>>,
+}
+
+/// One candidate through the offer floor, authored candidacy and line of
+/// sight. A non-hostile pawn passes the floor only by retaliation; with
+/// `ranked_only`, so does every pawn.
+fn evaluate_candidate(
+    pawn: &IndexedPawn,
+    from: Vec3,
+    gates: CandidateGates<'_>,
+    scope: &mut CandidateScope,
+    candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
+    ranked_only: bool,
+) -> Option<EligibleCandidate> {
+    let candidate = indexed_candidate(pawn, from);
+    let facts =
+        scope.refresh_with_faction(gates.context, pawn.entity, candidate.distance, pawn.faction);
+    let rank = retaliation_preference(facts, candidate.distance, gates.retaliation, gates.tick_ms);
+    if (ranked_only || facts.sentiment >= 0.0) && rank.is_none() {
+        return None;
+    }
+    let filter_allows = gates
+        .candidate_filter
+        .is_none_or(|filter| eval_value(filter, scope) == IrValue::Bool(true));
+    let perception = filter_allows
+        .then(|| candidate_perception(candidate.target))
+        .flatten()
+        .filter(|perception| perception.visible)?;
+    Some(EligibleCandidate {
+        candidate,
+        perception,
+        retaliation: rank,
+    })
+}
+
+/// Whether `candidate` is preferred to `current` in the scan's fold: the
+/// strongest retaliation rank, else the nearest hostile.
+fn preferred_to(candidate: EligibleCandidate, current: EligibleCandidate) -> bool {
+    match (candidate.retaliation, current.retaliation) {
+        (Some(candidate_rank), Some(current_rank)) => candidate_rank.is_preferred_to(current_rank),
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate
+            .candidate
+            .distance
+            .total_cmp(&current.candidate.distance)
+            .is_lt(),
+    }
+}
+
 /// Choose from the pass's pawn index on an acquisition tick. Authored candidacy and
 /// engine-floor LOS both narrow fresh eligibility, while the pure nearest stays
 /// untouched for stride pricing. The retained candidate is deliberately supplied
@@ -275,13 +342,6 @@ pub(super) fn select_target_with_attacker_ledger(
     tick_ms: f32,
     candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
 ) -> Option<TargetSelection> {
-    #[derive(Clone, Copy)]
-    struct EligibleCandidate {
-        candidate: TargetCandidate,
-        perception: RawTargetPerception,
-        retaliation: Option<RetaliationRank>,
-    }
-
     let refresh_context = CandidateRefreshContext::new(
         registry,
         factions,
@@ -295,28 +355,19 @@ pub(super) fn select_target_with_attacker_ledger(
     // sight. A non-hostile pawn passes the floor only by retaliation; with
     // `ranked_only`, so does every pawn.
     let mut evaluate = |pawn: &IndexedPawn, scope: &mut CandidateScope, ranked_only: bool| {
-        let candidate = indexed_candidate(pawn, offers.from);
-        let facts = scope.refresh_with_faction(
-            refresh_context,
-            pawn.entity,
-            candidate.distance,
-            pawn.faction,
-        );
-        let rank = retaliation_preference(facts, candidate.distance, retaliation, tick_ms);
-        if (ranked_only || facts.sentiment >= 0.0) && rank.is_none() {
-            return None;
-        }
-        let filter_allows =
-            candidate_filter.is_none_or(|filter| eval_value(filter, scope) == IrValue::Bool(true));
-        let perception = filter_allows
-            .then(|| candidate_perception(candidate.target))
-            .flatten()
-            .filter(|perception| perception.visible)?;
-        Some(EligibleCandidate {
-            candidate,
-            perception,
-            retaliation: rank,
-        })
+        evaluate_candidate(
+            pawn,
+            offers.from,
+            CandidateGates {
+                context: refresh_context,
+                retaliation,
+                tick_ms,
+                candidate_filter,
+            },
+            scope,
+            &mut *candidate_perception,
+            ranked_only,
+        )
     };
 
     // Hostile pawns nearest first, ties in scan order, until the first that is
@@ -392,20 +443,7 @@ pub(super) fn select_target_with_attacker_ledger(
         .sort_unstable_by_key(|contender| contender.map_or(u32::MAX, |(_, position)| position));
     let mut preferred_eligible: Option<EligibleCandidate> = None;
     for &(eligible, _) in contenders.iter().flatten() {
-        if preferred_eligible.is_none_or(|current| {
-            match (eligible.retaliation, current.retaliation) {
-                (Some(candidate_rank), Some(current_rank)) => {
-                    candidate_rank.is_preferred_to(current_rank)
-                }
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => eligible
-                    .candidate
-                    .distance
-                    .total_cmp(&current.candidate.distance)
-                    .is_lt(),
-            }
-        }) {
+        if preferred_eligible.is_none_or(|current| preferred_to(eligible, current)) {
             preferred_eligible = Some(eligible);
         }
     }
@@ -473,6 +511,251 @@ pub(super) fn select_target_with_attacker_ledger(
             .then_some(preferred.candidate.target.entity)
         });
         selection_for(preferred, retaliation_acquired_target)
+    })
+}
+
+/// The acquisition check of an NPC without a retained target: it notices
+/// through its awareness meters instead of taking the best candidate on
+/// sight. The scan walks hostile pawns nearest first past the first eligible
+/// one, testing candidacy and line of sight for each, until the meters' bound
+/// of passing candidates; then every member the walk did not reach, and
+/// ledger attackers for retaliation. Each visited member fills or drains, and
+/// a candidate whose meter is full is selected: the retaliation-ranked first,
+/// then the one selected last check, then the nearest. A new selection
+/// clears every other meter; without one, passing newcomers take slots at 0.
+/// A member the check cannot visit frees its slot.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn notice_target(
+    from: Vec3,
+    index: &PawnIndex,
+    registry: &EntityRegistry,
+    factions: &LiveFactionSentiment<'_>,
+    evaluating_enemy: Option<EntityId>,
+    evaluating_faction: f32,
+    candidate_filter: Option<&BoundProgram<CandidateScope>>,
+    candidate_scope: &mut CandidateScope,
+    recent_attackers: &[Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
+    retaliation: RetaliationDescriptor,
+    tick_ms: f32,
+    meters: &mut AwarenessMeters,
+    rates: AwarenessDescriptor,
+    candidate_perception: &mut dyn FnMut(TargetPawn) -> Option<RawTargetPerception>,
+) -> Option<TargetSelection> {
+    const NEWCOMERS: usize = AWARENESS_METER_CAPACITY + RECENT_ATTACKER_LEDGER_CAPACITY;
+    let gates = CandidateGates {
+        context: CandidateRefreshContext::new(
+            registry,
+            factions,
+            evaluating_enemy,
+            evaluating_faction,
+            recent_attackers,
+        ),
+        retaliation,
+        tick_ms,
+        candidate_filter,
+    };
+    let previous = meters.selected;
+    let mut check = AwarenessCheck::new(meters, rates);
+    // Each member's verdict on this check, with its scan position.
+    let mut members = [None::<(EligibleCandidate, u32)>; AWARENESS_METER_CAPACITY];
+    // Passing candidates without a meter.
+    let mut newcomers = [None::<(EligibleCandidate, u32)>; NEWCOMERS];
+    let mut newcomer_count = 0;
+
+    // Hostile pawns nearest first, ties in scan order, until the bound passes.
+    let mut walk = index.walk.borrow_mut();
+    walk.clear();
+    for position in index.hostile_pawns(factions, evaluating_faction) {
+        let pawn = index.pawn(position);
+        if evaluating_enemy != Some(pawn.entity) {
+            walk.push((distance_xz(pawn.position, from), position));
+        }
+    }
+    walk.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut passing = 0;
+    let mut stop = None;
+    for &(distance, position) in walk.iter() {
+        let pawn = index.pawn(position);
+        let eligible = evaluate_candidate(
+            pawn,
+            from,
+            gates,
+            candidate_scope,
+            &mut *candidate_perception,
+            false,
+        );
+        match check.member(pawn.entity) {
+            Some(slot) => {
+                check.visit(slot, distance, eligible.is_some());
+                members[slot] = eligible.map(|eligible| (eligible, position));
+            }
+            None => {
+                if let Some(eligible) = eligible {
+                    newcomers[newcomer_count] = Some((eligible, position));
+                    newcomer_count += 1;
+                }
+            }
+        }
+        if eligible.is_some() {
+            passing += 1;
+            if passing == AWARENESS_METER_CAPACITY {
+                stop = Some((distance, position));
+                break;
+            }
+        }
+    }
+    drop(walk);
+    let walked = |pawn: &IndexedPawn, position: u32| {
+        index.hostile_to(factions, evaluating_faction, pawn)
+            && stop.is_none_or(|(distance, last)| {
+                distance_xz(pawn.position, from)
+                    .total_cmp(&distance)
+                    .then(position.cmp(&last))
+                    .is_le()
+            })
+    };
+
+    // Members the walk did not reach: past its stop, or not hostile. One no
+    // longer a pawn of this pass is never visited and frees its slot.
+    for (slot, member) in members.iter_mut().enumerate() {
+        if check.visited(slot) {
+            continue;
+        }
+        let Some(candidate) = check.candidate(slot) else {
+            continue;
+        };
+        let Some(position) = index.position_of(candidate) else {
+            continue;
+        };
+        if evaluating_enemy == Some(candidate) {
+            continue;
+        }
+        let pawn = index.pawn(position);
+        let eligible = evaluate_candidate(
+            pawn,
+            from,
+            gates,
+            candidate_scope,
+            &mut *candidate_perception,
+            false,
+        );
+        check.visit(slot, distance_xz(pawn.position, from), eligible.is_some());
+        *member = eligible.map(|eligible| (eligible, position));
+    }
+
+    // Ledger attackers neither walked nor metered, in scan order: only a
+    // retaliation rank admits them.
+    let mut attackers = [u32::MAX; RECENT_ATTACKER_LEDGER_CAPACITY];
+    let mut attacker_count = 0;
+    for entry in recent_attackers.iter().flatten() {
+        let Some(position) = index.position_of(entry.attacker) else {
+            continue;
+        };
+        if evaluating_enemy == Some(entry.attacker)
+            || check.member(entry.attacker).is_some()
+            || walked(index.pawn(position), position)
+            || attackers[..attacker_count].contains(&position)
+        {
+            continue;
+        }
+        attackers[attacker_count] = position;
+        attacker_count += 1;
+    }
+    let attackers = &mut attackers[..attacker_count];
+    attackers.sort_unstable();
+    for &position in attackers.iter() {
+        if let Some(eligible) = evaluate_candidate(
+            index.pawn(position),
+            from,
+            gates,
+            candidate_scope,
+            &mut *candidate_perception,
+            true,
+        ) {
+            newcomers[newcomer_count] = Some((eligible, position));
+            newcomer_count += 1;
+        }
+    }
+
+    // A full meter that passed this check: the retaliation-ranked first, then
+    // the last selection, then the nearest; ties to the earlier pawn.
+    let nearer = |a: (EligibleCandidate, u32), b: (EligibleCandidate, u32)| {
+        a.0.candidate
+            .distance
+            .total_cmp(&b.0.candidate.distance)
+            .then(a.1.cmp(&b.1))
+            .is_lt()
+    };
+    let held = |eligible: EligibleCandidate| previous == Some(eligible.candidate.target.entity);
+    let mut nearest_full: Option<(EligibleCandidate, u32)> = None;
+    let mut chosen: Option<(EligibleCandidate, u32)> = None;
+    for (slot, member) in members.iter().enumerate() {
+        let Some(member) = *member else {
+            continue;
+        };
+        if !check.full(slot) {
+            continue;
+        }
+        if nearest_full.is_none_or(|current| nearer(member, current)) {
+            nearest_full = Some(member);
+        }
+        if chosen.is_none_or(|current| {
+            if preferred_to(member.0, current.0) && member.0.retaliation.is_some() {
+                return true;
+            }
+            if preferred_to(current.0, member.0) && current.0.retaliation.is_some() {
+                return false;
+            }
+            if held(member.0) != held(current.0) {
+                return held(member.0);
+            }
+            nearer(member, current)
+        }) {
+            chosen = Some(member);
+        }
+    }
+
+    let admit = |check: &mut AwarenessCheck<'_>,
+                 newcomers: &mut [Option<(EligibleCandidate, u32)>]| {
+        newcomers.sort_unstable_by(|a, b| match (a, b) {
+            (Some(a), Some(b)) => {
+                a.0.candidate
+                    .distance
+                    .total_cmp(&b.0.candidate.distance)
+                    .then(a.1.cmp(&b.1))
+            }
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        for (eligible, _) in newcomers.iter().flatten() {
+            check.admit(
+                eligible.candidate.target.entity,
+                eligible.candidate.distance,
+            );
+        }
+    };
+    let Some((chosen, _)) = chosen else {
+        admit(&mut check, &mut newcomers[..newcomer_count]);
+        check.finish(None);
+        return None;
+    };
+    let entity = chosen.candidate.target.entity;
+    if previous == Some(entity) {
+        admit(&mut check, &mut newcomers[..newcomer_count]);
+        check.finish(previous);
+    } else {
+        check.acquire(entity, chosen.candidate.distance);
+    }
+    // The latch marks a pick the retaliation term made over pure distance.
+    let retaliation_acquired_target = chosen.retaliation.and_then(|_| {
+        (nearest_full.map(|(nearest, _)| nearest.candidate.target.entity) != Some(entity))
+            .then_some(entity)
+    });
+    Some(TargetSelection {
+        target: chosen.candidate.target,
+        fresh_perception: Some(chosen.perception),
+        retaliation_acquired_target,
     })
 }
 

@@ -350,7 +350,8 @@ fn acquired_after_ticks(registry: &mut EntityRegistry, enemy: EntityId) -> Optio
     let sentiment = RefCell::new(postretro_entities::FactionSentimentState::default());
     let mut callback = |_: &mut EntityRegistry| {};
     let mut host = SimAiHost::new(&mut callback);
-    for _ in 0..4 {
+    // A first sighting, then the default 1 s awareness fill at 15 Hz checks.
+    for _ in 0..1 + 16 * 4 {
         let _ = postretro_ai::run_ai_tick_with_host(
             registry,
             &mut runtime,

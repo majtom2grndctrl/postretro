@@ -1287,3 +1287,30 @@ fn a_stance_under_a_mark_for_its_own_attack_strikes_again_and_again() {
         );
     }
 }
+
+// P1 / P27: a queued grant made on a rest's last run before the schedule
+// skips it opens its row on its next run, however many ticks it sat out.
+#[test]
+fn a_queued_grant_opens_on_the_next_run_after_a_skip() {
+    let graph = queue_graph(
+        vec![queued(SLAM, always())],
+        vec![(SLAM, strike(2.0, 1.0, vec![token("melee")]))],
+        NEVER,
+    );
+    let mut reg = EntityRegistry::new();
+    budgets(&mut reg, (3, 0.0), (1, 0.0));
+    let mut runtime = AiRuntime::new();
+    spawn_player(&mut reg, Vec3::new(1.8, 0.0, 0.0));
+    let enemy = spawn_resting(&mut reg, 0, &graph);
+    tick(&mut reg, &mut runtime);
+    assert_eq!(state(&reg, enemy), REST);
+    assert_eq!(held(&reg, enemy), vec![SLAM], "requested and granted");
+
+    for tick_index in 0..29 {
+        tick_skipping(&mut reg, &mut runtime, &[enemy]);
+        assert_eq!(state(&reg, enemy), REST, "tick {tick_index}");
+        assert_eq!(held(&reg, enemy), vec![SLAM], "tick {tick_index}");
+    }
+    tick(&mut reg, &mut runtime);
+    assert_eq!(state(&reg, enemy), hold(SLAM), "the row opened on its run");
+}

@@ -982,6 +982,7 @@ fn target_reachability_reads_the_door_that_cuts_the_only_route() {
                 factions: &factions,
                 faction_sentiment: &sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -1178,6 +1179,7 @@ fn reachability_carried_between_docks(wait_ms: f32) -> (bool, bool) {
                 factions: &factions,
                 faction_sentiment: &sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -2065,6 +2067,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -2092,6 +2095,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -2126,6 +2130,7 @@ fn set_sentiment_flips_next_ai_tick_and_remains_directional() {
                 factions: &data.factions,
                 faction_sentiment: &ctx.faction_sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -2277,6 +2282,7 @@ fn run_crossfire_tick(
             factions,
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -3333,6 +3339,7 @@ fn same_batch_lethal_contact_quiesces_later_projectile_attack() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -3402,6 +3409,7 @@ fn same_batch_contact_fire_rejects_target_killed_by_earlier_outcome() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -3476,6 +3484,7 @@ fn same_batch_projectile_fire_rejects_target_killed_by_earlier_outcome() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -3552,6 +3561,7 @@ fn same_batch_contact_fire_rejects_target_committed_to_despawn_by_earlier_policy
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |registry| {
@@ -3633,6 +3643,7 @@ fn same_batch_projectile_fire_rejects_target_committed_to_despawn_by_earlier_pol
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |registry| {
@@ -3735,6 +3746,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |registry| policies.evaluate_pending_in_registry(registry),
@@ -3777,6 +3789,7 @@ fn same_batch_recovered_actor_waits_for_fresh_ai_evaluation_before_firing() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |registry| policies.evaluate_pending_in_registry(registry),
@@ -3841,6 +3854,7 @@ fn impact_time_faction_write_reaches_all_brains_on_the_next_tick() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |registry| {
@@ -8224,6 +8238,7 @@ fn entering_an_activity_without_on_enter_emits_its_path_and_no_address() {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},
@@ -11709,6 +11724,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -11745,6 +11761,7 @@ fn projectile_weapon_attack_uses_resolved_range_and_damages_on_later_projectile_
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -11869,6 +11886,7 @@ fn registry_exhaustion_rejects_projectile_attack_without_fire_side_effects() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -11944,6 +11962,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -11990,6 +12009,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -12068,6 +12088,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -12097,6 +12118,7 @@ fn live_projectile_attack_refreshes_reloaded_weapon_and_disables_invalid_replace
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -12132,6 +12154,7 @@ fn tick_persistent_enemy_weapon(
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -12433,6 +12456,7 @@ fn projectile_attack_rejects_degenerate_aim_before_fire_side_effects() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -12482,6 +12506,7 @@ fn projectile_attack_accepts_finite_vertical_aim_direction() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -12535,6 +12560,7 @@ fn enemy_projectile_attack_emits_its_attack_cue_and_records_its_weapon() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -12627,6 +12653,7 @@ fn projectile_weapon_attack_into_a_wall_despawns_without_damage() {
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -14438,7 +14465,7 @@ fn airborne_launch_plays_jump_loop_after_fall_delay_then_lands() {
     let clips = clips_through_vertical_launch(&mut reg, &mut runtime, &world, &graph, enemy);
     let air_ticks = clips.iter().filter(|(airborne, _)| *airborne).count() as u32;
     assert!(
-        air_ticks > crate::sim::FALL_DELAY_TICKS,
+        air_ticks > crate::launch::NPC_FALL_DELAY_TICKS,
         "fixture: the flight outlasts the fall delay ({air_ticks} ticks)"
     );
     for (tick, (airborne, clip)) in clips.iter().enumerate() {
@@ -14446,7 +14473,7 @@ fn airborne_launch_plays_jump_loop_after_fall_delay_then_lands() {
         let expected = if !airborne {
             // Landing returns to the activity's resolved clip: still travelling.
             "locomotion"
-        } else if air_tick >= crate::sim::FALL_DELAY_TICKS {
+        } else if air_tick >= crate::launch::NPC_FALL_DELAY_TICKS {
             "jump_loop"
         } else {
             "locomotion"
@@ -14469,7 +14496,7 @@ fn airborne_launch_without_jump_loop_keeps_current_clip() {
     let enemy = travelling_chaser(&mut reg, &mut runtime, &world, &graph, enemy_mesh());
 
     let clips = clips_through_vertical_launch(&mut reg, &mut runtime, &world, &graph, enemy);
-    assert!(clips.len() as u32 > crate::sim::FALL_DELAY_TICKS);
+    assert!(clips.len() as u32 > crate::launch::NPC_FALL_DELAY_TICKS);
     assert!(
         clips.iter().all(|(_, clip)| clip == "locomotion"),
         "a mesh without `jump_loop` keeps its clip through the launch: {clips:?}"
@@ -14505,7 +14532,7 @@ fn horizontal_shove_keeps_ground_clip() {
     assert_eq!(enemy_animation(&reg, enemy), "idle", "fixture: rest clip");
 
     launch_enemy(&mut reg, enemy, Vec3::new(6.0, 0.0, 0.0));
-    for tick in 0..(2 * crate::sim::FALL_DELAY_TICKS) {
+    for tick in 0..(2 * crate::launch::NPC_FALL_DELAY_TICKS) {
         run_ai_tick(&mut reg, &mut runtime, STEER_DT);
         assert!(enemy_agent(&reg, enemy).is_grounded());
         assert_eq!(

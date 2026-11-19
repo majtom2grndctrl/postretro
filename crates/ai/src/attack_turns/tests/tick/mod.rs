@@ -12,6 +12,7 @@ mod refresh;
 mod release;
 mod reload;
 pub(crate) mod shipped_content;
+mod skip;
 mod tokens;
 
 use super::*;
@@ -280,6 +281,36 @@ fn tick(reg: &mut EntityRegistry, runtime: &mut AiRuntime) {
     run_ai_tick(reg, runtime, DT);
 }
 
+/// One tick with the AI tick schedule skipping `skip`: they stay in the AI
+/// set and run nothing.
+fn tick_skipping(reg: &mut EntityRegistry, runtime: &mut AiRuntime, skip: &[EntityId]) {
+    let lookup = |id| {
+        if skip.contains(&id) {
+            crate::ai_host::AiRun::Skip
+        } else {
+            crate::ai_host::AiRun::Run
+        }
+    };
+    run_ai_tick_with_navigation_and_impact(
+        reg,
+        runtime,
+        DT,
+        AiTickInputs {
+            mover_nav: crate::nav::MoverNav::none(),
+            nav_graph: None,
+            collision_world: Some(&CollisionWorld::new()),
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
+            schedule: crate::ai_host::AiSchedule::scheduled(&lookup),
+            cpu: None,
+        },
+        |_| {},
+    );
+}
+
 fn tick_with(
     reg: &mut EntityRegistry,
     runtime: &mut AiRuntime,
@@ -317,6 +348,7 @@ fn tick_with_clip_store(
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -401,6 +433,7 @@ fn engaged_outcome(
 ) -> EnemyOutcome {
     EnemyOutcome {
         id,
+        span: 1,
         position,
         target: Some(target),
         enemy_eye_offset: Vec3::ZERO,

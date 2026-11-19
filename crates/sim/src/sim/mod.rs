@@ -993,6 +993,7 @@ where
                 factions,
                 faction_sentiment,
                 clips: Some(hit_zone_store),
+                schedule: Default::default(),
                 cpu: Some(&cpu),
             },
             &mut host,

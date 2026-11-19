@@ -143,6 +143,9 @@ where
     }
 
     for mut outcome in outcomes {
+        // A brain the schedule skipped since its last run slews and spends
+        // weapon resources over every tick it missed.
+        let tick_dt = tick_dt * outcome.span.max(1) as f32;
         // Holding suspends world work without retiring private controller state.
         if registry.is_inventory_owned(outcome.id) {
             continue;

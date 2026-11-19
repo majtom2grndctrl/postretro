@@ -355,6 +355,7 @@ impl Scene {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&self.clips),
+                schedule: Default::default(),
                 cpu: None,
             },
             on_impact,

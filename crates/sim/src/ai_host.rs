@@ -78,6 +78,41 @@ pub struct AiTickInputs<'a> {
     /// The tick's stage frame, so AI reports its sub-stages under `sim_ai`
     /// (`rendering_pipeline.md` §12). `None` records nothing.
     pub cpu: Option<&'a AiStageFrame>,
+    /// Which brains run this tick and which the AI tick schedule skips.
+    pub schedule: AiSchedule<'a>,
+}
+
+/// What one brain's AI does this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiRun {
+    /// It runs, its clocks advancing by every tick since its last run.
+    Run,
+    /// The schedule skips it: it stays in the AI set, keeps its attack turns,
+    /// request and wait clock, and runs nothing.
+    Skip,
+}
+
+/// The AI tick schedule's answer for each brain. A lookup answers the same
+/// whenever it is asked within a tick. Every brain not scheduled runs every
+/// tick.
+#[derive(Clone, Copy, Default)]
+pub struct AiSchedule<'a> {
+    schedule: Option<&'a dyn Fn(postretro_entities::EntityId) -> AiRun>,
+}
+
+impl<'a> AiSchedule<'a> {
+    /// Every brain runs every tick.
+    pub const EVERY_TICK: AiSchedule<'static> = AiSchedule { schedule: None };
+
+    pub fn scheduled(schedule: &'a dyn Fn(postretro_entities::EntityId) -> AiRun) -> Self {
+        Self {
+            schedule: Some(schedule),
+        }
+    }
+
+    pub fn run(&self, id: postretro_entities::EntityId) -> AiRun {
+        self.schedule.map_or(AiRun::Run, |schedule| schedule(id))
+    }
 }
 
 /// The sim tick's stage frame as AI sees it.

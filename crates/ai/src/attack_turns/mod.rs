@@ -207,6 +207,46 @@ impl AttackTurnRuntime {
 /// The pool an enemy takes turns in: the running attack pool a start or a
 /// tagged spawn assigned it, else the default pool. An assignment naming a
 /// pool that is not running this tick reads as the default pool.
+/// A brain the AI tick schedule skipped this tick: present in the AI set,
+/// holding what it held as it left its last run, requesting nothing.
+#[derive(Clone, Copy)]
+pub(crate) struct SkippedHolder {
+    pub(crate) id: EntityId,
+    pub(crate) pool: AttackPoolId,
+    pub(crate) turns: AttackTurnState,
+}
+
+/// The brains in the AI set on the previous tick, run or skipped. Reused
+/// storage: one sorted list read this tick, one filled for the next.
+#[derive(Default)]
+pub(crate) struct Presence {
+    previous: Vec<EntityId>,
+    current: Vec<EntityId>,
+}
+
+impl Presence {
+    /// Start a tick: last tick's set becomes the one read.
+    pub(crate) fn begin(&mut self) {
+        std::mem::swap(&mut self.previous, &mut self.current);
+        self.current.clear();
+        self.previous.sort_unstable();
+    }
+
+    pub(crate) fn was_present(&self, id: EntityId) -> bool {
+        self.previous.binary_search(&id).is_ok()
+    }
+
+    /// `id` is in the AI set this tick.
+    pub(crate) fn mark(&mut self, id: EntityId) {
+        self.current.push(id);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.previous.clear();
+        self.current.clear();
+    }
+}
+
 pub(crate) fn attack_pool_of(budgets: &AttackBudgets, brain: &BrainComponent) -> AttackPoolId {
     match brain.attack_pool {
         Some(pool) if budgets.pools.is_running(pool) => AttackPoolId::Pool(pool),

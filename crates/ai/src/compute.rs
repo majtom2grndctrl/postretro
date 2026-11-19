@@ -55,6 +55,12 @@ pub(super) fn evaluate(
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for (slot, snap) in snapshots.into_iter().enumerate() {
+        // A brain the schedule skipped since its last run advances every
+        // clock by all the ticks it missed: its whole tick runs with its step
+        // scaled.
+        let span = snap.span;
+        let tick_dt = tick_dt * span as f32;
+        let dt_ms = dt_ms * span as f32;
         let mut brain = snap.brain;
         let mut graph_reseated = programs.take_reseat(snap.id);
         if graph_reseated {
@@ -273,6 +279,7 @@ pub(super) fn evaluate(
                     nav_graph,
                     collision_world,
                     fresh: selection.fresh_perception,
+                    span,
                 },
             )
         });
@@ -565,6 +572,7 @@ pub(super) fn evaluate(
                 aim_direction: target_perception
                     .map(|perception| perception.target_aim - perception.enemy_eye),
                 tick_dt,
+                span,
             },
         );
         let weapon_aim = target_perception.and_then(|perception| {
@@ -745,6 +753,7 @@ pub(super) fn evaluate(
         );
         outcomes.push(EnemyOutcome {
             id: snap.id,
+            span,
             position: snap.position,
             target,
             enemy_eye_offset,

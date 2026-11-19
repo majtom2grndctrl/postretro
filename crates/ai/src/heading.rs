@@ -30,6 +30,8 @@ pub(super) struct HeadingQuery {
     /// Eye to target aim point, when a target is perceived.
     pub(super) aim_direction: Option<Vec3>,
     pub(super) tick_dt: f32,
+    /// Ticks since the enemy's last run.
+    pub(super) span: u32,
 }
 
 /// What this tick's heading hands the rest of compute.
@@ -58,7 +60,12 @@ pub(super) fn resolve(
     // never turns the enemy toward its flight. A launch holds its impact yaw
     // under travel facing; target facing keeps re-aiming.
     let path_state = agent_steering::path_state(registry, query.id);
-    launch::advance(&mut brain.launch, path_state.as_ref(), query.rotation);
+    launch::advance(
+        &mut brain.launch,
+        path_state.as_ref(),
+        query.rotation,
+        query.span,
+    );
     let steering_velocity = path_state.map(|path| path.steering_velocity());
     let facing_policy = resolve_facing_policy(
         brain.aggro_armed.then(|| authored_facing(brain)).flatten(),

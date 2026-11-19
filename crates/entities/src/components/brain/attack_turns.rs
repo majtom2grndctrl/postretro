@@ -140,9 +140,14 @@ pub struct AttackTurnState {
     held: [Option<HeldTurn>; MAX_HELD_TURNS + MAX_UNDRAWN_TURNS],
     pub request: Option<TurnRequest>,
     pub wait: Option<WaitClock>,
-    /// The last AI tick this brain was evaluated on. A gap means it left the
-    /// AI set, which drops every turn, request and clock.
+    /// The last AI tick this brain was evaluated on. A gap with no scheduled
+    /// skip means it left the AI set, which drops every turn, request and
+    /// clock.
     pub seen_tick: u64,
+    /// Ticks between this brain's latest run and the one before: 1 at the
+    /// fixed rate, more when the AI tick schedule skipped it in between. 0
+    /// reads as 1.
+    pub run_span: u32,
 }
 
 impl AttackTurnState {
@@ -201,8 +206,10 @@ impl AttackTurnState {
     /// Drop every turn, the request and the wait clock.
     pub fn clear(&mut self) {
         let seen_tick = self.seen_tick;
+        let run_span = self.run_span;
         *self = Self {
             seen_tick,
+            run_span,
             ..Self::default()
         };
     }

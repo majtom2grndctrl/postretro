@@ -64,6 +64,8 @@ pub(super) struct TargetPerceptionQuery<'a> {
     pub(super) nav_graph: Option<&'a NavGraph>,
     pub(super) collision_world: Option<&'a CollisionWorld>,
     pub(super) fresh: Option<RawTargetPerception>,
+    /// Ticks since the enemy's last run: the grace window counts them all.
+    pub(super) span: u32,
 }
 
 /// Derive the one enemy eye point used by LOS consumers. An authored health
@@ -153,6 +155,7 @@ pub(super) fn perceive_target(
         nav_graph,
         collision_world,
         fresh,
+        span,
     } = query;
     let raw = match fresh {
         Some(raw) if raw.target == target.entity => raw,
@@ -176,7 +179,7 @@ pub(super) fn perceive_target(
             }
         }
     };
-    let visible = debounce_los(grace, enemy, target.entity, raw.visible);
+    let visible = debounce_los(grace, enemy, target.entity, raw.visible, span);
 
     Some(EnemyTargetPerception {
         visible,
@@ -191,11 +194,15 @@ pub(super) fn fire_gate(perception: Option<EnemyTargetPerception>) -> bool {
     perception.is_some_and(|perception| perception.visible)
 }
 
+/// The verdict holds clear for [`LOS_GRACE_TICKS`] ticks after the last clear
+/// one, counted in elapsed ticks: a run `span` ticks after the previous one
+/// spends `span` of the window, and closes it on the first run at or past it.
 fn debounce_los(
     grace: &mut HashMap<EntityId, LosGraceState>,
     enemy: EntityId,
     target: EntityId,
     raw_visible: bool,
+    span: u32,
 ) -> bool {
     if raw_visible {
         grace.insert(
@@ -215,12 +222,12 @@ fn debounce_los(
         grace.remove(&enemy);
         return false;
     }
-    if state.remaining_ticks == 0 {
+    if state.remaining_ticks < span.max(1) {
         grace.remove(&enemy);
         return false;
     }
 
-    state.remaining_ticks -= 1;
+    state.remaining_ticks -= span.max(1);
     if state.remaining_ticks == 0 {
         grace.remove(&enemy);
     }
@@ -261,18 +268,44 @@ mod tests {
         let enemy = registry.spawn(Default::default());
         let target = registry.spawn(Default::default());
 
-        assert!(debounce_los(&mut grace, enemy, target, true));
+        assert!(debounce_los(&mut grace, enemy, target, true, 1));
         for _ in 0..LOS_GRACE_TICKS {
             assert!(
-                debounce_los(&mut grace, enemy, target, false),
+                debounce_los(&mut grace, enemy, target, false, 1),
                 "the previous clear verdict survives its grace window"
             );
         }
         assert!(
-            !debounce_los(&mut grace, enemy, target, false),
+            !debounce_los(&mut grace, enemy, target, false, 1),
             "the first loss tick after grace closes the verdict"
         );
         assert!(grace.is_empty(), "expired state is pruned immediately");
+    }
+
+    // P18: the grace window counts elapsed ticks, so a run that spans several
+    // closes it on the first run at or past its length, never earlier.
+    #[test]
+    fn debounce_grace_expires_on_the_first_run_at_or_past_it_at_any_span() {
+        let mut registry = EntityRegistry::new();
+        let enemy = registry.spawn(Default::default());
+        let target = registry.spawn(Default::default());
+        // (span of each losing run, verdicts expected)
+        let cases: [(&[u32], &[bool]); 5] = [
+            (&[30], &[false]),
+            (&[1, 1, 1, 1], &[true, true, true, false]),
+            (&[2, 2], &[true, false]),
+            (&[3, 1], &[true, false]),
+            (&[2, 1, 1], &[true, true, false]),
+        ];
+        for (spans, expected) in cases {
+            let mut grace = HashMap::new();
+            assert!(debounce_los(&mut grace, enemy, target, true, 1));
+            let verdicts: Vec<bool> = spans
+                .iter()
+                .map(|&span| debounce_los(&mut grace, enemy, target, false, span))
+                .collect();
+            assert_eq!(verdicts, expected, "spans {spans:?}");
+        }
     }
 
     #[test]
@@ -283,9 +316,9 @@ mod tests {
         let first_target = registry.spawn(Default::default());
         let second_target = registry.spawn(Default::default());
 
-        assert!(debounce_los(&mut grace, enemy, first_target, true));
+        assert!(debounce_los(&mut grace, enemy, first_target, true, 1));
         assert!(
-            !debounce_los(&mut grace, enemy, second_target, false),
+            !debounce_los(&mut grace, enemy, second_target, false, 1),
             "a newly selected target has no inherited grace"
         );
         assert!(grace.is_empty(), "mismatched state is pruned");
@@ -341,6 +374,7 @@ mod tests {
                 nav_graph: None,
                 collision_world: Some(&CollisionWorld::new()),
                 fresh: Some(raw),
+                span: 1,
             },
         )
         .expect("the acquisition result is sufficient for this tick");

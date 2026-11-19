@@ -9,7 +9,12 @@ use postretro_entities::{EntityId, EntityRegistry};
 
 use super::facing::yaw_from_rotation;
 use crate::agent_steering::AgentPathState;
-use crate::sim::{FALL_DELAY_TICKS, JUMP_LOOP_STATE};
+use crate::sim::JUMP_LOOP_STATE;
+
+/// Airborne ticks of a launch before its body presents `jump_loop`: the
+/// player's fall delay, about 150 ms, kept as the NPC's own so a player retune
+/// does not move it. Counted in elapsed ticks.
+pub(crate) const NPC_FALL_DELAY_TICKS: u32 = 9;
 
 /// Advance a brain's launch memory from this tick's start-of-tick path state.
 /// `heading::resolve` calls it once per tick, before facing reads the impact
@@ -21,7 +26,15 @@ use crate::sim::{FALL_DELAY_TICKS, JUMP_LOOP_STATE};
 /// counting until the body lands, even if drag spends the knockback in the
 /// air; either keeps the enemy launched, which cancels a clip-timed attack's
 /// pending moment ([`launched`]).
-pub(super) fn advance(launch: &mut LaunchState, path: Option<&AgentPathState>, rotation: Quat) {
+///
+/// `span` is the ticks since the enemy's last run: an airborne stretch counts
+/// every one of them.
+pub(super) fn advance(
+    launch: &mut LaunchState,
+    path: Option<&AgentPathState>,
+    rotation: Quat,
+    span: u32,
+) {
     let knockback = path.is_some_and(|path| path.knockback_velocity != Vec3::ZERO);
     launch.impact_yaw = if knockback {
         Some(
@@ -34,7 +47,7 @@ pub(super) fn advance(launch: &mut LaunchState, path: Option<&AgentPathState>, r
     };
     let airborne = path.is_some_and(|path| path.airborne);
     launch.air_ticks = if airborne && (knockback || launch.air_ticks > 0) {
-        launch.air_ticks.saturating_add(1)
+        launch.air_ticks.saturating_add(span.max(1))
     } else {
         0
     };
@@ -55,7 +68,7 @@ pub(super) fn airborne_clip(
     id: EntityId,
     launch: &LaunchState,
 ) -> Option<&'static str> {
-    if launch.air_ticks < FALL_DELAY_TICKS {
+    if launch.air_ticks < NPC_FALL_DELAY_TICKS {
         return None;
     }
     registry
@@ -64,4 +77,45 @@ pub(super) fn airborne_clip(
         .and_then(|mesh| mesh.animation.as_ref())
         .is_some_and(|animation| animation.is_state_usable(JUMP_LOOP_STATE))
         .then_some(JUMP_LOOP_STATE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn launched_path() -> AgentPathState {
+        AgentPathState {
+            has_destination: false,
+            has_path: false,
+            arrived: false,
+            blocked: false,
+            distance_to_destination: 0.0,
+            position: Vec3::ZERO,
+            velocity: Vec3::X,
+            knockback_velocity: Vec3::X,
+            airborne: true,
+        }
+    }
+
+    /// The run on which a launch's airborne stretch first passes the fall
+    /// delay, running every `span` ticks.
+    fn presenting_run(span: u32) -> u32 {
+        let mut launch = LaunchState::default();
+        let path = launched_path();
+        (1..)
+            .find(|_| {
+                advance(&mut launch, Some(&path), Quat::IDENTITY, span);
+                launch.air_ticks >= NPC_FALL_DELAY_TICKS
+            })
+            .unwrap()
+    }
+
+    // P18: the fall delay counts elapsed ticks: at 60 Hz the stretch passes it
+    // on its ninth tick, at 2 Hz on its first run.
+    #[test]
+    fn the_fall_delay_passes_on_the_first_run_at_or_past_it_at_any_span() {
+        assert_eq!(presenting_run(1), NPC_FALL_DELAY_TICKS);
+        assert_eq!(presenting_run(30), 1);
+        assert_eq!(presenting_run(4), NPC_FALL_DELAY_TICKS.div_ceil(4));
+    }
 }

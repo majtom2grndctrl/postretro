@@ -133,7 +133,10 @@ pub(super) fn resolve_combat_slots(
                 outcome.combat_slot = Some(candidate.position);
                 outcome.brain.combat_slot = Some(candidate.position);
                 outcome.brain.combat_slot_hold_ticks = if candidate.is_incumbent {
-                    outcome.brain.combat_slot_hold_ticks.saturating_sub(1)
+                    outcome
+                        .brain
+                        .combat_slot_hold_ticks
+                        .saturating_sub(outcome.span.max(1))
                 } else {
                     COMBAT_SLOT_HOLD_TICKS
                 };

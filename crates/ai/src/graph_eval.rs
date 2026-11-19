@@ -273,7 +273,7 @@ impl TurnGate<'_> {
     }
 
     /// A rest's own grant lives one evaluation, as a mark's would: its row
-    /// passes on a turn granted on the previous tick, whatever its target
+    /// passes on a turn granted on the brain's previous run, whatever its target
     /// (after a switch the hold is still entered, and its mark re-requests).
     /// An older turn opens the row only under the path's own mark for its
     /// attack ([`Self::held_under_mark`]). Without that mark it was carried in
@@ -283,7 +283,11 @@ impl TurnGate<'_> {
     fn granted_last_tick(&self, attack: u16) -> bool {
         let turns = &self.brain.attack_turns;
         turns.held().any(|turn| {
-            turn.attack == attack && turn.granted_tick.wrapping_add(1) == turns.seen_tick
+            turn.attack == attack
+                && turn
+                    .granted_tick
+                    .wrapping_add(u64::from(turns.run_span.max(1)))
+                    == turns.seen_tick
         })
     }
 

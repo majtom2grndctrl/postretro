@@ -77,7 +77,7 @@ mod alloc_probe_tests {
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::ai_host::SimAiHost;
-use crate::ai_host::{AiHost, AiTickInputs, AiTickResult, ai_stage};
+use crate::ai_host::{AiHost, AiRun, AiTickInputs, AiTickResult, ai_stage};
 use crate::sim::cpu_stages::SimStage;
 #[cfg(any(test, feature = "test-support"))]
 use crate::{collision::CollisionWorld, nav::NavGraph};
@@ -163,12 +163,16 @@ pub(crate) struct EnemySnapshot {
     position: Vec3,
     rotation: Quat,
     brain: BrainComponent,
+    /// Ticks since this brain's last run: its clocks advance by all of them.
+    span: u32,
 }
 
 /// One enemy's resolved outcome after evaluating its brain this tick, applied in
 /// a second pass under `&mut registry`.
 pub(crate) struct EnemyOutcome {
     pub(crate) id: EntityId,
+    /// Ticks since this brain's last run; its timers covered all of them.
+    pub(crate) span: u32,
     /// This enemy's position as snapshotted, carried forward so combat-slot
     /// resolution needs nothing but the outcomes.
     pub(crate) position: Vec3,
@@ -268,6 +272,10 @@ pub(crate) enum AttackOutcome {
 /// Their lifecycle is reconciled together before compute: newly seen graphs
 /// bind, changed descriptors cancel old execution, and dead actors are pruned.
 pub struct AiRuntime {
+    /// The brains in the AI set last tick, run or skipped by the schedule.
+    presence: attack_turns::Presence,
+    /// This tick's skipped holders. Reused storage.
+    skipped: Vec<attack_turns::SkippedHolder>,
     /// Route-search scratch for the pass's reachability and positioning
     /// queries. Contents never carry between queries.
     nav_scratch: crate::nav::NavScratch,
@@ -328,6 +336,7 @@ impl AiRuntime {
     /// budgets. Call on level unload, before the next level's first tick.
     pub fn clear_level_state(&mut self) {
         self.turns.clear_level_state();
+        self.presence.clear();
     }
 
     pub fn new() -> Self {
@@ -341,6 +350,8 @@ impl AiRuntime {
             los_grace: HashMap::new(),
             weapons: weapon_controller::AiWeaponControllers::default(),
             turns: attack_turns::AttackTurnRuntime::default(),
+            presence: attack_turns::Presence::default(),
+            skipped: Vec::new(),
         }
     }
 }
@@ -397,6 +408,7 @@ macro_rules! test_tick_runner {
                 clips: $clips,
                 // The stage frame is the other build's `SimStage` too: AI
                 // sub-stages report only through the same-build runner.
+                schedule: Default::default(),
                 cpu: None,
             };
             let mut on_impact = |registry: &mut $crate::__postretro_entities::EntityRegistry| {
@@ -492,6 +504,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             factions: &factions,
             faction_sentiment: &faction_sentiment,
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -534,6 +547,7 @@ where
         faction_sentiment,
         clips,
         cpu,
+        schedule,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -550,6 +564,8 @@ where
         los_grace,
         weapons,
         turns,
+        presence,
+        skipped,
     } = runtime;
     turns.begin_tick(dt_ms, registry);
     turns.sync_pools(attack_turns::running_attack_pools(registry));
@@ -572,7 +588,12 @@ where
     reseat_warned.retain(|id| programs.get(*id).is_some());
     los_grace.retain(|id, _| programs.get(*id).is_some());
 
-    // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
+    // Pass 1: snapshot every brain-bearing enemy the schedule runs under the
+    // immutable borrow. One it skips stays in the AI set as a holder only:
+    // no clone, no evaluation.
+    presence.begin();
+    skipped.clear();
+    let mut remapped_while_skipped = Vec::new();
     let snapshots: Vec<EnemySnapshot> = registry
         .iter_with_kind(ComponentKind::Brain)
         .filter_map(|(id, value)| {
@@ -585,23 +606,57 @@ where
             let ComponentValue::Brain(brain) = value else {
                 return None;
             };
+            let present_last_tick = presence.was_present(id);
+            if schedule.run(id) == AiRun::Skip {
+                // A skip keeps a brain in the set only if it was in it: one
+                // returning from outside comes back on its next run, holding
+                // nothing.
+                if present_last_tick {
+                    presence.mark(id);
+                    let mut held = brain.attack_turns;
+                    held.request = None;
+                    let before = held;
+                    turns.remap_brain(&mut held);
+                    if held != before {
+                        remapped_while_skipped.push(id);
+                    }
+                    skipped.push(attack_turns::SkippedHolder {
+                        id,
+                        pool: attack_turns::attack_pool_of(&turns.budgets, brain),
+                        turns: held,
+                    });
+                }
+                return None;
+            }
+            presence.mark(id);
             let transform = registry.get_component::<Transform>(id).ok()?;
             let mut brain = brain.clone();
-            attack_turns::admit(&mut brain.attack_turns, turns.tick);
+            let span = attack_turns::admit(&mut brain.attack_turns, turns.tick, present_last_tick);
             turns.remap_brain(&mut brain.attack_turns);
             Some(EnemySnapshot {
                 id,
                 position: transform.position,
                 rotation: transform.rotation,
                 brain,
+                span,
             })
         })
         .collect();
+    // A token shift reaches a skipped holder's stored turns now: its next run
+    // reads them under the new ids. Rare (a reload that moves tokens).
+    for id in remapped_while_skipped {
+        if let Ok(brain) = registry.get_component::<BrainComponent>(id) {
+            let mut brain = brain.clone();
+            turns.remap_brain(&mut brain.attack_turns);
+            let _ = registry.set_component(id, brain);
+        }
+    }
     // The turn facts guards read this tick describe the line as it stood
     // after the previous tick.
     let attack_turns::AttackTurnRuntime {
         budgets, previous, ..
     } = &mut *turns;
+    let run_count = snapshots.len();
     previous.rebuild(
         budgets,
         snapshots
@@ -612,7 +667,18 @@ where
                 slot: slot as u32,
                 pool: attack_turns::attack_pool_of(budgets, &snapshot.brain),
                 turns: &snapshot.brain.attack_turns,
-            }),
+            })
+            .chain(
+                skipped
+                    .iter()
+                    .enumerate()
+                    .map(|(index, holder)| attack_turns::LineEntry {
+                        entity: holder.id,
+                        slot: (run_count + index) as u32,
+                        pool: holder.pool,
+                        turns: &holder.turns,
+                    }),
+            ),
     );
 
     // Every enemy's candidates, read once for the pass. Built here, after the
@@ -666,7 +732,7 @@ where
     );
 
     let _apply_stage = ai_stage(cpu, SimStage::AiApply);
-    attack_turns::arbitrate_attack_turns(&mut outcomes, programs, turns, weapons);
+    attack_turns::arbitrate_attack_turns(&mut outcomes, skipped, programs, turns, weapons);
 
     apply::apply_outcomes(
         registry,

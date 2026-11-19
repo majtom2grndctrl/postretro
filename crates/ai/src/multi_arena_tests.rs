@@ -185,6 +185,7 @@ fn run_arena(
                 factions: &factions,
                 faction_sentiment: &faction_sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: Some(&ai_cpu),
             },
             |_| {},

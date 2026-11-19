@@ -391,6 +391,7 @@ fn graph_reseat_mid_burst_cancels_execution_by_name() {
         outcome.graph_reseated = true;
         crate::attack_turns::arbitrate_attack_turns(
             &mut [outcome],
+            &[],
             &runtime.programs,
             &mut runtime.turns,
             &mut runtime.weapons,
@@ -447,6 +448,7 @@ fn invalid_path_reseat_mid_burst_cancels_an_undrawn_execution() {
     outcome.graph_reseated = true;
     crate::attack_turns::arbitrate_attack_turns(
         &mut [outcome],
+        &[],
         &runtime.programs,
         &mut runtime.turns,
         &mut runtime.weapons,

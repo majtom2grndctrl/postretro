@@ -367,6 +367,7 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
                 factions: &factions,
                 faction_sentiment: &faction_sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: Some(&ai_cpu),
             },
             |_| {},

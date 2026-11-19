@@ -483,3 +483,42 @@ fn dormant_walker_climbs_stairs_about_as_fast_as_at_60_hz() {
         );
     }
 }
+
+// P18: stuck detection counts elapsed ticks: a dormant walker wedged on a
+// wall fires recovery on the first step after its count reaches the
+// threshold, never on an earlier one. Recovery clears the plan latch, and a
+// 2 Hz step spends the whole tangent window inside it.
+#[test]
+fn dormant_wedge_fires_recovery_on_the_first_step_past_the_threshold() {
+    let world = walled_world(2.0);
+    let track = MoverTrack::at(Vec3::new(0.0, -100.0, 0.0));
+    let mut registry = EntityRegistry::new();
+    let goal = Vec3::new(20.0, rest_y(0.0), 0.0);
+    let walker = spawn(&mut registry, Vec3::new(0.0, rest_y(0.0), 0.0), Some(goal));
+    let mut schedule = Schedule::new();
+    schedule.dormant(walker, 0);
+    let mut stuck_before_step = 0;
+    let mut fired = Vec::new();
+    for tick_index in 0..600 {
+        let steps_now = schedule.steps_on(walker);
+        step_scheduled(&mut registry, &world, &[], &track, &mut schedule);
+        if !steps_now {
+            continue;
+        }
+        let mut walker_state = agent(&registry, walker).clone();
+        if walker_state.planned_destination.is_none() {
+            assert!(
+                stuck_before_step >= STUCK_TICKS_THRESHOLD,
+                "tick {tick_index}: recovery fired at {stuck_before_step} stuck ticks"
+            );
+            fired.push(tick_index);
+            // Re-latch the plan, as an admitted replan would.
+            walker_state.planned_destination = Some(goal);
+            registry
+                .set_component(walker, walker_state.clone())
+                .unwrap();
+        }
+        stuck_before_step = walker_state.stuck_ticks;
+    }
+    assert!(!fired.is_empty(), "the wedged walker tried to recover");
+}

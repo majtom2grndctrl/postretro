@@ -234,6 +234,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
         factions: &factions,
         faction_sentiment: &sentiment,
         clips: None,
+        schedule: Default::default(),
         cpu: None,
     };
     let _ =

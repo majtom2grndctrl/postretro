@@ -287,6 +287,7 @@ fn step_in(
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},

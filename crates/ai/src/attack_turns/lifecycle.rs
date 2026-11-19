@@ -11,19 +11,32 @@ use postretro_entities::components::brain::{
 use postretro_foundation::BehaviorGraphDescriptor;
 
 use super::arbitration::WaitKey;
-use super::{AttackTurnRuntime, attack_index, attack_name, attack_pool_of, path_mark};
+use super::{
+    AttackTurnRuntime, SkippedHolder, attack_index, attack_name, attack_pool_of, path_mark,
+};
 use crate::brain_programs::{BrainEntityPrograms, BrainPrograms};
 use crate::weapon_controller::AiWeaponControllers;
 use crate::{EnemyOutcome, PendingAttack};
 
-/// Admit a brain into this tick's AI set. A brain the previous tick did not
-/// evaluate left the set (quiescence, a queued despawn, inventory ownership,
-/// death): it returns holding nothing, requesting nothing, with no clock.
-pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
-    if turns.seen_tick.wrapping_add(1) != tick {
-        turns.clear();
-    }
+/// Admit a brain into this tick's run, and return the ticks since its last
+/// run. A brain the previous tick neither evaluated nor skipped left the set
+/// (quiescence, a queued despawn, inventory ownership, death): it returns
+/// holding nothing, requesting nothing, with no clock, and spans one tick. A
+/// brain the schedule skipped kept everything, and spans every tick since it
+/// last ran.
+pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64, present_last_tick: bool) -> u32 {
+    let stayed = present_last_tick || turns.seen_tick.wrapping_add(1) == tick;
+    let span = if stayed && turns.seen_tick < tick {
+        u32::try_from(tick - turns.seen_tick).unwrap_or(u32::MAX)
+    } else {
+        if !stayed {
+            turns.clear();
+        }
+        1
+    };
     turns.seen_tick = tick;
+    turns.run_span = span;
+    span
 }
 
 /// The tick's turn pass. Every release and request of the tick is known
@@ -53,8 +66,13 @@ pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
 /// is not known to be undrawn and its enemy holds no turn for it. The last
 /// rule covers what no ended turn reports: a burst a held enemy kept, on its
 /// drop with its turns cleared.
+///
+/// A holder the schedule skipped this tick (`skipped`) stays: its turns hold
+/// and count against their pools, none ends or starts a refresh, and it
+/// requests nothing until it runs again.
 pub(crate) fn arbitrate_attack_turns(
     outcomes: &mut [EnemyOutcome],
+    skipped: &[SkippedHolder],
     programs: &BrainPrograms,
     runtime: &mut AttackTurnRuntime,
     weapons: &mut AiWeaponControllers,
@@ -207,6 +225,15 @@ pub(crate) fn arbitrate_attack_turns(
         }
     }
 
+    for holder in skipped {
+        roster.ended_for(holder.id, &holder.turns, |turn| {
+            debug_assert!(false, "a skipped holder ended turn {}", turn.attack);
+        });
+        for turn in holder.turns.held() {
+            arbiter.hold((holder.pool, turn.target), turn.draws);
+        }
+    }
+
     roster.departed(|_holder, turn| {
         // A departed holder's execution is not cancelled here. A held (suspended)
         // enemy keeps its private execution by the held-ownership contract
@@ -254,7 +281,8 @@ pub(crate) fn arbitrate_attack_turns(
     roster.rebuild(
         outcomes
             .iter()
-            .map(|outcome| (outcome.id, &outcome.brain.attack_turns)),
+            .map(|outcome| (outcome.id, &outcome.brain.attack_turns))
+            .chain(skipped.iter().map(|holder| (holder.id, &holder.turns))),
     );
 
     for outcome in outcomes.iter_mut() {

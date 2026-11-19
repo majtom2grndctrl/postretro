@@ -110,7 +110,7 @@ impl Wave {
         self.runtime.turns.begin_tick(TICK_MS, registry);
         let tick = self.runtime.turns.tick;
         for outcome in &mut self.outcomes {
-            crate::attack_turns::admit(&mut outcome.brain.attack_turns, tick);
+            crate::attack_turns::admit(&mut outcome.brain.attack_turns, tick, false);
             if outcome.attack.is_none() {
                 outcome.attack = Some(ready_attack());
             }
@@ -127,7 +127,7 @@ impl Wave {
             ..
         } = &mut self.runtime;
         let started = Instant::now();
-        arbitrate_attack_turns(&mut self.outcomes, programs, turns, weapons);
+        arbitrate_attack_turns(&mut self.outcomes, &[], programs, turns, weapons);
         let elapsed = started.elapsed();
         let holders = self
             .outcomes

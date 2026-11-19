@@ -363,6 +363,7 @@ fn acquired_after_ticks(registry: &mut EntityRegistry, enemy: EntityId) -> Optio
                 factions: &factions,
                 faction_sentiment: &sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             &mut host,

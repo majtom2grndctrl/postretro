@@ -750,6 +750,7 @@ fn tick_impl(
             collision,
             corpse_yields,
             dt,
+            ticks,
         ) {
             settle_if_diverted(&mut agent);
             move_without_path(
@@ -993,7 +994,7 @@ fn tick_impl(
         // is provably nonzero.
         if recovery_active_this_tick {
             desired += recovery_tangent_bias(steer_velocity, shove_speed(&agent));
-            agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
+            agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(ticks);
         }
 
         // Separation: sum pushes from every other agent whose capsule overlaps
@@ -1062,6 +1063,7 @@ fn tick_impl(
                 goal_speed * dt,
                 has_recovery_intent,
                 easing_onto_mandatory,
+                ticks,
             );
         }
 
@@ -1779,6 +1781,9 @@ fn update_stuck_ticks(
     expected_goal_progress: f32,
     has_recovery_intent: bool,
     easing_onto_mandatory: bool,
+    // Ticks this step spans: a wedge counts every one, so recovery fires on
+    // the first step at or past the threshold.
+    ticks: u32,
 ) {
     if !has_recovery_intent {
         agent.stuck_ticks = 0;
@@ -1805,7 +1810,7 @@ fn update_stuck_ticks(
         expected_goal_progress * STUCK_PROGRESS_INTENT_FRACTION
     };
     if progress < floor {
-        agent.stuck_ticks = agent.stuck_ticks.saturating_add(1);
+        agent.stuck_ticks = agent.stuck_ticks.saturating_add(ticks);
     } else {
         agent.stuck_ticks = 0;
     }

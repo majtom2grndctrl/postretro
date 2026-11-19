@@ -403,6 +403,7 @@ fn the_scripting_surface_example_runs_as_dev_content() {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&clips),
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},

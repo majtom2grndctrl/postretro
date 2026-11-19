@@ -56,6 +56,7 @@ fn tick(
             factions,
             faction_sentiment: sentiment,
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},

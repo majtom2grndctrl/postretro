@@ -322,7 +322,8 @@ impl App {
             crate::session::saves::end_run_at_frontend(session);
         }
         if run_load_failed && !self.frontend_menu_is_present() {
-            self.present_frontend_menu();
+            // The menu and its backdrop, as a return to the frontend shows.
+            self.navigate_to_frontend();
         }
         // A connected client's failed host-named load puts the menu back,
         // whose install would have cleared it, with no backdrop load: the

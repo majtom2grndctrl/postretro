@@ -22,6 +22,9 @@ impl App {
     }
 
     pub(crate) fn reset_boot_state_after_suspend(&mut self) {
+        // Read before the reset: the suspend harvested a played level's pawns,
+        // and the resume enters the frontend.
+        let played = self.played_level_present();
         // Reset the boot state so `resumed()` re-runs window + renderer
         // creation. Without this, the `Booting` guard in `resumed()` would
         // no-op and the engine would stay permanently renderer-less.
@@ -45,12 +48,20 @@ impl App {
         // A waiting host or join press waited on an unload or close this
         // reset no longer tracks: it ends, and the player presses again.
         self.cancel_pending_entry("a suspend");
-        // The resume lands on the frontend, which ends any run in play and
-        // its queued load, as every frontend entry does.
+        // The resume lands on the frontend, which saves the character and
+        // world a played level leaves and ends any run in play and its
+        // queued load, as every frontend entry does. The played level is gone,
+        // so no session level stays installed for the verbs to wait on.
         if self.session_role() != crate::session::role_state::SessionRole::Client
             && let Some(session) = self.session.as_mut()
         {
-            crate::session::saves::end_run_at_frontend(session);
+            crate::session::saves::save_on_frontend_entry(session, played);
+            if played {
+                session.session_players.end_level(
+                    session.seat_table.as_mut(),
+                    &mut session.scripting.script_ctx.slot_table.borrow_mut(),
+                );
+            }
         }
         // The renderer holding the UI images is gone; upload them again to the
         // resumed one.

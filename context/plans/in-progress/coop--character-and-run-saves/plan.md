@@ -130,6 +130,10 @@ Round 2 (fix commit only): 1 correctness tracer, 1 adversarial tester (opus).
 - 🟡 fixed: a failed Continue/newRun load now brings the frontend menu back (`failed_run_load_ends_the_run_and_frees_the_verbs` no longer presents it by hand); a suspend's resume ends a queued or running run (`suspend_resume_ends_a_queued_run`); frontend entry keeps harvested gear when the character write fails and resets seat 0 only when saves loaded with no character selected (`frontend_entry_keeps_harvested_gear_when_the_character_write_fails`).
 - Left, with reason: a `--connect` boot admitted under the device id before its reconnect leaves a held ghost seat on the host until the hold expires (dev boot path; the adversarial pass found the reconcile runs before the first transport poll, so it should not arise); the save-verb refusal latch keys on the formatted reason and so grows with distinct script arguments until a role change (bounded by what scripts pass).
 
+Round 3 (round-2 fix commit only): 1 adversarial tester (opus).
+- 🟡 fixed: a suspend while a run's level plays now saves the character and world, ends the run and clears the session level, so the resumed frontend runs every verb with or without a backdrop (`suspend_during_a_played_run_level_saves_and_frees_the_verbs`).
+- 🟢 fixed: with no character selected or no saves, frontend entry empties seat 0 (fresh start in the degraded mode too); a failed run load returns through the ordinary frontend route, backdrop included; the carry comment no longer over-promises a retry.
+
 ## Follow-ups (not in this brief)
 - `prl-build`'s `find_scripts_build` does not know Cargo 1.100's build-dir layout (`target/<profile>/build/<pkg>/<hash>/out/`), so four data-script tests fail on current stable. Unrelated to this branch.
 - An asynchronous pending leave would avoid the up-to-2 s frame hold when a host never answers the final-character request.

@@ -1338,6 +1338,41 @@ fn boot_connect_without_a_selected_character_leaves() {
     assert_eq!(app.session_role(), SessionRole::SinglePlayer);
 }
 
+// Review round 3: a suspend while a run's level plays resumes at the
+// frontend: the character saves what it held, the run ends, and the verbs
+// run with no backdrop.
+#[test]
+fn suspend_during_a_played_run_level_saves_and_frees_the_verbs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+    app.drain_level_requests();
+    install_pawn(&mut app, true, 17);
+    {
+        // The suspend's own harvest, then its reset.
+        let session = app.session.as_mut().unwrap();
+        let ctx = session.scripting.script_ctx.clone();
+        session
+            .seat_table
+            .as_mut()
+            .unwrap()
+            .harvest_bound_pawns(&ctx.registry.borrow(), &[]);
+    }
+    app.reset_boot_state_after_suspend();
+    app.boot_state = crate::startup::BootState::Frontend;
+    present_frontend(&mut app);
+
+    assert!(app.at_frontend());
+    assert!(!app.session.as_ref().unwrap().saves.run_active());
+    let saved = read_document(&saves(dir.path()).character_path(0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.seats[0].loadout.reserve.get("shells"), Some(&17));
+    app.handle_save_verb(select(0));
+    assert_eq!(carry(&app).unwrap().reserve.available("shells"), 17);
+}
+
 // Review round 2: a suspend before a run's level loads resumes at the
 // frontend, which ends the run and frees the verbs.
 #[test]

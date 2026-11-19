@@ -1316,6 +1316,44 @@ declare function hostSession(): SystemReactionStep
 --- SystemReactionStep.
 declare function joinSession(): SystemReactionStep
 
+--- System reaction: continue the run in slot `index` (the 1-based `forEach`
+--- row of `getGameState().saves.runs`). A save verb, frontend-only: refused
+--- with a warning inside a played level and on a connected client.
+--- Machine-local. Pure: returns a SystemReactionStep.
+declare function continueRun(index: number): SystemReactionStep
+
+--- System reaction: start a new run in slot `index` (1-based `forEach` row) at
+--- catalog map `level`, with the selected character as it stands (New Game
+--- Plus with an existing character). A save verb, frontend-only.
+--- Machine-local. Pure: returns a SystemReactionStep.
+declare function newRun(index: number, level: string): SystemReactionStep
+
+--- System reaction: delete the run in slot `index` (1-based `forEach` row),
+--- even an unreadable one. A save verb, frontend-only. Machine-local. Pure:
+--- returns a SystemReactionStep.
+declare function deleteRun(index: number): SystemReactionStep
+
+--- System reaction: select the character in slot `index` (1-based `forEach`
+--- row). A save verb, frontend-only. Machine-local. Pure: returns a
+--- SystemReactionStep.
+declare function selectCharacter(index: number): SystemReactionStep
+
+--- System reaction: create a character in empty slot `index` (1-based
+--- `forEach` row), named from `ui.textEntry`. A save verb, frontend-only.
+--- Machine-local. Pure: returns a SystemReactionStep.
+declare function createCharacter(index: number): SystemReactionStep
+
+--- System reaction: delete the character in slot `index` (1-based `forEach`
+--- row), even an unreadable one. A save verb, frontend-only. Machine-local.
+--- Pure: returns a SystemReactionStep.
+declare function deleteCharacter(index: number): SystemReactionStep
+
+--- System reaction: reach checkpoint `name`. The host or single player saves
+--- the run at it and the character; the `player_spawn`s with
+--- `checkpoint=<name>` form its arrival set. Pure: returns a
+--- SystemReactionStep.
+declare function checkpoint(name: string): SystemReactionStep
+
 --- Set the live sentiment from faction `from` toward faction `to` at frame end.
 --- The pair is directional and baseline content remains immutable. Negative
 --- values degrade the relationship; positive values bond it. Unknown faction

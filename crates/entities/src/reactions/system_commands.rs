@@ -113,6 +113,69 @@ pub enum SystemReactionCommand {
         dispatch_source: String,
         origin: FireOrigin,
     },
+    /// `continueRun(i)`: continue run slot `index` (0-based). A save verb:
+    /// machine-local, run only at the frontend; the app refuses it elsewhere
+    /// and on a connected client. Origin only sets how loudly a refusal logs.
+    ContinueRun {
+        index: usize,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `newRun(i, map)`: start a new run in slot `index` (0-based) with the
+    /// selected character, at catalog map `map`. A save verb, as `continueRun`.
+    NewRun {
+        index: usize,
+        map: String,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `deleteRun(i)`: delete run slot `index` (0-based). A save verb.
+    DeleteRun {
+        index: usize,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `selectCharacter(i)`: select character slot `index` (0-based). A save verb.
+    SelectCharacter {
+        index: usize,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `createCharacter(i)`: create a character in empty slot `index`
+    /// (0-based), named from `ui.textEntry`. A save verb.
+    CreateCharacter {
+        index: usize,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `deleteCharacter(i)`: delete character slot `index` (0-based). A save verb.
+    DeleteCharacter {
+        index: usize,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
+    /// `checkpoint(name)`: the host or single player saves the run at
+    /// checkpoint `name`, and the character. A host consequence that a
+    /// connected client still lands and drains, so the app decides by role.
+    Checkpoint {
+        name: String,
+        /// Stable identity of the firing source for once-per-source diagnostics.
+        /// It is runtime queue context only, never persistent or on the wire.
+        dispatch_source: String,
+        origin: FireOrigin,
+    },
     PopTree,
     /// A `setState` queued for the frame-end drain. Only a queue with no
     /// [`StateWriteSink`] installed produces one; with a sink, the write lands
@@ -525,6 +588,13 @@ pub enum SystemReactionKind {
     EndSession,
     HostSession,
     JoinSession,
+    ContinueRun,
+    NewRun,
+    DeleteRun,
+    SelectCharacter,
+    CreateCharacter,
+    DeleteCharacter,
+    Checkpoint,
     SetState,
     SetSentiment,
     AdjustSentiment,
@@ -555,6 +625,13 @@ impl SystemReactionKind {
         Self::EndSession,
         Self::HostSession,
         Self::JoinSession,
+        Self::ContinueRun,
+        Self::NewRun,
+        Self::DeleteRun,
+        Self::SelectCharacter,
+        Self::CreateCharacter,
+        Self::DeleteCharacter,
+        Self::Checkpoint,
         Self::SetState,
         Self::SetSentiment,
         Self::AdjustSentiment,
@@ -582,6 +659,13 @@ impl SystemReactionKind {
             Self::EndSession => "endSession",
             Self::HostSession => "hostSession",
             Self::JoinSession => "joinSession",
+            Self::ContinueRun => "continueRun",
+            Self::NewRun => "newRun",
+            Self::DeleteRun => "deleteRun",
+            Self::SelectCharacter => "selectCharacter",
+            Self::CreateCharacter => "createCharacter",
+            Self::DeleteCharacter => "deleteCharacter",
+            Self::Checkpoint => "checkpoint",
             Self::SetState => "setState",
             Self::SetSentiment => "setSentiment",
             Self::AdjustSentiment => "adjustSentiment",
@@ -615,12 +699,19 @@ impl SystemReactionKind {
             | Self::BackspaceText
             | Self::ClearText
             | Self::HostSession
-            | Self::JoinSession => SystemReactionClass::MachineLocal,
+            | Self::JoinSession
+            | Self::ContinueRun
+            | Self::NewRun
+            | Self::DeleteRun
+            | Self::SelectCharacter
+            | Self::CreateCharacter
+            | Self::DeleteCharacter => SystemReactionClass::MachineLocal,
             Self::LoadLevel
             | Self::RestartLevel
             | Self::ReturnToFrontend
             | Self::LeaveSession
             | Self::EndSession
+            | Self::Checkpoint
             | Self::SetSentiment
             | Self::AdjustSentiment
             | Self::SetGhostAudio => SystemReactionClass::HostConsequence,
@@ -677,12 +768,19 @@ impl SystemReactionCommand {
             | Self::BackspaceText { .. }
             | Self::ClearText { .. }
             | Self::HostSession { .. }
-            | Self::JoinSession { .. } => SystemReactionClass::MachineLocal,
+            | Self::JoinSession { .. }
+            | Self::ContinueRun { .. }
+            | Self::NewRun { .. }
+            | Self::DeleteRun { .. }
+            | Self::SelectCharacter { .. }
+            | Self::CreateCharacter { .. }
+            | Self::DeleteCharacter { .. } => SystemReactionClass::MachineLocal,
             Self::LoadLevel { .. }
             | Self::RestartLevel { .. }
             | Self::ReturnToFrontend { .. }
             | Self::LeaveSession { .. }
             | Self::EndSession { .. }
+            | Self::Checkpoint { .. }
             | Self::SetSentiment { .. }
             | Self::AdjustSentiment { .. }
             | Self::SetGhostAudio(_) => SystemReactionClass::HostConsequence,

@@ -18,10 +18,11 @@ pub enum MachineRole {
 /// machine stays on that machine. The client tail filter, the late-joiner
 /// convergence and the player-event install rule all read this one predicate.
 ///
-/// `returnToFrontend` and `leaveSession` are machine-local only on a client,
-/// so a client tail parks and lands them; the app drain then decides what each
-/// does by role. `endSession` is a host consequence everywhere. `args` names
-/// the slot a `setState` writes; an unknown slot is not machine-local.
+/// `returnToFrontend`, `leaveSession` and `checkpoint` are machine-local only
+/// on a client, so a client tail parks and lands them; the app drain then
+/// decides what each does by role. `endSession` is a host consequence
+/// everywhere. `args` names the slot a `setState` writes; an unknown slot is
+/// not machine-local.
 pub fn system_reaction_is_machine_local(
     kind: SystemReactionKind,
     args: &serde_json::Value,
@@ -38,7 +39,9 @@ pub fn system_reaction_is_machine_local(
         SystemReactionClass::HostConsequence => {
             matches!(
                 kind,
-                SystemReactionKind::ReturnToFrontend | SystemReactionKind::LeaveSession
+                SystemReactionKind::ReturnToFrontend
+                    | SystemReactionKind::LeaveSession
+                    | SystemReactionKind::Checkpoint
             ) && role == MachineRole::Client
         }
     }
@@ -59,8 +62,9 @@ pub fn primitive_is_machine_local(
 /// How a client lands a tail: every machine-local step, or, for a segment due
 /// before the host tick this client revealed at (a late joiner's), only the
 /// steps that converge state. Transient presentation, `returnToFrontend`,
-/// `leaveSession`, `hostSession` and `joinSession` are skipped there, since
-/// the moment they belonged to has passed: a late joiner stays connected.
+/// `leaveSession`, `hostSession`, `joinSession`, the save verbs and
+/// `checkpoint` are skipped there, since the moment they belonged to has
+/// passed: a late joiner stays connected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientLanding {
     Land,
@@ -86,6 +90,13 @@ impl ClientLanding {
                             | SystemReactionKind::LeaveSession
                             | SystemReactionKind::HostSession
                             | SystemReactionKind::JoinSession
+                            | SystemReactionKind::ContinueRun
+                            | SystemReactionKind::NewRun
+                            | SystemReactionKind::DeleteRun
+                            | SystemReactionKind::SelectCharacter
+                            | SystemReactionKind::CreateCharacter
+                            | SystemReactionKind::DeleteCharacter
+                            | SystemReactionKind::Checkpoint
                     )
             }
         }

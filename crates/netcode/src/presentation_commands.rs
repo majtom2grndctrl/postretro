@@ -75,6 +75,13 @@ pub fn presentation_command_to_wire(
         | SystemReactionCommand::EndSession { .. }
         | SystemReactionCommand::HostSession { .. }
         | SystemReactionCommand::JoinSession { .. }
+        | SystemReactionCommand::ContinueRun { .. }
+        | SystemReactionCommand::NewRun { .. }
+        | SystemReactionCommand::DeleteRun { .. }
+        | SystemReactionCommand::SelectCharacter { .. }
+        | SystemReactionCommand::CreateCharacter { .. }
+        | SystemReactionCommand::DeleteCharacter { .. }
+        | SystemReactionCommand::Checkpoint { .. }
         | SystemReactionCommand::PopTree
         | SystemReactionCommand::SetState { .. }
         | SystemReactionCommand::SetSentiment { .. }

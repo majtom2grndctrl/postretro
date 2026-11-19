@@ -106,6 +106,8 @@ pub fn apply_adjust_sentiment(
 /// - Game flow: `loadLevel`, `restartLevel`, `returnToFrontend`
 /// - Session membership: `leaveSession`, `endSession`, `hostSession`,
 ///   `joinSession`
+/// - Save verbs and checkpoints: `continueRun`, `newRun`, `deleteRun`,
+///   `selectCharacter`, `createCharacter`, `deleteCharacter`, `checkpoint`
 /// - Slot write: `setState`
 /// - Live faction sentiment writes: `setSentiment`, `adjustSentiment`
 /// - Ghost bus override: `setGhostAudio`
@@ -372,6 +374,7 @@ pub fn register_system_reaction_primitives(registry: &mut SystemReactionRegistry
         });
         Ok(())
     });
+    save_verbs::register_save_verb_primitives(registry);
     // `setState` writes a value to a writable store slot at the game-logic stage.
     // It carries no `tag` (system-targeted). With the session's state sink
     // installed it writes at dispatch through the readonly-gated JSON write;
@@ -613,10 +616,13 @@ struct SlotOnlyArgs {
 }
 
 mod ir_bindings;
+mod save_verbs;
 pub use ir_bindings::{
     SystemReactionIrBindings, SystemReactionIrDispatch, SystemStateSink, apply_text_edit_command,
     is_ir_node,
 };
 
+#[cfg(test)]
+mod save_verb_tests;
 #[cfg(test)]
 mod tests;

@@ -2179,19 +2179,32 @@ fn trap_start_literals_and_addressing_are_rejected_in_both_vms() {
 }
 
 // A sequence entry with no `id`, `kind` or `target` is a system step: every
-// system reaction kind parses as one in both runtimes.
+// system reaction kind parses as one in both runtimes. The save verbs and
+// `checkpoint` refuse empty args at parse, so they carry their own.
 #[test]
 fn every_system_reaction_kind_parses_as_a_system_step_in_both_runtimes() {
     use postretro_entities::reactions::system_commands::SystemReactionKind;
     for kind in SystemReactionKind::ALL {
         let name = kind.primitive_name();
+        let (js_args, lua_args) = match kind {
+            SystemReactionKind::NewRun => ("{ index: 0, map: 'm' }", "{ index = 0, map = 'm' }"),
+            SystemReactionKind::Checkpoint => ("{ name: 'c' }", "{ name = 'c' }"),
+            SystemReactionKind::ContinueRun
+            | SystemReactionKind::DeleteRun
+            | SystemReactionKind::SelectCharacter
+            | SystemReactionKind::CreateCharacter
+            | SystemReactionKind::DeleteCharacter => ("{ index: 0 }", "{ index = 0 }"),
+            _ => ("{}", "{}"),
+        };
         let js = eval_js(
-            &format!(r#"({{ name: "r", sequence: [{{ primitive: "{name}", args: {{}} }}] }})"#),
+            &format!(
+                r#"({{ name: "r", sequence: [{{ primitive: "{name}", args: {js_args} }}] }})"#
+            ),
             |ctx, value| named_reaction_from_js(ctx, value).unwrap(),
         );
         let lua = eval_lua(
             &format!(
-                r#"return {{ name = "r", sequence = {{ {{ primitive = "{name}", args = {{}} }} }} }}"#
+                r#"return {{ name = "r", sequence = {{ {{ primitive = "{name}", args = {lua_args} }} }} }}"#
             ),
             |value| named_reaction_from_lua(value).unwrap(),
         );

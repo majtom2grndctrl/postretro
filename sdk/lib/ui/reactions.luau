@@ -472,6 +472,115 @@ function UiReactionsSdk.joinSession(): SystemReactionStep
   return { primitive = "joinSession", args = {} }
 end
 
+-- A save row crosses 0-based, as TypeScript's `forEach` counts; Luau's counts
+-- from 1. A non-number crosses unchanged, so reaction parsing refuses it and
+-- names it as written.
+local function wireRow(index: any): any
+  if type(index) == "number" then
+    return index - 1
+  end
+  return index
+end
+
+--- Continue the run in slot `index`: select its character, then load the level
+--- or checkpoint it last reached. Pure: returns a system reaction (a body on its
+--- own or a step in a sequence or array body), no FFI. `index` is the row index
+--- `UI.forEach(getGameState().saves.runs, function(row, i) ... end)` gives:
+--- 1-based.
+---
+--- A save verb, frontend-only: inside a played level, and on a connected
+--- client, it is refused with a warning and changes nothing. While hosting at
+--- the frontend it continues only the host character's own run, and clients
+--- follow into the level. A run whose character was deleted, or whose level the
+--- mod no longer defines, is refused, as is an unreadable slot.
+function UiReactionsSdk.continueRun(index: number): SystemReactionStep
+  return { primitive = "continueRun", args = { index = wireRow(index) } }
+end
+
+--- Start a new run in slot `index` at catalog map `level` (a `ModMapEntry.id`).
+--- Pure: returns a system reaction (a body on its own or a step in a sequence
+--- or array body), no FFI. `index` is the 1-based `UI.forEach` row index of
+--- `getGameState().saves.runs`.
+---
+--- The run starts with the selected character as it stands: with an existing
+--- character that is New Game Plus, gear and progress kept. For a fresh start,
+--- offer New game after `UI.createCharacter`. It resets run-scoped slots and
+--- faction sentiment and keeps `persist = true` world slots. It writes only into
+--- an empty slot or the selected character's own run, and needs a selected
+--- character when the mod declares `saves`.
+---
+--- A save verb, frontend-only: inside a played level, and on a connected
+--- client, it is refused with a warning and changes nothing. While hosting at
+--- the frontend it is permitted, and clients follow into the level.
+function UiReactionsSdk.newRun(index: number, level: string): SystemReactionStep
+  return { primitive = "newRun", args = { index = wireRow(index), map = level } }
+end
+
+--- Delete the run in slot `index`. Pure: returns a system reaction (a body on
+--- its own or a step in a sequence or array body), no FFI. `index` is the
+--- 1-based `UI.forEach` row index of `getGameState().saves.runs`. Deleting is
+--- permitted on a slot whose file this build cannot read, and on a run whose
+--- character was deleted. Deleting the selected run sets `saves.run` to `-1`.
+---
+--- A save verb, frontend-only: inside a played level, on a connected client,
+--- and while hosting, it is refused with a warning and changes nothing.
+function UiReactionsSdk.deleteRun(index: number): SystemReactionStep
+  return { primitive = "deleteRun", args = { index = wireRow(index) } }
+end
+
+--- Select the character in slot `index`, reloading per-owner progress and
+--- loadout from its save. Pure: returns a system reaction (a body on its own or
+--- a step in a sequence or array body), no FFI. `index` is the 1-based
+--- `UI.forEach` row index of `getGameState().saves.characters`. An empty or
+--- unreadable slot is refused.
+---
+--- A save verb, frontend-only: inside a played level, on a connected client,
+--- and while hosting, it is refused with a warning and changes nothing.
+function UiReactionsSdk.selectCharacter(index: number): SystemReactionStep
+  return { primitive = "selectCharacter", args = { index = wireRow(index) } }
+end
+
+--- Create a new character in empty slot `index` and select it. Its name is
+--- taken from `ui.textEntry`, so open the text entry first
+--- (`UI.openTextEntry`) and fire this from its commit. Pure: returns a system
+--- reaction (a body on its own or a step in a sequence or array body), no FFI.
+--- `index` is the 1-based `UI.forEach` row index of
+--- `getGameState().saves.characters`. A new character starts with an empty
+--- loadout. Creating into an occupied slot is refused with a warning.
+---
+--- A save verb, frontend-only: inside a played level, on a connected client,
+--- and while hosting, it is refused with a warning and changes nothing.
+function UiReactionsSdk.createCharacter(index: number): SystemReactionStep
+  return { primitive = "createCharacter", args = { index = wireRow(index) } }
+end
+
+--- Delete the character in slot `index`. Pure: returns a system reaction (a
+--- body on its own or a step in a sequence or array body), no FFI. `index` is
+--- the 1-based `UI.forEach` row index of `getGameState().saves.characters`.
+--- Deleting is permitted on a slot whose file this build cannot read. Deleting
+--- the selected character sets `saves.character` to `-1`; its runs remain and
+--- can only be deleted.
+---
+--- A save verb, frontend-only: inside a played level, on a connected client,
+--- and while hosting, it is refused with a warning and changes nothing.
+function UiReactionsSdk.deleteCharacter(index: number): SystemReactionStep
+  return { primitive = "deleteCharacter", args = { index = wireRow(index) } }
+end
+
+--- Reach checkpoint `name`: save the run at this checkpoint, and the
+--- character. Pure: returns a system reaction (a body on its own or a step in a
+--- sequence or array body), no FFI. Run by the host or single player; on a
+--- connected client it changes nothing. Outside an active run it saves only the
+--- character, and in the frontend backdrop nothing.
+---
+--- The `player_spawn`s with `checkpoint=<name>` form its arrival set: Continue
+--- arrives there, and once the checkpoint fires, respawns and late joiners use
+--- it too. A name with no such spawns falls back to the level start with a
+--- warning. A later level start clears the checkpoint.
+function UiReactionsSdk.checkpoint(name: string): SystemReactionStep
+  return { primitive = "checkpoint", args = { name = name } }
+end
+
 --- Set the live sentiment from faction `from` toward faction `to` at the
 --- frame-end game-logic drain. This replaces only that directional pair's live
 --- value and never changes authored baseline content. Negative values degrade

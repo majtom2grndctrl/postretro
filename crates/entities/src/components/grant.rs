@@ -336,9 +336,11 @@ mod tests {
 
         assert_eq!(
             exact_write_call_sites,
-            vec![PathBuf::from(
-                "sim/src/scripting/builtins/wieldable_inventory.rs"
-            )],
+            vec![
+                PathBuf::from("sim/src/scripting/builtins/wieldable_inventory.rs"),
+                // A character file's loadout restores into the carry it saved.
+                PathBuf::from("sim/src/scripting/save_files/loadout.rs"),
+            ],
             "exact reserve writes are reserved for carried-state restoration"
         );
     }
@@ -382,7 +384,12 @@ mod tests {
         let is_test_harness = path
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| stem.ends_with("_test") || stem.ends_with("_test_fixtures"));
+            .is_some_and(|stem| {
+                stem == "tests"
+                    || stem.ends_with("_test")
+                    || stem.ends_with("_tests")
+                    || stem.ends_with("_test_fixtures")
+            });
 
         is_in_integration_tests || is_test_harness
     }

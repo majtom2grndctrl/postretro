@@ -3534,6 +3534,9 @@ impl App {
     ///   Readonly-gated edits to a writable String slot, through the same
     ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
     ///   backspace is a silent no-op; unknown/non-String slot logs).
+    /// - The save verbs and `Checkpoint` → `App::handle_save_verb`
+    ///   (`startup/save_verbs.rs`). Unlike a session entry press, none
+    ///   survives a leave earlier in the same drain.
     fn dispatch_system_commands(&mut self) {
         // `dispatch_system_commands` stays on `App` (it calls App-bound lifecycle
         // methods). The script tranche, audio, and the decay/presentation systems
@@ -3776,6 +3779,13 @@ impl App {
                     dispatch_source,
                     origin,
                 } => self.run_join_session_verb(dispatch_source, origin),
+                command @ (SystemReactionCommand::ContinueRun { .. }
+                | SystemReactionCommand::NewRun { .. }
+                | SystemReactionCommand::DeleteRun { .. }
+                | SystemReactionCommand::SelectCharacter { .. }
+                | SystemReactionCommand::CreateCharacter { .. }
+                | SystemReactionCommand::DeleteCharacter { .. }
+                | SystemReactionCommand::Checkpoint { .. }) => self.handle_save_verb(command),
                 SystemReactionCommand::PopTree => {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.pop();

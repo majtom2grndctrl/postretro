@@ -4,7 +4,7 @@
 /// Every system reaction primitive. `entities`' `SystemReactionKind::ALL` is
 /// the source of truth; its drift test keeps this list equal to it. The
 /// script compiler's light pass reads it to admit a system sequence step.
-pub const SYSTEM_REACTION_PRIMITIVES: [&str; 23] = [
+pub const SYSTEM_REACTION_PRIMITIVES: [&str; 30] = [
     "playSound",
     "rumble",
     "flashScreen",
@@ -20,6 +20,13 @@ pub const SYSTEM_REACTION_PRIMITIVES: [&str; 23] = [
     "endSession",
     "hostSession",
     "joinSession",
+    "continueRun",
+    "newRun",
+    "deleteRun",
+    "selectCharacter",
+    "createCharacter",
+    "deleteCharacter",
+    "checkpoint",
     "setState",
     "setSentiment",
     "adjustSentiment",

@@ -47,8 +47,17 @@ pub(crate) fn save_on_frontend_entry(session: &mut Session, played_level_unloade
     if played_level_unloaded {
         let _ = save_world_and_character(session);
     }
+    end_run_at_frontend(session);
+}
+
+/// The frontend is entered by any path, a failed run load included: the run
+/// in play ends, its queued-load latch and arrival clear, and seat 0 carries
+/// the selected character again.
+pub(crate) fn end_run_at_frontend(session: &mut Session) {
     session.saves.set_run_active(false);
     session.saves.set_run_load_queued(false);
     session.saves.set_spawn_checkpoint(None);
+    session.saves.clear_continue_arrival();
+    super::set_seat_zero_carry_from_selection(session);
     publish_save_rows(session);
 }

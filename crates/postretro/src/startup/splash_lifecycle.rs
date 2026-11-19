@@ -576,6 +576,8 @@ impl App {
         // Admission identity is frozen by the scripting runtime; the digest is
         // recomputed from the committed registry each time this deferred init runs.
         self.install_network_mod_content();
+        // A boot flag's role meets the saves it could not see when it began.
+        self.reconcile_boot_role_with_saves();
         // Bind against the committed registry and the player's saved rows for
         // this mod right away, so a controls panel opened before any level
         // loads lists the game's commands.

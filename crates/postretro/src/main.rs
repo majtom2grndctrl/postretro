@@ -2033,7 +2033,10 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
-        if let Some(session) = self.session.as_mut() {
+        // A frontend backdrop's pawn is never harvested: outside play seat 0
+        // carries the selected character.
+        let harvest = !self.backdrop_installed;
+        if let Some(session) = self.session.as_mut().filter(|_| harvest) {
             let registry = session.scripting.script_ctx.registry.borrow();
             if let Some(seats) = session.seat_table.as_mut() {
                 // Harvest state but retain bindings until lifecycle events drain
@@ -2467,7 +2470,7 @@ impl App {
     /// leave or end makes every role single-player, and a client's leave
     /// restored its own world, so this save never writes a host's values.
     pub(crate) fn leave_end_and_save_for_exit(&mut self) {
-        self.harvest_seat_zero_for_save();
+        self.harvest_bound_pawns_for_save();
         self.leave_or_end_for_exit();
         if let Some(session) = self.session.as_mut() {
             session
@@ -2769,7 +2772,7 @@ impl App {
                     &mut script_ctx.slot_table.borrow_mut(),
                     admission.released_seats,
                 );
-                if admission.reclaimed {
+                if admission.keeps_live_state {
                     join_seed_state.mark_reclaimed(*client_id);
                 }
                 // Admission while a level is installed (the host Settling)
@@ -4172,7 +4175,7 @@ impl App {
                                             &mut script_ctx.slot_table.borrow_mut(),
                                             admission.released_seats,
                                         );
-                                        if admission.reclaimed {
+                                        if admission.keeps_live_state {
                                             join_seed_state.mark_reclaimed(*client_id);
                                         }
                                         // Admission names the installed level to

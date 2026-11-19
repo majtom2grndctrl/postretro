@@ -45,22 +45,6 @@ pub fn retain_saved_per_owner_state(retained: &mut Option<PersistedState>, saved
     }
 }
 
-/// Merge freshly collected entries into a save document without touching its
-/// global section. Used by the host clean-exit path, which saves its local
-/// player alongside the existing global collector.
-pub fn merge_per_owner_state(
-    state: &mut PersistedState,
-    per_owner: BTreeMap<String, BTreeMap<String, PersistedValue>>,
-) {
-    for (durable_key, player_values) in per_owner {
-        state
-            .per_owner
-            .entry(durable_key)
-            .or_default()
-            .extend(player_values);
-    }
-}
-
 /// Mirror the client-visible scalar projection of each per-owner slot into the
 /// local seat cache. Replication intentionally exposes only this client's
 /// scalar value; the cache lets persistence use the same seat-addressed read

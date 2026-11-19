@@ -53,7 +53,7 @@ pub(crate) const FINAL_CHARACTER_WAIT: std::time::Duration =
 /// How loudly a refused verb reports. The rule the scheduler applies to a
 /// client's dropped tail steps: a mistake when this machine's own input or
 /// state fired it, routine when the host's timeline or a shared crossing did.
-pub(super) fn refusal_is_own(origin: &FireOrigin) -> bool {
+pub(crate) fn refusal_is_own(origin: &FireOrigin) -> bool {
     matches!(origin, FireOrigin::EveryMachine(MachineSource::OwnState))
 }
 
@@ -298,17 +298,27 @@ impl App {
             match poll {
                 netcode::WorldLessPoll::Client(controls) => {
                     for control in controls {
-                        if let postretro_net::wire::ServerControlMessage::FinalCharacter {
-                            slots,
-                            loadout,
-                        } = control
-                        {
-                            self.received_final_character =
-                                Some(crate::session::store_saves::ReceivedFinalCharacter {
-                                    slots,
-                                    loadout,
-                                });
-                            return;
+                        match control {
+                            postretro_net::wire::ServerControlMessage::FinalCharacter {
+                                slots,
+                                loadout,
+                            } => {
+                                self.received_final_character =
+                                    Some(crate::session::store_saves::ReceivedFinalCharacter {
+                                        slots,
+                                        loadout,
+                                    });
+                                return;
+                            }
+                            // A level start or checkpoint crossing the leave:
+                            // the latest loadout the host sent, which a
+                            // silent host's leave then saves.
+                            postretro_net::wire::ServerControlMessage::CharacterLoadout {
+                                loadout,
+                            } => session.saves.set_client_loadout(Some(
+                                netcode::loadout_record_from_wire(&loadout),
+                            )),
+                            _ => {}
                         }
                     }
                 }

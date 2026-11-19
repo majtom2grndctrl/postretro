@@ -134,6 +134,8 @@ pub(crate) fn test_app() -> App {
             state_store_lifecycle: Default::default(),
             persisted_state: None,
             saves: Default::default(),
+            boot_connect: None,
+            boot_role_pending: false,
             per_owner_save_timer: Default::default(),
             progress_tracker: ProgressTracker::new(),
             pending_death_events: Vec::new(),

@@ -310,6 +310,13 @@ impl App {
             renderer.clear_splash();
         }
         self.boot_state = BootState::Frontend;
+        // Landing on the frontend ends a run whose level failed to load, as
+        // any frontend entry does; the run file still names that level.
+        if self.session_role() != crate::session::role_state::SessionRole::Client
+            && let Some(session) = self.session.as_mut()
+        {
+            crate::session::saves::end_run_at_frontend(session);
+        }
         // A connected client's failed host-named load puts the menu back,
         // whose install would have cleared it, with no backdrop load: the
         // backdrop may be the very level that failed.

@@ -28,7 +28,10 @@ mod tests;
 
 pub use client_session::*;
 pub use join_seed::*;
-pub use ledger::{reset_mod_slots_for_reload, run_scoped_durable_keys, split_world_and_run};
+pub use ledger::{
+    project_seat_per_owner_values, reset_mod_slots_for_reload, run_scoped_durable_keys,
+    split_world_and_run,
+};
 
 /// Current on-disk state format. Increment only with an explicit migration or invalidation policy.
 pub(crate) const CURRENT_STATE_VERSION: u32 = 4;

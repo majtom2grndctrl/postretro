@@ -384,9 +384,11 @@ pub(crate) fn install_world_cpu_with_models(
     // validated. Resolve the authored player-health range from the shared map
     // placement + descriptor table, not from a role-specific materialized pawn: a
     // connected client intentionally suppresses its boot pawn.
+    // Every spawn, not the active set: a client never knows the host's
+    // checkpoint, and the replicated schema must match on both.
     crate::sim::install_descriptor_player_health_range(
         &mut script_ctx.slot_table.borrow_mut(),
-        &spawn_points,
+        &level_spawn_points,
         &descriptors,
     );
     // Wieldable weapon instances have no MeshComponent of their own. Preload every

@@ -94,9 +94,13 @@ pub(crate) struct HoldDeadline(pub(crate) Duration);
 pub struct SeatAdmission {
     pub seat: Seat,
     pub released_seats: Vec<Seat>,
-    /// Whether this connection reclaimed an in-hold seat whose per-owner values
-    /// remain live and must not be overwritten by a persisted join seed.
+    /// Whether this connection reclaimed an in-hold seat.
     pub reclaimed: bool,
+    /// Whether the reclaimed seat holds live state (it once bound a pawn), so
+    /// its per-owner values and carry must not be overwritten by a persisted
+    /// join seed. A seat held before it ever spawned has nothing live, and
+    /// its rejoin's seed applies.
+    pub keeps_live_state: bool,
 }
 
 /// Where a hosted run's session id comes from: the OS RNG in production.
@@ -121,6 +125,10 @@ pub struct SeatTable {
     /// spawn after walking away.
     level_spawn_placements: HashMap<EntityId, usize>,
     connect_claims: HashMap<Seat, ConnectClaim>,
+    /// Seats that have bound a pawn: their per-owner values and carry are
+    /// live, so a rejoin keeps them over a join seed. A seat held before it
+    /// ever spawned has nothing live, and its rejoin seed applies.
+    live_seats: HashSet<Seat>,
     hold_deadlines: HashMap<Seat, HoldDeadline>,
     /// Monotonic ordering is separate from the deadline: two disconnects can
     /// land in one poll at the same accumulated time, but reclaim must still
@@ -181,6 +189,7 @@ impl SeatTable {
             placement_assignments: HashMap::new(),
             level_spawn_placements: HashMap::new(),
             connect_claims: HashMap::new(),
+            live_seats: HashSet::new(),
             hold_deadlines: HashMap::new(),
             hold_order: HashMap::new(),
             next_hold_order: 0,
@@ -211,6 +220,7 @@ impl SeatTable {
         self.next_seat = 1;
         self.client_bindings.clear();
         self.connect_claims.clear();
+        self.live_seats.retain(|seat| *seat == Seat(0));
         self.hold_deadlines.clear();
         self.hold_order.clear();
         self.next_hold_order = 0;
@@ -295,6 +305,7 @@ impl SeatTable {
                 seat,
                 released_seats: Vec::new(),
                 reclaimed: false,
+                keeps_live_state: false,
             });
         }
 
@@ -341,6 +352,7 @@ impl SeatTable {
                     seat: winner,
                     released_seats,
                     reclaimed: true,
+                    keeps_live_state: self.live_seats.contains(&winner),
                 });
             }
 
@@ -394,6 +406,7 @@ impl SeatTable {
             seat,
             released_seats: Vec::new(),
             reclaimed: false,
+            keeps_live_state: false,
         })
     }
 
@@ -446,6 +459,7 @@ impl SeatTable {
         }
         if let Some(pawn) = pawn {
             self.pawn_bindings.insert(seat, pawn);
+            self.live_seats.insert(seat);
             registry.bind_pawn_seat(pawn, seat);
         }
     }
@@ -517,6 +531,7 @@ impl SeatTable {
         self.placement_assignments.remove(&seat);
         self.overflow_warned.remove(&seat);
         self.connect_claims.remove(&seat);
+        self.live_seats.remove(&seat);
         self.hold_deadlines.remove(&seat);
         self.hold_order.remove(&seat);
         self.roster_dirty = true;

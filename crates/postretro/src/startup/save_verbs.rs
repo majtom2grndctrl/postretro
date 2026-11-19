@@ -21,34 +21,71 @@ fn hosting_permits(verb: &str) -> bool {
 impl App {
     /// Run one save verb, or refuse it with a warning, changing nothing.
     pub(crate) fn handle_save_verb(&mut self, command: SystemReactionCommand) {
-        let (verb, result) = match command {
-            SystemReactionCommand::SelectCharacter { index, .. } => (
+        let (verb, source, origin, result) = match command {
+            SystemReactionCommand::SelectCharacter {
+                index,
+                dispatch_source,
+                origin,
+            } => (
                 "selectCharacter",
+                dispatch_source,
+                origin,
                 self.gate("selectCharacter")
                     .and_then(|()| self.select_character_verb(index)),
             ),
-            SystemReactionCommand::CreateCharacter { index, .. } => (
+            SystemReactionCommand::CreateCharacter {
+                index,
+                dispatch_source,
+                origin,
+            } => (
                 "createCharacter",
+                dispatch_source,
+                origin,
                 self.gate("createCharacter")
                     .and_then(|()| self.create_character_verb(index)),
             ),
-            SystemReactionCommand::DeleteCharacter { index, .. } => (
+            SystemReactionCommand::DeleteCharacter {
+                index,
+                dispatch_source,
+                origin,
+            } => (
                 "deleteCharacter",
+                dispatch_source,
+                origin,
                 self.gate("deleteCharacter")
                     .and_then(|()| self.delete_character_verb(index)),
             ),
-            SystemReactionCommand::ContinueRun { index, .. } => (
+            SystemReactionCommand::ContinueRun {
+                index,
+                dispatch_source,
+                origin,
+            } => (
                 "continueRun",
+                dispatch_source,
+                origin,
                 self.gate("continueRun")
                     .and_then(|()| self.continue_run_verb(index)),
             ),
-            SystemReactionCommand::NewRun { index, map, .. } => (
+            SystemReactionCommand::NewRun {
+                index,
+                map,
+                dispatch_source,
+                origin,
+            } => (
                 "newRun",
+                dispatch_source,
+                origin,
                 self.gate("newRun")
                     .and_then(|()| self.new_run_verb(index, &map)),
             ),
-            SystemReactionCommand::DeleteRun { index, .. } => (
+            SystemReactionCommand::DeleteRun {
+                index,
+                dispatch_source,
+                origin,
+            } => (
                 "deleteRun",
+                dispatch_source,
+                origin,
                 self.gate("deleteRun")
                     .and_then(|()| self.delete_run_verb(index)),
             ),
@@ -64,7 +101,32 @@ impl App {
                     publish_save_rows(session);
                 }
             }
-            Err(why) => log::warn!("[State] {verb} refused: {why}"),
+            Err(why) => self.report_refused_save_verb(verb, source, &origin, &why),
+        }
+    }
+
+    /// A refused save verb warns once per firing source, verb and reason when
+    /// this machine's own input or state fired it, so a trigger that keeps
+    /// firing does not flood the log; any other origin logs at debug.
+    fn report_refused_save_verb(
+        &mut self,
+        verb: &'static str,
+        source: String,
+        origin: &postretro_entities::FireOrigin,
+        why: &str,
+    ) {
+        let own = super::lifecycle::session_membership::refusal_is_own(origin);
+        let first = own
+            && self.session.as_mut().is_some_and(|session| {
+                session
+                    .scripting
+                    .refused_verb_warnings
+                    .insert((format!("{source}: {why}"), verb))
+            });
+        if first {
+            log::warn!("[State] {verb} refused: {why} (from `{source}`)");
+        } else {
+            log::debug!("[State] {verb} refused: {why} (from `{source}`)");
         }
     }
 
@@ -81,7 +143,7 @@ impl App {
         match self.session_role() {
             SessionRole::Client => return Err("a connected client runs no save verbs".into()),
             SessionRole::Host if !hosting_permits(verb) => {
-                return Err("only Continue and newRun run while hosting".into());
+                return Err("only continueRun and newRun run while hosting".into());
             }
             _ => {}
         }
@@ -105,7 +167,8 @@ impl App {
             None => return Err(format!("character slot {index} is not declared")),
         }
         session.saves.select_character(Some(index));
-        reload_store(session, false);
+        let with_run = session.saves.run_active();
+        reload_store(session, with_run);
         set_seat_zero_carry_from_selection(session);
         Ok(())
     }
@@ -132,7 +195,8 @@ impl App {
             return Err(format!("character slot {index} could not be written"));
         }
         session.saves.select_character(Some(index));
-        reload_store(session, false);
+        let with_run = session.saves.run_active();
+        reload_store(session, with_run);
         set_seat_zero_carry_from_selection(session);
         Ok(())
     }
@@ -264,12 +328,19 @@ impl App {
         }
         // A new run: run-scoped globals, faction sentiment and the level
         // reset; world slots and the character as it stands are kept.
+        let previous_run = session.saves.selected_run_index();
+        let previous_active = session.saves.run_active();
         session.saves.select_run(None);
         reload_store(session, false);
         set_seat_zero_carry_from_selection(session);
         let (_, live) = collect_world_and_run(session);
-        // The run file lands before its level load begins.
+        // The run file lands before its level load begins. A failed write
+        // puts the previous selection and store back.
         if !session.saves.write_new_run(index, claim, map, live) {
+            session.saves.select_run(previous_run);
+            session.saves.set_run_active(previous_active);
+            reload_store(session, previous_active);
+            set_seat_zero_carry_from_selection(session);
             return Err(format!("run slot {index} could not be written"));
         }
         session.saves.select_run(Some(index));
@@ -286,6 +357,11 @@ impl App {
             session.modal_stack.clear_pushed();
             session.saves.set_run_load_queued(true);
         }
+        // A return to the frontend queued earlier in this drain would enter
+        // the frontend after the run starts and end it; the run's level
+        // replaces it, as a played load replaces a backdrop.
+        self.level_requests
+            .retain(|request| !matches!(request, LevelRequest::Unload));
         self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(level)));
     }
 }
@@ -305,7 +381,7 @@ impl App {
             log::debug!("[State] checkpoint `{name}` ignored outside a played level");
             return;
         }
-        self.harvest_seat_zero_for_save();
+        self.harvest_bound_pawns_for_save();
         // Each guest's loadout, harvested just now, returns to it.
         if let Some(session) = self.session.as_mut() {
             crate::session::store_saves::send_character_loadouts(session);

@@ -173,3 +173,32 @@ fn ledger_document_restores_every_durable_seat_field_and_omits_live_state() {
         written
     );
 }
+
+// Regression: a guest held before it ever spawned rejoined as "reclaimed",
+// which dropped its join seed and spawned it with nothing.
+#[test]
+fn rejoin_of_a_seat_that_never_spawned_is_not_reclaimed() {
+    let mut seats = SeatTable::from_test_session_id([5; 16]);
+    let mut registry = postretro_entities::EntityRegistry::new();
+    let claim = || ConnectClaim {
+        player_id: PlayerClaimId([9; 16]),
+        display_name: "Vex".into(),
+    };
+    let first = seats.admit_or_reclaim(10, Some(claim()), false).unwrap();
+    seats.hold_disconnected_client(&mut registry, 10);
+    let rejoin = seats.admit_or_reclaim(11, Some(claim()), false).unwrap();
+    assert_eq!(rejoin.seat, first.seat);
+    assert!(
+        rejoin.reclaimed && !rejoin.keeps_live_state,
+        "nothing live to keep"
+    );
+
+    let pawn = registry.spawn(postretro_entities::Transform::default());
+    seats.bind_pawn(&mut registry, rejoin.seat, pawn);
+    seats.hold_disconnected_client(&mut registry, 11);
+    let again = seats.admit_or_reclaim(12, Some(claim()), false).unwrap();
+    assert!(
+        again.keeps_live_state,
+        "a seat that spawned keeps its live state"
+    );
+}

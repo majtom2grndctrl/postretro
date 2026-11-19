@@ -13,7 +13,7 @@ mod tests;
 
 pub(crate) use boot::{BootInputs, load_save_slots};
 pub(crate) use rows::publish_save_rows;
-pub(crate) use save_points::{save_on_frontend_entry, save_on_level_start};
+pub(crate) use save_points::{end_run_at_frontend, save_on_frontend_entry, save_on_level_start};
 #[cfg(test)]
 pub(crate) use store::boot_restore_with;
 pub(crate) use store::{
@@ -109,6 +109,10 @@ impl SaveSlots {
 
     pub(crate) fn set_spawn_checkpoint(&mut self, checkpoint: Option<String>) {
         self.spawn_checkpoint = checkpoint;
+    }
+
+    pub(crate) fn clear_continue_arrival(&mut self) {
+        self.continue_arrival = None;
     }
 
     /// Whether a level start at `catalog_id` is Continue's own arrival.
@@ -343,6 +347,12 @@ impl SaveSlots {
     /// Select a run slot, or `None` for none, and store the selection.
     pub(crate) fn select_run(&mut self, index: Option<usize>) {
         self.selection.run = index.map_or(-1, |index| index as i32);
+        if index.is_none() {
+            // No run is selected, so none is in play, also for a mod without
+            // a `saves` block: its save points then write the character and
+            // world alone.
+            self.run_active = false;
+        }
         self.store_selection();
     }
 

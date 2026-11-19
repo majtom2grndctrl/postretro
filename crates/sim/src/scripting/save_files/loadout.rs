@@ -48,7 +48,7 @@ impl LoadoutRecord {
             return Self::default();
         };
         Self {
-            health: carried.health_current,
+            health: carried.health_current.filter(|health| health.is_finite()),
             life_state: carried.life_state.clone(),
             reserve: carried
                 .reserve
@@ -58,12 +58,15 @@ impl LoadoutRecord {
             wieldables: trim_trailing_none(carried.wieldables.to_vec()),
             magazines: trim_trailing_none(carried.magazines.to_vec()),
             active_slot: carried.active_slot,
+            // JSON has no non-finite numbers: serde_json writes one as
+            // `null`, which would make the whole file unreadable. A
+            // non-finite layer value saves as empty.
             layers: carried
                 .layers
                 .iter()
                 .map(|(name, value)| LayerRecord {
                     name: name.clone(),
-                    value: *value,
+                    value: if value.is_finite() { *value } else { 0.0 },
                 })
                 .collect(),
         }

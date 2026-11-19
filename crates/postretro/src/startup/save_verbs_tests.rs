@@ -13,6 +13,7 @@ use postretro_sim::scripting::save_files::{
 };
 
 use crate::App;
+use crate::session::role_state::SessionRole;
 use crate::session::saves::test_fixtures::{
     GENERATOR, MOD_ID, SCORE, app_with_store, boot, number, present_frontend, xp,
 };
@@ -1090,4 +1091,246 @@ fn mod_without_saves_block_keeps_progress_and_sentiment() {
             .get(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX),
         Some(-0.5)
     );
+}
+
+struct NoExit;
+
+impl crate::startup::LoopExit for NoExit {
+    fn exit(&self) {
+        panic!("a runtime load failure never exits the loop");
+    }
+}
+
+// Review fix: a Continue or newRun whose level fails to load lands on the
+// frontend, which ends the run and frees the verbs.
+#[test]
+fn failed_run_load_ends_the_run_and_frees_the_verbs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+    app.drain_level_requests();
+    let run_before = std::fs::read(saves(dir.path()).run_path(0)).unwrap();
+
+    app.finish_level_failure("prl parse failed".to_string(), &NoExit);
+    present_frontend(&mut app);
+
+    let session = app.session.as_ref().unwrap();
+    assert!(!session.saves.run_active());
+    assert!(!session.saves.run_load_queued());
+    app.handle_save_verb(select(0));
+    // A dev-picker load afterwards leaves the run file alone.
+    load_and_play(&mut app, "second", 1);
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("next".into()),
+    ));
+    app.drain_level_requests();
+    assert_eq!(
+        std::fs::read(saves(dir.path()).run_path(0)).unwrap(),
+        run_before
+    );
+}
+
+// Review fix: a return to the frontend queued earlier in the same drain does
+// not end the run newRun starts.
+#[test]
+fn queued_return_to_frontend_does_not_end_a_new_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    app.navigate_to_frontend();
+
+    app.handle_save_verb(new_run(0, "next"));
+    app.drain_level_requests();
+
+    assert!(app.session.as_ref().unwrap().saves.run_active());
+}
+
+// Review fix: a world slot written at the frontend survives the reload a
+// verb runs; a run-scoped one resets with the new run.
+#[test]
+fn frontend_world_write_survives_new_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    set(&app, SCORE, 6.0);
+    set(&app, GENERATOR, 2.0);
+
+    app.handle_save_verb(new_run(0, "next"));
+
+    assert_eq!(number(&app, SCORE), Some(SlotValue::Number(6.0)));
+    assert_eq!(number(&app, GENERATOR), Some(SlotValue::Number(0.0)));
+}
+
+// Review fix: selecting a character refreshes the per-owner value UI binds
+// read, not only seat 0's.
+#[test]
+fn select_character_refreshes_the_bound_per_owner_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    set_xp(&app, 5.0);
+    save(&mut app);
+    character(&mut app, 1, "Ash");
+
+    app.handle_save_verb(select(0));
+
+    assert_eq!(
+        number(&app, crate::session::saves::test_fixtures::XP),
+        Some(SlotValue::Number(5.0))
+    );
+}
+
+/// A booted mod without a `saves` block at its frontend, with `next` in its
+/// catalog.
+fn implicit_frontend(dir: &std::path::Path) -> App {
+    let mut app = app_with_store(dir);
+    boot(&mut app, None);
+    present_frontend(&mut app);
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .maps
+        .push(ModMapEntry {
+            id: "next".into(),
+            path: "maps/next-never-read.prl".into(),
+            name: "next".into(),
+            tags: Vec::new(),
+            loading_tree: Vec::new(),
+        });
+    app
+}
+
+// Review fixes for a mod without a `saves` block: selecting its character
+// keeps the implicit run's state, and deleting its run lets level starts
+// still save the character.
+#[test]
+fn implicit_mod_select_keeps_run_state_and_delete_run_still_saves() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = implicit_frontend(dir.path());
+    set(&app, GENERATOR, 4.0);
+    load_and_play(&mut app, "next", 1);
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("next".into()),
+    ));
+    app.drain_level_requests();
+    back_to_frontend(&mut app);
+
+    app.handle_save_verb(select(0));
+    assert_eq!(number(&app, GENERATOR), Some(SlotValue::Number(4.0)));
+
+    app.handle_save_verb(delete_run(0));
+    assert!(!app.session.as_ref().unwrap().saves.run_active());
+    load_and_play(&mut app, "next", 23);
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("next".into()),
+    ));
+    app.drain_level_requests();
+    let saved = read_document(&saves(dir.path()).character_path(0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.seats[0].loadout.reserve.get("shells"), Some(&23));
+}
+
+// C1 co-op and C3: once a checkpoint fires, late joiners take different
+// spawns of its set.
+#[test]
+fn late_joiners_spread_over_the_active_checkpoint_set() {
+    use super::spawn_pose_handoff_fixtures::Relay;
+    let points = spawn_points();
+    let mut relay = Relay::host();
+    relay.install(points[..2].to_vec());
+    relay.host_reveal();
+    relay.app.level_spawn_points = points.clone();
+    relay.app.apply_spawn_checkpoint(Some("bridge".into()));
+
+    let mut placed = Vec::new();
+    for client in [21, 22] {
+        relay.admit(&[client]);
+        relay.reveal(client);
+        let pawn = relay.await_pawn(client);
+        placed.push(relay.transform(pawn).position);
+    }
+
+    let bridge = super::spawn_pose_handoff_fixtures::standing_on(&points[2..], 0);
+    let bridge_second = super::spawn_pose_handoff_fixtures::standing_on(&points[2..], 1);
+    assert!(
+        placed.iter().all(|position| {
+            position.distance(bridge) < 0.01 || position.distance(bridge_second) < 0.01
+        }),
+        "{placed:?}"
+    );
+    assert!(
+        placed[0].distance(placed[1]) > 0.01,
+        "each joiner its own spawn"
+    );
+}
+
+/// Put a `--connect` boot's client endpoint on `app`, as boot flags do before
+/// the mod's saves load.
+fn boot_as_client(app: &mut App) {
+    let session = app.session.as_mut().unwrap();
+    let entry = crate::session::net_entry::enter_role(
+        &crate::netcode::NetRole::Connect {
+            addr: "127.0.0.1:9".parse().unwrap(),
+        },
+        session.player_options.player_id.map(|id| (id, "")),
+        &mut session.scripting,
+        &mut session.seat_table,
+        getrandom::fill,
+        || None,
+        "",
+    );
+    session.net_endpoint = entry.endpoint;
+    session.boot_connect = Some(("127.0.0.1:9".parse().unwrap(), String::new()));
+    session.boot_role_pending = true;
+    assert_eq!(app.session_role(), SessionRole::Client);
+}
+
+// Regression: a client that booted connected kept a store snapshot without
+// the implicit run, so its leave restored defaults that the next level start
+// saved over the run.
+#[test]
+fn connected_boot_keeps_the_implicit_run_for_its_leave() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = implicit_frontend(dir.path());
+    load_and_play(&mut first, "next", 1);
+    set(&first, GENERATOR, 4.0);
+    first.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("next".into()),
+    ));
+    first.drain_level_requests();
+    drop(first);
+
+    let mut app = app_with_store(dir.path());
+    boot_as_client(&mut app);
+    boot(&mut app, None);
+
+    let retained = app
+        .session
+        .as_ref()
+        .unwrap()
+        .persisted_state
+        .clone()
+        .unwrap();
+    assert_eq!(
+        retained.slots().get("k-gen"),
+        Some(&postretro_sim::scripting::state_persistence::PersistedValue::Number(4.0))
+    );
+}
+
+// Review fix: a `--connect` boot of a mod with a `saves` block and no
+// selected character leaves, as an in-app join would have been refused.
+#[test]
+fn boot_connect_without_a_selected_character_leaves() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_store(dir.path());
+    boot_as_client(&mut app);
+    boot(&mut app, SAVES);
+
+    app.reconcile_boot_role_with_saves();
+
+    capture.assert_logged(log::Level::Warn, "--connect refused");
+    assert_eq!(app.session_role(), SessionRole::SinglePlayer);
 }

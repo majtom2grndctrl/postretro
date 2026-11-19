@@ -561,6 +561,64 @@ impl App {
         }
     }
 
+    /// Boot flags enter a role before the mod's saves load. Once they load:
+    /// with a `saves` block and no character selected, a boot host ends its
+    /// session and a boot client leaves, as in-app entry would have refused
+    /// them; a boot client whose claim is not the selected character's
+    /// reconnects with it, so the host keys its seat by the character.
+    pub(crate) fn reconcile_boot_role_with_saves(&mut self) {
+        let role = self.session_role();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if !session.saves.is_loaded() || !std::mem::take(&mut session.boot_role_pending) {
+            return;
+        }
+        let boot_connect = session.boot_connect.take();
+        if role == SessionRole::SinglePlayer {
+            return;
+        }
+        if !self.character_selected_for_entry() {
+            match role {
+                SessionRole::Host => {
+                    log::warn!(
+                        "[Net] --host refused: this mod needs a selected character; ending the session"
+                    );
+                    self.end_session();
+                }
+                SessionRole::Client => {
+                    log::warn!(
+                        "[Net] --connect refused: this mod needs a selected character; leaving the session"
+                    );
+                    self.leave_session(super::session_membership::LeaveCause::Own);
+                }
+                SessionRole::SinglePlayer => {}
+            }
+            return;
+        }
+        let Some((addr, password)) = boot_connect.filter(|_| role == SessionRole::Client) else {
+            return;
+        };
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let (claim_id, claim_name) = session.character_claim();
+        if claim_id == session.player_options.player_id && claim_name.is_empty() {
+            return;
+        }
+        log::info!("[Net] reconnecting to {addr} as the selected character");
+        if let Some(netcode::NetEndpoint::Client { mut client, .. }) = session.net_endpoint.take() {
+            client.disconnect();
+        }
+        if let Some(failure) = self.enter_net_role(
+            &netcode::NetRole::Connect { addr },
+            getrandom::fill,
+            &password,
+        ) {
+            log::warn!("[Net] reconnecting as the selected character failed: {failure:?}");
+        }
+    }
+
     /// With a `saves` block, hosting and joining wait until a character is
     /// selected: the character is the identity a session keys by.
     fn character_selected_for_entry(&self) -> bool {

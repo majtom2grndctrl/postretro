@@ -5,7 +5,7 @@ use postretro_foundation::Seat;
 use postretro_sim::scripting::save_files::{LoadoutRecord, SaveDir, SeatRecord};
 use postretro_sim::scripting::state_persistence::{
     collect_seat_per_owner_values, overlay_persisted_faction_sentiment, overlay_persisted_state,
-    reset_mod_slots_for_reload, run_scoped_durable_keys, state_path,
+    project_seat_per_owner_values, reset_mod_slots_for_reload, run_scoped_durable_keys, state_path,
 };
 
 use super::{BootInputs, load_save_slots, publish_save_rows};
@@ -80,6 +80,13 @@ pub(crate) fn set_seat_zero_carry_from_selection(session: &mut Session) {
 /// hosting only seat 0's per-owner values reload. Crossing watchers re-arm on
 /// the reloaded values without firing.
 pub(crate) fn reload_store(session: &mut Session, with_run: bool) {
+    // The world file holds progress that outlives any run: a world slot
+    // written at the frontend since the last save point (a difficulty
+    // toggle before New game) saves before the reset discards it.
+    if session.state_store_lifecycle.can_save() {
+        let (world, _) = collect_world_and_run(session);
+        session.saves.save_world(world);
+    }
     {
         let script_ctx = session.scripting.script_ctx.clone();
         reset_mod_slots_for_reload(&mut script_ctx.slot_table.borrow_mut(), Seat(0));
@@ -126,9 +133,19 @@ fn overlay_selection(session: &mut Session, with_run: bool, with_owner_state: bo
             log::warn!("[State] {warning}");
         }
     }
-    // The retained store document: a join seed and a client's leave restore
-    // read it.
-    session.persisted_state = Some(document);
+    if with_owner_state {
+        // UI binds read a per-owner slot's local value, which an overlay of
+        // seat 0's values does not move on its own.
+        project_seat_per_owner_values(&mut script_ctx.slot_table.borrow_mut(), Seat(0));
+    }
+    // The retained store document a join seed and a client's leave restore
+    // read: it keeps an active run's state even where this overlay skipped
+    // it, so a client that boots connected restores its implicit run.
+    session.persisted_state = Some(if with_run || !session.saves.run_active() {
+        document
+    } else {
+        session.saves.store_document(true)
+    });
 }
 
 /// The selected character's record as it is now: its per-owner values on

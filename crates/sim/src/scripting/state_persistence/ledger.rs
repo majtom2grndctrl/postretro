@@ -105,3 +105,14 @@ pub fn reset_mod_slots_for_reload(table: &mut SlotTable, seat: Seat) {
         }
     }
 }
+
+/// Copy `seat`'s per-owner value into each mod per-owner slot's local value,
+/// which UI binds read, so a reload shows the selected character's values.
+pub fn project_seat_per_owner_values(table: &mut SlotTable, seat: Seat) {
+    for (_, record) in table.iter_mut() {
+        if record.schema.ownership == SlotOwnership::Mod && record.schema.per_owner {
+            let value = record.per_seat_value(seat).cloned();
+            record.write_value(value);
+        }
+    }
+}

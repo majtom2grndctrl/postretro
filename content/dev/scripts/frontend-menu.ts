@@ -24,6 +24,12 @@ import {
   VStack,
   accessibilityAction,
   bindState,
+  clearText,
+  closeDialog,
+  continueRun,
+  createCharacter,
+  deleteCharacter,
+  deleteRun,
   displayModeAction,
   defineUiTree,
   endSession,
@@ -33,8 +39,11 @@ import {
   KEYBOARD_TREE,
   leaveSession,
   loadLevel,
+  newRun,
   openMenu,
   openTextEntry,
+  selectCharacter,
+  stateCompare,
   stateEquals,
   ui,
   updateState,
@@ -44,7 +53,10 @@ import {
 } from "postretro/ui";
 
 // Tests bundle this module standalone (`menu_tests`, `window_mode_sdk_tests`),
-// so it takes no relative imports; `loading-screens.ts` imports from here.
+// so it takes no relative imports; `loading-screens.ts`, `pause-menu.ts` and
+// `frontend-saves.ts` import from here. Every frontend reaction lives here, in
+// `frontendReactions`, so a standalone bundle can press any of them;
+// `frontend-saves.ts` only lays out the character, run and lobby screens.
 
 /// The loading tree `loading-screens.ts` registers for catalog map `mapId`.
 export function loadingTreeName(mapId: string): string {
@@ -54,13 +66,17 @@ export function loadingTreeName(mapId: string): string {
 const TITLE_MENU_NAME = "frontend.menuTree";
 const LEVEL_SELECT_MENU_NAME = "frontend.devLevelSelect";
 const OPTIONS_MENU_NAME = "frontend.options";
+/** The save screens `frontend-saves.ts` registers under these names. */
+export const CHARACTERS_MENU_NAME = "frontend.characters";
+export const RUNS_MENU_NAME = "frontend.runs";
+export const LOBBY_MENU_NAME = "frontend.lobby";
 
 type Color = [number, number, number, number];
 
-const COLOR_ACCENT: Color = [0.12, 0.72, 0.4, 1.0];
+export const COLOR_ACCENT: Color = [0.12, 0.72, 0.4, 1.0];
 /// An unselected choice: dimmer than the selected one, still clearly there.
 const COLOR_UNSELECTED: Color = [0.5, 0.57, 0.6, 1.0];
-const COLOR_MUTED: Color = [0.58, 0.68, 0.72, 1.0];
+export const COLOR_MUTED: Color = [0.58, 0.68, 0.72, 1.0];
 const COLOR_PANEL: Color = [0.018, 0.026, 0.039, 0.94];
 
 // --- Visual grammar ------------------------------------------------------------
@@ -84,7 +100,7 @@ const COLOR_PANEL: Color = [0.018, 0.026, 0.039, 0.94];
 // predicate: one band colors both of its values.
 
 const LABEL_WHITE: Color = [1.0, 1.0, 1.0, 1.0];
-const COLOR_BODY: Color = [0.84, 0.9, 0.92, 1.0];
+export const COLOR_BODY: Color = [0.84, 0.9, 0.92, 1.0];
 const COLOR_RULE: Color = [1.0, 1.0, 1.0, 0.1];
 const FILL_WELL: Color = [0.0, 0.0, 0.0, 0.5];
 
@@ -149,41 +165,41 @@ export function backAction(id: string, label = "BACK"): WidgetDescriptor[] {
 }
 
 /// A screen's title: information, never pressable.
-function title(content: string, fontSize = 24): WidgetDescriptor {
+export function title(content: string, fontSize = 24): WidgetDescriptor {
   return Text({ content, fontSize, color: COLOR_ACCENT });
 }
 
 /// Body copy, sentence case.
-function body(content: string, visibleWhen?: Predicate): WidgetDescriptor {
+export function body(content: string, visibleWhen?: Predicate): WidgetDescriptor {
   return Text({ content, fontSize: 14, color: COLOR_BODY, ...(visibleWhen === undefined ? {} : { visibleWhen }) });
 }
 
 /// A hint: what to do, or what follows. Sentence case, muted.
-function hint(content: string): WidgetDescriptor {
+export function hint(content: string): WidgetDescriptor {
   return Text({ content, fontSize: 13, color: COLOR_MUTED });
 }
 
 type Tone = "status" | "notice";
-const COLOR_NOTICE: Color = [0.98, 0.68, 0.22, 1.0];
+export const COLOR_NOTICE: Color = [0.98, 0.68, 0.22, 1.0];
 const TONE_STRIPE: Record<Tone, Color> = { status: COLOR_ACCENT, notice: COLOR_NOTICE };
 const TONE_FILL: Record<Tone, Color> = { status: [0.0, 0.0, 0.0, 0.28], notice: [0.12, 0.05, 0.0, 0.4] };
 
 /// A callout: a tinted box under a colored stripe, holding a headline and its
 /// details. Status is green, a notice amber. Its only control, if any, is the
 /// notice's answer, boxed like every control.
-function callout(tone: Tone, children: WidgetDescriptor[], visibleWhen?: Predicate): WidgetDescriptor {
+export function callout(tone: Tone, children: WidgetDescriptor[], visibleWhen?: Predicate): WidgetDescriptor {
   return VStack(
     { gap: 0, align: "stretch", fill: TONE_FILL[tone], ...(visibleWhen === undefined ? {} : { visibleWhen }) },
     [VStack({ fill: TONE_STRIPE[tone], padding: 1.5 }, []), VStack({ gap: 5, padding: 10, align: "stretch" }, children)],
   );
 }
 
-function headline(tone: Tone, content: string): WidgetDescriptor {
+export function headline(tone: Tone, content: string): WidgetDescriptor {
   return Text({ content, fontSize: 16, color: TONE_STRIPE[tone] });
 }
 
 /// A frontend layer's panel: title, body, footer, in one linear focus group.
-function panel(
+export function panel(
   props: { width?: number; wrap?: boolean; localState?: NonNullable<Parameters<typeof VStack>[0]>["localState"] },
   children: WidgetDescriptor[],
 ): WidgetDescriptor {
@@ -314,8 +330,16 @@ const EXIT_CONFIRM_NAME = "dev.exitConfirm";
 const QUIT_CONFIRM_NAME = "dev.quitConfirm";
 
 // A dialog is a layer too: it hides what opened it. Its footer holds its way
-// back and its one action, which ends something, so it is red.
-function confirmDialog(name: string, prompt: string, label: string, onPress: string, idPrefix: string) {
+// back and its one action, which ends something, so it is red. `detail` is
+// information under the prompt: what the action ends.
+export function confirmDialog(
+  name: string,
+  prompt: string,
+  label: string,
+  onPress: string,
+  idPrefix: string,
+  detail: WidgetDescriptor[] = [],
+) {
   return defineUiTree({
     name,
     hideBelow: true,
@@ -331,6 +355,7 @@ function confirmDialog(name: string, prompt: string, label: string, onPress: str
       },
       panel({ width: 380, wrap: false }, [
         title(prompt, 22),
+        ...detail,
         footer(backAction(`${idPrefix}Cancel`, "CANCEL"), [action("session", { id: `${idPrefix}Confirm`, label, onPress })]),
       ]),
     ),
@@ -358,7 +383,11 @@ export const askExit = defineReaction("dev.askExit", openMenu(EXIT_CONFIRM_NAME)
 /** QUIT TO MENU buttons press this: it opens the quit confirmation. */
 export const askQuit = defineReaction("dev.askQuit", openMenu(QUIT_CONFIRM_NAME));
 
-const openPlay = defineReaction("frontend.openPlay", openMenu(LEVEL_SELECT_MENU_NAME));
+// PLAY starts the save flow: characters, then runs. The level picker stays a
+// dev path of its own.
+const openPlay = defineReaction("frontend.openPlay", openMenu(CHARACTERS_MENU_NAME));
+/** Opens the dev level picker: the title's and the lobby's LEVEL SELECT. */
+export const openLevelSelect = defineReaction("frontend.openLevelSelect", openMenu(LEVEL_SELECT_MENU_NAME));
 
 // --- Host and Join ---------------------------------------------------------
 // The engine owns entry, admission and the session facts; these menus only
@@ -400,7 +429,7 @@ const END_CAUSE_HINTS: Partial<Record<EndCause, string>> = {
 };
 
 /// A cause's callout: its headline, its hint, and the press that answers it.
-function endCauseNotice(cause: EndCause, answer?: WidgetDescriptor): WidgetDescriptor {
+export function endCauseNotice(cause: EndCause, answer?: WidgetDescriptor): WidgetDescriptor {
   const fix = END_CAUSE_HINTS[cause];
   return callout(
     "notice",
@@ -605,11 +634,19 @@ function passwordField(
 // Host and Join buttons. hostSession reads session.hostPassword; joinSession
 // reads session.joinPassword and session.joinAddress. The two passwords are
 // separate fields, so one typed to join never becomes the one a game hosts with.
-const host = defineReaction("frontend.hostSession", hostSession());
+// Hosting from the frontend lands in the lobby, in the Host menu's place, so
+// the lobby always sits on the title and its CANCEL GAME returns there.
+const host = defineReaction("frontend.hostSession", [hostSession(), closeDialog(), openMenu(LOBBY_MENU_NAME)]);
 const join = defineReaction("frontend.joinSession", joinSession());
 const stopHosting = defineReaction("frontend.stopHosting", endSession());
 const leave = defineReaction("frontend.leaveSession", leaveSession());
 const openHost = defineReaction("frontend.openHost", openMenu(HOST_MENU_NAME));
+/** The title's LOBBY, while hosting. */
+export const openLobby = defineReaction("frontend.openLobby", openMenu(LOBBY_MENU_NAME));
+// The Host menu's OPEN LOBBY: the lobby takes the Host menu's place.
+const showLobby = defineReaction("frontend.showLobby", [closeDialog(), openMenu(LOBBY_MENU_NAME)]);
+/** The lobby's CANCEL GAME: end the session, back to the title. */
+export const cancelLobby = defineReaction("frontend.lobby.cancel", [endSession(), closeDialog()]);
 const openJoin = defineReaction("frontend.openJoin", openMenu(JOIN_MENU_NAME));
 // From the title menu's notice straight to the field to fix: the keyboard
 // commits into the Join menu beneath it, which then opens on JOIN.
@@ -622,11 +659,32 @@ const retypePassword = defineReaction("frontend.retypePassword", [
   ...editFieldSteps(session.joinPassword, JOIN_PASSWORD_FIELD),
 ]);
 
-const isHosting = stateEquals(session.hosting, true);
-const notHosting = stateEquals(session.hosting, false);
+export const isHosting = stateEquals(session.hosting, true);
+export const notHosting = stateEquals(session.hosting, false);
 const isOffline = stateEquals(session.connection, "offline");
-const isConnecting = stateEquals(session.connection, "connecting");
+export const isConnecting = stateEquals(session.connection, "connecting");
 const isWaiting = stateEquals(session.connection, "waiting");
+
+// With a `saves` block the engine refuses hosting and joining until a
+// character is chosen, so the menus say so and offer the way there instead
+// of a press that would only warn.
+const { saves } = getGameState();
+export const characterChosen = stateCompare(saves.character, "atLeast", 0);
+export const noCharacter = stateEquals(saves.character, -1);
+
+/// While no character is chosen: why the menu cannot go on, and the press
+/// that fixes it.
+function characterNotice(id: string, why: string): WidgetDescriptor {
+  return callout(
+    "notice",
+    [
+      headline("notice", "CHOOSE A CHARACTER FIRST"),
+      hint(why),
+      action("primary", { id, label: "CHARACTERS", onPress: openPlay }),
+    ],
+    noCharacter,
+  );
+}
 
 /// The host's address, for players to type.
 function hostAddressLine(): WidgetDescriptor {
@@ -640,7 +698,7 @@ function hostAddressLine(): WidgetDescriptor {
 
 /// While hosting: where players dial, whether they need a password, and what
 /// they wait for.
-function hostingStatus(): WidgetDescriptor {
+export function hostingStatus(): WidgetDescriptor {
   return callout(
     "status",
     [
@@ -700,18 +758,20 @@ function sessionMenu(name: string, heading: string, initialFocus: string, rows: 
   });
 }
 
-// Opens on START HOSTING: the password is optional, so one press hosts.
+// Opens on START HOSTING: the password is optional, so one press hosts, and
+// the lobby takes this menu's place. While hosting, OPEN LOBBY returns there.
 export const hostMenu = sessionMenu(HOST_MENU_NAME, "HOST A GAME", "hostStart", [
   VStack({ gap: 14, align: "stretch", visibleWhen: isHosting }, [
     hostingStatus(),
-    action("primary", { id: "hostPlay", label: "START A LEVEL", onPress: openPlay }),
+    action("primary", { id: "hostLobby", label: "OPEN LOBBY", onPress: showLobby }),
     action("session", { id: "hostStop", label: "STOP HOSTING", onPress: stopHosting }),
   ]),
   VStack({ gap: 14, align: "stretch", visibleWhen: notHosting }, [
     endCauseNotice("hostFailed"),
     body("Finishing the last session...", isConnecting),
+    characterNotice("hostCharacters", "Players join you as the character you play."),
     passwordField("hostPassword", editHostPassword, session.hostPassword, "None: anyone can join"),
-    action("primary", { id: "hostStart", label: "START HOSTING", onPress: host }),
+    action("primary", { id: "hostStart", label: "START HOSTING", onPress: host, visibleWhen: characterChosen }),
   ]),
 ]);
 
@@ -728,6 +788,7 @@ export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinStart", 
   ]),
   VStack({ gap: 14, align: "stretch", visibleWhen: isOffline }, [
     ...endCauseNotices(JOIN_END_CAUSES),
+    characterNotice("joinCharacters", "You join as the character you choose, with its gear."),
     VStack({ gap: 10, align: "stretch" }, [
       field(
         "joinAddress",
@@ -739,7 +800,7 @@ export const joinMenu = sessionMenu(JOIN_MENU_NAME, "JOIN A GAME", "joinStart", 
       ),
       passwordField("joinPassword", editPassword, session.joinPassword, "None"),
     ]),
-    action("primary", { id: "joinStart", label: "JOIN", onPress: join }),
+    action("primary", { id: "joinStart", label: "JOIN", onPress: join, visibleWhen: characterChosen }),
   ]),
 ]);
 
@@ -763,6 +824,88 @@ const keyboardReactions: NamedReactionDescriptor[] = [
   defineReaction("kbBackspace", backspaceText(textEntry)),
 ];
 
+// --- Characters, runs and the lobby -------------------------------------------
+// The engine owns the save slots and publishes them as `getGameState().saves`;
+// these reactions press its verbs, one per slot row, under 0-based names that
+// match `forEach`'s row index. `frontend-saves.ts` lays out the screens that
+// press them. The engine refuses a verb that does not apply (an occupied
+// slot for CREATE, another character's run for CONTINUE while hosting) with a
+// warning, so the screens show each control only where it can work.
+
+/** The dev mod's `saves` block: how many character and run slots it keeps. */
+export const CHARACTER_SLOTS = 4;
+export const RUN_SLOTS = 3;
+
+/** New game starts a run on the catalog's campaign map. */
+export const NEW_GAME_MAP = mapsTagged("campaign")[0].id;
+
+type CharacterVerb = "select" | "name" | "create" | "askDelete" | "delete";
+type RunVerb = "continue" | "new" | "askDelete" | "delete";
+
+/** The reaction a character row's control presses for slot `i`. */
+export function characterReaction(verb: CharacterVerb, i: number): string {
+  return `frontend.characters.${verb}.${i}`;
+}
+
+/** The reaction a run row's control presses for slot `i`. */
+export function runReaction(verb: RunVerb, i: number): string {
+  return `frontend.runs.${verb}.${i}`;
+}
+
+/** The confirmation each DELETE opens: the safe choice is focused. */
+export function deleteCharacterDialogName(i: number): string {
+  return `frontend.characters.confirmDelete.${i}`;
+}
+
+export function deleteRunDialogName(i: number): string {
+  return `frontend.runs.confirmDelete.${i}`;
+}
+
+const CHARACTER_NAME_FIELD: KeyboardField = {
+  layout: "letters",
+  masked: false,
+  title: "NAME YOUR CHARACTER",
+  hint: "Other players see this name.",
+};
+
+/** The 0-based row indices of `count` save slots. */
+export function slotIndices(count: number): number[] {
+  return Array.from({ length: count }, (_, i) => i);
+}
+
+// CREATE opens the keyboard on `ui.textEntry` itself, with no field target:
+// a target would take the text out of `ui.textEntry` before the commit's
+// `createCharacter` reads it as the name. So the entry is emptied first, and
+// emptied again once the character has its name. A created character is
+// selected, so the runs screen follows.
+const characterReactions: NamedReactionDescriptor[] = slotIndices(CHARACTER_SLOTS).flatMap((i) => [
+  defineReaction(characterReaction("select", i), [selectCharacter(i), openMenu(RUNS_MENU_NAME)]),
+  defineReaction(characterReaction("name", i), [
+    clearText(textEntry),
+    kb.layout.set(CHARACTER_NAME_FIELD.layout),
+    kb.masked.set(CHARACTER_NAME_FIELD.masked),
+    kb.title.set(CHARACTER_NAME_FIELD.title),
+    kb.hint.set(CHARACTER_NAME_FIELD.hint),
+    openTextEntry(characterReaction("create", i)),
+  ]),
+  defineReaction(characterReaction("create", i), [
+    createCharacter(i),
+    clearText(textEntry),
+    openMenu(RUNS_MENU_NAME),
+  ]),
+  defineReaction(characterReaction("askDelete", i), openMenu(deleteCharacterDialogName(i))),
+  defineReaction(characterReaction("delete", i), [deleteCharacter(i), closeDialog()]),
+]);
+
+// CONTINUE and NEW GAME load a level, which closes the frontend; the lobby
+// presses the same two, and the players waiting there follow.
+const runReactions: NamedReactionDescriptor[] = slotIndices(RUN_SLOTS).flatMap((i) => [
+  defineReaction(runReaction("continue", i), continueRun(i)),
+  defineReaction(runReaction("new", i), newRun(i, NEW_GAME_MAP)),
+  defineReaction(runReaction("askDelete", i), openMenu(deleteRunDialogName(i))),
+  defineReaction(runReaction("delete", i), [deleteRun(i), closeDialog()]),
+]);
+
 const sessionReactions: NamedReactionDescriptor[] = [
   ...keyboardReactions,
   editPassword,
@@ -776,6 +919,11 @@ const sessionReactions: NamedReactionDescriptor[] = [
   openJoin,
   retypeAddress,
   retypePassword,
+  openLobby,
+  showLobby,
+  cancelLobby,
+  ...characterReactions,
+  ...runReactions,
 ];
 
 /// The title menu's answer to a notice: rejoin, or go straight to the field
@@ -810,8 +958,10 @@ export const openOptions = defineReaction("frontend.openOptions", openMenu(OPTIO
 // it. Its initial focus names a notice button: with none showing, focus falls
 // back to the first visible stop, PLAY for a player offline. The title is the
 // root, so nothing is beneath it to go back to: its footer's way out is EXIT.
+// PLAY leads to characters, then runs; while hosting, LOBBY takes its place.
 // While a session runs, HOST or JOIN opens that session's status and the
-// action that ends it, so it reads VIEW SESSION.
+// action that ends it, so it reads VIEW SESSION. LEVEL SELECT is the dev
+// path straight into a catalog map, outside any run.
 export const frontendMenu = defineUiTree({
   name: TITLE_MENU_NAME,
   tree: Tree(
@@ -833,12 +983,8 @@ export const frontendMenu = defineUiTree({
       VStack({ gap: 8, align: "stretch" }, [
         // A connected client plays the host's levels, and hosts nothing.
         VStack({ gap: 8, align: "stretch", visibleWhen: isOffline }, [
-          action("secondary", {
-            id: "frontendPlay",
-            label: "PLAY",
-            onPress: openPlay,
-            valueText: [{ when: [isHosting], text: "START A LEVEL" }],
-          }),
+          action("secondary", { id: "frontendPlay", label: "PLAY", onPress: openPlay, visibleWhen: notHosting }),
+          action("secondary", { id: "frontendLobby", label: "LOBBY", onPress: openLobby, visibleWhen: isHosting }),
           action("secondary", {
             id: "frontendHost",
             label: "HOST",
@@ -856,6 +1002,13 @@ export const frontendMenu = defineUiTree({
             { when: [isConnecting], text: "VIEW SESSION" },
             { when: [isWaiting], text: "VIEW SESSION" },
           ],
+        }),
+        // A connected client plays the host's levels, so it picks none.
+        action("secondary", {
+          id: "frontendLevels",
+          label: "LEVEL SELECT",
+          onPress: openLevelSelect,
+          visibleWhen: isOffline,
         }),
         action("secondary", { id: "frontendOptions", label: "OPTIONS", onPress: openOptions }),
       ]),
@@ -1440,6 +1593,7 @@ export const optionsMenu = defineUiTree({
 
 export const frontendReactions: NamedReactionDescriptor[] = [
   openPlay,
+  openLevelSelect,
   ...sessionReactions,
   openOptions,
   askExit,

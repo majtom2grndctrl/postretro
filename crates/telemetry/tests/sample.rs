@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use postretro_telemetry::{Envelope, Kind};
+use postretro_telemetry::{Envelope, Kind, LogRecord, ProducerEntry, RunEnd, RunStart};
 
 #[test]
 fn every_line_of_the_two_run_sample_parses_as_a_current_envelope() {

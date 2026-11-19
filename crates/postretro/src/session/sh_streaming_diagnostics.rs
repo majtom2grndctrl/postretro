@@ -541,6 +541,18 @@ mod tests {
         assert!(line.contains("4 misses (reach 4,"), "{line}");
         assert!(line.starts_with("[SH streaming] last 6.0 s:"), "{line}");
         assert_eq!(event["elapsed_s"], 6.0);
+        assert!(event["now"]["read_latency_p50_ms"].is_number());
+    }
+
+    #[test]
+    fn a_window_with_no_reads_has_no_latency_rather_than_zero() {
+        let (hub, _scope) = telemetry();
+        let mut window = ShStreamingLogWindow::default();
+        window.observe(0.0, &ShStreamingLiveDiagnostics::default());
+        window.observe(6.0, &counted(0, 3));
+        let events = windows(&hub);
+        assert!(events[0]["now"]["read_latency_p50_ms"].is_null());
+        assert!(events[0]["now"]["decode_latency_max_ms"].is_null());
     }
 
     #[test]

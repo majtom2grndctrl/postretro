@@ -122,5 +122,11 @@ fn a_headless_run_lists_timing_unsupported_and_ends_through_its_exit() {
     )));
     let end: RunEnd = serde_json::from_value(events.last().unwrap().payload.clone()).unwrap();
     assert_eq!(end.reason, ExitReason::Error);
-    assert_eq!(end.detail.as_deref(), Some("headless"));
+    assert!(
+        end.detail
+            .as_deref()
+            .is_some_and(|detail| detail.starts_with("headless: ")),
+        "{:?}",
+        end.detail
+    );
 }

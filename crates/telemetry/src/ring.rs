@@ -60,6 +60,8 @@ pub(crate) struct Ring {
     /// Every event below this sequence was evicted; a superseded pin below it
     /// would already have been evicted under the caps, so it drops.
     events_evicted_below: u64,
+    /// The same for log records, which evict under their own caps.
+    logs_evicted_below: u64,
     dropped: u64,
 }
 
@@ -72,8 +74,8 @@ pub struct EventsPage {
     pub next: u64,
     /// The sequence the next event will take.
     pub head: u64,
-    /// The oldest retained sequence, pins ignored; `head` when nothing
-    /// unpinned is retained.
+    /// The oldest retained sequence from which nothing unpinned is missing,
+    /// pins ignored; `head` when nothing unpinned is retained.
     pub oldest: u64,
     pub dropped: u64,
     pub run: String,
@@ -104,7 +106,7 @@ impl EventsPage {
     }
 }
 
-/// Why a page could not be served. Both name the run and `head` so a client
+/// Why a page could not be served. Each names the run and `head` so a client
 /// can tell a restarted process from its own bad cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventsError {
@@ -153,6 +155,7 @@ impl Ring {
             log_bytes: 0,
             pins: BTreeMap::new(),
             events_evicted_below: 0,
+            logs_evicted_below: 0,
             dropped: 0,
         }
     }
@@ -201,22 +204,27 @@ impl Ring {
 
     fn enforce_log_caps(&mut self) {
         while self.logs.len() > self.caps.log_count || self.log_bytes > self.caps.log_bytes {
-            let Some((_, evicted)) = self.logs.pop_first() else {
+            let Some((seq, evicted)) = self.logs.pop_first() else {
                 break;
             };
             self.log_bytes -= evicted.line.len();
+            self.logs_evicted_below = self.logs_evicted_below.max(seq + 1);
             self.dropped += 1;
         }
     }
 
+    /// The oldest sequence from which nothing unpinned is missing: the first
+    /// retained entry, raised past every eviction in either class. A client
+    /// whose `since` is below it lost something, whichever class lost it.
     pub(crate) fn oldest(&self, head: u64) -> u64 {
         let events = self.events.first_key_value().map(|(seq, _)| *seq);
         let logs = self.logs.first_key_value().map(|(seq, _)| *seq);
-        match (events, logs) {
+        let first = match (events, logs) {
             (Some(a), Some(b)) => a.min(b),
             (Some(a), None) | (None, Some(a)) => a,
-            (None, None) => head,
-        }
+            (None, None) => return head,
+        };
+        first.max(self.events_evicted_below.max(self.logs_evicted_below))
     }
 
     pub(crate) fn dropped(&self) -> u64 {

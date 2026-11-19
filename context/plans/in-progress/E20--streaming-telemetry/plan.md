@@ -9,6 +9,10 @@ read at: e0ac8b7f
 - Brief "the renderer hands back `GeometryInstallMarks` as plain data" → the marks are built inside `build_level_set_core` on the upload thread and never leave the set; planning around it by freezing them into a public plain `GeometryInstallTiming` stored on the resident set at the line, read back by set id at the bundle take or the beside commit.
 - Brief "`FrameTiming::accumulate`" as an emit point → it runs inside the renderer, which has no serde; planning around it by keeping each closed GPU window for a take-once renderer accessor that the binary emits from on the same frame, so the window carries the level current at its close.
 - Source: `rustc` 1.97 in the container is below the workspace `rust-version` 1.99 → updated the stable toolchain to 1.100 before building. Environment only.
+- Boundary inventory "Live verb | `ObserveRequest` variant" and Path "reshape the response vocabulary" → the transport peeks the verb and answers `events` from `observe_live/events.rs` with its own request type and reply body; `ObserveRequest`/`ObserveResponse` stay the main thread's vocabulary and their docs say so. Same wire shape; the request ignores unknown fields so a later wait field needs no protocol bump.
+- Wire format "absent optional payload values serialize as `null`" → `cpu_timing_window` reuses `CpuWindowReport` as the Decision requires, and that type omits absent keys rather than writing `null`. Absent still never reads as zero; the reducer reads both forms.
+- Brief silent on platform suspend → a suspend stops the running level without an unload: the hub's level clears so later events name none until the resumed load commits. Whether suspend should also write an `unload` is an owner call.
+- Brief silent on capture runs' timing → capture writes its timing to its measurement report, not timing windows, so a capture run lists requested timing producers unsupported with that reason, as headless does.
 
 ## Delegated answers
 - Ring caps — events 4096 records / 4 MiB, log records 2048 / 1 MiB, log message cap 4 KiB. Reason: at the File sink's rates (one line per load, per 5 s streaming window, per 120-frame timing window, per actionable message) a stress-warren session closes about one SH, one lightmap and two timing windows every 5 s; 4096 events hold over an hour of windows, and each window line is under 2 KiB. The stress-warren measurement the brief asks for needs a windowed GPU session this container cannot run; it stays an owner manual row below.
@@ -85,4 +89,20 @@ read at: e0ac8b7f
 | 5 | `prl-build`: sink after argument parsing, tee over `CollectingLogger`, reporter decorator, bake summary from each frontend, exits | integrating executor | 1 | done: `--bin prl-build -- telemetry behind_the_tee` 6 passed; `--test telemetry_cli` 4 passed |
 | 6 | observe-live `events` verb on the transport thread; hello protocol 2 with run | integrating executor | 1 | done: `-- observe_live` 34 passed |
 | 7 | Reducer in `tools/`, checked-in two-run sample, unittest, preflight wiring | delegated worker; integrated by executor | 1 | done: `python3 -m unittest tools.tests.test_telemetry_reduce` 20 passed; sample parses (`--test sample`) |
-| 8 | Allocation probe, preflight, review loop, context updates | integrating executor | 2–7 | |
+| 8 | Allocation probe, preflight, review loop, context updates | integrating executor | 2–7 | review round 1 fixed (see Review); `/preflight` is user-invoked only |
+
+## Review
+
+Round 1: 6 depth lenses (opus) + 2 hygiene passes (sonnet), no 🔴. Fixed:
+- `prl-build`: one summary per run (a TUI terminal error after success no longer adds a failed one); the TUI's Parsing begins before `prepare`, so a TUI parse failure writes its stage and failed summary like the plain reporter; a background stage's finish keeps its flag.
+- Leaf: the tee's capture flag clears on unwind; `oldest` rises past evictions in either class; in-crate tests compile with `cargo test -p postretro-telemetry` alone; `end_level` emits the unload and clears the level under one lock; the sink warning is formatted outside the lock; `Kind::ALL` drift guard; `ScopedHub` is `!Send`.
+- Engine: `exiting()` closes streaming windows and ends the run (macOS app-menu Quit never returns from the loop); suspend clears the running level; capture lists timing producers unsupported; settled producers keep their variable; SH latency gauges are null before a session's first read; capture and headless error exits carry the error text.
+- Reducer: a payload missing what its kind needs is counted malformed, never fatal; the sample matches real producer output (boot and mod phase names, commit-frame marks summing, the `Lightmap bound` row) and its leaf-owned payloads parse as the leaf's types.
+- Comment drift across renderer, engine and leaf; clippy `type_complexity`; temp-dir cleanup in CPU tests; bake tests moved to a lit fixture that runs every stage and a background one.
+
+Left, with reasons:
+- Invalid-JSON bodies naming `events` reach the main thread's queue: the peek needs a parseable body, and the main thread still answers an error.
+- One entry larger than a class's byte cap empties that class first: unreachable at the default caps.
+- A pipe or FIFO sink can tear lines over `PIPE_BUF` and block on a full pipe: the sink is a file by contract.
+- Duplicated scoped-hub test helpers across modules: test-only.
+- `observability` feature test code in `observability/driver.rs` fails to compile on `main` (missing `PlayerMovementDescriptor` fields): pre-existing, untouched by this branch.

@@ -6,9 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `{"verb":"events","since":u64,"max":u32,"kinds":[string]?}`.
+/// `{"verb":"events","since":u64,"max":u32,"kinds":[string]?}`. Unknown
+/// fields are ignored, so a later field (a wait) needs no protocol bump.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct EventsRequest {
     pub(crate) verb: String,
     pub(crate) since: u64,

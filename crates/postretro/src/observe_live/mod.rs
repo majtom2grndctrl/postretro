@@ -1,4 +1,5 @@
-//! Engine-free localhost transport for the live introspection channel.
+//! Engine-free localhost transport for the live introspection channel. It
+//! reads only the engine-blind telemetry hub, for `events`.
 //! See: context/lib/networking.md §Not netcode: the live introspection channel
 //!
 //! This module deliberately moves only opaque request and response bytes across

@@ -48,10 +48,28 @@ fn capture(record: &Record<'_>) {
     if CAPTURING.with(Cell::get) {
         return;
     }
-    CAPTURING.with(|capturing| capturing.set(true));
+    // Formatted before the flag is set: a `Display` that panics unwinds
+    // with capture still open on this thread.
     let message = record.args().to_string();
+    let _capturing = CapturingGuard::set();
     crate::with_hub(|hub| hub.log_record(record.level(), record.target(), &message));
-    CAPTURING.with(|capturing| capturing.set(false));
+}
+
+/// Clears the capture flag on every exit, an unwind included, so a thread
+/// whose panic is caught keeps capturing.
+struct CapturingGuard;
+
+impl CapturingGuard {
+    fn set() -> Self {
+        CAPTURING.with(|capturing| capturing.set(true));
+        Self
+    }
+}
+
+impl Drop for CapturingGuard {
+    fn drop(&mut self) {
+        let _ = CAPTURING.try_with(|capturing| capturing.set(false));
+    }
 }
 
 /// Install the process logger. With a consumer (the sink variable, or a

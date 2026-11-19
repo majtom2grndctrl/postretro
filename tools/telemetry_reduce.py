@@ -233,13 +233,16 @@ def reduce_lines(lines: Iterable[str]) -> dict:
         # One process writes its lines in sequence order; sort anyway so a
         # reordered file still settles producer states correctly.
         entries.sort(key=lambda entry: entry[1]["seq"])
-        run, run_bakes, run_loads, run_gaps = reduce_run(run_id, entries, unknown_kinds)
+        run, run_bakes, run_loads, run_gaps = reduce_run(
+            run_id, entries, unknown_kinds, malformed
+        )
         runs.append(run)
         bakes.extend(run_bakes)
         loads.extend(run_loads)
         gaps.extend(run_gaps)
 
     join_bakes(loads, bakes)
+    malformed.sort(key=lambda bad: bad["line"])
     return {
         "lines": lines_read,
         "malformed": len(malformed),
@@ -252,7 +255,7 @@ def reduce_lines(lines: Iterable[str]) -> dict:
     }
 
 
-def reduce_run(run_id, entries, unknown_kinds):
+def reduce_run(run_id, entries, unknown_kinds, malformed):
     first_line = entries[0][0]
     run = {
         "run": run_id,
@@ -278,6 +281,9 @@ def reduce_run(run_id, entries, unknown_kinds):
     expected_seq = 0
 
     def load_for(generation, number):
+        # bool is an int subclass; neither it nor null is a generation.
+        if not isinstance(generation, int) or isinstance(generation, bool):
+            raise TypeError(f"generation {generation!r} is not an integer")
         return loads.setdefault(generation, new_load(run_id, generation, number))
 
     for number, env in entries:
@@ -291,48 +297,53 @@ def reduce_run(run_id, entries, unknown_kinds):
         if ended:
             # Nothing is written after run_end; ignore anything that is.
             continue
-        if kind == "run_start":
-            run.update({
-                "epoch_ms": payload.get("epoch_ms"),
-                "version": payload.get("version"),
-                "argv": payload.get("argv"),
-                "sink": payload.get("sink"),
-            })
-            for entry in payload.get("producers") or []:
-                run["producers"][entry["producer"]] = producer_entry(entry)
-        elif kind == "producer_state":
-            run["producers"][payload["producer"]] = producer_entry(payload)
-        elif kind == "run_end":
-            run["end"] = {"reason": payload.get("reason"), "detail": payload.get("detail")}
-            ended = True
-        elif kind == "log":
-            run["log_counts"][payload.get("level")] += 1
-        elif kind in ("boot_phases", "mod_phases"):
-            run[kind] = phase_table(payload)
-        elif kind == "load_phases":
-            load = load_for(payload["generation"], number)
-            load["prl"] = payload.get("prl") or load["prl"]
-            load["phases"] = phase_table(payload)
-        elif kind == "geometry_install":
-            load = load_for(payload["generation"], number)
-            load["geometry_install"] = {
-                "has_geometry": payload.get("has_geometry"),
-                "total_ms": payload.get("total_ms"),
-                "phases": [{"name": p["name"], "ms": p["ms"]} for p in payload.get("phases") or []],
-                "other_ms": payload.get("other_ms"),
-            }
-        elif kind == "unload":
-            load = load_for(payload["generation"], number)
-            load["prl"] = load["prl"] or payload.get("prl")
-            load["unload_ms"] = payload.get("unload_ms")
-        elif kind in ("sh_streaming_window", "lightmap_streaming_window",
-                      "cpu_timing_window", "gpu_timing_window"):
-            groups.setdefault(level_key(env), WindowGroup(number)).add(env)
-            totals.add(env)
-        elif kind in ("bake_stage", "bake_summary"):
-            if bake is None:
-                bake = new_bake(run_id, number)
-            add_bake_event(bake, kind, payload)
+        try:
+            if kind == "run_start":
+                run.update({
+                    "epoch_ms": payload.get("epoch_ms"),
+                    "version": payload.get("version"),
+                    "argv": payload.get("argv"),
+                    "sink": payload.get("sink"),
+                })
+                for entry in payload.get("producers") or []:
+                    run["producers"][entry["producer"]] = producer_entry(entry)
+            elif kind == "producer_state":
+                run["producers"][payload["producer"]] = producer_entry(payload)
+            elif kind == "run_end":
+                run["end"] = {"reason": payload.get("reason"), "detail": payload.get("detail")}
+                ended = True
+            elif kind == "log":
+                run["log_counts"][payload.get("level")] += 1
+            elif kind in ("boot_phases", "mod_phases"):
+                run[kind] = phase_table(payload)
+            elif kind == "load_phases":
+                load = load_for(payload["generation"], number)
+                load["prl"] = payload.get("prl") or load["prl"]
+                load["phases"] = phase_table(payload)
+            elif kind == "geometry_install":
+                load = load_for(payload["generation"], number)
+                load["geometry_install"] = {
+                    "has_geometry": payload.get("has_geometry"),
+                    "total_ms": payload.get("total_ms"),
+                    "phases": [{"name": p["name"], "ms": p["ms"]} for p in payload.get("phases") or []],
+                    "other_ms": payload.get("other_ms"),
+                }
+            elif kind == "unload":
+                load = load_for(payload["generation"], number)
+                load["prl"] = load["prl"] or payload.get("prl")
+                load["unload_ms"] = payload.get("unload_ms")
+            elif kind in ("sh_streaming_window", "lightmap_streaming_window",
+                          "cpu_timing_window", "gpu_timing_window"):
+                groups.setdefault(level_key(env), WindowGroup(number)).add(env)
+                totals.add(env)
+            elif kind in ("bake_stage", "bake_summary"):
+                if bake is None:
+                    bake = new_bake(run_id, number)
+                add_bake_event(bake, kind, payload)
+        except (KeyError, TypeError, AttributeError, ValueError) as err:
+            # A whole envelope whose payload lacks what its kind promises:
+            # counted, never fatal to the rest of the file.
+            malformed.append({"line": number, "error": f"{kind} payload: {err!r}"})
 
     run["producers"] = dict(run["producers"])
     run["log_counts"] = dict(sorted(run["log_counts"].items(), key=lambda kv: str(kv[0])))
@@ -457,8 +468,8 @@ def join_bakes(loads, bakes):
     """Join each load to the bake whose summary output equals its `.prl`.
 
     Paths compare as exact strings; both processes write absolute paths. With
-    several candidates, the last bake before the load's run in the file wins,
-    else the last in the file.
+    several candidates, the last bake whose first line precedes the load's
+    first event wins, else the last in the file.
     """
     for load in loads:
         if load["prl"] is None:

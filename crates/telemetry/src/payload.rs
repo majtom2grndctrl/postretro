@@ -44,6 +44,13 @@ impl ProducerEntry {
         Self::new(producer, ProducerState::Unsupported, None, Some(reason))
     }
 
+    /// The variable that gates this producer, kept on every later state of a
+    /// gated producer so its settle names the same switch its launch did.
+    pub fn with_variable(mut self, variable: &str) -> Self {
+        self.variable = Some(variable.to_string());
+        self
+    }
+
     /// A variable-gated producer: enabled when `value` is `1`, else
     /// disabled naming `variable`.
     pub fn gated(producer: &str, variable: &str, value: Option<&str>) -> Self {

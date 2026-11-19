@@ -613,7 +613,7 @@ pub(crate) fn headless_arg(args: &[String]) -> Option<Option<&str>> {
 /// Detect the static offscreen frame-capture flag. Like `headless_arg`, the
 /// nested `Option` distinguishes absence from a flag with no scene argument so
 /// the capture driver can issue the user-facing diagnostic.
-fn capture_arg(args: &[String]) -> Option<Option<&str>> {
+pub(crate) fn capture_arg(args: &[String]) -> Option<Option<&str>> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         if arg == "--capture" {

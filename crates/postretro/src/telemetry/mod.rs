@@ -19,23 +19,58 @@ pub(crate) mod producers {
 
 pub(crate) const GPU_TIMING_ENV: &str = "POSTRETRO_GPU_TIMING";
 
+/// How the engine runs, as far as its timing producers care.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunMode {
+    Windowed,
+    /// `--headless`: renders no frames.
+    Headless,
+    /// `--capture`: its timing goes to the capture measurement report, not
+    /// to timing windows.
+    Capture,
+}
+
+impl RunMode {
+    fn of(args: &[String]) -> Self {
+        if crate::startup::headless_arg(args).is_some() {
+            RunMode::Headless
+        } else if crate::startup::capture_arg(args).is_some() {
+            RunMode::Capture
+        } else {
+            RunMode::Windowed
+        }
+    }
+
+    /// Why this mode writes no timing windows, if it writes none.
+    fn no_timing_windows(self) -> Option<&'static str> {
+        match self {
+            RunMode::Windowed => None,
+            RunMode::Headless => Some("a headless run renders no frames"),
+            RunMode::Capture => Some("a capture run reports timing in its measurement report"),
+        }
+    }
+}
+
 /// Every engine producer's state at launch. GPU timing stays pending until
-/// the renderer has its adapter; a headless run renders nothing, so both
-/// timing producers it was asked for are unsupported there.
+/// the renderer has its adapter. Headless and capture runs close no timing
+/// window, so each timing producer they were asked for is unsupported there.
 pub(crate) fn engine_producers(
-    headless: bool,
+    mode: RunMode,
     cpu_variable: Option<&str>,
     gpu_variable: Option<&str>,
 ) -> Vec<ProducerEntry> {
-    const HEADLESS: &str = "a headless run renders no frames";
-    let cpu = match (headless, cpu_variable == Some("1")) {
-        (true, true) => ProducerEntry::unsupported(producers::CPU_TIMING, HEADLESS),
+    let cpu = match (mode.no_timing_windows(), cpu_variable == Some("1")) {
+        (Some(reason), true) => {
+            ProducerEntry::unsupported(producers::CPU_TIMING, reason).with_variable(CPU_TIMING_ENV)
+        }
         _ => ProducerEntry::gated(producers::CPU_TIMING, CPU_TIMING_ENV, cpu_variable),
     };
-    let gpu = match (headless, gpu_variable == Some("1")) {
+    let gpu = match (mode.no_timing_windows(), gpu_variable == Some("1")) {
         (_, false) => ProducerEntry::disabled(producers::GPU_TIMING, GPU_TIMING_ENV),
-        (true, true) => ProducerEntry::unsupported(producers::GPU_TIMING, HEADLESS),
-        (false, true) => ProducerEntry::pending(producers::GPU_TIMING, GPU_TIMING_ENV),
+        (Some(reason), true) => {
+            ProducerEntry::unsupported(producers::GPU_TIMING, reason).with_variable(GPU_TIMING_ENV)
+        }
+        (None, true) => ProducerEntry::pending(producers::GPU_TIMING, GPU_TIMING_ENV),
     };
     vec![
         ProducerEntry::enabled(producers::LOAD_PHASES),
@@ -59,11 +94,10 @@ pub(crate) fn start_engine_run(args: &[String]) -> bool {
         return false;
     }
     let env = |name: &str| std::env::var(name).ok();
-    let headless = crate::startup::headless_arg(args).is_some();
     postretro_telemetry::install(Hub::start(HubConfig {
         argv: args.to_vec(),
         producers: engine_producers(
-            headless,
+            RunMode::of(args),
             env(CPU_TIMING_ENV).as_deref(),
             env(GPU_TIMING_ENV).as_deref(),
         ),
@@ -87,8 +121,9 @@ fn live_ring_requested(args: &[String]) -> bool {
     }
 }
 
-/// Install env_logger: exactly today's `init` without a consumer, behind the
-/// tee with one. Then log a sink warning the hub could not log before.
+/// Install env_logger: exactly `env_logger::init()` without a consumer,
+/// behind the tee with one. Then log a sink warning the hub could not log
+/// before.
 pub(crate) fn install_engine_logger(consumer: bool) {
     if consumer {
         let logger = env_logger::Builder::from_default_env().build();
@@ -114,14 +149,15 @@ pub(crate) fn end_engine_run(result: &anyhow::Result<()>) {
 }
 
 /// `run_end` before a `process::exit` that skips main's return: capture,
-/// headless, and a stock binary refusing either mode.
-pub(crate) fn end_run_before_exit(code: i32, mode: &str) {
+/// headless, and a stock binary refusing either mode. `detail` names the
+/// mode and, on an error, the error.
+pub(crate) fn end_run_before_exit(code: i32, detail: &str) {
     let reason = if code == 0 {
         ExitReason::Clean
     } else {
         ExitReason::Error
     };
-    postretro_telemetry::end_run(reason, Some(mode));
+    postretro_telemetry::end_run(reason, Some(detail));
 }
 
 /// `gpu_timing_window`: one closed GPU window. A pass sampled in no
@@ -181,7 +217,7 @@ pub(crate) fn settle_gpu_timing(support: postretro_renderer::GpuTimingSupport) {
         }
         let entry = match support {
             postretro_renderer::GpuTimingSupport::Enabled => {
-                ProducerEntry::enabled(producers::GPU_TIMING)
+                ProducerEntry::enabled(producers::GPU_TIMING).with_variable(GPU_TIMING_ENV)
             }
             postretro_renderer::GpuTimingSupport::NotRequested => {
                 ProducerEntry::disabled(producers::GPU_TIMING, GPU_TIMING_ENV)
@@ -189,7 +225,8 @@ pub(crate) fn settle_gpu_timing(support: postretro_renderer::GpuTimingSupport) {
             postretro_renderer::GpuTimingSupport::Unsupported => ProducerEntry::unsupported(
                 producers::GPU_TIMING,
                 "the adapter lacks TIMESTAMP_QUERY and TIMESTAMP_QUERY_INSIDE_ENCODERS",
-            ),
+            )
+            .with_variable(GPU_TIMING_ENV),
         };
         hub.set_producer_state(entry);
     });
@@ -210,7 +247,7 @@ mod tests {
 
     #[test]
     fn timing_producers_read_disabled_naming_their_variable_without_it() {
-        let producers = engine_producers(false, None, None);
+        let producers = engine_producers(RunMode::Windowed, None, None);
         let cpu = state(&producers, producers::CPU_TIMING);
         assert_eq!(cpu.state, ProducerState::Disabled);
         assert_eq!(cpu.variable.as_deref(), Some(CPU_TIMING_ENV));
@@ -221,7 +258,7 @@ mod tests {
 
     #[test]
     fn with_their_variables_cpu_reads_enabled_and_gpu_pending() {
-        let producers = engine_producers(false, Some("1"), Some("1"));
+        let producers = engine_producers(RunMode::Windowed, Some("1"), Some("1"));
         assert_eq!(
             state(&producers, producers::CPU_TIMING).state,
             ProducerState::Enabled
@@ -234,7 +271,7 @@ mod tests {
 
     #[test]
     fn a_headless_run_lists_both_requested_timing_producers_unsupported_with_reasons() {
-        let producers = engine_producers(true, Some("1"), Some("1"));
+        let producers = engine_producers(RunMode::Headless, Some("1"), Some("1"));
         for name in [producers::CPU_TIMING, producers::GPU_TIMING] {
             let entry = state(&producers, name);
             assert_eq!(entry.state, ProducerState::Unsupported);
@@ -243,8 +280,21 @@ mod tests {
     }
 
     #[test]
+    fn a_capture_run_lists_requested_timing_producers_unsupported_naming_their_variables() {
+        let producers = engine_producers(RunMode::Capture, Some("1"), Some("1"));
+        for (name, variable) in [
+            (producers::CPU_TIMING, CPU_TIMING_ENV),
+            (producers::GPU_TIMING, GPU_TIMING_ENV),
+        ] {
+            let entry = state(&producers, name);
+            assert_eq!(entry.state, ProducerState::Unsupported);
+            assert_eq!(entry.variable.as_deref(), Some(variable));
+        }
+    }
+
+    #[test]
     fn every_engine_producer_is_listed_once() {
-        let producers = engine_producers(false, None, None);
+        let producers = engine_producers(RunMode::Windowed, None, None);
         let mut names: Vec<&str> = producers.iter().map(|p| p.producer.as_str()).collect();
         names.sort_unstable();
         names.dedup();
@@ -285,7 +335,7 @@ mod tests {
                 ProducerState::Enabled,
             ),
         ] {
-            let (hub, _scope) = scoped(engine_producers(false, None, Some("1")));
+            let (hub, _scope) = scoped(engine_producers(RunMode::Windowed, None, Some("1")));
             settle_gpu_timing(support);
             settle_gpu_timing(support);
             let events = parsed(&hub);
@@ -298,6 +348,7 @@ mod tests {
             );
             let settled: ProducerEntry = serde_json::from_value(events[1].payload.clone()).unwrap();
             assert_eq!(settled.state, expected);
+            assert_eq!(settled.variable.as_deref(), Some(GPU_TIMING_ENV));
             assert_eq!(
                 settled.reason.is_some(),
                 expected == ProducerState::Unsupported
@@ -307,7 +358,7 @@ mod tests {
 
     #[test]
     fn a_disabled_gpu_producer_is_never_settled() {
-        let (hub, _scope) = scoped(engine_producers(false, None, None));
+        let (hub, _scope) = scoped(engine_producers(RunMode::Windowed, None, None));
         settle_gpu_timing(postretro_renderer::GpuTimingSupport::NotRequested);
         assert_eq!(parsed(&hub).len(), 1);
     }

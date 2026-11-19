@@ -562,3 +562,79 @@ fn with_a_consumer_info_is_captured_while_the_stderr_filter_hides_it() {
     assert!(tee.enabled(&Metadata::builder().level(LogLevel::Info).build()));
     assert!(!tee.enabled(&Metadata::builder().level(LogLevel::Debug).build()));
 }
+
+// A log eviction past `since` shows as a gap even while an older event is
+// still retained in the other class, and a superseded pin falling under the
+// caps never moves `oldest` back past an eviction.
+#[test]
+fn a_gap_in_either_class_shows_in_oldest_and_oldest_never_moves_back() {
+    let hub = Hub::start(config(Some(small_caps())));
+    hub.emit(Kind::GeometryInstall, &Probe { n: 0 }); // seq 1, pinned
+    hub.emit(Kind::CpuTimingWindow, &Probe { n: 0 }); // seq 2, retained
+    for n in 0..6 {
+        hub.log_record(LogLevel::Info, "t", &format!("record {n}")); // seq 3..8
+    }
+    let page = hub.page(3, 100, None).unwrap();
+    assert!(page.oldest > 3, "logs 3..5 were evicted: {}", page.oldest);
+    let before = page.oldest;
+    hub.emit(Kind::GeometryInstall, &Probe { n: 1 }); // supersedes seq 1
+    let page = hub.page(0, 100, None).unwrap();
+    assert!(page.oldest >= before, "{} < {before}", page.oldest);
+}
+
+// The tee formats before it marks the thread capturing, so a panicking
+// `Display` leaves capture open for that thread's later records.
+#[test]
+fn a_record_whose_display_panics_does_not_stop_later_capture_on_its_thread() {
+    struct Boom;
+    impl std::fmt::Display for Boom {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("display panicked")
+        }
+    }
+    let hub = Arc::new(Hub::start(config(Some(RingCaps::DEFAULT))));
+    let _scope = scoped::install(Arc::clone(&hub));
+    let tee = TeeLogger::new(Box::new(CaptureLogger::default()));
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tee.log(
+            &Record::builder()
+                .level(LogLevel::Info)
+                .target("t")
+                .args(format_args!("{}", Boom))
+                .build(),
+        );
+    }));
+    assert!(caught.is_err());
+    tee.log(
+        &Record::builder()
+            .level(LogLevel::Info)
+            .target("t")
+            .args(format_args!("after"))
+            .build(),
+    );
+    let logs = hub
+        .lines()
+        .iter()
+        .filter(|l| parse(l).kind == Kind::Log)
+        .count();
+    assert_eq!(logs, 1);
+}
+
+#[test]
+fn end_level_names_the_level_then_clears_it_and_needs_one() {
+    let hub = Hub::start(config(None));
+    hub.end_level(Kind::Unload, |_| Probe { n: 0 });
+    assert_eq!(hub.lines().len(), 1, "no level, nothing written");
+    let level = Level {
+        generation: 2,
+        map: String::from("m.prl"),
+    };
+    hub.set_level(Some(level.clone()));
+    hub.end_level(Kind::Unload, |level| Probe {
+        n: level.generation,
+    });
+    assert_eq!(hub.level(), None);
+    let unload = parse(hub.lines().last().unwrap());
+    assert_eq!(unload.level, Some(level));
+    assert_eq!(unload.payload["n"], 2);
+}

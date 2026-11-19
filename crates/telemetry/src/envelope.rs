@@ -3,8 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bumped when a field changes meaning or a reader must change to parse a
-/// line. A reader refuses any other version.
+/// Bumped when a field changes meaning or an existing field's type changes.
+/// Adding a kind or a payload field is no break: readers skip kinds they do
+/// not know (`Envelope::parse_line` reads only this build's kinds). A reader
+/// refuses any other version.
 pub const ENVELOPE_VERSION: u32 = 1;
 
 /// The process that wrote an event.
@@ -201,6 +203,35 @@ pub(crate) fn format_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every variant's place in `Kind::ALL`. Exhaustive, so a new variant
+    /// fails to compile here until it is placed in the list too.
+    fn position(kind: Kind) -> usize {
+        match kind {
+            Kind::RunStart => 0,
+            Kind::ProducerState => 1,
+            Kind::RunEnd => 2,
+            Kind::Log => 3,
+            Kind::BootPhases => 4,
+            Kind::ModPhases => 5,
+            Kind::LoadPhases => 6,
+            Kind::Unload => 7,
+            Kind::GeometryInstall => 8,
+            Kind::ShStreamingWindow => 9,
+            Kind::LightmapStreamingWindow => 10,
+            Kind::CpuTimingWindow => 11,
+            Kind::GpuTimingWindow => 12,
+            Kind::BakeStage => 13,
+            Kind::BakeSummary => 14,
+        }
+    }
+
+    #[test]
+    fn kind_all_lists_every_variant_in_place() {
+        for (index, kind) in Kind::ALL.into_iter().enumerate() {
+            assert_eq!(position(kind), index);
+        }
+    }
 
     #[test]
     fn kind_wire_names_match_serde_for_every_kind() {

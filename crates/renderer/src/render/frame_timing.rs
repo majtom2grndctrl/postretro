@@ -14,8 +14,8 @@ const AVG_WINDOW_SAMPLES: u32 = 120;
 /// bits wrapped between the prefill's end and start writes of a skipped pass.
 const MAX_PASS_NS: f64 = 1.0e9;
 
-/// One completed averaging window, retained for the debug UI and consumed by
-/// capture measurement.
+/// One completed averaging window, retained for the debug UI, consumed by
+/// capture measurement, and emitted by telemetry in every build.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameTimingSnapshot {
     /// Readbacks in the window. Every pass's `sampled_readbacks` is at most this.

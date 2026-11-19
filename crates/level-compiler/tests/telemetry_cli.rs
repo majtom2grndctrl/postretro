@@ -20,8 +20,8 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn tiny_map() -> PathBuf {
-    workspace_root().join("content/dev/maps/wedge-shared-plane.map")
+fn lit_map() -> PathBuf {
+    workspace_root().join("content/dev/maps/sdf-shadow-test.map")
 }
 
 fn events(path: &Path) -> Vec<Envelope> {
@@ -71,7 +71,7 @@ fn a_bake_ending_before_its_first_stage_writes_only_run_start_and_run_end() {
         dir.path(),
         Some(sink.to_str().unwrap()),
         &[
-            tiny_map().to_str().unwrap(),
+            lit_map().to_str().unwrap(),
             "-o",
             output.to_str().unwrap(),
             "--no-tui",
@@ -88,7 +88,7 @@ fn a_bake_ending_before_its_first_stage_writes_only_run_start_and_run_end() {
 fn a_failing_bake_writes_the_stages_it_began_then_a_summary_without_durations() {
     let dir = tempfile::tempdir().unwrap();
     let sink = dir.path().join("t.jsonl");
-    let map = std::fs::read_to_string(tiny_map()).unwrap().replace(
+    let map = std::fs::read_to_string(lit_map()).unwrap().replace(
         "\"classname\" \"worldspawn\"",
         "\"classname\" \"worldspawn\"\n\"data_script\" \"missing.luau\"",
     );
@@ -162,7 +162,7 @@ fn a_plain_bake_brackets_itself_and_leaves_its_output_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let args = |out: &str| {
         vec![
-            tiny_map().to_string_lossy().into_owned(),
+            lit_map().to_string_lossy().into_owned(),
             "-o".to_owned(),
             out.to_owned(),
             "--no-tui".to_owned(),

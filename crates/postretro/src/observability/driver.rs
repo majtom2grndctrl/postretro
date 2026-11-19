@@ -66,7 +66,7 @@ pub(crate) fn run_headless(
         }
         Err(err) => {
             eprintln!("[Headless] {err:#}");
-            crate::telemetry::end_run_before_exit(1, "headless");
+            crate::telemetry::end_run_before_exit(1, &format!("headless: {err:#}"));
             std::process::exit(1);
         }
     }

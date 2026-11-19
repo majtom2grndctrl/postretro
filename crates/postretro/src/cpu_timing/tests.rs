@@ -708,28 +708,29 @@ fn particle_live_count_reports_zero_and_is_absent_when_timing_is_off() {
 }
 
 /// A hub with the file sink and the live ring both on, scoped to this test
-/// thread: the costliest telemetry configuration.
+/// thread: the costliest telemetry configuration. The directory goes with
+/// the returned guard.
 fn telemetry_with_sink_and_ring(
     name: &str,
 ) -> (
     std::sync::Arc<postretro_telemetry::Hub>,
     postretro_telemetry::scoped::ScopedHub,
+    tempfile::TempDir,
 ) {
-    let dir = std::env::temp_dir().join(format!(
-        "postretro-cpu-telemetry-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::create_dir_all(&dir);
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("postretro-cpu-telemetry-{name}"))
+        .tempdir()
+        .unwrap();
     let hub = std::sync::Arc::new(postretro_telemetry::Hub::start(
         postretro_telemetry::HubConfig {
             memory: true,
-            sink: Some(dir.join("t.jsonl")),
+            sink: Some(dir.path().join("t.jsonl")),
             ring: Some(postretro_telemetry::RingCaps::DEFAULT),
             ..postretro_telemetry::HubConfig::new(postretro_telemetry::Source::Engine, "t")
         },
     ));
     let scope = postretro_telemetry::scoped::install(std::sync::Arc::clone(&hub));
-    (hub, scope)
+    (hub, scope, dir)
 }
 
 fn cpu_windows(hub: &postretro_telemetry::Hub) -> Vec<serde_json::Value> {
@@ -745,7 +746,7 @@ fn cpu_windows(hub: &postretro_telemetry::Hub) -> Vec<serde_json::Value> {
 // `[CpuTiming]` line formats; a row's average and max agree with the line.
 #[test]
 fn cpu_window_event_and_line_agree_on_a_rows_average_and_max() {
-    let (hub, _scope) = telemetry_with_sink_and_ring("agree");
+    let (hub, _scope, _dir) = telemetry_with_sink_and_ring("agree");
     let capture = LogCapture::start();
     let mut timer = CpuFrameTimer::new(TimingGate::ON);
     let mut closed = false;
@@ -781,7 +782,7 @@ fn cpu_window_event_and_line_agree_on_a_rows_average_and_max() {
 // Telemetry: a window cleared at a level change emits nothing.
 #[test]
 fn a_cpu_window_cleared_at_a_level_change_emits_nothing() {
-    let (hub, _scope) = telemetry_with_sink_and_ring("cleared");
+    let (hub, _scope, _dir) = telemetry_with_sink_and_ring("cleared");
     let mut timer = CpuFrameTimer::new(TimingGate::ON);
     for _ in 0..WINDOW_FRAMES - 1 {
         counted_frame(&mut timer, &[(FrameStage::Visibility, MS)], 2 * MS);
@@ -796,7 +797,7 @@ fn a_cpu_window_cleared_at_a_level_change_emits_nothing() {
 // allocates nothing.
 #[test]
 fn with_telemetry_on_a_frame_closing_no_window_allocates_nothing() {
-    let (_hub, _scope) = telemetry_with_sink_and_ring("alloc");
+    let (_hub, _scope, _dir) = telemetry_with_sink_and_ring("alloc");
     let mut timer = CpuFrameTimer::new(TimingGate::ON);
     drive_timer_frames(&mut timer, WINDOW_FRAMES);
     timer.log_last_window();

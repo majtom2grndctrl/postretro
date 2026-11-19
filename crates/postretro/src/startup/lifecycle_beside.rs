@@ -187,7 +187,6 @@ impl App {
         // commit's checks, then the running level's release; the commit
         // frame follows.
         self.level_timings.record("bundle_held");
-        let active_map_path = load.map_path.clone();
         let checked = match self.check_level_bundle(*bundle) {
             Ok(checked) => checked,
             Err(failure) => {
@@ -201,7 +200,7 @@ impl App {
         // Checked, the load can no longer be cancelled: its geometry install
         // is reported under its generation while the running level is still
         // the one the envelope names.
-        self.note_beside_commit(active.generation, &active_map_path, checked.set);
+        self.note_beside_commit(active.generation, &load.map_path, checked.set);
         if self.level_is_installed_state() {
             self.unload_level();
         }

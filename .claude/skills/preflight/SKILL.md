@@ -36,7 +36,7 @@ more cache churn.
 5. **Crate graph:** `cargo run -p xtask -- crate-graph --check` — fails if the
    committed `context/lib/crate-graph.md` snapshot is stale after an internal
    dependency change.
-6. **Telemetry reducer:** `python3 -m unittest tools.tests.test_telemetry_reduce`
+6. **Telemetry reducer:** `python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`
    — the stdlib-only reducer in `tools/` against its checked-in sample. No
    build; it needs only `python3`.
 

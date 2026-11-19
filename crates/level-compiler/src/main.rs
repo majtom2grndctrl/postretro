@@ -618,15 +618,27 @@ fn main() -> anyhow::Result<()> {
     // exit inside parsing and write nothing. A panic unwinding out of the bake
     // writes `run_end` from the guard, under either reporter.
     let telemetry = telemetry::start(std::env::args().collect());
-    let (source, output) = (args.input.clone(), args.output.clone());
-    let result = postretro_telemetry::run_guarded(|| bake_main(started, args, telemetry));
-    telemetry::end(&result, &source, &output);
+    let bake_events = telemetry::BakeEvents::new(&args.input, &args.output);
+    let result = postretro_telemetry::run_guarded(|| {
+        bake_main(
+            started,
+            args,
+            telemetry,
+            std::sync::Arc::clone(&bake_events),
+        )
+    });
+    bake_events.end(&result);
     result
 }
 
-fn bake_main(started: Instant, mut args: Args, telemetry: bool) -> anyhow::Result<()> {
-    // Install capture immediately after argument parsing so every subsequent
-    // early exit can emit the same exactly-once warning summary as a bake.
+fn bake_main(
+    started: Instant,
+    mut args: Args,
+    telemetry: bool,
+    bake_events: std::sync::Arc<telemetry::BakeEvents>,
+) -> anyhow::Result<()> {
+    // Install capture first in the bake body so every subsequent early exit
+    // can emit the same exactly-once warning summary as a bake.
     let log_sink = logger::install(args.verbose, telemetry)?;
     telemetry::log_startup_warning();
     let reporter_mode = select_reporter_mode(
@@ -665,7 +677,7 @@ fn bake_main(started: Instant, mut args: Args, telemetry: bool) -> anyhow::Resul
             let stage_cache = construct_stage_cache(&args);
             let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
             let pipeline_reporter =
-                telemetry::TelemetryReporter::wrap(reporter.clone(), &args.input, &args.output);
+                telemetry::TelemetryReporter::wrap(reporter.clone(), &bake_events);
             let result =
                 run_with_failure_cache_report(stage_cache, args.cache_max_bytes, |stage_cache| {
                     pipeline::run(&args, stage_cache, started, pipeline_reporter, governor)
@@ -678,7 +690,9 @@ fn bake_main(started: Instant, mut args: Args, telemetry: bool) -> anyhow::Resul
         ReporterMode::Tui => {
             // The planned list is content-dependent. Parse once before entering
             // the alternate screen, then pass that parsed map to the worker.
-            // Its measured duration remains the Parsing Build Summary row.
+            // Its measured duration remains the Parsing Build Summary row, and
+            // telemetry's Parsing stage begins here, before any reporter.
+            bake_events.begin(pipeline::StageId::Parsing, false);
             let prepared = match pipeline::prepare(&args) {
                 Ok(prepared) => prepared,
                 Err(error) => {
@@ -716,8 +730,7 @@ fn bake_main(started: Instant, mut args: Args, telemetry: bool) -> anyhow::Resul
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     let bake = move |reporter, governor| {
-                        let reporter =
-                            telemetry::TelemetryReporter::wrap(reporter, &args.input, &args.output);
+                        let reporter = telemetry::TelemetryReporter::wrap(reporter, &bake_events);
                         run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,
@@ -735,8 +748,7 @@ fn bake_main(started: Instant, mut args: Args, telemetry: bool) -> anyhow::Resul
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
-                        let reporter =
-                            telemetry::TelemetryReporter::wrap(reporter, &args.input, &args.output);
+                        let reporter = telemetry::TelemetryReporter::wrap(reporter, &bake_events);
                         run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,

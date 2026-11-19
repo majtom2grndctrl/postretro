@@ -118,7 +118,8 @@ class SampleSummaryTests(unittest.TestCase):
             ("Packing", 205.1),
         ])
         self.assertEqual([(s["name"], s["ms"]) for s in bake["non_stage"]],
-                         [("  TexelSteps", 840.2), ("SH bound", 12.6)])
+                         [("  TexelSteps", 840.2), ("SH bound", 12.6),
+                          ("Lightmap bound", 9.4)])
         self.assertEqual(bake["total_ms"], 5778.3)
         self.assertEqual(bake["skipped"], ["NavMesh"])
         self.assertEqual(bake["background"], ["Lightmap Bake"])
@@ -133,7 +134,8 @@ class SampleSummaryTests(unittest.TestCase):
                                      ("textures", 96.0), ("sh_plan", 34.2)]),
             ("commit_frame", 58.4, [("commit_checks", 1.2), ("set_publish", 3.1),
                                     ("classname_dispatch", 9.8), ("model_install", 22.6),
-                                    ("streaming_sessions", 4.0), ("enter_settling", 0.3)]),
+                                    ("audio_load", 17.4), ("streaming_sessions", 4.0),
+                                    ("enter_settling", 0.3)]),
             ("settle_hold", 210.0, []),
             ("reveal", 16.7, []),
             ("first_level_frame", 15.9, []),
@@ -159,8 +161,8 @@ class SampleSummaryTests(unittest.TestCase):
             ("load_dispatch", 0.5, []),
             ("bundle_ready", 288.1, [("prl_parse", 71.6), ("upload", 66.0), ("textures", 40.3)]),
             ("commit_frame", 31.2, [("commit_checks", 0.9), ("set_publish", 1.8),
-                                    ("model_install", 14.1), ("streaming_sessions", 2.6),
-                                    ("enter_settling", 0.2)]),
+                                    ("model_install", 14.1), ("audio_load", 11.6),
+                                    ("streaming_sessions", 2.6), ("enter_settling", 0.2)]),
             ("settle_hold", 96.4, []),
             ("reveal", 16.6, []),
             ("first_level_frame", 16.1, []),
@@ -338,6 +340,19 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertEqual(no_level["gpu"]["windows"], 1)
         self.assertEqual(no_level["gpu"]["passes"][0]["p50_mean_ms"], 1.5)
         self.assertEqual(summary["loads"], [])
+
+    def test_a_payload_missing_what_its_kind_needs_is_counted_not_fatal(self):
+        summary = REDUCER.reduce_lines([
+            run_start("dd-4"),
+            envelope("dd-4", 1, "load_phases", {}),
+            envelope("dd-4", 2, "load_phases", {"generation": None, "prl": None, "phases": []}),
+            envelope("dd-4", 3, "producer_state", {"state": "enabled"}),
+            envelope("dd-4", 4, "geometry_install", {"generation": 2, "has_geometry": True,
+                                                    "total_ms": 1.0, "phases": [],
+                                                    "other_ms": 0.0}),
+        ])
+        self.assertEqual([m["line"] for m in summary["malformed_lines"]], [2, 3, 4])
+        self.assertEqual([load["generation"] for load in summary["loads"]], [2])
 
 
 if __name__ == "__main__":

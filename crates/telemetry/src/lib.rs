@@ -47,7 +47,7 @@ pub fn global() -> Option<&'static Hub> {
 /// Run `f` against this thread's scoped hub (tests) or the process-wide one.
 /// `None` when neither exists: telemetry is off and nothing is built.
 pub fn with_hub<R>(f: impl FnOnce(&Hub) -> R) -> Option<R> {
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(hub) = scoped::current() {
         return Some(f(&hub));
     }
@@ -75,15 +75,24 @@ pub fn emit_for_level<P: Serialize + ?Sized>(kind: Kind, level: Option<&Level>, 
     with_hub(|hub| hub.emit_for_level(kind, level, payload));
 }
 
+/// End the running level: emit `kind` naming it and clear it under one
+/// lock, so no event from another thread lands between them still naming
+/// it. Nothing is written without a running level.
+pub fn end_level<P: Serialize>(kind: Kind, payload: impl FnOnce(&Level) -> P) {
+    with_hub(|hub| hub.end_level(kind, payload));
+}
+
 /// The running level, `None` between levels or without a hub.
 pub fn level() -> Option<Level> {
     with_hub(Hub::level).flatten()
 }
 
+/// Set the running level every later envelope names; `None` between levels.
 pub fn set_level(level: Option<Level>) {
     with_hub(|hub| hub.set_level(level));
 }
 
+/// Settle one producer's state and write it as `producer_state`.
 pub fn set_producer_state(entry: ProducerEntry) {
     with_hub(|hub| hub.set_producer_state(entry));
 }
@@ -121,7 +130,7 @@ pub fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 
 /// A hub private to one test thread, so parallel tests never share the
 /// process-wide one.
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod scoped {
     use std::cell::RefCell;
     use std::sync::Arc;
@@ -136,14 +145,22 @@ pub mod scoped {
         SCOPED.try_with(|slot| slot.borrow().clone()).ok().flatten()
     }
 
-    /// Route this thread's telemetry to `hub` until the guard drops.
+    /// Route this thread's telemetry to `hub` until the guard drops. Only
+    /// this thread: threads the code under test spawns see the
+    /// process-wide hub.
     pub fn install(hub: Arc<Hub>) -> ScopedHub {
         let previous = SCOPED.with(|slot| slot.replace(Some(hub)));
-        ScopedHub { previous }
+        ScopedHub {
+            previous,
+            _thread_bound: std::marker::PhantomData,
+        }
     }
 
+    /// Restores the previous scoped hub on drop. Not `Send`: it must drop on
+    /// the thread whose slot it set.
     pub struct ScopedHub {
         previous: Option<Arc<Hub>>,
+        _thread_bound: std::marker::PhantomData<*const ()>,
     }
 
     impl Drop for ScopedHub {

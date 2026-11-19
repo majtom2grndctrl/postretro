@@ -66,7 +66,9 @@ pub(crate) mod worker;
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
 #[cfg(feature = "observe-live")]
 pub(crate) use session::observe_live_port_arg;
-pub(crate) use session::{BootSession, PendingSessionInit, build_session, headless_arg};
+pub(crate) use session::{
+    BootSession, PendingSessionInit, build_session, capture_arg, headless_arg,
+};
 pub(crate) use splash_lifecycle::BootDestination;
 
 /// What a frame path calls to end the event loop: the live loop in the

@@ -100,20 +100,14 @@ pub(crate) fn emit_load_phases(timings: &StartupTimings) {
 
 /// Emit `unload` naming the level it unloaded, then clear the running
 /// level: events from here on belong to no level until the next commit.
+/// The level's partial windows closed earlier in the unload, while it was
+/// still the running level, so they name it too.
 pub(crate) fn emit_unload(unload_time: Duration) {
-    let Some(level) = postretro_telemetry::level() else {
-        return;
-    };
-    postretro_telemetry::emit_for_level(
-        Kind::Unload,
-        Some(&level),
-        &UnloadEvent {
-            generation: level.generation,
-            prl: level.map.clone(),
-            unload_ms: ms(unload_time),
-        },
-    );
-    postretro_telemetry::set_level(None);
+    postretro_telemetry::end_level(Kind::Unload, |level| UnloadEvent {
+        generation: level.generation,
+        prl: level.map.clone(),
+        unload_ms: ms(unload_time),
+    });
 }
 
 /// `geometry_install`: the renderer's frozen line for the load's set build.
@@ -179,8 +173,11 @@ mod tests {
     use super::*;
     use std::borrow::Cow;
 
-    /// Line C's own text, split back into `(stage, ms, [(mark, ms)])`.
-    fn parse_summary(line: &str) -> Vec<(String, f64, Vec<(String, f64)>)> {
+    /// One parsed stage of line C: its name, ms, and its `(mark, ms)` list.
+    type ParsedStage = (String, f64, Vec<(String, f64)>);
+
+    /// Line C's own text, split back into its stages.
+    fn parse_summary(line: &str) -> Vec<ParsedStage> {
         let body = line.strip_prefix("[Startup] ").expect("startup prefix");
         let mut out = Vec::new();
         let mut rest = body;

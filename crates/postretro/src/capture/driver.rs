@@ -67,7 +67,7 @@ pub(crate) fn run_capture(scene_arg: Option<&str>) -> ! {
         }
         Err(err) => {
             eprintln!("[Capture] {err:#}");
-            crate::telemetry::end_run_before_exit(1, "capture");
+            crate::telemetry::end_run_before_exit(1, &format!("capture: {err:#}"));
             std::process::exit(1);
         }
     }

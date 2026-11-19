@@ -178,8 +178,7 @@ impl Hub {
         self.record(kind, LevelChoice::Current, payload, pin_for(kind));
     }
 
-    /// Write `kind` naming `level` rather than the running level: an unload
-    /// and its partial windows name the level they end.
+    /// Write `kind` naming `level` rather than the running level.
     pub fn emit_for_level<P: Serialize + ?Sized>(
         &self,
         kind: Kind,
@@ -187,6 +186,35 @@ impl Hub {
         payload: &P,
     ) {
         self.record(kind, LevelChoice::Explicit(level), payload, pin_for(kind));
+    }
+
+    /// End the running level: write `kind` naming it, then clear it, under
+    /// one lock. Nothing is written without a running level. Partial
+    /// windows closed before this still name it, because the level is
+    /// cleared only here.
+    pub fn end_level<P: Serialize>(&self, kind: Kind, payload: impl FnOnce(&Level) -> P) {
+        let Some(level) = self.level() else {
+            return;
+        };
+        let Some(payload) = to_json(&payload(&level)) else {
+            return;
+        };
+        let failure = {
+            let mut state = self.lock();
+            if state.ended {
+                return;
+            }
+            let failure = self.write_locked(
+                &mut state,
+                kind,
+                LevelChoice::Explicit(Some(&level)),
+                &payload,
+                pin_for(kind),
+            );
+            state.level = None;
+            failure
+        };
+        emit_warning(failure);
     }
 
     /// Settle one producer's state and write it as `producer_state`.
@@ -329,19 +357,21 @@ impl Hub {
         state: &mut State,
         reason: ExitReason,
         detail: Option<&str>,
-    ) -> Option<String> {
+    ) -> Option<SinkFailure> {
         if state.ended {
             return None;
         }
         let mut warning = None;
-        let pending: Vec<String> = state
+        let pending: Vec<(String, Option<String>)> = state
             .producers
             .iter()
             .filter(|known| known.state == ProducerState::Pending)
-            .map(|known| known.producer.clone())
+            .map(|known| (known.producer.clone(), known.variable.clone()))
             .collect();
-        for producer in pending {
-            let entry = ProducerEntry::unsupported(&producer, "the run ended before it settled");
+        for (producer, variable) in pending {
+            let mut entry =
+                ProducerEntry::unsupported(&producer, "the run ended before it settled");
+            entry.variable = variable;
             if let Some(known) = state.producers.iter_mut().find(|k| k.producer == producer) {
                 *known = entry.clone();
             }
@@ -395,8 +425,8 @@ impl Hub {
     }
 
     /// Take the sequence, then write the line to the file, the memory copy
-    /// and the ring, all under the caller's lock. Returns a failed write's
-    /// warning for the caller to log after releasing the lock.
+    /// and the ring, all under the caller's lock. Returns a failed write for
+    /// the caller to format and log after releasing the lock.
     fn write_locked(
         &self,
         state: &mut State,
@@ -404,7 +434,7 @@ impl Hub {
         level: LevelChoice<'_>,
         payload: &str,
         pin: Option<PinKey>,
-    ) -> Option<String> {
+    ) -> Option<SinkFailure> {
         let t_ms = self.started.elapsed().as_millis() as u64;
         let seq = state.next_seq;
         state.next_seq += 1;
@@ -415,19 +445,15 @@ impl Hub {
             };
             format_line(&self.run_json, seq, t_ms, self.source, level, kind, payload)
         };
-        let mut warning = None;
+        let mut failure = None;
         if let Some(file) = state.file.as_mut()
             && let Err(error) = file.write_all(line.as_bytes())
         {
             state.file = None;
-            warning = Some(format!(
-                "[Telemetry] write to {} failed: {error}; telemetry file disabled",
-                state
-                    .sink_path
-                    .as_deref()
-                    .map(Path::display)
-                    .map_or_else(String::new, |path| path.to_string())
-            ));
+            failure = Some(SinkFailure {
+                path: state.sink_path.clone(),
+                error,
+            });
         }
         if let Some(memory) = state.memory.as_mut() {
             memory.push(line.clone());
@@ -442,7 +468,7 @@ impl Hub {
                 pin,
             );
         }
-        warning
+        failure
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -479,11 +505,23 @@ fn to_json<P: Serialize + ?Sized>(payload: &P) -> Option<String> {
     serde_json::to_string(payload).ok()
 }
 
-/// Logged outside the hub lock: the tee captures this record too, and
-/// capture takes the lock.
-fn emit_warning(warning: Option<String>) {
-    if let Some(warning) = warning {
-        log::warn!("{warning}");
+/// A file write that failed under the hub lock, formatted after it.
+struct SinkFailure {
+    path: Option<PathBuf>,
+    error: std::io::Error,
+}
+
+/// Formatted and logged outside the hub lock: the tee captures this record
+/// too, and capture takes the lock.
+fn emit_warning(failure: Option<SinkFailure>) {
+    if let Some(SinkFailure { path, error }) = failure {
+        let path = path.as_deref().map(Path::display);
+        match path {
+            Some(path) => {
+                log::warn!("[Telemetry] write to {path} failed: {error}; telemetry file disabled");
+            }
+            None => log::warn!("[Telemetry] write failed: {error}; telemetry file disabled"),
+        }
     }
 }
 

@@ -99,10 +99,12 @@ pub(crate) struct ShGauges {
     pub(crate) permits: u64,
     pub(crate) pool_occupancy_bytes: u64,
     pub(crate) pool_capacity_bytes: u64,
-    pub(crate) read_latency_p50_ms: f32,
-    pub(crate) read_latency_p95_ms: f32,
-    pub(crate) read_latency_max_ms: f32,
-    pub(crate) decode_latency_max_ms: f32,
+    /// The session's read and decode latencies; `None` before its first
+    /// read, never a zero.
+    pub(crate) read_latency_p50_ms: Option<f32>,
+    pub(crate) read_latency_p95_ms: Option<f32>,
+    pub(crate) read_latency_max_ms: Option<f32>,
+    pub(crate) decode_latency_max_ms: Option<f32>,
     pub(crate) largest_drain_bytes: u64,
     pub(crate) slowest_install_ms: f64,
     pub(crate) slowest_steady_install_ms: f64,
@@ -114,6 +116,9 @@ pub(crate) struct ShGauges {
 
 impl ShGauges {
     fn from_live(now: &ShStreamingLiveDiagnostics) -> Self {
+        // The worker's histograms read 0 with no sample; a session that has
+        // read nothing has no latency.
+        let sampled = |value: f32| (now.reads_issued > 0).then_some(value);
         Self {
             targets: now.target_clusters,
             lead: now.lead_clusters,
@@ -123,10 +128,10 @@ impl ShGauges {
             permits: now.permits_in_use,
             pool_occupancy_bytes: now.logical_occupancy_bytes,
             pool_capacity_bytes: now.active_capacity_bytes,
-            read_latency_p50_ms: now.read_latency_p50_ms,
-            read_latency_p95_ms: now.read_latency_p95_ms,
-            read_latency_max_ms: now.read_latency_max_ms,
-            decode_latency_max_ms: now.decode_latency_max_ms,
+            read_latency_p50_ms: sampled(now.read_latency_p50_ms),
+            read_latency_p95_ms: sampled(now.read_latency_p95_ms),
+            read_latency_max_ms: sampled(now.read_latency_max_ms),
+            decode_latency_max_ms: sampled(now.decode_latency_max_ms),
             largest_drain_bytes: now.max_drain_decoded_bytes,
             slowest_install_ms: now.install_cpu_max_drain_micros as f64 / 1000.0,
             slowest_steady_install_ms: now.install_cpu_max_steady_drain_micros as f64 / 1000.0,

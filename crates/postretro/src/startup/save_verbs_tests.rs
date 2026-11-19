@@ -1435,3 +1435,53 @@ fn second_suspend_never_reharvests_a_stale_pawn_into_another_character() {
 
     assert_eq!(carry(&app), None, "Ash never takes Vex's gear");
 }
+
+// F4: a slot whose file this build cannot read stays occupied; selecting it,
+// continuing it and starting a new run in it are refused, changing nothing,
+// and deleting it is permitted.
+#[test]
+fn verbs_on_an_unreadable_slot_are_refused_and_delete_is_permitted() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    let unreadable_character = saves(dir.path()).character_path(1);
+    let unreadable_run = saves(dir.path()).run_path(1);
+    std::fs::create_dir_all(unreadable_run.parent().unwrap()).unwrap();
+    std::fs::write(&unreadable_character, br#"{"version":999}"#).unwrap();
+    std::fs::write(&unreadable_run, b"{ not json").unwrap();
+    // Reload the slots as boot does.
+    drop(app);
+    let mut app = app_with_store(dir.path());
+    boot(&mut app, SAVES);
+    present_frontend(&mut app);
+    script_ctx(&app)
+        .data_registry
+        .borrow_mut()
+        .maps
+        .push(ModMapEntry {
+            id: "next".into(),
+            path: "maps/next-never-read.prl".into(),
+            name: "next".into(),
+            tags: Vec::new(),
+            loading_tree: Vec::new(),
+        });
+    app.handle_save_verb(select(0));
+    let selection_before = selection(&app);
+
+    app.handle_save_verb(select(1));
+    app.handle_save_verb(continue_run(1));
+    app.handle_save_verb(new_run(1, "next"));
+
+    assert_eq!(selection(&app), selection_before);
+    assert_eq!(
+        std::fs::read(&unreadable_character).unwrap(),
+        br#"{"version":999}"#
+    );
+    assert_eq!(std::fs::read(&unreadable_run).unwrap(), b"{ not json");
+    assert!(app.at_frontend());
+
+    app.handle_save_verb(delete_character(1));
+    app.handle_save_verb(delete_run(1));
+    assert!(!unreadable_character.exists());
+    assert!(!unreadable_run.exists());
+}

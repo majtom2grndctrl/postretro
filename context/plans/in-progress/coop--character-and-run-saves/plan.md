@@ -25,72 +25,72 @@ read at: 6c3f41ed
 
 Proof names are the planned test names; every row is automated unless marked manual.
 
-| AC | Proof | Status |
-|---|---|---|
-| F1 Files round-trip every field, loadout and checkpoint | `save_files::tests::character_world_and_run_files_round_trip_every_field` | achievable as stated |
-| F2 Multi-seat ledger round-trips into a fresh seat table; live state absent | `ledger_document_restores_every_durable_seat_field_and_omits_live_state` | achievable as stated |
-| F3 Unknown section ignored and kept byte-for-byte | `unknown_ledger_section_is_ignored_and_rewritten_byte_for_byte` | achievable as stated |
-| F4 Unsupported/unparsable file: warned, never written, occupied+unreadable, verbs refused, delete permitted; older supported version loads | `unreadable_slot_is_occupied_never_written_and_only_deletable` + `supported_older_version_loads` | achievable as stated |
-| F5 Save killed before rename leaves previous file byte-identical | `save_killed_before_rename_keeps_previous_file` (per kind) | achievable as stated |
-| F6 v4 `state.json` migration, `saves` block: recorded values, default sentiment, empty loadout, no run, id = `player_id`, source kept, no re-migration | `v4_state_migrates_to_character_and_world_once` | achievable as stated |
-| F7 Migration killed after each write re-migrates to identical files (P9) | `migration_interrupted_after_each_write_converges` | achievable as stated |
-| F8 Over-capacity character file loads in-range part, warns, active slot → 0 | `character_file_past_capacity_loads_in_range_part` | achievable as stated |
-| F9 Two characters and two runs independent; delete leaves others byte-identical | `slots_are_independent_and_delete_touches_one_file` | achievable as stated |
-| S1 Level start writes run (destination id) then character, after harvest, before install; failed load still resumes destination | `level_start_writes_run_then_character_before_install` + `failed_load_still_continues_at_destination` | achievable as stated |
-| S2 Crash between the two writes never pairs earlier level with later gear (P5) | `crash_between_level_start_writes_never_duplicates_gear` | achievable as stated |
-| S3 Non-initial life state at level start continues initial (P4) | `level_start_save_stores_initial_life_state` | achievable as stated |
-| S4 Mid-level pickup, quit, Continue holds weapon at last save point | `quit_after_pickup_continues_with_weapon_at_last_save_point` | achievable as stated |
-| S5 Crash (drop without exit path) loses only play since last save point | `dropped_app_loses_only_play_since_last_save_point` | achievable as stated |
-| S6 Dev-picker `loadLevel` and path `restartLevel` after Continue+return leave run byte-identical, write character | `save_verbs_tests::dev_picker_load_after_continue_leaves_run_file_untouched` + `save_points_tests::path_load_leaves_run_file_untouched_and_writes_character` | achievable as stated |
-| S7 Saved downed/dead continues initial at full health | `downed_character_continues_initial_at_full_health` | achievable as stated |
-| S8 Only host/SP writes world and run | `client_never_writes_world_or_run_files` | achievable as stated |
-| C1 `checkpoint` saves run+character; Continue arrives in set; co-op seats spread | `checkpoint_saves_and_continue_arrives_in_its_set` + `coop_continue_spreads_seats_over_checkpoint_set` | achievable as stated |
-| C2 Unknown checkpoint falls back with warning; later level start clears it | `unknown_checkpoint_falls_back_and_level_start_clears` | achievable as stated |
-| C3 After checkpoint fire and Continue arrival, respawn and late joiner use set | `respawn_and_late_joiner_use_active_checkpoint_set` | achievable as stated |
-| C4 Continue at `bridge`, quit, Continue again → `bridge` (P11) | `continue_twice_arrives_at_same_checkpoint` | achievable as stated |
-| C5 Level start skips keyed spawns; all-keyed level uses all and warns | `level_start_skips_keyed_spawns_unless_all_keyed` | achievable as stated |
-| C6 Client `checkpoint` no-op; outside run writes character only; backdrop writes nothing | `checkpoint_scope_by_role_and_run` | achievable as stated |
-| C7 `checkpoint`+`loadLevel` either order → destination start; two in one tick → later | `checkpoint_and_load_level_in_one_reaction_resume_destination` + `later_checkpoint_in_one_tick_wins` | achievable as stated |
-| R1 Continue selects run's character, installs level with loadout, run slots, sentiment | `continue_installs_run_with_its_character` | achievable as stated |
-| R2 Continue refused: deleted character, recreated slot, missing catalog id; delete permitted | `continue_refuses_orphaned_or_unknown_level_runs` | achievable as stated |
-| R3 `newRun` into another character's run refused; empty or own permitted | `new_run_slot_ownership` | achievable as stated |
-| R4 `newRun` resets run slots, sentiment, level; keeps world and character | `new_run_resets_run_scope_and_keeps_world_and_character` | achievable as stated |
-| R5 `newRun` writes run before load; crash in first level resumes it (P7) | `new_run_writes_run_file_before_load` | achievable as stated |
-| R6 SP with backdrop: new character carries gear level 1→2; second new character starts empty (P2) | `new_character_carries_gear_and_second_starts_empty` | achievable as stated |
-| R7 Backdrop installed: select A (gear), B (none), Continue B → empty, A unchanged (P2) | `selecting_another_character_never_takes_backdrop_or_prior_gear` | achievable as stated |
-| R8 Selecting B after A: per-owner slots B's or default, none A's | `select_character_replaces_per_owner_values` | achievable as stated |
-| R9 Non-persisted mod slots default after `newRun`/Continue; engine slots unchanged; level change keeps both | `store_reload_resets_mod_slots_and_keeps_engine_slots` | achievable as stated |
-| R10 `deleteCharacter` selected, `loadLevel` spawns empty, writes no character (P12) | `deleted_selection_spawns_empty_and_writes_nothing` | achievable as stated |
-| R11 `persist: true` global set outside run survives return + select | `save_verbs_tests::world_global_outside_run_survives_frontend_and_select` | achievable as stated |
-| R12 Migrated global now `persist: "run"` → implicit run (no block) / dropped (block); never world | `migrated_run_scoped_global_routes_by_saves_block` | achievable as stated |
-| R13 `persist: true` global written in run survives return + verbs + restart | `world_global_in_run_survives_verbs_and_restart` | achievable as stated |
-| R14 Boot-restored selection then join/load sends and spawns that loadout; join save keeps it (P1) | `boot_selection_seeds_join_and_spawn_loadout` | achievable as stated |
-| R15 Restart restores selection; options file holds neither; bad stored selection → -1 with warning, never written | `selection_restores_from_save_dir_and_rejects_bad_slots` | achievable as stated |
-| R16 Deleting selected run/character → -1, kept across restart (P10) | `deleting_selection_stores_minus_one` | achievable as stated |
-| R17 `createCharacter` into occupied refused | `create_character_refuses_occupied_slot` | achievable as stated |
-| R18 Rows equal declared count; cap clamp warns; lowered count keeps files hidden | `saves_rows_match_declared_count_and_cap` | achievable as stated |
-| R19 No `saves` block: implicit character+run keep progress and sentiment across restart, frontend and level changes; migration keeps sentiment | `mod_without_saves_block_keeps_progress_and_sentiment` | achievable as stated |
-| V1 Every verb refused in played level/loading and as client; permitted at frontend, with backdrop, while backdrop loads | `save_verbs_gate_by_scene_and_role` | achievable as stated |
-| V2 Hosting at frontend: own Continue and `newRun` permitted, clients follow; others refused; no selection blocks host/join/`newRun` | `hosting_frontend_verb_gate` + `no_selection_blocks_session_entry_and_new_run` | achievable as stated |
-| V3 Guest admitted at lobby keeps per-owner and loadout through host Continue/`newRun` and final character | `lobby_guest_keeps_values_through_host_continue` | achievable as stated |
-| V4 Second verb after queued run load refused (P6) | `verb_after_queued_run_load_is_refused` | achievable as stated |
-| V5 `persist: "run"` refused per-owner, accepted global | `persist_run_scope_declaration_rules` | achievable as stated |
-| N1 Host gear check: unknown parts dropped, magazine and health clamped, life state → initial, bad active slot → 0, valid restores whole | `join_seed_loadout_is_checked_against_host_mod` | achievable as stated |
-| N2 Rejoin within hold spawns held seat's loadout | `rejoin_within_hold_keeps_held_loadout` | achievable as stated |
-| N3 Guest pickup then host end saves weapon (P3); own leave after pickup saves it | `final_character_includes_gear_since_last_level_start` | achievable as stated |
-| N4 Client writes character per loadout message; periodic save keeps it (P8) | `client_saves_each_loadout_message_and_periodic_keeps_it` | achievable as stated |
-| N5 Leaving client with silent host closes at bound, saves last sent loadout | `leaving_client_gives_up_at_bound_with_last_loadout` | achievable as stated |
-| N6 Loadout messages reach only own seat's client; roster carries none | `loadout_messages_reach_only_their_owner` | achievable as stated |
-| N7 Roster shows character name truncated at claim cap | `roster_shows_character_name_truncated` | achievable as stated |
-| N8 Host's files never hold a guest's rows or loadout | `host_save_files_hold_no_guest_state` | achievable as stated |
-| N9 Two characters from one device each reclaim only own held seat | `two_characters_one_device_reclaim_own_seats` | achievable as stated |
-| N10 Grep gate: `crates/net` no engine crate; loadout wire type strings+integers only | xtask surface gate `net_loadout_wire_is_names_only` | achievable as stated |
-| D1 Join-then-leave seat-0 carry test replaced: carry equals selected character's saved loadout | `join_then_leave_restores_seat_zero_carry_from_selected_character` (replaces `join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry`) | achievable as stated |
-| D2 `docs/`, SDK comments cover `saves`, `persist: "run"`, verbs, `checkpoint`, `getGameState().saves`; FGD `checkpoint` key | doc review + SDK drift guards + FGD parse test | achievable as stated |
-| D3 Scripting surface example runs as `content/dev` fixture in TS and Luau, slots minted | `saves_surface_fixture_ts_and_luau_load` | achievable as stated |
-| M1 Dev mod SP: create, run, two levels, quit, Continue at level 2 with gear; checkpoint continue | owner, in-engine | manual |
-| M2 Loopback co-op lobby, guest gear in and out, Cancel ends session | owner, in-engine | manual |
-| M3 Gamepad-only character and run management | owner, in-engine | manual |
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| F1 Files round-trip every field, loadout and checkpoint | `save_files::tests::character_world_and_run_files_round_trip_every_field` | achievable as stated | pass: `save_files::tests::{character_file_round_trips_every_loadout_field, run_file_round_trips_level_checkpoint_slots_and_sentiment}` |
+| F2 Multi-seat ledger round-trips into a fresh seat table; live state absent | `ledger_document_restores_every_durable_seat_field_and_omits_live_state` | achievable as stated | pass: `seat::ledger_document_test::ledger_document_restores_every_durable_seat_field_and_omits_live_state` |
+| F3 Unknown section ignored and kept byte-for-byte | `unknown_ledger_section_is_ignored_and_rewritten_byte_for_byte` | achievable as stated | pass: `save_files::tests::unknown_ledger_section_is_ignored_and_rewritten_byte_for_byte` |
+| F4 Unsupported/unparsable file: warned, never written, occupied+unreadable, verbs refused, delete permitted; older supported version loads | `unreadable_slot_is_occupied_never_written_and_only_deletable` + `supported_older_version_loads` | achievable as stated | pass: `save_files::tests::{unsupported_or_unparsable_documents_are_errors, unreadable_slot_reads_occupied_and_not_readable}`, `saves::tests::selection_restores_from_save_dir_and_rejects_bad_slots`, `save_verbs_tests::verbs_on_an_unreadable_slot_are_refused_and_delete_is_permitted`; save version 1 is the only one, so "a supported older version loads" has no older version yet |
+| F5 Save killed before rename leaves previous file byte-identical | `save_killed_before_rename_keeps_previous_file` (per kind) | achievable as stated | pass: `save_files::tests::save_killed_before_rename_keeps_previous_file` (one staged-write path for every kind) |
+| F6 v4 `state.json` migration, `saves` block: recorded values, default sentiment, empty loadout, no run, id = `player_id`, source kept, no re-migration | `v4_state_migrates_to_character_and_world_once` | achievable as stated | pass: `saves::tests::v4_state_migrates_to_character_and_world_once` |
+| F7 Migration killed after each write re-migrates to identical files (P9) | `migration_interrupted_after_each_write_converges` | achievable as stated | pass: `saves::tests::migration_interrupted_after_each_write_converges` |
+| F8 Over-capacity character file loads in-range part, warns, active slot → 0 | `character_file_past_capacity_loads_in_range_part` | achievable as stated | pass: `save_files::tests::character_file_past_capacity_loads_in_range_part` |
+| F9 Two characters and two runs independent; delete leaves others byte-identical | `slots_are_independent_and_delete_touches_one_file` | achievable as stated | pass: `save_files::tests::slots_are_independent_and_delete_touches_one_file` |
+| S1 Level start writes run (destination id) then character, after harvest, before install; failed load still resumes destination | `level_start_writes_run_then_character_before_install` + `failed_load_still_continues_at_destination` | achievable as stated | pass: `save_points_tests::level_start_writes_run_then_character_before_install`, `save_verbs_tests::failed_load_still_continues_at_destination` |
+| S2 Crash between the two writes never pairs earlier level with later gear (P5) | `crash_between_level_start_writes_never_duplicates_gear` | achievable as stated | pass: `save_points_tests::crash_between_level_start_writes_never_duplicates_gear` |
+| S3 Non-initial life state at level start continues initial (P4) | `level_start_save_stores_initial_life_state` | achievable as stated | pass: `save_points_tests::downed_character_saves_initial_life_state_at_full_health` |
+| S4 Mid-level pickup, quit, Continue holds weapon at last save point | `quit_after_pickup_continues_with_weapon_at_last_save_point` | achievable as stated | pass: `save_points_tests::exit_mid_level_saves_the_gear_held_now` + `save_verbs_tests::continue_installs_run_with_its_character` |
+| S5 Crash (drop without exit path) loses only play since last save point | `dropped_app_loses_only_play_since_last_save_point` | achievable as stated | pass: `save_points_tests::dropped_app_loses_only_play_since_last_save_point` |
+| S6 Dev-picker `loadLevel` and path `restartLevel` after Continue+return leave run byte-identical, write character | `save_verbs_tests::dev_picker_load_after_continue_leaves_run_file_untouched` + `save_points_tests::path_load_leaves_run_file_untouched_and_writes_character` | achievable as stated | pass: `save_verbs_tests::dev_picker_load_after_continue_leaves_run_file_untouched`, `save_points_tests::path_load_leaves_run_file_untouched_and_writes_character` |
+| S7 Saved downed/dead continues initial at full health | `downed_character_continues_initial_at_full_health` | achievable as stated | pass: `save_points_tests::downed_character_saves_initial_life_state_at_full_health` |
+| S8 Only host/SP writes world and run | `client_never_writes_world_or_run_files` | achievable as stated | pass: `session_entry_tests::client_saves_each_loadout_message_and_periodic_keeps_it` (world and run bytes unchanged) |
+| C1 `checkpoint` saves run+character; Continue arrives in set; co-op seats spread | `checkpoint_saves_and_continue_arrives_in_its_set` + `coop_continue_spreads_seats_over_checkpoint_set` | achievable as stated | pass: `save_verbs_tests::{checkpoint_saves_and_continue_arrives_in_its_set, late_joiners_spread_over_the_active_checkpoint_set}` |
+| C2 Unknown checkpoint falls back with warning; later level start clears it | `unknown_checkpoint_falls_back_and_level_start_clears` | achievable as stated | pass: `save_verbs_tests::unknown_checkpoint_falls_back_and_level_start_clears`, sim `unknown_checkpoint_falls_back_to_level_start_set` |
+| C3 After checkpoint fire and Continue arrival, respawn and late joiner use set | `respawn_and_late_joiner_use_active_checkpoint_set` | achievable as stated | pass: `save_verbs_tests::{checkpoint_saves_and_continue_arrives_in_its_set (respawn placements), late_joiners_spread_over_the_active_checkpoint_set}` |
+| C4 Continue at `bridge`, quit, Continue again → `bridge` (P11) | `continue_twice_arrives_at_same_checkpoint` | achievable as stated | pass: `save_verbs_tests::checkpoint_saves_and_continue_arrives_in_its_set` (second Continue) |
+| C5 Level start skips keyed spawns; all-keyed level uses all and warns | `level_start_skips_keyed_spawns_unless_all_keyed` | achievable as stated | pass: sim `player_spawn::tests::level_start_skips_keyed_spawns_unless_all_keyed` |
+| C6 Client `checkpoint` no-op; outside run writes character only; backdrop writes nothing | `checkpoint_scope_by_role_and_run` | achievable as stated | pass (clarified by owner: outside a run the character and world save, never the run): `save_verbs_tests::checkpoint_scope_by_run_and_scene`, `session_entry_tests::connected_client_runs_no_save_verb_or_checkpoint` |
+| C7 `checkpoint`+`loadLevel` either order → destination start; two in one tick → later | `checkpoint_and_load_level_in_one_reaction_resume_destination` + `later_checkpoint_in_one_tick_wins` | achievable as stated | pass: `save_verbs_tests::{checkpoint_and_load_level_in_one_reaction_resume_destination, later_checkpoint_in_one_tick_wins}` |
+| R1 Continue selects run's character, installs level with loadout, run slots, sentiment | `continue_installs_run_with_its_character` | achievable as stated | pass: `save_verbs_tests::continue_installs_run_with_its_character` |
+| R2 Continue refused: deleted character, recreated slot, missing catalog id; delete permitted | `continue_refuses_orphaned_or_unknown_level_runs` | achievable as stated | pass: `save_verbs_tests::continue_refuses_orphaned_or_unknown_level_runs` |
+| R3 `newRun` into another character's run refused; empty or own permitted | `new_run_slot_ownership` | achievable as stated | pass: `save_verbs_tests::new_run_slot_ownership` |
+| R4 `newRun` resets run slots, sentiment, level; keeps world and character | `new_run_resets_run_scope_and_keeps_world_and_character` | achievable as stated | pass: `save_verbs_tests::new_run_resets_run_scope_and_keeps_world_and_character` |
+| R5 `newRun` writes run before load; crash in first level resumes it (P7) | `new_run_writes_run_file_before_load` | achievable as stated | pass: `save_verbs_tests::new_run_resets_run_scope_and_keeps_world_and_character` (run file before the load) + level-start saves |
+| R6 SP with backdrop: new character carries gear level 1→2; second new character starts empty (P2) | `new_character_carries_gear_and_second_starts_empty` | achievable as stated | pass: `save_verbs_tests::new_character_carries_gear_and_second_starts_empty` |
+| R7 Backdrop installed: select A (gear), B (none), Continue B → empty, A unchanged (P2) | `selecting_another_character_never_takes_backdrop_or_prior_gear` | achievable as stated | pass: `save_verbs_tests::selecting_another_character_never_takes_prior_gear`, `save_points_tests::backdrop_pawn_is_never_harvested` |
+| R8 Selecting B after A: per-owner slots B's or default, none A's | `select_character_replaces_per_owner_values` | achievable as stated | pass: `save_verbs_tests::{select_character_replaces_per_owner_values, select_character_refreshes_the_bound_per_owner_value}` |
+| R9 Non-persisted mod slots default after `newRun`/Continue; engine slots unchanged; level change keeps both | `store_reload_resets_mod_slots_and_keeps_engine_slots` | achievable as stated | pass: `save_verbs_tests::store_reload_resets_mod_slots_and_keeps_engine_slots` |
+| R10 `deleteCharacter` selected, `loadLevel` spawns empty, writes no character (P12) | `deleted_selection_spawns_empty_and_writes_nothing` | achievable as stated | pass: `save_verbs_tests::deleted_selection_spawns_empty_and_writes_nothing` |
+| R11 `persist: true` global set outside run survives return + select | `save_verbs_tests::world_global_outside_run_survives_frontend_and_select` | achievable as stated | pass: `save_verbs_tests::world_global_outside_run_survives_frontend_and_select` |
+| R12 Migrated global now `persist: "run"` → implicit run (no block) / dropped (block); never world | `migrated_run_scoped_global_routes_by_saves_block` | achievable as stated | pass: `saves::tests::{v4_state_migrates_to_character_and_world_once, mod_without_saves_block_gets_one_selected_active_run_holding_sentiment}` |
+| R13 `persist: true` global written in run survives return + verbs + restart | `world_global_in_run_survives_verbs_and_restart` | achievable as stated | pass: `save_verbs_tests::world_global_in_run_survives_verbs_and_restart` |
+| R14 Boot-restored selection then join/load sends and spawns that loadout; join save keeps it (P1) | `boot_selection_seeds_join_and_spawn_loadout` | achievable as stated | pass: `session_entry_tests::join_then_leave_restores_seat_zero_carry_from_selected_character`, `character_loadout_wire_tests::join_seed_loadout_is_checked_against_host_mod` |
+| R15 Restart restores selection; options file holds neither; bad stored selection → -1 with warning, never written | `selection_restores_from_save_dir_and_rejects_bad_slots` | achievable as stated | pass: `saves::tests::selection_restores_from_save_dir_and_rejects_bad_slots` |
+| R16 Deleting selected run/character → -1, kept across restart (P10) | `deleting_selection_stores_minus_one` | achievable as stated | pass: `save_verbs_tests::deleting_selection_stores_minus_one` |
+| R17 `createCharacter` into occupied refused | `create_character_refuses_occupied_slot` | achievable as stated | pass: `save_verbs_tests::create_character_refuses_occupied_slot` |
+| R18 Rows equal declared count; cap clamp warns; lowered count keeps files hidden | `saves_rows_match_declared_count_and_cap` | achievable as stated | pass: `saves::tests::saves_rows_match_declared_count`, scripting-core `saves_manifest::*` (clamp warning) |
+| R19 No `saves` block: implicit character+run keep progress and sentiment across restart, frontend and level changes; migration keeps sentiment | `mod_without_saves_block_keeps_progress_and_sentiment` | achievable as stated | pass: `save_verbs_tests::mod_without_saves_block_keeps_progress_and_sentiment`, `saves::tests::mod_without_saves_block_gets_one_selected_active_run_holding_sentiment` |
+| V1 Every verb refused in played level/loading and as client; permitted at frontend, with backdrop, while backdrop loads | `save_verbs_gate_by_scene_and_role` | achievable as stated | pass: `save_verbs_tests::save_verbs_gate_by_scene`, `session_entry_tests::connected_client_runs_no_save_verb_or_checkpoint`, `save_verbs_tests::new_character_carries_gear_and_second_starts_empty` (backdrop installed) |
+| V2 Hosting at frontend: own Continue and `newRun` permitted, clients follow; others refused; no selection blocks host/join/`newRun` | `hosting_frontend_verb_gate` + `no_selection_blocks_session_entry_and_new_run` | achievable as stated | pass: `save_verbs_tests::{hosting_frontend_verb_gate, no_selection_blocks_session_entry_and_new_run}`, `session_entry_tests::hosting_from_the_dev_frontend_lands_in_the_lobby_and_its_cancel_ends_the_session` |
+| V3 Guest admitted at lobby keeps per-owner and loadout through host Continue/`newRun` and final character | `lobby_guest_keeps_values_through_host_continue` | achievable as stated | pass: `save_verbs_tests::lobby_guest_keeps_values_through_host_continue` |
+| V4 Second verb after queued run load refused (P6) | `verb_after_queued_run_load_is_refused` | achievable as stated | pass: `save_verbs_tests::verb_after_queued_run_load_is_refused` |
+| V5 `persist: "run"` refused per-owner, accepted global | `persist_run_scope_declaration_rules` | achievable as stated | pass: `store_bridge::tests::persist_run_scope_declaration_rules`, `staged_manifest::tests::staged_manifest_carries_run_scope_and_saves_in_both_vms` |
+| N1 Host gear check: unknown parts dropped, magazine and health clamped, life state → initial, bad active slot → 0, valid restores whole | `join_seed_loadout_is_checked_against_host_mod` | achievable as stated | pass: `character_loadout_wire_tests::join_seed_loadout_is_checked_against_host_mod`, netcode `loadout_wire::tests` (4) |
+| N2 Rejoin within hold spawns held seat's loadout | `rejoin_within_hold_keeps_held_loadout` | achievable as stated | pass: `character_loadout_wire_tests::rejoin_within_hold_keeps_held_loadout`, netcode `rejoin_of_a_seat_that_never_spawned_is_not_reclaimed` |
+| N3 Guest pickup then host end saves weapon (P3); own leave after pickup saves it | `final_character_includes_gear_since_last_level_start` | achievable as stated | pass: `character_loadout_wire_tests::final_character_includes_gear_since_last_level_start`, `session_entry_tests::guest_leave_after_pickup_saves_the_weapon` |
+| N4 Client writes character per loadout message; periodic save keeps it (P8) | `client_saves_each_loadout_message_and_periodic_keeps_it` | achievable as stated | pass: `session_entry_tests::client_saves_each_loadout_message_and_periodic_keeps_it` |
+| N5 Leaving client with silent host closes at bound, saves last sent loadout | `leaving_client_gives_up_at_bound_with_last_loadout` | achievable as stated | pass: `session_entry_tests::leaving_client_gives_up_at_bound_with_last_loadout` |
+| N6 Loadout messages reach only own seat's client; roster carries none | `loadout_messages_reach_only_their_owner` | achievable as stated | pass: `character_loadout_wire_tests::loadout_messages_reach_only_their_owner` |
+| N7 Roster shows character name truncated at claim cap | `roster_shows_character_name_truncated` | achievable as stated | pass: `character_loadout_wire_tests::roster_shows_character_name_truncated` |
+| N8 Host's files never hold a guest's rows or loadout | `host_save_files_hold_no_guest_state` | achievable as stated | pass: `save_verbs_tests::lobby_guest_keeps_values_through_host_continue` |
+| N9 Two characters from one device each reclaim only own held seat | `two_characters_one_device_reclaim_own_seats` | achievable as stated | pass: `character_loadout_wire_tests::two_characters_one_device_reclaim_own_seats` |
+| N10 Grep gate: `crates/net` no engine crate; loadout wire type strings+integers only | xtask surface gate `net_loadout_wire_is_names_only` | achievable as stated | pass: xtask `net_loadout_wire_is_names_only` (+ self-test) |
+| D1 Join-then-leave seat-0 carry test replaced: carry equals selected character's saved loadout | `join_then_leave_restores_seat_zero_carry_from_selected_character` (replaces `join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry`) | achievable as stated | pass: `session_entry_tests::join_then_leave_restores_seat_zero_carry_from_selected_character` |
+| D2 `docs/`, SDK comments cover `saves`, `persist: "run"`, verbs, `checkpoint`, `getGameState().saves`; FGD `checkpoint` key | doc review + SDK drift guards + FGD parse test | achievable as stated | pass: docs and SDK comments reviewed (two hygiene passes); typedef drift tests; sim `fgd_declares_the_checkpoint_key_on_player_spawn` |
+| D3 Scripting surface example runs as `content/dev` fixture in TS and Luau, slots minted | `saves_surface_fixture_ts_and_luau_load` | achievable as stated | pass: `app::saves_surface_fixture_tests::saves_surface_fixture_ts_and_luau_load` |
+| M1 Dev mod SP: create, run, two levels, quit, Continue at level 2 with gear; checkpoint continue | owner, in-engine | manual | outstanding: owner, in-engine |
+| M2 Loopback co-op lobby, guest gear in and out, Cancel ends session | owner, in-engine | manual | outstanding: owner, in-engine |
+| M3 Gamepad-only character and run management | owner, in-engine | manual | outstanding: owner, in-engine |
 
 ## Tasks
 
@@ -139,6 +139,14 @@ Round 4 (round-3 fix commit only): 1 adversarial tester (opus).
 - 🟢 fixed: the reset comment no longer claims the resume always enters the frontend (a CLI boot map reloads instead).
 
 Round 5 (round-4 fix only): 1 adversarial tester (opus). No defects; the gate now matches the save's `played` condition. Test strength: the double-suspend test also asserts the first suspend saves the played level's gear. Optional cleanup left: `backdrop_installed` could fold into `played_level_present()` read at `unload_level` entry. Loop ends: no new concrete findings.
+
+## Final gate (after review, at `ff2d106a` plus the F4 test)
+- `cargo fmt --all --check`: pass.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass (manifest notes only: unused `postretro-net` in `combat-model`, unused `notify-debouncer-full` in `scripting-core`, both outside this branch).
+- `cargo test --workspace`: 16636 pass, 4 fail, 144 ignored. The 4 failures are `prl-build`'s data-script tests, which cannot find the `scripts-build` sidecar under Cargo 1.100's build-dir layout; this branch does not touch `level-compiler` (follow-up below).
+- `cargo test -p postretro --bin postretro --features dev-tools`: 2823 pass; `cargo clippy -p postretro --bin postretro --tests --features dev-tools -- -D warnings`: pass.
+- `cargo check --release --workspace`: pass (preflight, before review); `xtask crate-graph --check`: up to date.
+- GPU-gated tests skip without an adapter in this container.
 
 ## Follow-ups (not in this brief)
 - `prl-build`'s `find_scripts_build` does not know Cargo 1.100's build-dir layout (`target/<profile>/build/<pkg>/<hash>/out/`), so four data-script tests fail on current stable. Unrelated to this branch.

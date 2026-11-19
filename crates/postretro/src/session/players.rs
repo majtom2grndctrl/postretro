@@ -85,6 +85,33 @@ impl SessionPlayers {
         }
     }
 
+    /// While hosting at the frontend, no session level is installed, so the
+    /// counts stay 0 (gameplay reads them), but the rows list every seat,
+    /// joining (`loading`) or held (`reconnecting`), for a lobby screen. A
+    /// session level's install takes the rows over; ending the session at
+    /// the frontend clears them through [`Self::clear_lobby`].
+    pub(crate) fn publish_lobby(
+        &mut self,
+        seats: &SeatTable,
+        registry: &EntityRegistry,
+        slot_table: &mut SlotTable,
+    ) {
+        if self.session_level {
+            return;
+        }
+        derive_seat_statuses(seats, registry, CapturedPawns::NONE, &mut self.statuses);
+        self.rows
+            .write(slot_table, seat_rows(seats, &self.statuses));
+    }
+
+    /// The lobby ends with its session: rows read absent again.
+    pub(crate) fn clear_lobby(&mut self, slot_table: &mut SlotTable) {
+        if !self.session_level {
+            self.statuses.clear();
+            self.rows.clear(slot_table);
+        }
+    }
+
     /// The level ends, on every role: counts read 0 and rows read absent until
     /// the next install writes them, and on a machine left with no session
     /// level. The host's roster drops back to connection-only statuses.

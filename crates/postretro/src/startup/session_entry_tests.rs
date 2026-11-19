@@ -3120,3 +3120,39 @@ fn end_cause_catalog_values_match_the_engine_vocabulary() {
         expected.as_slice()
     );
 }
+
+// Correction 3 (the lobby): a host at its frontend lists joining players in
+// `session.players` while its counts stay 0; ending the session clears them.
+#[test]
+fn hosting_frontend_rows_list_joining_players_for_the_lobby() {
+    let points = spawn_points(3);
+    let mut host = single_player_at_menu(points.clone());
+    assert!(host.app.host_from_frontend(0));
+    let mut relay = Relay::adopt(host.app);
+    let mut view = single_player_at_menu(points);
+    assert!(view.app.join_from_frontend(relay.address()));
+    exchange_until(&mut relay, &mut view, |relay, _| {
+        slot(&relay.app, "session.players.1.present") == Some(SlotValue::Boolean(true))
+    });
+
+    assert_eq!(
+        slot(&relay.app, "session.players.0.present"),
+        Some(SlotValue::Boolean(true)),
+        "the host's own row"
+    );
+    assert_eq!(
+        slot(&relay.app, "session.players.1.status"),
+        Some(SlotValue::Enum("loading".into()))
+    );
+    assert_eq!(
+        slot(&relay.app, "session.playerCounts.connected"),
+        Some(SlotValue::Number(0.0)),
+        "the frontend is not a session level"
+    );
+
+    relay.app.end_session();
+    assert_eq!(
+        slot(&relay.app, "session.players.1.present"),
+        Some(SlotValue::Boolean(false))
+    );
+}

@@ -193,6 +193,9 @@ impl App {
             return;
         };
         session.closing_host_transport = Some(closing);
+        session
+            .session_players
+            .clear_lobby(&mut script_ctx.slot_table.borrow_mut());
         let released = {
             let mut registry = script_ctx.registry.borrow_mut();
             apply_role(

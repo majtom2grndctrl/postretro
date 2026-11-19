@@ -2668,6 +2668,17 @@ impl App {
                 netcode::finish_host_poll(server, seats),
             );
         }
+        if matches!(poll, netcode::WorldLessPoll::Host(_))
+            && let Some(session) = self.session.as_mut()
+            && let Some(seats) = session.seat_table.as_ref()
+        {
+            // A host at its frontend lists who is joining for its lobby.
+            session.session_players.publish_lobby(
+                seats,
+                &script_ctx.registry.borrow(),
+                &mut script_ctx.slot_table.borrow_mut(),
+            );
+        }
         if let netcode::WorldLessPoll::Host(host_poll) = &poll {
             let Some(session) = self.session.as_mut() else {
                 return Some(poll);

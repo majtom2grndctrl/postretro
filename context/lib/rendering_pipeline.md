@@ -219,7 +219,9 @@ invalidate sample words; admitted clusters install base and sparse data, then co
 their affected affinity rows. Each drain admits ready clusters in priority order up to the
 decoded-byte budget it shares with lightmap blocks, always at least one, and stops rather
 than skipping ahead to smaller lower-priority work, so frame cost tracks bytes rather than
-cluster count. A newly installed cluster remains unavailable to sampling until the next drain,
+cluster count. The budget's size, 8 MiB per play drain and 32 MiB per settling drain, is a tuning
+value, not a contract: a retune that keeps the one owner, the admission order and the lightmap
+in-hand totals lands without a brief (`plans/ready/streaming-drain-budget-spike`). A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
 reaches the ambient floor.
@@ -383,7 +385,10 @@ logs a load warning. Lightmap streaming reports through a throttled
 `[Lightmap streaming]` log line, the dev-tools Streaming tab, the capture report's
 `lightmap_streaming` block, and the `lightmap_residency` and `lightmap_drain` CPU-timing
 stages (§12). Layers, peak layers, live and retiring bytes, band headroom, repacks,
-compactions, compaction rollbacks and growths count per pool.
+compactions, compaction rollbacks and growths count per pool. Lightmap visible misses carry cause
+buckets as SH's do (decided, not yet built): each drawn-not-resident block-frame lands in exactly
+one, named as SH's where the cause is the same, and every surface names its unit, block-frames
+for lightmaps and episodes for SH (`plans/ready/streaming-drain-budget-spike`).
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and

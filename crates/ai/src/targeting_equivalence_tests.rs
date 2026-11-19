@@ -182,18 +182,21 @@ fn reference_outcome(scene: &Scene) -> String {
     )
 }
 
-/// The live selection, through the seams `compute` calls.
+/// The live selection, through the seams `compute` calls, over an index built
+/// as the pass builds it.
 fn live_outcome(scene: &Scene) -> String {
     let registry = &scene.registry;
+    let index = crate::pawn_index::PawnIndex::for_test(registry);
     drive(
         scene,
         |live, from, faction, exclude| {
-            targeting::target_offers(registry, live, from, faction, Some(scene.enemy), exclude)
+            targeting::target_offers(&index, live, from, faction, Some(scene.enemy), exclude)
         },
         |retained, offers, live, faction, perception| {
             targeting::select_target_with_attacker_ledger(
                 retained,
                 offers,
+                &index,
                 registry,
                 live,
                 Some(scene.enemy),
@@ -427,7 +430,10 @@ fn live_target_selection_matches_the_every_pawn_reference_across_random_scenes()
     }
     // The scenes reach every kind of result.
     let coverage = (selected, latched, fresh, empty);
-    assert!(selected > 3_000 && latched > 500 && fresh > 2_500 && empty > 50, "{coverage:?}");
+    assert!(
+        selected > 3_000 && latched > 500 && fresh > 2_500 && empty > 50,
+        "{coverage:?}"
+    );
 }
 
 /// A fixed scene: the enemy (alpha) at the origin, one player and a peer.

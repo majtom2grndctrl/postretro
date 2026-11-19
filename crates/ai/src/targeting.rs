@@ -7,19 +7,17 @@ use glam::Vec3;
 use super::engine_floor::{is_meaningfully_closer, think_stride_for_distance};
 use super::perception::RawTargetPerception;
 use crate::nav::distance_xz;
-use postretro_entities::ComponentKind;
 use postretro_entities::components::brain::{
     BrainComponent, RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker,
 };
 #[cfg(test)]
 use postretro_entities::components::health::HealthComponent;
 use postretro_entities::components::player_movement::PlayerMovementComponent;
-use postretro_entities::{
-    EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment, Transform,
-};
+use postretro_entities::{EntityId, EntityRegistry, LiveFactionSentiment, Transform};
 use postretro_foundation::{BoundProgram, IrValue, RetaliationDescriptor, eval_value};
 
 use super::candidate_scope::{CandidateFacts, CandidateRefreshContext, CandidateScope};
+use super::pawn_index::{IndexedPawn, PawnIndex};
 
 #[cfg(test)]
 const EMPTY_RECENT_ATTACKERS: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY] =
@@ -134,68 +132,49 @@ pub(super) fn target_candidate(
     })
 }
 
-/// Iterate targetable pawns without applying authored or engine-floor
-/// eligibility. Player-movement holders come first, followed by brain-only
-/// holders, matching the established deterministic scan order.
-fn target_candidates(
-    registry: &EntityRegistry,
-    from: Vec3,
-    evaluating_enemy: Option<EntityId>,
-    exclude: Option<EntityId>,
-) -> impl Iterator<Item = TargetCandidate> + '_ {
-    let movement_holders = registry.iter_with_kind(ComponentKind::PlayerMovement);
-    let brain_only_holders =
-        registry
-            .iter_with_kind(ComponentKind::Brain)
-            .filter(move |(entity, _)| {
-                registry
-                    .get_component::<PlayerMovementComponent>(*entity)
-                    .is_err()
-            });
-    movement_holders
-        .chain(brain_only_holders)
-        .filter_map(move |(entity, _)| {
-            if evaluating_enemy == Some(entity) || exclude == Some(entity) {
-                return None;
-            }
-            target_candidate(registry, entity, from)
-        })
-}
-
-/// Find the pure nearest hostile target without retaining a heap-backed copy
-/// of the candidate set. A due selection replays [`target_candidates`], so a
-/// later retaliation admission can never alter this stride-price input.
+/// Find the pure nearest hostile target from the pass's pawn index: the pawns
+/// in buckets the evaluating faction is hostile to, nearest by raw XZ
+/// distance, ties to the earlier in scan order. Only `nearest` prices the
+/// acquisition stride; a due selection walks the same buckets again.
 pub(super) fn target_offers(
-    registry: &EntityRegistry,
+    index: &PawnIndex,
     factions: &LiveFactionSentiment<'_>,
     from: Vec3,
     enemy_faction: f32,
     evaluating_enemy: Option<EntityId>,
     exclude: Option<EntityId>,
 ) -> TargetOffers {
-    let mut nearest = None;
-    for candidate in target_candidates(registry, from, evaluating_enemy, exclude) {
-        // Hostility alone contributes to the pure-distance stride price. The
-        // non-hostile pawn remains in the raw scan so selection can admit it
-        // only if its one refreshed candidate scope proves over tolerance.
-        // Retained lookup stays above this scan and deliberately never re-gates
-        // its target on hostility.
-        let candidate_faction = registry
-            .get_component::<EntityStateComponent>(candidate.target.entity)
-            .map_or(0.0, |state| state.get(super::FACTION_STATE_FIELD));
-        let hostile = is_hostile(factions, enemy_faction, candidate_faction);
-        if hostile
-            && nearest.is_none_or(|current: TargetCandidate| {
-                candidate.distance.total_cmp(&current.distance).is_lt()
-            })
-        {
-            nearest = Some(candidate);
+    let mut nearest: Option<(TargetCandidate, u32)> = None;
+    for position in index.hostile_pawns(factions, enemy_faction) {
+        let pawn = index.pawn(position);
+        if evaluating_enemy == Some(pawn.entity) || exclude == Some(pawn.entity) {
+            continue;
+        }
+        let candidate = indexed_candidate(pawn, from);
+        if nearest.is_none_or(|(current, current_position)| {
+            candidate
+                .distance
+                .total_cmp(&current.distance)
+                .then(position.cmp(&current_position))
+                .is_lt()
+        }) {
+            nearest = Some((candidate, position));
         }
     }
     TargetOffers {
-        nearest,
+        nearest: nearest.map(|(candidate, _)| candidate),
         from,
         exclude,
+    }
+}
+
+fn indexed_candidate(pawn: &IndexedPawn, from: Vec3) -> TargetCandidate {
+    TargetCandidate {
+        target: TargetPawn {
+            entity: pawn.entity,
+            position: pawn.position,
+        },
+        distance: distance_xz(pawn.position, from),
     }
 }
 
@@ -241,6 +220,7 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
 pub(super) fn select_target(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,
+    index: &PawnIndex,
     registry: &EntityRegistry,
     factions: &LiveFactionSentiment<'_>,
     evaluating_faction: f32,
@@ -251,6 +231,7 @@ pub(super) fn select_target(
     select_target_with_attacker_ledger(
         retained,
         offers,
+        index,
         registry,
         factions,
         None,
@@ -273,6 +254,7 @@ pub(super) fn select_target(
 pub(super) fn select_target_with_attacker_ledger(
     retained: Option<TargetCandidate>,
     offers: &TargetOffers,
+    index: &PawnIndex,
     registry: &EntityRegistry,
     factions: &LiveFactionSentiment<'_>,
     evaluating_enemy: Option<EntityId>,
@@ -299,44 +281,103 @@ pub(super) fn select_target_with_attacker_ledger(
         evaluating_faction,
         recent_attackers,
     );
-    let mut nearest_distance_eligible: Option<EligibleCandidate> = None;
-    let mut preferred_eligible: Option<EligibleCandidate> = None;
-    for candidate in target_candidates(registry, offers.from, evaluating_enemy, offers.exclude) {
-        let facts =
-            candidate_scope.refresh(refresh_context, candidate.target.entity, candidate.distance);
-        let retaliation_preference =
-            retaliation_preference(facts, candidate.distance, retaliation, tick_ms);
-        let hostile = facts.sentiment < 0.0;
-        // This is the only non-hostile admission path. Candidate guards remain
-        // narrowing-only and are deliberately not evaluated for an engine
-        // candidate that did not first pass the offer floor.
-        if !hostile && retaliation_preference.is_none() {
-            continue;
+    let skipped =
+        |entity: EntityId| evaluating_enemy == Some(entity) || offers.exclude == Some(entity);
+    // One candidate through the offer floor, authored candidacy and line of
+    // sight. A non-hostile pawn passes the floor only by retaliation; with
+    // `ranked_only`, so does every pawn.
+    let mut evaluate = |pawn: &IndexedPawn, scope: &mut CandidateScope, ranked_only: bool| {
+        let candidate = indexed_candidate(pawn, offers.from);
+        let facts = scope.refresh_with_faction(
+            refresh_context,
+            pawn.entity,
+            candidate.distance,
+            pawn.faction,
+        );
+        let rank = retaliation_preference(facts, candidate.distance, retaliation, tick_ms);
+        if (ranked_only || facts.sentiment >= 0.0) && rank.is_none() {
+            return None;
         }
-        let filter_allows = candidate_filter
-            .is_none_or(|filter| eval_value(filter, candidate_scope) == IrValue::Bool(true));
-        let Some(perception) = filter_allows
+        let filter_allows =
+            candidate_filter.is_none_or(|filter| eval_value(filter, scope) == IrValue::Bool(true));
+        let perception = filter_allows
             .then(|| candidate_perception(candidate.target))
             .flatten()
-            .filter(|perception| perception.visible)
-        else {
-            continue;
-        };
-        let eligible = EligibleCandidate {
+            .filter(|perception| perception.visible)?;
+        Some(EligibleCandidate {
             candidate,
             perception,
-            retaliation: retaliation_preference,
-        };
-        if hostile
-            && nearest_distance_eligible.is_none_or(|current| {
-                candidate
-                    .distance
-                    .total_cmp(&current.candidate.distance)
-                    .is_lt()
-            })
-        {
-            nearest_distance_eligible = Some(eligible);
+            retaliation: rank,
+        })
+    };
+
+    // Hostile pawns nearest first, ties in scan order, until the first that is
+    // eligible: the nearest eligible hostile, which pure distance ranking
+    // selects and the retaliation latch compares against.
+    let mut walk = index.walk.borrow_mut();
+    walk.clear();
+    for position in index.hostile_pawns(factions, evaluating_faction) {
+        let pawn = index.pawn(position);
+        if !skipped(pawn.entity) {
+            walk.push((distance_xz(pawn.position, offers.from), position));
         }
+    }
+    walk.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut nearest_distance_eligible: Option<(EligibleCandidate, u32)> = None;
+    for &(_, position) in walk.iter() {
+        if let Some(eligible) = evaluate(index.pawn(position), candidate_scope, false) {
+            nearest_distance_eligible = Some((eligible, position));
+            break;
+        }
+    }
+    // Where the walk stopped, in walk order; past it nothing was evaluated.
+    let walked_past = |pawn: &IndexedPawn, position: u32| match nearest_distance_eligible {
+        Some((eligible, stop)) => {
+            index.hostile_to(factions, evaluating_faction, pawn)
+                && (distance_xz(pawn.position, offers.from)
+                    .total_cmp(&eligible.candidate.distance)
+                    .then(position.cmp(&stop)))
+                .is_le()
+        }
+        None => index.hostile_to(factions, evaluating_faction, pawn),
+    };
+
+    // Only an attacker on the ledger can rank for retaliation, so every
+    // eligible candidate that could outrank the walk's is one of these. Each
+    // is evaluated once, in scan order, unless the walk already did.
+    let mut attackers = [u32::MAX; RECENT_ATTACKER_LEDGER_CAPACITY];
+    let mut attacker_count = 0;
+    for entry in recent_attackers.iter().flatten() {
+        let Some(position) = index.position_of(entry.attacker) else {
+            continue;
+        };
+        if skipped(entry.attacker) || attackers[..attacker_count].contains(&position) {
+            continue;
+        }
+        attackers[attacker_count] = position;
+        attacker_count += 1;
+    }
+    let attackers = &mut attackers[..attacker_count];
+    attackers.sort_unstable();
+    let mut ranked = [None::<(EligibleCandidate, u32)>; RECENT_ATTACKER_LEDGER_CAPACITY];
+    for (slot, &position) in ranked.iter_mut().zip(attackers.iter()) {
+        let pawn = index.pawn(position);
+        if walked_past(pawn, position) {
+            continue;
+        }
+        *slot = evaluate(pawn, candidate_scope, true).map(|eligible| (eligible, position));
+    }
+
+    // The scan's preference fold, over the candidates that can win, in scan
+    // order: the strongest retaliation rank, else the nearest hostile; ties
+    // to the earlier pawn.
+    let mut contenders = [None::<(EligibleCandidate, u32)>; RECENT_ATTACKER_LEDGER_CAPACITY + 1];
+    contenders[0] = nearest_distance_eligible;
+    contenders[1..].copy_from_slice(&ranked);
+    contenders
+        .sort_unstable_by_key(|contender| contender.map_or(u32::MAX, |(_, position)| position));
+    let mut preferred_eligible: Option<EligibleCandidate> = None;
+    for &(eligible, _) in contenders.iter().flatten() {
         if preferred_eligible.is_none_or(|current| {
             match (eligible.retaliation, current.retaliation) {
                 (Some(candidate_rank), Some(current_rank)) => {
@@ -344,7 +385,8 @@ pub(super) fn select_target_with_attacker_ledger(
                 }
                 (Some(_), None) => true,
                 (None, Some(_)) => false,
-                (None, None) => candidate
+                (None, None) => eligible
+                    .candidate
                     .distance
                     .total_cmp(&current.candidate.distance)
                     .is_lt(),
@@ -353,6 +395,7 @@ pub(super) fn select_target_with_attacker_ledger(
             preferred_eligible = Some(eligible);
         }
     }
+    let nearest_distance_eligible = nearest_distance_eligible.map(|(eligible, _)| eligible);
 
     let selection_for =
         |eligible: EligibleCandidate, retaliation_acquired_target| TargetSelection {
@@ -483,6 +526,22 @@ mod tests {
         })
     }
 
+    /// The pass's raw candidates, before any eligibility: every indexed pawn
+    /// but the evaluating enemy and the excluded one, in scan order.
+    fn target_candidates(
+        registry: &EntityRegistry,
+        from: Vec3,
+        evaluating_enemy: Option<EntityId>,
+        exclude: Option<EntityId>,
+    ) -> std::vec::IntoIter<TargetCandidate> {
+        PawnIndex::for_test(registry)
+            .entities()
+            .filter(|entity| evaluating_enemy != Some(*entity) && exclude != Some(*entity))
+            .filter_map(|entity| target_candidate(registry, entity, from))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
     fn pawn(registry: &mut EntityRegistry, x: f32) -> EntityId {
         let entity = registry.spawn(Transform {
             position: Vec3::new(x, 0.0, 0.0),
@@ -545,7 +604,7 @@ mod tests {
         let factions = FactionRegistry::default();
         let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
         let offers = target_offers(
-            registry,
+            &PawnIndex::for_test(registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             from,
             enemy_faction,
@@ -563,6 +622,7 @@ mod tests {
         let selected = select_target(
             retained,
             &offers,
+            &PawnIndex::for_test(registry),
             registry,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             enemy_faction,
@@ -589,7 +649,7 @@ mod tests {
         let retained =
             retained_target.and_then(|entity| target_candidate(registry, entity, Vec3::ZERO));
         let offers = target_offers(
-            registry,
+            &PawnIndex::for_test(registry),
             factions,
             Vec3::ZERO,
             enemy_faction,
@@ -608,6 +668,7 @@ mod tests {
         let selection = select_target_with_attacker_ledger(
             retained,
             &offers,
+            &PawnIndex::for_test(registry),
             registry,
             factions,
             Some(evaluating_enemy),
@@ -686,7 +747,7 @@ mod tests {
             .set(super::super::FACTION_STATE_FIELD, 1.0);
         let factions = FactionRegistry::default();
         let hostile_offers = target_offers(
-            &registry,
+            &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             0.0,
@@ -713,7 +774,7 @@ mod tests {
             .expect("fresh peer has entity state")
             .set(super::super::FACTION_STATE_FIELD, 0.0);
         let default_faction_offers = target_offers(
-            &registry,
+            &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             0.0,
@@ -778,7 +839,7 @@ mod tests {
             .set(super::super::FACTION_STATE_FIELD, 3.0);
 
         let cabal_offers = target_offers(
-            &registry,
+            &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             2.0,
@@ -797,7 +858,7 @@ mod tests {
             .expect("pawn remains live")
             .set(super::super::FACTION_STATE_FIELD, 2.0);
         let resistance_offers = target_offers(
-            &registry,
+            &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             3.0,
@@ -817,7 +878,7 @@ mod tests {
         );
         assert_eq!(
             target_offers(
-                &registry,
+                &PawnIndex::for_test(&registry),
                 &LiveFactionSentiment::with_empty_overlay(&factions),
                 Vec3::ZERO,
                 2.0,
@@ -849,7 +910,7 @@ mod tests {
         let pawn = pawn(&mut registry, 4.0);
         let factions = FactionRegistry::default();
         let offers = target_offers(
-            &registry,
+            &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             1.0,
@@ -871,6 +932,7 @@ mod tests {
         let selected = select_target(
             None,
             &offers,
+            &PawnIndex::for_test(&registry),
             &registry,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             1.0,
@@ -885,7 +947,7 @@ mod tests {
 
         let retained = target_candidate(&registry, pawn, Vec3::ZERO).expect("retained target");
         let empty_offers = target_offers(
-            &registry,
+            &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             1.0,
@@ -895,6 +957,7 @@ mod tests {
         let retained_selection = select_target(
             Some(retained),
             &empty_offers,
+            &PawnIndex::for_test(&registry),
             &registry,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             1.0,
@@ -917,7 +980,7 @@ mod tests {
             target_candidate(&registry, retained_entity, Vec3::ZERO).expect("retained target");
         let factions = FactionRegistry::default();
         let offers = target_offers(
-            &registry,
+            &PawnIndex::for_test(&registry),
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             1.0,
@@ -936,6 +999,7 @@ mod tests {
         let selected = select_target(
             Some(retained),
             &offers,
+            &PawnIndex::for_test(&registry),
             &registry,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             1.0,
@@ -1168,6 +1232,8 @@ mod tests {
         let peer = brain(&mut registry, 4.0);
         let factions = FactionRegistry::default();
         let mut candidate_scope = CandidateScope::for_validation();
+        // The pass builds its index before any enemy scans.
+        let index = PawnIndex::for_test(&registry);
         let mut candidate_perception = |target: TargetPawn| {
             Some(RawTargetPerception {
                 target: target.entity,
@@ -1180,7 +1246,7 @@ mod tests {
         // Warm the exact path before measuring so the probe covers one normal
         // due scan rather than one-time test/TLS initialization.
         let warm_offers = target_offers(
-            &registry,
+            &index,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             0.0,
@@ -1190,6 +1256,7 @@ mod tests {
         let _ = select_target_with_attacker_ledger(
             None,
             &warm_offers,
+            &index,
             &registry,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Some(enemy),
@@ -1205,7 +1272,7 @@ mod tests {
 
         let snapshot = AllocSnapshot::arm();
         let offers = target_offers(
-            &registry,
+            &index,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Vec3::ZERO,
             0.0,
@@ -1215,6 +1282,7 @@ mod tests {
         let selected = select_target_with_attacker_ledger(
             None,
             &offers,
+            &index,
             &registry,
             &LiveFactionSentiment::with_empty_overlay(&factions),
             Some(enemy),

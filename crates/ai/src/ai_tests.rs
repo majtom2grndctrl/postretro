@@ -1632,8 +1632,9 @@ fn select_target_for_test(
     let factions = FactionRegistry::default();
     let live_factions = LiveFactionSentiment::with_empty_overlay(&factions);
     let retained = retained_target.and_then(|entity| target_candidate(registry, entity, from));
+    let index = crate::pawn_index::PawnIndex::for_test(registry);
     let offers = target_offers(
-        registry,
+        &index,
         &live_factions,
         from,
         enemy_faction,
@@ -1652,6 +1653,7 @@ fn select_target_for_test(
     let selected = select_target(
         retained,
         &offers,
+        &index,
         registry,
         &live_factions,
         enemy_faction,

@@ -4,6 +4,7 @@
 // See: context/plans/in-progress/perf-ai-tick-cost (pawn index)
 
 use super::*;
+use postretro_entities::{ComponentKind, EntityStateComponent};
 
 /// Iterate targetable pawns without applying authored or engine-floor
 /// eligibility. Player-movement holders come first, followed by brain-only

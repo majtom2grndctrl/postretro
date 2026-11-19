@@ -24,6 +24,7 @@ mod graph_eval;
 mod heading;
 mod launch;
 mod leap;
+mod pawn_index;
 mod perception;
 mod steering;
 mod targeting;
@@ -270,6 +271,8 @@ pub struct AiRuntime {
     /// Route-search scratch for the pass's reachability and positioning
     /// queries. Contents never carry between queries.
     nav_scratch: crate::nav::NavScratch,
+    /// This pass's targetable pawns by faction, rebuilt every pass.
+    pawns: pawn_index::PawnIndex,
     /// Warn-once latch for the CONTENT-keyed diagnostics, namespaced so a given
     /// one fires once across the whole run, never each tick: `anim:<name>` for an
     /// animation state that fails to switch (`UnknownState`/`NotAnimated` — the
@@ -330,6 +333,7 @@ impl AiRuntime {
     pub fn new() -> Self {
         Self {
             nav_scratch: crate::nav::NavScratch::new(),
+            pawns: pawn_index::PawnIndex::default(),
             warned: HashSet::new(),
             blocked_warned: HashSet::new(),
             reseat_warned: HashSet::new(),
@@ -538,6 +542,7 @@ where
     // spawn, despawn, and a wholesale deserialize.
     let AiRuntime {
         nav_scratch,
+        pawns,
         warned,
         blocked_warned,
         reseat_warned,
@@ -610,6 +615,12 @@ where
             }),
     );
 
+    // Every enemy's candidates, read once for the pass. Built here, after the
+    // previous pass's apply and before compute borrows the registry for the
+    // rest of it. Unlike the snapshots, quiescent brains stay: they remain
+    // candidates.
+    pawns.rebuild(registry);
+
     // The live view exists only for compute. `apply_outcomes` can invoke an
     // impact policy which mutates the overlay, so retaining this Ref across the
     // apply pass would turn an ordinary same-tick write into a RefCell panic.
@@ -632,6 +643,7 @@ where
             clips,
             cpu,
             nav_scratch,
+            pawns,
         )
     };
 

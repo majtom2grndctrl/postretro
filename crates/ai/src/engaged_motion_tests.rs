@@ -1325,3 +1325,6 @@ mod stage_timing;
 
 #[path = "multi_arena_tests.rs"]
 mod multi_arena;
+
+#[path = "pawn_index_tests.rs"]
+mod pawn_index_pass;

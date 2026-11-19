@@ -51,6 +51,7 @@ pub(super) fn evaluate(
     clips: Option<&crate::scripting_systems::hit_zones::HitZoneStore>,
     cpu: Option<&AiStageFrame>,
     nav_scratch: &mut NavScratch,
+    pawns: &super::pawn_index::PawnIndex,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for (slot, snap) in snapshots.into_iter().enumerate() {
@@ -114,7 +115,7 @@ pub(super) fn evaluate(
                     let (candidate_filter, candidate_scope) =
                         programs.candidate_filter_context(snap.id);
                     let offers = target_offers(
-                        registry,
+                        pawns,
                         factions,
                         snap.position,
                         enemy_faction,
@@ -134,6 +135,7 @@ pub(super) fn evaluate(
                     select_target_with_attacker_ledger(
                         Some(retained),
                         &offers,
+                        pawns,
                         registry,
                         factions,
                         Some(snap.id),
@@ -158,7 +160,7 @@ pub(super) fn evaluate(
                 (target, evaluate_acquisition)
             } else {
                 let offers = target_offers(
-                    registry,
+                    pawns,
                     factions,
                     snap.position,
                     enemy_faction,
@@ -188,6 +190,7 @@ pub(super) fn evaluate(
                     select_target_with_attacker_ledger(
                         None,
                         &offers,
+                        pawns,
                         registry,
                         factions,
                         Some(snap.id),

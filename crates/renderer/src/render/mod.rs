@@ -95,6 +95,8 @@ mod dx12_fxc_test;
 #[cfg(test)]
 pub(crate) mod gpu_test_harness;
 #[cfg(test)]
+pub(crate) mod install_cost_model;
+#[cfg(test)]
 mod lightmap_residency_test;
 #[cfg(test)]
 mod render_extent_gpu_test;

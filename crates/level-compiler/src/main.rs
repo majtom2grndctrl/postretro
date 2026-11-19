@@ -1444,21 +1444,30 @@ fn log_captured_command_output(label: &str, stdout: &[u8], stderr: &[u8], level:
     }
 }
 
-fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
-    let profile_binary = exe_dir.parent().map(|parent| parent.join(name));
+/// The `target/<profile>/` directory when `exe_dir` holds a Cargo test
+/// executable. Cargo places test executables in `<profile>/deps/`, or, from
+/// Cargo 1.100, in `<profile>/build/<package>/<hash>/out/`; either way it
+/// builds the `scripts-build` binary itself into `<profile>/`.
+fn cargo_test_profile_dir(exe_dir: &Path) -> Option<&Path> {
+    let leaf = exe_dir.file_name()?;
+    if leaf == "deps" {
+        return exe_dir.parent();
+    }
+    let build = exe_dir.ancestors().nth(3)?;
+    if leaf == "out" && build.file_name()? == "build" {
+        return build.parent();
+    }
+    None
+}
 
-    // A Cargo unit-test executable lives in `target/<profile>/deps/`. Cargo
-    // builds the standalone sidecar at `target/<profile>/`, while a stale
-    // un-hashed compatibility binary can remain in `deps/`. Prefer the
-    // profile-level sidecar for that test-only layout so a child `cargo build`
-    // is also the binary we subsequently invoke.
-    if exe_dir
-        .file_name()
-        .is_some_and(|component| component == "deps")
-        && let Some(profile_binary) = profile_binary.as_ref()
+fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
+    // A test executable prefers the profile-level sidecar over a stale
+    // un-hashed copy beside it, so the binary a child `cargo build` writes is
+    // the one invoked.
+    if let Some(profile_binary) = cargo_test_profile_dir(exe_dir).map(|dir| dir.join(name))
         && profile_binary.is_file()
     {
-        return Some(profile_binary.clone());
+        return Some(profile_binary);
     }
 
     let adjacent = exe_dir.join(name);
@@ -1466,9 +1475,10 @@ fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
         return Some(adjacent);
     }
 
-    // A test target without a profile-level sidecar still falls through here,
-    // preserving the normal adjacent-then-parent discovery cascade.
-    profile_binary.filter(|binary| binary.is_file())
+    exe_dir
+        .parent()
+        .map(|parent| parent.join(name))
+        .filter(|binary| binary.is_file())
 }
 
 fn find_scripts_build() -> Option<PathBuf> {
@@ -1875,6 +1885,40 @@ mod tests {
             "a Cargo test binary must ignore a stale deps/scripts-build in favor of the profile sidecar"
         );
         std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
+    }
+
+    #[test]
+    fn scripts_build_beside_build_dir_test_binary_finds_profile_sidecar() {
+        let root = unique_temp_dir("scripts-build-build-dir");
+        let out = root.join("debug/build/postretro-level-compiler/0123abcd/out");
+        std::fs::create_dir_all(&out).expect("create test executable directory");
+        let name = if cfg!(windows) {
+            "scripts-build.exe"
+        } else {
+            "scripts-build"
+        };
+        let profile_binary = root.join("debug").join(name);
+        std::fs::write(&profile_binary, "current").expect("write profile sidecar");
+
+        assert_eq!(
+            scripts_build_beside(&out, name),
+            Some(profile_binary),
+            "a test binary under build/<package>/<hash>/out/ must find the profile sidecar"
+        );
+        std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
+    }
+
+    #[test]
+    fn cargo_test_profile_dir_ignores_an_out_dir_outside_build() {
+        let root = Path::new("target/debug");
+        assert_eq!(cargo_test_profile_dir(&root.join("deps")), Some(root));
+        assert_eq!(
+            cargo_test_profile_dir(&root.join("build/pkg/0123abcd/out")),
+            Some(root)
+        );
+        assert_eq!(cargo_test_profile_dir(&root.join("a/b/c/out")), None);
+        assert_eq!(cargo_test_profile_dir(&root.join("build/pkg/out")), None);
+        assert_eq!(cargo_test_profile_dir(root), None);
     }
 
     #[test]

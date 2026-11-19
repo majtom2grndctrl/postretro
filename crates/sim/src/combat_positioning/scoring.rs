@@ -31,7 +31,111 @@ pub(super) fn capsule_placement(nav_graph: &NavGraph) -> Option<CapsulePlacement
     })
 }
 
+/// Where a candidate's placement work comes from. [`Direct`] computes it for
+/// the one query; a batch shares the target-side half across its enemies
+/// (`placement_cache`). Every source returns what [`Direct`] returns.
+pub(super) trait PlacementSource {
+    /// The candidate grounded on its region's floor, if it stays there.
+    fn grounded(
+        &mut self,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+    ) -> Option<Vec3>;
+
+    /// No other agent stands within spacing of the grounded slot.
+    fn clear(
+        &mut self,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+    ) -> bool;
+
+    /// A docked mover overlaps a capsule at the grounded slot.
+    fn overlaps_docked_mover(
+        &mut self,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+    ) -> bool;
+
+    /// The slot reaches the target by a route about as short as the line.
+    fn tactically_direct(
+        &mut self,
+        scratch: &mut NavScratch,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+        target_distance: f32,
+    ) -> bool;
+}
+
+/// Placement work computed for one query alone.
+pub(super) struct Direct;
+
+impl PlacementSource for Direct {
+    fn grounded(
+        &mut self,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+    ) -> Option<Vec3> {
+        grounded_candidate_position(query, placement, position)
+    }
+
+    fn clear(
+        &mut self,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+    ) -> bool {
+        dynamic_placement_is_clear(query, placement, position)
+    }
+
+    fn overlaps_docked_mover(
+        &mut self,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+    ) -> bool {
+        overlaps_docked_mover(query, placement, position)
+    }
+
+    fn tactically_direct(
+        &mut self,
+        scratch: &mut NavScratch,
+        query: &CombatQuery<'_>,
+        placement: CapsulePlacement,
+        position: Vec3,
+        target_distance: f32,
+    ) -> bool {
+        has_tactically_direct_target_path(scratch, query, placement, position, target_distance)
+    }
+}
+
 pub(super) fn score_candidate(
+    scratch: &mut NavScratch,
+    query: &CombatQuery<'_>,
+    placement: CapsulePlacement,
+    position: Vec3,
+    generation_index: usize,
+    is_incumbent: bool,
+) -> Option<CombatCandidate> {
+    score_candidate_with(
+        &mut Direct,
+        scratch,
+        query,
+        placement,
+        position,
+        generation_index,
+        is_incumbent,
+    )
+}
+
+/// Score one candidate, taking its placement work from `source`. Every
+/// check is pure, so where a source gets an answer cannot change it.
+pub(super) fn score_candidate_with(
+    source: &mut impl PlacementSource,
     scratch: &mut NavScratch,
     query: &CombatQuery<'_>,
     placement: CapsulePlacement,
@@ -43,17 +147,17 @@ pub(super) fn score_candidate(
         return None;
     }
 
-    let position = grounded_candidate_position(query, placement, position)?;
-    if !dynamic_placement_is_clear(query, placement, position) {
+    let position = source.grounded(query, placement, position)?;
+    if !source.clear(query, placement, position) {
         return None;
     }
     // Gated routes never gate regions, so only this keeps a slot out of a door.
-    let capsule = crate::collision::CollisionCapsule::new(placement.radius, placement.half_height);
-    if query.mover_nav.overlaps_docked_mover(position, capsule) {
+    if source.overlaps_docked_mover(query, placement, position) {
         return None;
     }
     // Slot visibility is a positioning heuristic only. The following tick's
-    // actual-position fire gate remains authoritative for damage.
+    // actual-position fire gate remains authoritative for damage. It casts
+    // from this enemy's own eye, so it is never shared.
     if !line_of_sight(
         position + query.enemy_eye_offset,
         query.target_aim,
@@ -69,7 +173,7 @@ pub(super) fn score_candidate(
     };
     let path = find_path_from_in(scratch, query.nav_graph, gate, from, position)?;
     let target_distance = distance_xz(position, query.target_pos);
-    if !has_tactically_direct_target_path(scratch, query, placement, position, target_distance) {
+    if !source.tactically_direct(scratch, query, placement, position, target_distance) {
         return None;
     }
     let path_cost = path_length(&path);
@@ -85,6 +189,65 @@ pub(super) fn score_candidate(
     })
 }
 
+/// Placement work done at the scoring seam on this thread, for the proofs
+/// that a batch shares it.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PlacementWork {
+    pub(crate) groundings: usize,
+    pub(crate) dock_tests: usize,
+    pub(crate) target_routes: usize,
+    pub(crate) peers_examined: usize,
+    pub(crate) clearance_tests: usize,
+    /// The most agents one clearance test examined.
+    pub(crate) most_peers_per_test: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PLACEMENT_WORK: std::cell::Cell<PlacementWork> =
+        const {
+            std::cell::Cell::new(PlacementWork {
+                groundings: 0,
+                dock_tests: 0,
+                target_routes: 0,
+                peers_examined: 0,
+                clearance_tests: 0,
+                most_peers_per_test: 0,
+            })
+        };
+}
+
+/// Record one clearance test that examined `peers` agents.
+#[cfg(test)]
+pub(super) fn count_clearance(peers: usize) {
+    count_work(|work| {
+        work.clearance_tests += 1;
+        work.peers_examined += peers;
+        work.most_peers_per_test = work.most_peers_per_test.max(peers);
+    });
+}
+
+#[cfg(test)]
+pub(super) fn count_work(update: impl FnOnce(&mut PlacementWork)) {
+    PLACEMENT_WORK.with(|work| {
+        let mut value = work.get();
+        update(&mut value);
+        work.set(value);
+    });
+}
+
+fn overlaps_docked_mover(
+    query: &CombatQuery<'_>,
+    placement: CapsulePlacement,
+    position: Vec3,
+) -> bool {
+    #[cfg(test)]
+    count_work(|work| work.dock_tests += 1);
+    let capsule = crate::collision::CollisionCapsule::new(placement.radius, placement.half_height);
+    query.mover_nav.overlaps_docked_mover(position, capsule)
+}
+
 fn has_tactically_direct_target_path(
     scratch: &mut NavScratch,
     query: &CombatQuery<'_>,
@@ -92,6 +255,8 @@ fn has_tactically_direct_target_path(
     position: Vec3,
     target_distance: f32,
 ) -> bool {
+    #[cfg(test)]
+    count_work(|work| work.target_routes += 1);
     let gate = query.mover_nav.gate;
     // The slot is a floor placement, never a mover top, so it starts on world
     // ground.
@@ -129,6 +294,8 @@ fn grounded_candidate_position(
     placement: CapsulePlacement,
     position: Vec3,
 ) -> Option<Vec3> {
+    #[cfg(test)]
+    count_work(|work| work.groundings += 1);
     let region_index = query.nav_graph.region_at(position)?;
     let region = query.nav_graph.region(region_index)?;
     let probe = Vec3::new(
@@ -146,15 +313,30 @@ fn dynamic_placement_is_clear(
     position: Vec3,
 ) -> bool {
     let min_spacing = dynamic_min_spacing(placement);
-    query.other_agents.iter().all(|other| {
-        if other.claimant_id == query.claimant_id {
-            return true;
+    #[cfg(test)]
+    let mut examined = 0;
+    let clear = query.other_agents.iter().all(|other| {
+        #[cfg(test)]
+        {
+            examined += 1;
         }
-        if other.position.is_finite() && distance_xz(position, other.position) < min_spacing {
-            return false;
-        }
-        true
-    })
+        peer_is_clear(query, other, position, min_spacing)
+    });
+    #[cfg(test)]
+    count_clearance(examined);
+    clear
+}
+
+/// The spacing rule against one other agent: never against the claimant
+/// itself or a non-finite position.
+pub(super) fn peer_is_clear(
+    query: &CombatQuery<'_>,
+    other: &super::CombatAgentSnapshot,
+    position: Vec3,
+    min_spacing: f32,
+) -> bool {
+    other.claimant_id == query.claimant_id
+        || !(other.position.is_finite() && distance_xz(position, other.position) < min_spacing)
 }
 
 pub(super) fn dynamic_min_spacing(placement: CapsulePlacement) -> f32 {

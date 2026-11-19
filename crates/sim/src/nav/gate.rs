@@ -52,6 +52,16 @@ impl<'a> NavGate<'a> {
         self.docks.map_or(0, MoverDockTable::opened_generation)
     }
 
+    /// Whether two gates read the same dock table (or both none), so they
+    /// answer every question alike.
+    pub(crate) fn same_state(self, other: Self) -> bool {
+        match (self.docks, other.docks) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::ptr::eq(a, b),
+            _ => false,
+        }
+    }
+
     pub(crate) fn docked_at(self, mover_id: u32, waypoint: u32) -> bool {
         self.docks
             .is_some_and(|docks| docks.docked_waypoint(mover_id) == Some(waypoint))

@@ -17,18 +17,21 @@ use postretro_foundation::GroundRef;
 use crate::collision::{CapsulePlacement, CollisionWorld};
 use crate::nav::{NavGraph, NavScratch, distance_xz};
 
+mod placement_cache;
 mod rotated_ring;
 mod scoring;
 #[cfg(test)]
 mod uncached_reference;
 
 #[cfg(test)]
+pub(crate) use scoring::{PLACEMENT_WORK, PlacementWork};
+#[cfg(test)]
 pub(crate) use uncached_reference::select_combat_positions_batch_uncached;
 
 pub use rotated_ring::{KeepAway, RING_SLOT_COUNT, SlotRing, arc_slot_mask, slot_spacing};
 #[cfg(test)]
 use scoring::tactically_direct_path_length_limit;
-use scoring::{capsule_placement, dynamic_min_spacing, score_candidate};
+use scoring::{capsule_placement, dynamic_min_spacing, score_candidate, score_candidate_with};
 
 const RING_DIRECTIONS: [Vec3; 8] = [
     Vec3::new(1.0, 0.0, 0.0),
@@ -119,7 +122,27 @@ pub fn select_combat_positions_batch_in(
     queries: &[CombatQuery<'_>],
     scratch: &mut NavScratch,
 ) -> Vec<CombatAssignment> {
-    select_batch_with(queries, |query| combat_candidates_in(scratch, query))
+    // Target-side placement work is shared across the batch's enemies when
+    // they read the same world; otherwise each query does its own.
+    match placement_cache::BatchPlacements::for_batch(queries) {
+        Some(mut shared) => select_batch_with(queries, |query| {
+            combat_candidates_with(
+                query,
+                &mut |query, placement, position, generation, incumbent| {
+                    score_candidate_with(
+                        &mut shared,
+                        scratch,
+                        query,
+                        placement,
+                        position,
+                        generation,
+                        incumbent,
+                    )
+                },
+            )
+        }),
+        None => select_batch_with(queries, |query| combat_candidates_in(scratch, query)),
+    }
 }
 
 /// One candidate's score, or `None` when it cannot hold a slot:

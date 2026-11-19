@@ -337,8 +337,9 @@ fn coinciding_positions_across_standoffs_keep_their_generation_indices() {
     let three = crate::combat_positioning::combat_candidates(&queries[0]);
     let four = crate::combat_positioning::combat_candidates(&queries[1]);
     assert!(
-        three.iter().any(|a| four.iter().any(|b| a.position == b.position
-            && a.generation_index != b.generation_index)),
+        three.iter().any(|a| four
+            .iter()
+            .any(|b| a.position == b.position && a.generation_index != b.generation_index)),
         "the rings share a position under different generation indices"
     );
     assert_batch_matches_uncached(&queries, &mut NavScratch::new(), "coinciding standoffs");
@@ -413,4 +414,179 @@ fn a_batch_after_the_door_closes_matches_the_uncached_batch() {
         !in_doorway(&closed),
         "the docked door holds none: {closed:?}"
     );
+}
+
+fn work_during(batch: impl FnOnce()) -> crate::combat_positioning::PlacementWork {
+    use crate::combat_positioning::{PLACEMENT_WORK, PlacementWork};
+    PLACEMENT_WORK.with(|work| work.set(PlacementWork::default()));
+    batch();
+    PLACEMENT_WORK.with(|work| work.get())
+}
+
+/// The shared ring's generated positions: 8 directions at 3 radii.
+const RING_POSITIONS: usize = 24;
+
+// A fresh chase batch on one target and standoff grounds, tests against
+// docked movers, and routes to the target once per candidate position, for
+// one enemy or sixteen.
+#[test]
+fn a_chase_batch_does_target_side_placement_work_once_per_position() {
+    let mut rig = closed_door();
+    rig.command(MoverCommand::Start);
+    for _ in 0..80 {
+        rig.tick();
+    }
+    let world = low_wall_world();
+    let target = Vec3::new(16.0, REST_Y, 5.0);
+    let mut counts = Vec::new();
+    for enemies in [1usize, 16] {
+        // West of the door, clear of the ring.
+        let enemies: Vec<Enemy> = (0..enemies)
+            .map(|i| Enemy {
+                claimant: 1 + i as u32,
+                position: Vec3::new(1.0 + (i % 8) as f32, REST_Y, 7.5 + (i / 8) as f32),
+                target,
+                eye: HIGH_EYE,
+                standoff: 3.0,
+                slot: None,
+                ring: None,
+            })
+            .collect();
+        let others: Vec<CombatAgentSnapshot> = enemies
+            .iter()
+            .map(|enemy| CombatAgentSnapshot {
+                claimant_id: enemy.claimant,
+                position: enemy.position,
+            })
+            .collect();
+        let mover_nav = crate::nav::MoverNav {
+            gate: rig.gate(),
+            movers: &rig.colliders,
+            poses: &rig.movers,
+        };
+        let queries: Vec<CombatQuery<'_>> = enemies
+            .iter()
+            .map(|enemy| query(enemy, &others, &rig, &world, mover_nav))
+            .collect();
+        let mut scratch = NavScratch::new();
+        let mut assignments = Vec::new();
+        let work = work_during(|| {
+            assignments = select_combat_positions_batch_in(&queries, &mut scratch);
+        });
+        assert!(
+            assignments
+                .iter()
+                .all(|assignment| assignment.candidate.is_some()),
+            "every enemy gets a slot: {assignments:?}"
+        );
+        for (label, count) in [
+            ("groundings", work.groundings),
+            ("docked-mover tests", work.dock_tests),
+            ("target routes", work.target_routes),
+        ] {
+            assert!(
+                (1..=RING_POSITIONS).contains(&count),
+                "{label}: {count} for {} enemies",
+                enemies.len()
+            );
+        }
+        counts.push(work.groundings);
+    }
+    assert_eq!(counts[0], counts[1], "sixteen enemies ground what one does");
+}
+
+// P4: in a batch of 128 agents, a clearance test examines the agents in the
+// cells its spacing spans, never every agent.
+#[test]
+fn clearance_in_a_large_batch_examines_only_nearby_agents() {
+    let rig = closed_door();
+    let world = low_wall_world();
+    let target = Vec3::new(5.0, REST_Y, 7.0);
+    // A 16 × 8 block 0.6 m apart, south of the target; its ring overlaps it.
+    let enemies: Vec<Enemy> = (0..128)
+        .map(|i| Enemy {
+            claimant: 1 + i as u32,
+            position: Vec3::new(
+                0.5 + 0.6 * (i % 16) as f32,
+                REST_Y,
+                0.5 + 0.6 * (i / 16) as f32,
+            ),
+            target,
+            eye: HIGH_EYE,
+            standoff: 2.0,
+            slot: None,
+            ring: None,
+        })
+        .collect();
+    let others: Vec<CombatAgentSnapshot> = enemies
+        .iter()
+        .map(|enemy| CombatAgentSnapshot {
+            claimant_id: enemy.claimant,
+            position: enemy.position,
+        })
+        .collect();
+    let queries: Vec<CombatQuery<'_>> = enemies
+        .iter()
+        .map(|enemy| query(enemy, &others, &rig, &world, crate::nav::MoverNav::none()))
+        .collect();
+    assert_batch_matches_uncached(&queries, &mut NavScratch::new(), "128 agents");
+    let live = work_during(|| {
+        select_combat_positions_batch_in(&queries, &mut NavScratch::new());
+    });
+    assert!(live.clearance_tests > 0);
+    // Cells span 2 × spacing + 2 cells (3.5 m) each way: at 0.6 m apart at
+    // most 6 × 6 agents fall inside.
+    assert!(
+        (1..=36).contains(&live.most_peers_per_test),
+        "most agents one test examined: {}",
+        live.most_peers_per_test
+    );
+}
+
+// One slot on two targets' rings: (8, 5) is 3 m east of a west-room target
+// and 4 m west of an east-room one. With the door shut, only the first has a
+// route from it, so the shared work must keep each target's own verdict.
+#[test]
+fn a_slot_on_two_targets_rings_keeps_each_targets_route_verdict() {
+    let mut rig = closed_door();
+    rig.tick();
+    let world = low_wall_world();
+    let west = Vec3::new(5.0, REST_Y, 5.0);
+    let east = Vec3::new(12.0, REST_Y, 5.0);
+    let shared_slot = |candidate: &crate::combat_positioning::CombatCandidate| {
+        (candidate.position.x - 8.0).abs() < 1.0e-4 && (candidate.position.z - 5.0).abs() < 1.0e-4
+    };
+    let enemies = [(west, 3.0), (east, 4.0)].map(|(target, standoff)| Enemy {
+        claimant: if target == west { 1 } else { 2 },
+        position: Vec3::new(2.0, REST_Y, 8.0),
+        target,
+        eye: HIGH_EYE,
+        standoff,
+        slot: None,
+        ring: None,
+    });
+    // No blocker by the slot: `snapshots` places one there on purpose.
+    let others = enemies.map(|enemy| CombatAgentSnapshot {
+        claimant_id: enemy.claimant,
+        position: enemy.position,
+    });
+    let mover_nav = crate::nav::MoverNav {
+        gate: rig.gate(),
+        movers: &rig.colliders,
+        poses: &rig.movers,
+    };
+    let queries = enemies.map(|enemy| query(&enemy, &others, &rig, &world, mover_nav));
+    let alone = |query: &CombatQuery<'_>| {
+        crate::combat_positioning::combat_candidates(query)
+            .iter()
+            .any(shared_slot)
+    };
+    assert!(alone(&queries[0]), "the west target can use the slot");
+    assert!(
+        !alone(&queries[1]),
+        "the east target cannot, behind the shut door"
+    );
+    assert_batch_matches_uncached(&queries, &mut NavScratch::new(), "one slot, two targets");
+    let reversed = [queries[1], queries[0]];
+    assert_batch_matches_uncached(&reversed, &mut NavScratch::new(), "the other order");
 }

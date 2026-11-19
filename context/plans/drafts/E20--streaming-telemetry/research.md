@@ -41,6 +41,14 @@ An independent agent reviewed the design as its consumer. It agreed on cursor po
 
 Two corrections came out of the round. The app already has a load generation, so the brief reuses it rather than adding a counter. And `wait_ms` bounds per-request latency, not connection lockout. Every point landed in Decisions.
 
+## Direction validation
+
+The verdict was Reshape. It proposed a file-only rival: drop the ring and the `events` verb, and have `ServerHello` name the file. That rival depends on an assumption: an observe-live client is always on the same machine as the file (the listener binds `127.0.0.1`), so it can read the file directly. The validator gated the live half on a consumer that cannot read the host filesystem. The owner kept the ring and the verb. The event wording came from an active agent consumer, and that consumer is the reason. With the ring kept, the validator's conditional verdict was Direction sound, given three fixes:
+- name the file sink as a surface shipped in every build;
+- reuse `CpuWindowReport` for the CPU window payload;
+- state that the live half is engine-developer-only.
+All three landed.
+
 ## Prior commitments touched
 
 - `done/agentic-observability` cut the log ring from its first build and deferred streaming telemetry. This brief is that deferral.

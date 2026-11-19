@@ -3,7 +3,7 @@
 Brief · compact · Epic 20 · reads: `context/lib/development_guide.md` §6.1, §6.4 · `context/lib/networking.md` §Not netcode: the live introspection channel · `context/lib/boot_sequence.md` §Startup timing vocabulary · `context/lib/rendering_pipeline.md` §Cluster SH residency, §12 · `context/lib/build_pipeline.md` (compiler reporters) · `context/lib/testing_guide.md` §Resource bounds · read at 32ac4217 · evidence: `research.md`
 
 ## Problem
-Agents diagnosing a run read its diagnostics as text, and an agent attached to a running session cannot read them at all. This is a developer-requested capability for agents. Load phases, SH and lightmap streaming windows with their miss buckets, CPU stage and GPU pass timing windows, and `prl-build` bake stages each come from a typed snapshot. Each snapshot leaves its process only as one formatted log line on stderr, or as reporter text from the compiler. The observe-live socket carries none of it, and nothing retains recent log records. When this is done, one versioned envelope carries those four families as typed events. An agent that launched the run reads them from a JSONL file. An agent attached to a session someone else started pages them from a bounded in-process ring over observe-live, with recent log records alongside. Every existing log line and every reporter's output is unchanged.
+Agents diagnosing a run read its diagnostics as text, and an agent attached to a running session cannot read them at all. This is a capability agents requested, and an active agent asked for these first events by name. Load phases, SH and lightmap streaming windows with their miss buckets, CPU stage and GPU pass timing windows, and `prl-build` bake stages each come from a typed snapshot. Each snapshot leaves its process only as one formatted log line on stderr, or as reporter text from the compiler. The observe-live socket carries none of it, and nothing retains recent log records. When this is done, one versioned envelope carries those four families as typed events. An agent that launched the run reads them from a JSONL file. An agent attached to a session someone else started pages them from a bounded in-process ring over observe-live, with recent log records alongside. Every existing log line and every reporter's output is unchanged.
 
 ## Decisions
 - **One snapshot, two renderings.** Each event is built at its log line's emit point from the same closed snapshot the line formats. No text is parsed back. Lines and reporter output stay byte-identical, because unit tests pin them and humans read them.
@@ -105,7 +105,11 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
   - `FrameTiming::accumulate`.
   - The `Reporter` calls in level-compiler `pipeline.rs`.
 - `StartupTimings` keeps its contained marks private. Expose a typed view; do not reparse `summary()`.
-- Strongest rival shape: a socket-only stream with no file. Rejected because the agent that launched the run is the common consumer, and bake events have no socket.
+- Rival shapes:
+  - A socket-only stream with no file. Rejected: the agent that launched the run is the common consumer, and bake events have no socket.
+  - A file only, with the hello naming the file's path. Rejected for two reasons:
+    - An active agent consumer reads the stream live.
+    - The MCP frontend (roadmap Epic 20) exposes live verbs as tools, and a path in the hello gives it no tool.
 - First slice: the leaf crate, `run_start`/`run_end`, line C as an event, and the file sink in the engine. This proves the snapshot-to-envelope path and append-mode framing before fanning out to the other emit points.
 - `startup/mod.rs` and level-compiler `main.rs` are past 800 lines. Keep new logic in new modules and add only calls there.
 - `ObserveResponse::Ok` carries `dump` today. Reshape the response vocabulary so `events` has its own body without breaking the dump path.

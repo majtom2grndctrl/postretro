@@ -2960,5 +2960,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(stage_scope);
     drop(cpu_stages);
     app.cpu_timer.finish_frame(Instant::now());
+    // Taken every frame, consumer or not, so a closed window never waits
+    // to be emitted under a later level.
+    if let Some(renderer) = app.renderer.as_mut() {
+        crate::telemetry::emit_gpu_window(renderer);
+    }
     postretro_stage_timing::mark_frame();
 }

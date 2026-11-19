@@ -446,3 +446,26 @@ fn reinstall_after_unload_leaves_no_fixture_a_cpu_residue() {
     assert_eq!(app.collision_world.triangle_count(), 1);
     assert_eq!(app.collision_world.vertex_count(), 3);
 }
+
+// Telemetry: unload writes `unload` naming the level it unloads, its
+// generation and `.prl` in the payload, then clears the running level, so
+// events after it name none. Nothing is written without a running level.
+#[test]
+fn unload_writes_an_unload_event_naming_the_level_then_clears_it() {
+    let (hub, _scope) = telemetry_hub();
+    let mut app = test_app();
+    let level =
+        crate::startup::timing_events::committed_level(4, std::path::Path::new("maps/a.prl"));
+    postretro_telemetry::set_level(Some(level.clone()));
+    app.unload_level();
+    assert_eq!(postretro_telemetry::level(), None);
+    let events = lifecycle_events(&hub);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].kind, postretro_telemetry::Kind::Unload);
+    assert_eq!(events[0].level.as_ref(), Some(&level));
+    assert_eq!(payload_generation(&events[0]), Some(4));
+    assert_eq!(events[0].payload["prl"].as_str(), Some(level.map.as_str()));
+    assert!(std::path::Path::new(&level.map).is_absolute());
+    app.unload_level();
+    assert_eq!(lifecycle_events(&hub).len(), 1, "no level, no unload event");
+}

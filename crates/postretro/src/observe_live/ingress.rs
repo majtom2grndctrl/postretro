@@ -20,7 +20,8 @@ use crate::observability::{
 /// most one such unit of work. Further admitted work remains queued.
 pub(crate) const OBSERVE_LIVE_REQUESTS_PER_FRAME: usize = 1;
 
-/// JSON request vocabulary for the localhost live-introspection channel.
+/// JSON request vocabulary the main thread services. The transport answers
+/// `events` itself (`events.rs`) and never queues it here.
 ///
 /// Internally tagged enums are sound for this JSON-only channel. The bitcode
 /// wire-format rule against them does not apply here.
@@ -33,7 +34,8 @@ pub(crate) enum ObserveRequest {
     },
 }
 
-/// JSON response vocabulary for the localhost live-introspection channel.
+/// JSON response vocabulary for the main-thread verbs; `events` replies are
+/// built in `events.rs`.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum ObserveResponse {

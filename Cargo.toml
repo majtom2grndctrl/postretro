@@ -25,6 +25,7 @@ members = [
     "crates/net",
     "crates/test-log-capture",
     "crates/stage-timing",
+    "crates/telemetry",
     "crates/tool",
     "crates/xtask",
 ]
@@ -224,6 +225,7 @@ postretro-sim = { path = "crates/sim" }
 postretro-netcode = { path = "crates/netcode" }
 postretro-test-log-capture = { path = "crates/test-log-capture" }
 postretro-stage-timing = { path = "crates/stage-timing" }
+postretro-telemetry = { path = "crates/telemetry" }
 
 [profile.release]
 opt-level = 3

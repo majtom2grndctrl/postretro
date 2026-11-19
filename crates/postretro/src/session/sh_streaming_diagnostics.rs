@@ -58,11 +58,23 @@ pub(super) fn assemble_live_diagnostics(
 
 /// Throttles the periodic log line. A line needs both a full interval since
 /// the previous line and a cumulative counter that moved since then, so an
-/// idle session stays silent.
-#[derive(Debug, Default)]
+/// idle session stays silent. Each line is also a telemetry window; the
+/// session's end closes a final partial one, which has no line.
+#[derive(Debug)]
 pub(super) struct ShStreamingLogWindow {
+    session: u64,
     window_start: Option<f64>,
     baseline: ShStreamingLiveDiagnostics,
+}
+
+impl Default for ShStreamingLogWindow {
+    fn default() -> Self {
+        Self {
+            session: super::streaming_window_events::next_streaming_session(),
+            window_start: None,
+            baseline: ShStreamingLiveDiagnostics::default(),
+        }
+    }
 }
 
 impl ShStreamingLogWindow {
@@ -70,6 +82,25 @@ impl ShStreamingLogWindow {
         if let Some(line) = self.line_if_due(now_seconds, live) {
             log::info!("{line}");
         }
+    }
+
+    /// The session ends: a window that has counted something since its
+    /// last line closes as a partial, with no line. An idle one emits
+    /// nothing.
+    pub(super) fn finish(&mut self, now_seconds: f64, live: &ShStreamingLiveDiagnostics) {
+        let Some(start) = self.window_start.take() else {
+            return;
+        };
+        if cumulative_counters(live) == cumulative_counters(&self.baseline) {
+            return;
+        }
+        super::streaming_window_events::emit_sh_window(
+            self.session,
+            true,
+            now_seconds - start,
+            &self.baseline,
+            live,
+        );
     }
 
     fn line_if_due(
@@ -86,6 +117,13 @@ impl ShStreamingLogWindow {
             return None;
         }
         let line = format_line(elapsed, &self.baseline, live);
+        super::streaming_window_events::emit_sh_window(
+            self.session,
+            false,
+            elapsed,
+            &self.baseline,
+            live,
+        );
         self.baseline = live.clone();
         self.window_start = Some(now_seconds);
         Some(line)
@@ -462,5 +500,148 @@ mod tests {
             .line_if_due(15.0, &active)
             .expect("compose activity should activate the log window");
         assert!(line.contains("planning 0.275 ms"), "{line}");
+    }
+
+    fn telemetry() -> (
+        std::sync::Arc<postretro_telemetry::Hub>,
+        postretro_telemetry::scoped::ScopedHub,
+    ) {
+        let hub = std::sync::Arc::new(postretro_telemetry::Hub::start(
+            postretro_telemetry::HubConfig {
+                memory: true,
+                ..postretro_telemetry::HubConfig::new(postretro_telemetry::Source::Engine, "t")
+            },
+        ));
+        let scope = postretro_telemetry::scoped::install(std::sync::Arc::clone(&hub));
+        (hub, scope)
+    }
+
+    fn windows(hub: &postretro_telemetry::Hub) -> Vec<serde_json::Value> {
+        hub.lines()
+            .iter()
+            .map(|line| postretro_telemetry::Envelope::parse_line(line).unwrap())
+            .filter(|event| event.kind == postretro_telemetry::Kind::ShStreamingWindow)
+            .map(|event| event.payload)
+            .collect()
+    }
+
+    fn counted(reads: u64, misses_reach: u64) -> ShStreamingLiveDiagnostics {
+        let mut live = ShStreamingLiveDiagnostics {
+            reads_issued: reads,
+            misses: misses_reach,
+            ..ShStreamingLiveDiagnostics::default()
+        };
+        live.miss_buckets.outside_reach = misses_reach;
+        live
+    }
+
+    #[test]
+    fn sh_window_event_and_line_agree_on_deltas_and_the_miss_bucket() {
+        let (hub, _scope) = telemetry();
+        let mut window = ShStreamingLogWindow::default();
+        let capture = LogCapture::start();
+        window.observe(0.0, &counted(2, 1));
+        window.observe(6.0, &counted(9, 4));
+        let line = capture
+            .records()
+            .into_iter()
+            .find(|record| record.message.starts_with("[SH streaming]"))
+            .expect("a line")
+            .message;
+        let events = windows(&hub);
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event["partial"], false);
+        assert_eq!(event["delta"]["reads"], 9);
+        assert_eq!(event["delta"]["miss_reach"], 4);
+        assert_eq!(event["total"]["miss_reach"], 4);
+        assert!(line.contains("9 reads"), "{line}");
+        assert!(line.contains("4 miss episodes (reach 4,"), "{line}");
+        assert!(line.starts_with("[SH streaming] last 6.0 s:"), "{line}");
+        assert_eq!(event["elapsed_s"], 6.0);
+        assert!(event["now"]["read_latency_p50_ms"].is_number());
+    }
+
+    #[test]
+    fn a_window_with_no_reads_has_no_latency_rather_than_zero() {
+        let (hub, _scope) = telemetry();
+        let mut window = ShStreamingLogWindow::default();
+        window.observe(0.0, &ShStreamingLiveDiagnostics::default());
+        window.observe(6.0, &counted(0, 3));
+        let events = windows(&hub);
+        assert!(events[0]["now"]["read_latency_p50_ms"].is_null());
+        assert!(events[0]["now"]["decode_latency_max_ms"].is_null());
+    }
+
+    #[test]
+    fn an_idle_sh_window_emits_no_line_and_no_event_even_at_session_end() {
+        let (hub, _scope) = telemetry();
+        let capture = LogCapture::start();
+        let mut window = ShStreamingLogWindow::default();
+        let idle = ShStreamingLiveDiagnostics::default();
+        window.observe(0.0, &idle);
+        window.observe(10.0, &idle);
+        window.finish(10.0, &idle);
+        capture.assert_not_logged(log::Level::Info, "[SH streaming]");
+        assert!(windows(&hub).is_empty());
+    }
+
+    #[test]
+    fn unloading_two_seconds_into_a_counted_window_emits_one_partial_and_no_line() {
+        let (hub, _scope) = telemetry();
+        let capture = LogCapture::start();
+        let mut window = ShStreamingLogWindow::default();
+        window.observe(10.0, &ShStreamingLiveDiagnostics::default());
+        window.observe(12.0, &counted(3, 0));
+        window.finish(12.0, &counted(3, 0));
+        window.finish(12.0, &counted(3, 0));
+        capture.assert_not_logged(log::Level::Info, "[SH streaming]");
+        let events = windows(&hub);
+        assert_eq!(events.len(), 1, "one partial");
+        assert_eq!(events[0]["partial"], true);
+        assert_eq!(events[0]["elapsed_s"], 2.0);
+        assert_eq!(events[0]["delta"]["reads"], 3);
+    }
+
+    // P9: a session replaced within a level closes its own partial; the next
+    // session's totals restart under a new id.
+    #[test]
+    fn a_replaced_session_emits_one_partial_and_the_next_totals_restart() {
+        let (hub, _scope) = telemetry();
+        let mut first = ShStreamingLogWindow::default();
+        first.observe(0.0, &counted(0, 0));
+        first.observe(6.0, &counted(5, 0));
+        first.observe(8.0, &counted(7, 0));
+        first.finish(8.0, &counted(7, 0));
+        let mut second = ShStreamingLogWindow::default();
+        second.observe(8.0, &counted(0, 0));
+        second.observe(14.0, &counted(2, 0));
+        let mut idle = ShStreamingLogWindow::default();
+        idle.observe(14.0, &counted(0, 0));
+        idle.finish(15.0, &counted(0, 0));
+        let events = windows(&hub);
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert_eq!(events[0]["partial"], false);
+        assert_eq!(events[1]["partial"], true);
+        assert_eq!(events[1]["delta"]["reads"], 2);
+        assert_eq!(events[1]["total"]["reads"], 7);
+        assert_eq!(events[0]["session"], events[1]["session"]);
+        assert_ne!(events[2]["session"], events[1]["session"]);
+        assert_eq!(events[2]["total"]["reads"], 2, "totals restart");
+    }
+
+    // Telemetry: with a hub live, steady frames that close no window
+    // allocate nothing.
+    #[test]
+    fn with_telemetry_on_steady_sh_window_frames_allocate_nothing() {
+        let (_hub, _scope) = telemetry();
+        let mut window = ShStreamingLogWindow::default();
+        let live = counted(1, 0);
+        window.observe(0.0, &live);
+        let probe = crate::alloc_probe::AllocSnapshot::arm();
+        for frame in 0..64 {
+            window.observe(f64::from(frame) / 60.0, &live);
+        }
+        assert_eq!(probe.allocs_since(), 0);
     }
 }

@@ -103,6 +103,12 @@ The contract:
 Every other log line stays freely editable noise — do not let asserted strings spread
 beyond the criteria that need them.
 
+### Telemetry assertions
+
+Install a hub scoped to the test thread (the telemetry crate's `test-support` feature), never the
+process-wide one. Threads the code under test spawns do not see it: assert on events the test
+thread emits.
+
 ### Test naming
 
 Names describe the exact behavior and boundary under test. Pattern: `<subject>_<verb>_<expected_outcome>`.

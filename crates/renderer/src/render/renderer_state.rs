@@ -199,13 +199,23 @@ impl Renderer {
     /// Most recent averaged GPU-timing window, or `None` when GPU timing is
     /// disabled / no window has elapsed yet. The debug panel reads this each
     /// frame; the underlying snapshot is overwritten every
-    /// `AVG_WINDOW_FRAMES` frames.
+    /// `AVG_WINDOW_SAMPLES` completed readbacks.
     #[cfg(feature = "dev-tools")]
     pub fn frame_timing_snapshot(&self) -> Option<&frame_timing::FrameTimingSnapshot> {
         self.full()
             .frame_timing
             .as_ref()
             .and_then(|t| t.last_window())
+    }
+
+    /// The GPU timing window that closed since the last call, once; `None`
+    /// without GPU timing or before a full renderer.
+    pub fn take_gpu_timing_window(&mut self) -> Option<frame_timing::FrameTimingSnapshot> {
+        self.full
+            .as_mut()?
+            .frame_timing
+            .as_mut()?
+            .take_telemetry_window()
     }
 
     /// Rebuilds the swapchain via surface.configure (Alt+Shift+V diagnostic chord).

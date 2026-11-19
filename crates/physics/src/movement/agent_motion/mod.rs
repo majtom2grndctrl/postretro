@@ -11,6 +11,7 @@
 //      context/lib/entity_model.md §7 (collision)
 
 use glam::Vec3;
+use parry3d::shape::Capsule;
 
 use crate::collision::moving::{
     CollisionSource, CombinedCollisionWorld, MoverPose, MoverPoseSource, MoverTranslationLeg,
@@ -161,6 +162,100 @@ pub fn collide_and_slide(
     result
 }
 
+/// [`collide_and_slide`] for a step spanning several ticks, swept as
+/// `substeps` equal parts. The swept primitives meet one step-up and one floor
+/// snap per sweep, so a long step through stairs or over a crest is split
+/// where a single sweep would stall or float. The tick's mover carry and push
+/// land once, in the first part; the rest sweep against movers at rest in
+/// their tick-end poses. Release velocity is judged once, across the whole
+/// step. One part is [`collide_and_slide`] exactly.
+#[allow(clippy::too_many_arguments)]
+pub fn collide_and_slide_in_parts(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+    desired_horizontal: Vec3,
+    vertical_velocity: f32,
+    knockback_velocity: &mut Vec3,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+    substeps: u32,
+) -> SlideResult {
+    if substeps <= 1 {
+        return collide_and_slide(
+            collision,
+            capsule,
+            position,
+            previous_ground,
+            desired_horizontal,
+            vertical_velocity,
+            knockback_velocity,
+            environment,
+            dt,
+        );
+    }
+    let part_dt = dt / substeps as f32;
+    let mut result = slide(
+        collision,
+        capsule,
+        position,
+        previous_ground,
+        desired_horizontal,
+        vertical_velocity,
+        knockback_velocity,
+        environment,
+        part_dt,
+    );
+    let at_rest = PosesAtRest {
+        poses: collision.poses,
+    };
+    let resting = CombinedCollisionWorld::new(collision.static_world, collision.movers, &at_rest);
+    for _ in 1..substeps {
+        let part = slide(
+            &resting,
+            capsule,
+            result.position,
+            result.ground,
+            desired_horizontal,
+            result.velocity.y,
+            knockback_velocity,
+            environment,
+            part_dt,
+        );
+        result = SlideResult {
+            overlap: result.overlap.or(part.overlap),
+            walled_by_moving_mover: result
+                .walled_by_moving_mover
+                .or(part.walled_by_moving_mover),
+            ..part
+        };
+    }
+    if let Some(release) =
+        mover_release_velocity(previous_ground, result.ground, collision, result.position)
+    {
+        result.velocity += release;
+        *knockback_velocity += release;
+    }
+    result
+}
+
+/// Movers in their tick-end poses with this tick's motion spent: a later part
+/// of a split step neither rides nor is pushed by a mover a second time.
+struct PosesAtRest<'a> {
+    poses: &'a dyn MoverPoseSource,
+}
+
+impl MoverPoseSource for PosesAtRest<'_> {
+    fn pose(&self, mover_id: u32) -> Option<MoverPose> {
+        self.poses.pose(mover_id).map(|pose| MoverPose {
+            tick_delta: Vec3::ZERO,
+            tick_rotation_delta: glam::Quat::IDENTITY,
+            ..pose
+        })
+    }
+}
+
 /// [`collide_and_slide`] for a body walking out of `mover_id`'s course. A body
 /// embedded in that mover walks as if it were not there: every sweep from inside
 /// it stops at once, so the walk would never start. A body merely touching it, or
@@ -263,6 +358,40 @@ pub fn settle_corpse(
     )
 }
 
+/// Mover carry and displacement alone, for a body whose own step does not run
+/// this tick: a scheduled agent between its steps rides its lift and is pushed
+/// by doors every tick, and moves itself only on its step, whose
+/// [`collide_and_slide`] carries it for that tick once. Its ground, velocity
+/// and release wait for that step, so a mover that leaves it between steps
+/// releases it there.
+pub fn carry_without_step(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+) -> Vec3 {
+    carry_and_displace(
+        collision,
+        &capsule.collision_shape().parry(),
+        position,
+        previous_ground,
+    )
+}
+
+/// The tick's mover carry, then displacement out of any mover it left the body
+/// in: the movement.md §6 order, before the body's own sweep.
+fn carry_and_displace(
+    collision: &CombinedCollisionWorld<'_>,
+    parry_shape: &Capsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+) -> Vec3 {
+    let current_pos = apply_mover_carry(position, previous_ground, collision);
+    displace_out_of_hull(previous_ground, collision, parry_shape, current_pos).unwrap_or_else(
+        || displace_from_movers(previous_ground, collision, parry_shape, current_pos),
+    )
+}
+
 /// Everything in [`collide_and_slide`] short of release velocity.
 #[allow(clippy::too_many_arguments)]
 fn slide(
@@ -289,11 +418,7 @@ fn slide(
         desired_horizontal.z,
     );
 
-    let mut current_pos = apply_mover_carry(position, previous_ground, collision);
-    current_pos = displace_out_of_hull(previous_ground, collision, &parry_shape, current_pos)
-        .unwrap_or_else(|| {
-            displace_from_movers(previous_ground, collision, &parry_shape, current_pos)
-        });
+    let mut current_pos = carry_and_displace(collision, &parry_shape, position, previous_ground);
     // Mover policy polices carry and displacement; the tick overlap check covers
     // the agent's own movement from here.
     let checked_start = current_pos;

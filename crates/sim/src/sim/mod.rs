@@ -1030,6 +1030,7 @@ where
                 yields: mover_tick_states.agent_yields(),
                 gate: crate::nav::NavGate::new(mover_tick_states.docks()),
             },
+            agent_steering::AgentSteps::EVERY_TICK,
             &mut corpse_yields,
             environment,
             tick_dt,

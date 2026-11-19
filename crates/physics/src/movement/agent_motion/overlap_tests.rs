@@ -291,7 +291,9 @@ fn the_agent_controller_writes_no_body_position_outside_a_swept_move() {
     // this list no longer matches.
     let mut allowed = vec![
         "current_pos = apply_mover_carry(position, previous_ground, collision);",
-        "current_pos = displace_out_of_hull(previous_ground, collision, &parry_shape, current_pos)",
+        // Carry and displacement, shared by the slide and a scheduled agent's
+        // carry between its steps (`carry_without_step`).
+        "current_pos = carry_and_displace(collision, &parry_shape, position, previous_ground);",
         "current_pos = lifted;",
         "current_pos += velocity * remaining_dt;",
         "current_pos += dir * toi;",

@@ -215,6 +215,7 @@ impl Rig {
                 yields: &[],
                 gate: NavGate::new(self.movers.docks()),
             },
+            AgentSteps::EVERY_TICK,
             &mut Vec::new(),
             ENV,
             DT,

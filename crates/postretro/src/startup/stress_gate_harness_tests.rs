@@ -14,7 +14,7 @@ use postretro_physics::kinematic_mover::{
     MoverTickStateTable, apply_mover_command, run_kinematic_mover_tick,
 };
 use postretro_sim::agent_steering::{
-    MoverPins, REPLAN_BUDGET_PER_TICK, gate_replan_owed, set_destination, tick_with_mover_pins,
+    AgentSteps, MoverPins, REPLAN_BUDGET_PER_TICK, gate_replan_owed, set_destination, tick_with_mover_pins,
 };
 use postretro_sim::nav::{NavGate, NavGraph, install_mover_records};
 
@@ -124,6 +124,7 @@ fn under_contention_on_the_stress_map_no_gate_change_outlasts_the_budget() {
             &collision,
             Some(&graph),
             MoverPins { yields: &[], gate },
+            AgentSteps::EVERY_TICK,
             &mut Vec::new(),
             environment,
             DT,

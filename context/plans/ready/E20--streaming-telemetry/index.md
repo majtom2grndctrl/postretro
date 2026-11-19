@@ -19,8 +19,8 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
   - The file is the record of a run's end. A socket client may see the connection drop first.
 - **Telemetry turns on no producer.** CPU and GPU timing keep their own `POSTRETRO_*` gates, and `run_start` reports them. GPU timing has adapter cost and adapter requirements, which a sink switch must not hide.
 - **First kinds:**
-  - **Load family.** Boot, mod-init and level-load phases with their contained marks, carrying the load's generation and its `.prl` path. Unload names the level it unloads. Geometry install is emitted by the app when it takes the load's set, under that load's generation. A set from a cancelled load emits nothing, and the renderer's own line is unchanged.
-  - **Streaming windows.** SH and lightmap windows carry deltas, cumulative totals, elapsed time and the streaming session they measure. Totals restart with each session. A session that ends with counts since its last close emits a final `partial` window: at unload, on replacement within a level, on a world-less clear, or at `run_end`. A partial has no log line. An idle window emits nothing.
+  - **Load family.** Boot, mod-init and level-load phases with their contained marks, carrying the load's generation and its `.prl` path. Unload names the level it unloads. Geometry install is built from the renderer's closed snapshot and emitted under the load's generation once the load can no longer be cancelled. That is the bundle take in the loading-screen order, and a beside commit before the running level's release. A cancelled load emits nothing, and the renderer's own line is unchanged.
+  - **Streaming windows.** SH and lightmap windows carry deltas, cumulative totals, elapsed time and the streaming session they measure. Totals restart with each session. A session that ends with counts since its last close emits a final `partial` window: at unload, on replacement within a level, on a lightmap decline, on a world-less clear, or at `run_end`. A partial has no log line. An idle window emits nothing.
   - **Timing windows.** The CPU window payload is `CpuWindowReport`, the same rendering the live `cpu_timing` dump section uses. CPU windows are cleared at a level change, as today. GPU windows are never reset at a level change and may span one; each GPU window event carries the level current at its close.
   - **Bake.** Bake stage transitions in every reporter mode, and a bake summary. The summary names the source map and the output `.prl`, so a reducer joins a load to its bake. Stage durations come from the summary alone, because transitions overlap or begin late under the TUI. A failed bake's summary carries no durations.
   - **The rest:** `log`, `run_start`, `producer_state` and `run_end`.
@@ -30,14 +30,15 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
   - Captured log records go to the file as well as the ring.
   - A failed open or write warns once and disables the sink, without deadlocking against its own warning. It never blocks a frame or a bake.
 - **The ring.**
+  - The ring exists only in a run launched with `--observe-live`, its one reader. The file sink needs none.
   - One process-wide ring holds typed events and log records under separate count and byte caps. A log message over its cap truncates and is flagged.
   - Pinned outside the caps: `run_start`, the latest `producer_state` per producer, and the latest of each load-family kind. A superseded pin falls under the caps at once.
   - An eviction advances a dropped counter. The oldest retained sequence ignores pins.
 - **Log capture.** The tee logger forwards to the existing logger with its filter unchanged. With a consumer present (the sink variable, or `--observe-live`), it raises the global max level to info and captures info and above. In `prl-build` it forwards a record to `CollectingLogger` only when that logger's own filter accepts it. With no consumer, logger setup is exactly today's, and a plain run formats no extra records.
 - **Live read: a cursor-polled `events` verb on observe-live, served on the transport thread.**
-  - A reply returns the pinned events at or after `since`, then the retained events from the oldest, in sequence order, with the next cursor, the oldest, the dropped count and the run.
-  - A `since` beyond the next cursor, or an unknown kind in the filter, returns an error frame naming the current run and cursor.
-  - The hello gains the run and protocol 2. A client finds the cursor by polling with `max` 0.
+  - A reply returns the pinned events at or after `since`, then the retained events from the oldest, in sequence order. With them it returns `next` (the resume cursor, which equals `since` when nothing is returned), `head` (the sequence the next event will take), the oldest, the dropped count and the run.
+  - A `since` beyond `head`, or an unknown kind in the filter, returns an error frame naming the current run and `head`.
+  - The hello gains the run and protocol 2. A client finds `head` by polling with `max` 0.
   - Polling keeps the one-connection, single-slot contract and resumes across reconnects.
   - Serving off the main thread amends `networking.md`'s "the main thread builds every reply" for this verb only. That rule exists because registry state is `!Send`. The ring is engine-blind plain data, and logs matter most when the frame loop has stalled. `dump` stays on the main thread.
 - **First consumer: a reducer in `tools/`.** It is stdlib Python with a unittest. It summarizes one telemetry file: a load-phase table, per-window miss buckets, CPU and GPU p50 and max across windows, and bake stage durations, joined per run and per load. It follows the reducer shape `E20--memory-visibility` set out. `tools/` ships in SDK bundles.
@@ -68,6 +69,7 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 **Ordering (pins in `research.md`):**
 - [ ] A loading-screen level change writes, in order: the old level's partial windows and its unload, each naming the old level in its envelope; the new load's geometry install; then the new load's phases naming its generation. No unload carries a null level (P3).
 - [ ] A load beside a running level reports `bundle_held`, `commit_checks` and `running_release` as phases, and its commit-frame group holds no `commit_checks`. Its geometry install carries the new load's generation while the envelope names the running level (P4).
+- [ ] At a beside commit, the running level's partial windows and its unload, each naming it, come after the new load's geometry install and before the new load's phases.
 - [ ] A load cancelled after its set build emits neither geometry install nor load phases. Its generation shows as a gap (P13).
 - [ ] A level unloaded before its reveal writes its geometry install and its unload naming it, and no load phases. The reducer lists it as unloaded before reveal.
 - [ ] Events racing in from the main, upload, loader and logging threads land in strictly increasing sequence with no gap except evictions. A client polling during the race misses none (P5).
@@ -108,9 +110,9 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 - [ ] A client paging from 0 with a small `max`, while the latest load's phases are pinned and still newer than the oldest retained event, reads every event once, in sequence order, across all its polls (P2).
 - [ ] An over-cap message truncates and is flagged.
 - [ ] A `since` older than the oldest retained returns from the oldest, and the reply shows the gap.
-- [ ] A `since` equal to the next cursor returns empty.
-- [ ] A `since` beyond the next cursor returns an error naming the run and cursor.
-- [ ] `max` 0 returns nothing and leaves the cursor unchanged (P8).
+- [ ] A `since` equal to `head` returns empty.
+- [ ] A `since` beyond `head` returns an error naming the run and `head`.
+- [ ] `max` 0 returns no events, its `next` equals its `since`, and its `head` is the sequence the next event will take. Polling from that `head` returns only events written after it (P8).
 - [ ] A `kinds` filter returns only those kinds and still advances the cursor past the events it filtered out. An unknown kind returns an error.
 - [ ] Two polls, the second from the first's cursor, with events written between them and no eviction, return disjoint results whose sequences run contiguous from the first `since`.
 - [ ] With the main thread blocked, `events` answers at once, both before any `dump` and after a `dump` has timed out. The `dump` times out as it does today (P12).
@@ -122,7 +124,7 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 - [ ] In `prl-build`, an info record does not reach the TUI warnings list.
 
 **Allocation and the reducer:**
-- [ ] With the sink and the ring enabled, the streaming windows' and the CPU timer's per-frame paths allocate nothing on a frame that closes no window and logs nothing at info (`alloc_probe`).
+- [ ] With the sink set, and in a live run with the ring, the streaming windows' and the CPU timer's per-frame paths allocate nothing on a frame that closes no window and logs nothing at info (`alloc_probe`).
 - [ ] The reducer's unittest summarizes a checked-in two-run sample (a bake, then an engine run) into the expected per-load and per-window tables.
 - [ ] Every line of that sample parses as a current envelope in the leaf crate's tests.
 
@@ -139,7 +141,7 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 - **Emit points:**
   - `StartupTimings::log_level_line` and the boot and mod summary sites.
   - `unload_level`: capture the level before it is cleared.
-  - The app's take of the set: the renderer hands back `GeometryInstallMarks` as plain data.
+  - The bundle take and the beside commit: the renderer hands back `GeometryInstallMarks` as plain data with its total frozen at the line.
   - `ShStreamingLogWindow::line_if_due` and `LightmapStreamingLogWindow`, plus each session-ending path.
   - `FrameTimer::log_last_window`.
   - `FrameTiming::accumulate`.
@@ -170,7 +172,7 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 | Producer state | enum | `"enabled"`, `"disabled"`, `"pending"`, `"unsupported"` |
 | Env var | — | `POSTRETRO_TELEMETRY` |
 | Live verb | `ObserveRequest` variant | `{"verb":"events","since":u64,"max":u32,"kinds":[string]?}` |
-| Live reply | response body | `events`, `next`, `oldest`, `dropped`, `run` |
+| Live reply | response body | `events`, `next`, `head`, `oldest`, `dropped`, `run` |
 | Hello addition | `ServerHello` | `run`; `protocol` = 2 |
 
 ## Wire format
@@ -179,4 +181,4 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 - **Fields:**
   - `seq` and `t_ms` are unsigned, and `seq` starts at 0 with each process's `run_start`.
   - Absent optional payload values serialize as `null`, never `0`.
-  - An empty `events` reply is `[]`, and `oldest` equals `next` when nothing unpinned is retained.
+  - An empty `events` reply is `[]`, and `oldest` equals `head` when nothing unpinned is retained.

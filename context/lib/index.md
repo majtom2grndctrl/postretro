@@ -111,6 +111,7 @@
 - **Entity facing / map yaw / `angle` `angles` `mangle` / model front vs view forward / `rotation_quat` vs `model_rotation_quat`** → `entity_model.md` §4 (Facing convention) · `build_pipeline.md` §Supported Map Formats
 - **Frame timing / game loop** → `rendering_pipeline.md` §1 · `entity_model.md` §5
 - **CPU profiling / per-stage CPU timing / Tracy / GPU pass timing / Metal System Trace when timestamps are unsupported / perf measurement confounders / timed runs beside bakes / diagnostic env vars vs features** → `rendering_pipeline.md` §12 · `development_guide.md` §6.4
+- **Telemetry / `POSTRETRO_TELEMETRY` / typed event envelope / run_start and run_end / live `events` verb and telemetry ring / log capture for agents** → `development_guide.md` §6.5 · live verb: `networking.md` §Not netcode: the live introspection channel
 - **Boot / startup / splash / level-load sequence / mod loading** → `boot_sequence.md`
 - **Settling / level reveal / settle chokepoint and timeout / presented pose / first complete frame** → `boot_sequence.md` §1 (Settling) · streamed settle sets: `rendering_pipeline.md` §4 · co-op reveal: `networking.md` §Slot lifecycle
 - **Level-load timing / log line C / dispatch, bundle, commit-frame, prep-kind and unload marks / where load time goes** → `boot_sequence.md` §Startup timing vocabulary

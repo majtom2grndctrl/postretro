@@ -706,3 +706,108 @@ fn particle_live_count_reports_zero_and_is_absent_when_timing_is_off() {
         }
     }
 }
+
+/// A hub with the file sink and the live ring both on, scoped to this test
+/// thread: the costliest telemetry configuration.
+fn telemetry_with_sink_and_ring(
+    name: &str,
+) -> (
+    std::sync::Arc<postretro_telemetry::Hub>,
+    postretro_telemetry::scoped::ScopedHub,
+) {
+    let dir = std::env::temp_dir().join(format!(
+        "postretro-cpu-telemetry-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let hub = std::sync::Arc::new(postretro_telemetry::Hub::start(
+        postretro_telemetry::HubConfig {
+            memory: true,
+            sink: Some(dir.join("t.jsonl")),
+            ring: Some(postretro_telemetry::RingCaps::DEFAULT),
+            ..postretro_telemetry::HubConfig::new(postretro_telemetry::Source::Engine, "t")
+        },
+    ));
+    let scope = postretro_telemetry::scoped::install(std::sync::Arc::clone(&hub));
+    (hub, scope)
+}
+
+fn cpu_windows(hub: &postretro_telemetry::Hub) -> Vec<serde_json::Value> {
+    hub.lines()
+        .iter()
+        .map(|line| postretro_telemetry::Envelope::parse_line(line).unwrap())
+        .filter(|event| event.kind == postretro_telemetry::Kind::CpuTimingWindow)
+        .map(|event| event.payload)
+        .collect()
+}
+
+// Telemetry: the window event is `CpuWindowReport`, built from the window the
+// `[CpuTiming]` line formats; a row's average and max agree with the line.
+#[test]
+fn cpu_window_event_and_line_agree_on_a_rows_average_and_max() {
+    let (hub, _scope) = telemetry_with_sink_and_ring("agree");
+    let capture = LogCapture::start();
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    let mut closed = false;
+    for frame in 0..WINDOW_FRAMES {
+        let visibility = if frame == 0 { 3 * MS } else { MS };
+        closed = counted_frame(&mut timer, &[(FrameStage::Visibility, visibility)], 10 * MS);
+    }
+    assert!(closed);
+    timer.log_last_window();
+    let line = capture
+        .records()
+        .into_iter()
+        .find(|record| record.message.starts_with("[CpuTiming]"))
+        .expect("a line")
+        .message;
+    let windows = cpu_windows(&hub);
+    assert_eq!(windows.len(), 1);
+    let report: super::report::CpuWindowReport =
+        serde_json::from_value(windows[0].clone()).unwrap();
+    assert_eq!(report.frames, WINDOW_FRAMES);
+    let visibility = report
+        .stages
+        .iter()
+        .find(|stage| stage.label == "visibility")
+        .expect("visibility row");
+    let (average, max) = (visibility.average.unwrap(), visibility.max.unwrap());
+    assert!(
+        line.contains(&format!("visibility={average:.3}/{max:.3}ms")),
+        "{line} vs {average}/{max}"
+    );
+}
+
+// Telemetry: a window cleared at a level change emits nothing.
+#[test]
+fn a_cpu_window_cleared_at_a_level_change_emits_nothing() {
+    let (hub, _scope) = telemetry_with_sink_and_ring("cleared");
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    for _ in 0..WINDOW_FRAMES - 1 {
+        counted_frame(&mut timer, &[(FrameStage::Visibility, MS)], 2 * MS);
+    }
+    timer.level_changed();
+    timer.begin_frame(Instant::now());
+    assert!(!timer.finish_frame(Instant::now()));
+    assert!(cpu_windows(&hub).is_empty());
+}
+
+// Telemetry: with the sink and the ring live, a frame that closes no window
+// allocates nothing.
+#[test]
+fn with_telemetry_on_a_frame_closing_no_window_allocates_nothing() {
+    let (_hub, _scope) = telemetry_with_sink_and_ring("alloc");
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    drive_timer_frames(&mut timer, WINDOW_FRAMES);
+    timer.log_last_window();
+    let control = AllocSnapshot::arm();
+    std::hint::black_box(Box::new(7_u64));
+    assert!(
+        control.allocs_since() >= 1,
+        "probe must count in this binary"
+    );
+
+    let probe = AllocSnapshot::arm();
+    drive_timer_frames(&mut timer, WINDOW_FRAMES - 1);
+    assert_eq!(probe.allocs_since(), 0);
+}

@@ -61,9 +61,13 @@ static NEXT_UNIQUE_FILE_ID: AtomicU64 = AtomicU64::new(0);
 /// and failure.
 pub(crate) fn run_capture(scene_arg: Option<&str>) -> ! {
     match run_capture_inner(scene_arg) {
-        Ok(()) => std::process::exit(0),
+        Ok(()) => {
+            crate::telemetry::end_run_before_exit(0, "capture");
+            std::process::exit(0)
+        }
         Err(err) => {
             eprintln!("[Capture] {err:#}");
+            crate::telemetry::end_run_before_exit(1, "capture");
             std::process::exit(1);
         }
     }

@@ -283,6 +283,9 @@ pub struct FrameTiming {
     /// report. Kept distinct from `last_window` so diagnostics retain their
     /// most recent value while capture observes every window once.
     completed_window: Option<FrameTimingSnapshot>,
+    /// Newly completed window not yet taken by the app's telemetry, which
+    /// emits it on the frame it closes.
+    telemetry_window: Option<FrameTimingSnapshot>,
 }
 
 impl FrameTiming {
@@ -345,6 +348,7 @@ impl FrameTiming {
             frame_prefilled: false,
             last_window: None,
             completed_window: None,
+            telemetry_window: None,
         }
     }
 
@@ -372,6 +376,11 @@ impl FrameTiming {
         self.completed_window.take()
     }
 
+    /// Consume one newly completed window for telemetry, once.
+    pub fn take_telemetry_window(&mut self) -> Option<FrameTimingSnapshot> {
+        self.telemetry_window.take()
+    }
+
     /// Successful readbacks accumulated since the last completed window.
     /// Capture uses this instead of submitted frame count because a failed or
     /// delayed map does not contribute a timing sample.
@@ -391,6 +400,7 @@ impl FrameTiming {
         self.pairs_written_in_flight.store(0, Ordering::Relaxed);
         self.last_window = None;
         self.completed_window = None;
+        self.telemetry_window = None;
     }
 
     /// Render-pass timestamp writes for pair `pair_idx`. The returned
@@ -535,6 +545,7 @@ impl FrameTiming {
         }
         let snapshot = self.window.snapshot(&self.pass_labels);
         self.last_window = Some(snapshot.clone());
+        self.telemetry_window = Some(snapshot.clone());
         self.completed_window = Some(snapshot);
         log::info!("{}", self.window.log_line(&self.pass_labels));
         self.window.reset();

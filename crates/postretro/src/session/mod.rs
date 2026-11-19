@@ -61,6 +61,7 @@ pub(crate) mod role_state;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;
+mod streaming_window_events;
 use level_streaming::LevelStreaming;
 use sh_residency::ShStreamingSession;
 

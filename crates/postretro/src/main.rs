@@ -116,6 +116,7 @@ mod sound_events;
 mod streaming;
 use postretro_sim::{sim, spawner, sprite_collection};
 mod startup;
+mod telemetry;
 use postretro_sim::trigger_bindings;
 #[cfg(test)]
 use postretro_sim::trigger_commands;
@@ -655,7 +656,18 @@ fn reload_summary_requires_mod_init(summary: ReloadSummary) -> bool {
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    // Telemetry's `run_start` precedes every log record, so the hub starts
+    // before the logger. Every exit main returns through writes `run_end`;
+    // a panic unwinding out of the body writes it from the guard.
+    let args: Vec<String> = std::env::args().collect();
+    let consumer = telemetry::start_engine_run(&args);
+    telemetry::install_engine_logger(consumer);
+    let result = postretro_telemetry::run_guarded(run_engine);
+    telemetry::end_engine_run(&result);
+    result
+}
+
+fn run_engine() -> Result<()> {
     log::info!("[Engine] Postretro starting");
     // No-op unless built with the `tracy` feature.
     postretro_stage_timing::start_external_profiler();
@@ -879,6 +891,10 @@ pub(crate) struct App {
     core_root: postretro_ui::CoreRoot,
 
     exit_result: Result<()>,
+    /// The telemetry level a load becomes once it commits: captured when it
+    /// can no longer be cancelled, because nothing else keeps its generation
+    /// past the commit. See: context/lib/development_guide.md §6.5
+    telemetry_commit_level: Option<postretro_telemetry::Level>,
 
     camera: Camera,
 
@@ -2218,6 +2234,8 @@ impl ApplicationHandler for App {
             }
         };
         self.boot_timings.record("wgpu_init");
+        // The adapter exists: GPU timing is no longer pending.
+        telemetry::settle_gpu_timing(renderer.gpu_timing_support());
         // A saved exclusive mode may wait for the surface (window_modes).
         if let Some(options) = options {
             self.window_modes.finish_boot(&window, options);

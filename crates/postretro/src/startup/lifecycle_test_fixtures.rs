@@ -61,6 +61,7 @@ pub(crate) fn test_app() -> App {
         baked_root: None,
         core_root: postretro_ui::CoreRoot::working_directory(),
         exit_result: Ok(()),
+        telemetry_commit_level: None,
         camera: Camera::new(Vec3::ZERO, 0.0, 0.0),
         // Tests exercise level load/unload in the Running state, which touches
         // the session-owned modal stack and the whole script tranche; construct
@@ -910,4 +911,50 @@ pub(crate) fn inject_geometry_install_error(error: crate::render::LevelInstallEr
 pub(in crate::startup) fn take_injected_geometry_install_error()
 -> Option<crate::render::LevelInstallError> {
     INJECTED_GEOMETRY_INSTALL_ERROR.with(|slot| slot.borrow_mut().take())
+}
+
+/// A telemetry hub private to this test thread, keeping every line: the
+/// lifecycle's events reach it, never another test's.
+pub(crate) fn telemetry_hub() -> (
+    std::sync::Arc<postretro_telemetry::Hub>,
+    postretro_telemetry::scoped::ScopedHub,
+) {
+    let hub = std::sync::Arc::new(postretro_telemetry::Hub::start(
+        postretro_telemetry::HubConfig {
+            memory: true,
+            ..postretro_telemetry::HubConfig::new(postretro_telemetry::Source::Engine, "test")
+        },
+    ));
+    let scope = postretro_telemetry::scoped::install(std::sync::Arc::clone(&hub));
+    (hub, scope)
+}
+
+/// Every event the hub holds, parsed, of the load family and streaming
+/// windows: the kinds whose order the lifecycle pins.
+pub(crate) fn lifecycle_events(
+    hub: &postretro_telemetry::Hub,
+) -> Vec<postretro_telemetry::Envelope> {
+    use postretro_telemetry::Kind;
+    hub.lines()
+        .iter()
+        .map(|line| postretro_telemetry::Envelope::parse_line(line).expect("an envelope"))
+        .filter(|event| {
+            matches!(
+                event.kind,
+                Kind::LoadPhases
+                    | Kind::Unload
+                    | Kind::GeometryInstall
+                    | Kind::ShStreamingWindow
+                    | Kind::LightmapStreamingWindow
+            )
+        })
+        .collect()
+}
+
+/// An event's payload `generation`.
+pub(crate) fn payload_generation(event: &postretro_telemetry::Envelope) -> Option<u64> {
+    event
+        .payload
+        .get("generation")
+        .and_then(serde_json::Value::as_u64)
 }

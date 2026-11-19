@@ -208,6 +208,16 @@ impl Renderer {
             .and_then(|t| t.last_window())
     }
 
+    /// The GPU timing window that closed since the last call, once; `None`
+    /// without GPU timing or before a full renderer.
+    pub fn take_gpu_timing_window(&mut self) -> Option<frame_timing::FrameTimingSnapshot> {
+        self.full
+            .as_mut()?
+            .frame_timing
+            .as_mut()?
+            .take_telemetry_window()
+    }
+
     /// Rebuilds the swapchain via surface.configure (Alt+Shift+V diagnostic chord).
     /// `vsync_enabled` is full-phase state; the surface reconfigure is boot-phase
     /// — destructure so the boot fields and the full flag borrow disjointly.

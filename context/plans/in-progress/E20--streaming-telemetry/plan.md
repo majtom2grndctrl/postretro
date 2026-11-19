@@ -75,9 +75,9 @@ read at: e0ac8b7f
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Leaf crate `postretro-telemetry`: envelope, hub (one lock: seq, ring, file), ring with pins and caps, `events` page, tee logger, scoped test hub; engine first slice: `run_start`/`run_end`, line C event, file sink | integrating executor | — | |
-| 2 | Engine load family: boot/mod/load phases, unload, geometry install hand-back, running level at commit; ordering tests P3, P4, P13 | integrating executor | 1 | |
-| 3 | Engine streaming windows and partials; CPU/GPU timing windows; GPU `producer_state` | integrating executor | 1 | |
+| 1 | Leaf crate `postretro-telemetry`: envelope, hub (one lock: seq, ring, file), ring with pins and caps, `events` page, tee logger, scoped test hub; engine first slice: `run_start`/`run_end`, line C event, file sink | integrating executor | — | done: `cargo test -p postretro-telemetry` 28 passed |
+| 2 | Engine load family: boot/mod/load phases, unload, geometry install hand-back, running level at commit; ordering tests P3, P4, P13 | integrating executor | 1 | done; P3/P4/P13/before-reveal tests are GPU-gated and skip here (no adapter; lavapipe's 128 MiB binding limit is below the renderer's floor) |
+| 3 | Engine streaming windows and partials; CPU/GPU timing windows; GPU `producer_state` | integrating executor | 1 | done: `cargo test -p postretro --bin postretro -- telemetry streaming_diagnostics cpu_timing::tests timing_events unload_writes` 54 passed |
 | 4 | Engine exits: partials then `run_end` on clean/error, capture/headless `process::exit`, panic guard | integrating executor | 2, 3 | |
 | 5 | `prl-build`: sink after argument parsing, tee over `CollectingLogger`, reporter decorator, bake summary from each frontend, exits | integrating executor | 1 | |
 | 6 | observe-live `events` verb on the transport thread; hello protocol 2 with run | integrating executor | 1 | |

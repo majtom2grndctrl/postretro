@@ -235,6 +235,17 @@ impl NpcTiers {
             .map_or(AgentStep::Ticks(1), |entry| entry.step)
     }
 
+    /// `id`'s rank in the replan budget, higher first within each replan
+    /// tier: engaged 2, idle 1, dormant 0. Agents outside the tiers rank as
+    /// idle.
+    pub fn replan_rank(&self, id: EntityId) -> u8 {
+        match self.tier(id) {
+            Some(NpcTier::Engaged) => 2,
+            Some(NpcTier::Idle) | None => 1,
+            Some(NpcTier::Dormant) => 0,
+        }
+    }
+
     /// `id`'s tier, `None` outside the tiers (dead, removed, or not an NPC).
     pub fn tier(&self, id: EntityId) -> Option<NpcTier> {
         self.entries.get(&id).map(|entry| entry.tier)

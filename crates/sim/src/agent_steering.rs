@@ -37,10 +37,23 @@ mod mover_link;
 mod pin_escape;
 
 mod tick_diagnostics {
-    /// Maximum number of agents that may recompute a path in a single tick.
-    /// Bounds the per-frame pathfinding cost regardless of how many agents
-    /// simultaneously want a fresh route.
+    /// The fewest agents that may recompute a path in a single tick: the
+    /// budget whenever at most `REPLAN_BUDGET_PER_TICK × REPLAN_FAIR_WAIT_TICKS`
+    /// agents are owed a replan. Above that, [`replan_budget`] scales with
+    /// demand.
     pub const REPLAN_BUDGET_PER_TICK: u32 = 4;
+
+    /// The wait the scaled budget aims to give every owed agent: 6 ticks,
+    /// about 100 ms.
+    pub const REPLAN_FAIR_WAIT_TICKS: u32 = 6;
+
+    /// This tick's replan budget for `owed` agents owed a replan in any tier:
+    /// `max(4, ⌈owed / 6⌉)`, so route-query cost grows with the crowd and no
+    /// owed agent waits much past the fair wait.
+    pub fn replan_budget(owed: usize) -> u32 {
+        let owed = u32::try_from(owed).unwrap_or(u32::MAX);
+        REPLAN_BUDGET_PER_TICK.max(owed.div_ceil(REPLAN_FAIR_WAIT_TICKS))
+    }
 
     /// Ticks an agent must wait between path recomputations for the same
     /// destination, including retries after a failed plan.
@@ -51,14 +64,19 @@ mod tick_diagnostics {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct AgentTickResult {
         pub replans: u32,
+        /// This tick's replan budget, from the agents owed a replan.
+        pub budget: u32,
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub use tick_diagnostics::{AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS};
+pub use tick_diagnostics::{
+    AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_FAIR_WAIT_TICKS, REPLAN_STALENESS_TICKS,
+    replan_budget,
+};
 #[cfg(not(any(test, feature = "test-support")))]
 pub(crate) use tick_diagnostics::{
-    AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS,
+    AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS, replan_budget,
 };
 
 /// What one agent's steering does this tick.
@@ -78,16 +96,37 @@ pub enum AgentStep {
 #[derive(Clone, Copy)]
 pub struct AgentSteps<'a> {
     schedule: Option<&'a dyn Fn(EntityId) -> AgentStep>,
+    rank: Option<&'a dyn Fn(EntityId) -> u8>,
 }
 
 impl<'a> AgentSteps<'a> {
     /// Every agent steps every tick.
-    pub const EVERY_TICK: AgentSteps<'static> = AgentSteps { schedule: None };
+    pub const EVERY_TICK: AgentSteps<'static> = AgentSteps {
+        schedule: None,
+        rank: None,
+    };
 
     pub fn scheduled(schedule: &'a dyn Fn(EntityId) -> AgentStep) -> Self {
         Self {
             schedule: Some(schedule),
+            rank: None,
         }
+    }
+
+    /// [`Self::scheduled`] with each agent's NPC tier rank (higher first),
+    /// the replan budget's key after a leap's pacing within each replan tier.
+    pub fn ranked(
+        schedule: &'a dyn Fn(EntityId) -> AgentStep,
+        rank: &'a dyn Fn(EntityId) -> u8,
+    ) -> Self {
+        Self {
+            schedule: Some(schedule),
+            rank: Some(rank),
+        }
+    }
+
+    fn rank(&self, id: EntityId) -> u8 {
+        self.rank.map_or(0, |rank| rank(id))
     }
 
     fn step(&self, id: EntityId) -> AgentStep {
@@ -656,7 +695,7 @@ fn tick_impl(
     // after the snapshot) with the cooldown decremented exactly as the apply loop
     // will, so the two passes agree on each agent's verdict. Agents the ride code
     // will move this tick are left out, so every slot goes to an agent that
-    // replans. Total admissions stay ≤ REPLAN_BUDGET_PER_TICK.
+    // replans. Total admissions stay within this tick's `replan_budget`.
     let admission = admit_replans(registry, &snapshot, nav_graph, gate, collision, steps, dt);
 
     let mut replans = 0u32;
@@ -1078,7 +1117,10 @@ fn tick_impl(
 
     corpse::tick_corpses(registry, collision, environment, dt);
 
-    AgentTickResult { replans }
+    AgentTickResult {
+        replans,
+        budget: admission.budget,
+    }
 }
 
 /// How many parts a step spanning `ticks` sweeps in: enough that no part
@@ -1156,9 +1198,12 @@ fn move_without_path(
     let _ = registry.set_component(id, agent);
 }
 
-/// Decide which agents replan this tick under the per-tick budget. Returns the
-/// admitted ids, at most [`REPLAN_BUDGET_PER_TICK`], and the drift-driven agents
-/// it passed over. Admission runs tier by tier:
+/// Decide which agents replan this tick under the per-tick budget,
+/// [`replan_budget`] of the agents owed a replan in any tier. Returns the
+/// admitted ids, at most that budget, and the drift-driven agents it passed
+/// over. Within each tier a leap's spot goes first, then the higher NPC tier
+/// (the steps' rank); the gate tier keys them after its generation. Admission
+/// runs tier by tier:
 ///
 /// 1. GATE-owed: a dock change closed a crossing still ahead on the agent's
 ///    route, or the agent is latched `blocked` and a gate or link has opened
@@ -1206,9 +1251,9 @@ fn admit_replans(
     // Classify each snapshot agent once into a tier, or none. The cooldown is
     // decremented exactly as the apply loop will, so both passes see the same
     // verdict.
-    let mut gate_driven: Vec<(u64, EntityId)> = Vec::new();
-    let mut drift_driven: Vec<(bool, u32, usize, EntityId)> = Vec::new();
-    let mut staleness_only: Vec<EntityId> = Vec::new();
+    let mut gate_driven: Vec<(u64, bool, u8, EntityId)> = Vec::new();
+    let mut drift_driven: Vec<(bool, u8, u32, usize, EntityId)> = Vec::new();
+    let mut staleness_only: Vec<(bool, u8, EntityId)> = Vec::new();
 
     for (index, current) in snapshot.iter().enumerate() {
         let Ok(agent) = registry.get_component::<AgentComponent>(current.id) else {
@@ -1244,47 +1289,63 @@ fn admit_replans(
         // (or 0) this tick reaches 0 after the decrement and counts as stale.
         let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(ticks) == 0;
 
+        let rank = steps.rank(current.id);
         if gate_change_owes_replan(agent, current.position, nav_graph, gate) {
-            gate_driven.push((agent.gate_generation, current.id));
+            gate_driven.push((agent.gate_generation, agent.paced, rank, current.id));
         } else if drifted {
-            drift_driven.push((agent.paced, agent.drift_wait_ticks, index, current.id));
+            drift_driven.push((agent.paced, rank, agent.drift_wait_ticks, index, current.id));
         } else if cooldown_elapsed {
-            staleness_only.push(current.id);
+            staleness_only.push((agent.paced, rank, current.id));
         }
     }
 
-    let budget = REPLAN_BUDGET_PER_TICK as usize;
-    // Longest owed first, slot order within a generation (the sort is stable).
-    gate_driven.sort_by_key(|(generation, _)| *generation);
+    let budget = replan_budget(gate_driven.len() + drift_driven.len() + staleness_only.len());
+    let slots = budget as usize;
+    // Longest owed first; within a generation a leap's spot, then the higher
+    // NPC tier; slot order within those (the sort is stable). The tier keys
+    // come after the generation, so the ⌈N / budget⌉ bound stands.
+    gate_driven.sort_by_key(|&(generation, paced, rank, _)| {
+        (generation, std::cmp::Reverse((paced, rank)))
+    });
     let mut admitted: Vec<EntityId> = gate_driven
         .into_iter()
-        .take(budget)
-        .map(|(_, id)| id)
+        .take(slots)
+        .map(|(_, _, _, id)| id)
         .collect();
-    // A leap's spot first, then longest waiting, slot order within a wait
-    // (the sort is stable).
-    drift_driven.sort_by_key(|&(paced, wait, _, _)| std::cmp::Reverse((paced, wait)));
-    let remaining = budget - admitted.len();
+    // A leap's spot first, then the higher NPC tier, then longest waiting,
+    // slot order within a wait (the sort is stable).
+    drift_driven.sort_by_key(|&(paced, rank, wait, _, _)| std::cmp::Reverse((paced, rank, wait)));
+    let remaining = slots - admitted.len();
     let mut drift_waiting = vec![false; snapshot.len()];
-    for (rank, &(_, _, index, id)) in drift_driven.iter().enumerate() {
-        if rank < remaining {
+    for (place, &(_, _, _, index, id)) in drift_driven.iter().enumerate() {
+        if place < remaining {
             admitted.push(id);
         } else {
             drift_waiting[index] = true;
         }
     }
-    let remaining = budget - admitted.len();
-    admitted.extend(staleness_only.into_iter().take(remaining));
+    let remaining = slots - admitted.len();
+    // A leap's spot, then the higher NPC tier, slot order within.
+    staleness_only.sort_by_key(|&(paced, rank, _)| std::cmp::Reverse((paced, rank)));
+    admitted.extend(
+        staleness_only
+            .into_iter()
+            .take(remaining)
+            .map(|(_, _, id)| id),
+    );
     ReplanAdmission {
         admitted,
         drift_waiting,
+        budget,
     }
 }
 
 /// One tick's replan admission.
 struct ReplanAdmission {
-    /// The agents that replan this tick, at most [`REPLAN_BUDGET_PER_TICK`].
+    /// The agents that replan this tick, at most `budget`.
     admitted: Vec<EntityId>,
+    /// This tick's budget: [`replan_budget`] of the agents owed a replan.
+    budget: u32,
     /// Per snapshot index: drift-driven but passed over this tick, so its
     /// `drift_wait_ticks` grows.
     drift_waiting: Vec<bool>,

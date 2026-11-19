@@ -130,7 +130,7 @@ fn under_contention_on_the_stress_map_no_gate_change_outlasts_the_budget() {
             environment,
             DT,
         );
-        assert!(result.replans <= REPLAN_BUDGET_PER_TICK);
+        assert!(result.replans <= result.budget);
         for (index, id) in ids.iter().enumerate() {
             let agent = registry.get_component::<AgentComponent>(*id).unwrap();
             let position = registry.get_component::<Transform>(*id).unwrap().position;

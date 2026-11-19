@@ -1035,6 +1035,7 @@ where
         schedule.scheduler.tiers.settle_after_ai(&registry.borrow());
     }
     let tiers = schedule.as_ref().map(|schedule| &schedule.scheduler.tiers);
+    let replan_rank = |id| tiers.map_or(1, |tiers| tiers.replan_rank(id));
     let agent_step = |id| {
         tiers.map_or(agent_steering::AgentStep::Ticks(1), |tiers| {
             tiers.agent_step(id)
@@ -1067,7 +1068,7 @@ where
                 yields: mover_tick_states.agent_yields(),
                 gate: crate::nav::NavGate::new(mover_tick_states.docks()),
             },
-            agent_steering::AgentSteps::scheduled(&agent_step),
+            agent_steering::AgentSteps::ranked(&agent_step, &replan_rank),
             &mut corpse_yields,
             environment,
             tick_dt,

@@ -333,7 +333,7 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
     let mut replans_total = 0u32;
     let mut saturated_ticks = 0u32;
     let mut peak_peer_targets = 0usize;
-    let budget = agent_steering::REPLAN_BUDGET_PER_TICK;
+    let mut budget_total = 0u32;
     let mut chain = Digest::new();
     let mut checkpoints = Vec::new();
     let timing = TimingGate::new(report == Report::SubStages);
@@ -409,7 +409,8 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
         ai_times.push(ai_elapsed);
         steer_times.push(steer_elapsed);
         replans_total += result.replans;
-        if result.replans >= budget {
+        budget_total += result.budget;
+        if result.replans >= result.budget {
             saturated_ticks += 1;
         }
         let peer_targets = wave
@@ -523,8 +524,9 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
         "[ReplanStress] === {tag}: {wave_size} wave + {CHASERS} chasers, {SAMPLED_TICKS} ticks ==="
     );
     eprintln!(
-        "[ReplanStress] replans {replans_total} ({:.2}/tick, budget {budget}), budget-saturated ticks {saturated_ticks}/{SAMPLED_TICKS}; wave holding a slot at end {slotted}/{alive} alive; chasers holding the target {chasers_engaged}/{CHASERS}; agents moving at end {moving}/{}",
+        "[ReplanStress] replans {replans_total} ({:.2}/tick, mean budget {:.1}), budget-saturated ticks {saturated_ticks}/{SAMPLED_TICKS}; wave holding a slot at end {slotted}/{alive} alive; chasers holding the target {chasers_engaged}/{CHASERS}; agents moving at end {moving}/{}",
         replans_total as f64 / SAMPLED_TICKS as f64,
+        budget_total as f64 / SAMPLED_TICKS as f64,
         agents.len(),
     );
     eprintln!(

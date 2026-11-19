@@ -4,25 +4,9 @@
 // by spawn order or frame split.
 // See: context/lib/entity_model.md §7c (decide ticks)
 
-/// Ticks between an NPC's decides: 15 Hz on the 60 Hz tick.
-pub(crate) const DECIDE_INTERVAL_TICKS: u64 = 4;
-
-/// Whether an NPC with `identity` decides on AI tick `tick`, deciding every
-/// `interval` ticks.
-pub(crate) fn decides_on(tick: u64, identity: u64, interval: u64) -> bool {
-    let interval = interval.max(1);
-    (tick + phase(identity, interval)) % interval == 0
-}
-
-/// An identity's phase in a cycle of `interval` ticks: Fibonacci hashing,
-/// the fractional part of `identity × φ` scaled to the cycle. Identities are
-/// mostly counters (map ordinals, spawn counts), and a Weyl sequence spreads
-/// any run of them, strided or interleaved, near evenly; a mixing hash would
-/// spread them only as well as chance.
-pub(crate) fn phase(identity: u64, interval: u64) -> u64 {
-    let fraction = identity.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    ((u128::from(fraction) * u128::from(interval.max(1))) >> 64) as u64
-}
+#[cfg(test)]
+use postretro_sim::npc_tiers::phase;
+pub(crate) use postretro_sim::npc_tiers::{DECIDE_INTERVAL_TICKS, decides_on};
 
 /// A schedule identity whose decides fall on AI ticks `tick`, `tick + 4`,
 /// and so on at production cadence. A brain also decides on its first run.

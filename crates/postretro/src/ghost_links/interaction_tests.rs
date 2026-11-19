@@ -270,6 +270,7 @@ fn a_trigger_at_a_ghost_pawn_does_not_fire_while_one_at_the_real_pawn_does() {
 /// An enemy that acquires any hostile candidate within 4 m.
 fn enemy(registry: &mut EntityRegistry, at: Vec3) -> EntityId {
     let graph = BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "watch".into(),

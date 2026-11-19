@@ -780,6 +780,7 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("knockback?", "KnockbackResponse", "Optional enemy impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.")
+        .field("alwaysActive?", "boolean", "Optional; default false. True keeps this archetype's NPCs out of the dormant tier: they keep full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. Costs full rate for those NPCs only. A placed NPC's `always_active` map key (0 or 1) overrides it; NPCs a spawner releases take this value. A reload moves live NPCs placed without the key.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

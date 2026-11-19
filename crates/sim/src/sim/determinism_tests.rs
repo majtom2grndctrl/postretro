@@ -1367,6 +1367,7 @@ fn hold_enemy_graph() -> BehaviorGraphDescriptor {
         },
     };
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "brace".to_string(),
@@ -1474,6 +1475,7 @@ fn roll_enemy_graph() -> BehaviorGraphDescriptor {
         ..leaf()
     };
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "wait".to_string(),
@@ -1871,6 +1873,7 @@ fn brain_in_state(graph: &BehaviorGraphDescriptor, state: &str) -> BrainComponen
 
 fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),

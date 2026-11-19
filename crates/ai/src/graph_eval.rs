@@ -845,6 +845,7 @@ mod statechart_tests {
             BehaviorSelectorEntry::Motion(MotionVerb::Hold),
         ]);
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "engage".to_string(),
@@ -1185,6 +1186,7 @@ mod statechart_tests {
         transitions: BTreeMap<String, Vec<GuardedRow>>,
     ) -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: activities[0].to_string(),

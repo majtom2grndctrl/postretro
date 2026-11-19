@@ -195,6 +195,22 @@ pub struct BehaviorGraphDescriptor {
     #[serde(default)]
     pub engagement_radius: Option<f32>,
     pub move_speed: f32,
+    /// Root fields the AI tick scheduler reads.
+    #[serde(flatten)]
+    pub ai: BehaviorAiTuning,
+}
+
+/// Behavior-root fields the AI tick scheduler reads, on the wire beside the
+/// other root fields. Each serializes only when authored off its default, so
+/// a graph that sets none keeps its bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorAiTuning {
+    /// Keeps the archetype's NPCs out of the dormant tier: they run idle or
+    /// engaged whether or not a player perceives them. A placement's
+    /// `always_active` key overrides it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub always_active: bool,
 }
 
 /// Scalar tuning for the engine-owned retaliation preference. The candidate
@@ -262,6 +278,8 @@ struct RawBehaviorGraphDescriptor {
     #[serde(default)]
     engagement_radius: Option<f32>,
     move_speed: f32,
+    #[serde(default)]
+    always_active: bool,
 }
 
 impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
@@ -283,6 +301,9 @@ impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
             attacks: raw.attacks,
             engagement_radius: raw.engagement_radius,
             move_speed: raw.move_speed,
+            ai: BehaviorAiTuning {
+                always_active: raw.always_active,
+            },
         })
     }
 }
@@ -1323,6 +1344,7 @@ mod tests {
     #[test]
     fn standoff_distance_defaults_to_per_attack_engagement_radius_override() {
         let graph = BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
@@ -1434,6 +1456,43 @@ mod tests {
             error.to_string().contains("attacks.slam.standoffDistance"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn always_active_is_an_optional_root_boolean_that_keeps_default_bytes() {
+        let graph = |extra: serde_json::Value| {
+            let mut json = serde_json::json!({
+                "initial": "idle",
+                "moveSpeed": 3.0,
+                "activities": { "idle": { "animation": "idle", "motion": "hold" } },
+                "transitions": {},
+            });
+            json.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<BehaviorGraphDescriptor>(json)
+        };
+        let absent = graph(serde_json::json!({})).expect("absent `alwaysActive` parses");
+        assert!(!absent.ai.always_active);
+        assert!(
+            serde_json::to_value(&absent)
+                .unwrap()
+                .get("alwaysActive")
+                .is_none(),
+            "an unauthored `alwaysActive` adds no bytes"
+        );
+        let on = graph(serde_json::json!({ "alwaysActive": true })).expect("`true` parses");
+        assert!(on.ai.always_active);
+        assert_eq!(
+            serde_json::to_value(&on).unwrap()["alwaysActive"],
+            serde_json::json!(true)
+        );
+        for bad in [serde_json::json!("yes"), serde_json::json!(1)] {
+            assert!(
+                graph(serde_json::json!({ "alwaysActive": bad })).is_err(),
+                "`alwaysActive: {bad}` must be rejected"
+            );
+        }
     }
 
     #[test]

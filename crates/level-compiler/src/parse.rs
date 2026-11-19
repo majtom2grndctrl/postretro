@@ -1216,6 +1216,20 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         None => None,
     };
 
+    // A placed NPC's `always_active` is engine-reserved: 0 or 1. Anything else
+    // fails the build naming the entity, so no PRL carries a value the
+    // scheduler would have to guess at.
+    for (index, entity_id) in geo_map.entities.iter().enumerate() {
+        if let Some(raw) = get_property(&geo_map, entity_id, "always_active")
+            && !matches!(raw.trim(), "0" | "1")
+        {
+            let classname = get_property(&geo_map, entity_id, "classname").unwrap_or_default();
+            anyhow::bail!(
+                "entity {index} '{classname}': `always_active` value `{raw}` must be 0 or 1"
+            );
+        }
+    }
+
     for entity_id in geo_map.entities.iter() {
         let classname =
             get_property(&geo_map, entity_id, "classname").unwrap_or_else(|| "unknown".to_string());
@@ -7570,6 +7584,56 @@ mod tests {
             parse_worldspawn_with_kvp("\"ai_wake_lead\" \"0\"").ai_wake_lead,
             Some(0.0)
         );
+    }
+
+    #[test]
+    fn parse_map_file_rejects_an_always_active_other_than_0_or_1_by_name() {
+        let parse = |value: &str| {
+            let map_text = format!(
+                "\
+// entity 0
+{{
+\"classname\" \"worldspawn\"
+{{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}}
+}}
+// entity 1
+{{
+\"classname\" \"enemy_grunt\"
+\"origin\" \"0 0 0\"
+\"always_active\" \"{value}\"
+}}
+"
+            );
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let tid = std::thread::current().id();
+            let tmp =
+                std::env::temp_dir().join(format!("postretro_always_active_{nanos}_{tid:?}.map"));
+            std::fs::write(&tmp, map_text).unwrap();
+            let result = parse_map_file(&tmp, MapFormat::IdTech2);
+            let _ = std::fs::remove_file(&tmp);
+            result
+        };
+        for value in ["0", "1"] {
+            parse(value).unwrap_or_else(|err| panic!("`always_active` {value} must build: {err}"));
+        }
+        for value in ["2", "true", "", "yes"] {
+            let err = parse(value).expect_err("a bad `always_active` must fail the build");
+            let message = err.to_string();
+            assert!(
+                message.contains("always_active") && message.contains("enemy_grunt"),
+                "error for `{value}` should name the key and the entity, got: {message}",
+            );
+        }
     }
 
     #[test]

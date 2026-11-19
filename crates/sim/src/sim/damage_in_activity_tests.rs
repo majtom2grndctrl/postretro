@@ -76,6 +76,7 @@ fn graph(activities: &[&str], rows: &[(&str, &str, f32)]) -> BehaviorGraphDescri
             });
     }
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: activities[0].to_string(),

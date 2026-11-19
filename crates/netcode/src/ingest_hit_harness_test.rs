@@ -798,6 +798,7 @@ fn connected_client_projectile_declares_later_and_host_applies_authorized_credit
 
 fn retaliation_graph() -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "engaged".into(),

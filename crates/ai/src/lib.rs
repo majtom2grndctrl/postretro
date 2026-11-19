@@ -166,6 +166,9 @@ pub(crate) struct EnemySnapshot {
     brain: BrainComponent,
     /// Ticks since this brain's last run: its clocks advance by all of them.
     span: u32,
+    /// A dormant run's decide, which replaces the 15 Hz phase; `None` on an
+    /// ordinary run.
+    dormant_decide: Option<bool>,
 }
 
 /// One enemy's resolved outcome after evaluating its brain this tick, applied in
@@ -636,7 +639,8 @@ where
                 return None;
             };
             let present_last_tick = presence.was_present(id);
-            if schedule.run(id) == AiRun::Skip {
+            let run = schedule.run(id);
+            if run == AiRun::Skip {
                 // A skip keeps a brain in the set only if it was in it: one
                 // returning from outside comes back on its next run, holding
                 // nothing.
@@ -668,6 +672,10 @@ where
                 rotation: transform.rotation,
                 brain,
                 span,
+                dormant_decide: match run {
+                    AiRun::RunDormant { decide } => Some(decide),
+                    AiRun::Run | AiRun::Skip => None,
+                },
             })
         })
         .collect();

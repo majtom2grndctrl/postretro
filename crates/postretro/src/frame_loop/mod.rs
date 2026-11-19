@@ -937,11 +937,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 postretro_ai::tick_runner!(&mut app.ai_runtime),
                 app.level
                     .as_ref()
-                    .zip(app.npc_perception.as_mut())
+                    .zip(app.npc_scheduler.as_mut())
                     .map(
-                        |(level, state)| postretro_sim::npc_perception::PerceptionInput {
+                        |(level, scheduler)| postretro_sim::npc_tiers::ScheduleInput {
                             level,
-                            state,
+                            scheduler,
                         },
                     ),
                 &app.kinematic_mover_colliders,

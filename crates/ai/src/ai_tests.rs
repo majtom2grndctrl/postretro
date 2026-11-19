@@ -103,6 +103,7 @@ macro_rules! test_behavior_graph {
         move_speed: $move_speed:expr $(,)?
     }) => {
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: $initial,
@@ -9333,6 +9334,7 @@ fn reference_behavior_graph() -> BehaviorGraphDescriptor {
     };
 
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
@@ -13740,6 +13742,9 @@ mod clip_timed;
 
 #[path = "decide_tests.rs"]
 mod decide;
+
+#[path = "tier_tests.rs"]
+mod tier;
 
 #[path = "stance_pose_tests.rs"]
 mod stance_pose;

@@ -229,6 +229,11 @@ pub struct BrainComponent {
     /// uses the registry index, replay-stable only under a fixed spawn order.
     #[serde(default)]
     pub schedule_identity: Option<u64>,
+    /// Whether the NPC stays out of the dormant tier: the archetype's
+    /// `alwaysActive`, or its placement's `always_active` key, which wins.
+    /// Set-piece state read at spawn; a reload moves only `FromArchetype`.
+    #[serde(default)]
+    pub always_active: AlwaysActive,
     /// Last locomotion intent applied to animation selection. This latches the
     /// idle/walk decision so an enemy in `Alert` switches once on stop/resume
     /// instead of re-requesting the same animation every tick.
@@ -401,6 +406,38 @@ pub struct BrainComponent {
     pub entry_event_pending: bool,
 }
 
+/// Which `alwaysActive` an NPC follows: its archetype's (live across
+/// reloads), or its placement's `always_active` key, on or off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlwaysActive {
+    #[default]
+    FromArchetype,
+    On,
+    Off,
+}
+
+impl AlwaysActive {
+    /// The placement key's value: `"1"` on, `"0"` off. Anything else is not a
+    /// value (`prl-build` refuses it by name).
+    pub fn from_placement_key(value: &str) -> Option<Self> {
+        match value.trim() {
+            "1" => Some(Self::On),
+            "0" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    /// Whether the NPC stays out of the dormant tier, given its archetype's
+    /// live `alwaysActive`.
+    pub fn resolve(self, archetype: bool) -> bool {
+        match self {
+            Self::FromArchetype => archetype,
+            Self::On => true,
+            Self::Off => false,
+        }
+    }
+}
+
 impl BrainComponent {
     /// Materialize a fresh brain from an authored `components.behavior` graph.
     /// Seeded in the graph's `initial` state with every timer at rest.
@@ -418,6 +455,7 @@ impl BrainComponent {
             patrol_direction: 1,
             attack_cooldown_remaining_ms: BTreeMap::new(),
             schedule_identity: None,
+            always_active: AlwaysActive::FromArchetype,
             locomotion_moving: false,
             launch: LaunchState::default(),
             presented_travel_variant: TravelVariant::Base,
@@ -671,9 +709,17 @@ impl BrainComponent {
     /// downstream aging site, so moving it there would introduce a one-tick
     /// skew between the two facts.
     pub fn age_recent_attackers(&mut self, dt_ms: f32) {
+        self.age_recent_attackers_over(dt_ms, dt_ms);
+    }
+
+    /// [`Self::age_recent_attackers`] for a run spanning several ticks: an
+    /// entry hit since the last run (still at 0) ages one tick, `tick_dt_ms`,
+    /// as at 60 Hz, never the time before its hit; the rest age the whole
+    /// span, `span_dt_ms`.
+    pub fn age_recent_attackers_over(&mut self, span_dt_ms: f32, tick_dt_ms: f32) {
         for entry in self.recent_attackers.iter_mut().flatten() {
             entry.time_since_damage_ms =
-                (entry.time_since_damage_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE);
+                age_damage_clock(entry.time_since_damage_ms, span_dt_ms, tick_dt_ms);
         }
     }
 
@@ -1088,6 +1134,19 @@ const fn default_aggro_armed() -> bool {
     true
 }
 
+/// Advance a damage-recency clock over a run spanning several ticks. A clock
+/// at 0 was zeroed by a hit since the last run, and any hit moves its NPC to
+/// a running tier by the next tick, so it ages one tick, `tick_dt_ms`, exactly
+/// as at 60 Hz; any other ages the whole span.
+pub fn age_damage_clock(clock_ms: f32, span_dt_ms: f32, tick_dt_ms: f32) -> f32 {
+    let dt_ms = if clock_ms == 0.0 {
+        tick_dt_ms
+    } else {
+        span_dt_ms
+    };
+    (clock_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE)
+}
+
 const fn default_time_since_damage_ms() -> f32 {
     BRAIN_NO_TARGET_DISTANCE
 }
@@ -1293,6 +1352,7 @@ mod tests {
         use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
 
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "rest".to_string(),

@@ -87,6 +87,10 @@ pub struct AiTickInputs<'a> {
 pub enum AiRun {
     /// It runs, its clocks advancing by every tick since its last run.
     Run,
+    /// A dormant run: its whole tick at once, its clocks advancing by every
+    /// tick since its last run. It decides only when `decide` is set, on every
+    /// fourth dormant run, not on its 15 Hz phase.
+    RunDormant { decide: bool },
     /// The schedule skips it: it stays in the AI set, keeps its attack turns,
     /// request and wait clock, and runs nothing.
     Skip,

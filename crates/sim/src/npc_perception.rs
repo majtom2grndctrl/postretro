@@ -38,12 +38,6 @@ impl LevelCells for LevelWorld {
     }
 }
 
-/// The level-side input to one tick's perception step.
-pub struct PerceptionInput<'a> {
-    pub level: &'a dyn LevelCells,
-    pub state: &'a mut NpcPerception,
-}
-
 /// One ghost link's two cell lists, as ranges into [`GhostLinkCells::cells`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GhostLinkPair {
@@ -450,6 +444,10 @@ impl NpcPerception {
 fn within_lead(entries: &[ResidencyEntry], lead: u32) -> &[ResidencyEntry] {
     &entries[..entries.partition_point(|entry| entry.lead <= lead)]
 }
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "npc_perception/test_support.rs"]
+pub mod test_support;
 
 #[cfg(test)]
 #[path = "npc_perception/tests.rs"]

@@ -59,6 +59,7 @@ fn spawn_brain(registry: &mut EntityRegistry, tag: &str) -> EntityId {
     let entity = registry.spawn(Transform::default());
     registry.set_tags(entity, vec![tag.into()]).unwrap();
     let graph = postretro_foundation::BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: postretro_foundation::BehaviorGraphEnvelope {
             initial: "idle".to_string(),

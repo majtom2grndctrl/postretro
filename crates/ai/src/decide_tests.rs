@@ -10,7 +10,7 @@ use crate::decide::DECIDE_INTERVAL_TICKS;
 
 /// A brain that toggles between two holds on every decide: each decide's
 /// `acquisitionDue` is true, so a guard reading it passes only there.
-fn toggling_graph() -> BehaviorGraphDescriptor {
+pub(super) fn toggling_graph() -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "rest".to_string(),
         activities: BTreeMap::from([

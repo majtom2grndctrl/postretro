@@ -63,6 +63,7 @@ pub(super) fn evaluate(
         // scaled.
         let span = snap.span;
         let tick_dt = tick_dt * span as f32;
+        let one_tick_dt_ms = dt_ms;
         let dt_ms = dt_ms * span as f32;
         let mut brain = snap.brain;
         let mut graph_reseated = programs.take_reseat(snap.id);
@@ -93,11 +94,14 @@ pub(super) fn evaluate(
         // choice; the ticks between act on its choices. Each enemy decides on
         // its own phase of the 15 Hz cycle, keyed on its identity, and at once
         // whenever its path moved without a decide (a reseat).
-        let decide = crate::decide::decides_on(
-            turns.tick,
-            schedule_identity(&brain, snap.id),
-            decide_interval,
-        ) || graph_reseated
+        // A dormant run decides on every fourth dormant run instead.
+        let decide = snap.dormant_decide.unwrap_or_else(|| {
+            crate::decide::decides_on(
+                turns.tick,
+                postretro_sim::npc_tiers::schedule_identity(&brain, snap.id),
+                decide_interval,
+            )
+        }) || graph_reseated
             || selector_memo
                 .get(&snap.id)
                 .is_none_or(|choices| !choices.is_for(brain.active_path()));
@@ -108,7 +112,7 @@ pub(super) fn evaluate(
         // brain damage-fact aging site. Advance the paired attacker ledger here
         // exactly once so `@candidate.timeSinceDamageFromCandidate` sees the
         // same post-tick age that `@brain.timeSinceDamageMs` later publishes.
-        brain.age_recent_attackers(dt_ms);
+        brain.age_recent_attackers_over(dt_ms, one_tick_dt_ms);
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -230,8 +234,12 @@ pub(super) fn evaluate(
         }
         // Damage recency advances even while an activity entry is pending or
         // aggro is closed, matching the unconditional named-cooldown clock.
-        brain.time_since_damage_ms =
-            (brain.time_since_damage_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE);
+        // A hit since the last run ages one tick, never the run's whole span.
+        brain.time_since_damage_ms = postretro_entities::components::brain::age_damage_clock(
+            brain.time_since_damage_ms,
+            dt_ms,
+            one_tick_dt_ms,
+        );
         // An entry edge observes a freshly zeroed activity clock. Once it has
         // been consumed, subsequent ticks advance the active clocks before
         // evaluating their transition rows. A transition later in this pass
@@ -823,16 +831,4 @@ pub(super) fn evaluate(
     }
 
     outcomes
-}
-
-/// The identity an enemy's decide phase hashes: its map placement or spawner
-/// and spawn count, stored at seeding; else its registry index, replay-stable
-/// only while spawn order is.
-fn schedule_identity(
-    brain: &postretro_entities::components::brain::BrainComponent,
-    id: EntityId,
-) -> u64 {
-    brain
-        .schedule_identity
-        .unwrap_or_else(|| postretro_foundation::BehaviorDrawSalt::Entity(id.to_raw()).word())
 }

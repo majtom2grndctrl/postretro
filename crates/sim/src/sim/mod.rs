@@ -35,7 +35,7 @@ mod respawn;
 mod tick_start;
 pub use tick_start::{
     PendingTickStart, RespawnTurn, StartedTick, begin_tick, finish_tick_start,
-    simulate_tick_with_presentation_aim,
+    simulate_tick_scheduled, simulate_tick_with_presentation_aim,
 };
 #[cfg(test)]
 mod player_life_tests;
@@ -586,7 +586,7 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     mut presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     mut run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
-    perception: Option<crate::npc_perception::PerceptionInput<'_>>,
+    schedule: Option<crate::npc_tiers::ScheduleInput<'_>>,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -969,17 +969,32 @@ where
         &mut on_impact,
     );
     drop(stage);
-    // Perception for the AI scheduler's tiers: after movement, teleports and
-    // projectiles, so a player who teleports into a dormant arena has its NPCs
-    // perceived on this tick's AI stage. Without a level input (headless
-    // fixtures) every NPC runs perceived.
-    if let Some(perception) = perception {
-        perception.state.step(
-            perception.level,
-            &registry.borrow(),
+    // The NPC tiers: perception, then each NPC's tier, after movement,
+    // teleports and projectiles, so a player who teleports into a dormant
+    // arena has its NPCs perceived on this tick's AI stage, and damage landed
+    // so far moves its NPC up now. Without a level input (headless fixtures)
+    // every NPC runs every tick.
+    let mut schedule = schedule;
+    if let Some(schedule) = schedule.as_mut() {
+        let registry = registry.borrow();
+        let crate::npc_tiers::NpcScheduler { perception, tiers } = &mut *schedule.scheduler;
+        perception.step(
+            schedule.level,
+            &registry,
             players.iter().map(|player| player.pawn),
         );
+        tiers.choose(
+            &registry,
+            perception,
+            &crate::npc_tiers::TierInputs {
+                level: schedule.level,
+                descriptors,
+                descriptor_generation,
+            },
+        );
     }
+    let tiers = schedule.as_ref().map(|schedule| &schedule.scheduler.tiers);
+    let ai_run = |id| tiers.map_or(crate::ai_host::AiRun::Run, |tiers| tiers.ai_run(id));
     let stage = cpu.scope(SimStage::Ai);
     let ai_result = {
         let mut registry = registry.borrow_mut();
@@ -1005,7 +1020,7 @@ where
                 factions,
                 faction_sentiment,
                 clips: Some(hit_zone_store),
-                schedule: Default::default(),
+                schedule: crate::ai_host::AiSchedule::scheduled(&ai_run),
                 cpu: Some(&cpu),
             },
             &mut host,
@@ -1016,6 +1031,15 @@ where
         events: ai,
         projectile_spawns: enemy_projectile_spawns,
     } = ai_result;
+    if let Some(schedule) = schedule.as_mut() {
+        schedule.scheduler.tiers.settle_after_ai(&registry.borrow());
+    }
+    let tiers = schedule.as_ref().map(|schedule| &schedule.scheduler.tiers);
+    let agent_step = |id| {
+        tiers.map_or(agent_steering::AgentStep::Ticks(1), |tiers| {
+            tiers.agent_step(id)
+        })
+    };
 
     drop(stage);
     // Traps run after this tick's trigger and teleport requests were issued,
@@ -1043,7 +1067,7 @@ where
                 yields: mover_tick_states.agent_yields(),
                 gate: crate::nav::NavGate::new(mover_tick_states.docks()),
             },
-            agent_steering::AgentSteps::EVERY_TICK,
+            agent_steering::AgentSteps::scheduled(&agent_step),
             &mut corpse_yields,
             environment,
             tick_dt,
@@ -2252,6 +2276,7 @@ mod tests {
     /// A direct-graph brain staged directly into its `alert` state.
     fn alert_brain(move_speed: f32) -> BrainComponent {
         let graph = BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

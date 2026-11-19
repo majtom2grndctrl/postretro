@@ -565,6 +565,7 @@ mod tests {
 
     fn graph_with_attacks(attacks: BTreeMap<String, AttackParams>) -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

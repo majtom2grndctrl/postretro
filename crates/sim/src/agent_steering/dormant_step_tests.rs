@@ -6,7 +6,6 @@
 //      and pushes reach a dormant NPC every tick; P29)
 //      context/lib/movement.md §6
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 use glam::Vec3;
@@ -23,64 +22,100 @@ use crate::collision::moving::{CombinedCollisionWorld, MoverCollider};
 /// Ticks between a dormant agent's steps: 2 Hz.
 const STRIDE: u32 = 30;
 
-/// Each agent's phase in the stride, and the tick it last stepped on.
+/// The real NPC tick scheduler over a two-cell level: the agents stand in cell
+/// 0, which no perceiver sees; a far pawn in cell 1 sees only its own cell. A
+/// scheduled agent carries a brain whose identity puts its dormant run on the
+/// requested phase, so the tiers choose its steps as they do in production.
 struct Schedule {
-    phases: HashMap<EntityId, u32>,
-    last_step: RefCell<HashMap<EntityId, u32>>,
+    scheduler: crate::npc_tiers::NpcScheduler,
+    level: crate::npc_perception::test_support::Row,
+    pawn: Option<EntityId>,
+    identities: HashMap<EntityId, u64>,
+    /// The ticks stepped so far: the upcoming step is tick `tick`.
     tick: u32,
 }
 
 impl Schedule {
     fn new() -> Self {
+        let level = crate::npc_perception::test_support::Row {
+            width: 10_000.0,
+            residency: Some(crate::npc_perception::test_support::residency(
+                2,
+                32.0,
+                |camera| vec![(camera, 0.0)],
+            )),
+        };
         Self {
-            phases: HashMap::new(),
-            last_step: RefCell::new(HashMap::new()),
+            scheduler: crate::npc_tiers::NpcScheduler::new(
+                crate::npc_perception::NpcPerception::new(
+                    2,
+                    0,
+                    crate::npc_perception::GhostLinkCells::default(),
+                ),
+            ),
+            level,
+            pawn: None,
+            identities: HashMap::new(),
             tick: 0,
         }
     }
 
-    fn dormant(&mut self, id: EntityId, phase: u32) {
-        self.phases.insert(id, phase % STRIDE);
+    /// Make `id` an unseen NPC whose dormant runs fall on upcoming ticks
+    /// `phase`, `phase + 30`, and so on.
+    fn dormant(&mut self, registry: &mut EntityRegistry, id: EntityId, phase: u32) {
+        let phase = u64::from(phase % STRIDE);
+        // The tiers count from 1 on the first step, so step `t` is tier tick
+        // `t + 1`.
+        let identity = (0..)
+            .find(|&identity| crate::npc_tiers::dormant_runs_on(phase + 1, identity))
+            .expect("some identity takes every phase");
+        let graph =
+            crate::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor(
+                "dormant_walker",
+            )
+            .behavior
+            .unwrap();
+        let mut brain = postretro_entities::components::brain::BrainComponent::from_graph(&graph);
+        brain.schedule_identity = Some(identity);
+        registry.set_component(id, brain).unwrap();
+        if self.pawn.is_none() {
+            self.pawn = Some(registry.spawn(postretro_entities::Transform {
+                position: Vec3::new(15_000.0, 0.0, 0.0),
+                ..Default::default()
+            }));
+        }
+        self.identities.insert(id, identity);
     }
 
-    /// The step `id` takes on this tick: every tick when not dormant, else on
-    /// its phase, spanning the ticks since its last step. Pure: steering asks
-    /// more than once a tick.
+    /// Choose this tick's tiers, as the sim tick does before the AI stage.
+    fn choose(&mut self, registry: &EntityRegistry) {
+        let crate::npc_tiers::NpcScheduler { perception, tiers } = &mut self.scheduler;
+        perception.step(&self.level, registry, self.pawn);
+        tiers.choose(
+            registry,
+            perception,
+            &crate::npc_tiers::TierInputs {
+                level: &self.level,
+                descriptors: &[],
+                descriptor_generation: 0,
+            },
+        );
+    }
+
+    /// The step `id` takes on the tick just chosen.
     fn step(&self, id: EntityId) -> AgentStep {
-        let Some(&phase) = self.phases.get(&id) else {
-            return AgentStep::Ticks(1);
-        };
-        if self.tick % STRIDE != phase {
-            return AgentStep::CarryOnly;
-        }
-        let span = self
-            .last_step
-            .borrow()
-            .get(&id)
-            .map_or(STRIDE, |&previous| self.tick - previous);
-        AgentStep::Ticks(span)
+        self.scheduler.tiers.agent_step(id)
     }
 
-    /// Close the tick: record who stepped, then advance.
     fn finish_tick(&mut self) {
-        let stepped: Vec<EntityId> = self
-            .phases
-            .iter()
-            .filter(|&(_, &phase)| self.tick % STRIDE == phase)
-            .map(|(&id, _)| id)
-            .collect();
-        let mut last = self.last_step.borrow_mut();
-        for id in stepped {
-            last.insert(id, self.tick);
-        }
-        drop(last);
         self.tick += 1;
     }
 
+    /// Whether `id` steps on the upcoming tick.
     fn steps_on(&self, id: EntityId) -> bool {
-        self.phases
-            .get(&id)
-            .is_none_or(|&phase| self.tick % STRIDE == phase)
+        self.identities.get(&id).is_none_or(|&identity| {
+            crate::npc_tiers::dormant_runs_on(u64::from(self.tick) + 1, identity)
+        })
     }
 }
 
@@ -91,6 +126,7 @@ fn step_scheduled(
     track: &MoverTrack,
     schedule: &mut Schedule,
 ) {
+    schedule.choose(registry);
     let collision = CombinedCollisionWorld::new(world, movers, track);
     let lookup = |id| schedule.step(id);
     tick_with_steps(
@@ -123,7 +159,7 @@ fn dormant_ride(goal: Option<Vec3>, phase: u32) {
     let mut registry = EntityRegistry::new();
     let id = spawn(&mut registry, Vec3::new(0.0, rest_y(0.5), 0.0), goal);
     let mut schedule = Schedule::new();
-    schedule.dormant(id, phase);
+    schedule.dormant(&mut registry, id, phase);
 
     // Settle onto the lift with one ordinary tick.
     let lookup = |_| AgentStep::Ticks(1);
@@ -180,7 +216,7 @@ fn dormant_agent_pushed_by_a_door_is_never_embedded() {
         let mut registry = EntityRegistry::new();
         let id = spawn(&mut registry, Vec3::new(0.0, rest_y(0.0), 0.0), None);
         let mut schedule = Schedule::new();
-        schedule.dormant(id, phase);
+        schedule.dormant(&mut registry, id, phase);
 
         for tick_index in 0..120 {
             sweeper.advance(Vec3::X * 2.0);
@@ -235,7 +271,7 @@ fn dormant_rider_released_by_a_leaving_mover_no_later_than_its_next_step() {
             DT,
         );
         let mut schedule = Schedule::new();
-        schedule.dormant(id, phase);
+        schedule.dormant(&mut registry, id, phase);
 
         let mut releases = 0;
         let mut previous_ground = agent(&registry, id).ground;
@@ -299,8 +335,8 @@ fn dormant_walker_and_faller_never_pass_a_wall_or_floor() {
         );
         let faller = spawn(&mut registry, Vec3::new(-10.0, 12.0, 0.0), None);
         let mut schedule = Schedule::new();
-        schedule.dormant(walker, phase);
-        schedule.dormant(faller, phase + 3);
+        schedule.dormant(&mut registry, walker, phase);
+        schedule.dormant(&mut registry, faller, phase + 3);
         let track = MoverTrack::at(Vec3::new(0.0, -100.0, 0.0));
         for tick_index in 0..240 {
             step_scheduled(&mut registry, &world, &[], &track, &mut schedule);
@@ -347,12 +383,10 @@ fn knocked_travel(drag: f32, shove: Vec3, dormant: bool, ticks: u32) -> f32 {
     registry.set_component(id, shoved).unwrap();
     let from = position(&registry, id);
     if dormant {
-        // Its first step lands at the end of the first full stride.
-        schedule.dormant(id, (schedule.tick + STRIDE - 1) % STRIDE);
-        schedule
-            .last_step
-            .borrow_mut()
-            .insert(id, schedule.tick - 1);
+        // Its first step lands at the end of the first full stride: the
+        // tiers count its last step as the tick before it became dormant.
+        let phase = (schedule.tick + STRIDE - 1) % STRIDE;
+        schedule.dormant(&mut registry, id, phase);
     }
     for _ in 0..ticks {
         step_scheduled(&mut registry, &world, &[], &track, &mut schedule);
@@ -450,7 +484,7 @@ fn stair_climb(dormant: bool, phase: u32) -> Option<u32> {
     );
     let mut schedule = Schedule::new();
     if dormant {
-        schedule.dormant(id, phase);
+        schedule.dormant(&mut registry, id, phase);
     }
     for tick_index in 0..600 {
         step_scheduled(&mut registry, &world, &[], &track, &mut schedule);
@@ -496,7 +530,7 @@ fn dormant_wedge_fires_recovery_on_the_first_step_past_the_threshold() {
     let goal = Vec3::new(20.0, rest_y(0.0), 0.0);
     let walker = spawn(&mut registry, Vec3::new(0.0, rest_y(0.0), 0.0), Some(goal));
     let mut schedule = Schedule::new();
-    schedule.dormant(walker, 0);
+    schedule.dormant(&mut registry, walker, 0);
     let mut stuck_before_step = 0;
     let mut fired = Vec::new();
     for tick_index in 0..600 {

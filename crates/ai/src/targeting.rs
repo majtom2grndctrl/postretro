@@ -571,6 +571,7 @@ mod tests {
             ..Transform::default()
         });
         let graph = BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

@@ -579,6 +579,7 @@ pub(crate) fn attach_descriptor_components(
             .cloned()
         {
             brain.aggro_armed = aggro_armed;
+            brain.always_active = always_active_on_spawn(entity);
             brain.home_anchor = home_anchor;
             brain.seed_identity(
                 descriptor
@@ -719,6 +720,26 @@ pub(crate) fn descriptor_mesh_component(
 /// not descriptor-owned gameplay tuning. The descriptor refresh planner does
 /// not replace `BrainComponent`, so a hot descriptor reload preserves this
 /// placement-seeded host state rather than reopening a sealed enemy.
+/// A placed NPC's `always_active` key: forced on or off, or the archetype's
+/// value when absent. `prl-build` refuses any other value; a PRL carrying one
+/// anyway logs an error and takes the archetype's value.
+fn always_active_on_spawn(
+    entity: &MapEntity,
+) -> postretro_entities::components::brain::AlwaysActive {
+    use postretro_entities::components::brain::AlwaysActive;
+    let Some(raw) = entity.key_values.get("always_active") else {
+        return AlwaysActive::FromArchetype;
+    };
+    AlwaysActive::from_placement_key(raw).unwrap_or_else(|| {
+        log::error!(
+            "[Loader] {}: `always_active` value `{raw}` is not 0 or 1; using the archetype's \
+             `alwaysActive`",
+            entity.diagnostic_origin(),
+        );
+        AlwaysActive::FromArchetype
+    })
+}
+
 fn ai_aggro_armed_on_spawn(entity: &MapEntity) -> bool {
     let Some(raw) = entity.key_values.get("enabled_on_spawn") else {
         log::warn!(
@@ -3414,6 +3435,41 @@ mod tests {
         assert!(
             !reg.get_component::<BrainComponent>(id).unwrap().aggro_armed,
             "the bare placement KVP closes the host-only aggro gate"
+        );
+    }
+
+    #[test]
+    fn behavior_enemy_always_active_key_forces_on_or_off_and_a_bad_value_takes_the_archetype() {
+        use postretro_entities::components::brain::{AlwaysActive, BrainComponent};
+
+        let descriptors = vec![behavior_enemy_descriptor("escort")];
+        let placements = vec![
+            placement("escort", &[]),
+            placement("escort", &[("always_active", "1")]),
+            placement("escort", &[("always_active", "0")]),
+            // `prl-build` refuses this; a PRL carrying it anyway logs and
+            // falls back.
+            placement("escort", &[("always_active", "2")]),
+        ];
+        let mut reg = EntityRegistry::new();
+        apply_data_archetype_dispatch(&placements, &descriptors, &HashSet::new(), &mut reg, None);
+
+        let keys: Vec<AlwaysActive> = reg
+            .iter_with_kind(ComponentKind::Brain)
+            .map(|(id, _)| {
+                reg.get_component::<BrainComponent>(id)
+                    .unwrap()
+                    .always_active
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                AlwaysActive::FromArchetype,
+                AlwaysActive::On,
+                AlwaysActive::Off,
+                AlwaysActive::FromArchetype,
+            ]
         );
     }
 

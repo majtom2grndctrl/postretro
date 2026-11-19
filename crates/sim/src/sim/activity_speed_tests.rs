@@ -100,6 +100,7 @@ fn envelope(
 
 fn graph(move_speed: f32, root: BehaviorGraphEnvelope) -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: root,
         candidate_filter: None,

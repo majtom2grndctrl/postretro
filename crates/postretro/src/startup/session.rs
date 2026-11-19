@@ -290,6 +290,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
                 protocol: crate::observe_live::OBSERVE_LIVE_PROTOCOL,
                 map,
                 engine: env!("CARGO_PKG_VERSION").to_string(),
+                run: postretro_telemetry::global()
+                    .map(|hub| hub.run_id().to_string())
+                    .unwrap_or_default(),
             },
         )
     });

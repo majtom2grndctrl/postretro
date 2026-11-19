@@ -79,6 +79,7 @@ pub mod size_options;
 pub mod streaming_hints;
 pub(crate) mod surface_materials;
 pub(crate) mod surface_radiance;
+mod telemetry;
 pub mod texel_footprint;
 pub mod texel_step_detector;
 pub mod texture_mips;
@@ -612,10 +613,22 @@ fn should_run_config_screen(reporter_mode: ReporterMode, args: &Args) -> bool {
 
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
-    let mut args = parse_args()?;
+    let args = parse_args()?;
+    // Telemetry starts once arguments parse: `--help` and a rejected argument
+    // exit inside parsing and write nothing. A panic unwinding out of the bake
+    // writes `run_end` from the guard, under either reporter.
+    let telemetry = telemetry::start(std::env::args().collect());
+    let (source, output) = (args.input.clone(), args.output.clone());
+    let result = postretro_telemetry::run_guarded(|| bake_main(started, args, telemetry));
+    telemetry::end(&result, &source, &output);
+    result
+}
+
+fn bake_main(started: Instant, mut args: Args, telemetry: bool) -> anyhow::Result<()> {
     // Install capture immediately after argument parsing so every subsequent
     // early exit can emit the same exactly-once warning summary as a bake.
-    let log_sink = logger::install(args.verbose)?;
+    let log_sink = logger::install(args.verbose, telemetry)?;
+    telemetry::log_startup_warning();
     let reporter_mode = select_reporter_mode(
         args.tui,
         TerminalStreams {
@@ -651,7 +664,8 @@ fn main() -> anyhow::Result<()> {
         ReporterMode::Plain => {
             let stage_cache = construct_stage_cache(&args);
             let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
-            let pipeline_reporter: std::sync::Arc<dyn reporter::Reporter> = reporter.clone();
+            let pipeline_reporter =
+                telemetry::TelemetryReporter::wrap(reporter.clone(), &args.input, &args.output);
             let result =
                 run_with_failure_cache_report(stage_cache, args.cache_max_bytes, |stage_cache| {
                     pipeline::run(&args, stage_cache, started, pipeline_reporter, governor)
@@ -702,6 +716,8 @@ fn main() -> anyhow::Result<()> {
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     let bake = move |reporter, governor| {
+                        let reporter =
+                            telemetry::TelemetryReporter::wrap(reporter, &args.input, &args.output);
                         run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,
@@ -719,6 +735,8 @@ fn main() -> anyhow::Result<()> {
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
+                        let reporter =
+                            telemetry::TelemetryReporter::wrap(reporter, &args.input, &args.output);
                         run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,

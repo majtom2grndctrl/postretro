@@ -4540,6 +4540,7 @@ dependencies = [
  "postretro-physics",
  "postretro-render-cpu",
  "postretro-render-data",
+ "postretro-telemetry",
  "postretro-test-log-capture",
  "postretro-visibility",
  "proptest",

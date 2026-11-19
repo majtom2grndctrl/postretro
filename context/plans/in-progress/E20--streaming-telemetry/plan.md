@@ -71,6 +71,9 @@ read at: e0ac8b7f
 | Manual: stress-warren bake + run into one file, reducer matches stderr | owner, in-engine (Windows/Vulkan for GPU rows) | manual |
 | Manual: agent polls `events` across a level change | owner, windowed session | manual |
 
+- Brief "a bake summary … from each frontend's `Err`" → `prl-build`'s `main` now wraps the old body as `bake_main` under the unwind guard, and writes the failed summary from the body's `Err` once any stage began; planning around `main.rs` size by keeping the logic in a new `telemetry.rs`.
+- Brief "partial at every session-ending path" → each streaming window closes its partial when its session drops (`ShStreamingSession`'s existing `Drop`, the lightmap window's own), which covers unload, replacement, decline, world-less clear and the App's drop before `run_end` without naming each path.
+
 ## Tasks
 
 | # | Task | Owner | Depends on | Status |
@@ -78,8 +81,8 @@ read at: e0ac8b7f
 | 1 | Leaf crate `postretro-telemetry`: envelope, hub (one lock: seq, ring, file), ring with pins and caps, `events` page, tee logger, scoped test hub; engine first slice: `run_start`/`run_end`, line C event, file sink | integrating executor | — | done: `cargo test -p postretro-telemetry` 28 passed |
 | 2 | Engine load family: boot/mod/load phases, unload, geometry install hand-back, running level at commit; ordering tests P3, P4, P13 | integrating executor | 1 | done; P3/P4/P13/before-reveal tests are GPU-gated and skip here (no adapter; lavapipe's 128 MiB binding limit is below the renderer's floor) |
 | 3 | Engine streaming windows and partials; CPU/GPU timing windows; GPU `producer_state` | integrating executor | 1 | done: `cargo test -p postretro --bin postretro -- telemetry streaming_diagnostics cpu_timing::tests timing_events unload_writes` 54 passed |
-| 4 | Engine exits: partials then `run_end` on clean/error, capture/headless `process::exit`, panic guard | integrating executor | 2, 3 | |
-| 5 | `prl-build`: sink after argument parsing, tee over `CollectingLogger`, reporter decorator, bake summary from each frontend, exits | integrating executor | 1 | |
-| 6 | observe-live `events` verb on the transport thread; hello protocol 2 with run | integrating executor | 1 | |
-| 7 | Reducer in `tools/`, checked-in two-run sample, unittest, preflight wiring | integrating executor | 1 | |
+| 4 | Engine exits: partials then `run_end` on clean/error, capture/headless `process::exit`, panic guard | integrating executor | 2, 3 | done: partials close as each streaming session drops (the App drops before `run_end`); `tests/telemetry_run.rs` 3 passed with `observability` |
+| 5 | `prl-build`: sink after argument parsing, tee over `CollectingLogger`, reporter decorator, bake summary from each frontend, exits | integrating executor | 1 | done: `--bin prl-build -- telemetry behind_the_tee` 6 passed; `--test telemetry_cli` 4 passed |
+| 6 | observe-live `events` verb on the transport thread; hello protocol 2 with run | integrating executor | 1 | done: `-- observe_live` 34 passed |
+| 7 | Reducer in `tools/`, checked-in two-run sample, unittest, preflight wiring | delegated worker; integrated by executor | 1 | done: `python3 -m unittest tools.tests.test_telemetry_reduce` 20 passed; sample parses (`--test sample`) |
 | 8 | Allocation probe, preflight, review loop, context updates | integrating executor | 2–7 | |

@@ -17,7 +17,6 @@ const MAX_PASS_NS: f64 = 1.0e9;
 /// One completed averaging window, retained for the debug UI and consumed by
 /// capture measurement.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
 pub struct FrameTimingSnapshot {
     /// Readbacks in the window. Every pass's `sampled_readbacks` is at most this.
     pub readbacks: u32,
@@ -829,5 +828,27 @@ mod tests {
 
         let line = window.log_line(&labels);
         assert!(line.ends_with("; malformed: bad 1)"), "{line}");
+    }
+
+    // Telemetry: the closed snapshot the app emits agrees with the window's
+    // `[gpu-timing]` line on each pass mean, and a pass sampled in no
+    // readback reads absent (`n/a`, `None`), never zero.
+    #[test]
+    fn window_snapshot_and_log_line_agree_and_an_unsampled_pass_is_absent() {
+        let labels = ["forward", "sh_compose", "resolve"];
+        let mut window = TimingWindow::new(labels.len());
+        for duration in [1_250_000, 1_750_000] {
+            let ticks = simulate_frame(16, &[(0, duration), (2, 400_000)]);
+            window.record(mask(&[0, 2]), &ticks, 1.0, ONE_SECOND_TICKS);
+        }
+        let snapshot = window.snapshot(&labels);
+        let line = window.log_line(&labels);
+        assert_eq!(snapshot.readbacks, 2);
+        let forward = snapshot.passes[0].average_ms.expect("sampled");
+        assert!(line.contains(&format!("forward {forward:.2}ms")), "{line}");
+        assert!((forward - 1.5).abs() < 1e-6);
+        assert_eq!(snapshot.passes[1].average_ms, None);
+        assert_eq!(snapshot.passes[1].sampled_readbacks, 0);
+        assert!(line.contains("sh_compose n/a (0/2)"), "{line}");
     }
 }

@@ -138,7 +138,10 @@ impl Log for CollectingLogger {
 }
 
 /// Install the process logger, honoring `RUST_LOG` and the verbose default.
-pub fn install(verbose: bool) -> Result<LogSink, log::SetLoggerError> {
+/// With a telemetry consumer, the telemetry tee wraps it: a record reaches
+/// the sink only when this logger's own filter accepts it, so the TUI log
+/// pane and the warning tally are unchanged.
+pub fn install(verbose: bool, telemetry: bool) -> Result<LogSink, log::SetLoggerError> {
     let default = if verbose { "info" } else { "warn" };
     let directives = std::env::var("RUST_LOG").unwrap_or_else(|_| default.to_owned());
     let mut builder = env_filter::Builder::new();
@@ -146,8 +149,11 @@ pub fn install(verbose: bool) -> Result<LogSink, log::SetLoggerError> {
     let filter = builder.build();
     let max_level = filter.filter();
     let sink = LogSink::default();
-    log::set_boxed_logger(Box::new(CollectingLogger::new(filter, sink.clone())))?;
-    log::set_max_level(max_level);
+    postretro_telemetry::install_logger(
+        Box::new(CollectingLogger::new(filter, sink.clone())),
+        max_level,
+        telemetry,
+    )?;
     Ok(sink)
 }
 
@@ -170,6 +176,32 @@ mod tests {
                 .args(format_args!("{message}"))
                 .build(),
         );
+    }
+
+    // Telemetry: behind the tee, an info record the warn filter hides never
+    // reaches the sink, so it never joins the TUI warnings list.
+    #[test]
+    fn behind_the_tee_an_info_record_reaches_neither_the_sink_nor_the_warnings() {
+        let (logger, sink) = logger("warn");
+        let tee = postretro_telemetry::TeeLogger::new(Box::new(logger));
+        tee.log(
+            &Record::builder()
+                .level(Level::Info)
+                .target("compiler")
+                .args(format_args!("an info"))
+                .build(),
+        );
+        tee.log(
+            &Record::builder()
+                .level(Level::Warn)
+                .target("compiler")
+                .args(format_args!("a warning"))
+                .build(),
+        );
+        let drained = sink.drain();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].message, "a warning");
+        assert_eq!(sink.warning_count(), 1);
     }
 
     #[test]

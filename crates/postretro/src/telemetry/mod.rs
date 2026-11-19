@@ -250,4 +250,103 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), producers.len());
     }
+
+    fn scoped(
+        producers: Vec<ProducerEntry>,
+    ) -> (std::sync::Arc<Hub>, postretro_telemetry::scoped::ScopedHub) {
+        let hub = std::sync::Arc::new(Hub::start(HubConfig {
+            memory: true,
+            producers,
+            ..HubConfig::new(Source::Engine, "t")
+        }));
+        let scope = postretro_telemetry::scoped::install(std::sync::Arc::clone(&hub));
+        (hub, scope)
+    }
+
+    fn parsed(hub: &Hub) -> Vec<postretro_telemetry::Envelope> {
+        hub.lines()
+            .iter()
+            .map(|line| postretro_telemetry::Envelope::parse_line(line).unwrap())
+            .collect()
+    }
+
+    // P1: GPU timing requested on an adapter without timestamp queries reads
+    // pending at `run_start`, then settles unsupported with its reason as soon
+    // as the adapter exists, before any window could close.
+    #[test]
+    fn pending_gpu_timing_settles_unsupported_with_its_reason_or_enabled() {
+        for (support, expected) in [
+            (
+                postretro_renderer::GpuTimingSupport::Unsupported,
+                ProducerState::Unsupported,
+            ),
+            (
+                postretro_renderer::GpuTimingSupport::Enabled,
+                ProducerState::Enabled,
+            ),
+        ] {
+            let (hub, _scope) = scoped(engine_producers(false, None, Some("1")));
+            settle_gpu_timing(support);
+            settle_gpu_timing(support);
+            let events = parsed(&hub);
+            assert_eq!(events.len(), 2, "run_start, one settle");
+            let start: postretro_telemetry::RunStart =
+                serde_json::from_value(events[0].payload.clone()).unwrap();
+            assert_eq!(
+                state(&start.producers, producers::GPU_TIMING).state,
+                ProducerState::Pending
+            );
+            let settled: ProducerEntry = serde_json::from_value(events[1].payload.clone()).unwrap();
+            assert_eq!(settled.state, expected);
+            assert_eq!(
+                settled.reason.is_some(),
+                expected == ProducerState::Unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_gpu_producer_is_never_settled() {
+        let (hub, _scope) = scoped(engine_producers(false, None, None));
+        settle_gpu_timing(postretro_renderer::GpuTimingSupport::NotRequested);
+        assert_eq!(parsed(&hub).len(), 1);
+    }
+
+    // A GPU window spanning a level change names the level current at its
+    // close; an unsampled pass carries a null mean, never zero.
+    #[test]
+    fn a_gpu_window_names_the_level_at_its_close_and_keeps_absent_means_null() {
+        let (hub, _scope) = scoped(Vec::new());
+        let level = |generation| postretro_telemetry::Level {
+            generation,
+            map: format!("/maps/{generation}.prl"),
+        };
+        postretro_telemetry::set_level(Some(level(1)));
+        postretro_telemetry::set_level(Some(level(2)));
+        let window = postretro_renderer::FrameTimingSnapshot {
+            readbacks: 120,
+            passes: vec![
+                postretro_renderer::PassTiming {
+                    label: "forward",
+                    average_ms: Some(2.5),
+                    sampled_readbacks: 120,
+                    malformed_readbacks: 0,
+                },
+                postretro_renderer::PassTiming {
+                    label: "sh_compose",
+                    average_ms: None,
+                    sampled_readbacks: 0,
+                    malformed_readbacks: 0,
+                },
+            ],
+        };
+        postretro_telemetry::emit(
+            postretro_telemetry::Kind::GpuTimingWindow,
+            &GpuWindowEvent::from(&window),
+        );
+        let event = parsed(&hub).pop().unwrap();
+        assert_eq!(event.level, Some(level(2)));
+        assert_eq!(event.payload["passes"][0]["mean_ms"], 2.5);
+        assert!(event.payload["passes"][1]["mean_ms"].is_null());
+    }
 }

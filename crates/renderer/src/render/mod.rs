@@ -327,8 +327,8 @@ pub use debug_ui::{
     AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow, LightmapStreamingTab,
     NetworkLagLever, NetworkSessionRole, TriggerDiagnosticsRow, draw_diagnostics_panel,
 };
-#[cfg(feature = "dev-tools")]
-pub use frame_timing::FrameTimingSnapshot;
+// Every build: telemetry emits each closed window (`take_gpu_timing_window`).
+pub use frame_timing::{FrameTimingSnapshot, PassTiming};
 #[cfg(feature = "dev-tools")]
 pub use sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 #[cfg(feature = "dev-tools")]

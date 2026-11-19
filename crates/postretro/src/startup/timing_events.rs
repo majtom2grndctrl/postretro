@@ -272,4 +272,21 @@ mod tests {
         assert_eq!(timings.summary(), off);
         assert_eq!(hub.lines().len(), 2);
     }
+
+    // A load names its `.prl` as the canonical absolute path, whatever form
+    // the request gave it, so a bake summary from another working directory
+    // naming the same file joins it.
+    #[test]
+    fn a_committed_level_names_its_prl_canonically_from_a_relative_path() {
+        let relative = std::path::Path::new("Cargo.toml");
+        let absolute = std::fs::canonicalize(relative).unwrap();
+        assert_eq!(
+            committed_level(3, relative).map,
+            committed_level(3, &absolute).map
+        );
+        assert_eq!(
+            committed_level(3, relative).map,
+            absolute.display().to_string()
+        );
+    }
 }

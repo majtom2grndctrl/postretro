@@ -1401,12 +1401,18 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
     }
 }
 
-fn compiler_freshness_roots() -> Vec<PathBuf> {
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// The checkout this binary was built from. A bundle runs where it is absent,
+/// so every use must tolerate a missing path.
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .expect("level compiler lives two directories below the workspace")
-        .to_path_buf();
+        .to_path_buf()
+}
+
+fn compiler_freshness_roots() -> Vec<PathBuf> {
+    let workspace_root = workspace_root();
     vec![
         workspace_root.join("crates/script-compiler/src"),
         // scripts-build embeds and evaluates this SDK source during manifest
@@ -1444,59 +1450,32 @@ fn log_captured_command_output(label: &str, stdout: &[u8], stderr: &[u8], level:
     }
 }
 
-/// The `<profile>/` directory when `exe_dir` holds a Cargo test executable.
-/// Cargo places test executables in `<profile>/deps/` or, under its newer
-/// build-directory layout, in `<profile>/build/<package>/<hash>/out/`; either
-/// way the `scripts-build` binary lands in `<profile>/`. That holds only while
-/// the build directory is the target directory, Cargo's default.
-fn cargo_test_profile_dir(exe_dir: &Path) -> Option<&Path> {
-    let leaf = exe_dir.file_name()?;
-    if leaf == "deps" {
-        return exe_dir.parent();
-    }
-    if leaf == "out" {
-        let build = exe_dir.ancestors().nth(3)?;
-        if build.file_name()? == "build" {
-            return build.parent();
-        }
-    }
-    None
-}
-
-fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
-    // A test executable takes the profile-level sidecar first: a child
-    // `cargo build` writes it there, and a `deps/` directory can hold a stale
-    // un-hashed copy.
-    if let Some(profile_binary) = cargo_test_profile_dir(exe_dir).map(|dir| dir.join(name))
-        && profile_binary.is_file()
-    {
-        return Some(profile_binary);
-    }
-
-    let adjacent = exe_dir.join(name);
-    if adjacent.is_file() {
-        return Some(adjacent);
-    }
-
-    exe_dir
-        .parent()
-        .map(|parent| parent.join(name))
-        .filter(|binary| binary.is_file())
+/// The executable Cargo reports building for the `bin` target, read from
+/// `--message-format=json` output. Cargo names the path it wrote, so the
+/// caller never guesses the profile, target, target directory or build
+/// directory layout.
+fn built_executable(messages: &[u8], bin: &str) -> Option<PathBuf> {
+    String::from_utf8_lossy(messages)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| {
+            message["reason"] == "compiler-artifact" && message["target"]["name"] == bin
+        })
+        .filter_map(|message| message["executable"].as_str().map(PathBuf::from))
+        .next_back()
 }
 
 fn find_scripts_build() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     let name = if cfg!(windows) {
         "scripts-build.exe"
     } else {
         "scripts-build"
     };
 
-    let path = exe_dir
-        .as_deref()
-        .and_then(|dir| scripts_build_beside(dir, name));
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|binary| binary.is_file());
 
     let path = path.or_else(|| {
         std::env::var_os("PATH").and_then(|path_var| {
@@ -1512,9 +1491,9 @@ fn find_scripts_build() -> Option<PathBuf> {
 
     // Cargo does not wire `scripts-build` into this binary test target as a
     // `CARGO_BIN_EXE_*` dependency. A previous `cargo build` can therefore
-    // leave an older sibling binary in `target/<profile>/` even though the
-    // tests exercise newly compiled `prl-build` code. Rebuild in test builds
-    // so the subprocess has the CLI contract the test target expects. Normal
+    // leave an older binary on the lookup path even though the tests exercise
+    // newly compiled `prl-build` code. Rebuild in test builds so the
+    // subprocess has the CLI contract the test target expects. Normal
     // development and release builds retain the source-mtime freshness check.
     let needs_build = cfg!(test)
         || match &path {
@@ -1525,33 +1504,29 @@ fn find_scripts_build() -> Option<PathBuf> {
     if needs_build {
         log::info!("[prl-build] scripts-build is missing or stale. Rebuilding via cargo...");
         let mut cmd = std::process::Command::new("cargo");
+        // The manifest path lets the rebuild run from any working directory.
         cmd.arg("build")
+            .arg("--manifest-path")
+            .arg(workspace_root().join("Cargo.toml"))
             .arg("-p")
             .arg("postretro-script-compiler")
             .arg("--bin")
-            .arg("scripts-build");
+            .arg("scripts-build")
+            .arg("--message-format=json-render-diagnostics");
         if !cfg!(debug_assertions) {
             cmd.arg("--release");
         }
+        // stdout carries Cargo's JSON messages; rendered diagnostics go to
+        // stderr, which is the only stream worth logging.
         match cmd.output() {
             Ok(output) if output.status.success() => {
-                log_captured_command_output(
-                    "cargo build",
-                    &output.stdout,
-                    &output.stderr,
-                    log::Level::Info,
-                );
-                log::info!("[prl-build] scripts-build compiled successfully.");
-                if let Some(ref dir) = exe_dir
-                    && let Some(candidate) = scripts_build_beside(dir, name)
-                {
-                    return Some(candidate);
+                log_captured_command_output("cargo build", &[], &output.stderr, log::Level::Info);
+                if let Some(built) = built_executable(&output.stdout, "scripts-build") {
+                    log::info!("[prl-build] scripts-build compiled successfully.");
+                    return Some(built);
                 }
-                // Cargo wrote the binary where this lookup does not reach: a
-                // different profile, target triple, target dir or build dir.
                 log::warn!(
-                    "[prl-build] rebuilt scripts-build was not found beside {:?}; using {:?}",
-                    exe_dir,
+                    "[prl-build] cargo build reported no scripts-build executable; using {:?}",
                     path
                 );
             }
@@ -1560,12 +1535,7 @@ fn find_scripts_build() -> Option<PathBuf> {
                     "[prl-build] Failed to compile scripts-build: exit code {}",
                     output.status
                 );
-                log_captured_command_output(
-                    "cargo build",
-                    &output.stdout,
-                    &output.stderr,
-                    log::Level::Error,
-                );
+                log_captured_command_output("cargo build", &[], &output.stderr, log::Level::Error);
             }
             Err(err) => {
                 log::error!("[prl-build] Failed to spawn cargo build: {}", err);
@@ -1875,62 +1845,25 @@ mod tests {
     }
 
     #[test]
-    fn scripts_build_beside_test_binary_prefers_profile_sidecar() {
-        let root = unique_temp_dir("scripts-build-resolution");
-        let deps = root.join("debug/deps");
-        std::fs::create_dir_all(&deps).expect("create test executable directory");
-        let name = if cfg!(windows) {
-            "scripts-build.exe"
-        } else {
-            "scripts-build"
-        };
-        let stale_deps_binary = deps.join(name);
-        let current_profile_binary = root.join("debug").join(name);
-        std::fs::write(&stale_deps_binary, "stale").expect("write stale deps sidecar");
-        std::fs::write(&current_profile_binary, "current").expect("write current profile sidecar");
-
-        assert_eq!(
-            scripts_build_beside(&deps, name),
-            Some(current_profile_binary),
-            "a Cargo test binary must ignore a stale deps/scripts-build in favor of the profile sidecar"
+    fn built_executable_reads_the_path_cargo_reports() {
+        // Regression: guessing the path from the test executable's directory
+        // missed Cargo's `build/<package>/<hash>/out/` test layout, failing
+        // every data_script test.
+        let messages = concat!(
+            r#"{"reason":"compiler-artifact","target":{"name":"postretro-script-compiler","kind":["lib"]},"executable":null}"#,
+            "\n",
+            "not json\n",
+            r#"{"reason":"compiler-artifact","target":{"name":"scripts-build","kind":["bin"]},"executable":"/elsewhere/release/scripts-build"}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
         );
-        std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
-    }
-
-    #[test]
-    fn scripts_build_beside_build_dir_test_binary_finds_profile_sidecar() {
-        // Regression: a test executable under `build/<package>/<hash>/out/`
-        // found no sidecar, failing every data_script test.
-        let root = unique_temp_dir("scripts-build-build-dir");
-        let out = root.join("debug/build/postretro-level-compiler/0123abcd/out");
-        std::fs::create_dir_all(&out).expect("create test executable directory");
-        let name = if cfg!(windows) {
-            "scripts-build.exe"
-        } else {
-            "scripts-build"
-        };
-        let profile_binary = root.join("debug").join(name);
-        std::fs::write(&profile_binary, "current").expect("write profile sidecar");
-
         assert_eq!(
-            scripts_build_beside(&out, name),
-            Some(profile_binary),
-            "a test binary under build/<package>/<hash>/out/ must find the profile sidecar"
+            built_executable(messages.as_bytes(), "scripts-build"),
+            Some(PathBuf::from("/elsewhere/release/scripts-build"))
         );
-        std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
-    }
-
-    #[test]
-    fn cargo_test_profile_dir_matches_only_cargo_test_layouts() {
-        let root = Path::new("target/debug");
-        assert_eq!(cargo_test_profile_dir(&root.join("deps")), Some(root));
-        assert_eq!(
-            cargo_test_profile_dir(&root.join("build/pkg/0123abcd/out")),
-            Some(root)
-        );
-        assert_eq!(cargo_test_profile_dir(&root.join("a/b/c/out")), None);
-        assert_eq!(cargo_test_profile_dir(&root.join("build/pkg/out")), None);
-        assert_eq!(cargo_test_profile_dir(root), None);
+        assert_eq!(built_executable(messages.as_bytes(), "other"), None);
+        assert_eq!(built_executable(b"", "scripts-build"), None);
     }
 
     #[test]

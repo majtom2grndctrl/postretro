@@ -88,12 +88,12 @@ impl TsCompilerPath {
     /// 1. `scripts-build` next to `std::env::current_exe()`.
     /// 2. `scripts-build` on `PATH`.
     ///
-    // TODO(scripting-tools-dedup): the discovery cascade is duplicated in
-    // `crates/level-compiler/src/main.rs` (`find_scripts_build`). The
-    // level-compiler runs offline and cannot depend on this module
-    // (`#[cfg(debug_assertions)]`-gated, also pulls in wgpu via the engine
-    // crate). Consolidate into a shared `postretro-scripts-tools` crate when
-    // the level-compiler gains more scripting integration.
+    // TODO(scripting-tools-dedup): `find_scripts_build` in
+    // `crates/level-compiler/src/main.rs` repeats these two steps before its
+    // own Cargo rebuild. The level compiler cannot reuse this module: it is
+    // `#[cfg(debug_assertions)]`-gated, and this crate links both script VMs.
+    // Consolidate into a shared `postretro-scripts-tools` crate when the
+    // level-compiler gains more scripting integration.
     pub fn detect() -> Option<Self> {
         let exe_dir = std::env::current_exe()
             .ok()

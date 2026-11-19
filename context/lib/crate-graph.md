@@ -12,7 +12,7 @@ Generate the full edge diagram on demand with `cargo run -p xtask -- crate-graph
 
 ## Layers
 
-- **Layer 0 (leaves):** audio, collision, foundation, level-format, net, render-data, stage-timing, test-log-capture, xtask
+- **Layer 0 (leaves):** audio, collision, foundation, level-format, net, render-data, stage-timing, telemetry, test-log-capture, xtask
 - **Layer 1:** entities, level-loader, model, script-compiler
 - **Layer 2:** combat-model, physics, scripting-core, visibility
 - **Layer 3:** level-compiler, lighting, render-cpu, ui
@@ -42,6 +42,7 @@ recompiles every dependent.
 - **lighting** — 3 dependents (postretro, renderer, sim)
 - **sim** — 3 dependents (postretro, ai, netcode)
 - **render-cpu** — 2 dependents (postretro, renderer)
+- **telemetry** — 2 dependents (postretro, level-compiler)
 - **ui** — 2 dependents (postretro, renderer)
 - **ai** — 1 dependent (postretro)
 - **audio** — 1 dependent (postretro)

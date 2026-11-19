@@ -690,12 +690,14 @@ fn bake_main(
         ReporterMode::Tui => {
             // The planned list is content-dependent. Parse once before entering
             // the alternate screen, then pass that parsed map to the worker.
-            // Its measured duration remains the Parsing Build Summary row, and
-            // telemetry's Parsing stage begins here, before any reporter.
-            bake_events.begin(pipeline::StageId::Parsing, false);
+            // Its measured duration remains the Parsing Build Summary row.
             let prepared = match pipeline::prepare(&args) {
                 Ok(prepared) => prepared,
                 Err(error) => {
+                    // No reporter exists yet: the failed Parsing stage begins
+                    // here so the bake writes it and its failed summary, as
+                    // the plain reporter's does.
+                    bake_events.begin(pipeline::StageId::Parsing, false);
                     log_sink.print_warning_summary();
                     return Err(error);
                 }

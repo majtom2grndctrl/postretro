@@ -80,9 +80,67 @@ def parse_envelope(line):
     if not isinstance(env["seq"], int) or not isinstance(env["payload"], dict):
         raise MalformedLine("seq must be an integer and payload an object")
     level = env["level"]
-    if level is not None and not (isinstance(level, dict) and isinstance(level.get("gen"), int)):
+    if level is not None and not (isinstance(level, dict) and is_int(level.get("gen"))):
         raise MalformedLine("level must be null or carry an integer gen")
     return env
+
+
+def is_int(value):
+    # bool is an int subclass; it is never a count or a generation.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def check(condition, what):
+    if not condition:
+        raise TypeError(what)
+
+
+def check_rows(rows, what, name="name", value="ms", optional_value=False):
+    """A list of objects each with a string `name` and a number `value`."""
+    check(isinstance(rows, list), f"{what} is not a list")
+    for row in rows:
+        check(isinstance(row, dict) and isinstance(row.get(name), str), f"{what} row lacks {name}")
+        number = row.get(value)
+        if not (optional_value and number is None):
+            check(is_number(number), f"{what} row {row.get(name)!r} has no numeric {value}")
+
+
+def validate_payload(kind, payload):
+    """Raise TypeError unless `payload` carries what `kind`'s reducer reads,
+    so a bad line is counted before any of it is applied."""
+    if kind == "run_start":
+        for entry in payload.get("producers") or []:
+            check(isinstance(entry, dict) and isinstance(entry.get("producer"), str),
+                  "producer entry lacks producer")
+    elif kind == "producer_state":
+        check(isinstance(payload.get("producer"), str), "producer_state lacks producer")
+    elif kind in ("load_phases", "geometry_install", "unload"):
+        check(is_int(payload.get("generation")), f"{kind} generation is not an integer")
+        if kind == "load_phases":
+            check_rows(payload.get("phases"), "phases")
+            for phase in payload["phases"]:
+                check_rows(phase.get("marks") or [], "marks")
+        elif kind == "geometry_install":
+            check_rows(payload.get("phases") or [], "geometry phases")
+    elif kind in ("sh_streaming_window", "lightmap_streaming_window"):
+        delta = payload.get("delta") or {}
+        check(isinstance(delta, dict), "delta is not an object")
+        check(all(is_number(v) for v in delta.values()), "delta holds a non-number")
+    elif kind == "cpu_timing_window":
+        stages = [s for s in payload.get("stages") or [] if isinstance(s, dict)
+                  and s.get("kind") == "time"]
+        check_rows(stages, "cpu stages", name="label", value="average", optional_value=True)
+        check_rows(stages, "cpu stages", name="label", value="max", optional_value=True)
+    elif kind == "gpu_timing_window":
+        check_rows(payload.get("passes") or [], "gpu passes", name="label", value="mean_ms",
+                   optional_value=True)
+    elif kind == "bake_summary":
+        if payload.get("timings") is not None:
+            check_rows(payload["timings"], "bake timings")
 
 
 def p50(values):
@@ -281,9 +339,6 @@ def reduce_run(run_id, entries, unknown_kinds, malformed):
     expected_seq = 0
 
     def load_for(generation, number):
-        # bool is an int subclass; neither it nor null is a generation.
-        if not isinstance(generation, int) or isinstance(generation, bool):
-            raise TypeError(f"generation {generation!r} is not an integer")
         return loads.setdefault(generation, new_load(run_id, generation, number))
 
     for number, env in entries:
@@ -298,6 +353,7 @@ def reduce_run(run_id, entries, unknown_kinds, malformed):
             # Nothing is written after run_end; ignore anything that is.
             continue
         try:
+            validate_payload(kind, payload)
             if kind == "run_start":
                 run.update({
                     "epoch_ms": payload.get("epoch_ms"),

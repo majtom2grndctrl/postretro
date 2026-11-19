@@ -2181,8 +2181,13 @@ impl App {
         // On resume the splash state machine starts over from frame 0 and
         // dispatches a fresh load; the cancelled one is only retiring.
         self.level_load = None;
-        // The installed level stops running here, with no unload: later
-        // events name no level until the resumed load commits.
+        // The installed level stops running here, with no unload: its
+        // streaming sessions close their partial windows while it is still
+        // the running level, then later events name no level until the
+        // resumed load commits.
+        if let Some(session) = self.session.as_mut() {
+            session.clear_level_streaming();
+        }
         postretro_telemetry::set_level(None);
         self.reset_boot_state_after_suspend();
     }
@@ -2617,14 +2622,16 @@ impl ApplicationHandler for App {
         self.renderer = None;
         self.window_state = None;
         log::info!("[Engine] Exited");
-        // Some platforms end the process inside this callback (macOS's app
-        // menu Quit never returns from the event loop), so the run ends here:
-        // the level's streaming sessions close their partial windows first,
-        // then `run_end`. Where the loop does return, main's own `run_end`
-        // finds the run already ended.
+        // The level's streaming sessions close their partial windows here,
+        // before any `run_end`.
         if let Some(session) = self.session.as_mut() {
             session.clear_level_streaming();
         }
+        // On Apple platforms the app menu's Quit ends the process inside this
+        // callback, so the run ends here too. Elsewhere the loop returns and
+        // main writes `run_end`, which then also sees a loop error or a
+        // teardown panic.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
         telemetry::end_engine_run(&self.exit_result);
     }
 }

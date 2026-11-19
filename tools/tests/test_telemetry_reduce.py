@@ -354,6 +354,23 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertEqual([m["line"] for m in summary["malformed_lines"]], [2, 3, 4])
         self.assertEqual([load["generation"] for load in summary["loads"]], [2])
 
+    def test_a_half_bad_payload_applies_nothing(self):
+        summary = REDUCER.reduce_lines([
+            run_start("ee-5"),
+            envelope("ee-5", 1, "load_phases", {"generation": 7, "prl": "/m.prl",
+                                                "phases": [{"name": "load_dispatch"}]}),
+            envelope("ee-5", 2, "cpu_timing_window", {"frames": 120, "stages": [
+                {"label": "render", "kind": "time", "frames": 120, "average": "1.2",
+                 "max": 2.0}]}),
+            envelope("ee-5", 3, "sh_streaming_window", {"session": 1, "partial": False,
+                                                       "delta": {"misses": "4"}},
+                     level={"gen": True, "map": "/m.prl"}),
+        ])
+        self.assertEqual(summary["loads"], [], "the half-bad load_phases created no load")
+        (run,) = summary["runs"]
+        self.assertEqual(run["cpu"]["windows"], 0)
+        self.assertEqual(summary["malformed"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

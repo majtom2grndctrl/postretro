@@ -17,6 +17,17 @@ fn every_line_of_the_two_run_sample_parses_as_a_current_envelope() {
         first_kinds
             .entry(envelope.run.clone())
             .or_insert(envelope.kind);
+        // The payloads this crate owns parse as its own types, so the sample
+        // cannot drift from what a hub writes.
+        let payload = envelope.payload.clone();
+        let typed = match envelope.kind {
+            Kind::RunStart => serde_json::from_value::<RunStart>(payload).map(drop),
+            Kind::ProducerState => serde_json::from_value::<ProducerEntry>(payload).map(drop),
+            Kind::RunEnd => serde_json::from_value::<RunEnd>(payload).map(drop),
+            Kind::Log => serde_json::from_value::<LogRecord>(payload).map(drop),
+            _ => Ok(()),
+        };
+        typed.unwrap_or_else(|e| panic!("{e}: {line}"));
         runs.entry(envelope.run).or_default().push(envelope.seq);
     }
     assert_eq!(runs.len(), 2, "a bake run and an engine run");

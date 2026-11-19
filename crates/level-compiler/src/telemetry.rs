@@ -65,9 +65,7 @@ impl BakeEvents {
         })
     }
 
-    /// A stage begins. Under the TUI, Parsing begins in `prepare`, before
-    /// any reporter exists, and the pipeline begins it again later: the
-    /// second begin writes nothing.
+    /// A stage begins, once: a second begin of the same stage writes nothing.
     pub(crate) fn begin(&self, id: StageId, background: bool) {
         if !postretro_telemetry::active() {
             return;
@@ -513,8 +511,6 @@ mod tests {
             let logs = crate::logger::LogSink::default();
             let events = BakeEvents::new(&args.input, &args.output);
             if tui {
-                // As `bake_main`'s TUI arm does: Parsing begins in `prepare`.
-                events.begin(StageId::Parsing, false);
                 let prepared = crate::pipeline::prepare(&args).unwrap();
                 let planned = crate::pipeline::planned_stages(&prepared.map_data.lights);
                 let inner: Arc<dyn Reporter> =

@@ -193,26 +193,24 @@ impl Hub {
     /// windows closed before this still name it, because the level is
     /// cleared only here.
     pub fn end_level<P: Serialize>(&self, kind: Kind, payload: impl FnOnce(&Level) -> P) {
-        let Some(level) = self.level() else {
-            return;
-        };
-        let Some(payload) = to_json(&payload(&level)) else {
-            return;
-        };
         let failure = {
             let mut state = self.lock();
             if state.ended {
                 return;
             }
-            let failure = self.write_locked(
-                &mut state,
-                kind,
-                LevelChoice::Explicit(Some(&level)),
-                &payload,
-                pin_for(kind),
-            );
-            state.level = None;
-            failure
+            let Some(level) = state.level.take() else {
+                return;
+            };
+            match to_json(&payload(&level)) {
+                Some(payload) => self.write_locked(
+                    &mut state,
+                    kind,
+                    LevelChoice::Explicit(Some(&level)),
+                    &payload,
+                    pin_for(kind),
+                ),
+                None => None,
+            }
         };
         emit_warning(failure);
     }

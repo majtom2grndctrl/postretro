@@ -11,7 +11,7 @@ read at: e0ac8b7f
 - Source: `rustc` 1.97 in the container is below the workspace `rust-version` 1.99 → updated the stable toolchain to 1.100 before building. Environment only.
 - Boundary inventory "Live verb | `ObserveRequest` variant" and Path "reshape the response vocabulary" → the transport peeks the verb and answers `events` from `observe_live/events.rs` with its own request type and reply body; `ObserveRequest`/`ObserveResponse` stay the main thread's vocabulary and their docs say so. Same wire shape; the request ignores unknown fields so a later wait field needs no protocol bump.
 - Wire format "absent optional payload values serialize as `null`" → `cpu_timing_window` reuses `CpuWindowReport` as the Decision requires, and that type omits absent keys rather than writing `null`. Absent still never reads as zero; the reducer reads both forms.
-- Brief silent on platform suspend → a suspend stops the running level without an unload: the hub's level clears so later events name none until the resumed load commits. Whether suspend should also write an `unload` is an owner call.
+- Brief silent on platform suspend → a suspend stops the running level without an unload: its streaming sessions close their partial windows naming it, then the hub's level clears so later events name none until the resumed load commits. Whether suspend should also write an `unload` is an owner call.
 - Brief silent on capture runs' timing → capture writes its timing to its measurement report, not timing windows, so a capture run lists requested timing producers unsupported with that reason, as headless does.
 
 ## Delegated answers
@@ -99,6 +99,14 @@ Round 1: 6 depth lenses (opus) + 2 hygiene passes (sonnet), no 🔴. Fixed:
 - Engine: `exiting()` closes streaming windows and ends the run (macOS app-menu Quit never returns from the loop); suspend clears the running level; capture lists timing producers unsupported; settled producers keep their variable; SH latency gauges are null before a session's first read; capture and headless error exits carry the error text.
 - Reducer: a payload missing what its kind needs is counted malformed, never fatal; the sample matches real producer output (boot and mod phase names, commit-frame marks summing, the `Lightmap bound` row) and its leaf-owned payloads parse as the leaf's types.
 - Comment drift across renderer, engine and leaf; clippy `type_complexity`; temp-dir cleanup in CPU tests; bake tests moved to a lit fixture that runs every stage and a background one.
+
+Round 2 (one correctness tracer on the fix commit), fixed:
+- `exiting()` writes `run_end` only on Apple platforms, where the loop never returns; elsewhere main's `run_end` still records a loop error or a teardown panic. Streaming windows close in `exiting()` everywhere.
+- Suspend closes the level's streaming sessions before clearing the running level, so their partials name it.
+- The TUI's early Parsing begin is written only when `prepare` fails, so a config cancel or a later TUI error carries no dangling stage.
+- `end_level` reads, writes and clears under one lock.
+- The reducer validates each payload before applying any of it (no half-applied loads, windows or bakes) and rejects a bool generation.
+- The sample's leaf-owned payloads now really parse as the leaf's types (the earlier edit had not landed); the crate graph snapshot names the new leaf.
 
 Left, with reasons:
 - Invalid-JSON bodies naming `events` reach the main thread's queue: the peek needs a parseable body, and the main thread still answers an error.

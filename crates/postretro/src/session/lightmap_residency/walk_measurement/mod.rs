@@ -47,8 +47,13 @@
 // either left out to size that pool from id 58 (`34/15,30,/15`), or `bound` for
 // both pools at id 58 with no margin. A walk also draws cells its camera cell's
 // set does not hold, which the bound leaves out, so a real walk at `bound` can
-// grow where a walk of mandatory demand alone cannot. Leave
-// `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
+// grow where a walk of mandatory demand alone cannot.
+// `POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP` (MiB, a positive decimal: `4`, `16`,
+// `0.5`) replaces the play drain cap in every run through the seam the
+// dev-tools slider sets; settling and the lightmap in-hand caps keep
+// production. Zero, negatives and non-numbers are refused by name. A capped
+// run's label and `walk-result` line (`drain_cap_mib`, null when unset) carry
+// the cap. Leave `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
 // `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
 // stays fixed) and `POSTRETRO_LIGHTMAP_WALK_PITCH` (degrees, up positive,
@@ -98,7 +103,7 @@ mod completed_reads;
 mod cores;
 mod frame_driver;
 mod install_timing;
-mod levers;
+pub(crate) mod levers;
 mod mirror;
 mod modes;
 mod paths;
@@ -136,7 +141,7 @@ use baked_set::{
 };
 use busy_stats::BusyStats;
 use frame_driver::{FrameDriver, FrameInput};
-use levers::{DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, parse_pool_layers};
+use levers::{DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, drain_cap_from_env, parse_pool_layers};
 use mirror::{MirrorStats, WalkMirror};
 use modes::{ReadsMode, WalkModes, render_camera};
 use paths::{SplitMix64, WALK_SEED, WalkKind};
@@ -162,10 +167,11 @@ fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
 
 fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
     format!(
-        "{} | L {} m | {} | {}",
+        "{} | L {} m | {}{} | {}",
         walk.kind.label(),
         levers.lead_metres,
         levers.pools_label(),
+        levers.drain_cap_label(),
         modes.label()
     )
 }
@@ -209,6 +215,9 @@ impl<'w> Rig<'w> {
             reads.retire_clock(),
         );
         let mut level = LevelStreaming::default();
+        if let Some(cap) = levers.drain_cap {
+            cap.apply(&mut level);
+        }
         level.install_cell_demand(stage);
         level.install_lightmap(session);
         let driver = FrameDriver::new(level, mirror, reads, cell_blocks.clone());
@@ -607,6 +616,18 @@ fn lightmap_residency_walks_from_prl() {
                 ..default
             })
             .collect();
+    }
+    let drain_cap = drain_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
+    match drain_cap {
+        Some(cap) => println!(
+            "play drain cap: {} MiB ({} bytes) in every run; settling and the in-hand caps keep \
+             production",
+            cap.mib, cap.bytes
+        ),
+        None => println!("play drain cap: production"),
+    }
+    for config in &mut configs {
+        config.drain_cap = drain_cap;
     }
     let mut records = Vec::new();
     for kind in WalkKind::ALL {

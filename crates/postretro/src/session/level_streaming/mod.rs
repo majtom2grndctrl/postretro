@@ -1,6 +1,9 @@
 //! Level-scope streaming: one read issuer and one drain step for SH and lightmaps.
 //! See: context/lib/rendering_pipeline.md §4
 
+mod drain_cap;
+#[cfg(test)]
+mod drain_cap_tests;
 mod hooks;
 mod io;
 mod level_data;
@@ -27,9 +30,6 @@ use super::sh_residency::ShStreamingSession;
 use crate::cpu_timing::StreamingStage;
 use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cluster_hints::ClusterHints;
-use crate::streaming::drain_budget::{
-    MAX_INSTALL_DECODED_BYTES_PER_DRAIN, SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
-};
 use crate::streaming::issuer_busy::IssuerBusyLog;
 use crate::streaming::shared_drain::SharedDrain;
 
@@ -85,6 +85,11 @@ pub(crate) struct LevelStreaming {
     /// Where each issuer this owner spawns logs its busy time; `None` (play)
     /// times nothing. The walk measurement installs one.
     issuer_busy: Option<Arc<IssuerBusyLog>>,
+    /// The dev-tools slider's or the walk measurement's play drain cap;
+    /// `None` is the production cap. Outlives the level, as a developer
+    /// lever, until set back.
+    #[cfg(any(test, feature = "dev-tools"))]
+    play_drain_cap_override: Option<std::num::NonZeroU64>,
 }
 
 impl LevelStreaming {
@@ -233,11 +238,7 @@ impl LevelStreaming {
             }
             _ => false,
         };
-        self.drain.admit_within(if frame.settling {
-            SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN
-        } else {
-            MAX_INSTALL_DECODED_BYTES_PER_DRAIN
-        })?;
+        self.admit_offered(frame.settling)?;
         let batch = match (sh.as_mut(), sh_pending) {
             (Some(streaming), Some(pending)) => streaming.finish_drain(pending, &self.drain)?,
             _ => ShDrainBatch::default(),

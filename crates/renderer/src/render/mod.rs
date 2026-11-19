@@ -325,7 +325,8 @@ pub use rigid_occluder_depth::MoverOccluderAabb;
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
     AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow, LightmapStreamingTab,
-    NetworkLagLever, NetworkSessionRole, TriggerDiagnosticsRow, draw_diagnostics_panel,
+    NetworkLagLever, NetworkSessionRole, StreamingDrainCapLever, TriggerDiagnosticsRow,
+    draw_diagnostics_panel,
 };
 #[cfg(feature = "dev-tools")]
 pub use frame_timing::FrameTimingSnapshot;

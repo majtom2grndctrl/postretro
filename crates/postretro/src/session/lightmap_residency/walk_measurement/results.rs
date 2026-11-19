@@ -6,7 +6,7 @@
 // the matrix as separate interleaved invocations into one file and take
 // medians per cell. `POSTRETRO_LIGHTMAP_WALK_TAG` labels an invocation (a
 // repeat index, a build name). Matrix keys: prl, walk, reads, sh, cores,
-// lead_m, pools, planar, modes.
+// lead_m, pools, drain_cap_mib (null at production), planar, modes.
 //
 // `late_blocks` is the after-spawn total of drawn blocks still not resident
 // after each frame's last drain, in block-frames (deferred + left behind);
@@ -81,6 +81,7 @@ pub(super) fn result_line(keys: &RunKeys<'_>, report: &RunReport) -> Value {
         "cores_label": keys.modes.cores.label(),
         "lead_m": keys.levers.lead_metres,
         "pools": keys.levers.pools_label(),
+        "drain_cap_mib": keys.levers.drain_cap.map(|cap| cap.mib),
         "planar": keys.modes.planar,
         "modes": keys.modes.label(),
     });
@@ -176,5 +177,54 @@ pub(super) fn print_instruments(keys: &RunKeys<'_>, report: &RunReport) {
             .open(&path)
             .unwrap_or_else(|why| panic!("open {RESULTS_OUT_ENV} {path}: {why}"));
         writeln!(file, "{line}").expect("append the result line");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::cores::Cores;
+    use super::super::levers::{DEFAULT_LEVERS, parse_drain_cap};
+    use super::super::modes::Projection;
+    use super::*;
+
+    fn line_with(levers: Levers) -> Value {
+        let walk = Walk {
+            kind: WalkKind::FarPointTour,
+            cells: Vec::new(),
+            teleport: Vec::new(),
+            dwell: Vec::new(),
+            travel_yaw: Vec::new(),
+        };
+        let modes = WalkModes {
+            projection: Projection::default(),
+            pitch: 0.0,
+            pitch_degrees: 0.0,
+            reads: ReadsMode::CompletedReads,
+            record_out: None,
+            record_in: None,
+            planar: false,
+            sh: false,
+            cores: Cores::Machine,
+        };
+        let keys = RunKeys {
+            prl: "level.prl",
+            bake: "bake",
+            walk: &walk,
+            levers,
+            modes: &modes,
+            sh: ShStatus::Off,
+        };
+        result_line(&keys, &RunReport::default())
+    }
+
+    // Tagged results tell a capped run from a production one.
+    #[test]
+    fn result_line_carries_the_drain_cap_and_null_at_production() {
+        assert_eq!(line_with(DEFAULT_LEVERS)["drain_cap_mib"], Value::Null);
+        let capped = Levers {
+            drain_cap: Some(parse_drain_cap("16").unwrap()),
+            ..DEFAULT_LEVERS
+        };
+        assert_eq!(line_with(capped)["drain_cap_mib"], json!(16.0));
     }
 }

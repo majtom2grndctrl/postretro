@@ -1,7 +1,12 @@
-//! A residency walk's levers: the lead, and each pool's size.
+//! A residency walk's levers: the lead, each pool's size, and the play drain
+//! cap.
 //! See: context/lib/rendering_pipeline.md §4
 
+use std::num::NonZeroU64;
+
 use postretro_render_cpu::lightmap_pool::{PerPool, PoolKind};
+
+use crate::session::level_streaming::LevelStreaming;
 
 /// The runs to make, in place of the default sweep: see [`parse_pool_layers`].
 pub(super) const POOL_LAYERS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_POOL_LAYERS";
@@ -9,12 +14,19 @@ pub(super) const POOL_LAYERS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_POOL_LAYERS";
 /// `bound` in [`POOL_LAYERS_ENV`]: each pool at its id 58 figure, no margin.
 const AT_THE_BOUND: &str = "bound";
 
+/// Every run's play drain cap in place of production: see [`parse_drain_cap`].
+pub(crate) const DRAIN_CAP_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP";
+
+const MIB: f64 = 1024.0 * 1024.0;
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Levers {
     pub(super) lead_metres: f32,
     /// A pool's first generation in layers, taken as given. `None` sizes that
     /// pool as the runtime does, from the level's id 58.
     pub(super) pool_layers: PerPool<Option<u32>>,
+    /// The play drain cap; `None` is production.
+    pub(super) drain_cap: Option<WalkDrainCap>,
 }
 
 /// The shipped levers: the run every lever sweep varies one lever from.
@@ -24,6 +36,7 @@ pub(super) const DEFAULT_LEVERS: Levers = Levers {
         lightmap: None,
         mask: None,
     },
+    drain_cap: None,
 };
 
 impl Levers {
@@ -39,6 +52,63 @@ impl Levers {
             figure(PoolKind::Mask)
         )
     }
+
+    /// The run label's drain cap part: empty at production, so an unset run's
+    /// label is unchanged.
+    pub(super) fn drain_cap_label(&self) -> String {
+        self.drain_cap
+            .map_or_else(String::new, |cap| format!(" | drain cap {} MiB", cap.mib))
+    }
+}
+
+/// A walk's play drain cap: the MiB asked for and the whole bytes it applies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WalkDrainCap {
+    pub(crate) mib: f64,
+    pub(crate) bytes: NonZeroU64,
+}
+
+impl WalkDrainCap {
+    /// Sets `level`'s play cap override, the seam the dev-tools slider sets.
+    pub(crate) fn apply(self, level: &mut LevelStreaming) {
+        level.set_play_drain_cap_override(Some(self.bytes));
+    }
+}
+
+/// The play drain cap from [`DRAIN_CAP_ENV`], when set.
+pub(super) fn drain_cap_from_env() -> Result<Option<WalkDrainCap>, String> {
+    match std::env::var(DRAIN_CAP_ENV) {
+        Ok(value) => parse_drain_cap(&value).map(Some),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(why) => Err(format!("{DRAIN_CAP_ENV}: {why}")),
+    }
+}
+
+/// A positive decimal count of MiB: `4`, `16`, `0.5`. Zero, a negative, a
+/// non-number and a value past `u64` bytes are refused by name, never
+/// clamped.
+pub(crate) fn parse_drain_cap(value: &str) -> Result<WalkDrainCap, String> {
+    let refuse = |why: &str| format!("{DRAIN_CAP_ENV}={value:?}: {why}");
+    let mib: f64 = value
+        .trim()
+        .parse()
+        .ok()
+        .filter(|mib: &f64| mib.is_finite())
+        .ok_or_else(|| refuse("not a number of MiB"))?;
+    if mib < 0.0 {
+        return Err(refuse("a cap is a positive number of MiB"));
+    }
+    if mib == 0.0 {
+        return Err(refuse(
+            "a zero cap admits only each drain's first item; unset it for production",
+        ));
+    }
+    let bytes = (mib * MIB).round();
+    if bytes >= u64::MAX as f64 {
+        return Err(refuse("too large to represent in bytes"));
+    }
+    let bytes = NonZeroU64::new(bytes as u64).ok_or_else(|| refuse("rounds to zero bytes"))?;
+    Ok(WalkDrainCap { mib, bytes })
 }
 
 /// Each run's pool sizes from a comma-separated list. A run is `LIGHTMAP/MASK`
@@ -122,5 +192,54 @@ mod tests {
             ..DEFAULT_LEVERS
         };
         assert_eq!(levers.pools_label(), "pools 30/id58");
+    }
+
+    #[test]
+    fn drain_cap_accepts_positive_mib_as_whole_bytes() {
+        for (value, bytes) in [
+            ("8", 8 << 20),
+            ("4", 4 << 20),
+            ("16", 16 << 20),
+            (" 0.5 ", 512 << 10),
+            ("2.25", (2 << 20) + (256 << 10)),
+        ] {
+            let cap = parse_drain_cap(value).unwrap();
+            assert_eq!(cap.bytes.get(), bytes, "{value}");
+        }
+        assert_eq!(parse_drain_cap("16").unwrap().mib, 16.0);
+    }
+
+    #[test]
+    fn drain_cap_refuses_zero_negative_non_numbers_and_overflow_by_name() {
+        for (value, why) in [
+            ("0", "zero cap"),
+            ("0.0", "zero cap"),
+            ("-0", "zero cap"),
+            ("-4", "positive"),
+            ("", "not a number"),
+            ("eight", "not a number"),
+            ("8MiB", "not a number"),
+            ("inf", "not a number"),
+            ("NaN", "not a number"),
+            ("1e300", "too large"),
+            ("17592186044416", "too large"),
+            ("1e-12", "rounds to zero"),
+        ] {
+            let refusal = parse_drain_cap(value).unwrap_err();
+            assert!(
+                refusal.contains(DRAIN_CAP_ENV) && refusal.contains(why),
+                "{value:?}: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_label_names_a_drain_cap_only_when_set() {
+        assert_eq!(DEFAULT_LEVERS.drain_cap_label(), "");
+        let levers = Levers {
+            drain_cap: Some(parse_drain_cap("16").unwrap()),
+            ..DEFAULT_LEVERS
+        };
+        assert_eq!(levers.drain_cap_label(), " | drain cap 16 MiB");
     }
 }

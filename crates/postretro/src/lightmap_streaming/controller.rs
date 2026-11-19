@@ -535,6 +535,11 @@ impl LightmapResidencyController {
         self.in_hand_bytes
     }
 
+    #[cfg(test)]
+    pub(crate) fn band_in_hand_bytes(&self) -> u64 {
+        self.band_in_hand_bytes
+    }
+
     /// Capacities of every per-frame buffer, for the steady-frame proof.
     #[cfg(test)]
     pub(crate) fn buffer_capacities(&self) -> Vec<usize> {

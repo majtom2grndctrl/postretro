@@ -1,5 +1,6 @@
 //! Streaming tab: SH cluster residency and lightmap cell-block residency
-//! gauges, cumulative counters, and the level's lead L lever.
+//! gauges, cumulative counters, the level's lead L lever and the play drain
+//! cap lever.
 //!
 //! Rows are built as plain label/value strings first so the grouping and
 //! formatting are testable without an egui context.
@@ -9,6 +10,7 @@ use super::super::Renderer;
 use super::super::ShComposePassDiagnostics;
 use super::super::ShStreamingLiveDiagnostics;
 use super::super::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
+use super::drain_cap_lever::{StreamingDrainCapLever, draw_drain_cap_lever};
 
 /// The Streaming tab's lightmap input: the live counters, shown read-only.
 #[derive(Debug)]
@@ -22,6 +24,7 @@ pub(super) fn draw_streaming_tab(
     diagnostics: Option<&ShStreamingLiveDiagnostics>,
     lightmap: Option<LightmapStreamingTab<'_>>,
     reach: Option<&mut StreamingReachLever>,
+    drain_cap: &mut StreamingDrainCapLever,
 ) {
     // The reach is the level's, not a resource's: present for a level that
     // streams SH alone and after a lightmap decline.
@@ -35,6 +38,8 @@ pub(super) fn draw_streaming_tab(
         );
         ui.separator();
     }
+    draw_drain_cap_lever(ui, drain_cap);
+    ui.separator();
     egui::CollapsingHeader::new("Lightmap blocks")
         .default_open(true)
         .show(ui, |ui| match lightmap {

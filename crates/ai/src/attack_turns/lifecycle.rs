@@ -35,7 +35,6 @@ pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64, present_last_tick: b
         1
     };
     turns.seen_tick = tick;
-    turns.run_span = span;
     span
 }
 

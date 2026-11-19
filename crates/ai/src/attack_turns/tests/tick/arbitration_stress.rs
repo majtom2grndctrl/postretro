@@ -45,7 +45,7 @@ impl Wave {
     fn new(enemy_count: usize) -> Self {
         let graph = marked_graph(vec![(ATTACK, contact(1.0, 100_000.0))]);
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         runtime.turns.budgets = AttackBudgets::new(BudgetTable::new(vec![
             TokenBudget {
                 limit: 3,

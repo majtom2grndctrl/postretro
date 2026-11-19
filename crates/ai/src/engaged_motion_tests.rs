@@ -227,7 +227,7 @@ fn strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass() {
         )],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let player = spawn_player(&mut reg, target_pos());
     // Out of the attack's reach, so the shot can only land once the strafe
     // has carried it in.
@@ -331,7 +331,7 @@ fn strafe_reverses_at_blocked_occupied_or_blind_slot() {
         let world = OpenFloor::new().collision_world();
         let nav = region_nav(0, 18, 40, 40);
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &nav);
         ai_tick(&mut reg, &mut runtime, &world, &nav);
         assert_xz(
@@ -348,7 +348,7 @@ fn strafe_reverses_at_blocked_occupied_or_blind_slot() {
         let world = floor.collision_world();
         let nav = floor.nav_graph();
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &nav);
         let mut bystander = brain_with(tuning(), TEST_IDLE_STATE);
         bystander.aggro_armed = false;
@@ -367,7 +367,7 @@ fn strafe_reverses_at_blocked_occupied_or_blind_slot() {
         let world = floor_with_wall(21.5, 17.8, 19.2);
         let nav = OpenFloor::new().nav_graph();
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &nav);
         ai_tick(&mut reg, &mut runtime, &world, &nav);
         assert_xz(
@@ -386,7 +386,7 @@ fn strafe_holds_without_flipping_when_both_neighbors_unusable() {
     let world = OpenFloor::new().collision_world();
     let corridor = region_nav(0, 19, 40, 21);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &corridor);
     set_enemy_yaw(&mut reg, enemy, 0.0);
 
@@ -431,7 +431,7 @@ fn strafe_batch_loser_reverses_once() {
         vec![("wait", activity("walk", MotionVerb::Strafe, None))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     // East strafing counter-clockwise and south (-Z) strafing clockwise share
     // the south-east slot.
@@ -497,7 +497,7 @@ fn strafe_after_reposition_steps_from_current_bearing() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     // A 30° entry bearing rotates the reposition ring off the world axes.
     let enemy = spawn_engaged(
@@ -599,7 +599,7 @@ fn reposition_arrives_one_spacing_from_entry_position_and_slot() {
 
     // After an engaged hold that claimed a slot.
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     let enemy = spawn_engaged(
         &mut reg,
@@ -636,7 +636,7 @@ fn reposition_arrives_one_spacing_from_entry_position_and_slot() {
 
     // After an actionless `hold`, which holds no slot.
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     let enemy = spawn_engaged(
         &mut reg,
@@ -677,7 +677,7 @@ fn reposition_destinations_beside(
 ) -> Vec<Option<Vec3>> {
     let world = OpenFloor::new().collision_world();
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     for &at in bystanders {
         let mut bystander = brain_with(tuning(), TEST_IDLE_STATE);
@@ -768,7 +768,7 @@ fn reposition_entry_bearing_and_position_stay_fixed_while_target_moves() {
     let world = floor.collision_world();
     let nav = floor.nav_graph();
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let player = spawn_player(&mut reg, target_pos());
     let start = ring_point(target_pos(), EAST);
     let enemy = spawn_engaged(&mut reg, start, &reposition_graph(arc(90.0, 90.0)), "move");
@@ -848,7 +848,7 @@ fn reposition_twins_claim_distinct_slots_deterministically() {
         let nav = floor.nav_graph();
         let graph = reposition_graph(arc(45.0, 135.0));
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         spawn_player(&mut reg, target_pos());
         let near = spawn_engaged(&mut reg, ring_point(target_pos(), EAST), &graph, "move");
         let far = spawn_engaged(
@@ -876,7 +876,7 @@ fn reposition_above_target_measures_from_held_slot_or_ignores_arc() {
     let world = OpenFloor::new().collision_world();
     let run = |held: Option<Vec3>, nav: &NavGraph, params| {
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         // The target stands on a ledge directly above the enemy.
         spawn_player(&mut reg, target_pos() + Vec3::new(0.0, 1.5, 0.0));
         let mut brain = authored_brain(&reposition_graph(params), "move");
@@ -918,7 +918,7 @@ fn reposition_never_picks_radial_slots() {
     let radial = ring_point(target_pos(), EAST);
     for (case, offset) in [("outward", 2.0 * R), ("inward", 0.6 * R)] {
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         spawn_player(&mut reg, target_pos());
         // No minimum travel, so only the radial rule can refuse the nearest
         // slot.
@@ -951,7 +951,7 @@ fn restore_mid_reposition_and_strafe_records_fresh_entry() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let player = spawn_player(&mut reg, target_pos());
     let repositioner = spawn_engaged(&mut reg, ring_point(target_pos(), EAST), &graph, "move");
     let strafer = spawn_engaged(
@@ -971,7 +971,7 @@ fn restore_mid_reposition_and_strafe_records_fresh_entry() {
     // The direction a fresh entry here picks, from a control that never ran.
     let fresh_direction = {
         let mut control = EntityRegistry::new();
-        let mut control_runtime = AiRuntime::new();
+        let mut control_runtime = AiRuntime::deciding_every_tick();
         spawn_player(&mut control, target_pos());
         let control_strafer = spawn_engaged(&mut control, position(&reg, strafer), &graph, "wait");
         ai_tick(&mut control, &mut control_runtime, &world, &nav);
@@ -1011,7 +1011,7 @@ fn restore_mid_reposition_and_strafe_records_fresh_entry() {
     assert_eq!(memory(&restored, repositioner), EngagedMotionMemory::None);
     assert_eq!(memory(&restored, strafer), EngagedMotionMemory::None);
 
-    let mut restored_runtime = AiRuntime::new();
+    let mut restored_runtime = AiRuntime::deciding_every_tick();
     let restored_at = position(&restored, repositioner);
     ai_tick(&mut restored, &mut restored_runtime, &world, &nav);
     let (restored_entry, _) = reposition_entry(&restored, repositioner);
@@ -1045,7 +1045,7 @@ fn yaw_after_one_tick_with(
     stage: impl FnOnce(&mut BrainComponent),
 ) -> f32 {
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy_at = Vec3::new(20.0, 0.0, 20.0);
     spawn_player(&mut reg, enemy_at + Vec3::new(3.0, 0.0, 0.0));
     let mut brain = authored_brain(graph, state);
@@ -1173,7 +1173,7 @@ fn clips_for_travel(
     strafe.facing = facing;
     let graph = single_activity_graph(strafe);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy_at = Vec3::new(20.0, 0.0, 20.0);
     spawn_player(&mut reg, enemy_at + Vec3::new(3.0, 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, enemy_at, authored_brain(&graph, "only"), 50.0);

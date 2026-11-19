@@ -26,7 +26,7 @@ impl Shipped {
         Self {
             manifest,
             reg,
-            runtime: AiRuntime::new(),
+            runtime: AiRuntime::deciding_every_tick(),
             clips: HitZoneStore::new(),
             player,
         }

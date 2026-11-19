@@ -434,6 +434,7 @@ fn engaged_outcome(
     EnemyOutcome {
         id,
         span: 1,
+        decide: true,
         position,
         target: Some(target),
         enemy_eye_offset: Vec3::ZERO,

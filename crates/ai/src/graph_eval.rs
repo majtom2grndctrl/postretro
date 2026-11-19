@@ -13,7 +13,7 @@ use postretro_foundation::{
 };
 
 use super::brain_programs::{BoundLayer, BrainEntityPrograms};
-use super::brain_scope::{BrainScope, ScopeRelativeValues};
+use super::brain_scope::{BrainScope, ScopeRelativeValues, SelectorLayer as Layer};
 use super::clip_clock;
 use super::engine_floor::SteeringIntent;
 
@@ -273,7 +273,7 @@ impl TurnGate<'_> {
     }
 
     /// A rest's own grant lives one evaluation, as a mark's would: its row
-    /// passes on a turn granted on the brain's previous run, whatever its target
+    /// passes on a turn granted since the brain's previous decide, whatever its target
     /// (after a switch the hold is still entered, and its mark re-requests).
     /// An older turn opens the row only under the path's own mark for its
     /// attack ([`Self::held_under_mark`]). Without that mark it was carried in
@@ -286,7 +286,7 @@ impl TurnGate<'_> {
             turn.attack == attack
                 && turn
                     .granted_tick
-                    .wrapping_add(u64::from(turns.run_span.max(1)))
+                    .wrapping_add(u64::from(turns.decide_span.max(1)))
                     == turns.seen_tick
         })
     }
@@ -542,26 +542,30 @@ fn selector_motion(
     activity: &BehaviorActivityDescriptor,
 ) -> Option<MotionVerb> {
     let (entries, programs) = selector_layer(bound, brain, depth, activity, "move")?;
+    let motion_of = |entry: &BehaviorSelectorEntry| match entry {
+        BehaviorSelectorEntry::Row(row) => row.motion,
+        BehaviorSelectorEntry::Motion(motion) => Some(*motion),
+    };
+    if let Some(row) = scope.recalled_row(depth, Layer::Move) {
+        return row.and_then(|row| entries.get(row)).and_then(motion_of);
+    }
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
         activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
         damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });
-    for (entry, program) in entries.iter().zip(programs) {
-        match entry {
-            BehaviorSelectorEntry::Row(row)
-                if program
-                    .as_ref()
-                    .is_some_and(|program| eval_value(program, scope) == IrValue::Bool(true)) =>
-            {
-                return row.motion;
-            }
-            BehaviorSelectorEntry::Motion(motion) => return Some(*motion),
-            BehaviorSelectorEntry::Row(_) => {}
-        }
-    }
-    None
+    let chosen = entries
+        .iter()
+        .zip(programs)
+        .position(|(entry, program)| match entry {
+            BehaviorSelectorEntry::Row(_) => program
+                .as_ref()
+                .is_some_and(|program| eval_value(program, scope) == IrValue::Bool(true)),
+            BehaviorSelectorEntry::Motion(_) => true,
+        });
+    scope.record_row(depth, Layer::Move, chosen);
+    chosen.and_then(|row| motion_of(&entries[row]))
 }
 
 fn selector_action<'a>(
@@ -572,26 +576,36 @@ fn selector_action<'a>(
     activity: &'a BehaviorActivityDescriptor,
 ) -> Option<&'a ActionVerb> {
     let (entries, programs) = selector_layer(bound, brain, depth, activity, "offense")?;
+    let action_of = |entry: &'a BehaviorSelectorEntry| match entry {
+        BehaviorSelectorEntry::Row(row) => row.action.as_ref(),
+        BehaviorSelectorEntry::Motion(_) => None,
+    };
+    if let Some(row) = scope.recalled_row(depth, Layer::Offense) {
+        return row.and_then(|row| entries.get(row)).and_then(action_of);
+    }
     scope.repoint_scope_relative(ScopeRelativeValues {
         time_in_activity_ms: brain.activity_timer(depth).unwrap_or(0.0),
         attacks_fired_in_activity: brain.activity_attack_count(depth).unwrap_or(0),
         activity_roll: brain.activity_roll(depth).unwrap_or(0.0),
         damage_in_activity: brain.damage_in_activity(depth).unwrap_or(0.0),
     });
-    entries
+    let chosen = entries
         .iter()
         .zip(programs)
-        .find_map(|(entry, program)| match entry {
-            BehaviorSelectorEntry::Row(row)
-                if row.when.is_none()
-                    || program.as_ref().is_some_and(|program| {
-                        eval_value(program, scope) == IrValue::Bool(true)
-                    }) =>
-            {
-                row.action.as_ref()
+        .position(|(entry, program)| match entry {
+            // A passing row with no action reads as no match: the search
+            // goes on to the next row.
+            BehaviorSelectorEntry::Row(row) => {
+                row.action.is_some()
+                    && (row.when.is_none()
+                        || program.as_ref().is_some_and(|program| {
+                            eval_value(program, scope) == IrValue::Bool(true)
+                        }))
             }
-            BehaviorSelectorEntry::Row(_) | BehaviorSelectorEntry::Motion(_) => None,
-        })
+            BehaviorSelectorEntry::Motion(_) => false,
+        });
+    scope.record_row(depth, Layer::Offense, chosen);
+    chosen.and_then(|row| action_of(&entries[row]))
 }
 
 fn selector_layer<'a>(

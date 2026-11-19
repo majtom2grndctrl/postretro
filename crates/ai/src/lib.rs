@@ -17,6 +17,7 @@ mod candidate_scope;
 mod clip_clock;
 mod combat_slots;
 mod compute;
+mod decide;
 mod engaged_motion;
 mod engine_floor;
 mod facing;
@@ -113,7 +114,7 @@ use postretro_entities::components::health::{
 #[cfg(test)]
 use postretro_foundation::DamagePayload;
 #[cfg(test)]
-use targeting::{acquisition_due, select_target, target_candidate, target_offers};
+use targeting::{select_target, target_candidate, target_offers};
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the
@@ -173,6 +174,9 @@ pub(crate) struct EnemyOutcome {
     pub(crate) id: EntityId,
     /// Ticks since this brain's last run; its timers covered all of them.
     pub(crate) span: u32,
+    /// This tick decided: acquisition, guards, selectors and combat-slot
+    /// choice ran. Off it, the enemy acts on its last decide's choices.
+    pub(crate) decide: bool,
     /// This enemy's position as snapshotted, carried forward so combat-slot
     /// resolution needs nothing but the outcomes.
     pub(crate) position: Vec3,
@@ -276,6 +280,12 @@ pub struct AiRuntime {
     presence: attack_turns::Presence,
     /// This tick's skipped holders. Reused storage.
     skipped: Vec<attack_turns::SkippedHolder>,
+    /// Ticks between a brain's decides: [`decide::DECIDE_INTERVAL_TICKS`]
+    /// outside unit suites that pin graph semantics a tick at a time.
+    decide_interval: u64,
+    /// Each brain's selector rows from its last decide, for the ticks between.
+    /// Host-only, pruned with live brains.
+    selector_memo: HashMap<EntityId, brain_scope::SelectorChoices>,
     /// Route-search scratch for the pass's reachability and positioning
     /// queries. Contents never carry between queries.
     nav_scratch: crate::nav::NavScratch,
@@ -352,6 +362,22 @@ impl AiRuntime {
             turns: attack_turns::AttackTurnRuntime::default(),
             presence: attack_turns::Presence::default(),
             skipped: Vec::new(),
+            selector_memo: HashMap::new(),
+            decide_interval: decide::DECIDE_INTERVAL_TICKS,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl AiRuntime {
+    /// A runtime whose brains decide every tick: the 60 Hz granularity the
+    /// graph, turn and clip unit suites pin. Production decides every
+    /// [`decide::DECIDE_INTERVAL_TICKS`]; the decide rows and the stress rows
+    /// run that.
+    pub fn deciding_every_tick() -> Self {
+        Self {
+            decide_interval: 1,
+            ..Self::new()
         }
     }
 }
@@ -566,6 +592,8 @@ where
         turns,
         presence,
         skipped,
+        selector_memo,
+        decide_interval,
     } = runtime;
     turns.begin_tick(dt_ms, registry);
     turns.sync_pools(attack_turns::running_attack_pools(registry));
@@ -587,6 +615,7 @@ where
     blocked_warned.retain(|id| programs.get(*id).is_some());
     reseat_warned.retain(|id| programs.get(*id).is_some());
     los_grace.retain(|id, _| programs.get(*id).is_some());
+    selector_memo.retain(|id, _| programs.get(*id).is_some());
 
     // Pass 1: snapshot every brain-bearing enemy the schedule runs under the
     // immutable borrow. One it skips stays in the AI set as a holder only:
@@ -718,6 +747,8 @@ where
             cpu,
             nav_scratch,
             pawns,
+            selector_memo,
+            *decide_interval,
         )
     };
 

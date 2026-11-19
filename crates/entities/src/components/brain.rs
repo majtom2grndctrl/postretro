@@ -223,10 +223,12 @@ pub struct BrainComponent {
     /// so a same-named attack inherits its remaining cooldown.
     #[serde(default, deserialize_with = "deserialize_attack_cooldowns")]
     pub attack_cooldown_remaining_ms: BTreeMap<String, f32>,
-    /// Think-stride counter: incremented each tick by the FSM and compared
-    /// against a distance-derived stride to time-slice target acquisition for
-    /// distant enemies. Seeded to `0` at spawn.
-    pub think_stride_counter: u32,
+    /// The NPC's schedule identity: its behavior-draw salt word (map
+    /// placement, or spawner and spawn count), stored at seeding. It staggers
+    /// the NPC's decide and dormant phases. `None` until seeded; the AI then
+    /// uses the registry index, replay-stable only under a fixed spawn order.
+    #[serde(default)]
+    pub schedule_identity: Option<u64>,
     /// Last locomotion intent applied to animation selection. This latches the
     /// idle/walk decision so an enemy in `Alert` switches once on stop/resume
     /// instead of re-requesting the same animation every tick.
@@ -415,7 +417,7 @@ impl BrainComponent {
             patrol_cursor: 0,
             patrol_direction: 1,
             attack_cooldown_remaining_ms: BTreeMap::new(),
-            think_stride_counter: 0,
+            schedule_identity: None,
             locomotion_moving: false,
             launch: LaunchState::default(),
             presented_travel_variant: TravelVariant::Base,
@@ -584,6 +586,18 @@ impl BrainComponent {
     /// every seated level's roll and release time: the first evaluation reads
     /// this enemy's own salted draws, and seeding twice is the same as seeding
     /// once.
+    /// Seed the draws for `descriptor` under `salt`, and take the salt's word
+    /// as the NPC's schedule identity: one identity for its draws and its
+    /// decide and dormant phases.
+    pub fn seed_identity(
+        &mut self,
+        descriptor: &str,
+        salt: postretro_foundation::BehaviorDrawSalt,
+    ) {
+        self.seed_behavior_draws(postretro_foundation::behavior_draw_seed(descriptor, salt));
+        self.schedule_identity = Some(salt.word());
+    }
+
     pub fn seed_behavior_draws(&mut self, seed: u64) {
         self.behavior_draws.reseed(seed);
         let active_depth = self.active_depth();

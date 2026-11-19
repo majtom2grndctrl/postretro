@@ -116,7 +116,7 @@ fn a_pass_after_pawn_changes_selects_what_the_reference_scan_selects() {
     let factions = FactionRegistry::default();
     let sentiment = RefCell::new(FactionSentimentState::default());
     let mut registry = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy = spawn_engaged(&mut registry, Vec3::ZERO, &chase_graph(), "engage");
     set_faction(&mut registry, enemy, 1.0);
     let player = spawn_player(&mut registry, Vec3::new(6.0, 0.0, 0.0));
@@ -297,7 +297,7 @@ fn chase_wave(brains: usize, props: usize) -> (EntityRegistry, Vec<EntityId>) {
 }
 
 fn pass_with_walk_count(registry: &mut EntityRegistry) -> usize {
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let factions = FactionRegistry::default();
     let sentiment = RefCell::new(FactionSentimentState::default());
     column_walks::reset();

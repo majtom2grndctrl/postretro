@@ -1295,10 +1295,10 @@ fn spawn_roll_enemy(registry: &mut EntityRegistry, role: Role) -> EntityId {
     });
     let mut brain = BrainComponent::from_graph(&roll_enemy_graph());
     brain.home_anchor = position;
-    brain.seed_behavior_draws(postretro_foundation::behavior_draw_seed(
+    brain.seed_identity(
         "roller",
         postretro_foundation::BehaviorDrawSalt::Placement(placement),
-    ));
+    );
     registry
         .set_component(id, brain)
         .expect("roll enemy brain attaches");
@@ -1319,10 +1319,10 @@ fn spawn_hold_enemy(registry: &mut EntityRegistry, role: Role) -> EntityId {
     });
     let mut brain = BrainComponent::from_graph(&hold_enemy_graph());
     brain.home_anchor = position;
-    brain.seed_behavior_draws(postretro_foundation::behavior_draw_seed(
+    brain.seed_identity(
         "holder",
         postretro_foundation::BehaviorDrawSalt::Placement(placement),
-    ));
+    );
     registry
         .set_component(id, brain)
         .expect("hold enemy brain attaches");
@@ -4034,16 +4034,17 @@ fn assert_hold_release_positive_anchors(run: &SimRun) {
             .collect::<Vec<_>>(),
         [Role::Alpha, Role::Beta]
     );
-    let entry = first_hold(0);
-    assert_eq!(
-        entry,
-        first_hold(1),
-        "both enter their first hold on one tick"
+    // Each decides on its own placement's phase, so their first holds may
+    // fall on different ticks of one decide interval.
+    let entry = first_hold(0).max(first_hold(1));
+    assert!(
+        first_hold(0).abs_diff(first_hold(1)) < 4,
+        "both enter their first hold within one decide interval"
     );
     let draws = &run.events[entry].hold_releases;
     assert_ne!(
         draws[0].1, draws[1].1,
-        "two same-descriptor enemies entering holds on one tick draw differently"
+        "two same-descriptor enemies entering their first holds draw differently"
     );
     for (role_index, (role, _)) in draws.iter().enumerate() {
         let mut role_draws = run

@@ -144,10 +144,11 @@ pub struct AttackTurnState {
     /// skip means it left the AI set, which drops every turn, request and
     /// clock.
     pub seen_tick: u64,
-    /// Ticks between this brain's latest run and the one before: 1 at the
-    /// fixed rate, more when the AI tick schedule skipped it in between. 0
-    /// reads as 1.
-    pub run_span: u32,
+    /// Ticks between this brain's latest decide and the one before: 1 when it
+    /// decides every tick, more on the decide cadence or after a scheduled
+    /// skip. A rest's queued row opens on a turn granted since its previous
+    /// decide. 0 reads as 1.
+    pub decide_span: u32,
 }
 
 impl AttackTurnState {
@@ -206,10 +207,10 @@ impl AttackTurnState {
     /// Drop every turn, the request and the wait clock.
     pub fn clear(&mut self) {
         let seen_tick = self.seen_tick;
-        let run_span = self.run_span;
+        let decide_span = self.decide_span;
         *self = Self {
             seen_tick,
-            run_span,
+            decide_span,
             ..Self::default()
         };
     }

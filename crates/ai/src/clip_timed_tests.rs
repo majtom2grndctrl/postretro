@@ -1313,7 +1313,7 @@ fn save_and_restore(scene: &mut Scene, enemy: EntityId) {
         }
         scene.reg.set_component(enemy, mesh).unwrap();
     }
-    scene.runtime = AiRuntime::new();
+    scene.runtime = AiRuntime::deciding_every_tick();
 }
 
 // A flinch after the last compute, then a save: the restored switch count

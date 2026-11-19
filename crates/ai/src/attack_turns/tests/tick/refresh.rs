@@ -52,7 +52,7 @@ fn heavy_refresh_spaces_slams_while_jabs_draw_melee() {
     let graph = slam_and_jab();
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let first = spawn_at(&mut reg, 0, &graph, "slam_act");
     let second = spawn_at(&mut reg, 1, &graph, "idle");
@@ -120,7 +120,7 @@ fn refreshing_count_holds_admission_and_head_of_line() {
     ]);
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (3, 0.0), (2, 4000.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &graph, "strike_act");
     let crusher = spawn_at(&mut reg, 1, &graph, "idle");
@@ -250,7 +250,7 @@ fn interrupted_turn_spends_its_refresh() {
     ] {
         let mut reg = EntityRegistry::new();
         install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let pawn = spawn_player(&mut reg, player_spot());
         let mut descriptors = Vec::new();
         let mut generation = 0;
@@ -367,7 +367,7 @@ fn refresh_drops_on_level_change_and_target_loss() {
     let graph = slam_and_jab();
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
     let waiter = spawn_at(&mut reg, 1, &graph, "slam_act");
@@ -422,7 +422,7 @@ fn attack_turn_free_reads_refresh_with_one_tick_lag() {
     );
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
     let reader = spawn_at(&mut reg, 1, &graph, "idle");

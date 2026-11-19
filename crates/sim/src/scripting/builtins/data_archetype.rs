@@ -41,7 +41,7 @@ use postretro_entities::provenance::{
 };
 use postretro_entities::registry::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::{
-    ARCHETYPE_TOLERANCE_STATE_FIELD, BehaviorDrawSalt, FACTION_STATE_FIELD, behavior_draw_seed,
+    ARCHETYPE_TOLERANCE_STATE_FIELD, BehaviorDrawSalt, FACTION_STATE_FIELD,
 };
 use postretro_foundation::{NavAgentParams, ProjectileBodyVisual};
 #[cfg(test)]
@@ -580,13 +580,13 @@ pub(crate) fn attach_descriptor_components(
         {
             brain.aggro_armed = aggro_armed;
             brain.home_anchor = home_anchor;
-            brain.seed_behavior_draws(behavior_draw_seed(
+            brain.seed_identity(
                 descriptor
                     .canonical_name
                     .as_deref()
                     .unwrap_or(&entity.classname),
                 placement_draw_salt(id, entity),
-            ));
+            );
             let _ = registry.set_component(id, brain);
         }
         let state = registry

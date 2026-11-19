@@ -181,9 +181,157 @@ pub(crate) struct BrainScope {
     /// bind. Parallel to `attack_turn_values`, refreshed per enemy.
     attack_turn_reads: RefCell<Vec<(String, AttackTurnRead)>>,
     attack_turn_values: RefCell<Vec<bool>>,
+    /// The enemy's selector choices this pass: recorded on a decide tick,
+    /// recalled on the ticks between.
+    selectors: SelectorTrack,
+}
+
+/// A selector layer of one activity: its `move` rows or its `offense` rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectorLayer {
+    Move,
+    Offense,
+}
+
+const DEPTHS: usize = postretro_foundation::MAX_BEHAVIOR_NESTING_DEPTH;
+/// No choice recorded at this depth.
+const UNSET: u16 = u16::MAX;
+/// The layer was evaluated and no row matched.
+const NO_ROW: u16 = u16::MAX - 1;
+
+/// The selector rows one enemy's last decide chose, per active depth, on the
+/// path it held then. Host-only and transient: the ticks between decides act
+/// on these without evaluating a guard (`entity_model.md` §7c, decide ticks).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SelectorChoices {
+    path: [usize; DEPTHS],
+    path_len: usize,
+    rows: [[u16; 2]; DEPTHS],
+    /// The attack a standing rest's first open queued row waited on.
+    queued: Option<u16>,
+    /// The AI tick of the decide that recorded these.
+    tick: u64,
+}
+
+impl SelectorChoices {
+    fn fresh(path: &[usize]) -> Self {
+        let mut stored = [0; DEPTHS];
+        let path_len = path.len().min(DEPTHS);
+        stored[..path_len].copy_from_slice(&path[..path_len]);
+        Self {
+            path: stored,
+            path_len,
+            rows: [[UNSET; 2]; DEPTHS],
+            queued: None,
+            tick: 0,
+        }
+    }
+
+    pub(crate) fn is_for(&self, path: &[usize]) -> bool {
+        self.path[..self.path_len] == *path
+    }
+
+    pub(crate) fn queued(&self) -> Option<u16> {
+        self.queued
+    }
+
+    /// The AI tick of the decide that recorded these.
+    pub(crate) fn tick(&self) -> u64 {
+        self.tick
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectorPass {
+    /// Evaluate every selector reached, and record its row.
+    Decide,
+    /// Read the recorded rows; a layer with none is evaluated and recorded.
+    Recall,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SelectorTrack {
+    pass: SelectorPass,
+    choices: SelectorChoices,
+}
+
+impl Default for SelectorTrack {
+    fn default() -> Self {
+        Self {
+            pass: SelectorPass::Decide,
+            choices: SelectorChoices::fresh(&[]),
+        }
+    }
 }
 
 impl BrainScope {
+    /// Start an enemy's decide pass on `path`: selectors evaluate and record.
+    pub(crate) fn begin_decide(&mut self, path: &[usize]) {
+        self.selectors = SelectorTrack {
+            pass: SelectorPass::Decide,
+            choices: SelectorChoices::fresh(path),
+        };
+    }
+
+    /// Start an enemy's acting pass: selectors answer from `recalled` when it
+    /// was recorded on `path`. Returns `false`, and starts a decide pass, when
+    /// the path moved since (a reseat between decides).
+    pub(crate) fn begin_recall(
+        &mut self,
+        recalled: Option<SelectorChoices>,
+        path: &[usize],
+    ) -> bool {
+        match recalled.filter(|choices| choices.is_for(path)) {
+            Some(choices) => {
+                self.selectors = SelectorTrack {
+                    pass: SelectorPass::Recall,
+                    choices,
+                };
+                true
+            }
+            None => {
+                self.begin_decide(path);
+                false
+            }
+        }
+    }
+
+    /// The choices this pass recorded or recalled, kept for the ticks until
+    /// the next decide.
+    pub(crate) fn selector_choices(&self) -> SelectorChoices {
+        self.selectors.choices
+    }
+
+    /// Close a decide on AI tick `tick`: its queued attack, kept for the
+    /// ticks until the next.
+    pub(crate) fn record_decide(&mut self, tick: u64, queued: Option<u16>) {
+        self.selectors.choices.queued = queued;
+        self.selectors.choices.tick = tick;
+    }
+
+    /// On an acting pass, the row recorded for `layer` at `depth`: `Some` of
+    /// the row or of none. `None` means evaluate it.
+    pub(crate) fn recalled_row(&self, depth: usize, layer: SelectorLayer) -> Option<Option<usize>> {
+        if self.selectors.pass != SelectorPass::Recall || depth >= DEPTHS {
+            return None;
+        }
+        match self.selectors.choices.rows[depth][layer as usize] {
+            UNSET => None,
+            NO_ROW => Some(None),
+            row => Some(Some(usize::from(row))),
+        }
+    }
+
+    /// Record the row `layer` chose at `depth`, or none.
+    pub(crate) fn record_row(&mut self, depth: usize, layer: SelectorLayer, row: Option<usize>) {
+        if depth < DEPTHS {
+            self.selectors.choices.rows[depth][layer as usize] = row
+                .and_then(|row| u16::try_from(row).ok())
+                .filter(|&row| row < NO_ROW)
+                .unwrap_or(NO_ROW);
+        }
+    }
+
     /// A scope with no live values, for declaration-time and spawn-time binds.
     ///
     /// Bind consults only names and types, so guards type-check against this
@@ -202,6 +350,7 @@ impl BrainScope {
             defense: Default::default(),
             attack_turn_reads: RefCell::new(Vec::new()),
             attack_turn_values: RefCell::new(Vec::new()),
+            selectors: SelectorTrack::default(),
         }
     }
 

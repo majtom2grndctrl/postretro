@@ -356,7 +356,7 @@ fn assert_near(actual: f32, expected: f32, context: &str) {
 fn moving_from_a_rest_into_its_hold_carries_the_pose_and_announces_nothing() {
     let graph = stance_graph(vec![edge(HOLD, after_ms(96.0))], NEVER, vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, APPROACH);
 
@@ -419,7 +419,7 @@ fn moving_from_a_rest_into_its_hold_carries_the_pose_and_announces_nothing() {
 fn a_hold_that_loses_its_turn_returns_to_its_rest_with_the_pose_unbroken() {
     let graph = stance_graph(vec![edge(HOLD, after_ms(96.0))], NEVER, vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let hog = spawn_enemy(
@@ -470,7 +470,7 @@ fn a_hold_that_loses_its_turn_returns_to_its_rest_with_the_pose_unbroken() {
 fn a_hold_releases_once_its_pose_has_lasted_the_drawn_time() {
     let graph = stance_graph(vec![edge(HOLD, after_ms(200.0))], [300.0, 300.0], vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, REST);
 
@@ -508,7 +508,7 @@ fn a_hold_releases_once_its_pose_has_lasted_the_drawn_time() {
 fn entering_the_rest_from_a_recover_starts_the_pose_fresh_and_announces_it() {
     let graph = stance_graph(vec![edge(HOLD, after_ms(32.0))], [0.0, 0.0], vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, REST);
     step(&mut reg, &mut runtime);
@@ -564,7 +564,7 @@ fn an_ancestor_reseat_and_another_levels_copy_start_the_pose_fresh() {
         move_speed: TEST_MOVE_SPEED,
     });
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, "engage");
     step(&mut reg, &mut runtime);
@@ -594,7 +594,7 @@ fn a_wildcard_row_into_the_current_pose_is_skipped_but_leaves_a_release_or_recov
         vec![edge(REST, always())],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, REST);
 
@@ -708,7 +708,7 @@ struct Strike {
 fn run_strikes(release_after: [f32; 2], count: usize) -> Vec<Strike> {
     let graph = mix_up_graph(release_after);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, REST);
     let mut strikes = Vec::new();
@@ -809,7 +809,7 @@ fn fixed_and_zero_hold_ranges_release_on_their_bound_every_time() {
 
     let graph = stance_graph(vec![edge(HOLD, after_ms(48.0))], [0.0, 0.0], vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, REST);
     step_until(&mut reg, &mut runtime, enemy, HOLD, 10);
@@ -827,7 +827,7 @@ fn fixed_and_zero_hold_ranges_release_on_their_bound_every_time() {
 fn starved_hold(release_after: [f32; 2]) -> (EntityRegistry, AiRuntime, EntityId) {
     let graph = stance_graph(vec![edge(HOLD, always())], release_after, vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let hog = spawn_enemy(
@@ -890,7 +890,7 @@ fn a_due_release_and_a_missing_turn_on_one_evaluation_return_to_the_rest() {
 fn a_hold_whose_target_switches_carries_its_tell_when_the_new_target_is_granted() {
     let graph = stance_graph(vec![edge(HOLD, always())], [160.0, 160.0], vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let near = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let far = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 6.0));
     let enemy = spawn_posed(&mut reg, &graph, REST);
@@ -933,7 +933,7 @@ fn a_hold_whose_target_switches_carries_its_tell_when_the_new_target_is_granted(
 fn a_hold_whose_new_target_has_no_room_returns_to_its_rest_unbroken() {
     let graph = stance_graph(vec![edge(HOLD, always())], NEVER, vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let near = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let far = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 6.0));
@@ -984,7 +984,7 @@ fn a_hold_whose_new_target_has_no_room_returns_to_its_rest_unbroken() {
 fn a_hold_with_no_target_left_returns_to_its_rest_unbroken() {
     let graph = stance_graph(vec![edge(HOLD, always())], NEVER, vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_posed(&mut reg, &graph, REST);
     step(&mut reg, &mut runtime);
@@ -1027,7 +1027,7 @@ fn hold_due_now(reg: &mut EntityRegistry, runtime: &mut AiRuntime, near: EntityI
 #[test]
 fn a_release_due_on_a_switch_to_a_target_with_no_room_is_never_entered() {
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let near = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let far = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 6.0));
@@ -1064,7 +1064,7 @@ fn a_release_due_on_a_switch_to_a_target_with_no_room_is_never_entered() {
 #[test]
 fn a_release_due_on_the_tick_its_target_is_lost_is_never_entered() {
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = hold_due_now(&mut reg, &mut runtime, pawn);
 
@@ -1085,7 +1085,7 @@ fn a_release_due_on_the_tick_its_target_is_lost_is_never_entered() {
 #[test]
 fn a_release_due_on_a_switch_to_a_target_with_room_is_entered_on_the_new_turn() {
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let near = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let far = spawn_player(&mut reg, Vec3::new(0.0, 0.0, 6.0));
     let enemy = hold_due_now(&mut reg, &mut runtime, near);
@@ -1115,7 +1115,7 @@ fn a_release_due_on_a_switch_to_a_target_with_room_is_entered_on_the_new_turn() 
 fn a_root_strike_beside_a_chase_keeps_its_target_through_a_rerank_and_a_tick_out_of_sight() {
     let graph = stance_graph(vec![edge(HOLD, always())], [96.0, 96.0], vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let open = CollisionWorld::new();
     let wall = wall_world(0.5, -1.0, 2.0);
     let first = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
@@ -1160,7 +1160,7 @@ fn a_root_strike_beside_a_chase_keeps_its_target_through_a_rerank_and_a_tick_out
 fn a_resting_enemy_keeps_its_target_and_aim_until_a_player_is_nearer_past_the_margin() {
     let graph = stance_graph(vec![edge(HOLD, after_ms(100_000.0))], NEVER, vec![]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let open = CollisionWorld::new();
     let wall = wall_world(0.5, -1.0, 2.0);
     let first = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));

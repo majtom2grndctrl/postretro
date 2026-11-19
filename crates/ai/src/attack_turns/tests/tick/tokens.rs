@@ -17,7 +17,7 @@ fn declared_slam_reserves_melee_and_heavy_while_jabs_pass() {
     ]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 4), ("heavy", 1)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let first = spawn_at(&mut reg, 0, &graph, "slam_act");
     let second = spawn_at(&mut reg, 1, &graph, "slam_act");
@@ -68,7 +68,7 @@ fn declared_heavy_shared_by_two_archetypes_never_overlaps() {
     )]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 3), ("ranged", 2), ("heavy", 1)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let enemies = [
         (spawn_at(&mut reg, 0, &brute, "slam_act"), "slam_act"),
@@ -121,7 +121,7 @@ fn declared_head_of_line_reserves_per_token_in_wait_order() {
     ]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 3), ("heavy", 1)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
     let slam = spawn_at(&mut reg, 1, &graph, "slam_act");
@@ -184,7 +184,7 @@ fn declared_multi_token_waiter_is_granted_among_cycling_traffic() {
     ]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 3), ("heavy", 1), ("ranged", 2)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let rocket = spawn_at(&mut reg, 0, &graph, "rocket_act");
     let jab = spawn_at(&mut reg, 1, &graph, "jab_act");
@@ -288,7 +288,7 @@ fn each_target_has_its_own_allowance() {
     let bystander = graph("idle", vec![("idle", idle())], vec![], vec![]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 1)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
 
     // Groups sit 30 m apart, so every attacker's nearest hostile is its own
     // group's target.
@@ -403,7 +403,7 @@ fn default_token_needs_no_registration_and_draws_beside_mod_tokens() {
     );
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 1)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let defaults: Vec<EntityId> = (0..4)
         .map(|index| spawn_at(&mut reg, index, &unauthored, "strike"))
@@ -452,7 +452,7 @@ fn declared_waiter_switching_attack_frees_its_dropped_token() {
     let blocker_graph = marked_graph(vec![("claw", held_attack(vec![costing("melee", 3)]))]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("lobber", 1), ("melee", 3)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let a = spawn_at(&mut reg, 0, &graph, "grenade_act");
     let b = spawn_at(&mut reg, 1, &graph, "grenade_act");
@@ -512,7 +512,7 @@ fn declared_waiter_switching_to_a_fitting_draw_unblocks_token_same_tick() {
     ]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 3)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let x = spawn_at(&mut reg, 0, &graph, "jab_act");
     let b = spawn_at(&mut reg, 1, &graph, "slam_act");
@@ -546,7 +546,7 @@ fn committed_vocabulary_re_resolves_live_draws_by_name() {
     let graph = marked_graph(vec![("claw", held_attack(vec![token("melee")]))]);
     let mut reg = EntityRegistry::new();
     install_tokens(&mut reg, &[("melee", 3)]);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let claws: Vec<EntityId> = (0..3)
         .map(|index| spawn_at(&mut reg, index, &graph, "claw_act"))

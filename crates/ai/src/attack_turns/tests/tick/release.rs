@@ -41,7 +41,7 @@ fn turn_releases_on_every_ai_set_exit() {
     ] {
         let graph = marked_striker();
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         set_limits(&mut runtime, &[1]);
         let pawn = spawn_player(&mut reg, player_spot());
         let holder = spawn_at(&mut reg, 0, &graph, "strike");
@@ -141,7 +141,7 @@ fn turn_releases_on_every_ai_set_exit() {
 fn restore_drops_turns_and_wait_clocks() {
     let graph = marked_striker();
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player_spot());
     // The earlier slot asks second, so only a restored-from-scratch line
@@ -165,7 +165,7 @@ fn restore_drops_turns_and_wait_clocks() {
         );
     }
 
-    let mut restored_runtime = AiRuntime::new();
+    let mut restored_runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut restored_runtime, &[1]);
     tick(&mut restored, &mut restored_runtime);
     assert_eq!(
@@ -188,7 +188,7 @@ fn restore_drops_refreshing_counts() {
     let graph = slam_and_jab();
     let mut reg = EntityRegistry::new();
     budgets(&mut reg);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
     let waiter = spawn_at(&mut reg, 1, &graph, "slam_act");
@@ -205,7 +205,7 @@ fn restore_drops_refreshing_counts() {
     let mut restored = restore(&reg, &[pawn, holder, waiter]);
     // Level load registers the mod's budgets again.
     budgets(&mut restored);
-    let mut restored_runtime = AiRuntime::new();
+    let mut restored_runtime = AiRuntime::deciding_every_tick();
     assert_eq!(restored_runtime.turns.refreshing_entries(), 0);
     tick(&mut restored, &mut restored_runtime);
     assert_eq!(
@@ -281,7 +281,7 @@ fn dropped_enemy_does_not_resume_a_kept_burst() {
     let descriptors = [burst_weapon("enemy.burst", 3, 64.0, 160.0)];
     let rival_graph = marked_graph(vec![("attack", contact(1.0, 100_000.0))]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player_spot());
     let shooter = spawn_at(&mut reg, 0, &burst_shooter(), "strike");
@@ -361,7 +361,7 @@ fn graph_reseat_mid_burst_cancels_execution_by_name() {
             "fixture: moved {moved}"
         );
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let pawn = spawn_player(&mut reg, player_spot());
         let shooter = spawn_at(&mut reg, 0, &burst_shooter(), "strike");
         assert_eq!(
@@ -418,7 +418,7 @@ fn invalid_path_reseat_mid_burst_cancels_an_undrawn_execution() {
         vec![("attack", drawing(weapon("enemy.burst"), vec![]))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let shooter = spawn_at(&mut reg, 0, &shooter_graph, "strike");
     assert_eq!(

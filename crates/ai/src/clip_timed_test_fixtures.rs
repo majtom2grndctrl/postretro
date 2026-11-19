@@ -293,7 +293,7 @@ impl Scene {
         let pawn = spawn_player(&mut reg, player_spot());
         Self {
             reg,
-            runtime: AiRuntime::new(),
+            runtime: AiRuntime::deciding_every_tick(),
             mesh,
             clips,
             clip_tables,

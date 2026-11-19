@@ -35,6 +35,10 @@ pub(super) fn resolve_combat_slots(
         outcome.combat_slot = None;
         if !outcome.engaged {
             clear_combat_slot(outcome);
+        } else if !outcome.decide {
+            // Slot choice runs on decide ticks; between them an engaged enemy
+            // keeps the slot it holds.
+            outcome.combat_slot = outcome.brain.combat_slot;
         }
     }
 
@@ -48,7 +52,10 @@ pub(super) fn resolve_combat_slots(
         return;
     };
 
-    if !outcomes.iter().any(|outcome| outcome.engaged) {
+    if !outcomes
+        .iter()
+        .any(|outcome| outcome.engaged && outcome.decide)
+    {
         return;
     }
 
@@ -65,7 +72,7 @@ pub(super) fn resolve_combat_slots(
 
     let mut queries = Vec::new();
     for outcome in outcomes.iter() {
-        if !outcome.engaged {
+        if !outcome.engaged || !outcome.decide {
             continue;
         }
         let Some(target) = outcome.target else {
@@ -121,6 +128,9 @@ pub(super) fn resolve_combat_slots(
     for outcome in outcomes.iter_mut() {
         if !outcome.engaged {
             clear_combat_slot(outcome);
+            continue;
+        }
+        if !outcome.decide {
             continue;
         }
 

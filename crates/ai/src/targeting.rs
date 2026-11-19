@@ -4,7 +4,7 @@
 
 use glam::Vec3;
 
-use super::engine_floor::{is_meaningfully_closer, think_stride_for_distance};
+use super::engine_floor::is_meaningfully_closer;
 use super::perception::RawTargetPerception;
 use crate::nav::distance_xz;
 use postretro_entities::components::brain::{
@@ -47,11 +47,13 @@ pub(super) struct TargetSelection {
     pub(super) retaliation_acquired_target: Option<EntityId>,
 }
 
-/// Pure nearest sentiment-hostile candidate plus the origin and exclusion a due
-/// acquisition tick needs to walk the pass's hostile buckets again. Only
-/// `nearest` prices acquisition stride.
+/// Pure nearest sentiment-hostile candidate plus the origin and exclusion a
+/// decide needs to walk the pass's hostile buckets again. `nearest` no longer
+/// prices anything (the distance stride is retired); the hostile-bucket
+/// proofs read it.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TargetOffers {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) nearest: Option<TargetCandidate>,
     from: Vec3,
     exclude: Option<EntityId>,
@@ -134,7 +136,7 @@ pub(super) fn target_candidate(
 
 /// Find the pure nearest hostile target from the pass's pawn index: the pawns
 /// in buckets the evaluating faction is hostile to, nearest by raw XZ
-/// distance, ties to the earlier in scan order. Only `nearest` prices the
+/// distance, ties to the earlier in scan order. `nearest` once priced the
 /// acquisition stride; a due selection walks the same buckets again.
 pub(super) fn target_offers(
     index: &PawnIndex,
@@ -191,19 +193,6 @@ pub(super) fn is_hostile(
 
 pub(super) fn target_distance(target: TargetPawn, from: Vec3) -> f32 {
     distance_xz(target.position, from)
-}
-
-pub(super) fn acquisition_due(brain: &BrainComponent, distance: Option<f32>) -> bool {
-    distance
-        .map(|distance| {
-            let stride = think_stride_for_distance(distance);
-            stride <= 1
-                || brain
-                    .think_stride_counter
-                    .wrapping_add(1)
-                    .is_multiple_of(stride)
-        })
-        .unwrap_or(true)
 }
 
 pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId) -> bool {

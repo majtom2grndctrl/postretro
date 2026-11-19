@@ -436,6 +436,31 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
 /// only EnvironmentVolumes, and TextureNames and TextureCacheKeys gain that one
 /// texture, appended after every world entry.
 #[test]
+fn an_authored_ai_wake_lead_reaches_id_52_and_changes_no_other_section() {
+    let temp = TempBuildDir::new();
+    let base = sections(&compile(&temp, "base", &two_room_map(&[])));
+    assert_eq!(environment(&base).ai_wake_lead, None);
+
+    let gravity = format!("\"initialGravity\" \"{LEVEL_GRAVITY}\"");
+    let authored = two_room_map(&[]).replacen(
+        &gravity,
+        &format!("{gravity}\n\"ai_wake_lead\" \"24.5\""),
+        1,
+    );
+    let with_lead = sections(&compile(&temp, "lead", &authored));
+    assert_eq!(environment(&with_lead).ai_wake_lead, Some(24.5));
+    assert_eq!(
+        base.keys().collect::<Vec<_>>(),
+        with_lead.keys().collect::<Vec<_>>()
+    );
+    for (id, bytes) in &base {
+        if *id != SectionId::EnvironmentVolumes as u32 {
+            assert_eq!(bytes, &with_lead[id], "section {id} changed");
+        }
+    }
+}
+
+#[test]
 fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_section() {
     let temp = TempBuildDir::new();
     // A real PNG, so the appended cache key is a baked bundle, not the

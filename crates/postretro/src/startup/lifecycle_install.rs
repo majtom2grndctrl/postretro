@@ -317,6 +317,9 @@ impl App {
         // precede the fog entity ids segment B creates (both bridges key dirty
         // tracking on `EntityId`).
         self.nav_graph = install_world_gravity_and_nav(world, &script_ctx);
+        self.npc_perception = Some(postretro_sim::npc_perception::NpcPerception::for_level(
+            world,
+        ));
         let session = self
             .session
             .as_mut()

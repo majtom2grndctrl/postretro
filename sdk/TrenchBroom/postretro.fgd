@@ -19,6 +19,10 @@
     // acceleration. Absent uses the engine default, -20.32 (about twice
     // Earth's). May be changed at runtime via setGravity().
     initialGravity(float) : "Starting gravity (m/s²; default −20.32, about twice Earth); negative = downward, positive = upward. May be changed at runtime via setGravity()." : -20.32
+    // How far past each player's cell, in metres, enemies still count as
+    // seen and run at full rate. Absent uses 16. Capped at the level's baked
+    // visibility lead. 0 = only what players' cells can see.
+    ai_wake_lead(float) : "AI wake lead (m)" : "" : "Optional. How far past each player's cell, in metres, NPCs still count as seen and keep full-rate AI. Blank uses 16. A value above the level's baked visibility reach is capped with a warning. 0 keeps only the cells players can see. A negative or non-finite value fails the build."
     // Per-map lightmap density opt-in (meters per texel). Smaller = finer
     // shadows but larger atlas. Default 0.025 m/texel; only fidelity-critical
     // maps need to author this. Non-finite / <= 0 values are warned and the

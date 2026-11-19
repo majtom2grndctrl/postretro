@@ -586,6 +586,7 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     mut presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     mut run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
+    perception: Option<crate::npc_perception::PerceptionInput<'_>>,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -968,6 +969,17 @@ where
         &mut on_impact,
     );
     drop(stage);
+    // Perception for the AI scheduler's tiers: after movement, teleports and
+    // projectiles, so a player who teleports into a dormant arena has its NPCs
+    // perceived on this tick's AI stage. Without a level input (headless
+    // fixtures) every NPC runs perceived.
+    if let Some(perception) = perception {
+        perception.state.step(
+            perception.level,
+            &registry.borrow(),
+            players.iter().map(|player| player.pawn),
+        );
+    }
     let stage = cpu.scope(SimStage::Ai);
     let ai_result = {
         let mut registry = registry.borrow_mut();

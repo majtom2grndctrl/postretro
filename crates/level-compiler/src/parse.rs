@@ -1196,6 +1196,26 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         }
     };
 
+    // Worldspawn `ai_wake_lead` (metres): how far past each player's cell the
+    // AI scheduler still counts NPCs as perceived. Absent keeps the runtime's
+    // default; 0 is the players' cells and visible sets alone. A negative or
+    // non-finite value fails the build by name.
+    let ai_wake_lead: Option<f32> = match get_property(&geo_map, &worldspawn_id, "ai_wake_lead") {
+        Some(raw) => {
+            let parsed: f32 = raw.trim().parse().map_err(|e| {
+                anyhow::anyhow!("worldspawn `ai_wake_lead` value `{raw}` is not a valid float: {e}")
+            })?;
+            if !parsed.is_finite() || parsed < 0.0 {
+                anyhow::bail!(
+                    "worldspawn `ai_wake_lead` value `{raw}` must be a finite number of metres >= 0"
+                );
+            }
+            // `-0` reads as 0.
+            Some(parsed.max(0.0))
+        }
+        None => None,
+    };
+
     for entity_id in geo_map.entities.iter() {
         let classname =
             get_property(&geo_map, entity_id, "classname").unwrap_or_else(|| "unknown".to_string());
@@ -1865,6 +1885,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         stream_priority_regions,
         fog_pixel_scale,
         initial_gravity,
+        ai_wake_lead,
         lightmap_density,
         sh_density_fidelity,
         bounce_fill,
@@ -7493,6 +7514,10 @@ mod tests {
     /// `_lightmap_density` round-trip tests below to avoid duplicating the
     /// brush fixture six ways.
     fn parse_worldspawn_with_kvp(extra_kvp: &str) -> MapData {
+        try_parse_worldspawn_with_kvp(extra_kvp).expect("fixture should parse without error")
+    }
+
+    fn try_parse_worldspawn_with_kvp(extra_kvp: &str) -> anyhow::Result<MapData> {
         // Inline `extra_kvp` only when non-empty; an empty line between KVPs
         // and the first brush trips shalrath's "no worldspawn entity found"
         // path on some platforms.
@@ -7531,7 +7556,32 @@ mod tests {
         std::fs::write(&tmp, map_text).unwrap();
         let result = parse_map_file(&tmp, MapFormat::IdTech2);
         let _ = std::fs::remove_file(&tmp);
-        result.expect("fixture should parse without error")
+        result
+    }
+
+    #[test]
+    fn parse_map_file_reads_ai_wake_lead_and_leaves_it_absent_by_default() {
+        assert_eq!(parse_worldspawn_with_kvp("").ai_wake_lead, None);
+        assert_eq!(
+            parse_worldspawn_with_kvp("\"ai_wake_lead\" \"24.5\"").ai_wake_lead,
+            Some(24.5)
+        );
+        assert_eq!(
+            parse_worldspawn_with_kvp("\"ai_wake_lead\" \"0\"").ai_wake_lead,
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn parse_map_file_rejects_a_negative_non_finite_or_malformed_ai_wake_lead_by_name() {
+        for value in ["-1", "NaN", "inf", "-inf", "sixteen"] {
+            let err = try_parse_worldspawn_with_kvp(&format!("\"ai_wake_lead\" \"{value}\""))
+                .expect_err("a bad `ai_wake_lead` must fail the build");
+            assert!(
+                err.to_string().contains("ai_wake_lead"),
+                "error for `{value}` should name `ai_wake_lead`, got: {err}",
+            );
+        }
     }
 
     #[test]

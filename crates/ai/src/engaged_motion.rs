@@ -171,6 +171,18 @@ pub(super) fn settle(outcome: &mut EnemyOutcome, claim: Option<CombatCandidate>)
     };
 }
 
+/// Between decides an engaged slot verb walks on to the slot its last decide
+/// claimed: acting runs every tick, only the choice waits for a decide. With
+/// no claim it keeps standing, as `settle` left it.
+pub(super) fn walk_on(outcome: &mut EnemyOutcome) {
+    let slot_verb = !matches!(outcome.brain.engaged_motion, EngagedMotionMemory::None);
+    if let (true, SteeringIntent::Clear, Some(slot)) =
+        (slot_verb, outcome.steering, outcome.brain.combat_slot)
+    {
+        outcome.steering = SteeringIntent::MoveTo(slot);
+    }
+}
+
 fn horizontal_bearing(from: Vec3, to: Vec3) -> Option<Vec3> {
     let offset = Vec3::new(to.x - from.x, 0.0, to.z - from.z);
     let length = offset.length();

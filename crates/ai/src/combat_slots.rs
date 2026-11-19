@@ -33,12 +33,13 @@ pub(super) fn resolve_combat_slots(
 ) {
     for outcome in outcomes.iter_mut() {
         outcome.combat_slot = None;
-        if !outcome.engaged {
+        if !claims_slots(outcome) {
             clear_combat_slot(outcome);
         } else if !outcome.decide {
             // Slot choice runs on decide ticks; between them an engaged enemy
-            // keeps the slot it holds.
+            // keeps the slot it holds, and a slot verb walks on to it.
             outcome.combat_slot = outcome.brain.combat_slot;
+            engaged_motion::walk_on(outcome);
         }
     }
 
@@ -54,7 +55,7 @@ pub(super) fn resolve_combat_slots(
 
     if !outcomes
         .iter()
-        .any(|outcome| outcome.engaged && outcome.decide)
+        .any(|outcome| claims_slots(outcome) && outcome.decide)
     {
         return;
     }
@@ -72,7 +73,7 @@ pub(super) fn resolve_combat_slots(
 
     let mut queries = Vec::new();
     for outcome in outcomes.iter() {
-        if !outcome.engaged || !outcome.decide {
+        if !claims_slots(outcome) || !outcome.decide {
             continue;
         }
         let Some(target) = outcome.target else {
@@ -126,7 +127,7 @@ pub(super) fn resolve_combat_slots(
     let _apply_stage = ai_stage(cpu, SimStage::AiApply);
 
     for outcome in outcomes.iter_mut() {
-        if !outcome.engaged {
+        if !claims_slots(outcome) {
             clear_combat_slot(outcome);
             continue;
         }
@@ -154,6 +155,12 @@ pub(super) fn resolve_combat_slots(
             None => clear_combat_slot(outcome),
         }
     }
+}
+
+/// An engaged enemy inside its tactical line takes part in slot choice; one
+/// past it routes toward its target instead.
+fn claims_slots(outcome: &EnemyOutcome) -> bool {
+    outcome.engaged && !outcome.brain.beyond_tactical_range
 }
 
 fn clear_combat_slot(outcome: &mut EnemyOutcome) {

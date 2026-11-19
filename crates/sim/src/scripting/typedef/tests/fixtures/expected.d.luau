@@ -925,6 +925,8 @@ export type BehaviorGraphDescriptor = {
   engagementRadius: number?,
   --- Optional; default false. True keeps this archetype's NPCs out of the dormant tier: they keep full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. Costs full rate for those NPCs only. A placed NPC's `always_active` map key (0 or 1) overrides it; NPCs a spawner releases take this value. A reload moves live NPCs placed without the key.
   alwaysActive: boolean?,
+  --- Optional metres, default 100; finite and > 0. An engaged NPC whose target is farther than this (horizontal distance) heads straight for it under `chaseTarget`, `strafe` and `reposition` instead of claiming a combat slot, and claims slots again once the target is 10 m inside. A value below the archetype's largest attack standoff plus 10 m is raised to that, with a warning at load and on each reload.
+  tacticalRange: number?,
 }
 
 --- Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, `slide`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`.

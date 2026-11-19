@@ -596,6 +596,26 @@ pub(super) fn evaluate(
             && programs
                 .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
                 .unwrap_or(false);
+        // The tactical line, read at decides with its margin: past the line an
+        // engaged NPC routes toward its target and chooses no combat slot; it
+        // chooses slots again once its target is the margin inside the line.
+        if !engaged {
+            brain.beyond_tactical_range = false;
+        } else if decide && let Some(target) = target {
+            let line = programs.get(snap.id).map_or(
+                postretro_foundation::BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M,
+                |entry| entry.tactical_range_m(),
+            );
+            let distance = crate::nav::distance_xz(snap.position, target.position);
+            if distance > line {
+                brain.beyond_tactical_range = true;
+            } else if distance
+                <= line - postretro_foundation::BehaviorGraphDescriptor::TACTICAL_RANGE_MARGIN_M
+            {
+                brain.beyond_tactical_range = false;
+            }
+        }
+        let beyond_tactical_range = engaged && brain.beyond_tactical_range;
 
         let tick_heading = heading::resolve(
             registry,
@@ -645,6 +665,16 @@ pub(super) fn evaluate(
         // A leap arrives at its spot by the moment the clock now reads, and
         // stands once the latch it steered on has closed.
         let (steering, leap_travel) = leap::pace(&brain, &clip_source, motion, steering);
+        // Past the tactical line every engaged motion verb routes toward the
+        // target: no slot to walk to, and none stands still for want of one.
+        let steering = match resolved.map(|motion| motion.verb) {
+            Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
+                if beyond_tactical_range =>
+            {
+                SteeringIntent::Chase
+            }
+            _ => steering,
+        };
         // A repeating release strikes once per pass at its moment, under one
         // turn: a later pass ignores the cooldown its first hit started, and
         // each hit restarts it, so it runs from the release's last hit.
@@ -784,9 +814,11 @@ pub(super) fn evaluate(
         // A strafer re-aims, and a reposition picks its ring, each decide.
         let engaged_ring = decide
             .then(|| {
+                // Past the line the slot verbs keep no memory, so one chosen
+                // again inside starts its bounds where slot choice starts.
                 engaged_motion::plan(
                     &mut brain,
-                    resolved.filter(|_| engaged),
+                    resolved.filter(|_| engaged && !beyond_tactical_range),
                     entry_depth,
                     target,
                     snap.position,

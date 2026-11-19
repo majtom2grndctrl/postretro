@@ -234,6 +234,11 @@ pub struct BrainComponent {
     /// Set-piece state read at spawn; a reload moves only `FromArchetype`.
     #[serde(default)]
     pub always_active: AlwaysActive,
+    /// The NPC routes toward its target, choosing no combat slot: its target
+    /// was past its tactical line at a decide and has not since come the
+    /// margin inside it.
+    #[serde(default)]
+    pub beyond_tactical_range: bool,
     /// Last locomotion intent applied to animation selection. This latches the
     /// idle/walk decision so an enemy in `Alert` switches once on stop/resume
     /// instead of re-requesting the same animation every tick.
@@ -456,6 +461,7 @@ impl BrainComponent {
             attack_cooldown_remaining_ms: BTreeMap::new(),
             schedule_identity: None,
             always_active: AlwaysActive::FromArchetype,
+            beyond_tactical_range: false,
             locomotion_moving: false,
             launch: LaunchState::default(),
             presented_travel_variant: TravelVariant::Base,

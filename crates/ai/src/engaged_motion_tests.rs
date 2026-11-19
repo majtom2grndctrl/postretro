@@ -299,6 +299,44 @@ fn strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass() {
     assert_eq!(player_hp(&reg, player), 95.0);
 }
 
+// At production cadence the slot verbs choose a slot on decide ticks only;
+// the ticks between walk on to it, never standing down for want of a decide.
+#[test]
+fn slot_verbs_keep_walking_to_their_slot_between_decides() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    for verb in [MotionVerb::Strafe, MotionVerb::Reposition] {
+        let graph = engaged_graph("wait", vec![("wait", activity("walk", verb, None))]);
+        let mut reg = EntityRegistry::new();
+        let mut runtime = AiRuntime::new();
+        let _player = spawn_player(&mut reg, target_pos());
+        let enemy = spawn_engaged(
+            &mut reg,
+            target_pos() + Vec3::new(2.0 * R, 0.0, 0.0),
+            &graph,
+            "wait",
+        );
+        let mut claimed = None;
+        for tick in 0..24 {
+            ai_tick(&mut reg, &mut runtime, &world, &nav);
+            let slot = reg
+                .get_component::<BrainComponent>(enemy)
+                .unwrap()
+                .combat_slot;
+            if claimed.is_none() {
+                claimed = slot;
+                continue;
+            }
+            assert!(
+                destination(&reg, enemy).is_some(),
+                "{verb:?}: tick {tick} stood down between decides"
+            );
+        }
+        assert!(claimed.is_some(), "{verb:?} claimed a slot");
+    }
+}
+
 /// One strafer east of the target, its entry consumed and its direction set
 /// counter-clockwise, so its next slot lies at 45° (south-east, -Z) and its
 /// reverse at -45° (north-east).
@@ -1328,3 +1366,181 @@ mod multi_arena;
 
 #[path = "pawn_index_tests.rs"]
 mod pawn_index_pass;
+
+// ---------------------------------------------------------------------------
+// Tactical range
+// ---------------------------------------------------------------------------
+
+/// The authored line for these rows: above the shoot attack's floor.
+const TACTICAL_LINE: f32 = 20.0;
+
+fn ranged_graph(activity: BehaviorActivityDescriptor) -> BehaviorGraphDescriptor {
+    let mut graph = engaged_graph("move", vec![("move", activity)]);
+    graph.ai.tactical_range = Some(TACTICAL_LINE);
+    assert_eq!(graph.tactical_line().metres, TACTICAL_LINE);
+    graph
+}
+
+/// A point `distance` metres west of the enemy at x = 32, on the floor.
+fn west_of_enemy(distance: f32) -> Vec3 {
+    Vec3::new(32.0 - distance, chaser_rest_y(), 20.0)
+}
+
+fn move_to(reg: &mut EntityRegistry, id: EntityId, position: Vec3) {
+    let mut transform = *reg.get_component::<Transform>(id).unwrap();
+    transform.position = position;
+    reg.set_component(id, transform).unwrap();
+}
+
+fn slot(reg: &EntityRegistry, enemy: EntityId) -> Option<Vec3> {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .combat_slot
+}
+
+/// Run one decide interval at production cadence.
+fn decide_interval(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    nav: &NavGraph,
+) {
+    for _ in 0..crate::decide::DECIDE_INTERVAL_TICKS {
+        ai_tick(reg, runtime, world, nav);
+    }
+}
+
+// AC 35 / P28: past its tactical line an engaged NPC claims no combat slot and
+// routes toward its target under chase, strafe and reposition alike, every
+// tick, never standing for want of a slot.
+#[test]
+fn tactical_range_beyond_routes_to_the_target_under_every_engaged_verb() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    for verb in [
+        MotionVerb::ChaseTarget,
+        MotionVerb::Strafe,
+        MotionVerb::Reposition,
+    ] {
+        let mut reg = EntityRegistry::new();
+        let mut runtime = AiRuntime::new();
+        let target = west_of_enemy(TACTICAL_LINE + 5.0);
+        spawn_player(&mut reg, target);
+        let enemy = spawn_engaged(
+            &mut reg,
+            west_of_enemy(0.0),
+            &ranged_graph(activity("walk", verb, None)),
+            "move",
+        );
+        for tick in 0..3 * crate::decide::DECIDE_INTERVAL_TICKS {
+            ai_tick(&mut reg, &mut runtime, &world, &nav);
+            assert_eq!(
+                slot(&reg, enemy),
+                None,
+                "{verb:?}: tick {tick} claimed a slot"
+            );
+            assert_xz(
+                destination(&reg, enemy),
+                target,
+                &format!("{verb:?}: tick {tick} routes to its target"),
+            );
+        }
+    }
+}
+
+// AC 35 / P28: a target coming the margin inside the line gets a slot at the
+// next decide; one moving within the margin band keeps whatever the NPC was
+// doing; past the line again, the slot drops at the next decide.
+#[test]
+fn tactical_range_chooses_slots_the_margin_inside_and_holds_across_the_band() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut reg, west_of_enemy(TACTICAL_LINE + 5.0));
+    let enemy = spawn_engaged(
+        &mut reg,
+        west_of_enemy(0.0),
+        &ranged_graph(activity("walk", MotionVerb::ChaseTarget, None)),
+        "move",
+    );
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert_eq!(slot(&reg, enemy), None);
+
+    // Inside the line but within the margin: still routing.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE - 5.0));
+    for _ in 0..3 {
+        decide_interval(&mut reg, &mut runtime, &world, &nav);
+        assert_eq!(slot(&reg, enemy), None, "inside the band it keeps routing");
+    }
+
+    // The margin inside: a slot at its next decide.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE - 11.0));
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert!(
+        slot(&reg, enemy).is_some(),
+        "the margin inside, it chooses a slot"
+    );
+
+    // Back out into the band: the held slot stays.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE - 1.0));
+    for _ in 0..3 {
+        decide_interval(&mut reg, &mut runtime, &world, &nav);
+        assert!(
+            slot(&reg, enemy).is_some(),
+            "the band never drops a held slot"
+        );
+    }
+
+    // Past the line: routing again from the next decide.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE + 1.0));
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert_eq!(slot(&reg, enemy), None);
+}
+
+// AC 32 / P30: a reposition entered past the line fixes its bounds where it
+// starts choosing slots, not where it entered.
+#[test]
+fn reposition_entered_far_measures_its_arc_from_slot_start() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let player = spawn_player(&mut reg, west_of_enemy(TACTICAL_LINE + 5.0));
+    let enemy = spawn_engaged(
+        &mut reg,
+        west_of_enemy(0.0),
+        &ranged_graph(reposition_activity(arc(90.0, 90.0))),
+        "move",
+    );
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert_eq!(memory(&reg, enemy), EngagedMotionMemory::None);
+
+    // It closed in while routing; then its target comes inside.
+    let closer = Vec3::new(30.0, chaser_rest_y(), 24.0);
+    move_to(&mut reg, enemy, closer);
+    move_to(&mut reg, player, west_of_enemy(10.0));
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    let (entry_position, _) = reposition_entry(&reg, enemy);
+    assert_xz(
+        Some(entry_position),
+        closer,
+        "bounds start where slot choice starts",
+    );
+}
+
+// AC 35: omitted, the line is 100 m; authored, it is what the author wrote.
+#[test]
+fn tactical_range_defaults_to_100_m_and_reads_the_authored_value() {
+    let mut graph = engaged_graph(
+        "move",
+        vec![("move", activity("walk", MotionVerb::ChaseTarget, None))],
+    );
+    assert_eq!(graph.tactical_line().metres, 100.0);
+    graph.ai.tactical_range = Some(60.0);
+    assert_eq!(graph.tactical_line().metres, 60.0);
+    assert!(!graph.tactical_line().raised());
+}

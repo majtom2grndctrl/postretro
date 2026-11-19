@@ -211,6 +211,29 @@ pub struct BehaviorAiTuning {
     /// `always_active` key overrides it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub always_active: bool,
+    /// Metres: an engaged NPC whose target is farther (XZ) routes toward it
+    /// instead of choosing a combat slot. `None` is
+    /// [`BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tactical_range: Option<f32>,
+}
+
+/// An archetype's resolved tactical line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TacticalLine {
+    /// The line in metres: the authored or default range, raised to the floor.
+    pub metres: f32,
+    /// The range as authored, or the default.
+    pub requested: f32,
+    /// Its largest attack standoff plus the margin; `None` with no attack.
+    pub floor: Option<f32>,
+}
+
+impl TacticalLine {
+    /// The requested range sat below the floor and was raised to it.
+    pub fn raised(&self) -> bool {
+        self.metres > self.requested
+    }
 }
 
 /// Scalar tuning for the engine-owned retaliation preference. The candidate
@@ -280,6 +303,8 @@ struct RawBehaviorGraphDescriptor {
     move_speed: f32,
     #[serde(default)]
     always_active: bool,
+    #[serde(default)]
+    tactical_range: Option<f32>,
 }
 
 impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
@@ -303,6 +328,7 @@ impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
             move_speed: raw.move_speed,
             ai: BehaviorAiTuning {
                 always_active: raw.always_active,
+                tactical_range: raw.tactical_range,
             },
         })
     }
@@ -382,6 +408,39 @@ impl BehaviorGraphDescriptor {
     /// Combat-slot distance for the selected action. A per-attack standoff is
     /// explicit; otherwise retain the action-relative engagement-radius
     /// behavior so an attack override remains the positioning default.
+    /// Default tactical range, metres.
+    pub const DEFAULT_TACTICAL_RANGE_M: f32 = 100.0;
+    /// How far inside its tactical line a target comes before the NPC chooses
+    /// slots again, and how far above its largest standoff the line sits.
+    pub const TACTICAL_RANGE_MARGIN_M: f32 = 10.0;
+
+    /// The tactical line: `tacticalRange` or the default, raised to the
+    /// largest attack standoff plus the margin, so an NPC never routes past a
+    /// target it could attack from where it stands.
+    pub fn tactical_line(&self) -> TacticalLine {
+        let requested = self
+            .ai
+            .tactical_range
+            .unwrap_or(Self::DEFAULT_TACTICAL_RANGE_M);
+        let floor = self
+            .attacks
+            .keys()
+            .map(|name| {
+                self.standoff_distance_for_action(Some(&ActionVerb::Attack {
+                    name: name.clone(),
+                    at: None,
+                    at_default: false,
+                }))
+            })
+            .reduce(f32::max)
+            .map(|standoff| standoff + Self::TACTICAL_RANGE_MARGIN_M);
+        TacticalLine {
+            metres: floor.map_or(requested, |floor| requested.max(floor)),
+            requested,
+            floor,
+        }
+    }
+
     pub fn standoff_distance_for_action(&self, action: Option<&ActionVerb>) -> f32 {
         match action {
             Some(ActionVerb::Attack { name, .. }) => self
@@ -399,6 +458,9 @@ impl BehaviorGraphDescriptor {
         validate_positive("moveSpeed", self.move_speed)?;
         if let Some(radius) = self.engagement_radius {
             validate_positive("engagementRadius", radius)?;
+        }
+        if let Some(range) = self.ai.tactical_range {
+            validate_positive("tacticalRange", range)?;
         }
         if let Some(retaliation) = self.retaliation {
             validate_non_negative("retaliation.windowMs", retaliation.window_ms)?;
@@ -1456,6 +1518,69 @@ mod tests {
             error.to_string().contains("attacks.slam.standoffDistance"),
             "{error}"
         );
+    }
+
+    fn ranged_graph(tactical_range: Option<f32>, standoffs: &[f32]) -> BehaviorGraphDescriptor {
+        let attacks: serde_json::Map<String, serde_json::Value> = standoffs
+            .iter()
+            .enumerate()
+            .map(|(index, standoff)| {
+                (
+                    format!("attack{index}"),
+                    serde_json::json!({
+                        "damage": 1.0,
+                        "maxRange": standoff + 1.0,
+                        "cooldownMs": 500.0,
+                        "standoffDistance": standoff,
+                    }),
+                )
+            })
+            .collect();
+        let mut json = serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "attacks": attacks,
+            "activities": { "idle": { "animation": "idle", "motion": "hold" } },
+            "transitions": {},
+        });
+        if let Some(range) = tactical_range {
+            json["tacticalRange"] = serde_json::json!(range);
+        }
+        serde_json::from_value(json).expect("fixture graph parses")
+    }
+
+    #[test]
+    fn tactical_range_raises_to_the_largest_standoff_plus_the_margin() {
+        // Omitted: 100 m. Authored: as written.
+        assert_eq!(ranged_graph(None, &[4.0]).tactical_line().metres, 100.0);
+        assert_eq!(
+            ranged_graph(Some(60.0), &[4.0]).tactical_line().metres,
+            60.0
+        );
+        // 30 m with a 45 m attack runs at 55 m, raised (and warned at bind).
+        let line = ranged_graph(Some(30.0), &[45.0]).tactical_line();
+        assert_eq!(line.metres, 55.0);
+        assert!(line.raised());
+        // A 5 m and a 120 m attack, no `tacticalRange`: 130 m whichever is
+        // selected.
+        let line = ranged_graph(None, &[5.0, 120.0]).tactical_line();
+        assert_eq!(line.metres, 130.0);
+        assert!(line.raised());
+    }
+
+    #[test]
+    fn tactical_range_rejects_a_non_finite_or_non_positive_value() {
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut graph = ranged_graph(None, &[4.0]);
+            graph.ai.tactical_range = Some(bad);
+            let error = graph
+                .validate()
+                .expect_err("a bad tacticalRange is rejected");
+            assert!(error.to_string().contains("tacticalRange"), "{error}");
+        }
+        ranged_graph(Some(60.0), &[4.0])
+            .validate()
+            .expect("a positive tacticalRange is valid");
     }
 
     #[test]

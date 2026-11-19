@@ -7,6 +7,43 @@ use crate::render::uploads::{StagingPool, UploadQueue};
 
 pub(crate) const MIB: f64 = 1024.0 * 1024.0;
 
+/// A directory: when set, a measurement run brackets each measured drain with
+/// GPU markers and writes its run order there, so a Metal System Trace of the
+/// run can be reduced per drain (`rendering_pipeline.md` §12).
+const TRACE_DIR_ENV: &str = "POSTRETRO_INSTALL_COST_TRACE_DIR";
+
+fn trace_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os(TRACE_DIR_ENV).map(Into::into)
+}
+
+/// Submit a command buffer labelled `install-cost <series> <index> <edge>`
+/// holding one tiny buffer clear, so the trace shows it on the GPU timeline.
+/// Call it with `begin` before the drain and `end` after its GPU wait: the
+/// work between the two is that drain's. Does nothing unless traced.
+pub(crate) fn mark_drain(
+    device: &wgpu::Device,
+    queue: &UploadQueue,
+    series: &str,
+    index: usize,
+    edge: &str,
+) {
+    if trace_dir().is_none() {
+        return;
+    }
+    let label = format!("install-cost {series} {index} {edge}");
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&label),
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some(&label),
+    });
+    encoder.clear_buffer(&buffer, 0, None);
+    queue.submit([encoder.finish()]);
+}
+
 /// Buffers created so far by `pools` and by `queue`'s frame pool: every
 /// staging pool a drain, and the compose after it, can draw from.
 pub(crate) fn staging_buffers_created(pools: &[&StagingPool], queue: &UploadQueue) -> u64 {
@@ -184,6 +221,29 @@ impl CostRun {
             micros,
             class,
         });
+    }
+
+    /// When traced, write `<series>.csv` (`index,items,bytes,class`, run order)
+    /// to the trace directory for the per-drain GPU reduction.
+    pub(crate) fn write_sequence(&self, series: &str) {
+        let Some(dir) = trace_dir() else {
+            return;
+        };
+        let mut csv = String::from("index,items,bytes,class\n");
+        for (index, sample) in self.samples.iter().enumerate() {
+            let shape = &self.shapes[sample.shape];
+            let class = match sample.class {
+                DrainClass::Warm => "warm",
+                DrainClass::Cold { .. } => "cold",
+                DrainClass::Excluded(_) => "excluded",
+            };
+            csv.push_str(&format!(
+                "{index},{},{},{class}\n",
+                shape.items, shape.bytes
+            ));
+        }
+        let path = dir.join(format!("{series}.csv"));
+        std::fs::write(&path, csv).expect("write the drain sequence");
     }
 
     fn warm_sorted(&self, keep: impl Fn(&Shape) -> bool) -> Vec<u64> {

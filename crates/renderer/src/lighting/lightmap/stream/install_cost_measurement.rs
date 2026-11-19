@@ -25,7 +25,7 @@ use super::super::test_fixtures::{BlockFixture, FixtureTexels, block_fixture};
 use super::LightmapStreamState;
 use crate::render::gpu_test_harness::{GpuCtx, bc_gpu_or_skip};
 use crate::render::install_cost_model::{
-    CostRun, DrainClass, MIB, SHOWCASE_PRICES, Shape, run_context, shuffled,
+    CostRun, DrainClass, MIB, SHOWCASE_PRICES, Shape, mark_drain, run_context, shuffled,
     staging_buffers_created,
 };
 use crate::render::uploads::UploadQueue;
@@ -266,10 +266,14 @@ fn lightmap_install_cost_model() {
     for round in 0..ROUNDS {
         for shape in shuffled(run.shapes.len(), 0x5eed + round as u64) {
             let items = run.shapes[shape].items as usize;
+            let index = run.samples.len();
+            mark_drain(&ctx.device, &rig.queue, "lightmap", index, "begin");
             let (micros, class) = rig.drain(&ctx.device, extent_of[shape], items);
+            mark_drain(&ctx.device, &rig.queue, "lightmap", index, "end");
             run.record(shape, micros, class);
         }
     }
+    run.write_sequence("lightmap");
     run.report(
         &run_context(
             &ctx.device,

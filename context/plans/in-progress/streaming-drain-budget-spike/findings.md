@@ -10,7 +10,7 @@ On the showcase the budget itself holds back almost nothing: 2.2% of late lightm
 
 Raising the drain cap to 16 MiB clears the in-hand wait and cuts late items on the far-point walk: lightmap 180 → 145 and 147 block-frames, SH 44 → 37 cluster-frames. The binding limit then moves to the read permits. Past 16 MiB a larger cap buys less: 32 MiB cuts the far-point walk a further 12% (to 130 and 127) and the random walk by 3 block-frames.
 
-The cap cannot simply be raised, because one byte does not cost the same for both resources. A warm lightmap install costs about 0.20 ms/MiB of CPU; an SH install costs about 1.0–1.3 ms/MiB, five to six times as much. A 16 MiB lightmap drain of the showcase's shape costs about 3.5 ms, inside the 4 ms ceiling. But the showcase already admits SH drains of 7.6–7.9 MiB at the production cap, about 8–11 ms of SH install, and up to 10.8 MiB at 16 MiB, about 11–15 ms (the walk's largest SH share of any drain, `sh_max_drain_decoded_bytes`). The byte cap is too small for lightmaps and too large for SH.
+The cap cannot simply be raised, because one byte does not cost the same for both resources. A warm lightmap install costs about 0.20 ms/MiB of CPU; an SH install costs about 1.0–1.3 ms/MiB, five to six times as much. A 16 MiB lightmap drain of the showcase's shape costs about 3.5 ms, inside the 4 ms ceiling. But the showcase already admits SH drains of 7.6–7.9 MiB at the production cap, about 8–11 ms of SH install, and up to 10.8 MiB at 16 MiB, about 11–15 ms (the walk's largest SH share of any drain, `sh_max_drain_decoded_bytes`). The byte cap is too small for lightmaps and too large for SH. The GPU trace points the same way, at an idle clock: per MiB, SH's upload copies cost twice lightmap's before the compose they trigger (*Install cost*).
 
 ## Recommendations
 
@@ -76,7 +76,7 @@ The number of frames that carry a drain falls as the cap rises (13,700 paced fra
 
 ## Install cost (AC 12, 13, 18)
 
-CPU only. GPU time needs a Metal System Trace with the owner present, and is outstanding. Release build, Radeon Pro 5300M (Metal), warm staging pool, `--test-threads=1`, nothing else running. Tests: `lightmap_install_cost_model` (`renderer/src/lighting/lightmap/stream/install_cost_measurement.rs`) and `sh_install_cost_model` (`renderer/src/render/sh_streaming/gpu/install_cost_measurement.rs`), both ignored, sharing the fit and the cold classifier in `renderer/src/render/install_cost_model.rs`.
+CPU first; GPU under *GPU* below. Release build, Radeon Pro 5300M (Metal), warm staging pool, `--test-threads=1`, nothing else running. Tests: `lightmap_install_cost_model` (`renderer/src/lighting/lightmap/stream/install_cost_measurement.rs`) and `sh_install_cost_model` (`renderer/src/render/sh_streaming/gpu/install_cost_measurement.rs`), both ignored, sharing the fit and the cold classifier in `renderer/src/render/install_cost_model.rs`.
 
 **Shapes.** Lightmap: 29 shapes, pair edges 64 to 1280×1216, drain totals 2–32 MiB, 1 to 780 pairs per drain, shuffled over 12 rounds (348 drains). SH: 23 shapes, chunks of 1, 4, 16 and 64 bricks (65 KiB to 4.1 MiB), 1 to 501 chunks per drain (276 drains). Item size and item count vary independently, so the fit separates per-item from per-MiB cost (AC 13).
 
@@ -103,6 +103,19 @@ The lightmap per-drain term is small and unstable (−47 to 185 µs). SH fits wi
 
 **In play.** The showcase walks admit SH drains of up to 7.9 MiB at the production cap, and campaign-test's reach 7.9 MiB too. At the fitted SH install rate that is about 8–11 ms of CPU, before compose. In-engine dev-build logs on the stress hallway recorded a 34 ms SH drain that grew no pool (`plans/done/sh-streaming--pool-growth-device-limit/plan.md`). That figure is consistent with this rate.
 
+**GPU.** A Metal System Trace (`rendering_pipeline.md` §12) of each install-cost run, same binary and shapes. With `POSTRETRO_INSTALL_COST_TRACE_DIR` set, each test brackets every measured drain with labelled marker command buffers (`mark_drain`) and writes the run order there (`CostRun::write_sequence`). A drain's GPU time is the union of the process's GPU intervals between its two markers: its copy encoders, any compose passes, and the VRAM paging the trace shows in that window. Some marker rows are missing from the trace, as §12 warns. Those drains are dropped, not imputed: 121 of 348 lightmap drains and 59 of 276 SH drains. That leaves 193 and 198 warm drains.
+
+| Series | Per drain | Per item | Per MiB | rms |
+|---|---|---|---|---|
+| Lightmap drain window (copies + paging) | — | 42 µs | 0.22 ms | 1.2 ms |
+| SH upload copies | — | 70 µs | 0.43 ms | 0.6 ms |
+| SH compose passes after the install | 2.4 ms | 8 µs | 0.47 ms | 1.3 ms |
+| SH whole window (copies + compose + paging) | 2.8 ms | 90 µs | 0.95 ms | 1.8 ms |
+
+A lightmap pair costs about three times as much per item on the GPU as on the CPU. Drains of a few large pairs run at 0.19–0.29 ms/MiB, and drains of 195–780 small pairs at 1.1–1.6 ms/MiB, so the linear fit is loose. Priced: 8 × 1 MiB costs 2.1–2.5 ms of lightmap GPU, and 16 × 1 MiB 4.2–4.4 ms. SH 8 × 1 MiB costs about 4 ms of copies and 6 ms of compose, 9–11 ms in its window; SH 16 × 1 MiB costs about 8, 10 and 19 ms. Per MiB, SH copies cost twice lightmap's before compose. The GPU agrees with the CPU on the byte unit: one MiB does not cost the same for both resources.
+
+**These GPU figures are upper bounds, not pinned-clock costs.** Each test waits for the GPU after every drain, so the GPU idles between drains and drops into the low-clock regime §12 describes. The Radeon's core clock, polled every 2 s, had a median of 165–286 MHz over the lightmap run, peaking at 422 MHz. Over the SH run the median was about 64 MHz, peaking at 1,015 MHz. Temperature stayed at 67–87 °C. Before the runs, VRAM in use was 1.03 GB of 4 GB, with 2.68 GB free. Copies on the DMA channels depend less on core clock than the compute passes do, so the compose figures are the loosest. A saturated-clock figure needs a trace in-engine at a showcase burst, where the drain's encoders share a busy frame.
+
 **Caveats.** The lightmap fixture's irradiance is Rgba16Float; shipped irradiance is BC6H, so equal bytes hold more texels here. The SH fixture is synthetic all-L0 chunks of Rgba16Float atlas blocks and probe patches; which format the showcase streams was not established. SH eviction, which shares a drain with installs in play, costs about 0.4 ms/MiB more and is outside these figures.
 
 ## Records (AC 22)
@@ -120,6 +133,7 @@ The walk harness is `lightmap_residency_walks_from_prl` (ignored), driven by the
 
 | Pin | Value |
 |---|---|
+| GPU trace | `xcrun xctrace record --template 'Metal System Trace' --env POSTRETRO_INSTALL_COST_TRACE_DIR=<dir> --launch -- <renderer test binary> <full test path> --exact --ignored --nocapture --test-threads=1`, then `xctrace export` of `metal-gpu-intervals`, reduced per drain between its markers |
 | Machine | i9-9980HK (8C/16T), Radeon Pro 5300M 4 GB (Metal), 32 GB RAM, macOS |
 | Walk build | test profile (dev, workspace opt-level 1, deps opt-level 2) |
 | Fixtures | Showcase bake above; campaign-test 115 MB at `32ac4217e` |

@@ -25,7 +25,7 @@ use crate::render::animated_direct_sh_compose::AnimatedDirectShDebugOverride;
 use crate::render::direct_sh_compose::DirectShDebugOverride;
 use crate::render::gpu_test_harness::bc_gpu_or_skip;
 use crate::render::install_cost_model::{
-    CostRun, DrainClass, MIB, SHOWCASE_PRICES, Shape, run_context, shuffled,
+    CostRun, DrainClass, MIB, SHOWCASE_PRICES, Shape, mark_drain, run_context, shuffled,
     staging_buffers_created,
 };
 use crate::render::{ShSampleRegion, ShSampleRegionSets};
@@ -185,7 +185,9 @@ impl Rig {
                 &[],
             )
             .expect("streamed compose plan");
-        let mut encoder = device.create_command_encoder(&Default::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("install-cost compose"),
+        });
         state
             .dispatch_indirect_compose(queue, &mut encoder, &self.binding, false, mask, None)
             .expect("streamed indirect compose");
@@ -385,7 +387,10 @@ fn sh_install_cost_model() {
                     let micros = evict(&mut rig, device, &queue, &retiring);
                     evict_per_cluster.push(micros as f64 / retiring.len() as f64);
                 }
+                let index = composed.samples.len();
+                mark_drain(device, &queue, "sh", index, "begin");
                 let measured = frame(&mut rig, device, &queue, &ready);
+                mark_drain(device, &queue, "sh", index, "end");
                 assert!(measured.rows_composed > 0, "installs compose their rows");
                 rows_per_item.push(measured.rows_composed as f64 / f64::from(items));
                 let shape = first_shape + local;
@@ -419,6 +424,7 @@ fn sh_install_cost_model() {
     for note in &notes {
         println!("{note}");
     }
+    composed.write_sequence("sh");
     install.report(&context, &SHOWCASE_PRICES);
     drain.report(&context, &SHOWCASE_PRICES);
     composed.report(&context, &SHOWCASE_PRICES);

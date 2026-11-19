@@ -91,11 +91,14 @@ Validation follows the fluid policy above: a rule broken drops that fluid with a
 `pixelated: boolean`; omitted fields use half and smooth defaults.
 `reflections.style` accepts `"pixel" | "smooth"`,
 default pixel, and sets the look of every fluid reflection layer
-(`rendering_pipeline.md` §7.3a). `ghosts` accepts
+(`rendering_pipeline.md` §7.3a). `specular.style` (decided, not yet built)
+accepts `"pixel" | "smooth"`, default pixel, and sets whether world and mover
+highlights snap to the texel grid (`rendering_pipeline.md` §4, Texel-centre
+highlight). `ghosts` accepts
 `"blend" | "dither"`, default blend, and sets how every ghost draw is made
 translucent (`rendering_pipeline.md` §7.9). Malformed optional profile fields warn and
 degrade to those defaults without rejecting an otherwise valid manifest;
-`bloom`, `reflections` and `ghosts` degrade independently. A
+`bloom`, `reflections`, `specular` and `ghosts` degrade independently. A
 successful staged mod-init replaces the active profile; failed, rejected, and
 stale attempts preserve it. The profile is not a level script, reaction, or
 player setting.

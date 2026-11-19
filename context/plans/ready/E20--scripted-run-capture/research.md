@@ -42,7 +42,7 @@ Read at ecd9489e.
 - `plans/done/E21--bone-sockets-attachments` deferred its captured evidence here.
 - `plans/done/emissive-surfaces-bloom` deferred a rendered-frame golden harness, not evidence: capture already draws bloom. This plan ships same-adapter byte identity only.
 - `drafts/E20--memory-visibility` blocks on whether an offscreen session host exists.
-- `drafts/camera-path-playback` owns per-frame streaming and frame timing along a route; this plan preloads per capture (isolated), settles each new view (settled continuous) or streams as play does (streamed continuous), and times nothing.
+- `ready/camera-path-playback` owns per-frame streaming and frame timing along a route; this plan preloads per capture (isolated), settles each new view (settled continuous) or streams as play does (streamed continuous), and times nothing.
 - Renderer target inspection (roadmap, undrafted): no technical dependency either way.
 
 ## Pins

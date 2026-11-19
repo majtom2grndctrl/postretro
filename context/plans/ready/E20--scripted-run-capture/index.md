@@ -21,12 +21,12 @@ Agents, the owner and modders' agents cannot get a picture of what play looks li
   - Isolated mode: each capture preloads its own view, so its bytes do not depend on what earlier captures left in the pools.
   - Continuous mode, a per-run option: *settled* (default) settles each new view synchronously, lightmaps and SH, before drawing it, on any bake; the settle frames count as history. *Streamed* streams every tick as play does, for maps too large to settle view by view.
   - The runspec's choice governs the run. The streaming environment variables are ignored in a capture run, with one warning naming each that is set.
-  - Streaming cost and frame timing are not measured here; `drafts/camera-path-playback` owns them.
+  - Streaming cost and frame timing are not measured here; `ready/camera-path-playback` owns them.
 - **Determinism: same-adapter byte identity per PNG**, as frame capture set it, in isolated mode and in settled continuous mode. Streamed continuous mode races background reads and promises no identity; its captures are for looking, not diffing.
 - **Entry: the existing `--headless` flag.** The runspec decides whether a run needs an adapter; a second flag would make an agent pick an entry point for something the runspec already says. A capture-free runspec keeps `--headless`'s no-adapter guarantee.
 - **Fixture: a purpose-built `content/dev` map and runspec, with a README.** Byte-identity rows couple to every pixel, so the fixture serves only this proof, as the `mover-closet-*` maps serve static capture. It doubles as the worked example the `docs/` page points modders' agents to.
 - **Gating: SDK bundles carry scripted-run capture; player builds do not.** Agent-oriented development is part of the architecture, so a modder's agent can capture scripted runs of their own maps. It rides the existing `capture` and `observability` features: no new feature, no dependency (`development_guide.md` §6.4). The SDK's authoring engine gains both, so static capture and the batch runner reach bundles too. A bundle user runs a capture runspec through `postretro-tool`, documented in `docs/`. The release engine in a bundle and the player dist engine carry neither. Not a player setting.
-- **No ordering against renderer target inspection.** The roadmap's sequencing line goes at landing.
+- **No ordering against renderer target inspection.** Neither waits on the other.
 - **Not this brief:**
   - A live-socket capture verb: the live channel runs no scripted tick loop (`plans/done/E20--live-socket-channel`).
   - Record/replay; multiple local or remote players; audio.
@@ -89,8 +89,8 @@ Agents, the owner and modders' agents cannot get a picture of what play looks li
 - **First slice:** the shared step extracted, then a capture-bearing runspec on a fixture with one emitter, one dynamic light, one fog volume and one promotable light near a skinned mesh, captured at tick 0 and a later tick. It tests the riskiest assumption: that one presentation advance per tick reproduces play's particles and lights.
 - **Fixture:** a map script can enable the light and the fog at known ticks; runspec commands carry only movement, aim, fire and reload.
 - **xtask:** the headless verb already builds the scripts sidecar; the capture run needs it too.
-- **SDK:** the authoring engine's feature list in `xtask/src/dist.rs` (stage 1, `--features dev-tools`) gains `observability` and `capture`. `postretro-tool run` already forwards `--headless <runspec>` to the engine (`crates/tool/src/run.rs`). The `docs/` page names only bundle-runnable commands. At promotion, `development_guide.md` §6.4's sentence that SDK engines carry no diagnostic feature is corrected.
-- **Docs at landing:** `rendering_pipeline.md` §7.8 gains the scripted run; §7.5 drops the stale `frame_index` field; the roadmap's Epic 20 entry drops its sequencing line.
+- **SDK:** the authoring engine's feature list in `xtask/src/dist.rs` (stage 1, `--features dev-tools`) gains `observability` and `capture`. `postretro-tool run` already forwards `--headless <runspec>` to the engine (`crates/tool/src/run.rs`). The `docs/` page names only bundle-runnable commands.
+- **Docs at landing:** `rendering_pipeline.md` §7.8 gains the scripted run; §7.5 drops the stale `frame_index` field.
 
 ## Open questions
 - None. Every choice left to the build is named in Path.

@@ -100,7 +100,6 @@ The agent running `streaming-drain-budget-spike` reported gaps the owner relayed
   - Record shape: the capture `MeasurementReport` (`capture/report.rs`). Present mode: `Renderer::toggle_vsync` and the init-time `AutoVsync`.
 - **Shape and rival:** the chosen shape is a file-driven pose override in the windowed binary. The rival is regenerating the walk from seed and map in the engine, rejected in Decisions.
 - **First slice:** a pose file of a few hundred far-point frames played on campaign-test with one frame-mark mechanism, then `xctrace export`. It falsifies the riskiest assumption: that an MST export can attribute the "Streamed Lightmap Drain" and "Streamed SH Upload Copies" intervals to a playback frame index (`research.md` §Frame marks).
-- **At promotion:** `development_guide.md` §6.4's SDK sentence is corrected: SDK bundles ship a dev-tools engine (`xtask/src/dist.rs`, `tool/src/sdk_dist/assemble.rs`).
 - **Large files:** `main.rs` and `frame_loop/mod.rs` are past 800 lines. Put playback in its own module and add only calls there.
 
 ## Open questions

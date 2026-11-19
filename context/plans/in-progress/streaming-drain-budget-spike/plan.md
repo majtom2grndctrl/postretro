@@ -16,7 +16,18 @@ read at: 32ac4217e
 - Forced-miss hook — chosen only if the severity read runs (Task 8).
 
 ## Lightmap cause buckets (as built)
-Recorded here when Task 1 lands, with any amendment to the briefed list and its reason.
+Classified in `count_visible_misses` (`lightmap_streaming/miss_causes.rs`) after the frame's outcome, first match wins, over drawn blocks only. Per-block marks carry a frame epoch, so they reset without a pass over all blocks.
+1. **failed**: marked failed this frame (`fail()`: read, decode, install or preload failure; `abort_drain`: rollback) or phase `Failed`. First, so a rolled-back block re-requested in a later drain of the same frame is still failed (P8).
+2. **refused**: phase `Refused`, or (item 9) a band read the request pass held back for pool headroom.
+3. **read_in_flight**: phase `InFlight`, or (item 9) targeted and waiting for the issuer, as SH files it.
+4. **awaiting_renderer_drain**: phase `InDrain`, or `Ready` and not offered because the previous batch was outstanding (P4).
+5. **deferred_by_pool**: `Ready` and deferred in this frame's outcome; wins over a later cut in the same frame, never carried forward (P6). Retiring-generation and device-limit deferrals share it: the outcome does not tell them apart.
+6. **held_by_drain_budget**: `Ready`, offered this frame, not deferred: past the shared drain's cut.
+7. **outside_reach**: `Absent` and untargeted, or a frame that may not read it.
+8. **waiting_on_permit**, **waiting_on_in_hand_cap**: `Absent`, targeted, readable, at or past the block where the latest request pass stopped for permits or in-hand bytes (full or band half). The verdict is the pass's and stands until the next pass (P7, P15).
+9. Other `Absent`, targeted, readable blocks: refused or read in flight, as above.
+
+Amendments to the briefed list: **waiting_on_permit** added, because the permit cap is a separate limit from the in-hand bytes and ready pairs left behind hold permits too. **awaiting_renderer_drain** added for P4. **refused** widened to band reads held back for pool headroom (held frames only; portal-walk drawn blocks are never band). **read_in_flight** widened to targeted blocks still waiting for the issuer, as SH does.
 
 ## AC-to-proof
 
@@ -50,7 +61,7 @@ Recorded here when Task 1 lands, with any amendment to the briefed list and its 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
 | 0 | Baseline at 32ac4217e: bakes (campaign-test; frozen showcase `--no-cache`), walk-base binary, completed walks SH off/on ×2 on both maps | integrating executor | — | campaign-test done: both walks 0 late blocks, installs 5,986 / 5,758, SH 19 installs, 0 `sh_late`, reruns identical. Showcase waits on its bake |
-| 1 | Production lightmap cause buckets in the controller (request-pass, drain-outcome and rollback verdicts per block), fixture tests (AC 2), and the three surfaces (AC 3) | delegated slice | 0 | |
+| 1 | Production lightmap cause buckets in the controller (request-pass, drain-outcome and rollback verdicts per block), fixture tests (AC 2), and the three surfaces (AC 3) | delegated slice | 0 | done: buckets above; 13 fixture tests in `miss_cause_tests.rs` (one per cause, P4, P6, P7/P15, P8, settling); log-line tests for both resources via log capture, capture-report JSON fields with `miss_unit`, Streaming tab section tests. postretro bin 2,739 passed, renderer `streaming_tab` 5, capture report 14; clippy with and without dev-tools, fmt clean. `take_requests` reordered to read the target before the permit check; submissions unchanged (AC 1 run confirms). `rendering_pipeline.md` §4 lists the buckets |
 | 2 | Cap levers: one play-cap override on the level's drain step, set by the dev-tools slider and by the walk's env override; tests AC 7–11; grep gate AC 14 | delegated slice | 1 | |
 | 3 | Walk tallies: bucket sums and held-frame gap (AC 4), same-class cut counter (AC 5), SH per-frame tally (AC 6), largest drains with per-resource shares, spawn step apart; results JSON | delegated slice | 1, 2 | |
 | 4 | AC 1 and AC 7 runs: spike build vs baseline, completed, both maps | integrating executor | 3 | |

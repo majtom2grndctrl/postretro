@@ -138,7 +138,7 @@ fn format_line(
     format!(
         "[SH streaming] last {elapsed_seconds:.1} s: {reads} reads ({coalesced} coalesced) \
          {read_bytes} incl. {gap_bytes} gap, {installs} installs {installed_bytes}, \
-         {misses} misses (reach {miss_reach}, pressure {miss_pressure}, in flight \
+         {misses} miss episodes (reach {miss_reach}, pressure {miss_pressure}, in flight \
          {miss_in_flight}, budget {miss_budget}, compose {miss_compose}, failed {miss_failed}, \
          device limit {miss_device_limit}, map cap {miss_map_cap}), \
          {rereads} re-reads, {evictions} evictions, {retries} retries, {cancelled} cancelled, \
@@ -329,6 +329,24 @@ mod tests {
         window.observe(2401.0 / 60.0, &live);
         assert_eq!(lines(&capture), 5);
         capture.assert_logged(log::Level::Info, "1 installs");
+    }
+
+    // streaming-drain-budget-spike AC 3: SH's miss buckets name their unit,
+    // episodes, beside the lightmap's block-frames.
+    #[test]
+    fn log_line_names_miss_buckets_in_episodes() {
+        let capture = LogCapture::start();
+        let mut window = ShStreamingLogWindow::default();
+        let mut live = ShStreamingLiveDiagnostics::default();
+        window.observe(0.0, &live);
+        live.misses = 2;
+        live.miss_buckets.read_in_flight = 1;
+        live.miss_buckets.held_by_drain_budget = 1;
+        window.observe(DIAGNOSTICS_LOG_INTERVAL_SECONDS, &live);
+        capture.assert_logged_once(
+            log::Level::Info,
+            "2 miss episodes (reach 0, pressure 0, in flight 1, budget 1, compose 0",
+        );
     }
 
     #[test]

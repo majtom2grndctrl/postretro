@@ -179,9 +179,9 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
             rows: vec![
                 ("Installs", d.installs.to_string()),
                 ("Evictions", d.evictions.to_string()),
-                ("Misses", d.misses.to_string()),
+                ("Miss episodes", d.misses.to_string()),
                 (
-                    "Misses: reach / pressure / in flight",
+                    "Miss episodes: reach / pressure / in flight",
                     format!(
                         "{} / {} / {}",
                         d.miss_buckets.outside_reach,
@@ -190,7 +190,7 @@ fn streaming_sections(d: &ShStreamingLiveDiagnostics) -> [StreamingSection; 5] {
                     ),
                 ),
                 (
-                    "Misses: budget / compose / failed / device limit / map cap",
+                    "Miss episodes: budget / compose / failed / device limit / map cap",
                     format!(
                         "{} / {} / {} / {} / {}",
                         d.miss_buckets.held_by_drain_budget,
@@ -320,13 +320,35 @@ fn lightmap_sections(d: &LightmapStreamingLiveDiagnostics) -> [StreamingSection;
                     split(d.mandatory_lightmap_bytes, d.mandatory_shadowmask_bytes),
                 ),
                 (
-                    "Visible misses (outside set / not resident)",
+                    "Visible misses, block-frames (outside set / not resident)",
                     format!(
                         "{} / {} (last frame {} / {})",
                         d.drawn_outside_baked_set,
                         d.drawn_not_resident,
                         d.last_frame_drawn_outside_baked_set,
                         d.last_frame_drawn_not_resident,
+                    ),
+                ),
+                (
+                    "Not resident, block-frames: reach / in flight / permit / in-hand cap",
+                    format!(
+                        "{} / {} / {} / {}",
+                        d.miss_buckets.outside_reach,
+                        d.miss_buckets.read_in_flight,
+                        d.miss_buckets.waiting_on_permit,
+                        d.miss_buckets.waiting_on_in_hand_cap,
+                    ),
+                ),
+                (
+                    "Not resident, block-frames: budget / renderer drain / deferred / refused / \
+                     failed",
+                    format!(
+                        "{} / {} / {} / {} / {}",
+                        d.miss_buckets.held_by_drain_budget,
+                        d.miss_buckets.awaiting_renderer_drain,
+                        d.miss_buckets.deferred_by_pool,
+                        d.miss_buckets.refused,
+                        d.miss_buckets.failed,
                     ),
                 ),
             ],
@@ -497,6 +519,17 @@ mod tests {
             drawn_outside_baked_set: 3,
             drawn_not_resident: 5,
             last_frame_drawn_not_resident: 1,
+            miss_buckets: crate::render::LightmapMissBuckets {
+                outside_reach: 1,
+                read_in_flight: 2,
+                waiting_on_permit: 3,
+                waiting_on_in_hand_cap: 4,
+                held_by_drain_budget: 5,
+                awaiting_renderer_drain: 6,
+                deferred_by_pool: 7,
+                refused: 8,
+                failed: 9,
+            },
             pool_layers: PerPool {
                 lightmap: 7,
                 mask: 3,
@@ -534,8 +567,26 @@ mod tests {
             "3.0 MiB (id 22 1.0 MiB, id 42 2.0 MiB)"
         );
         assert_eq!(
-            value("Residency", "Visible misses (outside set / not resident)"),
+            value(
+                "Residency",
+                "Visible misses, block-frames (outside set / not resident)"
+            ),
             "3 / 5 (last frame 0 / 1)"
+        );
+        assert_eq!(
+            value(
+                "Residency",
+                "Not resident, block-frames: reach / in flight / permit / in-hand cap"
+            ),
+            "1 / 2 / 3 / 4"
+        );
+        assert_eq!(
+            value(
+                "Residency",
+                "Not resident, block-frames: budget / renderer drain / deferred / refused / \
+                 failed"
+            ),
+            "5 / 6 / 7 / 8 / 9"
         );
         assert_eq!(value("Pool", "Layers (peak)"), "7 (9)");
         assert_eq!(value("Pool", "Mask layers (peak)"), "3 (4)");
@@ -610,7 +661,7 @@ mod tests {
         assert_eq!(
             value(
                 "Installs",
-                "Misses: budget / compose / failed / device limit / map cap"
+                "Miss episodes: budget / compose / failed / device limit / map cap"
             ),
             "0 / 0 / 0 / 5 / 0"
         );

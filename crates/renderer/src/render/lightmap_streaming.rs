@@ -8,7 +8,7 @@ use postretro_level_loader::{LightmapDrainBatch, LightmapDrainOutcome};
 
 use super::Renderer;
 use crate::lighting::lightmap::{LightmapResidencyDrainError, LightmapStreamCounters};
-pub use diagnostics::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
+pub use diagnostics::{LightmapMissBuckets, LightmapStreamingLiveDiagnostics, StreamingReachLever};
 
 impl Renderer {
     /// Execute the controller's lightmap drain batch. Call once per frame,

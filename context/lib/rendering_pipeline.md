@@ -386,9 +386,15 @@ logs a load warning. Lightmap streaming reports through a throttled
 `lightmap_streaming` block, and the `lightmap_residency` and `lightmap_drain` CPU-timing
 stages (§12). Layers, peak layers, live and retiring bytes, band headroom, repacks,
 compactions, compaction rollbacks and growths count per pool. Lightmap visible misses carry cause
-buckets as SH's do (decided, not yet built): each drawn-not-resident block-frame lands in exactly
-one, named as SH's where the cause is the same, and every surface names its unit, block-frames
-for lightmaps and episodes for SH (`plans/ready/streaming-drain-budget-spike`).
+buckets as SH's do: each drawn-not-resident block-frame lands in exactly one, named as SH's where
+the cause is the same, and every surface names its unit, block-frames for lightmaps and episodes
+for SH. The buckets are outside the reach, read in flight, waiting on a permit, waiting on the
+in-hand cap, held by the drain budget (ready, offered to this frame's drain, past its cut),
+awaiting the renderer's drain (ready behind a batch the renderer has not returned, or in it),
+deferred by the pool, refused (by the pool, or held back from reading for band headroom), and
+failed (a failure or rolled-back drain this frame, or a failed pair). A wait on permits or in-hand
+bytes is the latest request pass's verdict, kept until the next pass; a deferral or failure counts
+only in its frame. Admission never reads them (`lightmap_streaming/miss_causes.rs`).
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and

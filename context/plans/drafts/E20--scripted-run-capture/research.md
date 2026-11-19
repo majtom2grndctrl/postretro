@@ -42,7 +42,7 @@ Read at ecd9489e.
 - `plans/done/E21--bone-sockets-attachments` deferred its captured evidence here.
 - `plans/done/emissive-surfaces-bloom` deferred a rendered-frame golden harness, not evidence: capture already draws bloom. This plan ships same-adapter byte identity only.
 - `drafts/E20--memory-visibility` blocks on whether an offscreen session host exists.
-- `drafts/camera-path-playback` owns per-frame streaming and frame timing along a route; this plan preloads per capture (isolated) or streams synchronously every tick (continuous), and times nothing.
+- `drafts/camera-path-playback` owns per-frame streaming and frame timing along a route; this plan preloads per capture (isolated), settles each new view (settled continuous) or streams as play does (streamed continuous), and times nothing.
 - Renderer target inspection (roadmap, undrafted): no technical dependency either way.
 
 ## Pins
@@ -65,7 +65,7 @@ Read at ecd9489e.
 | P15 | Burst emitter fires on its first update; particles live L ticks; captures before tick L and after tick L+1 | Step advances after every tick from tick 1; no catch-up advance at a capture | Billboards before tick L; none after tick L+1 |
 | P16 | Isolated: capture on a streamed-SH level after an earlier capture at another pose | The SH preload draws its frames, then the reset applies to the captured frame, never to a preload frame | Captured bytes equal a single-capture run at that pose, whatever number of preload frames ran |
 | P17 | Capture A writes at tick j; capture B fails at tick k > j (e.g. player pose, no local pawn) | B fails at its tick; no later capture runs | Run exits non-zero naming B; A's PNG stays on disk |
-| P18 | Continuous: a promotable map light comes into view by an aim on tick k; captures at k, 0.1 s after and 1 s after | A frame drawn every tick steps the 0.3 s crossfade by 1/60 s; script-spawned lights are dynamic and never fade, so the light is map-authored | About a third of full weight at 0.1 s; full at 1 s; two preloaded runs give equal bytes |
+| P18 | Continuous: a promotable map light comes into view by an aim on tick k; captures at k, 0.1 s after and 1 s after | A frame drawn every tick steps the 0.3 s crossfade by 1/60 s; script-spawned lights are dynamic and never fade, so the light is map-authored | About a third of full weight at 0.1 s; full at 1 s; two settled runs give equal bytes; the visible change is the skinned receiver's shadow, since the baked-to-runtime handoff hides brightness |
 | P19 | Continuous tick-0 capture | Install, then the revealed frame: settled residency, promotions whole | Equals the isolated tick-0 capture at that pose |
 | P20 | Same runspec across modes, residency options and capture lists | Presentation writes are the same every tick whatever the renderer draws | Equal dumps; the sim never reads what captures view |
 
@@ -75,3 +75,4 @@ Read at ecd9489e.
 - Planar selection is app-side: a held plane on `App.planar_render` (`frame_loop/planar.rs`), kept by a score margin against the previous selection (`render-cpu` `planar_reflection/selection.rs`), not a timer. Static capture builds a fresh selection per capture.
 - Skinned palettes: mid and far instances resample on the collector's `frame_index` stride (`mesh_render.rs` `should_resample`, which takes a `force` input); a skip reuses the renderer's palette cached from the last drawn frame (`mesh_pass/pose.rs`).
 - Without a reset, a first capture draws a promoted light at about 0.055 weight; a later capture after a 0.25 s step at about 0.83. In continuous mode the crossfade steps 1/60 s per tick and reaches full weight after 0.3 s.
+| P21 | Continuous: tick k carries an override capture and a player-pose capture, in either list order | The tick's held-view frame draws first; override draws follow it, in list order | The player-pose capture on tick k has the same bytes whatever the override's list position, and as with no override on k |

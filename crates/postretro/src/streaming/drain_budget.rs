@@ -103,6 +103,12 @@ impl DrainRank {
         self.resource
     }
 
+    /// The walk measurement's same-class cut tally reads the class at a cut.
+    #[cfg(test)]
+    pub(crate) const fn class(&self) -> DrainClass {
+        self.class
+    }
+
     pub(crate) const fn key(&self) -> u32 {
         self.key
     }

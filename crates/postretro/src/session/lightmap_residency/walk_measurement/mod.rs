@@ -68,6 +68,16 @@
 // pairing compares block counts because the cell layout matches; across
 // partitions use `world_poses`, whose unit is deferred texel area.
 //
+// Drain-budget tallies (`budget_tallies`, `drain_tally`), the spawn step's
+// apart, since it admits a level-entry burst at the play cap that
+// production settles at its own: the lightmap controller's late block-frames
+// by cause, asserted to sum to its drawn-not-resident count, beside the
+// drawn blocks a held frame leaves uncounted; SH's late cluster-frames by
+// cause, classified every frame at drain 0's target update, beside its
+// episode buckets; and per drain, the decoded bytes admitted per resource,
+// the largest drains, and same-class cuts (a cut admitting one resource and
+// leaving a same-class item of the other).
+//
 // Decode and pool comparisons (lightmap-compact-storage): every run reports an
 // order-independent hash of every uploaded payload (`payload_hash`), the
 // issuer's busy p95/max per physical read (`busy_stats`) and the per-drain
@@ -98,9 +108,11 @@
 // replays them in the other build, and compares deferred texel area.
 
 mod baked_set;
+mod budget_tallies;
 mod busy_stats;
 mod completed_reads;
 mod cores;
+mod drain_tally;
 mod frame_driver;
 mod install_timing;
 pub(crate) mod levers;
@@ -421,6 +433,7 @@ fn run(
                     }
                 }
             }
+            report.tallies.add(step == 0, &outcome);
             let (outside, not_resident) = (outcome.outside, outcome.not_resident);
             if step == 0 {
                 report.spawn.add(outside, not_resident, outside_missing);
@@ -493,6 +506,7 @@ fn run(
         {
             report.sh = Some(ShRunStats {
                 spawn_misses: counters.misses,
+                spawn_buckets: counters.miss_buckets,
                 counters,
                 workers: None,
             });
@@ -517,6 +531,7 @@ fn run(
     }
     report.lightmap_decode = driver.session().ledger().decode_stats();
     let (counters, physical_reads, mirror) = driver.finish();
+    report.tallies.assert_sums(&counters);
     report.counters = Some(counters);
     report.physical_reads = physical_reads;
     report.wall = started.elapsed();

@@ -175,6 +175,56 @@ fn completed_reads_frame_counts_an_undemanded_drawn_block_as_left_behind() {
     );
 }
 
+// P9: each frame carries the controller's late block-frames by cause, summing
+// to its drawn-not-resident count, and every drain's admission; a lightmap-only
+// drain never counts a same-class cut.
+#[test]
+fn frame_outcome_carries_the_controllers_buckets_and_each_drains_admission() {
+    let mut corridor = Corridor::new(ReadsMode::CompletedReads, RetireClock::Frames);
+    let [first, second] = corridor.grow_then_turn();
+    for outcome in [first, second] {
+        assert_eq!(
+            outcome.lightmap_misses.total(),
+            u64::from(outcome.not_resident)
+        );
+        assert_eq!(outcome.sh_miss_frames, None, "SH off");
+        assert!(
+            outcome.drain_samples[..outcome.drains as usize]
+                .iter()
+                .all(|sample| sample.sh_bytes == 0 && !sample.same_class_cut)
+        );
+    }
+    assert!(
+        first
+            .drain_samples
+            .iter()
+            .any(|sample| sample.lightmap_bytes > 0),
+        "frame 1's second drain admits the reads its first issued"
+    );
+    assert_eq!(
+        second.lightmap_misses.deferred_by_pool, 1,
+        "block 5 waits behind the retiring generation"
+    );
+}
+
+// P9: a held (step-limit) frame's controller counts every drawn block,
+// block 6 included though it holds no pair for it, so the walk's tally adds
+// nothing past the controller's there; the run reports any excess apart.
+#[test]
+fn held_frame_controller_counts_every_drawn_block_the_walk_tallies() {
+    let mut corridor = Corridor::new(ReadsMode::CompletedReads, RetireClock::Frames);
+    corridor.frame(0, PORTAL, &[0]);
+    let trip = corridor.frame(0, STEP_LIMIT, &[0, 6]);
+    assert_eq!(
+        (trip.deferred + trip.left_behind, trip.not_resident),
+        (1, 1)
+    );
+    assert_eq!(
+        trip.lightmap_misses.outside_reach, 1,
+        "a held frame may not read block 6"
+    );
+}
+
 /// A run's record from the fixture's frames, as the harness records them.
 fn record(label: &str, frames: &[(VisibilityPath, FrameOutcome)]) -> RunRecord {
     RunRecord {

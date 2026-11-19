@@ -117,6 +117,8 @@ impl ShCompletionGate {
 pub(super) struct ShRunStats {
     /// Visible misses by the end of the spawn step.
     pub(super) spawn_misses: u64,
+    /// The episode buckets by the end of the spawn step.
+    pub(super) spawn_buckets: postretro_renderer::ShMissBuckets,
     pub(super) counters: ShResidencyCounters,
     /// The workers' read and decode timings over the whole run.
     pub(super) workers: Option<ShWorkerStats>,

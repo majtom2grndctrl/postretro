@@ -11,7 +11,26 @@
 // `late_blocks` is the after-spawn total of drawn blocks still not resident
 // after each frame's last drain, in block-frames (deferred + left behind);
 // `late_blocks_spawn` is the spawn step's. `sh_late` counts SH visible-miss
-// episodes after the spawn step.
+// episodes after the spawn step; `sh_late_read_in_flight` and
+// `sh_late_held_by_drain_budget` are whole-run episode buckets.
+//
+// The drain-budget tallies (`budget_tallies`, `drain_tally`) are after the
+// spawn step, each with a `_spawn` twin for the spawn step alone:
+// - `lm_late_<cause>`: the lightmap controller's drawn-not-resident
+//   block-frames by cause, summing to `lm_drawn_not_resident`.
+//   `lm_held_frame_uncounted` is the walk's tally past the controller's,
+//   summed per frame (drawn blocks a held frame leaves uncounted);
+//   `lm_counted_beyond_walk` the reverse.
+// - `sh_frames_<cause>`: drawn SH clusters not Sampleable, in cluster-frames,
+//   classified on every frame at the frame's first target update.
+//   `sh_episodes_<cause>`: SH's episode buckets, each episode filed by its
+//   first frame. Both null with SH off.
+// - `drains`, `drains_admitting`, `same_class_cuts` (drains whose cut admits
+//   one resource and leaves a same-class item of the other),
+//   `drain_admitted_bytes_p95` / `_max` over admitting drains, and
+//   `largest_drains`: the five largest by decoded bytes admitted, each with
+//   `bytes`, `sh_bytes`, `lightmap_bytes` and `items`. Completed mode counts
+//   both of a frame's drains.
 
 use std::io::Write;
 
@@ -132,8 +151,9 @@ pub(super) fn result_line(keys: &RunKeys<'_>, report: &RunReport) -> Value {
         "sh_decode_ms": quantiles(sh_workers.as_ref().map(|w| &w.decode_latency)),
         "sh_read_ms": quantiles(sh_workers.as_ref().map(|w| &w.read_latency)),
     });
+    let tallies_part = Value::Object(report.tallies.json(sh));
     let mut line = serde_json::Map::new();
-    for part in [keys_part, lightmap_part, sh_part, decode_part] {
+    for part in [keys_part, lightmap_part, sh_part, decode_part, tallies_part] {
         if let Value::Object(fields) = part {
             line.extend(fields);
         }
@@ -168,6 +188,7 @@ pub(super) fn print_instruments(keys: &RunKeys<'_>, report: &RunReport) {
         }
         (None, _) => println!("   SH off"),
     }
+    report.tallies.print(report.sh.as_ref());
     let line = result_line(keys, report);
     println!("walk-result {line}");
     if let Ok(path) = std::env::var(RESULTS_OUT_ENV) {

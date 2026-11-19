@@ -299,6 +299,13 @@ impl LevelStreaming {
         self.retirement.is_some()
     }
 
+    /// The latest drain's merged list after admission: the walk
+    /// measurement reads each drain's cut and admitted bytes here.
+    #[cfg(test)]
+    pub(crate) fn shared_drain(&self) -> &SharedDrain {
+        &self.drain
+    }
+
     #[cfg(test)]
     pub(crate) fn drain_capacity(&self) -> usize {
         self.drain.capacity()

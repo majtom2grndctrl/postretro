@@ -577,6 +577,31 @@ fn walk_drain_cap_override_lives_only_in_the_test_walk_harness() {
     assert!(!strip_gated(&residency, &[TEST]).contains("mod walk_measurement"));
 }
 
+// AC 14: both walk tallies, the same-class cut counter and SH's per-frame
+// late tally, and the drain views they read build only for tests.
+#[test]
+fn walk_tallies_and_their_seams_are_test_only() {
+    let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let seams = [
+        "same_class_cut",
+        "latest_update_miss_frames",
+        "ordered_items",
+        "fn shared_drain",
+    ];
+    let named: Vec<&str> = seams
+        .iter()
+        .copied()
+        .filter(|seam| {
+            rust_sources(&engine)
+                .iter()
+                .any(|(_, source)| source.contains(seam))
+        })
+        .collect();
+    assert_eq!(named, seams, "every seam exists to be gated");
+    let ungated = ungated_mentions(&engine, &[TEST], &seams);
+    assert!(ungated.is_empty(), "{ungated:#?}");
+}
+
 // AC 14: the override seam builds only for tests and dev-tools; a production
 // build admits play drains against the constant alone.
 #[test]

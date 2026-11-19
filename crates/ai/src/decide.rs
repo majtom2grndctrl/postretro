@@ -89,7 +89,7 @@ mod tests {
                     );
                     // At 64 NPCs over the 30 dormant phases (about two each)
                     // a phase can sit empty; the dormant cycle is held to it
-                    // from 128 (plan: AC 33 asks the owner).
+                    // from 128 (AC 33, owner ruling).
                     let checks_empty = count >= 64 && (interval < 30 || count >= 128);
                     if checks_empty {
                         assert!(

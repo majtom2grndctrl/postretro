@@ -3,7 +3,7 @@
 Brief · compact · Epic 20 · reads: `context/lib/rendering_pipeline.md` §7.5, §7.8 · `context/lib/development_guide.md` §6.4 · `context/lib/boot_sequence.md` §3 · research: `research.md` · read at ecd9489e
 
 ## Problem
-Agents and the owner cannot get a picture of what play looks like after something happens. Frame capture draws one static pose of a level as installed, with no script VM and no tick. It draws no particles, no dynamic lights and no fog volumes, and skinned props stand at rest pose. The batch runner ticks the sim through scripted commands but never renders. Briefs that needed rendered evidence of animated or scripted content, such as bone-socket attachments, deferred it to this plan. When this is done, a runspec can ask for captures at chosen ticks. The run ticks the sim and presents every tick as windowed play does, and each capture tick writes a PNG from the player's camera or an authored pose. The PNG includes animated skinned meshes, particles, dynamic lights and fog volumes, and optionally the viewmodel. The runspec chooses, per run, whether each capture stands alone or carries the renderer's history from the run.
+Agents, the owner and modders' agents cannot get a picture of what play looks like after something happens. Frame capture draws one static pose of a level as installed, with no script VM and no tick. It draws no particles, no dynamic lights and no fog volumes, and skinned props stand at rest pose. The batch runner ticks the sim through scripted commands but never renders. Briefs that needed rendered evidence of animated or scripted content, such as bone-socket attachments, deferred it to this plan. When this is done, a runspec can ask for captures at chosen ticks. The run ticks the sim and presents every tick as windowed play does, and each capture tick writes a PNG from the player's camera or an authored pose. The PNG includes animated skinned meshes, particles, dynamic lights and fog volumes, and optionally the viewmodel. The runspec chooses, per run, whether each capture stands alone or carries the renderer's history from the run.
 
 ## Decisions
 - **Capture is a section of the batch runspec.** One vocabulary, as `plans/done/E20--frame-capture` and `plans/done/agentic-observability` committed. A runspec without the section runs exactly as today: no adapter, byte-identical output. A runspec with it needs the `capture` feature and an adapter. A build without `capture` rejects it by name before loading the map, as batch runs reject live-only sections. The run still writes its dump, and the dump names that it came from a capture run.
@@ -23,7 +23,7 @@ Agents and the owner cannot get a picture of what play looks like after somethin
   - The runspec's choice governs the run. The streaming environment variables are ignored in a capture run, with one warning naming each that is set.
   - Streaming cost and frame timing are not measured here; `drafts/camera-path-playback` owns them.
 - **Determinism: same-adapter byte identity per PNG**, as frame capture set it, in isolated mode and in settled continuous mode. Streamed continuous mode races background reads and promises no identity; its captures are for looking, not diffing.
-- **Gating.** Rides the existing `capture` feature: no new feature, no dependency (`development_guide.md` §6.4). Not a player or modder surface.
+- **Gating: SDK bundles carry scripted-run capture; player builds do not.** Agent-oriented development is part of the architecture, so a modder's agent can capture scripted runs of their own maps. It rides the existing `capture` and `observability` features: no new feature, no dependency (`development_guide.md` §6.4). The SDK's authoring engine gains both, so static capture and the batch runner reach bundles too. A bundle user runs a capture runspec through `postretro-tool`, documented in `docs/`. The release engine in a bundle and the player dist engine carry neither. Not a player setting.
 - **No ordering against renderer target inspection.** The roadmap's sequencing line goes at landing.
 - **Not this brief:**
   - A live-socket capture verb: the live channel runs no scripted tick loop (`plans/done/E20--live-socket-channel`).
@@ -71,6 +71,7 @@ Agents and the owner cannot get a picture of what play looks like after somethin
 - [ ] Windowed redraw and the scripted capture run reach emitter, particle, light, fog and mesh collection through the one presentation step. A grep gate finds no per-frame caller of those collectors outside the step and static capture.
 - [ ] Existing static capture tests pass with byte-identical output, and windowed frame-loop tests pass, after the presentation step is extracted.
 - [ ] Every row above that reads a capture runs in a pass with `POSTRETRO_REQUIRE_GPU` set, and fails rather than skips with no adapter.
+- [ ] An SDK bundle built by `sdk-dist` runs the fixture's capture runspec through the command `docs/` gives, using only the bundle, and writes its PNGs and dump. The bundle's release engine and the player dist engine build with neither `capture` nor `observability`, and reject a capture-bearing runspec naming the feature.
 
 ### Manual
 - [ ] Owner visual read on the fixture run: each capture beside a windowed screenshot at about the same tick and pose. Particles, dynamic lights, fog and animation look as they do in play.
@@ -86,6 +87,7 @@ Agents and the owner cannot get a picture of what play looks like after somethin
 - **First slice:** the shared step extracted, then a capture-bearing runspec on a fixture with one emitter, one dynamic light, one fog volume and one promotable light near a skinned mesh, captured at tick 0 and a later tick. It tests the riskiest assumption: that one presentation advance per tick reproduces play's particles and lights.
 - **Fixture:** a `content/dev` map and runspec. A map script can enable the light and the fog at known ticks; runspec commands carry only movement, aim, fire and reload.
 - **xtask:** the headless verb already builds the scripts sidecar; the capture run needs it too.
+- **SDK:** the authoring engine's feature list in `xtask/src/dist.rs` (stage 1, `--features dev-tools`) gains `observability` and `capture`. `postretro-tool run` already forwards `--headless <runspec>` to the engine (`crates/tool/src/run.rs`). The `docs/` page names only bundle-runnable commands. At promotion, `development_guide.md` §6.4's sentence that SDK engines carry no diagnostic feature is corrected.
 - **Docs at landing:** `rendering_pipeline.md` §7.8 gains the scripted run; §7.5 drops the stale `frame_index` field; the roadmap's Epic 20 entry drops its sequencing line.
 
 ## Open questions

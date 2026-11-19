@@ -1,7 +1,7 @@
 # camera-path-playback — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 2f1a5d7f4
 
 Source re-read at 2f1a5d7f4 against every symbol Decisions and Path cite. The walk harness (`session/lightmap_residency/`), `camera.rs` and `frame_eye.rs` are unchanged since the brief's read commit ecd9489e0, so a trip record written now is a read-commit record. No Decision premise is false. The Path needs the corrections below.

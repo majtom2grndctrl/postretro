@@ -4239,7 +4239,8 @@ language's `forEach` gives it: from 0 in TypeScript, from 1 in Luau.
 - `selectCharacter(i)` selects a character. The store reloads: every mod slot
   returns to its default, then the world file and the character apply.
 - `createCharacter(i)` creates a character in an empty slot, naming it from
-  `ui.textEntry`, and selects it. An occupied slot is refused.
+  `ui.textEntry`, and selects it. Open the text entry with no target field and
+  fire it from the entry's commit. An occupied slot is refused.
 - `deleteCharacter(i)` and `deleteRun(i)` delete a slot, readable or not.
   Deleting the selection sets it to `-1`.
 - `continueRun(i)` selects the run's character, reloads the store with the run

@@ -541,8 +541,9 @@ function UiReactionsSdk.selectCharacter(index: number): SystemReactionStep
 end
 
 --- Create a new character in empty slot `index` and select it. Its name is
---- taken from `ui.textEntry`, so open the text entry first
---- (`UI.openTextEntry`) and fire this from its commit. Pure: returns a system
+--- taken from `ui.textEntry`, so open the text entry with no target field
+--- (`UI.openTextEntry(onCommit)`) and fire this from its commit; a target
+--- field would receive the text and empty `ui.textEntry` before this runs. Pure: returns a system
 --- reaction (a body on its own or a step in a sequence or array body), no FFI.
 --- `index` is the 1-based `UI.forEach` row index of
 --- `getGameState().saves.characters`. A new character starts with an empty

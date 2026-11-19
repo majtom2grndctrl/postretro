@@ -10569,6 +10569,11 @@ mod tests {
             Some("frontend.openPlay")
         );
         assert_eq!(
+            button_action(&title.root, "frontendLevels"),
+            Some("frontend.openLevelSelect"),
+            "the level picker stays a dev path off the title"
+        );
+        assert_eq!(
             button_action(&title.root, "frontendOptions"),
             Some("frontend.openOptions")
         );

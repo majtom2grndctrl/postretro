@@ -2266,21 +2266,32 @@ fn a_waiting_join_answers_with_the_password_it_captured() {
     );
 }
 
-/// Install the shipped dev frontend's menus, its reactions and keyboard, over
-/// the engine keyboard it shadows, into `app` as mod init does. Returns each
-/// menu tree as JSON.
+/// Install the shipped dev frontend's menus and save screens, its reactions
+/// and keyboard, over the engine keyboard it shadows, into `app` as mod init
+/// does. Returns each menu tree as JSON.
 fn install_dev_frontend(app: &mut App) -> Vec<(String, serde_json::Value)> {
     use postretro_level_format::data_script::DataScriptSection;
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../content/dev/scripts/frontend-menu.ts");
+    // The save screens import the menu module by relative path, so both sit
+    // beside the entry, as they sit beside each other in content/dev.
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("frontend-menu.ts"),
+        include_str!("../../../../content/dev/scripts/frontend-menu.ts"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("frontend-saves.ts"),
+        include_str!("../../../../content/dev/scripts/frontend-saves.ts"),
+    )
+    .unwrap();
     let entry = dir.path().join("session-menus.ts");
     std::fs::write(
         &entry,
-        format!(
-            "{}\nexport function setupLevel() {{ return {{ uiTrees: [frontendMenu, hostMenu, joinMenu, devKeyboard, devLevelSelectMenu, optionsMenu, exitConfirm, quitConfirm], reactions: frontendReactions }}; }}\n",
-            include_str!("../../../../content/dev/scripts/frontend-menu.ts")
-        ),
+        "import { frontendMenu, hostMenu, joinMenu, devKeyboard, devLevelSelectMenu, optionsMenu, exitConfirm, quitConfirm, frontendReactions } from \"./frontend-menu\";\n\
+         import { saveScreens } from \"./frontend-saves\";\n\
+         export function setupLevel() { return { uiTrees: [frontendMenu, hostMenu, joinMenu, devKeyboard, devLevelSelectMenu, optionsMenu, exitConfirm, quitConfirm, ...saveScreens], reactions: frontendReactions }; }\n",
     )
     .unwrap();
     let session = app.session.as_mut().unwrap();
@@ -2535,12 +2546,36 @@ fn the_dev_keyboard_titles_its_field_and_masks_a_password() {
 
 // Each session menu shows one state at a time. When the focused button hides
 // with its state, the first stop left is the new state's own button, so the
-// initial-focus fallback lands there.
+// initial-focus fallback lands there. With no character chosen, Host and Join
+// offer the way to one in place of the press the engine would refuse.
 #[test]
 fn the_dev_session_menus_show_one_state_at_a_time() {
     let mut view = entering_engine(spawn_points(3));
     let _ = install_dev_frontend(&mut view.app);
     let app = &mut view.app;
+
+    app.write_session_slot("saves.character", SlotValue::Number(-1.0));
+    press(app, "frontend.openJoin");
+    let (texts, stops) = draw_top(app);
+    assert_eq!(
+        stops,
+        [
+            "joinCharacters",
+            "joinAddress",
+            "joinPassword",
+            "frontend.join.back"
+        ]
+    );
+    assert!(has(&texts, "CHOOSE A CHARACTER FIRST"), "{texts:?}");
+    app.session.as_mut().unwrap().modal_stack.pop();
+    press(app, "frontend.openHost");
+    let (_, stops) = draw_top(app);
+    assert_eq!(
+        stops,
+        ["hostCharacters", "hostPassword", "frontend.host.back"]
+    );
+    app.session.as_mut().unwrap().modal_stack.pop();
+    app.write_session_slot("saves.character", SlotValue::Number(0.0));
 
     press(app, "frontend.openJoin");
     let (_, stops) = draw_top(app);
@@ -2586,7 +2621,7 @@ fn the_dev_session_menus_show_one_state_at_a_time() {
     app.write_session_slot("session.hosting", SlotValue::Boolean(true));
     write_text(app, "session.hostAddress", "10.0.0.7:27015");
     let (texts, stops) = draw_top(app);
-    assert_eq!(stops, ["hostPlay", "hostStop", "frontend.host.back"]);
+    assert_eq!(stops, ["hostLobby", "hostStop", "frontend.host.back"]);
     assert!(has(&texts, "HOSTING ON 10.0.0.7:27015"), "{texts:?}");
     app.session.as_mut().unwrap().modal_stack.pop();
 
@@ -2610,6 +2645,7 @@ fn the_dev_session_menus_show_one_state_at_a_time() {
             "frontendPlay",
             "frontendHost",
             "frontendJoin",
+            "frontendLevels",
             "frontendOptions",
             "frontendExit"
         ]
@@ -2738,8 +2774,9 @@ fn engine_panels_over_the_dev_options_draw_alone() {
 }
 
 // The rules the frontend's visual grammar rests on, over every screen and
-// session state: title, level select, options, the exit dialog, Host and Join
-// in each state, and the keyboard over each field.
+// session state: title, characters, runs, level select, options, the exit
+// dialog, Host, the lobby and Join in each state, each delete confirmation,
+// and the keyboard over each field.
 #[test]
 fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
     let mut view = entering_engine(spawn_points(3));
@@ -2754,7 +2791,24 @@ fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
     reset(app);
     assert_one_layer_with_one_way_back(app, "title");
     for (open, screen) in [
-        ("frontend.openPlay", "level select"),
+        ("frontend.openPlay", "characters"),
+        ("frontend.characters.name.0", "character name keyboard"),
+    ] {
+        press(app, open);
+        assert_one_layer_with_one_way_back(app, screen);
+    }
+    app.cancel_text_entry();
+    for (open, screen) in [
+        ("frontend.characters.askDelete.0", "delete character dialog"),
+        ("frontend.characters.select.0", "runs"),
+        ("frontend.runs.askDelete.0", "delete run dialog"),
+    ] {
+        press(app, open);
+        assert_one_layer_with_one_way_back(app, screen);
+    }
+    reset(app);
+    for (open, screen) in [
+        ("frontend.openLevelSelect", "level select"),
         ("frontend.openOptions", "options"),
         ("dev.askExit", "exit dialog"),
         ("dev.askQuit", "quit dialog"),
@@ -2768,11 +2822,19 @@ fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
     app.write_session_slot("session.hosting", SlotValue::Boolean(true));
     write_text(app, "session.hostAddress", "10.0.0.7:27015");
     assert_one_layer_with_one_way_back(app, "hosting");
-    press(app, "frontend.openPlay");
+    press(app, "frontend.openLevelSelect");
     assert_one_layer_with_one_way_back(app, "level select over hosting");
     reset(app);
     assert_one_layer_with_one_way_back(app, "title while hosting");
+    press(app, "frontend.openLobby");
+    assert_one_layer_with_one_way_back(app, "lobby");
+    press(app, "frontend.openLevelSelect");
+    assert_one_layer_with_one_way_back(app, "level select over the lobby");
+    reset(app);
     app.write_session_slot("session.hosting", SlotValue::Boolean(false));
+    press(app, "frontend.openLobby");
+    assert_one_layer_with_one_way_back(app, "lobby, not hosting");
+    reset(app);
 
     press(app, "frontend.openJoin");
     assert_one_layer_with_one_way_back(app, "join");
@@ -2804,6 +2866,45 @@ fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
         enum_slot(app, "session.endCause", cause.as_str());
         assert_one_layer_with_one_way_back(app, &format!("title, {}", cause.as_str()));
     }
+}
+
+// Hosting from the dev frontend lands in the lobby, in the Host menu's place
+// on the title; the lobby's CANCEL GAME ends the session and returns to the
+// title (M2).
+#[test]
+fn hosting_from_the_dev_frontend_lands_in_the_lobby_and_its_cancel_ends_the_session() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    let app = &mut view.app;
+    // The dev title is this frontend's root, as the dev manifest declares it.
+    {
+        let session = app.session.as_mut().unwrap();
+        session.frontend.as_mut().unwrap().menu_tree = "frontend.menuTree".to_string();
+        session.modal_stack.clear_pushed();
+        session.modal_stack.push_named("frontend.menuTree", None);
+    }
+    assert!(app.at_frontend());
+    press(app, "frontend.openHost");
+    press(app, "frontend.hostSession");
+    assert_eq!(app.session_role(), SessionRole::Host);
+    {
+        let stack = &app.session.as_ref().unwrap().modal_stack;
+        assert_eq!(stack.active_name(), Some("frontend.lobby"));
+        assert!(
+            !stack.contains_pushed("frontend.host"),
+            "the lobby takes the Host menu's place"
+        );
+        assert!(stack.contains_pushed("frontend.menuTree"));
+    }
+    assert_one_layer_with_one_way_back(app, "lobby while hosting");
+
+    press(app, "frontend.lobby.cancel");
+    assert_eq!(app.session_role(), SessionRole::SinglePlayer);
+    assert_eq!(
+        app.session.as_ref().unwrap().modal_stack.active_name(),
+        Some("frontend.menuTree"),
+        "CANCEL GAME returns to the title"
+    );
 }
 
 // The title's answer to a refused password opens the Join menu with the

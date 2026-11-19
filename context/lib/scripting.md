@@ -178,9 +178,31 @@ Per-owner slots hold one host-side value per player seat. They may be host-local
 
 Each successful commit also replaces current declaration membership. Persistence and replicated schemas filter the add-only live table through that membership. The full identity ledger remains retained for rename protection, including orphan entries.
 
-Declarations establish slot schemas and defaults before persisted values are restored. Persistence overlays compatible declared slots once per process, after the first successful mod-init commit. Missing or malformed files leave defaults active and still permit later clean-exit saving. Failed or absent mod init cannot overwrite persistence. Persisted slots save best-effort on clean engine exit; abnormal termination may lose unsaved changes.
+Declarations establish slot schemas and defaults before saved values restore. Saves load once per process, after the first successful mod-init commit. An unreadable file leaves defaults active and never blocks a later save. Failed or absent mod init cannot overwrite a save.
 
-Per-owner slots may declare `persist: true`. Per-owner persistence keys saved values by the player's device-local identity rather than session-scoped seat. Each player saves only their own per-owner values. A connecting client carries saved per-owner values as a join seed on the Control channel so player progress is portable across hosts. Character progress (per-owner rows) and world progress (globals and faction sentiment) stay separate; under the saves below, sentiment becomes run state. A connected client saves periodically and at clean exit; its saves keep the world it booted with (its boot document's globals and faction sentiment) and replace only its own character rows, so the host's world never reaches its disk.
+**Saves.** Three kinds of file, each a form of the durable ledger document (`networking.md` §Session-state ledger), each replaced whole and atomically:
+
+| Kind | Holds | Count |
+|---|---|---|
+| Character | per-owner `persist: true` slots, display name, whole carried loadout | `characterSlots` |
+| Run | its character, the level and checkpoint last reached, `persist: "run"` globals, faction sentiment | `runSlots` |
+| World | `persist: true` globals: progress no run resets | one per mod |
+
+A mod's `saves` block declares both counts, each capped at 16. A mod without one gets one character and one run, created and selected at boot; that run never ends. A per-owner slot cannot declare `persist: "run"`. A single-file save from before saves existed migrates once into that shape, world file last, so an interrupted migration retries. The menu reads the `saves.characters` and `saves.runs` lists and the selected indices `saves.character` and `saves.run` (-1 for none).
+
+A run is active from Continue or `newRun` until the frontend is entered by any path. `loadLevel` starts no run. The host or single player saves at:
+
+| Save point | Run | Character and world |
+|---|---|---|
+| Level start, after the outgoing level's gear is read, before install | at the destination level | yes |
+| `checkpoint(name)` | at that checkpoint | yes |
+| Frontend entry from a played level, a join, clean exit | no | yes |
+
+The run writes first. A failed run write skips the character, so a run never pairs one level with another level's gear. Gear saves from a played level's pawns, never a frontend backdrop's. A character never saves downed or dead: life state saves initial, and health at or below zero restores full. A crash loses play since the last save point. The implicit run keeps the same cadence, so quitting loses run-scoped state written since its last level start or checkpoint.
+
+Selecting or creating a character, Continue and `newRun` reload the store (§10.4). Each first saves the live world, so a frontend write to a `persist: true` global survives. Then every mod-owned slot resets to its default, and the world file, the character and, for Continue, the run overlay it. While hosting only seat 0 reloads. Crossing watchers re-arm on the reloaded values without firing. Continue arrives at the run's checkpoint spawn set when it reached one (`entity_model.md` §7b).
+
+Per-owner values key by the selected character's id, never a session seat; that id is the claim a client joins with. Each player saves only their own character. A connecting client carries its character's per-owner values and loadout as a join seed on the Control channel, so progress and gear move between hosts. A connected client writes only its character file: periodically, at each loadout its host returns (level start, checkpoint) and after its leave. The host's world and run never reach its disk.
 
 When its session ends (`networking.md` §Slot lifecycle), a client applies the final character its host returned, saves its character only if it participated on that connection, then restores its store as single-player:
 
@@ -189,12 +211,7 @@ When its session ends (`networking.md` §Slot lifecycle), a client applies the f
 - Non-replicated globals keep the client's writes.
 - Crossing watchers re-arm on the restored values without firing.
 
-Live faction sentiment persists beside the slot store as a directional sparse
-set. Authored factions use their names. The player and default-enemy indices use
-engine-reserved keys in a namespace authored faction names cannot enter. Unknown
-or renamed authored names warn and drop without aborting the remaining restore.
-
-**Character, world and run saves (decided, not yet built).** These replace the single file and clean-exit save above with three kinds, each its own versioned JSON file. A character holds its per-owner `persist` slots, display name and whole carried loadout. The world file, one per mod, holds `persist: true` global slots: progress that outlives any run. A run holds its character's id, the level and checkpoint it last reached, `persist: "run"` global slots and faction sentiment. Per-owner run scope is refused at declaration. A mod's `saves` block declares how many character and run slots it keeps. A mod without one gets one of each, created, selected and active for the whole process. The character saves its live state at every save point; the run saves at each level start and each `checkpoint(name)` step. Continue resumes from the last of these, and a fresh start is a new character. Save verbs run only at the frontend. Selecting a character, Continue and `newRun` reset every mod-owned slot to its default, then overlay the world file, the character and, for Continue, the run; while hosting, only seat 0 reloads. Every file is one form of the durable ledger document (`networking.md` §Session-state ledger). Brief: `plans/ready/coop--character-and-run-saves/`.
+Live faction sentiment saves with the run as a directional sparse set. Authored factions use their names. The player and default-enemy indices use engine-reserved keys in a namespace authored faction names cannot enter. Unknown or renamed authored names warn and drop without aborting the remaining restore.
 
 ### Engine State SDK
 
@@ -261,7 +278,7 @@ The runtime installs the generated tree before SDK prelude evaluation, captures 
 **Session players.** The host derives one status per seat, its own included: `loading` (connected, no live pawn), `inPlay` (live pawn counted by the life-state `occupancy` rule, §12), `down` (live pawn not counted), `reconnecting` (held after a disconnect).
 - `session.playerCounts` holds readonly Numbers `connected`, `loading`, `inPlay`, `down` and `reconnecting`, host-computed and shared with every machine; `connected` sums the first three. Gameplay reads these.
 - `session.players` is a display list: one row per seat, dense and in seat order up to the session's player capacity, each `present`, `name`, `status` and `isLocal`. Every machine holds the same rows; clients fill them from the roster (`networking.md` §Session-state ledger). An empty name reads `Player N`, N being the seat plus 1.
-- Counts and rows hold no players from unload until the next install writes them, and on a machine with no session level. A frontend backdrop is not a session level.
+- Counts and rows hold no players from unload until the next install writes them, and on a machine with no session level. A frontend backdrop is not a session level. The one exception is a host at the frontend: its rows list every seat for a lobby, and its counts stay 0.
 
 **Occupancy.** `occupancy.tag(tag)` reads `occupiedCount` (player-occupied trigger volumes carrying the tag, armed or not) and `occupants` (distinct counted players inside any of them), host-computed and shared.
 - A family exists for each tag the scripts reference, collected from what they evaluate to, never from source text. Mod-scope references are replaced at each mod commit; a level's `setupLevel` references live that level.
@@ -532,6 +549,10 @@ its connection establishes, leaves its modal stack untouched, and warns once
 per firing source and verb. The client still changes level, but only by
 following the host's relevel (`networking.md` §Slot lifecycle).
 
+**Save verbs.** `selectCharacter`, `createCharacter`, `deleteCharacter`, `continueRun`, `newRun` and `deleteRun` take a slot index. They are machine-local and run only at the frontend. In a played level and on a connected client each is refused with a warning, changing nothing. A host at its frontend may only Continue its own character's run or start a `newRun`; connected players follow into the level. Once `continueRun` or `newRun` queues its level, later verbs in that reaction are refused. A slot whose file this build cannot read stays occupied; only a delete touches it. `newRun` needs a selected character and starts with it as it stands, resets run-scoped slots and faction sentiment, and writes only into an empty slot or that character's own run. A run whose character or level is gone refuses Continue. A failed run load ends the run and returns to the frontend. What each reload restores: §5.
+
+`checkpoint(name)` is a host consequence. Inside a played level on the host or in single player, it makes the named spawn set active and saves (§5). Elsewhere it does nothing.
+
 **Session membership.** `leaveSession()` and `endSession()` change membership
 and never navigate. Navigation never changes membership, and the frontend is
 outside every session, so a run's end composes the two: `endSession()` then
@@ -570,7 +591,8 @@ publishing `session.connection` `connecting`, then runs with the address and
 password it captured when pressed. A later navigation, load or suspend cancels
 it, publishing `offline`. An entry verb after `leaveSession` in one reaction
 belongs to the next session, so it survives the drop and defers; a press still
-queued when its level unloads survives the unload. Both are machine-local, and
+queued when its level unloads survives the unload. With a `saves` block both
+need a selected character (§5). Both are machine-local, and
 a late joiner skips them (`networking.md` §Role model).
 
 The session facts are client-local, nonpersistent engine slots. Writable:

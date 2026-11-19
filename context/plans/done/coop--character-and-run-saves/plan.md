@@ -152,3 +152,6 @@ Round 5 (round-4 fix only): 1 adversarial tester (opus). No defects; the gate no
 - `prl-build`'s `find_scripts_build` does not know Cargo 1.100's build-dir layout (`target/<profile>/build/<pkg>/<hash>/out/`), so four data-script tests fail on current stable. Unrelated to this branch.
 - An asynchronous pending leave would avoid the up-to-2 s frame hold when a host never answers the final-character request.
 - Mirror `validate_save_verb_reaction_args` in `script-compiler`'s light-membership step check.
+
+## Landing
+Context updated: `scripting.md` §5 (saves contract: file kinds, save points, reloads, client saves; lobby rows exception) and §10.4 (save verbs, `checkpoint`, entry needs a selected character); `networking.md` (durable ledger built, lobby at the frontend, boot flags with saves); `entity_model.md` §7b (checkpoint spawn sets built); `boot_sequence.md` (exit save); `player_options.md` §2 (device id seeds the implicit character, claim is the character's); `build_pipeline.md` (player-data directory); `index.md` router. Each edit self-reviewed against the context style guide.

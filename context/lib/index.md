@@ -43,13 +43,13 @@
 - **Distribution / packaging a runnable build / `dist` payload layout / launcher / `.dist-incomplete` / which levels ship** → `build_pipeline.md` §Distribution packaging
 - **Modder SDK bundle / shipping the content tools / `prl-build` + `scripts-build` in a distribution / `sdk-dist`** → `build_pipeline.md` §Distribution packaging (§SDK bundle)
 - **`postretro-tool` / `postretro.toml` project marker / project discovery / helper-binary resolution / why `xtask` cannot ship** → `build_pipeline.md` §Distribution packaging (§The project marker, §Why the tool is not xtask)
-- **Player-data directory / where `settings.toml` and `state.json` live / `--app-name` / per-game user directories** → `build_pipeline.md` §Distribution packaging (§Player-data directory) · `player_options.md` §2
+- **Player-data directory / where `settings.toml` and saves live / `--app-name` / per-game user directories** → `build_pipeline.md` §Distribution packaging (§Player-data directory) · `player_options.md` §2
 - **Authoring launch against a project / `postretro-tool run` / `--core-root` / `--install-root` / who supplies `--baked-root` and `--cache-dir`** → `build_pipeline.md` §Distribution packaging (§Authoring launch) · `ui.md` §5 · `docs/external-projects.md` (author-facing)
 - **Where `.prm` sidecars live / materials-root derivation / mod root shape / `--baked-root` / game content in a repo outside the engine install** → `build_pipeline.md` §Baked texture mips
 - **Input format adapters / adding a new map source format / what Quake or TrenchBroom vocabulary may cross into shared compiler stages** → `build_pipeline.md` §Source-format neutrality
 - **Input handling / gamepad / triggers / active pad / device family (glyph family by vendor id)** → `input.md`
 - **Remapping / rebinding / key bindings / author default bindings / manifest `input` block / command relevance / tap-hold activators / controls panel / rebind capture / UI nav from the binding table / console menu conventions (restore focus, hold-to-repeat, nested groups, tabs, scroll, glyphs, text-entry shortcuts)** → `player_options.md` §6 · `input.md` §2, §5, §7 · `ui.md` §4, §4.1
-- **Game saves / character, world and run slots / Continue and New game / `persist: "run"` / checkpoints / durable ledger document** (decided, not yet built) → `scripting.md` §5 · `networking.md` §Session-state ledger · checkpoint spawns: `entity_model.md` §7b
+- **Game saves / character, world and run slots / Continue and New game / `persist: "run"` / checkpoints / durable ledger document / save verbs** → `scripting.md` §5, §10.4 · `networking.md` §Session-state ledger · checkpoint spawns: `entity_model.md` §7b
 - **Player options / settings persistence / mouse sensitivity / invert-Y / view_feel_scale** → `player_options.md`
 - **Window modes / fullscreen / exclusive display mode / mode confirm / `--windowed`** → `player_options.md` §7 · `boot_sequence.md` §1 (Window mode) · `ui.md` §4.1
 - **Accessibility preferences / OS preference seeding / `accessibility.*` slots / reduce motion / per-field settings fallback** → `player_options.md` §5, §2

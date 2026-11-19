@@ -560,6 +560,14 @@ impl App {
         }
     }
 
+    /// With a `saves` block, hosting and joining wait until a character is
+    /// selected: the character is the identity a session keys by.
+    fn character_selected_for_entry(&self) -> bool {
+        self.session.as_ref().is_none_or(|session| {
+            !session.saves.has_saves_block() || session.saves.selected_character().is_some()
+        })
+    }
+
     /// Whether this machine stands at its frontend: the frontend menu is up
     /// and no level a session plays is installed. A backdrop, installed or
     /// loading, counts as the frontend; a played load cannot be queued or in
@@ -592,6 +600,10 @@ impl App {
     pub(crate) fn join_from_frontend_with(&mut self, addr: SocketAddr, password: &str) -> bool {
         if self.session_role() != SessionRole::SinglePlayer || !self.at_frontend() {
             log::warn!("[Net] join refused: entry needs a single-player machine at its frontend");
+            return false;
+        }
+        if !self.character_selected_for_entry() {
+            log::warn!("[Net] join refused: select a character first");
             return false;
         }
         self.cancel_backdrop_load_for_join();
@@ -627,6 +639,10 @@ impl App {
     ) -> bool {
         if self.session_role() != SessionRole::SinglePlayer || !self.at_frontend() {
             log::warn!("[Net] host refused: entry needs a single-player machine at its frontend");
+            return false;
+        }
+        if !self.character_selected_for_entry() {
+            log::warn!("[Net] host refused: select a character first");
             return false;
         }
         let Some(failure) = self.enter_net_role(&netcode::NetRole::Host { port }, mint, password)

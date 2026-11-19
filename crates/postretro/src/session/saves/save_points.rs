@@ -43,5 +43,6 @@ pub(crate) fn save_on_frontend_entry(session: &mut Session, played_level_unloade
         let _ = save_world_and_character(session);
     }
     session.saves.set_run_active(false);
+    session.saves.set_run_load_queued(false);
     publish_save_rows(session);
 }

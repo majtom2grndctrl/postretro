@@ -50,6 +50,8 @@ pub(crate) mod render_profile;
 mod revive_marker_surface_tests;
 #[cfg(test)]
 mod save_points_tests;
+#[cfg(test)]
+mod save_verbs_tests;
 pub(crate) mod save_verbs;
 pub(crate) mod session;
 pub(crate) mod settle_log;

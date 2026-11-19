@@ -14,8 +14,10 @@ mod tests;
 pub(crate) use boot::{BootInputs, load_save_slots};
 pub(crate) use rows::publish_save_rows;
 pub(crate) use save_points::{save_on_frontend_entry, save_on_level_start};
+#[cfg(test)]
+pub(crate) use store::boot_restore_with;
 pub(crate) use store::{
-    boot_restore, boot_restore_with, collect_character_record, collect_world_and_run, reload_store,
+    boot_restore, collect_character_record, collect_world_and_run, reload_store,
     set_seat_zero_carry_from_selection,
 };
 
@@ -44,6 +46,9 @@ pub(crate) struct SaveSlots {
     /// The catalog id Continue's level load is arriving at, until its level
     /// start writes the run.
     continue_arrival: Option<String>,
+    /// Continue or `newRun` queued its level: every later save verb is
+    /// refused until the frontend is entered again.
+    run_load_queued: bool,
 }
 
 impl SaveSlots {
@@ -71,6 +76,14 @@ impl SaveSlots {
 
     pub(crate) fn run_active(&self) -> bool {
         self.run_active
+    }
+
+    pub(crate) fn run_load_queued(&self) -> bool {
+        self.run_load_queued
+    }
+
+    pub(crate) fn set_run_load_queued(&mut self, queued: bool) {
+        self.run_load_queued = queued;
     }
 
     pub(crate) fn set_run_active(&mut self, active: bool) {
@@ -280,4 +293,122 @@ pub(crate) enum RunCheckpoint {
     LevelStart,
     /// A `checkpoint(name)` step.
     Set(String),
+}
+
+impl SaveSlots {
+    /// Select a character slot, or `None` for none, and store the selection.
+    pub(crate) fn select_character(&mut self, index: Option<usize>) {
+        self.selection.character = index.map_or(-1, |index| index as i32);
+        self.store_selection();
+    }
+
+    /// Select a run slot, or `None` for none, and store the selection.
+    pub(crate) fn select_run(&mut self, index: Option<usize>) {
+        self.selection.run = index.map_or(-1, |index| index as i32);
+        self.store_selection();
+    }
+
+    /// The character slot holding `claim`, readable.
+    pub(crate) fn character_index_for_claim(&self, claim: &str) -> Option<usize> {
+        self.characters.iter().position(|slot| {
+            slot.document()
+                .and_then(|document| document.seats.first())
+                .is_some_and(|record| record.claim == claim)
+        })
+    }
+
+    /// The character claim a run belongs to.
+    pub(crate) fn run_character(&self, index: usize) -> Option<&str> {
+        self.runs
+            .get(index)?
+            .document()?
+            .run
+            .as_ref()
+            .map(|run| run.character.as_str())
+    }
+
+    /// Write a fresh character into an empty slot.
+    pub(crate) fn create_character(&mut self, index: usize, name: String) -> bool {
+        let Some(path) = self.dir.as_ref().map(|dir| dir.character_path(index)) else {
+            return false;
+        };
+        let Some(slot) = self.characters.get_mut(index) else {
+            return false;
+        };
+        let claim = postretro_sim::scripting::state_persistence::encode_player_claim_id(
+            &postretro_net::wire::PlayerClaimId(boot::random_character_id()),
+        );
+        write_slot(
+            &path,
+            slot,
+            LedgerDocument {
+                seats: vec![SeatRecord {
+                    claim,
+                    name,
+                    ..SeatRecord::default()
+                }],
+                ..LedgerDocument::default()
+            },
+        )
+    }
+
+    /// Delete a character slot's file, readable or not.
+    pub(crate) fn delete_character(&mut self, index: usize) -> bool {
+        let Some(path) = self.dir.as_ref().map(|dir| dir.character_path(index)) else {
+            return false;
+        };
+        delete_slot_file(&path, &mut self.characters[index])
+    }
+
+    /// Delete a run slot's file, readable or not.
+    pub(crate) fn delete_run(&mut self, index: usize) -> bool {
+        let Some(path) = self.dir.as_ref().map(|dir| dir.run_path(index)) else {
+            return false;
+        };
+        delete_slot_file(&path, &mut self.runs[index])
+    }
+
+    /// Write a new run for `claim` into slot `index`, starting at `catalog_id`
+    /// with the live (just reset) run state.
+    pub(crate) fn write_new_run(
+        &mut self,
+        index: usize,
+        claim: String,
+        catalog_id: &str,
+        live: LedgerDocument,
+    ) -> bool {
+        let Some(path) = self.dir.as_ref().map(|dir| dir.run_path(index)) else {
+            return false;
+        };
+        write_slot(
+            &path,
+            &mut self.runs[index],
+            LedgerDocument {
+                level: Some(postretro_sim::scripting::save_files::LevelRecord {
+                    catalog_id: catalog_id.to_owned(),
+                    checkpoint: None,
+                }),
+                run: Some(postretro_sim::scripting::save_files::RunRecord {
+                    character: claim,
+                    saved_at: postretro_sim::scripting::save_files::now_unix_seconds(),
+                }),
+                slots: live.slots,
+                faction_sentiment: live.faction_sentiment,
+                ..LedgerDocument::default()
+            },
+        )
+    }
+}
+
+fn delete_slot_file(path: &std::path::Path, slot: &mut SlotFile) -> bool {
+    match postretro_sim::scripting::save_files::delete_slot(path) {
+        Ok(()) => {
+            *slot = SlotFile::Empty;
+            true
+        }
+        Err(error) => {
+            log::warn!("[State] failed to delete {}: {error}", path.display());
+            false
+        }
+    }
 }

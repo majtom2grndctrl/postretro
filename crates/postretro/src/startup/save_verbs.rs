@@ -1,15 +1,265 @@
-// Save verbs and `checkpoint` at the app's system-command drain.
-// See: context/lib/scripting.md §5
+// The save verbs: select, create and delete characters; continue, start and delete runs.
+// See: context/lib/scripting.md §5 (Durable State Store)
 
 use postretro_entities::SystemReactionCommand;
+use postretro_entities::slot_table::SlotValue;
+use postretro_sim::scripting::save_files::SlotFile;
 
+use super::{LevelRequest, LevelSource};
 use crate::App;
+use crate::session::role_state::SessionRole;
+use crate::session::saves::{
+    collect_world_and_run, publish_save_rows, reload_store, set_seat_zero_carry_from_selection,
+};
+
+/// The verbs a host at its frontend may run: they start or continue the
+/// host character's own run, and its clients follow into the level.
+fn hosting_permits(verb: &str) -> bool {
+    matches!(verb, "continueRun" | "newRun")
+}
 
 impl App {
-    /// Run one save verb (`continueRun`, `newRun`, `deleteRun`,
-    /// `selectCharacter`, `createCharacter`, `deleteCharacter`) or
-    /// `checkpoint` the drain received.
+    /// Run one save verb, or refuse it with a warning, changing nothing.
     pub(crate) fn handle_save_verb(&mut self, command: SystemReactionCommand) {
-        log::debug!("[State] save verb {:?} not yet handled", command);
+        let (verb, result) = match command {
+            SystemReactionCommand::SelectCharacter { index, .. } => {
+                ("selectCharacter", self.gate("selectCharacter").and_then(|()| self.select_character_verb(index)))
+            }
+            SystemReactionCommand::CreateCharacter { index, .. } => {
+                ("createCharacter", self.gate("createCharacter").and_then(|()| self.create_character_verb(index)))
+            }
+            SystemReactionCommand::DeleteCharacter { index, .. } => {
+                ("deleteCharacter", self.gate("deleteCharacter").and_then(|()| self.delete_character_verb(index)))
+            }
+            SystemReactionCommand::ContinueRun { index, .. } => {
+                ("continueRun", self.gate("continueRun").and_then(|()| self.continue_run_verb(index)))
+            }
+            SystemReactionCommand::NewRun { index, map, .. } => {
+                ("newRun", self.gate("newRun").and_then(|()| self.new_run_verb(index, &map)))
+            }
+            SystemReactionCommand::DeleteRun { index, .. } => {
+                ("deleteRun", self.gate("deleteRun").and_then(|()| self.delete_run_verb(index)))
+            }
+            SystemReactionCommand::Checkpoint { name, .. } => {
+                log::debug!("[State] checkpoint `{name}` not yet handled");
+                return;
+            }
+            _ => return,
+        };
+        match result {
+            Ok(()) => {
+                if let Some(session) = self.session.as_mut() {
+                    publish_save_rows(session);
+                }
+            }
+            Err(why) => log::warn!("[State] {verb} refused: {why}"),
+        }
+    }
+
+    /// Save verbs run only at the frontend of a single player or a host,
+    /// never once a run's level is queued, and while hosting only the verbs
+    /// that start the host character's own run.
+    fn gate(&self, verb: &str) -> Result<(), String> {
+        let Some(session) = self.session.as_ref() else {
+            return Err("no session".into());
+        };
+        if !session.saves.is_loaded() {
+            return Err("saves are unavailable for this run".into());
+        }
+        match self.session_role() {
+            SessionRole::Client => return Err("a connected client runs no save verbs".into()),
+            SessionRole::Host if !hosting_permits(verb) => {
+                return Err("only Continue and newRun run while hosting".into());
+            }
+            _ => {}
+        }
+        if session.saves.run_load_queued() {
+            return Err("a run's level is already queued".into());
+        }
+        if !self.at_frontend() {
+            return Err("save verbs run only at the frontend".into());
+        }
+        Ok(())
+    }
+
+    fn select_character_verb(&mut self, index: usize) -> Result<(), String> {
+        let session = self.session.as_mut().expect("gated on a session");
+        match session.saves.character_slots().get(index) {
+            Some(SlotFile::Occupied(_)) => {}
+            Some(SlotFile::Unreadable) => return Err(format!("character slot {index} cannot be read")),
+            Some(SlotFile::Empty) => return Err(format!("character slot {index} is empty")),
+            None => return Err(format!("character slot {index} is not declared")),
+        }
+        session.saves.select_character(Some(index));
+        reload_store(session, false);
+        set_seat_zero_carry_from_selection(session);
+        Ok(())
+    }
+
+    fn create_character_verb(&mut self, index: usize) -> Result<(), String> {
+        let session = self.session.as_mut().expect("gated on a session");
+        match session.saves.character_slots().get(index) {
+            Some(SlotFile::Empty) => {}
+            Some(_) => return Err(format!("character slot {index} is occupied")),
+            None => return Err(format!("character slot {index} is not declared")),
+        }
+        let name = match session
+            .scripting
+            .script_ctx
+            .slot_table
+            .borrow()
+            .get("ui.textEntry")
+            .and_then(|slot| slot.value.clone())
+        {
+            Some(SlotValue::String(name)) => name,
+            _ => String::new(),
+        };
+        if !session.saves.create_character(index, name) {
+            return Err(format!("character slot {index} could not be written"));
+        }
+        session.saves.select_character(Some(index));
+        reload_store(session, false);
+        set_seat_zero_carry_from_selection(session);
+        Ok(())
+    }
+
+    fn delete_character_verb(&mut self, index: usize) -> Result<(), String> {
+        let session = self.session.as_mut().expect("gated on a session");
+        match session.saves.character_slots().get(index) {
+            Some(SlotFile::Empty) => return Err(format!("character slot {index} is empty")),
+            Some(_) => {}
+            None => return Err(format!("character slot {index} is not declared")),
+        }
+        let selected = session.saves.selected_character_index() == Some(index)
+            || session.saves.selection().character == index as i32;
+        if !session.saves.delete_character(index) {
+            return Err(format!("character slot {index} could not be deleted"));
+        }
+        if selected {
+            session.saves.select_character(None);
+            reload_store(session, false);
+            set_seat_zero_carry_from_selection(session);
+        }
+        Ok(())
+    }
+
+    fn delete_run_verb(&mut self, index: usize) -> Result<(), String> {
+        let session = self.session.as_mut().expect("gated on a session");
+        match session.saves.run_slots().get(index) {
+            Some(SlotFile::Empty) => return Err(format!("run slot {index} is empty")),
+            Some(_) => {}
+            None => return Err(format!("run slot {index} is not declared")),
+        }
+        let selected = session.saves.selection().run == index as i32;
+        if !session.saves.delete_run(index) {
+            return Err(format!("run slot {index} could not be deleted"));
+        }
+        if selected {
+            session.saves.select_run(None);
+        }
+        Ok(())
+    }
+
+    fn continue_run_verb(&mut self, index: usize) -> Result<(), String> {
+        let hosting = self.session_role() == SessionRole::Host;
+        let session = self.session.as_mut().expect("gated on a session");
+        let document = match session.saves.run_slots().get(index) {
+            Some(SlotFile::Occupied(document)) => document.clone(),
+            Some(SlotFile::Unreadable) => return Err(format!("run slot {index} cannot be read")),
+            Some(SlotFile::Empty) => return Err(format!("run slot {index} is empty")),
+            None => return Err(format!("run slot {index} is not declared")),
+        };
+        let claim = document
+            .run
+            .as_ref()
+            .map(|run| run.character.clone())
+            .ok_or_else(|| format!("run slot {index} names no character"))?;
+        let Some(character) = session.saves.character_index_for_claim(&claim) else {
+            return Err(format!("run slot {index}'s character was deleted"));
+        };
+        if hosting && session.saves.selected_character_index() != Some(character) {
+            return Err(format!(
+                "run slot {index} belongs to another character than the host's"
+            ));
+        }
+        let level = document
+            .level
+            .as_ref()
+            .map(|level| level.catalog_id.clone())
+            .ok_or_else(|| format!("run slot {index} has reached no level"))?;
+        let known = session
+            .scripting
+            .script_ctx
+            .data_registry
+            .borrow()
+            .maps
+            .iter()
+            .any(|entry| entry.id == level);
+        if !known {
+            return Err(format!("run slot {index}'s level `{level}` is not in this mod's catalog"));
+        }
+        if !hosting {
+            session.saves.select_character(Some(character));
+        }
+        session.saves.select_run(Some(index));
+        reload_store(session, true);
+        set_seat_zero_carry_from_selection(session);
+        session.saves.set_run_active(true);
+        session.saves.mark_continue_arrival(&level);
+        self.queue_run_level(level);
+        Ok(())
+    }
+
+    fn new_run_verb(&mut self, index: usize, map: &str) -> Result<(), String> {
+        let session = self.session.as_mut().expect("gated on a session");
+        let Some(claim) = session.saves.selected_character().map(|record| record.claim.clone())
+        else {
+            return Err("no character is selected".into());
+        };
+        match session.saves.run_slots().get(index) {
+            Some(SlotFile::Empty) => {}
+            Some(SlotFile::Unreadable) => return Err(format!("run slot {index} cannot be read")),
+            Some(SlotFile::Occupied(_)) if session.saves.run_character(index) == Some(&claim) => {}
+            Some(SlotFile::Occupied(_)) => {
+                return Err(format!("run slot {index} holds another character's run"));
+            }
+            None => return Err(format!("run slot {index} is not declared")),
+        }
+        let known = session
+            .scripting
+            .script_ctx
+            .data_registry
+            .borrow()
+            .maps
+            .iter()
+            .any(|entry| entry.id == map);
+        if !known {
+            return Err(format!("level `{map}` is not in this mod's catalog"));
+        }
+        // A new run: run-scoped globals, faction sentiment and the level
+        // reset; world slots and the character as it stands are kept.
+        session.saves.select_run(None);
+        reload_store(session, false);
+        set_seat_zero_carry_from_selection(session);
+        let (_, live) = collect_world_and_run(session);
+        // The run file lands before its level load begins.
+        if !session.saves.write_new_run(index, claim, map, live) {
+            return Err(format!("run slot {index} could not be written"));
+        }
+        session.saves.select_run(Some(index));
+        session.saves.set_run_active(true);
+        self.queue_run_level(map.to_owned());
+        Ok(())
+    }
+
+    /// Clear the frontend menu and queue the run's level, as `loadLevel`
+    /// does. Every later save verb is refused until the frontend is entered
+    /// again.
+    fn queue_run_level(&mut self, level: String) {
+        if let Some(session) = self.session.as_mut() {
+            session.modal_stack.clear_pushed();
+            session.saves.set_run_load_queued(true);
+        }
+        self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(level)));
     }
 }

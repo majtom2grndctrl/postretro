@@ -418,21 +418,14 @@ When you find a misleading, stale, or code-restating comment in a file you're al
 
 - **Runtime instrumentation compiles into every build**, toggled by a `POSTRETRO_*` environment variable (`POSTRETRO_GPU_TIMING`, `POSTRETRO_CPU_TIMING`; see `rendering_pipeline.md` §12). A diagnostic present only in some builds is worse for modders than one uniformly available.
 - **Invariant checks compile into every build too.** The tick overlap check (`movement.md` §1) is a panicking assertion in tests, on by default with debug assertions and off in release; `POSTRETRO_OVERLAP_CHECK=1` turns it on in any build and `0` off. A malformed value warns once and keeps the build default.
-- **Diagnostic surfaces sit behind cargo features.** `observability`, `observe-live` and `capture` add no dependencies. `dev-tools` carries egui. The Tracy profiler bridge is its own feature (`tracy`). Release and dist builds enable none of them.
+- **Diagnostic surfaces sit behind cargo features.** `observability`, `observe-live` and `capture` add no dependencies. `dev-tools` carries egui. The Tracy profiler bridge is its own feature (`tracy`). Release and dist builds enable none of them. The telemetry file sink is the one exception (§6.5): the SDK engine and `prl-build` carry no diagnostic feature, and both must reach it.
 - **A launch seed for a `dev-tools` surface ships with that surface.** A `POSTRETRO_*` variable may preset a panel at launch (`POSTRETRO_SH_PROBE_OVERLAY`: `rendering_pipeline.md` §12; `POSTRETRO_NET_LAG`: `networking.md` §Testing the conditioned link). Builds without the feature ignore it. A malformed value warns once and leaves the panel default; it never blocks boot.
 
 ### 6.5 Telemetry
 
-- **One envelope, typed events.**
-  - Engine and `prl-build` diagnostics that agents read are also emitted as typed events in one versioned JSON envelope. The envelope carries run, sequence, monotonic time, source process, running level, kind and payload. A leaf crate owns it.
-  - Each event is built at its log line's emit point from the snapshot that line formats. Log lines and reporter output never change because telemetry is on, and no text is parsed back.
-- **First kinds:** boot, mod-init and level-load phases, unload, geometry install, SH and lightmap streaming windows, CPU and GPU timing windows, bake stages and the bake summary, captured log records, and run bracketing.
-- **The run brackets itself.**
-  - `run_start` comes first. It names every known producer as enabled, disabled (with its enabling variable), pending or unsupported (with a reason), so an absent family is never read as zero. Telemetry switches on no producer.
-  - `run_end` is last, written on every exit the process controls. A file without it was killed.
-- **File sink: `POSTRETRO_TELEMETRY=<path>`, JSONL, in every build.**
-  - Each process appends whole lines and flushes each one. A failed open or write warns once and disables the sink.
-  - The file sink is the one diagnostic surface outside the §6.4 feature rule. The SDK engine and `prl-build` must both reach it, and neither carries a diagnostic feature.
-- **Live ring.**
-  - A run with `--observe-live` keeps a bounded ring of events and log records for the live `events` verb (`networking.md` §Not netcode). Caps are by count and bytes, pins hold the run header and the latest load events, and evictions are counted.
-  - With a consumer present (the sink or the live channel), log capture raises the max level to info. Without one, logger setup is untouched.
+- **Typed events beside log lines.** The engine and `prl-build` also emit their agent-facing diagnostics as typed events in one versioned JSON envelope, which a leaf crate owns. Each event is built at its log line's emit point from the snapshot that line formats. Telemetry never changes a log line or reporter output. No text is parsed back.
+- **Covered:** boot, mod-init and level-load phases, unload, geometry install, SH and lightmap streaming windows, CPU and GPU timing windows, bake stages and the bake summary, captured log records, and run bracketing.
+- **The run brackets itself.** `run_start` comes first and names every known producer's state: enabled, disabled (with its enabling variable), pending, or unsupported (with a reason). An absent family is therefore never read as zero. Telemetry switches on no producer. `run_end` comes last, on every exit the process controls, so a file without it was killed.
+- **File sink: `POSTRETRO_TELEMETRY=<path>`.** JSONL, in every build (the §6.4 exception). Each process appends whole lines and flushes each one. A failed open or write warns once and disables the sink.
+- **Live ring.** A run with `--observe-live` keeps a bounded ring of events and log records for the live `events` verb (`networking.md` §Not netcode). Caps count records and bytes. Pins keep the run header and the latest load events. Evictions are counted.
+- **Log capture.** With a sink or a live channel, capture raises the max log level to info. Without either, logger setup is untouched.

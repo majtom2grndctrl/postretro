@@ -125,7 +125,9 @@ Level-load line C (`[Startup] …`) top-level stages are disjoint, consecutive a
 
 `settle_hold` closes on the frame that decides the release, and `reveal` at the reveal edge, a timed-out reveal included. A load beside a running level (§4) logs `load_dispatch, bundle_ready, bundle_held, commit_checks, running_release, commit_frame, settle_hold, reveal, first_level_frame`: `bundle_held` is how long the ready bundle waited for its caller, its checks run before the running level's release, and `commit_frame` then carries no `commit_checks`.
 
-Every startup line, unload and geometry install is also a typed telemetry event carrying its load's generation (`development_guide.md` §6.5). Geometry install is emitted once the load can no longer be cancelled. Marks that `StartupTimings` cannot carry log their own lines. Every set build logs `[Renderer] Geometry install timing:` with its geometry phases (buffers and SH streaming init, SDF atlas and compose family, lightmap and SDF shadow, BVH and cull, `other`); for a load it logs from the upload thread. The renderer never sees app-side timing types. Unload logs its own `[Startup] unload_level=` line: in the loading-screen order it runs before the next load resets the level timings, and beside a running level it falls inside `running_release`.
+Marks that `StartupTimings` cannot carry log their own lines. Every set build logs `[Renderer] Geometry install timing:` with its geometry phases (buffers and SH streaming init, SDF atlas and compose family, lightmap and SDF shadow, BVH and cull, `other`); for a load it logs from the upload thread. The renderer never sees app-side timing types. Unload logs its own `[Startup] unload_level=` line: in the loading-screen order it runs before the next load resets the level timings, and beside a running level it falls inside `running_release`.
+
+Each of these lines is also a telemetry event carrying its load's generation (`development_guide.md` §6.5). Geometry install emits only once its load can no longer be cancelled.
 
 ---
 

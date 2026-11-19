@@ -312,9 +312,9 @@ presented. Presentation goes through a `Reporter` trait (`reporter.rs`) with two
 lines plus discrete percent/ETA lines, and a `TuiReporter` (`tui.rs` and its submodules) that drives a
 ratatui terminal UI when stdin, stdout, and stderr are all TTYs. The orchestrator calls the reporter
 per stage (begin → optionally declare a progress handle → finish or skip) and never assumes which
-frontend is active. With `POSTRETRO_TELEMETRY` set, a wrapper around either frontend emits bake stage
-events and a bake summary without changing what the frontend prints (`development_guide.md` §6.5).
-Stage durations come from the summary, because stage transitions overlap under the TUI.
+frontend is active. With `POSTRETRO_TELEMETRY` set, stage transitions and the build summary also emit
+telemetry events, without changing either frontend's output (`development_guide.md` §6.5).
+Event durations come from the summary: stage transitions overlap under the TUI.
 
 - **Governor** (`governor.rs`) is the single cooperative gate for pause/resume and core-throttle. Serial
   loops call `checkpoint()` (parks while paused); parallel work items call `enter()` exactly once at

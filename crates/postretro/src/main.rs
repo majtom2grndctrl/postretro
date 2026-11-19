@@ -2,7 +2,7 @@
 // See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
 // Per-tick navigation-agent steering: replan budget, waypoint following, and
-// separation, built on the agent controller and `nav::find_path_from`.
+// separation, built on the agent controller and `nav::find_path_from_in`.
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
 mod app;

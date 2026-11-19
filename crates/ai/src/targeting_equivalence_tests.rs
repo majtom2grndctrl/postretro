@@ -1,8 +1,8 @@
-// Live target selection against today's every-pawn scan, kept as a test-only
+// Live target selection against the every-pawn scan the pawn index replaced, kept as a test-only
 // reference (`targeting::reference`): the same stride-pricing nearest, selected
 // target, fresh LOS verdict and retaliation latch, across randomized scenes
 // and the named edge classes.
-// See: context/lib/entity_model.md §7c · context/plans/in-progress/perf-ai-tick-cost
+// See: context/lib/entity_model.md §7c
 
 use super::*;
 use crate::targeting::{self, TargetCandidate, TargetOffers, TargetPawn, TargetSelection};
@@ -464,6 +464,62 @@ fn base_scene() -> (Scene, EntityId, EntityId) {
     (scene, player, peer)
 }
 
+/// The reference scan's fresh selection: (target, retaliation latch).
+fn reference_choice(scene: &Scene) -> (Option<EntityId>, Option<EntityId>) {
+    let registry = &scene.registry;
+    let live = LiveFactionSentiment::new(&scene.factions, &scene.overlay);
+    let from = registry
+        .get_component::<Transform>(scene.enemy)
+        .unwrap()
+        .position;
+    let faction = crate::compute::entity_faction(registry, scene.enemy);
+    let offers = targeting::reference::target_offers(
+        registry,
+        &live,
+        from,
+        faction,
+        Some(scene.enemy),
+        None,
+    );
+    let mut perception = |target: TargetPawn| {
+        Some(perception::RawTargetPerception {
+            target: target.entity,
+            visible: true,
+            enemy_eye: from,
+            target_aim: target.position,
+        })
+    };
+    let selection = targeting::reference::select_target_with_attacker_ledger(
+        None,
+        &offers,
+        registry,
+        &live,
+        Some(scene.enemy),
+        faction,
+        None,
+        &mut CandidateScope::for_validation(),
+        &scene.ledger,
+        None,
+        scene.retaliation,
+        TICK_MS,
+        &mut perception,
+    );
+    (
+        selection.map(|selection| selection.target.entity),
+        selection.and_then(|selection| selection.retaliation_acquired_target),
+    )
+}
+
+/// Give the scene's enemy an archetype tolerance, which outranks the faction
+/// pair's (alpha toward alpha declares none: `f32::MAX`).
+fn tolerate(scene: &mut Scene, tolerance: f32) {
+    scene
+        .registry
+        .entity_state_mut(scene.enemy)
+        .unwrap()
+        .set(ARCHETYPE_TOLERANCE_STATE_FIELD, tolerance);
+}
+
 fn attack(scene: &mut Scene, slot: usize, attacker: EntityId, damage: f32) {
     scene.ledger[slot] = Some(RecentAttacker {
         attacker,
@@ -483,7 +539,13 @@ fn named_edge_scenes_match_the_reference() {
 
     // A non-hostile peer admitted only by retaliation over tolerance (4).
     let (mut scene, _, peer) = base_scene();
+    tolerate(&mut scene, 4.0);
     attack(&mut scene, 0, peer, 10.0);
+    assert_eq!(
+        reference_choice(&scene),
+        (Some(peer), Some(peer)),
+        "the peer ranks"
+    );
     assert_live_matches_reference(&scene, "over-tolerance allied attacker");
     // A hostile ledger attacker beyond the nearest hostile.
     let (mut scene, player, _) = base_scene();
@@ -509,8 +571,14 @@ fn named_edge_scenes_match_the_reference() {
     let b = peer_brain(&mut scene.registry, Vec3::new(0.0, 0.0, -4.0), 50.0);
     set_faction(&mut scene.registry, a, ALPHA);
     set_faction(&mut scene.registry, b, ALPHA);
+    tolerate(&mut scene, 4.0);
     attack(&mut scene, 0, b, 10.0);
     attack(&mut scene, 1, a, 10.0);
+    assert_eq!(
+        reference_choice(&scene),
+        (Some(a), Some(a)),
+        "equal ranks: the earlier in scan order"
+    );
     assert_live_matches_reference(&scene, "equal-rank attackers");
 
     // A candidacy predicate and failed LOS rejecting the nearest several.

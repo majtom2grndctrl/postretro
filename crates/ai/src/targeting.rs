@@ -47,9 +47,9 @@ pub(super) struct TargetSelection {
     pub(super) retaliation_acquired_target: Option<EntityId>,
 }
 
-/// Pure nearest sentiment-hostile candidate plus the stack-only scan context
-/// needed to replay raw candidates on a due acquisition tick. The replay keeps
-/// the hot path allocation-free; only `nearest` prices acquisition stride.
+/// Pure nearest sentiment-hostile candidate plus the origin and exclusion a due
+/// acquisition tick needs to walk the pass's hostile buckets again. Only
+/// `nearest` prices acquisition stride.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TargetOffers {
     pub(super) nearest: Option<TargetCandidate>,
@@ -211,7 +211,7 @@ pub(super) fn selected_target_alive(registry: &EntityRegistry, target: EntityId)
         && crate::scripting_systems::health::is_damage_target_eligible(registry, target)
 }
 
-/// Choose from a raw offer set on an acquisition tick. Authored candidacy and
+/// Choose from the pass's pawn index on an acquisition tick. Authored candidacy and
 /// engine-floor LOS both narrow fresh eligibility, while `offers.nearest` stays
 /// untouched for stride pricing. The retained candidate is deliberately supplied
 /// separately and never passes either fresh-acquisition gate.
@@ -322,6 +322,9 @@ pub(super) fn select_target_with_attacker_ledger(
             walk.push((distance_xz(pawn.position, offers.from), position));
         }
     }
+    // A full sort, though the walk usually stops at the first pawn: it is
+    // over hostile pawns only, allocation-free, and cheap beside the refresh
+    // and line of sight it orders. A lazy selection waits on a profile.
     walk.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut nearest_distance_eligible: Option<(EligibleCandidate, u32)> = None;
     for &(_, position) in walk.iter() {
@@ -330,6 +333,9 @@ pub(super) fn select_target_with_attacker_ledger(
             break;
         }
     }
+    // The candidacy and perception callbacks below must not reach the index
+    // either; release the walk before them all the same.
+    drop(walk);
     // Where the walk stopped, in walk order; past it nothing was evaluated.
     let walked_past = |pawn: &IndexedPawn, position: u32| match nearest_distance_eligible {
         Some((eligible, stop)) => {

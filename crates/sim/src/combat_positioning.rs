@@ -25,6 +25,12 @@ mod uncached_reference;
 
 #[cfg(test)]
 pub(crate) use scoring::{PLACEMENT_WORK, PlacementWork};
+
+/// Whether a batch of `queries` shares target-side placement work.
+#[cfg(test)]
+pub(crate) fn shares_placement_work(queries: &[CombatQuery<'_>]) -> bool {
+    placement_cache::BatchPlacements::for_batch(queries).is_some()
+}
 #[cfg(test)]
 pub(crate) use uncached_reference::select_combat_positions_batch_uncached;
 

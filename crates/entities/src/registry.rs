@@ -2782,7 +2782,9 @@ mod tests {
 }
 
 /// Test-only count of whole-column walks on this thread, for proofs that a
-/// pass's walks do not scale with how many entities it serves.
+/// pass's walks do not scale with how many entities it serves. It counts
+/// `iter_with_kind`, `for_each_with_kind_mut`, `for_each_with_kind_mut_reading`
+/// and `for_each_defense_layers_lent`; other slot walks are not counted.
 #[cfg(any(test, feature = "test-support"))]
 pub mod column_walks {
     use std::cell::Cell;

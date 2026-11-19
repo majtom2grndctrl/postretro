@@ -253,3 +253,40 @@ fn region_lookup_on_a_large_level_examines_only_nearby_regions() {
         "some samples were off-mesh and snapped"
     );
 }
+
+// A rect stored with min past max decodes inverted: no point lies inside it,
+// yet the snap still measures to it, so the index must file it.
+#[test]
+fn indexed_lookup_equals_linear_scan_with_inverted_rects() {
+    let graph = NavGraph::from_section(&NavMeshSection {
+        version: NAVMESH_VERSION,
+        origin: [3.0, 0.0, -2.0],
+        cell_size: 0.7,
+        dim_x: 12,
+        dim_z: 12,
+        agent_radius: 0.3,
+        agent_height: 1.8,
+        step_height: 0.4,
+        max_slope_deg: 45.0,
+        regions: vec![
+            region(4, 0, 0, 4, (0.0, 0.25)),
+            region(5, 3, 9, 0, (0.0, 0.25)),
+            region(3, 11, 2, 6, (1.0, 1.25)),
+        ],
+        portals: Vec::new(),
+        gates: Vec::new(),
+        links: Vec::new(),
+    });
+    let mut rng = Lcg(19);
+    let mut snapped = 0;
+    for _ in 0..20_000 {
+        let point = Vec3::new(
+            rng.range(1.0, 13.0),
+            rng.range(-1.0, 2.0),
+            rng.range(-4.0, 8.0),
+        );
+        assert_matches_linear(&graph, point);
+        snapped += usize::from(graph.resolve_region_at(point).is_some());
+    }
+    assert!(snapped > 0, "some points snap to an inverted rect");
+}

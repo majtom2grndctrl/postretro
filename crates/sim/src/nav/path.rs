@@ -609,8 +609,9 @@ fn astar_corridor(
 }
 
 /// The A* search of [`astar_corridor`]: the node that closes the route, read
-/// back through `scratch`, or `None` when disconnected. It allocates nothing
-/// once `scratch` has grown to the graph.
+/// back through `scratch`, or `None` when disconnected. Once `scratch` has
+/// grown to the graph and its heap to the largest frontier seen, it allocates
+/// nothing.
 fn astar_search(
     scratch: &mut NavScratch,
     graph: &NavGraph,

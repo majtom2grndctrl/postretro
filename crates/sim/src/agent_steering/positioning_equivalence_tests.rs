@@ -2,7 +2,7 @@
 // before the per-batch placement cache), kept test-only: every assignment's
 // slot, score terms, generation index and incumbency, across randomized scenes
 // in the door rig's two rooms.
-// See: context/lib/entity_model.md §7c · context/plans/in-progress/perf-ai-tick-cost
+// See: context/lib/entity_model.md §7c
 
 use super::*;
 use crate::combat_positioning::{
@@ -589,4 +589,64 @@ fn a_slot_on_two_targets_rings_keeps_each_targets_route_verdict() {
     assert_batch_matches_uncached(&queries, &mut NavScratch::new(), "one slot, two targets");
     let reversed = [queries[1], queries[0]];
     assert_batch_matches_uncached(&reversed, &mut NavScratch::new(), "the other order");
+}
+
+// A batch whose queries read different worlds shares no placement work: one
+// sees the door open and one shut (same movers, different gates), then each
+// carries its own agent slice. Sharing (8, 5)'s route verdict to the east
+// target across them would hand the shut-door query the open door's answer.
+#[test]
+fn queries_reading_different_worlds_do_not_share_placement_work() {
+    let mut rig = closed_door();
+    rig.tick();
+    let world = low_wall_world();
+    let target = Vec3::new(12.0, REST_Y, 5.0);
+    let enemies = [1, 2].map(|claimant| Enemy {
+        claimant,
+        position: Vec3::new(2.0, REST_Y, 8.0 - claimant as f32),
+        target,
+        eye: HIGH_EYE,
+        standoff: 4.0,
+        slot: None,
+        ring: None,
+    });
+    let others = enemies.map(|enemy| CombatAgentSnapshot {
+        claimant_id: enemy.claimant,
+        position: enemy.position,
+    });
+    let open = crate::nav::MoverNav {
+        gate: crate::nav::NavGate::OPEN,
+        movers: &rig.colliders,
+        poses: &rig.movers,
+    };
+    let shut = crate::nav::MoverNav {
+        gate: rig.gate(),
+        movers: &rig.colliders,
+        poses: &rig.movers,
+    };
+    let queries = [
+        query(&enemies[0], &others, &rig, &world, open),
+        query(&enemies[1], &others, &rig, &world, shut),
+    ];
+    assert!(!crate::combat_positioning::shares_placement_work(&queries));
+    let assignments = assert_batch_matches_uncached(&queries, &mut NavScratch::new(), "two gates");
+    let west_slot = |assignment: &CombatAssignment| {
+        assignment
+            .candidate
+            .is_some_and(|candidate| candidate.position.x < 10.0)
+    };
+    assert!(
+        west_slot(&assignments[0]),
+        "the open door lets a west slot reach the target"
+    );
+    assert!(!west_slot(&assignments[1]), "the shut door does not");
+
+    // One world, but each query carries its own agent slice.
+    let own = [[others[1]], [others[0]]];
+    let queries = [
+        query(&enemies[0], &own[0], &rig, &world, open),
+        query(&enemies[1], &own[1], &rig, &world, open),
+    ];
+    assert!(crate::combat_positioning::shares_placement_work(&queries));
+    assert_batch_matches_uncached(&queries, &mut NavScratch::new(), "own agent slices");
 }

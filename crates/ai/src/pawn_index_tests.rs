@@ -1,7 +1,7 @@
 // The faction-first pawn index through the AI pass: rebuilt every pass (P1),
 // refreshing only the candidates a due selection must inspect, and walking the
 // registry the same number of times whatever the enemy count.
-// See: context/lib/entity_model.md §7c · context/plans/in-progress/perf-ai-tick-cost
+// See: context/lib/entity_model.md §7c
 
 use std::cell::RefCell;
 
@@ -133,7 +133,7 @@ fn a_pass_after_pawn_changes_selects_what_the_reference_scan_selects() {
     // The aftermath of tick 1's apply.
     registry.despawn(player).unwrap();
     let newcomer = peer(&mut registry, Vec3::new(1.0, 0.0, 0.0), 3.0);
-    assert_ne!(newcomer, player, "the reused slot carries a new generation");
+    assert_ne!(newcomer, player, "a new id, wherever the registry seats it");
     set_faction(&mut registry, turncoat, 0.0);
     sentiment
         .borrow_mut()
@@ -326,4 +326,19 @@ fn targeting_ignores_non_pawn_entities_and_walks_columns_once_per_pass() {
         walks_1, walks_64,
         "column walks per pass ignore the brain count"
     );
+}
+
+// The index rebuilds every pass; once its buffers have grown to the level's
+// pawns, a rebuild allocates nothing.
+#[test]
+fn a_warm_index_rebuild_allocates_nothing() {
+    let (registry, _) = chase_wave(32, 100);
+    let mut index = PawnIndex::default();
+    index.rebuild(&registry);
+    index.rebuild(&registry);
+    let snapshot = crate::alloc_probe::AllocSnapshot::arm();
+    index.rebuild(&registry);
+    let allocations = snapshot.allocs_since();
+    assert_eq!(allocations, 0, "a warm rebuild allocated");
+    assert_eq!(index.entities().count(), 33, "the player and every brain");
 }

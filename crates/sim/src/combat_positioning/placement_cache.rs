@@ -5,7 +5,8 @@
 //! agents. Nothing outlives the batch: movers, gates and agents move between
 //! batches.
 //!
-//! See: context/lib/entity_model.md §7c · context/lib/entity_model.md §9
+//! See: context/lib/entity_model.md §7c (combat slots) · §9 (its named
+//! exception for this per-batch proximity query)
 
 use std::collections::HashMap;
 
@@ -130,7 +131,13 @@ struct PeerGrid<'a> {
 
 impl<'a> PeerGrid<'a> {
     fn build(agents: &'a [CombatAgentSnapshot], spacing: f32) -> Option<Self> {
-        if !spacing.is_finite() || spacing <= 0.0 {
+        // Outside a sane range a cell walk could underflow the spacing test or
+        // span unbounded cells; the full scan answers those batches instead.
+        if !(spacing.is_normal()
+            && (spacing * spacing).is_normal()
+            && spacing > 0.0
+            && spacing < 1.0e6)
+        {
             return None;
         }
         let mut grid = Self {
@@ -171,6 +178,14 @@ impl<'a> PeerGrid<'a> {
         let x1 = self.cell(position.x + self.spacing).saturating_add(1);
         let z0 = self.cell(position.z - self.spacing).saturating_sub(1);
         let z1 = self.cell(position.z + self.spacing).saturating_add(1);
+        if x1.saturating_sub(x0) > 8 || z1.saturating_sub(z0) > 8 {
+            // A coordinate far enough out for `p ± spacing` to round by whole
+            // cells: scan everything.
+            return (
+                Direct.clear_against(query, self.agents, position, self.spacing),
+                self.agents.len(),
+            );
+        }
         let mut examined = 0;
         for x in x0..=x1 {
             let start = self

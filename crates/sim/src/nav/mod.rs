@@ -5,9 +5,11 @@
 mod gate;
 mod path;
 mod region_index;
-// One-shot path queries. `find_path_from` is the production entry: steering, AI
-// reachability and combat scoring route from a body's position and ground.
-// `find_path_gated` assumes world ground, and `find_path` also ignores gates.
+// Path queries. `find_path_from_in` is the production entry: steering, AI
+// reachability and combat scoring route from a body's position and ground,
+// searching in a caller-owned `NavScratch`. `find_path_gated_in` assumes world
+// ground. `find_path_from`, `find_path_gated` and `find_path` (which also
+// ignores gates) are one-off wrappers over a fresh scratch.
 pub(crate) use gate::NavMoverBound;
 pub use gate::{MoverNav, NavGate, install_mover_records};
 pub use path::{
@@ -585,7 +587,7 @@ impl NavGraph {
     /// eroded wall margin.
     ///
     /// This is the routing definition of "which region does this world position
-    /// belong to": the route queries (`find_path_from` and its wrappers) resolve
+    /// belong to": the route queries (`find_path_from_in` and the wrappers over it) resolve
     /// the goal through it, and the start too unless the body stands on a lift
     /// it can ride ([`Self::route_mover`]). The steering replan gates use it so
     /// a target skirting in and out of the eroded band does not flap between

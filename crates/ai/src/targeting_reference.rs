@@ -1,7 +1,7 @@
 // Test-only reference: enemy target selection as it ran before the
 // faction-first pawn index, walking every pawn per enemy. The live selection
 // must return what this returns.
-// See: context/plans/in-progress/perf-ai-tick-cost (pawn index)
+// See: context/lib/entity_model.md §7c
 
 use super::*;
 use postretro_entities::{ComponentKind, EntityStateComponent};

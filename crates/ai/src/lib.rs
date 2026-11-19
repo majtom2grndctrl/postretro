@@ -619,7 +619,15 @@ where
     // previous pass's apply and before compute borrows the registry for the
     // rest of it. Unlike the snapshots, quiescent brains stay: they remain
     // candidates.
-    pawns.rebuild(registry);
+    {
+        let _stage = ai_stage(cpu, SimStage::AiTargeting);
+        if snapshots.is_empty() {
+            // No enemy selects this pass: skip the registry walk.
+            pawns.clear();
+        } else {
+            pawns.rebuild(registry);
+        }
+    }
 
     // The live view exists only for compute. `apply_outcomes` can invoke an
     // impact policy which mutates the overlay, so retaining this Ref across the

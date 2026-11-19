@@ -1,7 +1,7 @@
 // Multi-arena row: what a spread wave and a level's off-arena population cost
 // the AI and steering ticks on a realistic nav graph (4,216 regions). It proves
 // nothing and only prints.
-// See: context/plans/in-progress/perf-ai-tick-cost (Manual: multi-arena row)
+// See: context/lib/testing_guide.md §Resource bounds · context/lib/rendering_pipeline.md §12
 //
 // Run release, single-threaded, nothing heavy beside it:
 //   cargo test --release -p postretro-ai --lib multi_arena_row -- --ignored --nocapture --test-threads=1

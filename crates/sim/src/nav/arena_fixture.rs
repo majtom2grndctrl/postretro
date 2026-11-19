@@ -2,7 +2,7 @@
 // arenas in a row along +X, joined by 40 m corridors 4 m wide, on 2×2 m nav
 // tiles: 4,216 regions and about 8.3k portals (env-volumes has 4,326). Walls
 // are 0.8 m: bodies collide with them and sight passes over them.
-// See: context/plans/in-progress/perf-ai-tick-cost (multi-arena row, P3, P5)
+// See: context/lib/build_pipeline.md §Navigation bake
 
 use glam::Vec3;
 use postretro_level_format::navmesh::{NAVMESH_VERSION, NavMeshSection, NavPortal, NavRegion};

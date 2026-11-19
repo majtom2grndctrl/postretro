@@ -1,7 +1,7 @@
 // Test-only reference: the A* search exactly as it ran before route scratch,
 // allocating and filling graph-sized arrays per query. Route queries with a
 // reused `NavScratch` must return what this returns.
-// See: context/plans/in-progress/perf-ai-tick-cost (route scratch)
+// See: context/lib/build_pipeline.md §Navigation bake
 
 use std::collections::BinaryHeap;
 

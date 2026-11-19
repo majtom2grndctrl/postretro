@@ -2,7 +2,7 @@
 // placement cache, grounding, testing and routing every candidate for every
 // enemy. The batch run with this scorer is the uncached batch the live one
 // must match.
-// See: context/plans/in-progress/perf-ai-tick-cost (positioning cache)
+// See: context/lib/entity_model.md §7c
 
 use glam::Vec3;
 

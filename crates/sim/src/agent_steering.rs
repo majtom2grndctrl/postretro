@@ -4,7 +4,7 @@
 // controller.
 //
 // This is the primary production caller for the route query
-// (`nav::find_path_from`) and the agent component; Ai reachability and
+// (`nav::find_path_from_in`) and the agent component; Ai reachability and
 // `combat_positioning` query routes too. It owns the replan policy (per-tick
 // budget, admitted gate-owed first, then target drift, then staleness), the
 // waypoint-following loop and the O(n²) separation pass. Siblings take the

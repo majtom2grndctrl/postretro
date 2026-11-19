@@ -58,12 +58,7 @@ impl PawnIndex {
     /// transform that no inventory owns, as `targeting::target_candidate`
     /// admits one. Two column walks, whatever the enemy count.
     pub(crate) fn rebuild(&mut self, registry: &EntityRegistry) {
-        self.pawns.clear();
-        self.buckets.clear();
-        self.members.clear();
-        self.bucket_of.clear();
-        self.by_entity.clear();
-        self.bucket_counts.clear();
+        self.clear();
 
         let movement_holders = registry.iter_with_kind(ComponentKind::PlayerMovement);
         let brain_only_holders =
@@ -118,6 +113,16 @@ impl PawnIndex {
         let mut walk = self.walk.borrow_mut();
         walk.clear();
         walk.reserve(self.pawns.len());
+    }
+
+    /// Empty the index for a pass with no enemy to serve.
+    pub(crate) fn clear(&mut self) {
+        self.pawns.clear();
+        self.buckets.clear();
+        self.members.clear();
+        self.bucket_of.clear();
+        self.by_entity.clear();
+        self.bucket_counts.clear();
     }
 
     /// A test-only index over `registry`.

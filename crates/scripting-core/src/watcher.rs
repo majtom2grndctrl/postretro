@@ -1,7 +1,7 @@
 //! Dev-mode hot-reload plumbing for the scripting subsystem.
 //!
 //! Compiled only in debug builds (see `cfg` gate below and the `mod`
-//! declaration in `scripting::mod`). In release builds, no watcher exists and
+//! declaration in `lib.rs`). In release builds, no watcher exists and
 //! `ScriptRuntime::drain_reload_requests` is a no-op.
 //! See: `context/lib/scripting.md`
 //!
@@ -34,7 +34,7 @@
 //! work. The watcher records changed paths only; `ScriptRuntime` decides
 //! whether those paths affect the active mod-init dependency set.
 
-// Belt-and-braces: the `mod watcher;` in `scripting::mod` is already
+// Belt-and-braces: the `mod watcher;` in `lib.rs` is already
 // `#[cfg(debug_assertions)]`, but gating the module itself ensures a release
 // build can't pull this file in via any future path. Clippy flags the pair
 // as duplicated attributes — silenced deliberately.

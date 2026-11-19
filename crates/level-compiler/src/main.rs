@@ -1355,17 +1355,8 @@ where
     })
 }
 
-/// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn
-/// data scripts.
-///
-// TODO(scripting-tools-dedup): duplicates `TsCompilerPath::detect` in
-// `crates/scripting-core/src/watcher.rs`, reached by the engine through a
-// debug-only compatibility re-export. The level-compiler still cannot import
-// the engine-side wrapper. The matching subprocess invocation lives in
-// `run_ts_compiler` in the watcher module. Consolidate into a
-// shared `postretro-scripts-tools` crate when the level-compiler gains more
-// scripting integration. See:
-// context/plans/drafts/scripting-tools-dedup/index.md
+/// True when a source `scripts-build` compiles from is newer than the binary.
+/// Without a checkout, as in a bundle, nothing is stale.
 fn is_compiler_stale(binary_path: &Path) -> bool {
     let source_dirs = compiler_freshness_roots();
     if source_dirs.iter().all(|source_dir| !source_dir.is_dir()) {
@@ -1465,6 +1456,17 @@ fn built_executable(messages: &[u8], bin: &str) -> Option<PathBuf> {
         .next_back()
 }
 
+/// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn
+/// data scripts: beside this executable, then on `PATH`. With the checkout
+/// present, Cargo rebuilds it when missing or stale, and always in tests.
+///
+// TODO(scripting-tools-dedup): the first two steps repeat
+// `TsCompilerPath::detect` in `crates/scripting-core/src/watcher.rs`, and
+// `compile_worldspawn_data_script` mirrors its `run_ts_compiler`. That module is
+// debug-only and its crate links both script VMs, so prl-build cannot reuse
+// it. Consolidate into a shared `postretro-scripts-tools` crate when the
+// level-compiler gains more scripting integration. See:
+// context/plans/drafts/scripting-tools-dedup/index.md
 fn find_scripts_build() -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "scripts-build.exe"
@@ -1501,13 +1503,20 @@ fn find_scripts_build() -> Option<PathBuf> {
             Some(p) => is_compiler_stale(p),
         };
 
-    if needs_build {
+    let workspace = workspace_root();
+    if needs_build && !workspace.join("Cargo.toml").is_file() {
+        log::warn!(
+            "[prl-build] cannot rebuild scripts-build: no checkout at {}",
+            workspace.display()
+        );
+    } else if needs_build {
         log::info!("[prl-build] scripts-build is missing or stale. Rebuilding via cargo...");
         let mut cmd = std::process::Command::new("cargo");
-        // The manifest path lets the rebuild run from any working directory.
-        cmd.arg("build")
-            .arg("--manifest-path")
-            .arg(workspace_root().join("Cargo.toml"))
+        // Run from the checkout, not the caller's directory (`postretro-tool`
+        // uses the project root): Cargo finds `.cargo/config.toml`, and rustup
+        // `rust-toolchain.toml`, from the working directory, not the manifest.
+        cmd.current_dir(&workspace)
+            .arg("build")
             .arg("-p")
             .arg("postretro-script-compiler")
             .arg("--bin")

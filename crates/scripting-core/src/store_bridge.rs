@@ -19,6 +19,40 @@ use crate::slot_table::{
     SlotValue, StoreDeclaration, StoreDeclarationSet,
 };
 
+/// Where a declared slot's value is saved, from its authored `persist`.
+/// `SlotSchema.persist` records only whether it is saved (`!= None`); the run
+/// scope travels as `StoreDeclaration::run_scoped` membership.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PersistScope {
+    /// `persist` absent or `false`: never saved.
+    #[default]
+    None,
+    /// `persist: true`: a global in the world file, a per-owner slot in the
+    /// character.
+    Durable,
+    /// `persist: "run"`: a global in the current run. Refused on per-owner
+    /// slots, because a host never saves a guest's run state.
+    Run,
+}
+
+impl PersistScope {
+    /// Parse an authored `persist` value. Absent and `null` read as `false`.
+    fn from_authored(slot_name: &str, value: Option<&Value>) -> Result<Self, ScriptError> {
+        match value {
+            None | Some(Value::Bool(false)) => Ok(Self::None),
+            Some(Value::Bool(true)) => Ok(Self::Durable),
+            Some(Value::String(scope)) if scope == "run" => Ok(Self::Run),
+            Some(other) => Err(ScriptError::InvalidArgument {
+                reason: format!(
+                    "defineStore: slot `{slot_name}` has unknown `persist` value `{other}`; accepted \
+                     values are `true` (world file, or the character for a `perOwner` slot), \
+                     `\"run\"` (the current run), or `false`"
+                ),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SlotSchemaInput {
@@ -29,7 +63,7 @@ struct SlotSchemaInput {
     #[serde(default)]
     range: Option<Value>,
     #[serde(default)]
-    persist: bool,
+    persist: Option<Value>,
     #[serde(default)]
     readonly: bool,
     #[serde(default)]
@@ -371,14 +405,19 @@ pub fn store_declaration(namespace: &str, schema: Value) -> Result<StoreDeclarat
         serde_json::from_value(schema).map_err(|error| invalid_schema(None, error))?;
 
     let mut records = Vec::with_capacity(inputs.len());
+    let mut run_scoped = BTreeSet::new();
     for (slot_name, input) in inputs {
-        let record = validate_slot_schema(&slot_name, input)?;
+        let (record, scope) = validate_slot_schema(&slot_name, input)?;
+        if scope == PersistScope::Run {
+            run_scoped.insert(slot_name.clone());
+        }
         records.push((slot_name, record));
     }
 
     Ok(StoreDeclaration {
         namespace: namespace.to_string(),
         records,
+        run_scoped,
     })
 }
 
@@ -400,7 +439,7 @@ fn state_refs_for(declaration: &StoreDeclaration) -> StoreStateRefs {
 fn validate_slot_schema(
     slot_name: &str,
     input: SlotSchemaInput,
-) -> Result<SlotRecord, ScriptError> {
+) -> Result<(SlotRecord, PersistScope), ScriptError> {
     let SlotSchemaInput {
         slot_type,
         default,
@@ -423,6 +462,16 @@ fn validate_slot_schema(
     if slot_name.contains(':') {
         return Err(ScriptError::InvalidArgument {
             reason: format!("defineStore: slot name `{slot_name}` must not contain `:`"),
+        });
+    }
+    let persist = PersistScope::from_authored(slot_name, persist.as_ref())?;
+    if per_owner && persist == PersistScope::Run {
+        return Err(ScriptError::InvalidArgument {
+            reason: format!(
+                "defineStore: slot `{slot_name}` may not combine `perOwner: true` with \
+                 `persist: \"run\"`; a host never saves a guest's run state, so a per-owner slot \
+                 persists in its owner's character with `persist: true`"
+            ),
         });
     }
     if per_owner && accumulate.is_some() {
@@ -537,17 +586,18 @@ fn validate_slot_schema(
         }
     };
 
-    Ok(SlotRecord::new(SlotSchema {
+    let record = SlotRecord::new(SlotSchema {
         slot_type,
         default: Some(default),
         range,
-        persist,
+        persist: persist != PersistScope::None,
         readonly,
         ownership: SlotOwnership::Mod,
         network,
         per_owner,
         accumulate,
-    }))
+    });
+    Ok((record, persist))
 }
 
 fn replication_scope_for(
@@ -1166,6 +1216,65 @@ mod tests {
                 message.contains(expected),
                 "diagnostic must explain the invalid declaration: {message}"
             );
+        }
+    }
+
+    // Run scope is a global-only `persist` value. Both scopes keep
+    // `SlotSchema.persist` true; only `run_scoped` membership tells them apart.
+    #[test]
+    fn persist_run_scope_declaration_rules() {
+        let declaration = store_declaration(
+            "progress",
+            serde_json::json!({
+                "generatorOn": { "type": "boolean", "default": false, "persist": "run" },
+                "episode2": { "type": "boolean", "default": false, "persist": true },
+                "xp": { "type": "number", "default": 0, "perOwner": true, "persist": true },
+                "scratch": { "type": "number", "default": 0, "persist": false },
+                "plain": { "type": "number", "default": 0 }
+            }),
+        )
+        .expect("`persist: \"run\"` is accepted on a global slot");
+        assert_eq!(
+            declaration.run_scoped,
+            BTreeSet::from(["generatorOn".to_string()])
+        );
+        let schemas: BTreeMap<_, _> = declaration.records.into_iter().collect();
+        assert!(schemas["generatorOn"].schema.persist);
+        assert!(schemas["episode2"].schema.persist);
+        assert!(schemas["xp"].schema.persist);
+        assert!(!schemas["scratch"].schema.persist);
+        assert!(!schemas["plain"].schema.persist);
+
+        for (slot, schema, expected) in [
+            (
+                "runXp",
+                serde_json::json!({
+                    "type": "number", "default": 0, "perOwner": true, "persist": "run"
+                }),
+                "may not combine `perOwner: true` with `persist: \"run\"`",
+            ),
+            (
+                "worldFlag",
+                serde_json::json!({ "type": "boolean", "default": false, "persist": "world" }),
+                "unknown `persist` value `\"world\"`",
+            ),
+            (
+                "countFlag",
+                serde_json::json!({ "type": "boolean", "default": false, "persist": 1 }),
+                "unknown `persist` value `1`",
+            ),
+        ] {
+            let mut store = serde_json::Map::new();
+            store.insert(slot.to_string(), schema);
+            let error = store_declaration("progress", Value::Object(store))
+                .expect_err("the declaration must be refused");
+            assert!(
+                matches!(error, ScriptError::InvalidArgument { .. }),
+                "{error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains(slot), "must name `{slot}`: {message}");
+            assert!(message.contains(expected), "{message}");
         }
     }
 

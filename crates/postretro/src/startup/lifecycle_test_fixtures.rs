@@ -133,6 +133,9 @@ pub(crate) fn test_app() -> App {
             host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker::default(),
             state_store_lifecycle: Default::default(),
             persisted_state: None,
+            saves: Default::default(),
+            boot_connect: None,
+            boot_role_pending: false,
             per_owner_save_timer: Default::default(),
             progress_tracker: ProgressTracker::new(),
             pending_death_events: Vec::new(),
@@ -242,6 +245,7 @@ pub(crate) fn test_app() -> App {
         published_level_identity: None,
         pending_splash_override: None,
         host_spawn_points: Vec::new(),
+        level_spawn_points: Vec::new(),
         spawn_poses: Default::default(),
         script_time: 0.0,
         anim_time: 0.0,
@@ -254,6 +258,7 @@ pub(crate) fn test_app() -> App {
         active_level_source: None,
         active_level_host_named: false,
         level_stopped_by_session_end: false,
+        backdrop_installed: false,
         pending_entry: None,
         text_entry_field: None,
         join_facts: Default::default(),
@@ -261,6 +266,7 @@ pub(crate) fn test_app() -> App {
         client_left_in_control_drain: false,
         client_participated: false,
         received_final_character: None,
+        received_host_loadout: None,
         boot_host_level_missing: false,
         last_relevel: None,
         level_load: None,
@@ -562,6 +568,7 @@ pub(crate) fn install_descriptor_world(
             suppress_host_replicated,
             suppress_boot_pawn: suppress_host_replicated,
             local_carried_loadout: None,
+            spawn_checkpoint: None,
         };
         install_world_cpu(
             handles,
@@ -628,6 +635,7 @@ pub(crate) fn install_capture_world(
         suppress_host_replicated: false,
         suppress_boot_pawn: true,
         local_carried_loadout: None,
+        spawn_checkpoint: None,
     };
     let products = install_world_cpu(
         handles,

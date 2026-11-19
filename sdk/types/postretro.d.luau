@@ -1326,6 +1326,14 @@ export type ModLoading = {
   tree: string | {string},
 }
 
+--- Save slots declared via `ModManifest.saves`: how many characters and runs the frontend can keep. Each count is a whole number from 1 to the engine cap of 16; a larger count is clamped to 16 with a warning, and a missing, fractional or smaller count warns and uses 1.
+export type SavesManifest = {
+  --- Character save slots. A character holds its per-owner `persist: true` slots, its name and its carried gear.
+  characterSlots: number,
+  --- Run save slots. A run holds its character, the level and checkpoint it reached, its `persist: "run"` slots and faction sentiment.
+  runSlots: number,
+}
+
 --- Theme token maps supplied via `ModManifest.theme`. Three category-scoped maps: colors (linear-RGBA), fonts (registered family name), spacing (logical px). Each is optional; overrides merge per-token into the engine default.
 export type ThemeTokens = {
   --- Color tokens: token name → linear-RGBA `[r, g, b, a]`. Optional.
@@ -1707,6 +1715,8 @@ export type ModManifest = {
   maps: {ModMapEntry}?,
   --- Mod-defined frontend menu declaration. Optional; omission clears the mod frontend and presents the engine fallback menu.
   frontend: Frontend?,
+  --- Save slots the mod keeps. Optional; without it the mod gets one character slot and one run slot, created and selected automatically, with that run always active. The engine caps each count at 16.
+  saves: SavesManifest?,
   --- Engine-global reaction definitions. Optional; survive level unload and compose into active level behavior by `levels` tag selectors.
   reactions: {NamedReactionDescriptor}?,
   --- Pure mod-global impact-policy declarations. Optional; `levels` selects map tags, setupLevel events append level-local declarations, and base plus matching last-registered override resolve by author-assigned id. Override filters narrow the base filter.
@@ -1910,6 +1920,24 @@ export type GameStateRefs = {
     weaponCharging: ComputedRef<boolean>,
     weaponCooldownMs: PlayerComputedRef<number>,
     weaponResource: ComputedRef<"none" | "ammo" | "heat" | "cell">,
+  },
+  saves: {
+    character: ComputedRef<number>,
+    characters: StateList<{
+      present: ComputedRef<boolean>,
+      occupied: ComputedRef<boolean>,
+      readable: ComputedRef<boolean>,
+      name: ComputedRef<string>,
+    }>,
+    run: ComputedRef<number>,
+    runs: StateList<{
+      present: ComputedRef<boolean>,
+      occupied: ComputedRef<boolean>,
+      readable: ComputedRef<boolean>,
+      levelName: ComputedRef<string>,
+      characterName: ComputedRef<string>,
+      savedAt: ComputedRef<string>,
+    }>,
   },
   screen: {
     flash: ComputedRef<{number}>,
@@ -3164,8 +3192,10 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: PlayerOwner) 
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
---- a finite-number array. `persist` saves global slots on clean exit. On
---- connected clients, `perOwner = true, persist = true` saves the local
+--- a finite-number array. `persist = true` saves a global slot in
+--- the world file and a per-owner slot in the character; `persist = "run"`
+--- saves a global slot in the current run and is refused on a per-owner slot.
+--- On connected clients, `perOwner = true, persist = true` saves the local
 --- owner's value every ~60 seconds and on clean exit; it travels via that
 --- player's join seed. `readonly` blocks script writes. `perOwner = true` gives each player seat an independent
 --- host-side value and permits only omitted `network` or
@@ -3175,10 +3205,10 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: PlayerOwner) 
 --- `postretro-tool mint-identity <mod>` and keep its durable key
 --- across renames.
 export type StoreSlotSchema = (
-  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, persist: (boolean | "run")?, accumulate: nil? }
   | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
-  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, persist: (boolean | "run")?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, persist: (boolean | "run")?, accumulate: nil? }
   | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
 ) & { [string]: any }
 
@@ -3218,6 +3248,7 @@ export type ModManifestInput = {
   loading: ModLoading?,
   maps: {ModMapEntry}?,
   frontend: Frontend?,
+  saves: SavesManifest?,
   reactions: {NamedReactionDescriptor}?,
   events: {ImpactEvent}?,
   crossings: {CrossingDescriptor}?,
@@ -4009,6 +4040,20 @@ export type PostretroUiModule = {
   hostSession: () -> SystemReactionStep,
   --- Join the co-op host at `session.joinAddress` (IPv4, port optional) from the frontend, answering its password from `session.joinPassword`. Saves the world and character first; `session.connection`, `session.waitReason` and `session.endCause` say how it goes. Waits and refuses as `UI.hostSession()` does. Machine-local.
   joinSession: () -> SystemReactionStep,
+  --- Continue the run in slot `index` (the 1-based `UI.forEach` row of `getGameState().saves.runs`): select its character, then load the level or checkpoint it last reached. A save verb, frontend-only: inside a played level and on a connected client it is refused with a warning. While hosting at the frontend it continues only the host character's own run, and clients follow.
+  continueRun: (index: number) -> SystemReactionStep,
+  --- Start a new run in slot `index` (1-based `UI.forEach` row) at catalog map `level`, with the selected character as it stands: an existing character makes it New Game Plus. Resets run-scoped slots and faction sentiment. Writes only into an empty slot or the selected character's own run. A save verb, frontend-only: refused with a warning inside a played level and on a connected client; permitted while hosting at the frontend.
+  newRun: (index: number, level: string) -> SystemReactionStep,
+  --- Delete the run in slot `index` (1-based `UI.forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
+  deleteRun: (index: number) -> SystemReactionStep,
+  --- Select the character in slot `index` (1-based `UI.forEach` row of `getGameState().saves.characters`). A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
+  selectCharacter: (index: number) -> SystemReactionStep,
+  --- Create a character in empty slot `index` (1-based `UI.forEach` row), named from `ui.textEntry`, and select it. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
+  createCharacter: (index: number) -> SystemReactionStep,
+  --- Delete the character in slot `index` (1-based `UI.forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting.
+  deleteCharacter: (index: number) -> SystemReactionStep,
+  --- Reach checkpoint `name`: the host or single player saves the run at it, then the character and the world file (outside an active run, the character and world file only); a connected client changes nothing. The `player_spawn`s with `checkpoint=<name>` form its arrival set for Continue, respawns and late joiners.
+  checkpoint: (name: string) -> SystemReactionStep,
   --- Set the live directional sentiment from `from` toward `to` at frame end. Negative values degrade the relationship; positive values bond it.
   setSentiment: (from: string, to: string, value: number) -> SystemReactionStep,
   --- Add `delta` to the current live directional sentiment from `from` toward `to` at frame end. Negative deltas degrade the relationship; positive deltas bond it.

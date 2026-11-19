@@ -536,9 +536,10 @@ pub fn host_handle_transport_disconnect(
     closed.and_then(|closed| closed.network_id)
 }
 
-/// A listen host ends its session (`endSession`): every connection that has
-/// participated, held between levels included, first receives its final
-/// character, then every live slot receives the session-ended cause. Each
+/// A listen host ends its session (`endSession`): every bound pawn is
+/// harvested, then every connection that has participated, held between
+/// levels included, receives its final character (per-owner values and its
+/// seat's loadout), then every live slot receives the session-ended cause. Each
 /// remote pawn is torn down as a closed slot's is, but no seat is held: the
 /// caller releases them with the role change. Takes the host endpoint out of
 /// `endpoint` and returns its closing transport, which the caller pumps until
@@ -587,20 +588,26 @@ pub fn end_host_session(
         }
     }
     clients.sort_unstable();
+    // Each final character holds what its pawn holds now, gear picked up
+    // since the last level start included.
+    if let Some(seats) = seat_table.as_deref_mut() {
+        seats.harvest_bound_pawns(registry, life_state_names);
+    }
     for &client_id in &clients {
         if server.is_closed(client_id) || !join_seeds.has_participated(client_id) {
             continue;
         }
-        let Some(seat) = seat_table
-            .as_deref()
-            .and_then(|seats| seats.seat_for_client(client_id))
-        else {
+        let Some((seat, loadout)) = seat_table.as_deref().and_then(|seats| {
+            let seat = seats.seat_for_client(client_id)?;
+            Some((seat, carried_to_wire(seats.carried_state(seat))))
+        }) else {
             continue;
         };
         server.send_control(
             client_id,
             postretro_net::wire::encode(&ServerControlMessage::FinalCharacter {
                 slots: final_character(seat),
+                loadout,
             }),
         );
     }

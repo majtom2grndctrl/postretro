@@ -151,6 +151,7 @@ mod tests {
                     accumulate: None,
                 }),
             )],
+            run_scoped: Default::default(),
         }
     }
 

@@ -232,6 +232,7 @@ impl Level {
                 suppress_host_replicated: false,
                 suppress_boot_pawn: false,
                 local_carried_loadout: None,
+                spawn_checkpoint: None,
             };
             install_world_cpu(
                 handles,

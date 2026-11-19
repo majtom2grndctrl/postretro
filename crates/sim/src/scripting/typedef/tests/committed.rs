@@ -729,7 +729,7 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
     assert!(
         ts.contains("accumulate: (t: TickParams) => RuntimeValue")
             && ts.contains("type: \"number\"; readonly?: boolean;")
-            && ts.contains("readonly?: false; network?: \"shared\"; perOwner?: false; accumulate:")
+            && ts.contains("readonly?: false; network?: \"shared\"; perOwner?: false; persist?: boolean | \"run\"; accumulate:")
             && ts.contains("perOwner?: false")
             && ts.contains("network?: \"ownerPrivate\"; perOwner: true; persist?: boolean; accumulate?: never")
             && !ts.contains("network?: \"shared\" | \"ownerPrivate\"; perOwner: true")
@@ -770,7 +770,7 @@ fn define_store_emits_flattened_handle_and_converged_refs() {
     assert!(
         luau.contains("accumulate: (TickParams) -> RuntimeValue")
             && luau.contains("type: \"number\", readonly: boolean?")
-            && luau.contains("readonly: false?, network: \"shared\"?, perOwner: false?, accumulate:")
+            && luau.contains("readonly: false?, network: \"shared\"?, perOwner: false?, persist: (boolean | \"run\")?, accumulate:")
             && luau.contains("perOwner: false?")
             && luau.contains("network: \"ownerPrivate\"?, perOwner: true, persist: boolean?, accumulate: nil?")
             && !luau.contains("network: (\"shared\" | \"ownerPrivate\")?, perOwner: true")

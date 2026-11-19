@@ -21,10 +21,11 @@ use crate::data_descriptors::{
     drain_mover_defaults_js, drain_mover_defaults_lua, drain_player_events_js,
     drain_player_events_lua, drain_presentation_overlays_js, drain_presentation_overlays_lua,
     drain_presentation_templates_js, drain_presentation_templates_lua, drain_render_profile_js,
-    drain_render_profile_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
-    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
-    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
-    entity_descriptor_from_lua, entity_faction_name_from_js, entity_faction_name_from_lua,
+    drain_render_profile_lua, drain_saves_js, drain_saves_lua, drain_switching_js,
+    drain_switching_lua, drain_theme_js, drain_theme_lua, drain_trigger_pools_js,
+    drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua, drain_ui_trees_js,
+    drain_ui_trees_lua, entity_descriptor_from_js, entity_descriptor_from_lua,
+    entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use crate::error::ScriptError;
 use crate::primitives_registry::ScriptPrimitive;
@@ -497,6 +498,15 @@ pub(super) fn run_mod_init_quickjs(
                 return;
             }
         };
+        let saves = match drain_saves_js(&obj, "default mod manifest export") {
+            Ok(saves) => saves,
+            Err(e) => {
+                out = Err(ScriptError::InvalidArgument {
+                    reason: format!("mod-init: `{source_path}` default mod manifest export `saves` invalid: {e}"),
+                });
+                return;
+            }
+        };
         let fonts = match drain_fonts_js(&obj, "default mod manifest export") {
             Ok(f) => f,
             Err(e) => {
@@ -616,6 +626,7 @@ pub(super) fn run_mod_init_quickjs(
             frontend,
             ui_images,
             loading,
+            saves,
             fonts,
             maps,
             fluids,
@@ -928,6 +939,11 @@ pub(super) fn run_mod_init_luau(
             ),
         }
     })?;
+    let saves = drain_saves_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `saves` invalid: {e}"),
+        }
+    })?;
     let fonts = drain_fonts_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest `fonts` invalid: {e}"),
@@ -1019,6 +1035,7 @@ pub(super) fn run_mod_init_luau(
         frontend,
         ui_images,
         loading,
+        saves,
         fonts,
         maps,
         fluids,
@@ -1152,6 +1169,43 @@ mod tests {
         assert_eq!(luau.ui_images, expected_images);
         assert_eq!(js.loading.tree, vec!["modLoading".to_string()]);
         assert_eq!(luau.loading, js.loading);
+    }
+
+    #[test]
+    fn mod_init_saves_match_in_both_runtimes() {
+        let registry = PrimitiveRegistry::new();
+        let quickjs = QuickJsSubsystem::new(&registry, &crate::quickjs::QuickJsConfig::default())
+            .expect("QuickJS subsystem should initialize");
+        let cases = [
+            ("", "", None),
+            (
+                "saves: { characterSlots: 4, runSlots: 40 },",
+                "saves = { characterSlots = 4, runSlots = 40 },",
+                Some(crate::runtime::SavesManifest {
+                    character_slots: 4,
+                    run_slots: crate::runtime::MAX_RUN_SLOTS,
+                }),
+            ),
+        ];
+        for (js_field, luau_field, expected) in cases {
+            let js = run_mod_init_quickjs(
+                &quickjs,
+                &format!(
+                    "globalThis.__postretroModManifest = {{ name: 'Saves', id: 'saves', version: '1', {js_field} }};"
+                ),
+                "saves.js",
+            )
+            .expect("a saves block never rejects the manifest");
+            let luau = run_mod_init_luau(
+                &[],
+                &format!("return {{ name = 'Saves', id = 'saves', version = '1', {luau_field} }}"),
+                "saves.luau",
+                Path::new("."),
+            )
+            .expect("a saves block never rejects the manifest");
+            assert_eq!(js.saves, expected, "{js_field}");
+            assert_eq!(luau.saves, expected, "{luau_field}");
+        }
     }
 
     #[test]

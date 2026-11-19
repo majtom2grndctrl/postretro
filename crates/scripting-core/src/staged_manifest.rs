@@ -25,10 +25,10 @@ use super::data_descriptors::{
     drain_player_events_js, drain_player_events_lua, drain_presentation_overlays_js,
     drain_presentation_overlays_lua, drain_presentation_templates_js,
     drain_presentation_templates_lua, drain_render_profile_js, drain_render_profile_lua,
-    drain_switching_js, drain_switching_lua, drain_theme_js, drain_theme_lua,
-    drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js, drain_ui_images_lua,
-    drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js, entity_faction_name_from_js,
-    entity_faction_name_from_lua,
+    drain_saves_js, drain_saves_lua, drain_switching_js, drain_switching_lua, drain_theme_js,
+    drain_theme_lua, drain_trigger_pools_js, drain_trigger_pools_lua, drain_ui_images_js,
+    drain_ui_images_lua, drain_ui_trees_js, drain_ui_trees_lua, entity_descriptor_from_js,
+    entity_faction_name_from_js, entity_faction_name_from_lua,
 };
 use super::error::ScriptError;
 use super::luau::LuauConfig;
@@ -362,6 +362,7 @@ fn run_staged_manifest_build(
         frontend: manifest.frontend,
         ui_images: manifest.ui_images,
         loading: manifest.loading,
+        saves: manifest.saves,
         store_declarations: manifest.store_declarations,
         defense: manifest.defense,
         attack_budgets: manifest.attack_budgets,
@@ -683,6 +684,13 @@ fn manifest_from_js_value<'js>(
             ),
         }
     })?;
+    let saves = drain_saves_js(&obj, "default mod manifest export").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export `saves` invalid: {e}"
+            ),
+        }
+    })?;
     let fonts = drain_fonts_js(&obj, "default mod manifest export").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!(
@@ -803,6 +811,7 @@ fn manifest_from_js_value<'js>(
         frontend,
         ui_images,
         loading,
+        saves,
         fonts,
         maps,
         fluids,
@@ -1092,6 +1101,11 @@ fn run_staged_mod_init_luau(
             ),
         }
     })?;
+    let saves = drain_saves_lua(&table, "returned mod manifest").map_err(|e| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest `saves` invalid: {e}"),
+        }
+    })?;
     let fonts = drain_fonts_lua(&table, "returned mod manifest").map_err(|e| {
         ScriptError::InvalidArgument {
             reason: format!("mod-init: `{source_path}` returned mod manifest `fonts` invalid: {e}"),
@@ -1201,6 +1215,7 @@ fn run_staged_mod_init_luau(
         frontend,
         ui_images,
         loading,
+        saves,
         fonts,
         maps,
         fluids,
@@ -2206,6 +2221,108 @@ mod tests {
         );
         assert_eq!(js, expected);
         assert_eq!(luau, expected);
+    }
+
+    // The run-scope rule through the SDK builders in both VMs: `persist: "run"`
+    // lands in the declaration's run-scoped set on a global slot and fails the
+    // build on a per-owner one, naming the slot. The `saves` block rides the
+    // same manifest drain.
+    #[test]
+    fn staged_manifest_carries_run_scope_and_saves_in_both_vms() {
+        let accepted = [
+            (
+                "start-script.js",
+                r#"
+                const run = defineStore("run", {
+                    generatorOn: { type: "boolean", default: false, persist: "run" },
+                    episode2: { type: "boolean", default: false, persist: true },
+                    xp: { type: "number", default: 0, perOwner: true, persist: true },
+                });
+                globalThis.__postretroModManifest = defineMod({
+                    name: "Saves", id: "saves", version: "1",
+                    saves: { characterSlots: 4, runSlots: 3 },
+                    stores: [run],
+                });
+                "#,
+            ),
+            (
+                "start-script.luau",
+                r#"
+                local run = defineStore("run", {
+                    generatorOn = { type = "boolean", default = false, persist = "run" },
+                    episode2 = { type = "boolean", default = false, persist = true },
+                    xp = { type = "number", default = 0, perOwner = true, persist = true },
+                })
+                return defineMod({
+                    name = "Saves", id = "saves", version = "1",
+                    saves = { characterSlots = 4, runSlots = 3 },
+                    stores = { run },
+                })
+                "#,
+            ),
+        ];
+        for (file, source) in accepted {
+            let dir = temp_mod_root(&format!("run_scope_accepted_{file}"));
+            fs::write(dir.join(file), source).unwrap();
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+            let StagedManifestBuildStatus::Built(manifest) = result.status else {
+                panic!(
+                    "{file}: expected built result, got {:?}",
+                    result.diagnostics
+                );
+            };
+            assert_eq!(
+                crate::store_identity::run_scoped_slot_names(&manifest.store_declarations),
+                std::collections::BTreeSet::from(["run.generatorOn".to_string()]),
+                "{file}"
+            );
+            assert_eq!(
+                manifest.saves,
+                Some(crate::runtime::SavesManifest {
+                    character_slots: 4,
+                    run_slots: 3,
+                }),
+                "{file}"
+            );
+        }
+
+        let refused = [
+            (
+                "start-script.js",
+                r#"
+                const hero = defineStore("hero", {
+                    runXp: { type: "number", default: 0, perOwner: true, persist: "run" },
+                });
+                globalThis.__postretroModManifest = defineMod({
+                    name: "Saves", id: "saves", version: "1", stores: [hero],
+                });
+                "#,
+            ),
+            (
+                "start-script.luau",
+                r#"
+                local hero = defineStore("hero", {
+                    runXp = { type = "number", default = 0, perOwner = true, persist = "run" },
+                })
+                return defineMod({ name = "Saves", id = "saves", version = "1", stores = { hero } })
+                "#,
+            ),
+        ];
+        for (file, source) in refused {
+            let dir = temp_mod_root(&format!("run_scope_refused_{file}"));
+            fs::write(dir.join(file), source).unwrap();
+            let result = build_staged_manifest(&dir, 1, &StagedManifestBuildConfig::default());
+            assert_eq!(result.status, StagedManifestBuildStatus::Failed, "{file}");
+            assert!(
+                result.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.severity == StagedManifestDiagnosticSeverity::Error
+                        && diagnostic.message.contains("runXp")
+                        && diagnostic.message.contains("`persist: \"run\"`")
+                }),
+                "{file}: per-owner run scope must be refused naming the slot: {:?}",
+                result.diagnostics
+            );
+        }
     }
 
     #[test]

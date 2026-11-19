@@ -118,7 +118,7 @@ pub(crate) struct PendingSessionInit {
     /// See: context/lib/networking.md.
     raw_args: Vec<String>,
     /// Per-user directories resolved once at stage 1; every settings and
-    /// `state.json` read and write takes them from here, never re-resolving.
+    /// save-file read and write takes them from here, never re-resolving.
     app_dirs: AppDirs,
     boot_options: crate::options::boot::BootOptions,
 }
@@ -373,6 +373,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         client_reload_edges: Default::default(),
         client_overheat_edge: Default::default(),
         host_spawn_points: Vec::new(),
+        level_spawn_points: Vec::new(),
         spawn_poses: Default::default(),
         script_time: 0.0,
         anim_time: 0.0,
@@ -395,6 +396,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         active_level_source,
         active_level_host_named: false,
         level_stopped_by_session_end: false,
+        backdrop_installed: false,
         pending_entry: None,
         text_entry_field: None,
         join_facts: Default::default(),
@@ -402,6 +404,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         client_left_in_control_drain: false,
         client_participated: false,
         received_final_character: None,
+        received_host_loadout: None,
         boot_host_level_missing: false,
         last_relevel: None,
         level_load: None,

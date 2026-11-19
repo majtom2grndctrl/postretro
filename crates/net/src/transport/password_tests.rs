@@ -37,10 +37,10 @@ fn joiner(server: &mut NetServer, id: ClientId, mod_id: &str, password: Option<&
     client.set_mod_identity(mod_id.into(), "1".into());
     client.set_mod_digest(Some([7; 32]));
     client.set_level_parity(Some(("test-level".into(), [9; 32])));
-    client.set_join_seed(BTreeMap::from([(
-        "k-xp".to_owned(),
-        JoinSeedValue::Number(7.0),
-    )]));
+    client.set_join_seed(
+        BTreeMap::from([("k-xp".to_owned(), JoinSeedValue::Number(7.0))]),
+        None,
+    );
     client.set_revealed_level(Some(RevealedLevel::new("test-level", None)));
     if let Some(password) = password {
         client.set_session_password(password);
@@ -128,7 +128,10 @@ fn right_password_admits_and_applies_what_was_declared_before_the_proof() {
         poll.join_seeds,
         vec![(
             A,
-            BTreeMap::from([("k-xp".to_owned(), JoinSeedValue::Number(7.0))])
+            crate::transport::ReceivedJoinSeed {
+                slots: BTreeMap::from([("k-xp".to_owned(), JoinSeedValue::Number(7.0))]),
+                loadout: None,
+            }
         )]
     );
     assert_eq!(

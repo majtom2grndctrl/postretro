@@ -16,9 +16,9 @@ use renet_netcode::{
 
 use crate::slots::{CloseCause, SlotEvent, SlotState, SlotTable};
 use crate::wire::{
-    self, ClientControlMessage, ConnectClaim, JoinSeedValue, NETCODE_USER_DATA_BYTES,
-    ParityDeclaration, ParticipationFrame, RevealedLevel, ServerControlFrame, ServerControlMessage,
-    ServerPresentationMessage,
+    self, CarriedLoadoutWire, ClientControlMessage, ConnectClaim, JoinSeedValue,
+    NETCODE_USER_DATA_BYTES, ParityDeclaration, ParticipationFrame, RevealedLevel,
+    ServerControlFrame, ServerControlMessage, ServerPresentationMessage,
 };
 
 pub use crate::handshake::*;
@@ -151,13 +151,28 @@ pub struct ServerPoll {
     pub lifecycle: Vec<SlotEvent>,
     /// Registry-blind join seeds. The engine owns buffering, validation, and
     /// per-seat application because the transport has no slot declarations.
-    pub join_seeds: Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
+    pub join_seeds: Vec<(ClientId, ReceivedJoinSeed)>,
+    /// Connections that asked for their final character at their own leave,
+    /// in arrival order. The engine answers each with
+    /// [`ServerControlMessage::FinalCharacter`].
+    pub final_character_requests: Vec<ClientId>,
 }
 
-type ControlMessages = (
-    Vec<HandshakeOutcome>,
-    Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
-);
+/// One join seed as a client declared it: its per-owner values and its
+/// character's carried loadout, both opaque to the transport.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReceivedJoinSeed {
+    pub slots: BTreeMap<String, JoinSeedValue>,
+    pub loadout: Option<CarriedLoadoutWire>,
+}
+
+/// What one poll's Control drain hands the engine besides lifecycle edges.
+#[derive(Default)]
+struct ControlMessages {
+    handshakes: Vec<HandshakeOutcome>,
+    join_seeds: Vec<(ClientId, ReceivedJoinSeed)>,
+    final_character_requests: Vec<ClientId>,
+}
 
 /// How long a password host waits for a challenged connection's proof
 /// before refusing it with [`ClosingCause::Password`]. One round trip is well
@@ -388,16 +403,17 @@ impl NetServer {
         self.advance_closing(dt);
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, join_seeds) = self.process_control_messages();
+        let control = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
         self.transport.send_packets(&mut self.server);
         Ok(ServerPoll {
             disconnects,
-            handshakes,
+            handshakes: control.handshakes,
             lifecycle,
-            join_seeds,
+            join_seeds: control.join_seeds,
+            final_character_requests: control.final_character_requests,
         })
     }
 
@@ -542,11 +558,11 @@ impl NetServer {
     }
 
     fn process_control_messages(&mut self) -> ControlMessages {
-        let mut outcomes = Vec::new();
-        let mut join_seeds = Vec::new();
+        let mut control = ControlMessages::default();
         let Some((expected_id, expected_version)) = self.mod_identity.clone() else {
-            return (outcomes, join_seeds);
+            return control;
         };
+        let mut outcomes = Vec::new();
         let expected_protocol = protocol_version();
 
         for client_id in self.server.clients_id() {
@@ -663,7 +679,8 @@ impl NetServer {
                             self.apply_declaration(
                                 client_id,
                                 held,
-                                &mut join_seeds,
+                                &mut control.join_seeds,
+                                &mut control.final_character_requests,
                                 &mut declaration_moved,
                             );
                         }
@@ -685,7 +702,8 @@ impl NetServer {
                         self.apply_declaration(
                             client_id,
                             declaration,
-                            &mut join_seeds,
+                            &mut control.join_seeds,
+                            &mut control.final_character_requests,
                             &mut declaration_moved,
                         );
                     }
@@ -714,7 +732,8 @@ impl NetServer {
             }
         }
         self.expire_challenges(&mut outcomes);
-        (outcomes, join_seeds)
+        control.handshakes = outcomes;
+        control
     }
 
     /// Issue `client_id` a password challenge with a fresh nonce. Returns
@@ -775,12 +794,14 @@ impl NetServer {
         }
     }
 
-    /// Apply one declaration a slot sent: parity, join seed or reveal.
+    /// Apply one declaration a slot sent: parity, join seed, reveal or a
+    /// final-character request.
     fn apply_declaration(
         &mut self,
         client_id: ClientId,
         declaration: ClientControlMessage,
-        join_seeds: &mut Vec<(ClientId, BTreeMap<String, JoinSeedValue>)>,
+        join_seeds: &mut Vec<(ClientId, ReceivedJoinSeed)>,
+        final_character_requests: &mut Vec<ClientId>,
         declaration_moved: &mut bool,
     ) {
         match declaration {
@@ -788,12 +809,16 @@ impl NetServer {
                 self.parity_declarations.insert(client_id, declaration);
                 *declaration_moved = true;
             }
-            ClientControlMessage::JoinSeed { slots } => {
+            ClientControlMessage::JoinSeed { slots, loadout } => {
                 // The engine validates the durable keys against its
                 // committed declarations and applies only eligible
-                // per-owner values. This transport is intentionally
-                // registry-blind, so pass the opaque map through.
-                join_seeds.push((client_id, slots));
+                // per-owner values, and checks the loadout against its own
+                // mod. This transport is intentionally registry-blind, so
+                // pass both through.
+                join_seeds.push((client_id, ReceivedJoinSeed { slots, loadout }));
+            }
+            ClientControlMessage::RequestFinalCharacter => {
+                final_character_requests.push(client_id);
             }
             ClientControlMessage::Revealed(level) => {
                 // Retained like parity: only the batch's last
@@ -1213,15 +1238,16 @@ impl NetServer {
         self.collect_server_events(Duration::ZERO);
         self.apply_pending_disconnects();
         self.discard_ineligible_input();
-        let (handshakes, join_seeds) = self.process_control_messages();
+        let control = self.process_control_messages();
         self.discard_ineligible_input();
         let lifecycle = std::mem::take(&mut self.pending_lifecycle);
         let disconnects = std::mem::take(&mut self.pending_slot_disconnects);
         ServerPoll {
             disconnects,
-            handshakes,
+            handshakes: control.handshakes,
             lifecycle,
-            join_seeds,
+            join_seeds: control.join_seeds,
+            final_character_requests: control.final_character_requests,
         }
     }
 }
@@ -1374,6 +1400,8 @@ pub struct NetClient {
     parity_sent: bool,
     join_seed_sent: bool,
     join_seed: BTreeMap<String, JoinSeedValue>,
+    /// The joining character's loadout, sent with `join_seed`.
+    join_loadout: Option<CarriedLoadoutWire>,
     /// Whether the host holds the current `revealed_level`. A fresh
     /// connection starts sent: the host reads an absent record as not revealed.
     revealed_sent: bool,
@@ -1440,6 +1468,7 @@ impl NetClient {
             parity_sent: false,
             join_seed_sent: false,
             join_seed: BTreeMap::new(),
+            join_loadout: None,
             revealed_sent: true,
             mod_identity: None,
             password_key: None,
@@ -1494,12 +1523,33 @@ impl NetClient {
         self.revealed_level.as_ref()
     }
 
-    /// Replace the values to carry with the next content-parity declaration.
-    /// An empty map is a meaningful seed: it explicitly starts a player at the
-    /// host's declared defaults when no local persistence exists.
-    pub fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
+    /// Replace the values and the character loadout to carry with the next
+    /// content-parity declaration. An empty map is a meaningful seed: it
+    /// explicitly starts a player at the host's declared defaults when no
+    /// local persistence exists. A `None` loadout is a character with none.
+    pub fn set_join_seed(
+        &mut self,
+        slots: BTreeMap<String, JoinSeedValue>,
+        loadout: Option<CarriedLoadoutWire>,
+    ) {
         self.join_seed = slots;
+        self.join_loadout = loadout;
         self.join_seed_sent = false;
+    }
+
+    /// Ask the host for this seat's final character at this client's own
+    /// leave. Sent at once on a live connection; returns whether it was. The
+    /// answer arrives as [`ServerControlMessage::FinalCharacter`], and only
+    /// on a connection that has participated.
+    pub fn request_final_character(&mut self) -> bool {
+        if !self.client.is_connected() || !self.admission_sent {
+            return false;
+        }
+        self.client.send_message(
+            Channel::Control,
+            wire::encode(&ClientControlMessage::RequestFinalCharacter),
+        );
+        true
     }
 
     #[deprecated(note = "use set_mod_digest and set_level_parity")]
@@ -1546,6 +1596,7 @@ impl NetClient {
                     Channel::Control,
                     wire::encode(&ClientControlMessage::JoinSeed {
                         slots: self.join_seed.clone(),
+                        loadout: self.join_loadout.clone(),
                     }),
                 );
                 self.join_seed_sent = true;
@@ -2445,6 +2496,7 @@ mod tests {
             first,
             wire::encode(&ServerControlMessage::FinalCharacter {
                 slots: BTreeMap::from([("hp".to_owned(), JoinSeedValue::Number(40.0))]),
+                loadout: None,
             }),
         );
         server.end_session();
@@ -2467,6 +2519,7 @@ mod tests {
             vec![
                 ServerControlMessage::FinalCharacter {
                     slots: BTreeMap::from([("hp".to_owned(), JoinSeedValue::Number(40.0))]),
+                    loadout: None,
                 },
                 session_ended(),
             ]
@@ -2579,7 +2632,7 @@ mod tests {
         );
         assert_eq!(
             poll.join_seeds,
-            vec![(RELAY_CLIENT_ID, BTreeMap::new())],
+            vec![(RELAY_CLIENT_ID, ReceivedJoinSeed::default())],
             "a client with no retained values still sends an explicit empty join seed"
         );
         assert!(server.is_participating(RELAY_CLIENT_ID));
@@ -3168,21 +3221,39 @@ mod tests {
     }
 
     #[test]
-    fn join_seed_reaches_the_server_poll_without_transport_interpretation() {
+    fn join_seed_and_final_character_request_reach_the_server_poll_uninterpreted() {
         let (mut server, mut client) = participate_relay_pair();
         let slots =
             BTreeMap::from([("kplayer0000000001".to_string(), JoinSeedValue::Number(42.0))]);
+        let loadout = CarriedLoadoutWire {
+            health_centi: Some(9_999_999),
+            wieldables: vec![Some("not-a-weapon-here".to_string())],
+            ..CarriedLoadoutWire::default()
+        };
         client.client.send_message(
             Channel::Control,
             wire::encode(&ClientControlMessage::JoinSeed {
                 slots: slots.clone(),
+                loadout: Some(loadout.clone()),
             }),
         );
+        assert!(client.request_final_character());
 
         relay_client_to_server(&mut client, &mut server);
         let poll = server.poll_handshakes();
 
-        assert_eq!(poll.join_seeds, vec![(RELAY_CLIENT_ID, slots)]);
+        assert_eq!(
+            poll.join_seeds,
+            vec![(
+                RELAY_CLIENT_ID,
+                ReceivedJoinSeed {
+                    slots,
+                    loadout: Some(loadout),
+                }
+            )],
+            "the transport passes the loadout through unchecked; the engine checks it"
+        );
+        assert_eq!(poll.final_character_requests, vec![RELAY_CLIENT_ID]);
     }
 
     // Regression: parity retained while Pending was never reconsidered when the
@@ -3338,17 +3409,32 @@ mod tests {
     // peer the player life-state record, a wire-38 peer the assist fields, and a
     // wire-39 peer the roster entry's name and status.
     // A PRLC peer predates the spawn-pose hint, a PRLD peer the session-ended
-    // cause and a PRLE peer the session-password challenge. The admission gate
-    // refuses each declaration with a typed cause, logging the protocol
-    // mismatch, and admits a PRLF / 40 one.
+    // cause, a PRLE peer the session-password challenge, and a PRLF or
+    // wire-40 peer the carried loadout. The admission gate refuses each
+    // declaration with a typed cause, logging the protocol mismatch, and
+    // admits a PRLG / 41 one.
     #[test]
-    fn admission_refuses_prlb_to_prle_or_wire_32_to_39_and_admits_prlf_40() {
+    fn admission_refuses_prlb_to_prlf_or_wire_32_to_40_and_admits_prlg_41() {
         let current = wire::ProtocolVersion {
-            app_protocol_id: 0x_5052_4C46,
-            wire_version: 40,
+            app_protocol_id: 0x_5052_4C47,
+            wire_version: 41,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
+            (
+                wire::ProtocolVersion {
+                    app_protocol_id: 0x_5052_4C46,
+                    ..current
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 40,
+                    ..current
+                },
+                false,
+            ),
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C45,

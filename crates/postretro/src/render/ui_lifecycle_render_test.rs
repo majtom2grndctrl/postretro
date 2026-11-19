@@ -121,6 +121,7 @@ fn staged_manifest_result(
             frontend: None,
             ui_images: Default::default(),
             loading: Default::default(),
+            saves: None,
             store_declarations: Default::default(),
             defense: Default::default(),
             attack_budgets: Default::default(),

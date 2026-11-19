@@ -98,6 +98,8 @@ pub(super) struct Relay {
     /// Every relay packet in both directions, once [`Self::record_packets`]
     /// turns recording on.
     pub(super) recorded: Option<Vec<Vec<u8>>>,
+    /// The host mod's descriptors, which [`Self::unload`] refills.
+    descriptors: Vec<EntityTypeDescriptor>,
 }
 
 fn claim(client_id: u64) -> ConnectClaim {
@@ -110,9 +112,16 @@ fn claim(client_id: u64) -> ConnectClaim {
 impl Relay {
     /// A listen host with a host seat table, no level and no clients.
     pub(super) fn host() -> Self {
-        let mut app = test_app();
+        let app = test_app();
+        script_ctx(&app).data_registry.borrow_mut().entities = descriptors();
+        Self::host_on(app)
+    }
+
+    /// [`Self::host`] around an engine whose mod is already initialized: its
+    /// own descriptors and vocabulary stand as the host mod.
+    pub(super) fn host_on(mut app: App) -> Self {
         let ctx = script_ctx(&app);
-        ctx.data_registry.borrow_mut().entities = descriptors();
+        let descriptors = ctx.data_registry.borrow().entities.clone();
         let mod_digest =
             crate::mod_digest::mod_compatibility_digest_from_registry(&ctx.data_registry.borrow());
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -143,6 +152,7 @@ impl Relay {
             level_digest: [0; 32],
             world_less: false,
             recorded: None,
+            descriptors,
         }
     }
 
@@ -159,6 +169,7 @@ impl Relay {
             panic!("the adopted engine hosts");
         };
         let port = server.local_addr()[0].port();
+        let descriptors = ctx.data_registry.borrow().entities.clone();
         Self {
             app,
             clients: Vec::new(),
@@ -167,6 +178,7 @@ impl Relay {
             level_digest: [0; 32],
             world_less: true,
             recorded: None,
+            descriptors,
         }
     }
 
@@ -179,6 +191,15 @@ impl Relay {
 
     /// Connect a client under `claim_of`'s player identity, without pumping.
     pub(super) fn connect_as(&mut self, client_id: u64, claim_of: u64) -> &mut NetClient {
+        self.connect_with_claim(client_id, claim(claim_of))
+    }
+
+    /// Connect a client asserting `claim`, without pumping.
+    pub(super) fn connect_with_claim(
+        &mut self,
+        client_id: u64,
+        claim: ConnectClaim,
+    ) -> &mut NetClient {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let mut client = NetClient::new(
             socket,
@@ -193,7 +214,7 @@ impl Relay {
         client.set_mod_digest(Some(self.mod_digest));
         client.set_connected();
         self.server()
-            .add_relay_connection(client_id, Some(encode_connect_claim(&claim(claim_of))));
+            .add_relay_connection(client_id, Some(encode_connect_claim(&claim)));
         self.clients.push(RelayClient {
             id: client_id,
             client,
@@ -469,7 +490,7 @@ impl Relay {
     /// would refill, so the fixture refills it.
     pub(super) fn unload(&mut self) {
         self.app.unload_level();
-        script_ctx(&self.app).data_registry.borrow_mut().entities = descriptors();
+        script_ctx(&self.app).data_registry.borrow_mut().entities = self.descriptors.clone();
     }
 
     /// The host's reveal edge.
@@ -567,6 +588,21 @@ impl Relay {
             .collect();
         client.forwarded = client.log.len();
         messages
+    }
+
+    /// Every Control message `client_id` has received, forwarded or not.
+    pub(super) fn received(&self, client_id: u64) -> Vec<ServerControlMessage> {
+        self.clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .unwrap()
+            .log
+            .iter()
+            .filter_map(|arrival| match arrival {
+                ControlArrival::Message(message) => Some(message.clone()),
+                ControlArrival::ParticipationMarker { .. } => None,
+            })
+            .collect()
     }
 
     pub(super) fn hints(&self, client_id: u64) -> Vec<SpawnPoseHint> {

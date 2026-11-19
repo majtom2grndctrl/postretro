@@ -419,6 +419,7 @@ fn installed_with_reactions(
             suppress_host_replicated: client,
             suppress_boot_pawn: true,
             local_carried_loadout: None,
+            spawn_checkpoint: None,
         },
         &mut crate::startup::StartupTimings::new(),
         |models, tables| {

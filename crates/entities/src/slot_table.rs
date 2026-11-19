@@ -1,7 +1,7 @@
 // Engine-global state-store declarations, values, and reconciliation.
 // See: context/lib/scripting.md §5 "Durable State Store"
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::engine_state_catalog::engine_state_catalog;
 use postretro_foundation::{IrNode, Seat};
@@ -167,6 +167,11 @@ impl PartialEq for SlotRecord {
 pub struct StoreDeclaration {
     pub namespace: String,
     pub records: Vec<(String, SlotRecord)>,
+    /// Slot names (keys of `records`) declared `persist: "run"`. Their
+    /// `SlotSchema.persist` is true like a `persist: true` slot's; this set is
+    /// what routes them to the run save instead of the world file. A scope
+    /// change on a live namespace is a changed schema.
+    pub run_scoped: BTreeSet<String>,
 }
 
 /// Declarations collected during one mod-init or staged-build attempt.
@@ -229,6 +234,9 @@ impl StoreReconcilePlan {
 pub struct SlotTable {
     slots: HashMap<String, SlotRecord>,
     namespaces: HashSet<String>,
+    /// Dotted names of committed mod slots declared `persist: "run"`.
+    /// `SlotSchema` carries no scope, so reconcile compares this beside it.
+    run_scoped: HashSet<String>,
 }
 
 impl Default for SlotTable {
@@ -236,6 +244,7 @@ impl Default for SlotTable {
         let mut table = Self {
             slots: HashMap::new(),
             namespaces: HashSet::new(),
+            run_scoped: HashSet::new(),
         };
         let catalog = engine_state_catalog().expect("built-in engine-state catalog must be valid");
         for (namespace, records) in catalog.store_declarations() {
@@ -345,6 +354,10 @@ impl SlotTable {
     pub fn apply_reconcile_plan(&mut self, plan: StoreReconcilePlan) {
         for declaration in plan.new_declarations {
             self.namespaces.insert(declaration.namespace.clone());
+            for slot_name in &declaration.run_scoped {
+                self.run_scoped
+                    .insert(format!("{}.{}", declaration.namespace, slot_name));
+            }
             for (slot_name, record) in declaration.records {
                 self.slots
                     .insert(format!("{}.{}", declaration.namespace, slot_name), record);
@@ -494,6 +507,8 @@ impl SlotTable {
         existing.len() == declaration.records.len()
             && declaration.records.iter().all(|(slot_name, record)| {
                 existing.get(slot_name.as_str()) == Some(&&record.schema)
+                    && declaration.run_scoped.contains(slot_name)
+                        == self.run_scoped.contains(&format!("{prefix}{slot_name}"))
             })
     }
 }
@@ -1048,6 +1063,7 @@ mod tests {
         let declaration = StoreDeclaration {
             namespace: "audio".to_string(),
             records: vec![("master".to_string(), number_slot(1.0))],
+            run_scoped: BTreeSet::new(),
         };
         let mut first = StoreDeclarationSet::default();
         first.add(declaration.clone()).unwrap();
@@ -1160,6 +1176,7 @@ mod tests {
             .add(StoreDeclaration {
                 namespace: "video".to_string(),
                 records: vec![("gamma".to_string(), number_slot(1.0))],
+                run_scoped: BTreeSet::new(),
             })
             .unwrap();
         declarations
@@ -1169,6 +1186,7 @@ mod tests {
                     ("master".to_string(), number_slot(1.0)),
                     ("music".to_string(), number_slot(0.5)),
                 ],
+                run_scoped: BTreeSet::new(),
             })
             .unwrap();
 
@@ -1180,5 +1198,38 @@ mod tests {
             }
         );
         assert!(table.get("video.gamma").is_none());
+    }
+
+    // A `persist: true` → `persist: "run"` edit leaves `SlotSchema` equal, so
+    // the live table's run-scope membership is what makes it a changed schema.
+    #[test]
+    fn reconcile_rejects_changed_persist_scope_and_accepts_the_same_scope() {
+        let persisted = || {
+            let mut record = number_slot(0.0);
+            record.schema.persist = true;
+            record
+        };
+        let declaration = |run_scoped: &[&str]| {
+            let mut set = StoreDeclarationSet::default();
+            set.add(StoreDeclaration {
+                namespace: "run".to_string(),
+                records: vec![("generator".to_string(), persisted())],
+                run_scoped: run_scoped.iter().map(|name| name.to_string()).collect(),
+            })
+            .unwrap();
+            set
+        };
+        let mut table = SlotTable::new();
+        let plan = table.plan_reconcile(&declaration(&["generator"])).unwrap();
+        table.apply_reconcile_plan(plan);
+
+        let same = table.plan_reconcile(&declaration(&["generator"])).unwrap();
+        assert_eq!(same.added_namespace_count(), 0);
+        assert_eq!(
+            table.plan_reconcile(&declaration(&[])).unwrap_err(),
+            NamespaceInsertError::IncompatibleSchema {
+                namespace: "run".to_string()
+            }
+        );
     }
 }

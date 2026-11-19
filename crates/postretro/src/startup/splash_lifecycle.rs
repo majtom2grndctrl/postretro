@@ -8,10 +8,6 @@ use winit::event_loop::ActiveEventLoop;
 
 use crate::App;
 use crate::render;
-use crate::scripting::state_persistence::{
-    load_persisted_state, overlay_persisted_faction_sentiment, overlay_persisted_state,
-    persisted_state_version_is_supported, state_path,
-};
 use crate::startup::{BootState, LevelRequest, LevelSource, SplashSource, StartupTimings};
 
 /// Splash frames 0 and 1 are the black and logo frames; this one repeats while
@@ -545,79 +541,9 @@ impl App {
                     .state_store_lifecycle
                     .should_restore_after_mod_init(has_manifest)
                 {
-                    let mod_id = session
-                        .scripting
-                        .script_runtime
-                        .committed_mod_identity()
-                        .map(|(id, _)| id.to_owned())
-                        .expect("restore only runs after a committed manifest");
-                    let identity = session.scripting.script_runtime.store_identity().cloned();
-                    let committed_store_slots = session
-                        .scripting
-                        .script_runtime
-                        .committed_store_slots()
-                        .clone();
-                    if let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) {
-                        match load_persisted_state(&state_path) {
-                            Ok(Some(persisted)) => {
-                                let is_connected_client = matches!(
-                                    session.net_endpoint.as_ref(),
-                                    Some(crate::netcode::NetEndpoint::Client { .. })
-                                );
-                                let local_player_id = if is_connected_client {
-                                    None
-                                } else {
-                                    session.player_options.player_id
-                                };
-                                let warnings = overlay_persisted_state(
-                                    &mut session.scripting.script_ctx.slot_table.borrow_mut(),
-                                    &persisted,
-                                    identity.as_ref(),
-                                    &committed_store_slots,
-                                    local_player_id,
-                                    postretro_foundation::Seat(0),
-                                );
-                                for warning in warnings {
-                                    log::warn!("[State] {warning}");
-                                }
-                                if persisted_state_version_is_supported(&persisted) {
-                                    // Shared faction sentiment belongs to the host. A connected
-                                    // client receives its overlay from the host snapshot path and
-                                    // must never seed it from device-local campaign state.
-                                    if !is_connected_client {
-                                        let factions =
-                                            session.scripting.script_ctx.data_registry.borrow();
-                                        let mut faction_sentiment = session
-                                            .scripting
-                                            .script_ctx
-                                            .faction_sentiment
-                                            .borrow_mut();
-                                        for warning in overlay_persisted_faction_sentiment(
-                                            &mut faction_sentiment,
-                                            &factions.factions,
-                                            &persisted,
-                                        ) {
-                                            log::warn!("[State] {warning}");
-                                        }
-                                    }
-                                    session.persisted_state = Some(persisted);
-                                    log::info!(
-                                        "[State] restored persistent slots from {}",
-                                        state_path.display()
-                                    );
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(error) => log::warn!(
-                                "[State] failed to load persistent slots from {}: {error}; using declared defaults",
-                                state_path.display()
-                            ),
-                        }
-                    } else if session.state_store_lifecycle.disable_persistence() {
-                        log::warn!(
-                            "[State] platform data directory is unavailable; persistent state is disabled for this run"
-                        );
-                    }
+                    // Migrate, select and overlay the character, world
+                    // and run saves (scripting.md §5).
+                    crate::session::saves::boot_restore(session);
                     session.state_store_lifecycle.mark_restore_completed();
                 }
             }
@@ -650,6 +576,8 @@ impl App {
         // Admission identity is frozen by the scripting runtime; the digest is
         // recomputed from the committed registry each time this deferred init runs.
         self.install_network_mod_content();
+        // A boot flag's role meets the saves it could not see when it began.
+        self.reconcile_boot_role_with_saves();
         // Bind against the committed registry and the player's saved rows for
         // this mod right away, so a controls panel opened before any level
         // loads lists the game's commands.

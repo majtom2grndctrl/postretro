@@ -374,6 +374,7 @@ fn staged_frontend_commit_replaces_active_frontend_modal() {
             }),
             ui_images: Default::default(),
             loading: Default::default(),
+            saves: None,
             store_declarations: Default::default(),
             defense: Default::default(),
             attack_budgets: Default::default(),

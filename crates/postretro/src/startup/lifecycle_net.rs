@@ -167,6 +167,9 @@ impl App {
     /// | assist progress, latches, row-6 records, last-pass pair values, stored per-pawn life states | |
     pub(crate) fn unload_level(&mut self) {
         let unload_started = std::time::Instant::now();
+        // A frontend backdrop's pawn is never harvested: seat 0 carries the
+        // selected character outside play, not the backdrop's pawn.
+        let harvest = !std::mem::take(&mut self.backdrop_installed);
         self.cpu_timer.level_changed();
         self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
@@ -274,7 +277,7 @@ impl App {
                 // discarded by the unload clear below; the next level enters
                 // `initial`.
                 let registry = session.scripting.script_ctx.registry.borrow();
-                if let Some(seats) = session.seat_table.as_mut() {
+                if harvest && let Some(seats) = session.seat_table.as_mut() {
                     seats.harvest_bound_pawns(
                         &registry,
                         &session

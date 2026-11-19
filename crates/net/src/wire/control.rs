@@ -120,6 +120,32 @@ pub enum JoinSeedValue {
     Array(Vec<f64>),
 }
 
+/// A character's carried loadout as it crosses between a host and that seat's
+/// own client: a names-only mirror of the engine's carried state, holding only
+/// strings and integers. The engine converts both ways and validates on
+/// arrival; this crate never interprets it.
+///
+/// Health and layer values are hundredths, rounded. Positional fields follow
+/// the engine's wieldable slots; trailing empty slots may be omitted. Any field
+/// change alters the bitcode layout and bumps `WIRE_VERSION`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct CarriedLoadoutWire {
+    /// Current health in hundredths; `None` keeps the spawn default.
+    pub health_centi: Option<i32>,
+    /// The authored life-state name; `None` is the initial state.
+    pub life_state: Option<String>,
+    /// Ammo reserve balances by ammo-type name.
+    pub reserve: Vec<(String, u32)>,
+    /// Weapon canonical descriptor names by wieldable slot.
+    pub wieldables: Vec<Option<String>>,
+    /// Magazine counts by wieldable slot, paired with `wieldables`.
+    pub magazines: Vec<Option<u32>>,
+    /// The selected wieldable slot.
+    pub active_slot: u32,
+    /// Defense layer values in hundredths, by layer name.
+    pub layers: Vec<(String, i32)>,
+}
+
 /// Tagged client -> server Control envelope. New variants must be appended.
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub enum ClientControlMessage {
@@ -133,9 +159,12 @@ pub enum ClientControlMessage {
     /// Persisted per-owner values keyed by the authored durable slot identity.
     ///
     /// New variants must be appended because bitcode encodes enum tags
-    /// positionally. The host validates these entries against its own registry.
+    /// positionally. The host validates these entries against its own registry,
+    /// and checks `loadout`, the joining character's, against its own mod.
+    /// `None` is a character with no saved loadout.
     JoinSeed {
         slots: BTreeMap<String, JoinSeedValue>,
+        loadout: Option<CarriedLoadoutWire>,
     },
     /// The level install this client has revealed. `None` retracts a reveal
     /// at unload or suspend. Re-sent on change; the host keeps the last one
@@ -148,6 +177,11 @@ pub enum ClientControlMessage {
     PasswordProof {
         proof: [u8; 32],
     },
+    /// Sent at this client's own leave: the host answers with this seat's
+    /// [`ServerControlMessage::FinalCharacter`], its loadout harvested from the
+    /// live pawn at that moment. A connection that never participated is
+    /// not answered.
+    RequestFinalCharacter,
 }
 
 /// The key a session password derives. An empty password derives a key like
@@ -378,8 +412,12 @@ pub enum ServerControlMessage {
     /// values, and an empty map when the player has none. A per-owner slot
     /// that never replicates is the client's own, so it is left out. The
     /// client applies only keys its own declarations persist per owner.
+    /// `loadout` is the seat's carried loadout, harvested from its live pawn
+    /// just before this is encoded; `None` when the seat carries none. Also
+    /// the answer to [`ClientControlMessage::RequestFinalCharacter`].
     FinalCharacter {
         slots: BTreeMap<String, JoinSeedValue>,
+        loadout: Option<CarriedLoadoutWire>,
     },
     /// A password host's challenge to a pending connection whose mod id
     /// matched: a fresh nonce from the OS RNG, answered with
@@ -387,6 +425,12 @@ pub enum ServerControlMessage {
     /// engine never sees it.
     PasswordChallenge {
         nonce: [u8; 32],
+    },
+    /// The seat's carried loadout, sent to that seat's own client alone, to
+    /// each seat that carries a loadout, so the player saves its gear.
+    /// No other peer ever receives a seat's loadout.
+    CharacterLoadout {
+        loadout: CarriedLoadoutWire,
     },
 }
 
@@ -622,11 +666,33 @@ mod tests {
                 level: Some(("map-a".to_string(), [0xa5; 32])),
             }
         )));
+        let loadout = CarriedLoadoutWire {
+            health_centi: Some(3_725),
+            life_state: Some("alive".to_string()),
+            reserve: vec![("shells".to_string(), 19)],
+            wieldables: vec![None, Some("shotgun".to_string())],
+            magazines: vec![None, Some(6)],
+            active_slot: 1,
+            layers: vec![("armor".to_string(), 2_550)],
+        };
         assert!(round_trips(&ClientControlMessage::JoinSeed {
             slots: BTreeMap::from([(
                 "kplayer0000000001".to_string(),
                 JoinSeedValue::Array(vec![0.25, 0.75]),
             )]),
+            loadout: Some(loadout.clone()),
+        }));
+        assert!(round_trips(&ClientControlMessage::JoinSeed {
+            slots: BTreeMap::new(),
+            loadout: None,
+        }));
+        assert!(round_trips(&ClientControlMessage::RequestFinalCharacter));
+        assert!(round_trips(&ServerControlMessage::FinalCharacter {
+            slots: BTreeMap::new(),
+            loadout: Some(loadout.clone()),
+        }));
+        assert!(round_trips(&ServerControlMessage::CharacterLoadout {
+            loadout
         }));
         assert!(round_trips(&ClientControlMessage::Revealed(Some(
             RevealedLevel::new("map-a", Some(4))

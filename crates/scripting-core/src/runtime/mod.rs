@@ -8,12 +8,14 @@ mod input_block;
 mod loading_screen;
 mod mod_init;
 mod mod_init_exec;
+mod saves_manifest;
 #[cfg(debug_assertions)]
 mod staged_preflight;
 mod types;
 
 pub use input_block::{ModInputBinding, ModInputBlock, ModInputCommand, ModInputGlyphs};
 pub use loading_screen::ModLoading;
+pub use saves_manifest::{MAX_CHARACTER_SLOTS, MAX_RUN_SLOTS, SavesManifest};
 pub use types::{
     Frontend, MenuCamera, ModAttenuation, ModAttenuationCurve, ModAudioProfile, ModBloomProfile,
     ModBloomResolution, ModGhostAudio, ModGhostTransparency, ModManifestResult, ModMapEntry,

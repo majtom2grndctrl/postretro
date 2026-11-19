@@ -58,9 +58,11 @@ pub(crate) mod occupancy_families;
 pub(crate) mod players;
 pub(crate) mod progress_save;
 pub(crate) mod role_state;
+pub(crate) mod saves;
 mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;
+pub(crate) mod store_saves;
 use level_streaming::LevelStreaming;
 use sh_residency::ShStreamingSession;
 
@@ -157,7 +159,7 @@ pub(crate) struct Session {
     /// Selection and lifetime stay independent of local rendering.
     pub(crate) host_overlay_fact_tracker: crate::netcode::HostOverlayFactTracker,
 
-    /// Gates the one-time persistence overlay and clean-exit save.
+    /// Gates the one-time restore and every save point.
     pub(crate) state_store_lifecycle: StateStoreLifecycle,
 
     /// Connected-client cadence for private per-owner state. It advances only
@@ -167,6 +169,17 @@ pub(crate) struct Session {
     /// Boot-loaded state retained for per-owner saves and join-seed assembly.
     /// The document remains main-thread-only with the rest of the session.
     pub(crate) persisted_state: Option<PersistedState>,
+
+    /// The mod's character, world and run save slots.
+    pub(crate) saves: saves::SaveSlots,
+
+    /// A `--connect` boot's host address and password: the boot connects
+    /// before the mod's saves load, so once they do the connection is redone
+    /// with the selected character's claim.
+    pub(crate) boot_connect: Option<(std::net::SocketAddr, String)>,
+    /// A boot flag entered a role this boot has not yet reconciled with the
+    /// loaded saves.
+    pub(crate) boot_role_pending: bool,
 
     /// Per-tag kill-count subscriptions. See: context/lib/scripting.md §2.
     pub(crate) progress_tracker: ProgressTracker,
@@ -265,10 +278,12 @@ pub(crate) struct Session {
     /// See: context/lib/player_options.md
     pub(crate) settings_path: Option<PathBuf>,
 
-    /// Per-user data directory each mod's `state.json` lives under, resolved with
-    /// `settings_path` from the one app name at boot stage 1 so per-player rows
-    /// stay keyed by this settings file's `player_id`. `None` when the platform
-    /// exposes no data directory; persistence is then disabled for the run.
+    /// Per-user data directory each mod's save files live under
+    /// (`<data_dir>/<mod_id>/`; `state.json` there is only a migration source),
+    /// resolved with `settings_path` from the one app name at boot stage 1.
+    /// Per-owner rows key by the selected character's claim. `None` when the
+    /// platform exposes no data directory; persistence is then disabled for the
+    /// run.
     /// See: context/lib/build_pipeline.md §Distribution packaging
     pub(crate) data_dir: Option<PathBuf>,
 
@@ -333,6 +348,20 @@ pub(crate) fn modal_focus_key(
 }
 
 impl Session {
+    /// The id and name this player saves under and joins with: the selected
+    /// character's. Before saves load, and with no data directory, the
+    /// device's player id stands in as the claim, with an empty name.
+    pub(crate) fn character_claim(&self) -> (Option<[u8; 16]>, String) {
+        if self.saves.is_loaded() {
+            (
+                self.saves.selected_character_id(),
+                self.saves.selected_character_name().to_owned(),
+            )
+        } else {
+            (self.player_options.player_id, String::new())
+        }
+    }
+
     /// The focus-engine key and registry name of the tree on top: a pushed
     /// modal is keyed by name and instance, so a fresh push never inherits the
     /// focus a previous instance of the same tree had; with no modal, the
@@ -670,7 +699,7 @@ impl Session {
             .and_then(|config| config.password.as_deref());
         let entry = net_entry::enter_role(
             &net_role,
-            player_options.player_id,
+            player_options.player_id.map(|id| (id, "")),
             &mut scripting,
             &mut seat_table,
             getrandom::fill,
@@ -687,6 +716,12 @@ impl Session {
             cli_password,
         );
         let net_endpoint = entry.endpoint;
+        let boot_connect = match &net_role {
+            netcode::NetRole::Connect { addr } if net_endpoint.is_some() => {
+                Some((*addr, cli_password.unwrap_or_default().to_owned()))
+            }
+            _ => None,
+        };
         let trigger_auto_close_timers = scripting.auto_close_timers.clone();
         let trigger_spawn_context = scripting.spawn_context.clone();
         boot_timings.record("net_endpoint_complete");
@@ -732,6 +767,9 @@ impl Session {
             state_store_lifecycle: StateStoreLifecycle::default(),
             per_owner_save_timer: PerOwnerSaveTimer::default(),
             persisted_state: None,
+            saves: saves::SaveSlots::default(),
+            boot_role_pending: net_endpoint.is_some(),
+            boot_connect,
             progress_tracker: ProgressTracker::new(),
             pending_death_events: Vec::new(),
             crossing_detector: CrossingDetector::new(),

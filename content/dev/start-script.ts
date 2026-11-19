@@ -110,6 +110,8 @@ import {
 } from "./scripts/loading-screens";
 import { devInput } from "./scripts/input";
 import {
+  CHARACTER_SLOTS,
+  RUN_SLOTS,
   devKeyboard,
   devLevelSelectMenu,
   exitConfirm,
@@ -121,6 +123,7 @@ import {
   optionsMenu,
   quitConfirm,
 } from "./scripts/frontend-menu";
+import { saveScreens } from "./scripts/frontend-saves";
 import {
   ammoOnKill,
   booster,
@@ -156,6 +159,8 @@ export default defineMod({
     blockDuringReload: false,
   },
   maps: mapCatalog,
+  // Characters and runs the frontend keeps (scripts/frontend-saves.ts).
+  saves: { characterSlots: CHARACTER_SLOTS, runSlots: RUN_SLOTS },
   // Dogfoods the mod-authored bloom surface on every dev launch. `resolution`
   // is left at the engine default (`half`); `pixelated: true` is the non-default
   // field, so a regression in the pixelated wire is visible here. (Set
@@ -207,6 +212,7 @@ export default defineMod({
     joinMenu,
     devKeyboard,
     optionsMenu,
+    ...saveScreens,
     loadingPlain,
     ...mapLoadingTrees,
   ],

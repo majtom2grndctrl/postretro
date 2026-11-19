@@ -269,12 +269,12 @@ export type LevelManifest = {
   uiTrees?: import("postretro").ModUiTree[];
 };
 
-/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist` saves global slots on clean exit. On connected clients, `perOwner: true, persist: true` saves the local owner's value every ~60 seconds and on clean exit; it travels via that player's join seed. `readonly` blocks script writes. `perOwner: true` creates one value per player seat and permits only omitted `network` (host-local) or `"ownerPrivate"`; `"shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `postretro-tool mint-identity <mod>`. Keep its durable key when renaming the store or slot. */
+/** One slot inside a `defineStore` schema. Every slot needs `default`. `type: "number"` accepts a finite numeric default plus optional inclusive `range: [min, max]`; `"boolean"` and `"string"` require matching defaults; `"enum"` requires non-empty `values` and a default in that list; `"array"` is a finite-number array. `persist: true` saves a global slot in the world file and a per-owner slot in the character; `persist: "run"` saves a global slot in the current run and is refused on a per-owner slot. On connected clients, `perOwner: true, persist: true` saves the local owner's value every ~60 seconds and on clean exit; it travels via that player's join seed. `readonly` blocks script writes. `perOwner: true` creates one value per player seat and permits only omitted `network` (host-local) or `"ownerPrivate"`; `"shared"` is for global slots. A mod-owned persisted writable or replicated slot requires a minted `<mod-root>/identity.json` entry; run `postretro-tool mint-identity <mod>`. Keep its durable key when renaming the store or slot. */
 export type StoreSlotSchema = (
-  | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+  | { type: "number"; readonly?: boolean; network?: "shared"; perOwner?: false; persist?: boolean | "run"; accumulate?: never }
   | { type: "number"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
-  | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; accumulate?: never }
+  | { type: "number"; readonly?: false; network?: "shared"; perOwner?: false; persist?: boolean | "run"; accumulate: (t: TickParams) => import("postretro").RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "shared"; perOwner?: false; persist?: boolean | "run"; accumulate?: never }
   | { type: "boolean" | "string" | "enum" | "array"; readonly?: boolean; network?: "ownerPrivate"; perOwner: true; persist?: boolean; accumulate?: never }
 ) & Record<string, unknown>;
 

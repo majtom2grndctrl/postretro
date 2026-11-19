@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use super::input_block::ModInputBlock;
 use super::loading_screen::ModLoading;
+use super::saves_manifest::SavesManifest;
 use crate::ctx::ScriptCtx;
 use crate::data_descriptors::{
     EntityTypeDescriptor, FluidRegistry, GhostStyleRegistry, ImpactEventDescriptor, ModFontAssets,
@@ -309,6 +310,11 @@ pub struct ModManifestResult {
     /// field. Default (empty pool) when absent or malformed. Replaced whole by a
     /// successful staged mod-init commit, like [`Self::frontend`].
     pub loading: ModLoading,
+    /// Save-slot counts from the manifest's `saves` field. `None` when the
+    /// mod declares no block: it gets one implicit character and one implicit
+    /// run. Counts were clamped to the engine caps, or defaulted to 1, with a
+    /// warning at parse time.
+    pub saves: Option<SavesManifest>,
     /// Font assets (family → TTF path) from the mod manifest's `fonts` field.
     /// Default (empty) when absent. Installed via `register_ui_font` by the
     /// boot caller.
@@ -765,6 +771,9 @@ pub struct ScriptRuntime {
     /// commit. Kept separately because the live slot table retains removed
     /// declarations and the ledger deliberately retains orphan entries.
     pub(super) committed_store_slots: BTreeSet<String>,
+    /// The subset of `committed_store_slots` declared `persist: "run"`,
+    /// replaced and cleared with it on every declaration commit.
+    pub(super) committed_run_scoped_slots: BTreeSet<String>,
     /// The first successfully committed mod identity. Admission, persistence,
     /// and replication keep this process-scoped value across later init attempts.
     pub(super) committed_mod_identity: Option<(String, String)>,

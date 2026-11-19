@@ -237,6 +237,7 @@ impl ScriptRuntime {
             mod_manifest: None,
             store_identity: None,
             committed_store_slots: Default::default(),
+            committed_run_scoped_slots: Default::default(),
             committed_mod_identity: None,
             #[cfg(debug_assertions)]
             watcher: None,
@@ -638,6 +639,8 @@ impl ScriptRuntime {
             }
             let next_committed_store_slots =
                 crate::store_identity::declaration_slot_names(&next_store_declarations);
+            let next_committed_run_scoped_slots =
+                crate::store_identity::run_scoped_slot_names(&next_store_declarations);
             // Keep identity in the same all-or-nothing commit gate as slot
             // reconciliation. In particular this runs before deferred mesh
             // snapshots, entity refresh, and every live registry mutation.
@@ -757,6 +760,7 @@ impl ScriptRuntime {
                 self.store_identity = validated.ledger;
             }
             self.committed_store_slots = next_committed_store_slots;
+            self.committed_run_scoped_slots = next_committed_run_scoped_slots;
 
             // Hot-reload range-follow: if the refresh replaced the pawn's Health
             // component (e.g. an authored `max` edit), re-attach the
@@ -911,6 +915,13 @@ impl ScriptRuntime {
         &self.committed_store_slots
     }
 
+    /// The subset of [`Self::committed_store_slots`] declared
+    /// `persist: "run"`, from the same commit. Persistence saves these globals
+    /// in the run file rather than the world file.
+    pub fn committed_run_scoped_slots(&self) -> &std::collections::BTreeSet<String> {
+        &self.committed_run_scoped_slots
+    }
+
     /// Mutable accessor for the stored manifest. Used by the boot caller to
     /// drain `entities` into `DataRegistry` after a successful
     /// [`ScriptRuntime::run_mod_init`] — the runtime parses and returns; the
@@ -928,7 +939,7 @@ impl ScriptRuntime {
     }
 
     /// Stand in for a declaration commit that named `slots` with `ledger`'s
-    /// durable keys.
+    /// durable keys, none of them run-scoped.
     #[cfg(feature = "test-support")]
     pub fn commit_store_identity_for_test(
         &mut self,
@@ -937,6 +948,13 @@ impl ScriptRuntime {
     ) {
         self.store_identity = Some(ledger);
         self.committed_store_slots = slots;
+        self.committed_run_scoped_slots.clear();
+    }
+
+    /// Stand in for a commit whose declarations made `slots` run-scoped.
+    #[cfg(feature = "test-support")]
+    pub fn commit_run_scoped_slots_for_test(&mut self, slots: std::collections::BTreeSet<String>) {
+        self.committed_run_scoped_slots = slots;
     }
 
     /// Stand in for a mod init that committed `id` and `version`.
@@ -1297,6 +1315,114 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    fn write_run_scoped_store_manifest(mod_root: &Path, extra_store: &str, extra_name: &str) {
+        fs::write(
+            mod_root.join("start-script.js"),
+            format!(
+                r#"
+                    const run = defineStore("run", {{
+                        generatorOn: {{ type: "boolean", default: false, persist: "run" }},
+                        episode2: {{ type: "boolean", default: false, persist: true }},
+                    }});
+                    {extra_store}
+                    globalThis.__postretroModManifest = defineMod({{
+                        name: "Run Scope", id: "run-scope", version: "1",
+                        stores: [run{extra_name}],
+                    }});
+                "#,
+            ),
+        )
+        .unwrap();
+    }
+
+    // Run-scoped membership is replaced on every declaration commit beside
+    // `committed_store_slots`, and a scope change on a live slot is a changed
+    // schema that leaves both untouched.
+    #[test]
+    fn committed_run_scoped_slots_follow_each_declaration_commit() {
+        let mod_root = temp_mod_root("run_scoped_membership");
+        fs::write(
+            mod_root.join(crate::store_identity::IDENTITY_FILE_NAME),
+            r#"{"version":1,"slots":{
+                "run.generatorOn":"k0000000000000001",
+                "run.episode2":"k0000000000000002",
+                "later.alarm":"k0000000000000003"
+            }}"#,
+        )
+        .unwrap();
+        write_run_scoped_store_manifest(&mod_root, "", "");
+        let ctx = ScriptCtx::new();
+        let primitives = PrimitiveRegistry::new();
+        let mut runtime =
+            ScriptRuntime::new(&primitives, &ScriptRuntimeConfig::default(), &ctx).unwrap();
+
+        runtime.run_mod_init(&mod_root).unwrap();
+        assert_eq!(
+            runtime.committed_run_scoped_slots(),
+            &BTreeSet::from(["run.generatorOn".to_string()])
+        );
+        assert!(runtime.committed_store_slots().contains("run.episode2"));
+
+        // `persist: true` -> `persist: "run"` keeps `SlotSchema` equal; the
+        // commit must still reject it as a changed schema.
+        fs::write(
+            mod_root.join("start-script.js"),
+            r#"
+                const run = defineStore("run", {
+                    generatorOn: { type: "boolean", default: false, persist: "run" },
+                    episode2: { type: "boolean", default: false, persist: "run" },
+                });
+                globalThis.__postretroModManifest = defineMod({
+                    name: "Run Scope", id: "run-scope", version: "1", stores: [run],
+                });
+            "#,
+        )
+        .unwrap();
+        let rescoped = build_staged_manifest(&mod_root, 1, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(1));
+        let outcome = runtime.commit_staged_manifest_result(
+            &rescoped,
+            &ctx,
+            &SequencedPrimitiveRegistry::new(),
+        );
+        let StagedManifestCommitOutcome::Rejected { reason, .. } = outcome else {
+            panic!("a persist-scope change must reject the staged commit, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("`run` changes an already committed schema"),
+            "{reason}"
+        );
+        assert_eq!(
+            runtime.committed_run_scoped_slots(),
+            &BTreeSet::from(["run.generatorOn".to_string()])
+        );
+
+        write_run_scoped_store_manifest(
+            &mod_root,
+            r#"const later = defineStore("later", { alarm: { type: "boolean", default: false, persist: "run" } });"#,
+            ", later",
+        );
+        let added = build_staged_manifest(&mod_root, 2, &StagedManifestBuildConfig::default());
+        runtime.staged_manifest_lane = Some(StagedManifestBuildLane::new_for_test_latest(2));
+        assert!(matches!(
+            runtime.commit_staged_manifest_result(&added, &ctx, &SequencedPrimitiveRegistry::new()),
+            StagedManifestCommitOutcome::Committed { generation: 2, .. }
+        ));
+        assert_eq!(
+            runtime.committed_run_scoped_slots(),
+            &BTreeSet::from(["later.alarm".to_string(), "run.generatorOn".to_string()])
+        );
+
+        fs::remove_file(mod_root.join("start-script.js")).unwrap();
+        runtime
+            .run_mod_init(&mod_root)
+            .expect("debug resume without a start script commits an empty snapshot");
+        assert!(runtime.committed_run_scoped_slots().is_empty());
+        assert!(runtime.committed_store_slots().is_empty());
+
+        fs::remove_dir_all(mod_root).unwrap();
     }
 
     // Regression: an absent start script cleared durable identity along with

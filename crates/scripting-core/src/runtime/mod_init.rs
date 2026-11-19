@@ -136,6 +136,7 @@ impl ScriptRuntime {
                 // consumers stop treating retained slots as current content.
                 self.mod_manifest = None;
                 self.committed_store_slots.clear();
+                self.committed_run_scoped_slots.clear();
                 self.store_identity = validated_identity.and_then(|validated| validated.ledger);
                 return Ok(());
             }
@@ -233,6 +234,8 @@ impl ScriptRuntime {
         }
         self.committed_store_slots =
             crate::store_identity::declaration_slot_names(&manifest.store_declarations);
+        self.committed_run_scoped_slots =
+            crate::store_identity::run_scoped_slot_names(&manifest.store_declarations);
 
         log::info!("[Mod-init] mod `{}` initialized", manifest.name);
         self.mod_manifest = Some(manifest);

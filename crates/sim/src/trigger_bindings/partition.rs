@@ -54,6 +54,13 @@ const LIFECYCLE_PRIMITIVES: &[&str] = &[
     "endSession",
     "hostSession",
     "joinSession",
+    "continueRun",
+    "newRun",
+    "deleteRun",
+    "selectCharacter",
+    "createCharacter",
+    "deleteCharacter",
+    "checkpoint",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

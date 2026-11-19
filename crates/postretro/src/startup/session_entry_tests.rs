@@ -506,6 +506,7 @@ fn with_saves(view: &mut ClientView, data_dir: &std::path::Path) {
             .state_store_lifecycle
             .should_restore_after_mod_init(true)
     );
+    crate::session::saves::boot_restore(session);
     session.state_store_lifecycle.mark_restore_completed();
     let boot = crate::session::progress_save::save_world_and_character(session)
         .expect("fixture: saves are allowed");
@@ -530,9 +531,27 @@ fn write_character(app: &App, value: f32) {
         .set_per_seat_value(Seat(0), SlotValue::Number(value));
 }
 
+/// The world file: what a host or single player's save point always writes.
 fn saved_file(app: &App) -> std::path::PathBuf {
     let session = app.session.as_ref().unwrap();
-    crate::scripting::state_persistence::state_path(session.data_dir.as_deref(), MOD_ID).unwrap()
+    postretro_sim::scripting::save_files::SaveDir::new(session.data_dir.as_deref().unwrap(), MOD_ID)
+        .world_path()
+}
+
+/// The world file and character slot 0 as the store document they compose.
+fn on_disk_state(app: &App) -> crate::scripting::state_persistence::PersistedState {
+    use postretro_sim::scripting::save_files::{SaveDir, read_document};
+    let session = app.session.as_ref().unwrap();
+    let dir = SaveDir::new(session.data_dir.as_deref().unwrap(), MOD_ID);
+    let world = read_document(&dir.world_path()).unwrap();
+    let character = read_document(&dir.character_path(0)).unwrap();
+    crate::scripting::state_persistence::PersistedState::from_ledger(
+        world.as_ref(),
+        None,
+        character
+            .as_ref()
+            .and_then(|document| document.seats.first()),
+    )
 }
 
 fn character_in(state: Option<&crate::scripting::state_persistence::PersistedState>) -> f64 {
@@ -557,9 +576,7 @@ fn join_saves_world_and_character_before_its_first_connect_packet() {
 
     assert!(view.app.join_from_frontend(relay.address()));
 
-    let on_disk = crate::scripting::state_persistence::load_persisted_state(&saved_file(&view.app))
-        .unwrap()
-        .expect("the join wrote the save");
+    let on_disk = on_disk_state(&view.app);
     assert_eq!(
         Some(&on_disk),
         view.app.session.as_ref().unwrap().persisted_state.as_ref(),
@@ -612,42 +629,219 @@ fn failed_join_save_still_rebases_the_restore_snapshot_and_warns() {
     assert_eq!(slot(&view.app, WORLD_SLOT), Some(SlotValue::Number(42.0)));
 }
 
-// AC S4: carried loadout from earlier single-player levels does not survive
-// a join and leave; seat 0 holds what a fresh ledger holds.
+/// Save the selected character with seat 0 carrying `shells`, as a save
+/// point does.
+fn save_character_with_shells(view: &mut ClientView, shells: u32) {
+    let session = view.app.session.as_mut().unwrap();
+    let mut carried = postretro_combat_model::CarriedState::default();
+    carried.reserve.set_exact("shells", shells);
+    session
+        .seat_table
+        .as_mut()
+        .unwrap()
+        .set_carried_state(Seat(0), Some(carried));
+    crate::session::progress_save::save_world_and_character(session).unwrap();
+}
+
+/// The `shells` the saved character carries.
+fn saved_shells(app: &App) -> Option<u32> {
+    let session = app.session.as_ref().unwrap();
+    let dir = postretro_sim::scripting::save_files::SaveDir::new(
+        session.data_dir.as_deref().unwrap(),
+        MOD_ID,
+    );
+    postretro_sim::scripting::save_files::read_document(&dir.character_path(0))
+        .unwrap()
+        .and_then(|document| document.seats.first().cloned())
+        .and_then(|record| record.loadout.reserve.get("shells").copied())
+}
+
+fn seat_zero_shells(app: &App) -> Option<u32> {
+    app.session
+        .as_ref()
+        .unwrap()
+        .seat_table
+        .as_ref()
+        .unwrap()
+        .carried_state(Seat(0))
+        .map(|carried| carried.reserve.available("shells"))
+}
+
+// D1 (replaces the fresh-ledger carry test): after a join and leave, seat 0
+// carries the selected character's saved loadout.
 #[test]
-fn join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry() {
+fn join_then_leave_restores_seat_zero_carry_from_selected_character() {
+    let dir = tempfile::tempdir().unwrap();
     let relay = host_in_level(&spawn_points(3));
     let mut view = single_player_at_menu(spawn_points(3));
-    {
-        let session = view.app.session.as_mut().unwrap();
-        let ctx = session.scripting.script_ctx.clone();
-        let mut registry = ctx.registry.borrow_mut();
-        let pawn = registry.spawn(postretro_entities::Transform::default());
-        let mut health = postretro_entities::components::health::HealthComponent::from_descriptor(
-            &postretro_entities::data_descriptors::HealthDescriptor {
-                max: 100.0,
-                ..Default::default()
-            },
-        );
-        health.current = 40.0;
-        registry.set_component(pawn, health).unwrap();
-        let seats = session.seat_table.as_mut().unwrap();
-        seats.bind_pawn(&mut registry, Seat(0), pawn);
-        seats.harvest_bound_pawns(&registry, &[]);
-        assert!(
-            seats.carried_state(Seat(0)).is_some(),
-            "fixture: seat 0 carries"
-        );
-    }
+    with_saves(&mut view, dir.path());
+    save_character_with_shells(&mut view, 5);
 
     assert!(view.app.join_from_frontend(relay.address()));
     assert!(view.app.leave_session(LeaveCause::Own));
 
-    let fresh = crate::netcode::SeatTable::local_only();
-    let session = view.app.session.as_ref().unwrap();
+    assert_eq!(seat_zero_shells(&view.app), Some(5));
+    assert_eq!(saved_shells(&view.app), Some(5));
+}
+
+/// A client with saves, joined and participating in the relay host's level.
+fn participating_client(dir: &std::path::Path, shells: u32) -> (Relay, ClientView, u64) {
+    let mut relay = host_in_level(&spawn_points(3));
+    let mut view = single_player_at_menu(spawn_points(3));
+    with_saves(&mut view, dir);
+    save_character_with_shells(&mut view, shells);
+    assert!(view.app.join_from_frontend(relay.address()));
+    let (id, _) = follow_into_level(&mut relay, &mut view);
+    (relay, view, id)
+}
+
+/// The host hands `id`'s seat a carry of `shells` and sends each owner its
+/// loadout, as a level start or checkpoint does.
+fn host_sends_loadout(relay: &mut Relay, id: u64, shells: u32) {
+    let seat = relay.seat(id).unwrap();
+    let mut carried = postretro_combat_model::CarriedState::default();
+    carried.reserve.set_exact("shells", shells);
+    relay.seats_mut().set_carried_state(seat, Some(carried));
+    let session = relay.app.session.as_mut().unwrap();
+    let sent = session
+        .net_endpoint
+        .as_mut()
+        .unwrap()
+        .send_character_loadouts(session.seat_table.as_ref());
+    assert_eq!(sent, 1);
+}
+
+fn world_and_run_bytes(app: &App) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let session = app.session.as_ref().unwrap();
+    let dir = postretro_sim::scripting::save_files::SaveDir::new(
+        session.data_dir.as_deref().unwrap(),
+        MOD_ID,
+    );
+    (
+        std::fs::read(dir.world_path()).ok(),
+        std::fs::read(dir.run_path(0)).ok(),
+    )
+}
+
+// N4, P8 and S8: each loadout message saves the character; the periodic
+// save keeps it; the client never writes world or run files.
+#[test]
+fn client_saves_each_loadout_message_and_periodic_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut relay, mut view, id) = participating_client(dir.path(), 3);
+    let world_and_run = world_and_run_bytes(&view.app);
+
+    host_sends_loadout(&mut relay, id, 7);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        saved_shells(&view.app) == Some(7)
+    });
+    crate::save_connected_client_per_owner_state(view.app.session.as_mut().unwrap());
     assert_eq!(
-        session.seat_table.as_ref().unwrap().carried_state(Seat(0)),
-        fresh.carried_state(Seat(0))
+        saved_shells(&view.app),
+        Some(7),
+        "the periodic save keeps it"
+    );
+
+    host_sends_loadout(&mut relay, id, 8);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        saved_shells(&view.app) == Some(8)
+    });
+    assert_eq!(world_and_run_bytes(&view.app), world_and_run);
+}
+
+// N3, client side: a guest's own leave after a pickup saves it.
+#[test]
+fn guest_leave_after_pickup_saves_the_weapon() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut relay, mut view, id) = participating_client(dir.path(), 3);
+    {
+        // The guest's pawn picks up ammo after the last level start.
+        let pawn = relay.pawn(id).unwrap();
+        let ctx = relay
+            .app
+            .session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .clone();
+        let mut reserve = postretro_entities::AmmoReserve::new();
+        reserve.set_exact("shells", 11);
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, reserve)
+            .unwrap();
+    }
+
+    assert!(view.app.request_final_character_for_leave());
+    exchange_until(&mut relay, &mut view, |_, view| {
+        view.app.received_final_character.is_some()
+    });
+    assert!(view.app.leave_session(LeaveCause::Own));
+
+    assert_eq!(saved_shells(&view.app), Some(11));
+    assert_eq!(seat_zero_shells(&view.app), Some(11));
+}
+
+// N5: a host that never answers: the leave closes at the bound and saves
+// the loadout the host last sent.
+#[test]
+fn leaving_client_gives_up_at_bound_with_last_loadout() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut relay, mut view, id) = participating_client(dir.path(), 3);
+    host_sends_loadout(&mut relay, id, 6);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        saved_shells(&view.app) == Some(6)
+    });
+
+    // The host stops answering: the relay is never stepped again.
+    let started = std::time::Instant::now();
+    assert!(view.app.leave_session(LeaveCause::Own));
+    let waited = started.elapsed();
+
+    assert!(
+        waited >= super::session_membership::FINAL_CHARACTER_WAIT
+            && waited < super::session_membership::FINAL_CHARACTER_WAIT * 2,
+        "{waited:?}"
+    );
+    capture.assert_logged(log::Level::Warn, "did not return the final character");
+    assert_eq!(saved_shells(&view.app), Some(6));
+}
+
+// V1 and C6, client half: a connected client's save verbs and checkpoints
+// change nothing.
+#[test]
+fn connected_client_runs_no_save_verb_or_checkpoint() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, mut view, _) = participating_client(dir.path(), 3);
+    let character = std::fs::read(
+        postretro_sim::scripting::save_files::SaveDir::new(dir.path(), MOD_ID).character_path(0),
+    )
+    .unwrap();
+
+    view.app
+        .handle_save_verb(SystemReactionCommand::SelectCharacter {
+            index: 0,
+            dispatch_source: "named:test".into(),
+            origin: own(),
+        });
+    view.app
+        .handle_save_verb(SystemReactionCommand::Checkpoint {
+            name: "bridge".into(),
+            dispatch_source: "named:test".into(),
+            origin: own(),
+        });
+
+    capture.assert_logged(log::Level::Warn, "a connected client runs no save verbs");
+    assert_eq!(
+        std::fs::read(
+            postretro_sim::scripting::save_files::SaveDir::new(dir.path(), MOD_ID)
+                .character_path(0)
+        )
+        .unwrap(),
+        character
     );
 }
 
@@ -741,8 +935,12 @@ fn entry_facts(app: &App) -> EntryFacts {
         join_password: slot(app, "session.joinPassword"),
         end_cause: slot(app, "session.endCause"),
         connection: connection(app),
-        saved: crate::scripting::state_persistence::state_path(session.data_dir.as_deref(), MOD_ID)
-            .and_then(|path| std::fs::read(path).ok()),
+        saved: session.data_dir.as_deref().and_then(|dir| {
+            std::fs::read(
+                postretro_sim::scripting::save_files::SaveDir::new(dir, MOD_ID).world_path(),
+            )
+            .ok()
+        }),
     }
 }
 
@@ -2068,21 +2266,32 @@ fn a_waiting_join_answers_with_the_password_it_captured() {
     );
 }
 
-/// Install the shipped dev frontend's menus, its reactions and keyboard, over
-/// the engine keyboard it shadows, into `app` as mod init does. Returns each
-/// menu tree as JSON.
+/// Install the shipped dev frontend's menus and save screens, its reactions
+/// and keyboard, over the engine keyboard it shadows, into `app` as mod init
+/// does. Returns each menu tree as JSON.
 fn install_dev_frontend(app: &mut App) -> Vec<(String, serde_json::Value)> {
     use postretro_level_format::data_script::DataScriptSection;
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../content/dev/scripts/frontend-menu.ts");
+    // The save screens import the menu module by relative path, so both sit
+    // beside the entry, as they sit beside each other in content/dev.
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("frontend-menu.ts"),
+        include_str!("../../../../content/dev/scripts/frontend-menu.ts"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("frontend-saves.ts"),
+        include_str!("../../../../content/dev/scripts/frontend-saves.ts"),
+    )
+    .unwrap();
     let entry = dir.path().join("session-menus.ts");
     std::fs::write(
         &entry,
-        format!(
-            "{}\nexport function setupLevel() {{ return {{ uiTrees: [frontendMenu, hostMenu, joinMenu, devKeyboard, devLevelSelectMenu, optionsMenu, exitConfirm, quitConfirm], reactions: frontendReactions }}; }}\n",
-            include_str!("../../../../content/dev/scripts/frontend-menu.ts")
-        ),
+        "import { frontendMenu, hostMenu, joinMenu, devKeyboard, devLevelSelectMenu, optionsMenu, exitConfirm, quitConfirm, frontendReactions } from \"./frontend-menu\";\n\
+         import { saveScreens } from \"./frontend-saves\";\n\
+         export function setupLevel() { return { uiTrees: [frontendMenu, hostMenu, joinMenu, devKeyboard, devLevelSelectMenu, optionsMenu, exitConfirm, quitConfirm, ...saveScreens], reactions: frontendReactions }; }\n",
     )
     .unwrap();
     let session = app.session.as_mut().unwrap();
@@ -2337,12 +2546,36 @@ fn the_dev_keyboard_titles_its_field_and_masks_a_password() {
 
 // Each session menu shows one state at a time. When the focused button hides
 // with its state, the first stop left is the new state's own button, so the
-// initial-focus fallback lands there.
+// initial-focus fallback lands there. With no character chosen, Host and Join
+// offer the way to one in place of the press the engine would refuse.
 #[test]
 fn the_dev_session_menus_show_one_state_at_a_time() {
     let mut view = entering_engine(spawn_points(3));
     let _ = install_dev_frontend(&mut view.app);
     let app = &mut view.app;
+
+    app.write_session_slot("saves.character", SlotValue::Number(-1.0));
+    press(app, "frontend.openJoin");
+    let (texts, stops) = draw_top(app);
+    assert_eq!(
+        stops,
+        [
+            "joinCharacters",
+            "joinAddress",
+            "joinPassword",
+            "frontend.join.back"
+        ]
+    );
+    assert!(has(&texts, "CHOOSE A CHARACTER FIRST"), "{texts:?}");
+    app.session.as_mut().unwrap().modal_stack.pop();
+    press(app, "frontend.openHost");
+    let (_, stops) = draw_top(app);
+    assert_eq!(
+        stops,
+        ["hostCharacters", "hostPassword", "frontend.host.back"]
+    );
+    app.session.as_mut().unwrap().modal_stack.pop();
+    app.write_session_slot("saves.character", SlotValue::Number(0.0));
 
     press(app, "frontend.openJoin");
     let (_, stops) = draw_top(app);
@@ -2388,7 +2621,7 @@ fn the_dev_session_menus_show_one_state_at_a_time() {
     app.write_session_slot("session.hosting", SlotValue::Boolean(true));
     write_text(app, "session.hostAddress", "10.0.0.7:27015");
     let (texts, stops) = draw_top(app);
-    assert_eq!(stops, ["hostPlay", "hostStop", "frontend.host.back"]);
+    assert_eq!(stops, ["hostLobby", "hostStop", "frontend.host.back"]);
     assert!(has(&texts, "HOSTING ON 10.0.0.7:27015"), "{texts:?}");
     app.session.as_mut().unwrap().modal_stack.pop();
 
@@ -2412,6 +2645,7 @@ fn the_dev_session_menus_show_one_state_at_a_time() {
             "frontendPlay",
             "frontendHost",
             "frontendJoin",
+            "frontendLevels",
             "frontendOptions",
             "frontendExit"
         ]
@@ -2540,8 +2774,9 @@ fn engine_panels_over_the_dev_options_draw_alone() {
 }
 
 // The rules the frontend's visual grammar rests on, over every screen and
-// session state: title, level select, options, the exit dialog, Host and Join
-// in each state, and the keyboard over each field.
+// session state: title, characters, runs, level select, options, the exit
+// dialog, Host, the lobby and Join in each state, each delete confirmation,
+// and the keyboard over each field.
 #[test]
 fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
     let mut view = entering_engine(spawn_points(3));
@@ -2556,7 +2791,24 @@ fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
     reset(app);
     assert_one_layer_with_one_way_back(app, "title");
     for (open, screen) in [
-        ("frontend.openPlay", "level select"),
+        ("frontend.openPlay", "characters"),
+        ("frontend.characters.name.0", "character name keyboard"),
+    ] {
+        press(app, open);
+        assert_one_layer_with_one_way_back(app, screen);
+    }
+    app.cancel_text_entry();
+    for (open, screen) in [
+        ("frontend.characters.askDelete.0", "delete character dialog"),
+        ("frontend.characters.select.0", "runs"),
+        ("frontend.runs.askDelete.0", "delete run dialog"),
+    ] {
+        press(app, open);
+        assert_one_layer_with_one_way_back(app, screen);
+    }
+    reset(app);
+    for (open, screen) in [
+        ("frontend.openLevelSelect", "level select"),
         ("frontend.openOptions", "options"),
         ("dev.askExit", "exit dialog"),
         ("dev.askQuit", "quit dialog"),
@@ -2570,11 +2822,19 @@ fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
     app.write_session_slot("session.hosting", SlotValue::Boolean(true));
     write_text(app, "session.hostAddress", "10.0.0.7:27015");
     assert_one_layer_with_one_way_back(app, "hosting");
-    press(app, "frontend.openPlay");
+    press(app, "frontend.openLevelSelect");
     assert_one_layer_with_one_way_back(app, "level select over hosting");
     reset(app);
     assert_one_layer_with_one_way_back(app, "title while hosting");
+    press(app, "frontend.openLobby");
+    assert_one_layer_with_one_way_back(app, "lobby");
+    press(app, "frontend.openLevelSelect");
+    assert_one_layer_with_one_way_back(app, "level select over the lobby");
+    reset(app);
     app.write_session_slot("session.hosting", SlotValue::Boolean(false));
+    press(app, "frontend.openLobby");
+    assert_one_layer_with_one_way_back(app, "lobby, not hosting");
+    reset(app);
 
     press(app, "frontend.openJoin");
     assert_one_layer_with_one_way_back(app, "join");
@@ -2606,6 +2866,45 @@ fn every_dev_frontend_screen_is_one_layer_with_one_way_back() {
         enum_slot(app, "session.endCause", cause.as_str());
         assert_one_layer_with_one_way_back(app, &format!("title, {}", cause.as_str()));
     }
+}
+
+// Hosting from the dev frontend lands in the lobby, in the Host menu's place
+// on the title; the lobby's CANCEL GAME ends the session and returns to the
+// title (M2).
+#[test]
+fn hosting_from_the_dev_frontend_lands_in_the_lobby_and_its_cancel_ends_the_session() {
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    let app = &mut view.app;
+    // The dev title is this frontend's root, as the dev manifest declares it.
+    {
+        let session = app.session.as_mut().unwrap();
+        session.frontend.as_mut().unwrap().menu_tree = "frontend.menuTree".to_string();
+        session.modal_stack.clear_pushed();
+        session.modal_stack.push_named("frontend.menuTree", None);
+    }
+    assert!(app.at_frontend());
+    press(app, "frontend.openHost");
+    press(app, "frontend.hostSession");
+    assert_eq!(app.session_role(), SessionRole::Host);
+    {
+        let stack = &app.session.as_ref().unwrap().modal_stack;
+        assert_eq!(stack.active_name(), Some("frontend.lobby"));
+        assert!(
+            !stack.contains_pushed("frontend.host"),
+            "the lobby takes the Host menu's place"
+        );
+        assert!(stack.contains_pushed("frontend.menuTree"));
+    }
+    assert_one_layer_with_one_way_back(app, "lobby while hosting");
+
+    press(app, "frontend.lobby.cancel");
+    assert_eq!(app.session_role(), SessionRole::SinglePlayer);
+    assert_eq!(
+        app.session.as_ref().unwrap().modal_stack.active_name(),
+        Some("frontend.menuTree"),
+        "CANCEL GAME returns to the title"
+    );
 }
 
 // The title's answer to a refused password opens the Join menu with the
@@ -2920,5 +3219,41 @@ fn end_cause_catalog_values_match_the_engine_vocabulary() {
     assert_eq!(
         postretro_entities::engine_state_catalog::SESSION_END_CAUSE_VALUES,
         expected.as_slice()
+    );
+}
+
+// Correction 3 (the lobby): a host at its frontend lists joining players in
+// `session.players` while its counts stay 0; ending the session clears them.
+#[test]
+fn hosting_frontend_rows_list_joining_players_for_the_lobby() {
+    let points = spawn_points(3);
+    let mut host = single_player_at_menu(points.clone());
+    assert!(host.app.host_from_frontend(0));
+    let mut relay = Relay::adopt(host.app);
+    let mut view = single_player_at_menu(points);
+    assert!(view.app.join_from_frontend(relay.address()));
+    exchange_until(&mut relay, &mut view, |relay, _| {
+        slot(&relay.app, "session.players.1.present") == Some(SlotValue::Boolean(true))
+    });
+
+    assert_eq!(
+        slot(&relay.app, "session.players.0.present"),
+        Some(SlotValue::Boolean(true)),
+        "the host's own row"
+    );
+    assert_eq!(
+        slot(&relay.app, "session.players.1.status"),
+        Some(SlotValue::Enum("loading".into()))
+    );
+    assert_eq!(
+        slot(&relay.app, "session.playerCounts.connected"),
+        Some(SlotValue::Number(0.0)),
+        "the frontend is not a session level"
+    );
+
+    relay.app.end_session();
+    assert_eq!(
+        slot(&relay.app, "session.players.1.present"),
+        Some(SlotValue::Boolean(false))
     );
 }

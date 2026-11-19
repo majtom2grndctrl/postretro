@@ -384,6 +384,7 @@ fn incoming_declarations() -> StoreDeclarationSet {
                 SlotRecord::new(schema(SlotType::Boolean, SlotValue::Boolean(false), true)),
             ),
         ],
+        run_scoped: Default::default(),
     })
     .unwrap();
     set.add(crate::slot_table::StoreDeclaration {
@@ -392,6 +393,7 @@ fn incoming_declarations() -> StoreDeclarationSet {
             "bonus".into(),
             SlotRecord::new(schema(SlotType::Number, SlotValue::Number(2.0), false)),
         )],
+        run_scoped: Default::default(),
     })
     .unwrap();
     set

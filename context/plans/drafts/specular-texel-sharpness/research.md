@@ -34,3 +34,15 @@ A 1024×1024 specular slot across 11 mips: R8 is 1,398,101 B, Rg8 2,796,202 B, R
 ## Why reconstruction, not a separate snap
 
 `sample_post_retro` moves the UV to the texel centre when magnified and leaves it near the true UV once a texel is smaller than a pixel. Mapping that same reconstructed UV to world has two effects. When magnified, the highlight is flat per texel with the same antialiased seam that intensity and the normal have. When minified, the position error is sub-pixel. A hard snap, by contrast, would step the position at the seam while N and intensity still blend across it, which would draw a hard edge in the highlight.
+
+## Pins
+
+| ID | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Smooth style committed, then the player switches Surface Depth | style commit → Surface Depth Off → On | Static faces and movers draw smooth on every frame. The march turns off, then is restored |
+| P2 | Surface Depth Off, then the style changes | Surface Depth Off → style smooth → style pixel | The march stays off. Each style reaches the next frame's specular |
+| P3 | A four-channel material whose Surface Depth uniform resolves flat | built, then Surface Depth Off → On. Cases: `_p` without `_h`; a prefix with no Surface Depth tuning; `_p`+`_h` | Per-texel sharpness on every frame in every case. The march runs only for `_p`+`_h` at On |
+| P4 | Style committed before a level's materials exist | style smooth → then one of: full init; first level install; unload → next install; surface loss → full-renderer rebuild → install; suspend → resume | The first frame of each installed level draws smooth on static faces and movers |
+| P5 | A staged mod init commits while a level load is in flight | load dispatches at pixel → staged init commits smooth → load publishes | The published level draws smooth on its first frame. No further commit is needed |
+| P6 | Staged mod-init outcomes after smooth is active | smooth → failed → rejected → stale → committed with no start script | Smooth through failed, rejected and stale. Pixel after the committed no-start result |
+| P7 | Plane byte without `_h` | bake | Stored G = 127 (255 − 128). A stored 128 reads as authored 127, a trough of −1/128. Symbols: `surface_height_fraction_from_byte`, `bake_materials_into` |

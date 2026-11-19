@@ -78,10 +78,30 @@ many a map has, one player gets one body.
 | `angle` / `angles` | yaw, or pitch yaw roll | `0` | The direction the player looks (see Entity facing). |
 | `coop_only` | 0/1 | `0` | `1` keeps this spawn for co-op joiners: the first player never starts here. If every spawn is marked, the first player takes the first one and the engine logs a warning. |
 | `entity_class` | string | `player` | The registered entity the player is spawned as. |
+| `checkpoint` | string | empty | The checkpoint this spawn belongs to. Spawns sharing a name are that checkpoint's arrival set. Spawns without it are the level-start set. |
 
 Spawns appear in the map file in the order you placed them. TrenchBroom keeps
 that order, but if a co-op spawn must never be the first player's, mark it
 `coop_only` rather than relying on its position.
+
+### Checkpoint spawns
+
+A level's script saves a checkpoint with `checkpoint("bridge")` (see
+[Characters, runs and checkpoints](scripting-reference.md#characters-runs-and-checkpoints)).
+Give the spawns players should use from then on `checkpoint bridge`:
+
+- **At a level start**, players arrive at spawns with no `checkpoint` key.
+  Keyed spawns are skipped. If every spawn in the level has a key, the level
+  start uses all of them and the engine logs a warning.
+- **Once `checkpoint("bridge")` fires**, players who respawn and players who
+  join late use the `bridge` spawns until the next level start.
+- **Continue on a run saved at `bridge`** arrives at the `bridge` spawns. In
+  co-op each player takes a different one of them while one is free, by the
+  same rule as joiners.
+- **A checkpoint name no spawn carries** falls back to the level-start spawns
+  and logs a warning.
+
+Place at least as many spawns in a checkpoint's set as the game's player count.
 
 ---
 

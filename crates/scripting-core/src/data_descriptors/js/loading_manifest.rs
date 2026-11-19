@@ -45,7 +45,7 @@ pub(crate) fn loading_tree_from_js<'js>(
     ))
 }
 
-fn authored_field_js<'js>(
+pub(super) fn authored_field_js<'js>(
     obj: &Object<'js>,
     field: &str,
 ) -> Result<AuthoredValue, DescriptorError> {

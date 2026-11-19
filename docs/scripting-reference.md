@@ -64,7 +64,7 @@ registered here; those belong in per-level data scripts via `setupLevel(ctx)`.
 The mod-init VM is dropped after the manifest commits; no script state persists
 past that point.
 
-**Durable store identity.** A mod-owned slot with writable `persist: true` or
+**Durable store identity.** A mod-owned slot with writable `persist: true` or `persist: "run"`, or
 any `network` replication scope (`"shared"` or `"ownerPrivate"`) must have an
 entry in `<mod-root>/identity.json`:
 
@@ -93,8 +93,16 @@ host-side value. Omit `network` for host-local bookkeeping or use
 `update`, or the `addSlot` reaction. Generic `storeRead(name)` and
 `storeWrite(name, value)` also reject per-owner slots because they carry no
 owner address. A per-owner slot may also set `persist: true`: each player's
-value saves under their own device-local identity, so progress such as an XP
-total follows that player across hosts. A global slot is saved by the host only.
+value saves with their character, so progress such as an XP total follows that
+player across hosts. A global slot is saved by the host only.
+
+**Where persisted slots save.** `persist: true` on a global slot saves it in the
+mod's world file: progress that outlives any run, such as an unlocked episode.
+`persist: "run"` on a global slot saves it in the current run instead, so a new
+run starts it from its default. `persist: true` on a per-owner slot saves it in
+the player's character. `persist: "run"` on a per-owner slot is refused when the
+store is declared, because a host never saves a guest's run state. See
+[Characters, runs and checkpoints](#characters-runs-and-checkpoints).
 
 **Render profile.** The optional `render` block picks the mod's bloom and
 water-reflection looks once, for the whole mod:
@@ -4005,6 +4013,13 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `loadLevel(id)` | `{ primitive: "loadLevel", args: { map: id } }` | Queues a catalog map load by id. |
 | `restartLevel()` | `{ primitive: "restartLevel", args: {} }` | Requeues the currently-active level source. No-ops when no level is active. |
 | `returnToFrontend()` | `{ primitive: "returnToFrontend", args: {} }` | Queues a return to the frontend menu, including its optional background level. Navigation outside a session: a host and a connected client refuse it (see [Session membership](#session-membership)). |
+| `continueRun(i)` | `{ primitive: "continueRun", args: { index } }` | Continues run slot `i` from its last level start or checkpoint, selecting its character. Frontend only. See [Characters, runs and checkpoints](#characters-runs-and-checkpoints). |
+| `newRun(i, level)` | `{ primitive: "newRun", args: { index, map: level } }` | Starts a new run in slot `i` at catalog map `level` with the selected character as it stands. Frontend only. |
+| `deleteRun(i)` | `{ primitive: "deleteRun", args: { index } }` | Deletes run slot `i`. Frontend only, not while hosting. |
+| `selectCharacter(i)` | `{ primitive: "selectCharacter", args: { index } }` | Selects character slot `i` and reloads its progress. Frontend only, not while hosting. |
+| `createCharacter(i)` | `{ primitive: "createCharacter", args: { index } }` | Creates a character in empty slot `i`, named from `ui.textEntry`, and selects it. Frontend only, not while hosting. |
+| `deleteCharacter(i)` | `{ primitive: "deleteCharacter", args: { index } }` | Deletes character slot `i`. Frontend only, not while hosting. |
+| `checkpoint(name)` | `{ primitive: "checkpoint", args: { name } }` | Saves the active run at checkpoint `name`, then the character and the world file. Outside an active run it saves the character and the world file only. Run by the host or a single player; does nothing on a connected client or in the frontend backdrop. |
 | `leaveSession()` | `{ primitive: "leaveSession", args: {} }` | Leaves the co-op session on a connected client, which lands at the frontend as single-player. Membership only. See [Session membership](#session-membership). |
 | `endSession()` | `{ primitive: "endSession", args: {} }` | Ends the co-op session on a host, which stays in its level as single-player. Membership only. See [Session membership](#session-membership). |
 | `setSentiment(from, to, value)` | `{ primitive: "setSentiment", args: { from, to, value } }` | Sets the live directional `from` → `to` relationship. Negative values degrade it; positive values bond it. |
@@ -4166,6 +4181,127 @@ navigation outside a session (see [Session membership](#session-membership)).
 Use the reserved button action for a quit button that should work in any role
 without depending on a registered reaction; use `returnToFrontend()` when an
 authored event should route through the reaction system.
+
+### Characters, runs and checkpoints
+
+A player picks a **character** and a **run** at the frontend. The character
+holds the player's per-owner `persist: true` slots, their display name and
+everything they carry: health, weapons, magazines, ammo and defense layers. Gear
+always belongs to the character, so it goes with them into any run and to any
+co-op host. A run holds the level and checkpoint it last reached, the
+`persist: "run"` global slots and faction sentiment. The mod's world file holds
+`persist: true` global slots, which no run resets.
+
+Declare how many slots of each the menu offers with a `saves` block:
+
+```typescript
+export default defineMod({
+  saves: { characterSlots: 4, runSlots: 3 },
+  // stores, reactions, maps, frontend, uiTrees ...
+});
+```
+
+```lua
+return defineMod({
+  saves = { characterSlots = 4, runSlots = 3 },
+})
+```
+
+The engine caps each count at 16 and warns when it clamps one. A mod without a
+`saves` block gets one character and one run, created and selected
+automatically, and its run lasts the whole time the game runs. Every existing
+mod keeps its progress that way, faction sentiment included. Such a mod saves
+its run-scoped globals and faction sentiment at level starts and checkpoints
+only; changes since the last of them are lost at quit or return to the
+frontend.
+
+**When saves happen.** The run saves at every level start and every
+`checkpoint`. The character saves at those too, and also at a clean exit, a
+join, a leave and every return to the frontend, holding exactly what the player
+carries at that moment. A run is active from `continueRun` or `newRun` until the frontend is entered
+again by any path. `loadLevel` starts no run, so its level starts save the
+character and world but no run. A crash loses only the play since the last of
+them. A
+character never saves downed or dead: they continue in their initial life state,
+and at full health if they had none.
+
+**The menu rows.** `getGameState().saves` holds what the menu shows:
+
+- `characters`: one row per declared character slot, each `{ present, occupied,
+  readable, name }`.
+- `runs`: one row per declared run slot, each `{ present, occupied, readable,
+  levelName, characterName, savedAt }`. `savedAt` reads like `2026-11-18 21:04
+  UTC`.
+- `character` and `run`: the selected slot index, or `-1` for none. Both are
+  0-based in both languages, so Luau compares them with `i - 1` (rows from
+  `UI.forEach` count from 1).
+
+Rows past the declared count are not `present`. `readable` is false for an
+empty row as well as for a file this build cannot read. A slot whose file this
+build cannot read stays `occupied` but not `readable` until it is deleted; only
+a delete touches it.
+
+**The verbs.** Import them from `postretro/ui` (`require("postretro/ui")` in
+Luau, as `UI.continueRun` and so on). Each takes the row index as that
+language's `forEach` gives it: from 0 in TypeScript, from 1 in Luau.
+
+- `selectCharacter(i)` selects a character. The store reloads: every mod slot
+  returns to its default, then the world file and the character apply.
+- `createCharacter(i)` creates a character in an empty slot, naming it from
+  `ui.textEntry`, and selects it. Open the text entry with no target field and
+  fire it from the entry's commit. An occupied slot is refused.
+- `deleteCharacter(i)` and `deleteRun(i)` delete a slot, readable or not.
+  Deleting the selection sets it to `-1`.
+- `continueRun(i)` selects the run's character, reloads the store with the run
+  and loads its level, arriving at its checkpoint if it reached one. A run
+  whose character was deleted, or whose level the mod no longer has, is refused;
+  you can still delete it.
+- `newRun(i, level)` starts a run at catalog map `level` with the selected
+  character as it stands, so a new run with an existing character keeps its
+  gear and progress (New Game Plus). It resets the run's slots and faction
+  sentiment and keeps world slots. It writes into an empty slot or the selected
+  character's own run only. A mod that wants a fresh start offers New game after
+  `createCharacter`.
+
+Select, create, Continue and `newRun` save the live world file before they
+reload, so a `persist: true` global written at the frontend (a difficulty
+toggle before New game, say) survives. Run-scoped and per-owner values written
+at the frontend still reset. The slot numbers in the engine's refusal warnings
+for these verbs count from 0 in both languages.
+
+Save verbs run only at the frontend. Inside a played level and on a connected
+client each is refused with a warning, changing nothing. Once `continueRun` or
+`newRun` queues its level, later verbs in the same reaction are refused. While
+hosting at the frontend, `continueRun` on the host's own character's run and
+`newRun` are allowed, and connected players follow into the level; the other
+verbs are refused. With a `saves` block, `hostSession()`, `joinSession()` and
+`newRun` need a selected character.
+
+**Checkpoints.** `checkpoint(name)` in a level script saves the run at that
+checkpoint and saves the character. Spawns whose `checkpoint` key matches the
+name become where players respawn and late joiners arrive, and where Continue
+arrives later (see the level design reference's checkpoint spawns). The next
+level start clears it. A checkpoint outside an active run saves the character and the world file,
+never a run.
+
+```typescript
+import { defineStore, defineReaction } from "postretro";
+import { continueRun, newRun, deleteRun, checkpoint } from "postretro/ui";
+
+const run = defineStore("run", {
+  generatorOn: { type: "boolean", default: false, persist: "run" },
+});
+const reachBridge = defineReaction("level.bridge", checkpoint("bridge"));
+```
+
+**Co-op.** A joining player brings their character's gear. The host keeps each
+weapon, ammo type and defense layer only if this mod defines it (an ammo type
+counts as defined only when one of the mod's weapons uses it as its ammo
+resource; ammo only a pickup grants is dropped from a joiner's gear), clamps
+magazines and health to their maximums, drops the rest with a warning, and never
+saves a guest's gear or progress. It sends each player their gear back at every
+level start and checkpoint and when they leave or the host ends the session,
+and the player's own machine saves it.
 
 ### Session membership
 

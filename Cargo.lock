@@ -4455,6 +4455,7 @@ dependencies = [
  "postretro-script-compiler",
  "postretro-scripting-core",
  "postretro-sim",
+ "postretro-stage-timing",
  "postretro-test-log-capture",
  "rquickjs",
  "serde_json",

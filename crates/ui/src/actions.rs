@@ -139,9 +139,10 @@ mod tests {
     }
 
     // AC U6: session entry is a reaction verb (`hostSession`, `joinSession`),
-    // never a reserved `ui.*` action: mods own the menus.
+    // never a reserved `ui.*` action: mods own the menus. So are the save
+    // verbs (`continueRun`, `newRun`, `selectCharacter`, …) and `checkpoint`.
     #[test]
-    fn reserved_ui_actions_name_no_host_or_join_action() {
+    fn reserved_ui_actions_name_no_session_entry_or_save_action() {
         let source = include_str!("actions.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
         for literal in production.split('"').skip(1).step_by(2) {
@@ -152,6 +153,12 @@ mod tests {
             assert!(
                 !lowered.contains("host") && !lowered.contains("join"),
                 "reserved action `{literal}` enters a session"
+            );
+            assert!(
+                !["run", "character", "checkpoint", "save"]
+                    .iter()
+                    .any(|word| lowered.contains(word)),
+                "reserved action `{literal}` is a save verb"
             );
         }
     }

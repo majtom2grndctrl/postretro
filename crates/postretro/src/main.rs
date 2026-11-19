@@ -2,7 +2,7 @@
 // See: context/lib/boot_sequence.md §3 · context/lib/index.md
 
 // Per-tick navigation-agent steering: replan budget, waypoint following, and
-// separation, built on the agent controller and `nav::find_path_from`.
+// separation, built on the agent controller and `nav::find_path_from_in`.
 #[cfg(feature = "dev-tools")]
 mod agent_diagnostics;
 mod app;
@@ -142,7 +142,7 @@ mod scripting_systems;
 #[global_allocator]
 static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -176,9 +176,11 @@ use crate::input::{Action, ButtonState, DiagnosticAction, InputFocus};
 use crate::netcode::frame_order;
 use crate::render::Renderer;
 use crate::scripting::state_persistence::{
-    apply_join_seed, collect_per_owner_state, collected_per_owner_only_state,
-    overlay_client_local_per_owner_state, retain_saved_per_owner_state, save_persisted_state,
-    state_path, sync_client_per_owner_projection,
+    overlay_client_local_per_owner_state, sync_client_per_owner_projection,
+};
+pub(crate) use crate::session::store_saves::{
+    answer_final_character_requests, apply_host_join_seed,
+    maybe_save_connected_client_per_owner_state, save_connected_client_per_owner_state,
 };
 // Session-owned types referenced in `main.rs` only by `#[cfg(test)]` code, so
 // they are gated test-only to keep the bin build warning-free.
@@ -203,7 +205,7 @@ use postretro_entities::{ComponentKind, ComponentValue, ScriptCtx, SystemReactio
 use postretro_foundation::LEGACY_WEAPON_PLACEMENT;
 #[cfg(test)]
 use postretro_foundation::resolve_weapon_placement;
-use postretro_foundation::{ModThemeTokens, Seat, SwitchingDescriptor, WeaponPlacementDescriptor};
+use postretro_foundation::{ModThemeTokens, SwitchingDescriptor, WeaponPlacementDescriptor};
 use postretro_net::wire::{ClosingCause, DivergenceReason, ServerControlMessage};
 use postretro_scripting_core::data_descriptors::RegisteredUiTree;
 #[cfg(test)]
@@ -371,8 +373,17 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             ServerControlMessage::SpawnPoseHint(hint) => app.receive_spawn_pose_hint(hint),
             // Held until the leave saves it: a snapshot the host sent before
             // its end may still apply after this, and must not win.
-            ServerControlMessage::FinalCharacter { slots } => {
-                app.received_final_character = Some(slots);
+            ServerControlMessage::FinalCharacter { slots, loadout } => {
+                app.received_final_character =
+                    Some(crate::session::store_saves::ReceivedFinalCharacter { slots, loadout });
+            }
+            // The latest loadout this client's host returned, at a level
+            // start or checkpoint: what its character saves carry.
+            ServerControlMessage::CharacterLoadout { loadout } => {
+                if let Some(session) = app.session.as_mut() {
+                    crate::session::store_saves::save_client_character_loadout(session, &loadout);
+                }
+                app.received_host_loadout = Some(loadout);
             }
             // The transport answers a challenge itself and never surfaces one.
             ServerControlMessage::PasswordChallenge { .. } => {}
@@ -420,7 +431,7 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
                         persisted,
                         identity.as_ref(),
                         &membership,
-                        session.player_options.player_id,
+                        session.character_claim().0,
                         local_seat,
                     ) {
                         log::warn!("[State] {warning}");
@@ -1196,6 +1207,9 @@ pub(crate) struct App {
     /// (spawn-point / built-in-handled / remaining-entity bookkeeping) now lives
     /// as locals inside `install_world_cpu`; only this host copy outlives install.
     host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+    /// Every `player_spawn` of the installed level; `host_spawn_points` is the
+    /// active set drawn from it.
+    level_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
     /// Each remote seat's resolved spawn pose on the installed level.
     spawn_poses: crate::spawn_pose::SpawnPoseResolver,
 
@@ -1268,6 +1282,9 @@ pub(crate) struct App {
     /// frame returns before them, until the leave's queued unload drains.
     /// Cleared by `unload_level`.
     level_stopped_by_session_end: bool,
+    /// The installed level is the frontend backdrop, whose pawn is never
+    /// harvested. Set at install, cleared at unload.
+    backdrop_installed: bool,
 
     /// A `hostSession` or `joinSession` press waiting for a left level's
     /// unload or an ended host's close, with what it captured when pressed.
@@ -1294,9 +1311,15 @@ pub(crate) struct App {
     /// left the session, so the rest of that batch is dropped.
     client_left_in_control_drain: bool,
 
-    /// The final character values a closing host returned to this client,
-    /// held until its leave saves them. Cleared by the leave.
-    received_final_character: Option<BTreeMap<String, postretro_net::wire::JoinSeedValue>>,
+    /// The final character a closing host returned to this client (its
+    /// per-owner values and loadout), held until its leave saves it. Cleared
+    /// by the leave.
+    received_final_character: Option<crate::session::store_saves::ReceivedFinalCharacter>,
+
+    /// The loadout this client's host last sent at a level start or
+    /// checkpoint, retained for the client's character saves. Cleared by the
+    /// leave, so a later session never reads a previous host's.
+    received_host_loadout: Option<postretro_net::wire::CarriedLoadoutWire>,
 
     /// Before boot left the splash or the first-launch hold, the host named
     /// a catalog level this client lacks. The boot-destination step consumes
@@ -1989,138 +2012,6 @@ fn update_debug_chase_agent_destination(
     set_debug_agent_destination(registry, agent, target);
 }
 
-/// Apply one host-validated join seed to an admitted seat. The host registry is
-/// authoritative: unknown durable keys and any schema-incompatible entries are
-/// warned and skipped before owner-private replication observes the values.
-fn apply_host_join_seed(
-    script_ctx: &postretro_entities::ScriptCtx,
-    registry: &mut postretro_entities::EntityRegistry,
-    identity: Option<&postretro_scripting_core::store_identity::StoreIdentityLedger>,
-    committed_store_slots: &BTreeSet<String>,
-    seat: Seat,
-    slots: BTreeMap<String, postretro_net::wire::JoinSeedValue>,
-) {
-    // Bound so the slot-table borrow ends before the layers evaluate.
-    let outcome = apply_join_seed(
-        &mut script_ctx.slot_table.borrow_mut(),
-        identity,
-        committed_store_slots,
-        seat,
-        slots,
-    );
-    for warning in &outcome.warnings {
-        log::warn!("[Net] {warning}");
-    }
-    if outcome.applied == 0 {
-        return;
-    }
-    // Settle now, as seat bind does: fullness is judged against the pre-seed
-    // capacity and refills to the seeded one before a grant, hit or level
-    // change can land.
-    if let Some(pawn) = registry.pawn_for_seat(seat) {
-        use postretro_entities::components::defense_layers::{LayerRefill, settle_layers_now};
-        settle_layers_now(registry, pawn, |component| {
-            component.mark_unmarked(LayerRefill::IfFull);
-        });
-    }
-}
-
-/// Save a connected client's own persistent per-owner values, periodically
-/// and at its leave. Its document keeps the world it booted with
-/// (`collected_per_owner_only_state`): the host's replicated globals are the
-/// host's, while the durable player-owned values belong in the local device's
-/// document.
-fn save_connected_client_per_owner_state(session: &mut crate::session::Session) {
-    if !session.state_store_lifecycle.can_save() {
-        return;
-    }
-    let Some((_, _, Some(local_seat))) = session
-        .net_endpoint
-        .as_ref()
-        .and_then(netcode::NetEndpoint::client_per_owner_save_context)
-    else {
-        return;
-    };
-    let Some(local_player_id) = session.player_options.player_id else {
-        // A process without a durable player identity must not manufacture a
-        // per-owner key or write a document it cannot later identify.
-        return;
-    };
-    let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() else {
-        log::warn!("[State] no committed mod manifest; skipping persistent per-owner state save");
-        return;
-    };
-    let mod_id = mod_id.to_owned();
-    let Some(state_path) = state_path(session.data_dir.as_deref(), &mod_id) else {
-        if session.state_store_lifecycle.disable_persistence() {
-            log::warn!(
-                "[State] platform data directory is unavailable; persistent state is disabled for this run"
-            );
-        }
-        return;
-    };
-
-    let identity = session.scripting.script_runtime.store_identity().cloned();
-    let committed_store_slots = session
-        .scripting
-        .script_runtime
-        .committed_store_slots()
-        .clone();
-    let script_ctx = session.scripting.script_ctx.clone();
-    let collected = collect_per_owner_state(
-        &script_ctx.slot_table.borrow(),
-        identity.as_ref(),
-        &committed_store_slots,
-        local_seat,
-        local_player_id,
-    );
-    for warning in collected.warnings {
-        log::warn!("[State] {warning}");
-    }
-
-    let save_state =
-        collected_per_owner_only_state(session.persisted_state.as_ref(), collected.per_owner);
-    match save_persisted_state(&state_path, &save_state) {
-        Ok(()) => {
-            // Keep boot-loaded globals in memory for their own lifecycle, but
-            // advance the retained per-owner document used by future client
-            // saves and join-seed assembly.
-            retain_saved_per_owner_state(&mut session.persisted_state, save_state);
-            log::info!(
-                "[State] saved persistent per-owner slots to {}",
-                state_path.display()
-            );
-        }
-        Err(error) => log::warn!(
-            "[State] failed to save persistent per-owner slots to {}: {error}",
-            state_path.display()
-        ),
-    }
-}
-
-/// Advance the connected-client private-save cadence after all game-logic work
-/// has settled for the frame. The caller owns the exact post-command-drain
-/// location; this helper owns only role/participation gating and synchronous I/O.
-fn maybe_save_connected_client_per_owner_state(
-    session: &mut crate::session::Session,
-    frame_dt: std::time::Duration,
-) {
-    let Some((connected, participating, _)) = session
-        .net_endpoint
-        .as_ref()
-        .and_then(netcode::NetEndpoint::client_per_owner_save_context)
-    else {
-        return;
-    };
-    session.per_owner_save_timer.observe_connection(connected);
-    if session
-        .per_owner_save_timer
-        .advance(frame_dt, connected && participating)
-    {
-        save_connected_client_per_owner_state(session);
-    }
-}
-
 impl App {
     /// The platform suspend: everything `suspended` does, which needs no
     /// event loop, so tests drive it too. The renderer, its window and every
@@ -2158,7 +2049,11 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
-        if let Some(session) = self.session.as_mut() {
+        // Only a played level's pawns are harvested: a backdrop's never is, and
+        // a pawn left bound by an earlier suspend (a suspend does not unload)
+        // is not one the selected character holds.
+        let harvest = self.played_level_present();
+        if let Some(session) = self.session.as_mut().filter(|_| harvest) {
             let registry = session.scripting.script_ctx.registry.borrow();
             if let Some(seats) = session.seat_table.as_mut() {
                 // Harvest state but retain bindings until lifecycle events drain
@@ -2590,24 +2485,34 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        // Every exit path reaches here, `ui.exitToDesktop`, window close and
-        // the quit chord alike: a client leaves and a host ends first, so
-        // peers learn now rather than at their keepalive timeout, and the
-        // saves below run as single-player.
+        self.exit_saves_and_teardown();
+    }
+}
+
+impl App {
+    /// Leave or end any session, then save. A played level's seat-0 pawn is
+    /// harvested first, so the character saves the gear it holds now.
+    /// Saving before declarations commit and restore completes could replace
+    /// valid saves with defaults, which the save entry point refuses. The
+    /// leave or end makes every role single-player, and a client's leave
+    /// restored its own world, so this save never writes a host's values.
+    pub(crate) fn leave_end_and_save_for_exit(&mut self) {
+        self.harvest_bound_pawns_for_save();
         self.leave_or_end_for_exit();
         if let Some(session) = self.session.as_mut() {
             session
                 .options_bridge
                 .flush_on_clean_exit(&session.player_options, session.settings_path.as_deref());
-        }
-
-        // Saving before declarations commit and restore completes could replace
-        // a valid state file with an empty or default-only snapshot. The leave
-        // or end above made every role single-player, and a client's leave
-        // restored its own world, so this save never writes a host's values.
-        if let Some(session) = self.session.as_mut() {
             let _ = crate::session::progress_save::save_world_and_character(session);
         }
+    }
+
+    fn exit_saves_and_teardown(&mut self) {
+        // Every exit path reaches here, `ui.exitToDesktop`, window close and
+        // the quit chord alike: a client leaves and a host ends first, so
+        // peers learn now rather than at their keepalive timeout, and the
+        // saves below run as single-player.
+        self.leave_end_and_save_for_exit();
 
         // Release the level's sound registry at teardown too, mirroring the
         // runtime level-unload path. Audio is session-owned.
@@ -2804,6 +2709,17 @@ impl App {
                 netcode::finish_host_poll(server, seats),
             );
         }
+        if matches!(poll, netcode::WorldLessPoll::Host(_))
+            && let Some(session) = self.session.as_mut()
+            && let Some(seats) = session.seat_table.as_ref()
+        {
+            // A host at its frontend lists who is joining for its lobby.
+            session.session_players.publish_lobby(
+                seats,
+                &script_ctx.registry.borrow(),
+                &mut script_ctx.slot_table.borrow_mut(),
+            );
+        }
         if let netcode::WorldLessPoll::Host(host_poll) = &poll {
             let Some(session) = self.session.as_mut() else {
                 return Some(poll);
@@ -2894,7 +2810,7 @@ impl App {
                     &mut script_ctx.slot_table.borrow_mut(),
                     admission.released_seats,
                 );
-                if admission.reclaimed {
+                if admission.keeps_live_state {
                     join_seed_state.mark_reclaimed(*client_id);
                 }
                 // Admission while a level is installed (the host Settling)
@@ -2928,7 +2844,7 @@ impl App {
             {
                 match arrival {
                     netcode::JoinSeedArrival::Buffered => {}
-                    netcode::JoinSeedArrival::Apply(slots) => {
+                    netcode::JoinSeedArrival::Apply(seed) => {
                         let Some(seat) = seat_table
                             .as_deref()
                             .and_then(|seats| seats.seat_for_client(client_id))
@@ -2944,7 +2860,15 @@ impl App {
                             join_seed_identity.as_ref(),
                             &join_seed_membership,
                             seat,
-                            slots,
+                            seed.slots,
+                        );
+                        crate::session::store_saves::apply_host_join_loadout(
+                            &script_ctx,
+                            &registry,
+                            seat_table.as_deref_mut(),
+                            &self.host_spawn_points,
+                            seat,
+                            seed.loadout,
                         );
                     }
                     netcode::JoinSeedArrival::DroppedConsumed => log::warn!(
@@ -3000,14 +2924,24 @@ impl App {
                         };
                         match join_seed_state.on_participating(*client_id) {
                             netcode::ParticipationSeed::None => {}
-                            netcode::ParticipationSeed::Apply(slots) => apply_host_join_seed(
-                                &script_ctx,
-                                &mut registry,
-                                join_seed_identity.as_ref(),
-                                &join_seed_membership,
-                                seat,
-                                slots,
-                            ),
+                            netcode::ParticipationSeed::Apply(seed) => {
+                                apply_host_join_seed(
+                                    &script_ctx,
+                                    &mut registry,
+                                    join_seed_identity.as_ref(),
+                                    &join_seed_membership,
+                                    seat,
+                                    seed.slots,
+                                );
+                                crate::session::store_saves::apply_host_join_loadout(
+                                    &script_ctx,
+                                    &registry,
+                                    seat_table.as_deref_mut(),
+                                    &self.host_spawn_points,
+                                    seat,
+                                    seed.loadout,
+                                );
+                            }
                             netcode::ParticipationSeed::DroppedReclaimed => log::info!(
                                 "[Net] dropping join seed from client {client_id}; reclaimed seat keeps live per-owner values"
                             ),
@@ -3016,6 +2950,16 @@ impl App {
                 }
             }
             if let Some(seats) = seat_table {
+                answer_final_character_requests(
+                    &script_ctx,
+                    server,
+                    join_seed_state,
+                    seats,
+                    &registry,
+                    join_seed_identity.as_ref(),
+                    &join_seed_membership,
+                    &host_poll.final_character_requests,
+                );
                 netcode::clear_released_seat_slot_values(
                     &mut script_ctx.slot_table.borrow_mut(),
                     netcode::finish_host_poll(server, seats),
@@ -3688,6 +3632,9 @@ impl App {
     ///   Readonly-gated edits to a writable String slot, through the same
     ///   writable-slot gate as `SetState` (readonly warns + no-ops; empty
     ///   backspace is a silent no-op; unknown/non-String slot logs).
+    /// - The save verbs and `Checkpoint` → `App::handle_save_verb`
+    ///   (`startup/save_verbs.rs`). Unlike a session entry press, none
+    ///   survives a leave earlier in the same drain.
     fn dispatch_system_commands(&mut self) {
         // `dispatch_system_commands` stays on `App` (it calls App-bound lifecycle
         // methods). The script tranche, audio, and the decay/presentation systems
@@ -3930,6 +3877,13 @@ impl App {
                     dispatch_source,
                     origin,
                 } => self.run_join_session_verb(dispatch_source, origin),
+                command @ (SystemReactionCommand::ContinueRun { .. }
+                | SystemReactionCommand::NewRun { .. }
+                | SystemReactionCommand::DeleteRun { .. }
+                | SystemReactionCommand::SelectCharacter { .. }
+                | SystemReactionCommand::CreateCharacter { .. }
+                | SystemReactionCommand::DeleteCharacter { .. }
+                | SystemReactionCommand::Checkpoint { .. }) => self.handle_save_verb(command),
                 SystemReactionCommand::PopTree => {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.pop();
@@ -4192,6 +4146,7 @@ impl App {
                             || !poll.handshakes.is_empty()
                             || !poll.lifecycle.is_empty()
                             || !poll.join_seeds.is_empty()
+                            || !poll.final_character_requests.is_empty()
                         {
                             let mut registry = script_ctx.registry.borrow_mut();
                             // A transport disconnect ends the short-lived client-id
@@ -4258,7 +4213,7 @@ impl App {
                                             &mut script_ctx.slot_table.borrow_mut(),
                                             admission.released_seats,
                                         );
-                                        if admission.reclaimed {
+                                        if admission.keeps_live_state {
                                             join_seed_state.mark_reclaimed(*client_id);
                                         }
                                         // Admission names the installed level to
@@ -4310,7 +4265,7 @@ impl App {
                             {
                                 match arrival {
                                     netcode::JoinSeedArrival::Buffered => {}
-                                    netcode::JoinSeedArrival::Apply(slots) => {
+                                    netcode::JoinSeedArrival::Apply(seed) => {
                                         let Some(seat) = seat_table
                                             .as_deref()
                                             .and_then(|seats| seats.seat_for_client(client_id))
@@ -4326,7 +4281,15 @@ impl App {
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,
-                                            slots,
+                                            seed.slots,
+                                        );
+                                        crate::session::store_saves::apply_host_join_loadout(
+                                            &script_ctx,
+                                            &registry,
+                                            seat_table.as_deref_mut(),
+                                            &host_spawn_points,
+                                            seat,
+                                            seed.loadout,
                                         );
                                     }
                                     netcode::JoinSeedArrival::DroppedConsumed => log::warn!(
@@ -4430,14 +4393,22 @@ impl App {
                                 };
                                 match join_seed_state.on_participating(*client_id) {
                                     netcode::ParticipationSeed::None => {}
-                                    netcode::ParticipationSeed::Apply(slots) => {
+                                    netcode::ParticipationSeed::Apply(seed) => {
                                         apply_host_join_seed(
                                             &script_ctx,
                                             &mut registry,
                                             join_seed_identity.as_ref(),
                                             &join_seed_membership,
                                             seat,
-                                            slots,
+                                            seed.slots,
+                                        );
+                                        crate::session::store_saves::apply_host_join_loadout(
+                                            &script_ctx,
+                                            &registry,
+                                            seat_table.as_deref_mut(),
+                                            &host_spawn_points,
+                                            seat,
+                                            seed.loadout,
                                         );
                                     }
                                     netcode::ParticipationSeed::DroppedReclaimed => log::info!(
@@ -4580,6 +4551,18 @@ impl App {
                                     last_sent_tuning,
                                     *client_id,
                                     payload,
+                                );
+                            }
+                            if let Some(seats) = seat_table.as_deref_mut() {
+                                answer_final_character_requests(
+                                    &script_ctx,
+                                    server,
+                                    join_seed_state,
+                                    seats,
+                                    &registry,
+                                    join_seed_identity.as_ref(),
+                                    &join_seed_membership,
+                                    &poll.final_character_requests,
                                 );
                             }
                         }
@@ -10627,6 +10610,11 @@ mod tests {
             Some("frontend.openPlay")
         );
         assert_eq!(
+            button_action(&title.root, "frontendLevels"),
+            Some("frontend.openLevelSelect"),
+            "the level picker stays a dev path off the title"
+        );
+        assert_eq!(
             button_action(&title.root, "frontendOptions"),
             Some("frontend.openOptions")
         );
@@ -11646,6 +11634,7 @@ mod tests {
                     }),
                     ui_images: Default::default(),
                     loading: Default::default(),
+                    saves: None,
                     store_declarations: Default::default(),
                     defense: Default::default(),
                     attack_budgets: Default::default(),
@@ -12752,8 +12741,8 @@ mod tests {
         );
         assert_eq!(
             snapshot.len(),
-            79 + list_slots,
-            "only value-bearing player, screen, input, loading, session, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
+            81 + list_slots,
+            "only value-bearing player, screen, input, loading, session, saves, UI, options, accessibility and window slots appear, plus the explicitly set player.health",
         );
     }
 

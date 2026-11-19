@@ -498,6 +498,7 @@ fn predict_and_sweep_dev_map(
         suppress_host_replicated: connected_client,
         suppress_boot_pawn: connected_client,
         local_carried_loadout: None,
+        spawn_checkpoint: None,
     };
     let _ = install_world_cpu(
         handles,

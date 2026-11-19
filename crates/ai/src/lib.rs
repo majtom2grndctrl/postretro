@@ -24,6 +24,7 @@ mod graph_eval;
 mod heading;
 mod launch;
 mod leap;
+mod pawn_index;
 mod perception;
 mod steering;
 mod targeting;
@@ -76,7 +77,8 @@ mod alloc_probe_tests {
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::ai_host::SimAiHost;
-use crate::ai_host::{AiHost, AiTickInputs, AiTickResult};
+use crate::ai_host::{AiHost, AiTickInputs, AiTickResult, ai_stage};
+use crate::sim::cpu_stages::SimStage;
 #[cfg(any(test, feature = "test-support"))]
 use crate::{collision::CollisionWorld, nav::NavGraph};
 use brain_programs::BrainPrograms;
@@ -266,6 +268,11 @@ pub(crate) enum AttackOutcome {
 /// Their lifecycle is reconciled together before compute: newly seen graphs
 /// bind, changed descriptors cancel old execution, and dead actors are pruned.
 pub struct AiRuntime {
+    /// Route-search scratch for the pass's reachability and positioning
+    /// queries. Contents never carry between queries.
+    nav_scratch: crate::nav::NavScratch,
+    /// This pass's targetable pawns by faction, rebuilt every pass.
+    pawns: pawn_index::PawnIndex,
     /// Warn-once latch for the CONTENT-keyed diagnostics, namespaced so a given
     /// one fires once across the whole run, never each tick: `anim:<name>` for an
     /// animation state that fails to switch (`UnknownState`/`NotAnimated` — the
@@ -325,6 +332,8 @@ impl AiRuntime {
 
     pub fn new() -> Self {
         Self {
+            nav_scratch: crate::nav::NavScratch::new(),
+            pawns: pawn_index::PawnIndex::default(),
             warned: HashSet::new(),
             blocked_warned: HashSet::new(),
             reseat_warned: HashSet::new(),
@@ -386,6 +395,9 @@ macro_rules! test_tick_runner {
                 // so the caller's cannot cross this bridge: without one built
                 // in AI's build, every clip runs unresolved.
                 clips: $clips,
+                // The stage frame is the other build's `SimStage` too: AI
+                // sub-stages report only through the same-build runner.
+                cpu: None,
             };
             let mut on_impact = |registry: &mut $crate::__postretro_entities::EntityRegistry| {
                 host.on_impact(registry)
@@ -480,6 +492,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             factions: &factions,
             faction_sentiment: &faction_sentiment,
             clips: None,
+            cpu: None,
         },
         |_| {},
     )
@@ -520,6 +533,7 @@ where
         factions,
         faction_sentiment,
         clips,
+        cpu,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -527,6 +541,8 @@ where
     // before anything reads it: this is the single lifecycle hook covering
     // spawn, despawn, and a wholesale deserialize.
     let AiRuntime {
+        nav_scratch,
+        pawns,
         warned,
         blocked_warned,
         reseat_warned,
@@ -599,6 +615,20 @@ where
             }),
     );
 
+    // Every enemy's candidates, read once for the pass. Built here, after the
+    // previous pass's apply and before compute borrows the registry for the
+    // rest of it. Unlike the snapshots, quiescent brains stay: they remain
+    // candidates.
+    {
+        let _stage = ai_stage(cpu, SimStage::AiTargeting);
+        if snapshots.is_empty() {
+            // No enemy selects this pass: skip the registry walk.
+            pawns.clear();
+        } else {
+            pawns.rebuild(registry);
+        }
+    }
+
     // The live view exists only for compute. `apply_outcomes` can invoke an
     // impact policy which mutates the overlay, so retaining this Ref across the
     // apply pass would turn an ordinary same-tick write into a RefCell panic.
@@ -619,6 +649,9 @@ where
             &live_factions,
             turns,
             clips,
+            cpu,
+            nav_scratch,
+            pawns,
         )
     };
 
@@ -628,8 +661,11 @@ where
         nav_graph,
         mover_nav,
         collision_world,
+        cpu,
+        nav_scratch,
     );
 
+    let _apply_stage = ai_stage(cpu, SimStage::AiApply);
     attack_turns::arbitrate_attack_turns(&mut outcomes, programs, turns, weapons);
 
     apply::apply_outcomes(

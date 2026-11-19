@@ -2,6 +2,9 @@
 //! declares the `lifecycle_*` siblings that load, install, finish and rebuild a level.
 //! See: context/lib/boot_sequence.md §1 · §4
 
+#[cfg(test)]
+#[path = "character_loadout_wire_tests.rs"]
+mod character_loadout_wire_tests;
 #[path = "host_named_level.rs"]
 mod host_named_level;
 #[cfg(test)]
@@ -78,6 +81,9 @@ mod lifecycle_unload_tests;
 mod lifecycle_world_cpu;
 #[path = "lifecycle_world_handles.rs"]
 mod lifecycle_world_handles;
+#[cfg(test)]
+#[path = "save_verbs_tests.rs"]
+mod save_verbs_tests;
 #[path = "session_entry.rs"]
 pub(crate) mod session_entry;
 #[cfg(test)]
@@ -304,6 +310,21 @@ impl App {
             renderer.clear_splash();
         }
         self.boot_state = BootState::Frontend;
+        // Landing on the frontend ends a run whose level failed to load, as
+        // any frontend entry does; the run file still names that level.
+        // Continue and New game cleared the menu to start that level, so it
+        // comes back: without it no verb, Host or Join can be pressed.
+        let mut run_load_failed = false;
+        if self.session_role() != crate::session::role_state::SessionRole::Client
+            && let Some(session) = self.session.as_mut()
+        {
+            run_load_failed = session.saves.run_load_queued();
+            crate::session::saves::end_run_at_frontend(session);
+        }
+        if run_load_failed && !self.frontend_menu_is_present() {
+            // The menu and its backdrop, as a return to the frontend shows.
+            self.navigate_to_frontend();
+        }
         // A connected client's failed host-named load puts the menu back,
         // whose install would have cleared it, with no backdrop load: the
         // backdrop may be the very level that failed.

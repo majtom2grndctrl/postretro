@@ -993,6 +993,7 @@ where
                 factions,
                 faction_sentiment,
                 clips: Some(hit_zone_store),
+                cpu: Some(&cpu),
             },
             &mut host,
         )
@@ -3413,8 +3414,12 @@ mod tests {
         // `PlayerEvents` runs after the tick returns, in the frame loop.
         // `WeaponFluidCrossings` runs only in a tick that fires a hitscan;
         // `timed_hitscan_tick_reports_fluid_crossings_inside_weapons` covers it.
+        // AI's sub-stages cannot cross this test's two-build AI runner; the AI
+        // crate's `stage_timing` tests drive the same-build runner instead.
         for &stage in cpu_stages::SimStage::ALL[1..].iter().filter(|stage| {
-            stage.parent().is_some() && **stage != cpu_stages::SimStage::WeaponFluidCrossings
+            stage.parent().is_some()
+                && **stage != cpu_stages::SimStage::WeaponFluidCrossings
+                && stage.parent() != Some(cpu_stages::SimStage::Ai)
         }) {
             let value = events
                 .cpu

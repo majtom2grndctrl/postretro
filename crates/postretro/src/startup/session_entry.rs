@@ -407,7 +407,8 @@ impl App {
             }
             ServerControlMessage::SpawnPoseHint(_)
             | ServerControlMessage::SessionRoster(_)
-            | ServerControlMessage::FinalCharacter { .. } => self.note_client_admitted(),
+            | ServerControlMessage::FinalCharacter { .. }
+            | ServerControlMessage::CharacterLoadout { .. } => self.note_client_admitted(),
             _ => {}
         }
     }
@@ -560,6 +561,72 @@ impl App {
         }
     }
 
+    /// Boot flags enter a role before the mod's saves load. Once they load:
+    /// with a `saves` block and no character selected, a boot host ends its
+    /// session and a boot client leaves, as in-app entry would have refused
+    /// them; a boot client whose claim is not the selected character's
+    /// reconnects with it, so the host keys its seat by the character.
+    pub(crate) fn reconcile_boot_role_with_saves(&mut self) {
+        let role = self.session_role();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if !session.saves.is_loaded() || !std::mem::take(&mut session.boot_role_pending) {
+            return;
+        }
+        let boot_connect = session.boot_connect.take();
+        if role == SessionRole::SinglePlayer {
+            return;
+        }
+        if !self.character_selected_for_entry() {
+            match role {
+                SessionRole::Host => {
+                    log::warn!(
+                        "[Net] --host refused: this mod needs a selected character; ending the session"
+                    );
+                    self.end_session();
+                }
+                SessionRole::Client => {
+                    log::warn!(
+                        "[Net] --connect refused: this mod needs a selected character; leaving the session"
+                    );
+                    self.leave_session(super::session_membership::LeaveCause::Own);
+                }
+                SessionRole::SinglePlayer => {}
+            }
+            return;
+        }
+        let Some((addr, password)) = boot_connect.filter(|_| role == SessionRole::Client) else {
+            return;
+        };
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let (claim_id, claim_name) = session.character_claim();
+        if claim_id == session.player_options.player_id && claim_name.is_empty() {
+            return;
+        }
+        log::info!("[Net] reconnecting to {addr} as the selected character");
+        if let Some(netcode::NetEndpoint::Client { mut client, .. }) = session.net_endpoint.take() {
+            client.disconnect();
+        }
+        if let Some(failure) = self.enter_net_role(
+            &netcode::NetRole::Connect { addr },
+            getrandom::fill,
+            &password,
+        ) {
+            log::warn!("[Net] reconnecting as the selected character failed: {failure:?}");
+        }
+    }
+
+    /// With a `saves` block, hosting and joining wait until a character is
+    /// selected: the character is the identity a session keys by.
+    fn character_selected_for_entry(&self) -> bool {
+        self.session.as_ref().is_none_or(|session| {
+            !session.saves.has_saves_block() || session.saves.selected_character().is_some()
+        })
+    }
+
     /// Whether this machine stands at its frontend: the frontend menu is up
     /// and no level a session plays is installed. A backdrop, installed or
     /// loading, counts as the frontend; a played load cannot be queued or in
@@ -592,6 +659,10 @@ impl App {
     pub(crate) fn join_from_frontend_with(&mut self, addr: SocketAddr, password: &str) -> bool {
         if self.session_role() != SessionRole::SinglePlayer || !self.at_frontend() {
             log::warn!("[Net] join refused: entry needs a single-player machine at its frontend");
+            return false;
+        }
+        if !self.character_selected_for_entry() {
+            log::warn!("[Net] join refused: select a character first");
             return false;
         }
         self.cancel_backdrop_load_for_join();
@@ -627,6 +698,10 @@ impl App {
     ) -> bool {
         if self.session_role() != SessionRole::SinglePlayer || !self.at_frontend() {
             log::warn!("[Net] host refused: entry needs a single-player machine at its frontend");
+            return false;
+        }
+        if !self.character_selected_for_entry() {
+            log::warn!("[Net] host refused: select a character first");
             return false;
         }
         let Some(failure) = self.enter_net_role(&netcode::NetRole::Host { port }, mint, password)
@@ -673,9 +748,10 @@ impl App {
         let Some(session) = self.session.as_mut() else {
             return Some(EntryFailure::Endpoint);
         };
+        let (claim_id, claim_name) = session.character_claim();
         let entry = enter_role(
             net_role,
-            session.player_options.player_id,
+            claim_id.map(|id| (id, claim_name.as_str())),
             &mut session.scripting,
             &mut session.seat_table,
             mint,

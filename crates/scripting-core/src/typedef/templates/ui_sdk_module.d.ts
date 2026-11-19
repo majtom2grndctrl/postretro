@@ -345,6 +345,20 @@ declare module "postretro/ui" {
   export function hostSession(): SystemReactionStep;
   /** Join the co-op host at `session.joinAddress` (IPv4, port optional) from the frontend, answering its password from `session.joinPassword`. Saves the world and character first; `session.connection`, `session.waitReason` and `session.endCause` say how it goes. Waits and refuses as `hostSession()` does. Machine-local. */
   export function joinSession(): SystemReactionStep;
+  /** Continue the run in slot `index` (the 0-based `forEach` row of `getGameState().saves.runs`): select its character, then load the level or checkpoint it last reached. A save verb, frontend-only: inside a played level and on a connected client it is refused with a warning. While hosting at the frontend it continues only the host character's own run, and clients follow. */
+  export function continueRun(index: number): SystemReactionStep;
+  /** Start a new run in slot `index` (0-based `forEach` row) at catalog map `level`, with the selected character as it stands: an existing character makes it New Game Plus. Resets run-scoped slots and faction sentiment. Writes only into an empty slot or the selected character's own run. A save verb, frontend-only: refused with a warning inside a played level and on a connected client; permitted while hosting at the frontend. */
+  export function newRun(index: number, level: string): SystemReactionStep;
+  /** Delete the run in slot `index` (0-based `forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
+  export function deleteRun(index: number): SystemReactionStep;
+  /** Select the character in slot `index` (0-based `forEach` row of `getGameState().saves.characters`). A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
+  export function selectCharacter(index: number): SystemReactionStep;
+  /** Create a character in empty slot `index` (0-based `forEach` row), named from `ui.textEntry`, and select it. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
+  export function createCharacter(index: number): SystemReactionStep;
+  /** Delete the character in slot `index` (0-based `forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
+  export function deleteCharacter(index: number): SystemReactionStep;
+  /** Reach checkpoint `name`: the host or single player saves the run at it, then the character and the world file (outside an active run, the character and world file only); a connected client changes nothing. The `player_spawn`s with `checkpoint=<name>` form its arrival set for Continue, respawns and late joiners. */
+  export function checkpoint(name: string): SystemReactionStep;
   /** Set the live sentiment from `from` toward `to` at frame end. The pair is directional and baseline content remains immutable. Negative values degrade the relationship; positive values bond it. Unknown faction names warn and no-op. */
   export function setSentiment(from: string, to: string, value: number): SystemReactionStep;
   /** Add `delta` to the current live sentiment from `from` toward `to` at frame end (or its authored baseline when unchanged). The pair is directional. Negative deltas degrade the relationship; positive deltas bond it. Unknown faction names warn and no-op. */

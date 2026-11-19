@@ -204,6 +204,7 @@ impl App {
         // (`loadLevel`, `restartLevel`, a host-named or launch level) installs
         // with the menu cleared. Counts are written before crossings initialize.
         let session_level = !self.frontend_menu_is_present();
+        self.backdrop_installed = !session_level;
         if let Some(session) = self.session.as_mut() {
             let script_ctx = &session.scripting.script_ctx;
             let client = match session.net_endpoint.as_ref() {
@@ -220,14 +221,17 @@ impl App {
                 &mut script_ctx.slot_table.borrow_mut(),
             );
         }
-        let join_seed = {
+        let (join_seed, join_loadout) = {
             let session = self
                 .session
                 .as_ref()
                 .expect("session installed before level install");
-            crate::scripting::state_persistence::join_seed_from_persisted_state(
-                session.persisted_state.as_ref(),
-                session.player_options.player_id,
+            (
+                crate::scripting::state_persistence::join_seed_from_persisted_state(
+                    session.persisted_state.as_ref(),
+                    session.character_claim().0,
+                ),
+                crate::session::store_saves::join_seed_loadout(session),
             )
         };
         // A host's frontend backdrop names no level to its clients: no parity,
@@ -259,7 +263,7 @@ impl App {
                 .active_level_source
                 .as_ref()
                 .expect("active level source retained before parity installation");
-            endpoint.set_join_seed(join_seed);
+            endpoint.set_join_seed(join_seed, join_loadout);
             let identity = level_identity(source, &self.content_root);
             self.published_level_identity = Some(identity.clone());
             endpoint.set_level_parity(Some((identity, level_content_digest)));

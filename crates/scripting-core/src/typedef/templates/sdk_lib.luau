@@ -1316,6 +1316,45 @@ declare function hostSession(): SystemReactionStep
 --- SystemReactionStep.
 declare function joinSession(): SystemReactionStep
 
+--- System reaction: continue the run in slot `index` (the 1-based `forEach`
+--- row of `getGameState().saves.runs`). A save verb, frontend-only: refused
+--- with a warning inside a played level and on a connected client.
+--- Machine-local. Pure: returns a SystemReactionStep.
+declare function continueRun(index: number): SystemReactionStep
+
+--- System reaction: start a new run in slot `index` (1-based `forEach` row) at
+--- catalog map `level`, with the selected character as it stands (New Game
+--- Plus with an existing character). A save verb, frontend-only.
+--- Machine-local. Pure: returns a SystemReactionStep.
+declare function newRun(index: number, level: string): SystemReactionStep
+
+--- System reaction: delete the run in slot `index` (1-based `forEach` row),
+--- even an unreadable one. A save verb, frontend-only. Machine-local. Pure:
+--- returns a SystemReactionStep.
+declare function deleteRun(index: number): SystemReactionStep
+
+--- System reaction: select the character in slot `index` (1-based `forEach`
+--- row). A save verb, frontend-only. Machine-local. Pure: returns a
+--- SystemReactionStep.
+declare function selectCharacter(index: number): SystemReactionStep
+
+--- System reaction: create a character in empty slot `index` (1-based
+--- `forEach` row), named from `ui.textEntry`. A save verb, frontend-only.
+--- Machine-local. Pure: returns a SystemReactionStep.
+declare function createCharacter(index: number): SystemReactionStep
+
+--- System reaction: delete the character in slot `index` (1-based `forEach`
+--- row), even an unreadable one. A save verb, frontend-only. Machine-local.
+--- Pure: returns a SystemReactionStep.
+declare function deleteCharacter(index: number): SystemReactionStep
+
+--- System reaction: reach checkpoint `name`. The host or single player saves
+--- the run at it, then the character and the world file; outside an active run
+--- it saves the character and the world file only. The `player_spawn`s with
+--- `checkpoint=<name>` form its arrival set. Pure: returns a
+--- SystemReactionStep.
+declare function checkpoint(name: string): SystemReactionStep
+
 --- Set the live sentiment from faction `from` toward faction `to` at frame end.
 --- The pair is directional and baseline content remains immutable. Negative
 --- values degrade the relationship; positive values bond it. Unknown faction
@@ -1395,8 +1434,10 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: PlayerOwner) 
 --- `type = "number"` accepts a finite numeric default plus optional inclusive
 --- `range = {min, max}`; `"boolean"` and `"string"` require matching defaults;
 --- `"enum"` requires non-empty `values` and a default in that list; `"array"` is
---- a finite-number array. `persist` saves global slots on clean exit. On
---- connected clients, `perOwner = true, persist = true` saves the local
+--- a finite-number array. `persist = true` saves a global slot in
+--- the world file and a per-owner slot in the character; `persist = "run"`
+--- saves a global slot in the current run and is refused on a per-owner slot.
+--- On connected clients, `perOwner = true, persist = true` saves the local
 --- owner's value every ~60 seconds and on clean exit; it travels via that
 --- player's join seed. `readonly` blocks script writes. `perOwner = true` gives each player seat an independent
 --- host-side value and permits only omitted `network` or
@@ -1406,10 +1447,10 @@ type StoreRef<T> = Ref<T> & { byPlayer: (self: StoreRef<T>, owner: PlayerOwner) 
 --- `postretro-tool mint-identity <mod>` and keep its durable key
 --- across renames.
 export type StoreSlotSchema = (
-  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  { type: "number", readonly: boolean?, network: "shared"?, perOwner: false?, persist: (boolean | "run")?, accumulate: nil? }
   | { type: "number", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
-  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, accumulate: (TickParams) -> RuntimeValue }
-  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, accumulate: nil? }
+  | { type: "number", readonly: false?, network: "shared"?, perOwner: false?, persist: (boolean | "run")?, accumulate: (TickParams) -> RuntimeValue }
+  | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "shared"?, perOwner: false?, persist: (boolean | "run")?, accumulate: nil? }
   | { type: "boolean" | "string" | "enum" | "array", readonly: boolean?, network: "ownerPrivate"?, perOwner: true, persist: boolean?, accumulate: nil? }
 ) & { [string]: any }
 
@@ -1449,6 +1490,7 @@ export type ModManifestInput = {
   loading: ModLoading?,
   maps: {ModMapEntry}?,
   frontend: Frontend?,
+  saves: SavesManifest?,
   reactions: {NamedReactionDescriptor}?,
   events: {ImpactEvent}?,
   crossings: {CrossingDescriptor}?,

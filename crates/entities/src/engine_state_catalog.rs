@@ -931,6 +931,35 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
+        wire_name: "saves.character",
+        sdk_path: &["saves", "character"],
+        value_type: EngineStateValueType::Number,
+        // The selected character slot, or -1 for none. Engine-written from
+        // the mod's save directory, never from player options.
+        default: EngineStateDefault::Number(-1.0),
+        range: Some(NumericRange {
+            min: -1.0,
+            max: crate::engine_state_collections::SAVE_SLOT_CAPACITY as f32 - 1.0,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
+        wire_name: "saves.run",
+        sdk_path: &["saves", "run"],
+        value_type: EngineStateValueType::Number,
+        // The selected run slot, or -1 for none.
+        default: EngineStateDefault::Number(-1.0),
+        range: Some(NumericRange {
+            min: -1.0,
+            max: crate::engine_state_collections::SAVE_SLOT_CAPACITY as f32 - 1.0,
+        }),
+        persist: false,
+        capability: EngineStateCapability::Readonly,
+        network: ReplicationScope::None,
+    },
+    EngineStateCatalogEntry {
         wire_name: "session.openSeats",
         sdk_path: &["session", "openSeats"],
         value_type: EngineStateValueType::Number,
@@ -1779,6 +1808,8 @@ mod tests {
                 "player.weaponCharging",
                 "player.weaponCooldownMs",
                 "player.weaponResource",
+                "saves.character",
+                "saves.run",
                 "screen.flash",
                 "screen.shake",
                 "screen.vignette",

@@ -385,6 +385,7 @@ pub(crate) mod tests {
             frontend: None,
             ui_images: Default::default(),
             loading: Default::default(),
+            saves: None,
             fonts: ModFontAssets::default(),
             maps: Vec::new(),
             reactions: Vec::new(),

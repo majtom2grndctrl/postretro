@@ -67,6 +67,7 @@ impl Shipped {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&self.clips),
+                cpu: None,
             },
             |_| {},
         )
@@ -417,6 +418,7 @@ fn brute_run_in(
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&shipped.clips),
+                cpu: None,
             },
             |_| {},
         );
@@ -1660,11 +1662,11 @@ fn shipped_brute_leap_that_falls_short_stands_from_its_moment() {
         run.speed[moment - 1]
     );
     let landed = run.positions[moment - 1];
-    for tick in moment..recover {
+    for (tick, &position) in run.positions.iter().enumerate().take(recover).skip(moment) {
         assert!(
-            distance_xz(run.positions[tick], landed) <= 1.0e-4,
+            distance_xz(position, landed) <= 1.0e-4,
             "tick {tick}: the leap stands after its moment, {} m on from where it fell short",
-            distance_xz(run.positions[tick], landed)
+            distance_xz(position, landed)
         );
     }
 }

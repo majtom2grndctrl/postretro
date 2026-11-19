@@ -273,7 +273,7 @@ The mod frontend hub is the player-facing menu flow. A committed `frontend` mani
 ## 5. Shutdown
 
 - A close request or Escape exits the event loop. In a session, a client leaves and a host ends it first (`networking.md` §Slot lifecycle).
-- On clean exit, teardown first flushes any pending `PlayerOptions` debounce, then saves persistent mod-state slots best-effort, releases level sounds (mirrors texture release on unload), shuts the engine load pool down without waiting on a running task, and drops renderer and window.
+- On clean exit, teardown first flushes any pending `PlayerOptions` debounce, then harvests a played level's pawns and saves the character and world files (`scripting.md` §5), releases level sounds (mirrors texture release on unload), shuts the engine load pool down without waiting on a running task, and drops renderer and window.
 - Abnormal termination may lose writes made since the last successful save.
 - `App` holds `App.session` (which owns `script_ctx`, the scripting registries, audio, and all session-lifetime state) until the event loop returns and the process ends.
 

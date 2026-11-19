@@ -205,6 +205,14 @@ pub fn primitive_descriptor_from_lua(
         target.as_deref(),
         &args,
     )?;
+    validate_save_verb_reaction_args(
+        reaction,
+        "primitive",
+        &primitive,
+        &args,
+        AuthoredRowBase::One,
+    )
+    .map_err(|reason| DescriptorError::InvalidShape { reason })?;
 
     Ok(PrimitiveDescriptor {
         primitive,
@@ -317,6 +325,8 @@ pub fn sequence_steps_from_lua(
         // level script's drain and rejects the mod manifest in a mod-global
         // drain.
         validate_consequential_args(reaction, &site, &primitive, &args)
+            .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
+        validate_save_verb_reaction_args(reaction, &site, &primitive, &args, AuthoredRowBase::One)
             .map_err(|reason| DescriptorError::InvalidSequenceStep { reason })?;
         out.push(SequenceStep {
             id,

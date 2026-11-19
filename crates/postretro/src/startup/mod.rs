@@ -11,6 +11,8 @@ pub(crate) mod app_dirs;
 mod assist_rebind_tests;
 pub(crate) mod audio_profile;
 #[cfg(test)]
+mod character_file_slice_tests;
+#[cfg(test)]
 mod closet_reveal_surface_tests;
 #[cfg(test)]
 mod coop_activation_tests;
@@ -46,6 +48,9 @@ pub(crate) mod reaction_validation;
 pub(crate) mod render_profile;
 #[cfg(test)]
 mod revive_marker_surface_tests;
+#[cfg(test)]
+mod save_points_tests;
+pub(crate) mod save_verbs;
 pub(crate) mod session;
 pub(crate) mod settle_log;
 pub(crate) mod settling;

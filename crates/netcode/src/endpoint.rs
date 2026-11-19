@@ -708,11 +708,26 @@ impl NetEndpoint {
         }
     }
 
-    /// Install the client-owned per-owner persistence seed to send with the
-    /// next parity declaration. This is intentionally a no-op for hosts.
-    pub fn set_join_seed(&mut self, slots: BTreeMap<String, JoinSeedValue>) {
+    /// Install the client-owned per-owner persistence seed, and the joining
+    /// character's loadout, to send with the next parity declaration. This is
+    /// intentionally a no-op for hosts.
+    pub fn set_join_seed(
+        &mut self,
+        slots: BTreeMap<String, JoinSeedValue>,
+        loadout: Option<postretro_net::wire::CarriedLoadoutWire>,
+    ) {
         if let Self::Client { client, .. } = self {
-            client.set_join_seed(slots);
+            client.set_join_seed(slots, loadout);
+        }
+    }
+
+    /// At a client's own leave, ask its host for this seat's final character.
+    /// Returns whether the request went out: never on a host, nor on a
+    /// connection that is not live.
+    pub fn request_final_character(&mut self) -> bool {
+        match self {
+            Self::Client { client, .. } => client.request_final_character(),
+            Self::Host { .. } => false,
         }
     }
 

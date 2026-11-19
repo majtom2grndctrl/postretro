@@ -1,13 +1,10 @@
-// The world-and-character save: the one entry point the clean-exit save and
-// a join's first save share, so splitting world and character saves later
-// changes one place.
+// The world-and-character save: the entry point the clean exit, a join and
+// the other save points share.
 // See: context/lib/scripting.md §5 · context/lib/networking.md §Role model
 
 use super::Session;
-use crate::scripting::state_persistence::{
-    PersistedState, collect_per_owner_state, collect_persisted_faction_sentiment,
-    collect_persisted_state, merge_per_owner_state, save_persisted_state, state_path,
-};
+use super::saves::{collect_character_record, collect_world_and_run, publish_save_rows};
+use crate::scripting::state_persistence::PersistedState;
 
 /// What a world-and-character save collected. A write that failed has
 /// warned.
@@ -15,86 +12,34 @@ pub(crate) struct ProgressSave {
     pub(crate) state: PersistedState,
 }
 
-/// Collect the world slots, faction sentiment and the local player's
-/// character, then write them to this mod's state file. Returns `None` when
-/// nothing may be collected yet: before declarations commit and the boot
-/// restore completes, a snapshot holds defaults that could replace a valid
-/// file. With persistence unavailable the state is still collected, for the
-/// in-memory snapshot a join rebases on, and only the write is skipped. Every
-/// failure warns.
+/// Collect the world slots, the run's live state and the selected
+/// character, then write the world file and the character file. Returns
+/// `None` when nothing may be collected yet: before declarations commit and
+/// the boot restore completes, the store holds defaults that could replace a
+/// valid file. With persistence unavailable the state is still collected,
+/// for the in-memory snapshot a join rebases on, and only the writes are
+/// skipped. Only the host or single player calls this; a connected client
+/// saves its character alone.
 pub(crate) fn save_world_and_character(session: &mut Session) -> Option<ProgressSave> {
     if !session.state_store_lifecycle.can_collect() {
         return None;
     }
-    let Some((mod_id, _)) = session.scripting.script_runtime.committed_mod_identity() else {
-        log::warn!("[State] no committed mod manifest; skipping persistent-state save");
-        return None;
-    };
-    let mod_id = mod_id.to_owned();
-    let identity = session.scripting.script_runtime.store_identity().cloned();
-    let committed_store_slots = session
-        .scripting
-        .script_runtime
-        .committed_store_slots()
-        .clone();
-    let script_ctx = session.scripting.script_ctx.clone();
-    let mut collected = collect_persisted_state(
-        &script_ctx.slot_table.borrow(),
-        identity.as_ref(),
-        &committed_store_slots,
-    );
-    for warning in collected.warnings {
-        log::warn!("[State] {warning}");
-    }
-    {
-        let factions = script_ctx.data_registry.borrow();
-        let faction_sentiment = script_ctx.faction_sentiment.borrow();
-        for warning in collect_persisted_faction_sentiment(
-            &mut collected.state,
-            &faction_sentiment,
-            &factions.factions,
-        ) {
-            log::warn!("[State] {warning}");
+    let character = collect_character_record(session);
+    let (world, run_state) = collect_world_and_run(session);
+    if session.state_store_lifecycle.can_save() {
+        let character_saved = character
+            .clone()
+            .is_none_or(|character| session.saves.save_selected_character(character));
+        let world_saved = session.saves.save_world(world.clone());
+        // These two lines are named by the join-save tests.
+        if character_saved && world_saved {
+            log::info!("[State] saved persistent slots to the world and character saves");
+        } else {
+            log::warn!("[State] failed to save persistent slots; the previous saves are kept");
         }
-    }
-    if let Some(local_player_id) = session.player_options.player_id {
-        let per_owner = collect_per_owner_state(
-            &script_ctx.slot_table.borrow(),
-            identity.as_ref(),
-            &committed_store_slots,
-            postretro_foundation::Seat(0),
-            local_player_id,
-        );
-        for warning in per_owner.warnings {
-            log::warn!("[State] {warning}");
-        }
-        merge_per_owner_state(&mut collected.state, per_owner.per_owner);
-    }
-    if !session.state_store_lifecycle.can_save() {
-        // Persistence is off for this run; it warned when it turned off.
-        return Some(ProgressSave {
-            state: collected.state,
-        });
-    }
-    match state_path(session.data_dir.as_deref(), &mod_id) {
-        Some(state_path) => match save_persisted_state(&state_path, &collected.state) {
-            Ok(()) => {
-                log::info!("[State] saved persistent slots to {}", state_path.display());
-            }
-            Err(error) => log::warn!(
-                "[State] failed to save persistent slots to {}: {error}",
-                state_path.display()
-            ),
-        },
-        None => {
-            if session.state_store_lifecycle.disable_persistence() {
-                log::warn!(
-                    "[State] platform data directory is unavailable; persistent state is disabled for this run"
-                );
-            }
-        }
+        publish_save_rows(session);
     }
     Some(ProgressSave {
-        state: collected.state,
+        state: PersistedState::from_ledger(Some(&world), Some(&run_state), character.as_ref()),
     })
 }

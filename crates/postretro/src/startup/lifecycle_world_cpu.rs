@@ -135,6 +135,7 @@ pub(crate) fn install_world_cpu_with_models(
         suppress_host_replicated,
         suppress_boot_pawn,
         local_carried_loadout,
+        spawn_checkpoint,
     } = handles;
 
     // Install has not reset App's old clock yet. No previous-level baseline
@@ -216,10 +217,16 @@ pub(crate) fn install_world_cpu_with_models(
             entity
         })
         .collect();
-    let (spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
+    let (level_spawn_points, map_entities): (Vec<_>, Vec<_>) = all_entities
         .into_iter()
         .filter(|entity| !is_region_companion(&entity.classname))
         .partition(|e| e.classname == PLAYER_START_CLASSNAME);
+    // Arrival, respawn and joiners choose within the active set: the
+    // level-start spawns, or Continue's checkpoint's.
+    let spawn_points = crate::scripting::builtins::player_spawn::active_spawn_set(
+        &level_spawn_points,
+        spawn_checkpoint.as_deref(),
+    );
     let builtin_handled = {
         let mut registry = script_ctx.registry.borrow_mut();
         let handled = apply_classname_dispatch(&map_entities, classname_dispatch, &mut registry);
@@ -377,9 +384,11 @@ pub(crate) fn install_world_cpu_with_models(
     // validated. Resolve the authored player-health range from the shared map
     // placement + descriptor table, not from a role-specific materialized pawn: a
     // connected client intentionally suppresses its boot pawn.
+    // Every spawn, not the active set: a client never knows the host's
+    // checkpoint, and the replicated schema must match on both.
     crate::sim::install_descriptor_player_health_range(
         &mut script_ctx.slot_table.borrow_mut(),
-        &spawn_points,
+        &level_spawn_points,
         &descriptors,
     );
     // Wieldable weapon instances have no MeshComponent of their own. Preload every
@@ -694,6 +703,7 @@ pub(crate) fn install_world_cpu_with_models(
         mover_tick_states: crate::kinematic_mover::MoverTickStateTable::default(),
         first_spawn,
         spawn_points,
+        level_spawn_points,
     }
 }
 

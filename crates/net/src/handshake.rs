@@ -15,9 +15,11 @@ pub use crate::wire::{ClosingCause, DivergenceReason, HoldingCause};
 /// it to protocol 12, "PRLC". The appended spawn-pose hint advances it to
 /// protocol 13, "PRLD". The appended session-ended closing cause and final
 /// character message advance it to protocol 14, "PRLE". The session-password
-/// challenge, proof and closing cause advance it to protocol 15, "PRLF".
+/// challenge, proof and closing cause advance it to protocol 15, "PRLF". The
+/// appended client final-character request and the per-seat character loadout
+/// message advance it to protocol 16, "PRLG".
 /// Independent of the baked PRL file format.
-pub const PROTOCOL_ID: u32 = 0x_5052_4C46; // "PRLF"
+pub const PROTOCOL_ID: u32 = 0x_5052_4C47; // "PRLG"
 /// E15's admission/parity envelopes and participation-framed traffic layouts.
 /// E17 adds `blocked` to `WireKinematicMoverState`; E16 consumed epoch 16 for
 /// `drop_pressed` on the Input channel and `JoinSeed` advances this to 18. The
@@ -58,7 +60,9 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C46; // "PRLF"
 /// `WireMovementInput`, and the local-pawn record's assist pair table and
 /// received required ticks.
 /// The roster entry's display name and status advance it to 40.
-pub const WIRE_VERSION: u32 = 40;
+/// The carried loadout on `JoinSeed` and `FinalCharacter` advances it to 41:
+/// both shipped messages changed layout.
+pub const WIRE_VERSION: u32 = 41;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -169,6 +173,62 @@ mod tests {
     /// Client Control variants before `Revealed`, in the current layout.
     #[derive(Debug, Clone, PartialEq, Encode, Decode)]
     enum PreRevealedClientControlMessage {
+        Admission {
+            protocol: ProtocolVersion,
+            mod_id: String,
+            mod_version: String,
+        },
+        Parity(crate::wire::ParityDeclaration),
+        JoinSeed {
+            slots: std::collections::BTreeMap<String, crate::wire::JoinSeedValue>,
+            loadout: Option<crate::wire::CarriedLoadoutWire>,
+        },
+    }
+
+    /// Client Control variants before `RequestFinalCharacter`, in the current
+    /// layout.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreFinalRequestClientControlMessage {
+        Admission {
+            protocol: ProtocolVersion,
+            mod_id: String,
+            mod_version: String,
+        },
+        Parity(crate::wire::ParityDeclaration),
+        JoinSeed {
+            slots: std::collections::BTreeMap<String, crate::wire::JoinSeedValue>,
+            loadout: Option<crate::wire::CarriedLoadoutWire>,
+        },
+        Revealed(Option<crate::wire::RevealedLevel>),
+        PasswordProof {
+            proof: [u8; 32],
+        },
+    }
+
+    /// Server Control variants before `CharacterLoadout`, in the current
+    /// layout.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreLoadoutServerControlMessage {
+        Divergence(DivergenceReason),
+        Tuning(Vec<u8>),
+        Relevel {
+            catalog_id: String,
+            level_life: u64,
+        },
+        SessionRoster(crate::wire::SessionRosterMessage),
+        SpawnPoseHint(crate::wire::SpawnPoseHint),
+        FinalCharacter {
+            slots: std::collections::BTreeMap<String, crate::wire::JoinSeedValue>,
+            loadout: Option<crate::wire::CarriedLoadoutWire>,
+        },
+        PasswordChallenge {
+            nonce: [u8; 32],
+        },
+    }
+
+    /// The two messages as shipped at wire 40, before their loadout.
+    #[derive(Debug, Clone, PartialEq, Encode, Decode)]
+    enum PreLoadoutFieldClientControlMessage {
         Admission {
             protocol: ProtocolVersion,
             mod_id: String,
@@ -549,8 +609,12 @@ mod tests {
             (
                 PreRevealedClientControlMessage::JoinSeed {
                     slots: slots.clone(),
+                    loadout: None,
                 },
-                ClientControlMessage::JoinSeed { slots },
+                ClientControlMessage::JoinSeed {
+                    slots,
+                    loadout: None,
+                },
             ),
         ];
 
@@ -694,6 +758,152 @@ mod tests {
         } = entry;
         let _host_minted_or_observed = (seat, connected, status);
         let _displayed_to_every_peer = name;
+    }
+
+    #[test]
+    fn final_character_request_append_preserves_shipped_client_control_encodings() {
+        use crate::wire::{ClientControlMessage, ParityDeclaration, RevealedLevel};
+
+        let protocol = protocol_version();
+        let parity = ParityDeclaration {
+            mod_digest: [0x40; 32],
+            level: Some(("campaign-test".to_owned(), [0x41; 32])),
+        };
+        let cases = [
+            (
+                PreFinalRequestClientControlMessage::Admission {
+                    protocol,
+                    mod_id: "postretro.test".to_owned(),
+                    mod_version: "1.0.0".to_owned(),
+                },
+                ClientControlMessage::Admission {
+                    protocol,
+                    mod_id: "postretro.test".to_owned(),
+                    mod_version: "1.0.0".to_owned(),
+                },
+            ),
+            (
+                PreFinalRequestClientControlMessage::Parity(parity.clone()),
+                ClientControlMessage::Parity(parity),
+            ),
+            (
+                PreFinalRequestClientControlMessage::JoinSeed {
+                    slots: Default::default(),
+                    loadout: Some(crate::wire::CarriedLoadoutWire::default()),
+                },
+                ClientControlMessage::JoinSeed {
+                    slots: Default::default(),
+                    loadout: Some(crate::wire::CarriedLoadoutWire::default()),
+                },
+            ),
+            (
+                PreFinalRequestClientControlMessage::Revealed(Some(RevealedLevel::new(
+                    "campaign-test",
+                    Some(2),
+                ))),
+                ClientControlMessage::Revealed(Some(RevealedLevel::new("campaign-test", Some(2)))),
+            ),
+            (
+                PreFinalRequestClientControlMessage::PasswordProof { proof: [5; 32] },
+                ClientControlMessage::PasswordProof { proof: [5; 32] },
+            ),
+        ];
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending RequestFinalCharacter changed a shipped client control encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    #[test]
+    fn character_loadout_append_preserves_shipped_server_control_encodings() {
+        use crate::wire::{CarriedLoadoutWire, ServerControlMessage};
+
+        let loadout = CarriedLoadoutWire {
+            health_centi: Some(5_000),
+            wieldables: vec![Some("shotgun".to_owned())],
+            magazines: vec![Some(2)],
+            ..CarriedLoadoutWire::default()
+        };
+        let cases = [
+            (
+                PreLoadoutServerControlMessage::Tuning(vec![4]),
+                ServerControlMessage::Tuning(vec![4]),
+            ),
+            (
+                PreLoadoutServerControlMessage::FinalCharacter {
+                    slots: Default::default(),
+                    loadout: Some(loadout.clone()),
+                },
+                ServerControlMessage::FinalCharacter {
+                    slots: Default::default(),
+                    loadout: Some(loadout),
+                },
+            ),
+            (
+                PreLoadoutServerControlMessage::PasswordChallenge { nonce: [6; 32] },
+                ServerControlMessage::PasswordChallenge { nonce: [6; 32] },
+            ),
+        ];
+        for (before, after) in cases {
+            assert_eq!(
+                bitcode::encode(&before),
+                crate::wire::encode(&after),
+                "appending CharacterLoadout changed a shipped server control encoding; bump WIRE_VERSION"
+            );
+        }
+    }
+
+    // A wire-40 / PRLF peer sends `JoinSeed` and expects `FinalCharacter`
+    // without a loadout, and knows neither appended message: both gates
+    // refuse it, and its shipped join seed no longer decodes as the current
+    // one.
+    #[test]
+    fn carried_loadout_refuses_wire_40_and_prlf_peers() {
+        const PRE_LOADOUT_WIRE_VERSION: u32 = 40;
+        const PRE_LOADOUT_PROTOCOL_ID: u32 = 0x_5052_4C46; // "PRLF"
+        const {
+            assert!(WIRE_VERSION > PRE_LOADOUT_WIRE_VERSION);
+            assert!(PROTOCOL_ID > PRE_LOADOUT_PROTOCOL_ID);
+        };
+        for (app_protocol_id, wire_version) in [
+            (PROTOCOL_ID, PRE_LOADOUT_WIRE_VERSION),
+            (PRE_LOADOUT_PROTOCOL_ID, WIRE_VERSION),
+            (PRE_LOADOUT_PROTOCOL_ID, PRE_LOADOUT_WIRE_VERSION),
+        ] {
+            let old_peer = ProtocolVersion {
+                app_protocol_id,
+                wire_version,
+            };
+            assert!(matches!(
+                validate_handshake(protocol_version(), old_peer),
+                Err(ClosingCause::Protocol { .. })
+            ));
+            assert_ne!(
+                transport_protocol_id(),
+                (u64::from(app_protocol_id) << 32) | u64::from(wire_version),
+                "gate 1 refuses the loadout-free layout before decode"
+            );
+        }
+        let shipped = bitcode::encode(&PreLoadoutFieldClientControlMessage::JoinSeed {
+            slots: std::collections::BTreeMap::from([(
+                "kplayer0000000001".to_owned(),
+                crate::wire::JoinSeedValue::Number(3.0),
+            )]),
+        });
+        assert_ne!(
+            crate::wire::decode::<crate::wire::ClientControlMessage>(&shipped).ok(),
+            Some(crate::wire::ClientControlMessage::JoinSeed {
+                slots: std::collections::BTreeMap::from([(
+                    "kplayer0000000001".to_owned(),
+                    crate::wire::JoinSeedValue::Number(3.0),
+                )]),
+                loadout: None,
+            }),
+            "a wire-40 join seed does not read as the current one"
+        );
     }
 }
 
@@ -1115,9 +1325,9 @@ mod switch_tick_epoch_tests {
     // status: the bump refuses it at both gates, and the shipped prefix no
     // longer decodes as the current entry.
     #[test]
-    fn roster_names_refuse_wire_39_peers_and_admit_wire_40() {
+    fn roster_names_refuse_wire_39_peers_and_admit_current_wire() {
         const PRE_ROSTER_NAME_WIRE_VERSION: u32 = 39;
-        assert_eq!(WIRE_VERSION, 40);
+        const { assert!(WIRE_VERSION > PRE_ROSTER_NAME_WIRE_VERSION) };
         let old_peer = ProtocolVersion {
             app_protocol_id: PROTOCOL_ID,
             wire_version: PRE_ROSTER_NAME_WIRE_VERSION,
@@ -1351,6 +1561,7 @@ mod server_vocabulary_tests {
                 ServerControlMessage::SpawnPoseHint(_) => "SpawnPoseHint",
                 ServerControlMessage::FinalCharacter { .. } => "FinalCharacter",
                 ServerControlMessage::PasswordChallenge { .. } => "PasswordChallenge",
+                ServerControlMessage::CharacterLoadout { .. } => "CharacterLoadout",
             }
         }
         fn presentation(payload: &ServerPresentationPayload) -> &'static str {
@@ -1387,8 +1598,8 @@ mod server_vocabulary_tests {
             "Rumble"
         );
 
-        assert_eq!(PROTOCOL_ID, 0x_5052_4C46, "PROTOCOL_ID is still \"PRLF\"");
-        assert_eq!(WIRE_VERSION, 40);
+        assert_eq!(PROTOCOL_ID, 0x_5052_4C47, "PROTOCOL_ID is still \"PRLG\"");
+        assert_eq!(WIRE_VERSION, 41);
         assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
     }
 }

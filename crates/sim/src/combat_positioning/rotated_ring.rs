@@ -6,8 +6,7 @@
 use glam::{Quat, Vec3};
 use postretro_foundation::COMBAT_RING_STEP_DEG;
 
-use super::scoring::score_candidate;
-use super::{CombatCandidate, CombatQuery, compare_candidates};
+use super::{CombatCandidate, CombatQuery, ScoreFn, compare_candidates};
 use crate::collision::CapsulePlacement;
 use crate::nav::distance_xz;
 
@@ -147,6 +146,7 @@ pub(super) fn ring_candidates(
     query: &CombatQuery<'_>,
     ring: &SlotRing,
     placement: CapsulePlacement,
+    score: &mut ScoreFn<'_>,
 ) -> Vec<CombatCandidate> {
     let bearing_len_sq = ring.bearing.length_squared();
     if !bearing_len_sq.is_finite() || (bearing_len_sq - 1.0).abs() > 1.0e-3 {
@@ -158,9 +158,7 @@ pub(super) fn ring_candidates(
         if !ring.keeps_away(position) {
             continue;
         }
-        if let Some(candidate) =
-            score_candidate(query, placement, position, usize::from(index), false)
-        {
+        if let Some(candidate) = score(query, placement, position, usize::from(index), false) {
             candidates.push(candidate);
         }
     }

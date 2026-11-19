@@ -41,6 +41,11 @@ fn sample_args(kind: SystemReactionKind) -> serde_json::Value {
         CloseDialog | RestartLevel | ReturnToFrontend | LeaveSession | EndSession | HostSession
         | JoinSession => json!({}),
         LoadLevel => json!({ "map": "next" }),
+        ContinueRun | DeleteRun | SelectCharacter | CreateCharacter | DeleteCharacter => {
+            json!({ "index": 3 })
+        }
+        NewRun => json!({ "index": 2, "map": "next" }),
+        Checkpoint => json!({ "name": "bridge" }),
         SetState => json!({ "slot": "step.flag", "value": 1 }),
         SetSentiment => json!({ "from": "a", "to": "b", "value": 0.5 }),
         AdjustSentiment => json!({ "from": "a", "to": "b", "delta": 0.5 }),
@@ -294,12 +299,13 @@ fn every_system_reaction_kind_as_a_step_does_what_its_body_does_from_every_sourc
 }
 
 // Drift guard for the shared machine-local predicate, by exhaustive match: it
-// holds for exactly presentation and machine-local kinds, a `setState` on a
-// slot that does not replicate and, on a client only, `returnToFrontend` and
-// `leaveSession`; never `endSession`. A client landing keeps exactly those, a
-// late joiner's converging landing those minus presentation, `returnToFrontend`
-// and `leaveSession`; a player event refuses exactly those minus presentation,
-// which it forwards.
+// holds for exactly presentation and machine-local kinds (the save verbs
+// among them), a `setState` on a slot that does not replicate and, on a client
+// only, `returnToFrontend`, `leaveSession` and `checkpoint`; never
+// `endSession`. A client landing keeps exactly those, a late joiner's
+// converging landing those minus presentation, navigation, membership, the
+// session entry and save verbs and `checkpoint`; a player event refuses
+// exactly those minus presentation, which it forwards.
 #[test]
 fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_kind() {
     use postretro_entities::{
@@ -329,9 +335,12 @@ fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_ki
                 let expected = match kind {
                     PlaySound | Rumble | FlashScreen | Vignette | ScreenShake => true,
                     ShowDialog | OpenMenu | CloseDialog | CellWrite | AppendText
-                    | BackspaceText | ClearText | HostSession | JoinSession => true,
+                    | BackspaceText | ClearText | HostSession | JoinSession | ContinueRun
+                    | NewRun | DeleteRun | SelectCharacter | CreateCharacter | DeleteCharacter => {
+                        true
+                    }
                     SetState => !replicated,
-                    ReturnToFrontend | LeaveSession => role == MachineRole::Client,
+                    ReturnToFrontend | LeaveSession | Checkpoint => role == MachineRole::Client,
                     LoadLevel | RestartLevel | EndSession | SetSentiment | AdjustSentiment
                     | SetGhostAudio => false,
                 };
@@ -357,7 +366,17 @@ fn machine_local_predicate_client_filter_and_player_event_rule_agree_on_every_ki
                             && !presentation
                             && !matches!(
                                 kind,
-                                ReturnToFrontend | LeaveSession | HostSession | JoinSession
+                                ReturnToFrontend
+                                    | LeaveSession
+                                    | HostSession
+                                    | JoinSession
+                                    | ContinueRun
+                                    | NewRun
+                                    | DeleteRun
+                                    | SelectCharacter
+                                    | CreateCharacter
+                                    | DeleteCharacter
+                                    | Checkpoint
                             ),
                         "late-joiner convergence: {label}"
                     );

@@ -203,7 +203,7 @@ flowchart LR
 | Read | at boot, then sent up to any host in `JoinSeed` | at boot | by Continue |
 | Today | rows inside `state.json` | the same `state.json` (G10) | nothing (G8) |
 
-- **Decided (owner):** separate files, one per kind, in versioned JSON. A character file can be backed up or moved on its own, and runs keep numbered slots without touching characters. Brief: `plans/ready/coop--character-and-run-saves/`.
+- **Decided (owner):** separate files, one per kind, in versioned JSON. A character file can be backed up or moved on its own, and runs keep numbered slots without touching characters. Brief: `plans/done/coop--character-and-run-saves/`.
 - **Decided (owner): gear always belongs to the character.** Players bring gear from one game into another, and a host's run save never holds a guest's gear. A host checks a joiner's gear against its own mod's names. A character's runs share its gear, and a fresh start is a new character.
 - **Decided (owner):** run saves, the revisited-map record (`roadmap.md` Future) and a host-migration handoff (Epic 15) share one serialization of the durable session-state ledger. Run and character saves ship it first; the others add named sections.
 

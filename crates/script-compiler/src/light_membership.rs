@@ -886,6 +886,13 @@ fn install_lua_prelude(lua: &Lua, mod_root: &Path) -> mlua::Result<()> {
             "endSession",
             "hostSession",
             "joinSession",
+            "continueRun",
+            "newRun",
+            "deleteRun",
+            "selectCharacter",
+            "createCharacter",
+            "deleteCharacter",
+            "checkpoint",
             "setSentiment",
             "adjustSentiment",
             "updateState",
@@ -1072,6 +1079,8 @@ pub const MIRRORED_GAME_STATE_LEAVES: &[(&str, &str, bool)] = &[
     ("player.weapon.current", "string", false),
     ("player.weapon.pending", "string", false),
     ("player.weapon.switching", "boolean", false),
+    ("saves.character", "number", false),
+    ("saves.run", "number", false),
     ("session.openSeats", "number", false),
     ("session.hostAddress", "string", false),
     ("session.hosting", "boolean", false),
@@ -1201,16 +1210,41 @@ pub const MIRRORED_GAME_STATE_FAMILIES: &[(&str, &str, MirroredFields)] = &[(
 /// The engine catalog's lists, mirrored: SDK path, row capacity, and each
 /// row's `(field, kind)`.
 #[doc(hidden)]
-pub const MIRRORED_GAME_STATE_LISTS: &[(&str, usize, MirroredFields)] = &[(
-    "session.players",
-    postretro_foundation::seat::SESSION_PLAYER_CAPACITY,
-    &[
-        ("present", "boolean"),
-        ("name", "string"),
-        ("status", "enum"),
-        ("isLocal", "boolean"),
-    ],
-)];
+pub const MIRRORED_GAME_STATE_LISTS: &[(&str, usize, MirroredFields)] = &[
+    (
+        "session.players",
+        postretro_foundation::seat::SESSION_PLAYER_CAPACITY,
+        &[
+            ("present", "boolean"),
+            ("name", "string"),
+            ("status", "enum"),
+            ("isLocal", "boolean"),
+        ],
+    ),
+    (
+        "saves.characters",
+        // The engine's save slot cap; the drift guard holds it to the catalog.
+        16,
+        &[
+            ("present", "boolean"),
+            ("occupied", "boolean"),
+            ("readable", "boolean"),
+            ("name", "string"),
+        ],
+    ),
+    (
+        "saves.runs",
+        16,
+        &[
+            ("present", "boolean"),
+            ("occupied", "boolean"),
+            ("readable", "boolean"),
+            ("levelName", "string"),
+            ("characterName", "string"),
+            ("savedAt", "string"),
+        ],
+    ),
+];
 
 /// Mirrors scripting-core's `QUICKJS_INSTALL_FAMILY`.
 #[doc(hidden)]

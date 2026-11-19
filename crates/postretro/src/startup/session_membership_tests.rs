@@ -321,6 +321,62 @@ fn steps_after_leave_drop_at_debug() {
     }
 }
 
+// The save verbs and `checkpoint` belong to the world being left, as
+// `loadLevel` does: unlike a session entry press, none survives a leave
+// earlier in the same drain.
+#[test]
+fn save_verbs_and_checkpoint_after_leave_drop_at_debug() {
+    let source = || "ui:leave".to_string();
+    for after in [
+        SystemReactionCommand::ContinueRun {
+            index: 0,
+            dispatch_source: source(),
+            origin: own(),
+        },
+        SystemReactionCommand::NewRun {
+            index: 1,
+            map: "e1m2".into(),
+            dispatch_source: source(),
+            origin: own(),
+        },
+        SystemReactionCommand::DeleteRun {
+            index: 2,
+            dispatch_source: source(),
+            origin: own(),
+        },
+        SystemReactionCommand::SelectCharacter {
+            index: 3,
+            dispatch_source: source(),
+            origin: own(),
+        },
+        SystemReactionCommand::CreateCharacter {
+            index: 4,
+            dispatch_source: source(),
+            origin: own(),
+        },
+        SystemReactionCommand::DeleteCharacter {
+            index: 5,
+            dispatch_source: source(),
+            origin: own(),
+        },
+        SystemReactionCommand::Checkpoint {
+            name: "bridge".into(),
+            dispatch_source: source(),
+            origin: own(),
+        },
+    ] {
+        let capture = LogCapture::start();
+        let mut client = client_app();
+        let dropped =
+            format!("{after:?} dropped: this machine left its session earlier in this drain");
+        run(&mut client, [leave("ui:leave"), after]);
+        assert_eq!(client.session_role(), SessionRole::SinglePlayer);
+        assert_eq!(requests(&client), frontend_requests());
+        capture.assert_logged_once(log::Level::Debug, &dropped);
+        capture.assert_nothing_above(log::Level::Info);
+    }
+}
+
 // AC 7, the direct case: `[endSession(), returnToFrontend()]` in every role.
 #[test]
 fn run_end_composition_behaves_per_role() {

@@ -234,6 +234,7 @@ fn actual_movement_ai_mover_and_death_producers_select_frame_origins() {
         factions: &factions,
         faction_sentiment: &sentiment,
         clips: None,
+        cpu: None,
     };
     let _ =
         postretro_ai::run_ai_tick_with_host(&mut registry, &mut runtime, dt, inputs(), &mut host);

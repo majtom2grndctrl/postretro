@@ -1146,6 +1146,8 @@ impl EntityRegistry {
         &self,
         kind: ComponentKind,
     ) -> impl Iterator<Item = (EntityId, &ComponentValue)> + '_ {
+        #[cfg(any(test, feature = "test-support"))]
+        column_walks::record();
         let column = &self.components[kind as usize];
         self.slots
             .iter()
@@ -1174,6 +1176,8 @@ impl EntityRegistry {
             ComponentKind::Inventory,
             "Inventory requires checked replacement"
         );
+        #[cfg(any(test, feature = "test-support"))]
+        column_walks::record();
         let column = &mut self.components[kind as usize];
         for (idx, slot) in self.slots.iter().enumerate() {
             if !slot.live || slot.retired {
@@ -1202,6 +1206,8 @@ impl EntityRegistry {
             ComponentKind::Inventory,
             "Inventory requires checked replacement"
         );
+        #[cfg(any(test, feature = "test-support"))]
+        column_walks::record();
         let Ok([column, read_column]) = self
             .components
             .get_disjoint_mut([kind as usize, read as usize])
@@ -1459,6 +1465,8 @@ impl EntityRegistry {
         &mut self,
         mut visit: impl FnMut(&EntityRegistry, EntityId, &mut DefenseLayersComponent),
     ) {
+        #[cfg(any(test, feature = "test-support"))]
+        column_walks::record();
         let kind = ComponentKind::DefenseLayers as usize;
         for index in 0..self.slots.len() {
             let slot = &self.slots[index];
@@ -2770,5 +2778,32 @@ mod tests {
                 elapsed
             );
         }
+    }
+}
+
+/// Test-only count of whole-column walks on this thread, for proofs that a
+/// pass's walks do not scale with how many entities it serves. It counts
+/// `iter_with_kind`, `for_each_with_kind_mut`, `for_each_with_kind_mut_reading`
+/// and `for_each_defense_layers_lent`; other slot walks are not counted.
+#[cfg(any(test, feature = "test-support"))]
+pub mod column_walks {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WALKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn record() {
+        WALKS.with(|walks| walks.set(walks.get() + 1));
+    }
+
+    /// Zero this thread's count.
+    pub fn reset() {
+        WALKS.with(|walks| walks.set(0));
+    }
+
+    /// Column walks on this thread since the last [`reset`].
+    pub fn count() -> usize {
+        WALKS.with(Cell::get)
     }
 }

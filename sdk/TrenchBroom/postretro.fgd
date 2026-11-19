@@ -336,6 +336,10 @@
 // map order not marked `coop_only`; each co-op joiner takes the first free one.
 // Rest the box on the floor: its bottom is where the player's feet stand.
 // `entity_class` picks the registered classname (defaults to `"player"`).
+// `checkpoint` names the checkpoint whose arrival set this spawn joins: after a
+// script's `checkpoint(name)` fires, or Continue arrives at it, arrival, respawn
+// and late joiners use the spawns sharing that name. Spawns without it are the
+// level-start set, which skips keyed spawns.
 @PointClass base(EntitySpawn)
     color(0 220 0)
     size(-16 -16 -24, 16 16 32)
@@ -348,6 +352,7 @@
         0 : "No"
         1 : "Yes (never the first player's start)"
     ]
+    checkpoint(string) : "Checkpoint arrival set (empty: level start)" : ""
 ]
 
 // Stateless enemy spawn point. The named archetype is resolved at level load;

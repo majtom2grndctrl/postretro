@@ -21,62 +21,59 @@ read at: e0ac8b7f
 
 ## AC-to-proof
 
-| AC | Proof | Status |
-|---|---|---|
-| Snapshot → payload and line agree (line C sums and marks, miss bucket, CPU avg/max, GPU mean, absent GPU pass) | unit tests beside each emit point (`*_event_matches_line`) | achievable as stated |
-| stderr unchanged with sink on/off; fixed snapshot byte-identical; `prl-build --no-tui` stderr and Build Summary stdout; existing log-capture and CLI-contract tests unchanged | engine line-builder tests on/off; `compiler_cli_contract` + new `telemetry_cli` integration test diffing on/off output | achievable as stated |
-| No-feature engine and `prl-build` write the sink | `cargo test -p postretro --no-default-features` sink test; `telemetry_cli` | achievable as stated |
-| P3 loading-screen level change order | `lifecycle_load` telemetry test with scoped hub | achievable as stated |
-| P4 beside load phases and commit-frame group | `lifecycle_beside` telemetry test | achievable as stated |
-| Beside commit: partials and unload between geometry install and phases | `lifecycle_beside` telemetry test | achievable as stated |
-| P13 cancelled after set build emits nothing | `lifecycle_load` telemetry test | achievable as stated |
-| Unloaded before reveal: geometry install + unload, no phases; reducer lists it | lifecycle test + reducer unittest | achievable as stated |
-| P5 concurrent emitters strictly increasing, poller misses none | leaf crate concurrency test | achievable as stated |
-| P1 GPU pending → unsupported before any window | renderer support state + app settle test | achievable as stated |
-| Idle SH window emits nothing | `sh_streaming_diagnostics` test | achievable as stated |
-| Unload 2 s into counted SH window: one partial with elapsed, no line | `sh_streaming_diagnostics` test | achievable as stated |
-| Replacement within a level: one partial, totals restart (P9); idle nothing | `sh_streaming_diagnostics` test | achievable as stated |
-| Lightmap partial at session end; world-less clear ends both | `lightmap_streaming_diagnostics` + session test | achievable as stated |
-| CPU window cleared at level change emits nothing; GPU window names level at close | `cpu_timing` test; GPU emit test | achievable as stated |
-| Bake events list Build Summary stages in order; durations equal in plain and TUI (P7) | level-compiler reporter decorator tests | achievable as stated |
-| Stage with no output emits skip | decorator test | achievable as stated |
-| Failing bake: begun stages, unsuccessful summary without durations | decorator/frontend test | achievable as stated |
-| Bake ending before first stage: `run_start` + `run_end` only | `telemetry_cli` | achievable as stated |
-| `--help` and rejected argument write nothing (P14) | `telemetry_cli` | achievable as stated |
-| `run_start` first at seq 0 before logs; relative path resolved | leaf test + `telemetry_cli` + engine binary test | achievable as stated |
-| `run_start` producers: CPU enabled/disabled with variable; GPU disabled/pending; settle to enabled | engine producer tests | achievable as stated (enabled settle needs a timestamp adapter: GPU-gated) |
-| Headless with both variables: unsupported, no windows, nothing pending at `run_end` | headless binary test (`observability`) | achievable as stated |
-| Clean exit: partials then `run_end` last; post-`run_end` record writes nothing (P6) | leaf test + engine exit test | achievable as stated |
-| Error, panic, capture/headless exits write `run_end` with reason | leaf guard test + `telemetry_cli` + headless test | achievable as stated |
-| Caught worker panic writes no `run_end`; process-ending panic does, engine and both `prl-build` reporters (P6) | leaf guard test; `telemetry_cli` panic hook seam | achievable as stated |
-| Killed process leaves every prior line parseable | leaf test (child process killed) | achievable as stated |
-| Unwritable path warns once, run completes | leaf test | achievable as stated |
-| Mid-run write failure warns once, no deadlock, ring and stderr continue (P10) | leaf test | achievable as stated |
-| Engine and bake appending at once: two runs, whole lines incl. message at cap (P11) | leaf multi-process test | achievable as stated |
-| Bake and engine from different cwds name same absolute `.prl`; reducer joins | `telemetry_cli` + reducer unittest | achievable as stated |
-| Ring eviction per class and caps | leaf ring tests | achievable as stated |
-| Late attach after eviction (P2) | leaf ring test | achievable as stated |
-| Paging from 0 with small `max` reads every event once (P2) | leaf ring test | achievable as stated |
-| Over-cap message truncates and is flagged | leaf test | achievable as stated |
-| `since` older than oldest | leaf ring test | achievable as stated |
-| `since` = `head` empty | leaf ring test | achievable as stated |
-| `since` > `head` error names run and head | leaf + observe-live test | achievable as stated |
-| `max` 0 (P8) | leaf ring test | achievable as stated |
-| `kinds` filter and unknown kind | leaf + observe-live test | achievable as stated |
-| Two polls disjoint and contiguous | leaf ring test | achievable as stated |
-| Main thread blocked: `events` answers at once, before and after a timed-out `dump` (P12) | observe-live transport test | achievable as stated |
-| Protocol-1 client reads hello; malformed `events` body errors | observe-live test | achievable as stated |
-| Consumer present: info captured while stderr filter hides it; debug not captured | leaf tee test | achievable as stated |
-| No consumer: max level unchanged (own process) | leaf integration test binary | achievable as stated |
-| `prl-build`: info record does not reach TUI warnings list | level-compiler tee test | achievable as stated |
-| `alloc_probe`: streaming windows and CPU timer per-frame paths allocate nothing with sink/ring | engine alloc test | achievable as stated |
-| Reducer unittest over checked-in two-run sample | `tools/tests/test_telemetry_reduce.py` | achievable as stated |
-| Every sample line parses as a current envelope | leaf crate test | achievable as stated |
-| Manual: stress-warren bake + run into one file, reducer matches stderr | owner, in-engine (Windows/Vulkan for GPU rows) | manual |
-| Manual: agent polls `events` across a level change | owner, windowed session | manual |
-
-- Brief "a bake summary … from each frontend's `Err`" → `prl-build`'s `main` now wraps the old body as `bake_main` under the unwind guard, and writes the failed summary from the body's `Err` once any stage began; planning around `main.rs` size by keeping the logic in a new `telemetry.rs`.
-- Brief "partial at every session-ending path" → each streaming window closes its partial when its session drops (`ShStreamingSession`'s existing `Drop`, the lightmap window's own), which covers unload, replacement, decline, world-less clear and the App's drop before `run_end` without naming each path.
+| AC | Proof | Status | Result |
+|---|---|---|---|
+| Snapshot → payload and line agree (line C sums and marks, miss bucket, CPU avg/max, GPU mean, absent GPU pass) | unit tests beside each emit point (`*_event_matches_line`) | achievable as stated | pass: `timing_events` (line C sums and marks), `sh_streaming_diagnostics` (miss bucket), `cpu_timing::tests` (row avg/max), renderer `frame_timing` + engine `telemetry` (GPU mean, absent pass null) |
+| stderr unchanged with sink on/off; fixed snapshot byte-identical; `prl-build --no-tui` stderr and Build Summary stdout; existing log-capture and CLI-contract tests unchanged | engine line-builder tests on/off; `compiler_cli_contract` + new `telemetry_cli` integration test diffing on/off output | achievable as stated | pass for `prl-build` end to end (`telemetry_cli` stderr and stdout shape; `compiler_cli_contract` 7 passed) and for the engine per line (fixed-snapshot on/off test; engine bin suite 2836 passed); a windowed engine stderr diff is manual |
+| No-feature engine and `prl-build` write the sink | `cargo test -p postretro --no-default-features` sink test; `telemetry_cli` | achievable as stated | pass: `tests/telemetry_run.rs` (engine, no features) and `telemetry_cli` |
+| P3 loading-screen level change order | `lifecycle_load` telemetry test with scoped hub | achievable as stated | outstanding: GPU-gated test written, skips here (no adapter); run with `POSTRETRO_REQUIRE_GPU=1` |
+| P4 beside load phases and commit-frame group | `lifecycle_beside` telemetry test | achievable as stated | outstanding: GPU-gated test written, skips here (no adapter); run with `POSTRETRO_REQUIRE_GPU=1` |
+| Beside commit: partials and unload between geometry install and phases | `lifecycle_beside` telemetry test | achievable as stated | outstanding: GPU-gated test written, skips here (no adapter); run with `POSTRETRO_REQUIRE_GPU=1` |
+| P13 cancelled after set build emits nothing | `lifecycle_load` telemetry test | achievable as stated | outstanding: GPU-gated test written, skips here (no adapter); run with `POSTRETRO_REQUIRE_GPU=1` |
+| Unloaded before reveal: geometry install + unload, no phases; reducer lists it | lifecycle test + reducer unittest | achievable as stated | outstanding: GPU-gated test written, skips here (no adapter); run with `POSTRETRO_REQUIRE_GPU=1`; GPU-free half passes (`unload_writes_an_unload_event_naming_the_level_then_clears_it`, reducer lists unloaded before reveal) |
+| P5 concurrent emitters strictly increasing, poller misses none | leaf crate concurrency test | achievable as stated | pass: `concurrent_emitters_land_in_strictly_increasing_sequence_and_a_poller_misses_none` |
+| P1 GPU pending → unsupported before any window | renderer support state + app settle test | achievable as stated | pass: `pending_gpu_timing_settles_unsupported_with_its_reason_or_enabled` |
+| Idle SH window emits nothing | `sh_streaming_diagnostics` test | achievable as stated | pass |
+| Unload 2 s into counted SH window: one partial with elapsed, no line | `sh_streaming_diagnostics` test | achievable as stated | pass |
+| Replacement within a level: one partial, totals restart (P9); idle nothing | `sh_streaming_diagnostics` test | achievable as stated | pass (window-level) |
+| Lightmap partial at session end; world-less clear ends both | `lightmap_streaming_diagnostics` + session test | achievable as stated | pass for the lightmap window; the world-less clear runs the same session Drop (no session-level test) |
+| CPU window cleared at level change emits nothing; GPU window names level at close | `cpu_timing` test; GPU emit test | achievable as stated | pass |
+| Bake events list Build Summary stages in order; durations equal in plain and TUI (P7) | level-compiler reporter decorator tests | achievable as stated | pass: `stage_events_follow_the_build_summary_under_the_plain_and_tui_reporters` on a lit fixture |
+| Stage with no output emits skip | decorator test | achievable as stated | pass |
+| Failing bake: begun stages, unsuccessful summary without durations | decorator/frontend test | achievable as stated | pass |
+| Bake ending before first stage: `run_start` + `run_end` only | `telemetry_cli` | achievable as stated | pass |
+| `--help` and rejected argument write nothing (P14) | `telemetry_cli` | achievable as stated | pass |
+| `run_start` first at seq 0 before logs; relative path resolved | leaf test + `telemetry_cli` + engine binary test | achievable as stated | pass in both processes |
+| `run_start` producers: CPU enabled/disabled with variable; GPU disabled/pending; settle to enabled | engine producer tests | achievable as stated (enabled settle needs a timestamp adapter: GPU-gated) | pass at the unit seam; settle to enabled on a timestamp adapter is GPU-gated (manual) |
+| Headless with both variables: unsupported, no windows, nothing pending at `run_end` | headless binary test (`observability`) | achievable as stated | pass: `a_headless_run_lists_timing_unsupported_and_ends_through_its_exit` |
+| Clean exit: partials then `run_end` last; post-`run_end` record writes nothing (P6) | leaf test + engine exit test | achievable as stated | pass in the leaf (order, nothing after `run_end`); the engine clean-exit order holds by construction (`exiting` closes windows before `run_end`), no windowed test |
+| Error, panic, capture/headless exits write `run_end` with reason | leaf guard test + `telemetry_cli` + headless test | achievable as stated | pass for engine error, headless and `prl-build` error; the capture exit is wired but not run here |
+| Caught worker panic writes no `run_end`; process-ending panic does, engine and both `prl-build` reporters (P6) | leaf guard test; `telemetry_cli` panic hook seam | achievable as stated | pass at the leaf guard (`a_caught_panic_writes_no_run_end_and_one_leaving_the_guard_does`); process-level engine and TUI panics hold by guard placement, untested end to end |
+| Killed process leaves every prior line parseable | leaf test (child process killed) | achievable as stated | pass |
+| Unwritable path warns once, run completes | leaf test | achievable as stated | pass |
+| Mid-run write failure warns once, no deadlock, ring and stderr continue (P10) | leaf test | achievable as stated | pass |
+| Engine and bake appending at once: two runs, whole lines incl. message at cap (P11) | leaf multi-process test | achievable as stated | pass |
+| Bake and engine from different cwds name same absolute `.prl`; reducer joins | `telemetry_cli` + reducer unittest | achievable as stated | pass: `committed_level` canonical test, `telemetry_cli` canonical output, reducer join test |
+| Ring eviction per class and caps | leaf ring tests | achievable as stated | pass |
+| Late attach after eviction (P2) | leaf ring test | achievable as stated | pass |
+| Paging from 0 with small `max` reads every event once (P2) | leaf ring test | achievable as stated | pass |
+| Over-cap message truncates and is flagged | leaf test | achievable as stated | pass |
+| `since` older than oldest | leaf ring test | achievable as stated | pass |
+| `since` = `head` empty | leaf ring test | achievable as stated | pass |
+| `since` > `head` error names run and head | leaf + observe-live test | achievable as stated | pass |
+| `max` 0 (P8) | leaf ring test | achievable as stated | pass |
+| `kinds` filter and unknown kind | leaf + observe-live test | achievable as stated | pass |
+| Two polls disjoint and contiguous | leaf ring test | achievable as stated | pass |
+| Main thread blocked: `events` answers at once, before and after a timed-out `dump` (P12) | observe-live transport test | achievable as stated | pass: `events_answer_while_the_main_thread_is_blocked_around_a_timed_out_dump` |
+| Protocol-1 client reads hello; malformed `events` body errors | observe-live test | achievable as stated | pass |
+| Consumer present: info captured while stderr filter hides it; debug not captured | leaf tee test | achievable as stated | pass |
+| No consumer: max level unchanged (own process) | leaf integration test binary | achievable as stated | pass |
+| `prl-build`: info record does not reach TUI warnings list | level-compiler tee test | achievable as stated | pass |
+| `alloc_probe`: streaming windows and CPU timer per-frame paths allocate nothing with sink/ring | engine alloc test | achievable as stated | pass: SH, lightmap and CPU timer probes with sink and ring live |
+| Reducer unittest over checked-in two-run sample | `tools/tests/test_telemetry_reduce.py` | achievable as stated | pass: 22 tests |
+| Every sample line parses as a current envelope | leaf crate test | achievable as stated | pass |
+| Manual: stress-warren bake + run into one file, reducer matches stderr | owner, in-engine (Windows/Vulkan for GPU rows) | manual | outstanding: owner, in-engine |
+| Manual: agent polls `events` across a level change | owner, windowed session | manual | outstanding: owner, windowed session |
 
 ## Tasks
 

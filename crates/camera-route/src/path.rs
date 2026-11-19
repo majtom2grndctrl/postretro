@@ -1,5 +1,5 @@
-//! Seeded camera walks over portal adjacency, for the lightmap residency walks.
-//! See: context/lib/experimental_spikes.md
+// Seeded camera-cell paths over portal adjacency: the walk's cell sequence.
+// See: context/lib/rendering_pipeline.md §12
 
 // A port of the dry run's `camera_walks.rs` (level-compiler
 // `lightmap_residency_dry_run/`), test-only code in the `prl-build` binary.
@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WalkKind {
+pub enum WalkKind {
     /// Uniform random portal neighbour each step; teleports when stalled.
     Random,
     /// Shortest hop path to the farthest unvisited camera cell, repeatedly.
@@ -17,26 +17,40 @@ pub(super) enum WalkKind {
 }
 
 impl WalkKind {
-    pub(super) const ALL: [WalkKind; 2] = [WalkKind::Random, WalkKind::FarPointTour];
+    pub const ALL: [WalkKind; 2] = [WalkKind::Random, WalkKind::FarPointTour];
 
-    pub(super) fn label(self) -> &'static str {
+    /// The harness's run label. Trip records pair runs on it, so it never
+    /// changes.
+    pub fn label(self) -> &'static str {
         match self {
             WalkKind::Random => "random walk",
             WalkKind::FarPointTour => "far-point tour",
         }
     }
+
+    /// The kind's name on a command line and in a pose file's origin.
+    pub fn key(self) -> &'static str {
+        match self {
+            WalkKind::Random => "random",
+            WalkKind::FarPointTour => "far-point",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.key() == key)
+    }
 }
 
 /// The dry run's `SIM_SEED`.
-pub(super) const WALK_SEED: u64 = 0x5EED_B10C;
+pub const WALK_SEED: u64 = 0x5EED_B10C;
 /// The dry run's `STALL_TELEPORT_STEPS`.
-const STALL_TELEPORT_STEPS: usize = 1_000;
+pub const STALL_TELEPORT_STEPS: usize = 1_000;
 
 /// Deterministic SplitMix64, as the dry run uses.
-pub(super) struct SplitMix64(pub(super) u64);
+pub struct SplitMix64(pub u64);
 
 impl SplitMix64 {
-    pub(super) fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -44,19 +58,19 @@ impl SplitMix64 {
         z ^ (z >> 31)
     }
 
-    pub(super) fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+    pub fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
     }
 
     /// Uniform in `[0, 1)`.
-    pub(super) fn unit(&mut self) -> f32 {
-        (self.next() >> 40) as f32 / (1u64 << 24) as f32
+    pub fn unit(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
     }
 }
 
 /// Portal adjacency between camera cells, by index into `camera_cells`.
 /// `portals` are (front, back) cell pairs.
-pub(super) fn camera_adjacency(
+pub fn camera_adjacency(
     cell_count: usize,
     portals: impl Iterator<Item = (usize, usize)>,
     camera_cells: &[u32],
@@ -81,7 +95,7 @@ pub(super) fn camera_adjacency(
 }
 
 /// A walk of `steps` camera-cell indices and its teleport count.
-pub(super) fn walk_path(
+pub fn walk_path(
     kind: WalkKind,
     adjacency: &[Vec<u32>],
     steps: usize,

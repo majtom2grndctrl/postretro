@@ -9,6 +9,7 @@
 use std::ffi::OsString;
 
 mod binaries;
+mod camera_route;
 mod dist;
 mod engine_trees;
 mod flag;
@@ -54,6 +55,7 @@ fn try_main() -> Result<i32, String> {
         "solve-weapon-mount" => mount::run(rest),
         "mint-identity" => mint::run(rest),
         "prl-sections" => prl_sections::run(rest),
+        "generate-camera-route" => camera_route::run(rest),
         _ => Err(format!(
             "unknown command `{}`\n\nRun `postretro-tool --help` for usage.",
             command.to_string_lossy()
@@ -84,6 +86,8 @@ USAGE:
   postretro-tool solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [options]
   postretro-tool mint-identity <mod> [--project <dir> | --manifest <path>]
   postretro-tool prl-sections <level.prl>
+  postretro-tool generate-camera-route <level.prl> --kind far-point|random [--seed <u64>]
+                [--steps <n>] [--pitch <degrees>] [--hfov <degrees>] -o <out-file>
 
 COMMANDS:
   dist                 Assemble a runnable player distribution payload
@@ -99,6 +103,10 @@ COMMANDS:
   prl-sections         Print a compiled level's sections, largest first: id,
                        name, version, bytes and share of the file; needs no
                        project
+  generate-camera-route
+                       Write a level's seeded camera route as a pose file:
+                       the residency walk's exact frames (far-point tour or
+                       random walk); needs no project, GPU or engine
 
 HELPER BINARIES:
   The tool compiles nothing. Each helper defaults to a conventional path beside

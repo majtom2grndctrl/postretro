@@ -74,6 +74,9 @@ postretro-lighting = { workspace = true, features = ["script-ffi"] }
 postretro-stage-timing.workspace = true
 postretro-telemetry.workspace = true
 postretro-visibility = { workspace = true }
+# Pose files and the bake identity. Route generation runs only in the walk
+# harness (test code) and `postretro-tool`; the engine never calls it.
+postretro-camera-route = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }
 postretro-combat-model = { workspace = true }

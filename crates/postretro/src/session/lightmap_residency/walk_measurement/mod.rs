@@ -101,18 +101,18 @@ mod install_timing;
 mod levers;
 mod mirror;
 mod modes;
-mod paths;
 mod payload_hash;
 mod pool_mirror;
 #[cfg(test)]
 mod pool_sizing_tests;
 mod report;
 mod results;
+#[cfg(test)]
+mod route_file_tests;
 mod sh_walk;
 #[cfg(test)]
 mod tests;
 mod trip_record;
-mod walk;
 mod world_poses;
 
 use std::ops::Range;
@@ -130,28 +130,26 @@ use crate::streaming::cell_demand::CellDemand;
 use crate::streaming::cell_demand::LEAD_UNITS_PER_METRE;
 use crate::streaming::cluster_hints::decode_level_hints;
 use crate::streaming::issuer_busy::IssuerBusyLog;
-use baked_set::{
-    bake_identity, bake_token, cell_block_ranges, mandatory_blocks, mandatory_cells,
-    mandatory_set_sizes,
-};
+use baked_set::{cell_block_ranges, mandatory_blocks, mandatory_cells, mandatory_set_sizes};
 use busy_stats::BusyStats;
 use frame_driver::{FrameDriver, FrameInput};
 use levers::{DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, parse_pool_layers};
 use mirror::{MirrorStats, WalkMirror};
 use modes::{ReadsMode, WalkModes, render_camera};
-use paths::{SplitMix64, WALK_SEED, WalkKind};
 use pool_mirror::{PoolMirror, pool_sizing};
+use postretro_camera_route::{
+    ExactRoute, FRAME_SECONDS, MAX_DWELL_FRAMES, RUN_SPEED, WALK_SEED, Walk, WalkKind,
+    bake_identity, bake_token, pose_fingerprint,
+};
 use report::{RunReport, print_run, print_split};
 use results::{RunKeys, ShStatus, print_instruments};
 use sh_walk::ShRunStats;
-use trip_record::{FrameRecord, RunRecord, pose_fingerprint};
-use walk::{MAX_DWELL_FRAMES, RUN_SPEED, Walk, eye_point};
+use trip_record::{FrameRecord, RunRecord};
 
 const PRL_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PRL";
 const STEPS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_STEPS";
 const RUNS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_RUNS";
-const DEFAULT_STEPS: usize = 2_000;
-const FRAME_SECONDS: f64 = 1.0 / 60.0;
+const DEFAULT_STEPS: usize = postretro_camera_route::DEFAULT_STEPS;
 
 fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
     (
@@ -274,10 +272,13 @@ fn run(
         mirror: planar.is_some().then(MirrorStats::default),
         ..RunReport::default()
     };
+    // The walk's frames, drawn before the clock starts: the spawn eye first,
+    // then one eye per dwell frame, in the order the run consumes them.
+    let route = ExactRoute::of_walk(world, walk, modes.pitch).expect("the walk has camera cells");
+    let mut poses = route.poses.iter();
     let started = Instant::now();
-    let mut rng = SplitMix64(WALK_SEED ^ 0xE7E5);
 
-    let spawn_eye = eye_point(world, walk.cells[0], &mut rng);
+    let spawn_eye = route.spawn;
     let spawn_cell = world.locate_cell(spawn_eye) as u32;
     let before = section_reads(&read_counters);
     let summary = rig.preload(spawn_cell);
@@ -316,10 +317,11 @@ fn run(
 
     for (step, &cell) in walk.cells.iter().enumerate() {
         let step_reads_before = section_reads(&read_counters);
-        for frame in 0..walk.dwell[step] {
+        for _ in 0..walk.dwell[step] {
             let frame_started = Instant::now();
-            let eye = eye_point(world, cell, &mut rng);
-            let yaw = walk.travel_yaw[step] + frame as f32 * std::f32::consts::FRAC_PI_2;
+            let pose = poses.next().expect("one pose per dwell frame");
+            debug_assert_eq!(pose.walk, Some((step as u32, cell)));
+            let (eye, yaw) = (pose.eye, pose.yaw);
             let camera = render_camera(eye, yaw, modes.pitch, modes.projection);
             let main = VisibleRenderPreparation::for_level(
                 world,

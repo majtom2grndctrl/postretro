@@ -18,8 +18,7 @@ const RECORD_OUT_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT";
 const RECORD_IN_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_IN";
 const PLANAR_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PLANAR";
 
-/// Default camera: `camera.rs` HFOV at 16:9.
-const DEFAULT_HFOV_DEGREES: f32 = 100.0;
+/// Default camera: `camera.rs` HFOV at 16:9, the generated routes' default.
 const DEFAULT_ASPECT: (f32, f32) = (16.0, 9.0);
 
 /// Horizontal FOV is fixed; vertical follows the aspect, as the player
@@ -35,8 +34,8 @@ pub(super) struct Projection {
 impl Default for Projection {
     fn default() -> Self {
         Self {
-            hfov_degrees: DEFAULT_HFOV_DEGREES,
-            aspect: DEFAULT_ASPECT.0 / DEFAULT_ASPECT.1,
+            hfov_degrees: postretro_camera_route::DEFAULT_HFOV_DEGREES,
+            aspect: postretro_camera_route::DEFAULT_ASPECT,
             aspect_label: DEFAULT_ASPECT,
         }
     }

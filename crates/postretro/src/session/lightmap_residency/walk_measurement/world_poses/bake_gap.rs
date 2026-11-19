@@ -12,16 +12,14 @@
 use std::fmt::Write as _;
 
 use glam::Vec3;
+use postretro_camera_route::{ExactRoute, Walk, WalkKind, bake_identity};
 use postretro_level_loader::LevelWorld;
 use postretro_render_cpu::lightmap_pool::POOL_POLICY_IDENTITY;
 use postretro_visibility::{TimingGate, VisibilityPath};
 
-use super::super::baked_set::bake_identity;
 use super::super::frame_driver::FrameInput;
 use super::super::modes::{ReadsMode, WalkModes, render_camera};
-use super::super::paths::{SplitMix64, WALK_SEED, WalkKind};
 use super::super::report::pool_layers_line;
-use super::super::walk::{Walk, eye_point};
 use super::super::{DEFAULT_LEVERS, DEFAULT_STEPS, FRAME_SECONDS, Rig, run_label};
 use super::poses::{WorldPose, read_poses};
 use super::{FILE_ENV, STEPS_ENV, env};
@@ -147,23 +145,20 @@ fn materialise(world: &LevelWorld, modes: &WalkModes) -> Vec<(String, Vec3, Vec<
     let mut plans = Vec::new();
     for kind in WalkKind::ALL {
         let walk = Walk::build(world, kind, steps);
-        if walk.cells.is_empty() {
+        // `run`'s frames: the spawn eye first, then one eye per frame.
+        let Ok(route) = ExactRoute::of_walk(world, &walk, modes.pitch) else {
             continue;
-        }
-        // `run`'s eye stream: the spawn eye first, then one eye per frame.
-        let mut rng = SplitMix64(WALK_SEED ^ 0xE7E5);
-        let spawn = eye_point(world, walk.cells[0], &mut rng);
-        let mut frames = Vec::with_capacity(walk.frames() as usize);
-        for (step, &cell) in walk.cells.iter().enumerate() {
-            for frame in 0..walk.dwell[step] {
-                frames.push(FramePose {
-                    eye: eye_point(world, cell, &mut rng),
-                    yaw: walk.travel_yaw[step] + frame as f32 * std::f32::consts::FRAC_PI_2,
-                    pitch: modes.pitch,
-                });
-            }
-        }
-        plans.push((run_label(&walk, DEFAULT_LEVERS, modes), spawn, frames));
+        };
+        let frames = route
+            .poses
+            .iter()
+            .map(|pose| FramePose {
+                eye: pose.eye,
+                yaw: pose.yaw,
+                pitch: pose.pitch,
+            })
+            .collect();
+        plans.push((run_label(&walk, DEFAULT_LEVERS, modes), route.spawn, frames));
     }
     if let Some(file) = env(FILE_ENV) {
         let set = read_poses(&file).unwrap_or_else(|why| panic!("{why}"));

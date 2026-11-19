@@ -32,7 +32,7 @@ The agent running `streaming-drain-budget-spike` reported gaps the owner relayed
 - **Frames carry marks only during playback.** Each playback frame's GPU work can be attributed to its frame index in an exported trace. Outside playback, every encoder label stays as it is today, so per-encoder reducers keep their grouping.
 - **One reducer in `tools/`,** with a unittest that preflight runs. It joins the record with an MST export and reports per frame: interval, drain-encoder GPU time, cold flag and pool-growth flag. Per run it reports interval p50, p95 and max, and frames over budget, with cold and pool-growth drains counted apart. It follows §12's per-encoder rules, and extends `gpu-pass-paired-ab`'s reducer rather than forking it if that lands first.
 - **Non-goals:**
-  - Input record and replay: roadmap Epic 20's candidate replays input through the sim, and this brief drives no sim.
+  - Input record and replay: roadmap Epic 20's candidate replays input through the sim; this brief replays no input, and the sim it leaves ticking reads none.
   - Offscreen or headless playback: capture owns offscreen rendering.
   - Recording a live play session into a pose file, and authored routes. The file format admits both later.
   - Choosing the drain cap: the spike owns that.

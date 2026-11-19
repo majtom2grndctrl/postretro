@@ -1418,6 +1418,14 @@ fn second_suspend_never_reharvests_a_stale_pawn_into_another_character() {
     app.drain_level_requests();
     install_pawn(&mut app, true, 9);
     app.suspend_platform();
+    let saved = read_document(&saves(dir.path()).character_path(0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        saved.seats[0].loadout.reserve.get("shells"),
+        Some(&9),
+        "the suspend harvests and saves the played level's gear"
+    );
     app.boot_state = crate::startup::BootState::Frontend;
     present_frontend(&mut app);
     character(&mut app, 1, "Ash");

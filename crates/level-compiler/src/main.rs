@@ -1444,26 +1444,29 @@ fn log_captured_command_output(label: &str, stdout: &[u8], stderr: &[u8], level:
     }
 }
 
-/// The `target/<profile>/` directory when `exe_dir` holds a Cargo test
-/// executable. Cargo places test executables in `<profile>/deps/`, or, from
-/// Cargo 1.100, in `<profile>/build/<package>/<hash>/out/`; either way it
-/// builds the `scripts-build` binary itself into `<profile>/`.
+/// The `<profile>/` directory when `exe_dir` holds a Cargo test executable.
+/// Cargo places test executables in `<profile>/deps/` or, under its newer
+/// build-directory layout, in `<profile>/build/<package>/<hash>/out/`; either
+/// way the `scripts-build` binary lands in `<profile>/`. That holds only while
+/// the build directory is the target directory, Cargo's default.
 fn cargo_test_profile_dir(exe_dir: &Path) -> Option<&Path> {
     let leaf = exe_dir.file_name()?;
     if leaf == "deps" {
         return exe_dir.parent();
     }
-    let build = exe_dir.ancestors().nth(3)?;
-    if leaf == "out" && build.file_name()? == "build" {
-        return build.parent();
+    if leaf == "out" {
+        let build = exe_dir.ancestors().nth(3)?;
+        if build.file_name()? == "build" {
+            return build.parent();
+        }
     }
     None
 }
 
 fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
-    // A test executable prefers the profile-level sidecar over a stale
-    // un-hashed copy beside it, so the binary a child `cargo build` writes is
-    // the one invoked.
+    // A test executable takes the profile-level sidecar first: a child
+    // `cargo build` writes it there, and a `deps/` directory can hold a stale
+    // un-hashed copy.
     if let Some(profile_binary) = cargo_test_profile_dir(exe_dir).map(|dir| dir.join(name))
         && profile_binary.is_file()
     {
@@ -1544,6 +1547,13 @@ fn find_scripts_build() -> Option<PathBuf> {
                 {
                     return Some(candidate);
                 }
+                // Cargo wrote the binary where this lookup does not reach: a
+                // different profile, target triple, target dir or build dir.
+                log::warn!(
+                    "[prl-build] rebuilt scripts-build was not found beside {:?}; using {:?}",
+                    exe_dir,
+                    path
+                );
             }
             Ok(output) => {
                 log::error!(
@@ -1889,6 +1899,8 @@ mod tests {
 
     #[test]
     fn scripts_build_beside_build_dir_test_binary_finds_profile_sidecar() {
+        // Regression: a test executable under `build/<package>/<hash>/out/`
+        // found no sidecar, failing every data_script test.
         let root = unique_temp_dir("scripts-build-build-dir");
         let out = root.join("debug/build/postretro-level-compiler/0123abcd/out");
         std::fs::create_dir_all(&out).expect("create test executable directory");
@@ -1909,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn cargo_test_profile_dir_ignores_an_out_dir_outside_build() {
+    fn cargo_test_profile_dir_matches_only_cargo_test_layouts() {
         let root = Path::new("target/debug");
         assert_eq!(cargo_test_profile_dir(&root.join("deps")), Some(root));
         assert_eq!(

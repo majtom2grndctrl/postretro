@@ -19,7 +19,7 @@ Read at e0d708672. This spike builds on `lightmap-compact-storage`'s decode pool
 - GPU: the Mac perf target has no timestamp queries; per-pass time comes from Metal System Trace reduced per encoder (`rendering_pipeline.md` §12).
 
 ## Prior numbers (from `lightmap-compact-storage`, showcase at 0.0125 m)
-- Realtime late blocks 181 far-point, 306 random; SH `sh_late` far-point 44 at default cores, 47 at emulated 1 core.
+- Realtime late blocks 181 far-point, 306 random. The random walk is not pool-limited: completed random stays at 279 from a 1,392 to a 2,086 MiB pool (`lightmap-compact-storage/plan.md`, Task 6), and its cause is not isolated. Realtime SH `sh_late` far-point 44 at default cores, 47 at emulated 1 core.
 - Largest drain install 14.7 MB at baseline (the first-item rule lets a drain exceed the cap).
 - Completed mode, far-point: SH off 79 late blocks, SH on 78. SH off is the worse one, so it is not evidence of SH crowding lightmaps out; cause not isolated.
 - Campaign-test has 0 lightmap late blocks in every walk cell, realtime included (`lightmap-compact-storage/plan.md`, Task 6 follow-up). Its lightmap side cannot open the gate.

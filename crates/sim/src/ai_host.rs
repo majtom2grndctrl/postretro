@@ -75,6 +75,20 @@ pub struct AiTickInputs<'a> {
     /// clip events. `None` leaves every clip unresolved: `at` attacks fire as
     /// without `at`, and a non-looping state reads `brain.animationDone` true.
     pub clips: Option<&'a crate::scripting_systems::hit_zones::HitZoneStore>,
+    /// The tick's stage frame, so AI reports its sub-stages under `sim_ai`
+    /// (`rendering_pipeline.md` §12). `None` records nothing.
+    pub cpu: Option<&'a AiStageFrame>,
+}
+
+/// The sim tick's stage frame as AI sees it.
+pub type AiStageFrame = postretro_stage_timing::StageFrame<crate::sim::cpu_stages::SimStage>;
+
+/// Time `stage` until the returned guard drops; a no-op without a frame.
+pub fn ai_stage(
+    cpu: Option<&AiStageFrame>,
+    stage: crate::sim::cpu_stages::SimStage,
+) -> Option<postretro_stage_timing::StageScope<'_, crate::sim::cpu_stages::SimStage>> {
+    cpu.map(|cpu| cpu.scope(stage))
 }
 
 /// Finalized host-only output from exactly one AI stage invocation.

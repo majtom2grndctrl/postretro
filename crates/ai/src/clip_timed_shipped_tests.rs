@@ -67,6 +67,7 @@ impl Shipped {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&self.clips),
+                cpu: None,
             },
             |_| {},
         )
@@ -417,6 +418,7 @@ fn brute_run_in(
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&shipped.clips),
+                cpu: None,
             },
             |_| {},
         );

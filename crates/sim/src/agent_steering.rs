@@ -4,7 +4,7 @@
 // controller.
 //
 // This is the primary production caller for the route query
-// (`nav::find_path_from`) and the agent component; Ai reachability and
+// (`nav::find_path_from_in`) and the agent component; Ai reachability and
 // `combat_positioning` query routes too. It owns the replan policy (per-tick
 // budget, admitted gate-owed first, then target drift, then staleness), the
 // waypoint-following loop and the O(n²) separation pass. Siblings take the
@@ -26,7 +26,7 @@ use crate::movement::MovementCollisionSource;
 use crate::movement::agent_motion::{
     AgentCapsule, carried_by_mover, collide_and_slide, escape_slide,
 };
-use crate::nav::{NavGate, NavGraph, NavStart, distance_xz, find_path_from};
+use crate::nav::{NavGate, NavGraph, NavScratch, NavStart, distance_xz, find_path_from_in};
 use postretro_collision::EnvironmentView;
 use postretro_entities::components::agent::{AgentComponent, ArrivalLeash};
 use postretro_entities::{ComponentKind, ComponentValue, EntityId, EntityRegistry, Transform};
@@ -592,6 +592,9 @@ fn tick_impl(
     let admission = admit_replans(registry, &snapshot, nav_graph, gate, collision, dt);
 
     let mut replans = 0u32;
+    // One route-search scratch for the pass's replans: it grows to the graph on
+    // the first and is reused by the rest.
+    let mut route_scratch = NavScratch::new();
 
     // Drive each agent. The snapshot holds the ids in slot order; we mutate one
     // agent at a time, reading its live component (set/clear destination may have
@@ -753,7 +756,9 @@ fn tick_impl(
                 ground: agent.ground,
                 height: agent.height,
             };
-            match nav_graph.and_then(|graph| find_path_from(graph, gate, from, destination)) {
+            match nav_graph.and_then(|graph| {
+                find_path_from_in(&mut route_scratch, graph, gate, from, destination)
+            }) {
                 Some(path) => {
                     agent.path_crossings.clear();
                     agent.path_crossings.extend_from_slice(path.crossings());

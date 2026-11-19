@@ -31,6 +31,8 @@ postretro-scripting-core.workspace = true
 # the pacing proofs over the dev mod's own descriptors and budgets.
 postretro-script-compiler = { path = "../script-compiler" }
 postretro-sim = { workspace = true, features = ["test-support"] }
+# `StageSet::parent` for the AI sub-stage proofs.
+postretro-stage-timing.workspace = true
 postretro-test-log-capture.workspace = true
 rquickjs.workspace = true
 serde_json.workspace = true

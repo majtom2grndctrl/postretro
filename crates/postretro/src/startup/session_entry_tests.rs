@@ -629,42 +629,219 @@ fn failed_join_save_still_rebases_the_restore_snapshot_and_warns() {
     assert_eq!(slot(&view.app, WORLD_SLOT), Some(SlotValue::Number(42.0)));
 }
 
-// AC S4: carried loadout from earlier single-player levels does not survive
-// a join and leave; seat 0 holds what a fresh ledger holds.
+/// Save the selected character with seat 0 carrying `shells`, as a save
+/// point does.
+fn save_character_with_shells(view: &mut ClientView, shells: u32) {
+    let session = view.app.session.as_mut().unwrap();
+    let mut carried = postretro_combat_model::CarriedState::default();
+    carried.reserve.set_exact("shells", shells);
+    session
+        .seat_table
+        .as_mut()
+        .unwrap()
+        .set_carried_state(Seat(0), Some(carried));
+    crate::session::progress_save::save_world_and_character(session).unwrap();
+}
+
+/// The `shells` the saved character carries.
+fn saved_shells(app: &App) -> Option<u32> {
+    let session = app.session.as_ref().unwrap();
+    let dir = postretro_sim::scripting::save_files::SaveDir::new(
+        session.data_dir.as_deref().unwrap(),
+        MOD_ID,
+    );
+    postretro_sim::scripting::save_files::read_document(&dir.character_path(0))
+        .unwrap()
+        .and_then(|document| document.seats.first().cloned())
+        .and_then(|record| record.loadout.reserve.get("shells").copied())
+}
+
+fn seat_zero_shells(app: &App) -> Option<u32> {
+    app.session
+        .as_ref()
+        .unwrap()
+        .seat_table
+        .as_ref()
+        .unwrap()
+        .carried_state(Seat(0))
+        .map(|carried| carried.reserve.available("shells"))
+}
+
+// D1 (replaces the fresh-ledger carry test): after a join and leave, seat 0
+// carries the selected character's saved loadout.
 #[test]
-fn join_then_leave_leaves_seat_zero_with_a_fresh_ledgers_carry() {
+fn join_then_leave_restores_seat_zero_carry_from_selected_character() {
+    let dir = tempfile::tempdir().unwrap();
     let relay = host_in_level(&spawn_points(3));
     let mut view = single_player_at_menu(spawn_points(3));
-    {
-        let session = view.app.session.as_mut().unwrap();
-        let ctx = session.scripting.script_ctx.clone();
-        let mut registry = ctx.registry.borrow_mut();
-        let pawn = registry.spawn(postretro_entities::Transform::default());
-        let mut health = postretro_entities::components::health::HealthComponent::from_descriptor(
-            &postretro_entities::data_descriptors::HealthDescriptor {
-                max: 100.0,
-                ..Default::default()
-            },
-        );
-        health.current = 40.0;
-        registry.set_component(pawn, health).unwrap();
-        let seats = session.seat_table.as_mut().unwrap();
-        seats.bind_pawn(&mut registry, Seat(0), pawn);
-        seats.harvest_bound_pawns(&registry, &[]);
-        assert!(
-            seats.carried_state(Seat(0)).is_some(),
-            "fixture: seat 0 carries"
-        );
-    }
+    with_saves(&mut view, dir.path());
+    save_character_with_shells(&mut view, 5);
 
     assert!(view.app.join_from_frontend(relay.address()));
     assert!(view.app.leave_session(LeaveCause::Own));
 
-    let fresh = crate::netcode::SeatTable::local_only();
-    let session = view.app.session.as_ref().unwrap();
+    assert_eq!(seat_zero_shells(&view.app), Some(5));
+    assert_eq!(saved_shells(&view.app), Some(5));
+}
+
+/// A client with saves, joined and participating in the relay host's level.
+fn participating_client(dir: &std::path::Path, shells: u32) -> (Relay, ClientView, u64) {
+    let mut relay = host_in_level(&spawn_points(3));
+    let mut view = single_player_at_menu(spawn_points(3));
+    with_saves(&mut view, dir);
+    save_character_with_shells(&mut view, shells);
+    assert!(view.app.join_from_frontend(relay.address()));
+    let (id, _) = follow_into_level(&mut relay, &mut view);
+    (relay, view, id)
+}
+
+/// The host hands `id`'s seat a carry of `shells` and sends each owner its
+/// loadout, as a level start or checkpoint does.
+fn host_sends_loadout(relay: &mut Relay, id: u64, shells: u32) {
+    let seat = relay.seat(id).unwrap();
+    let mut carried = postretro_combat_model::CarriedState::default();
+    carried.reserve.set_exact("shells", shells);
+    relay.seats_mut().set_carried_state(seat, Some(carried));
+    let session = relay.app.session.as_mut().unwrap();
+    let sent = session
+        .net_endpoint
+        .as_mut()
+        .unwrap()
+        .send_character_loadouts(session.seat_table.as_ref());
+    assert_eq!(sent, 1);
+}
+
+fn world_and_run_bytes(app: &App) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let session = app.session.as_ref().unwrap();
+    let dir = postretro_sim::scripting::save_files::SaveDir::new(
+        session.data_dir.as_deref().unwrap(),
+        MOD_ID,
+    );
+    (
+        std::fs::read(dir.world_path()).ok(),
+        std::fs::read(dir.run_path(0)).ok(),
+    )
+}
+
+// N4, P8 and S8: each loadout message saves the character; the periodic
+// save keeps it; the client never writes world or run files.
+#[test]
+fn client_saves_each_loadout_message_and_periodic_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut relay, mut view, id) = participating_client(dir.path(), 3);
+    let world_and_run = world_and_run_bytes(&view.app);
+
+    host_sends_loadout(&mut relay, id, 7);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        saved_shells(&view.app) == Some(7)
+    });
+    crate::save_connected_client_per_owner_state(view.app.session.as_mut().unwrap());
     assert_eq!(
-        session.seat_table.as_ref().unwrap().carried_state(Seat(0)),
-        fresh.carried_state(Seat(0))
+        saved_shells(&view.app),
+        Some(7),
+        "the periodic save keeps it"
+    );
+
+    host_sends_loadout(&mut relay, id, 8);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        saved_shells(&view.app) == Some(8)
+    });
+    assert_eq!(world_and_run_bytes(&view.app), world_and_run);
+}
+
+// N3, client side: a guest's own leave after a pickup saves it.
+#[test]
+fn guest_leave_after_pickup_saves_the_weapon() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut relay, mut view, id) = participating_client(dir.path(), 3);
+    {
+        // The guest's pawn picks up ammo after the last level start.
+        let pawn = relay.pawn(id).unwrap();
+        let ctx = relay
+            .app
+            .session
+            .as_ref()
+            .unwrap()
+            .scripting
+            .script_ctx
+            .clone();
+        let mut reserve = postretro_entities::AmmoReserve::new();
+        reserve.set_exact("shells", 11);
+        ctx.registry
+            .borrow_mut()
+            .set_component(pawn, reserve)
+            .unwrap();
+    }
+
+    assert!(view.app.request_final_character_for_leave());
+    exchange_until(&mut relay, &mut view, |_, view| {
+        view.app.received_final_character.is_some()
+    });
+    assert!(view.app.leave_session(LeaveCause::Own));
+
+    assert_eq!(saved_shells(&view.app), Some(11));
+    assert_eq!(seat_zero_shells(&view.app), Some(11));
+}
+
+// N5: a host that never answers: the leave closes at the bound and saves
+// the loadout the host last sent.
+#[test]
+fn leaving_client_gives_up_at_bound_with_last_loadout() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let dir = tempfile::tempdir().unwrap();
+    let (mut relay, mut view, id) = participating_client(dir.path(), 3);
+    host_sends_loadout(&mut relay, id, 6);
+    exchange_until(&mut relay, &mut view, |_, view| {
+        saved_shells(&view.app) == Some(6)
+    });
+
+    // The host stops answering: the relay is never stepped again.
+    let started = std::time::Instant::now();
+    assert!(view.app.leave_session(LeaveCause::Own));
+    let waited = started.elapsed();
+
+    assert!(
+        waited >= super::session_membership::FINAL_CHARACTER_WAIT
+            && waited < super::session_membership::FINAL_CHARACTER_WAIT * 2,
+        "{waited:?}"
+    );
+    capture.assert_logged(log::Level::Warn, "did not return the final character");
+    assert_eq!(saved_shells(&view.app), Some(6));
+}
+
+// V1 and C6, client half: a connected client's save verbs and checkpoints
+// change nothing.
+#[test]
+fn connected_client_runs_no_save_verb_or_checkpoint() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let dir = tempfile::tempdir().unwrap();
+    let (_relay, mut view, _) = participating_client(dir.path(), 3);
+    let character = std::fs::read(
+        postretro_sim::scripting::save_files::SaveDir::new(dir.path(), MOD_ID).character_path(0),
+    )
+    .unwrap();
+
+    view.app
+        .handle_save_verb(SystemReactionCommand::SelectCharacter {
+            index: 0,
+            dispatch_source: "named:test".into(),
+            origin: own(),
+        });
+    view.app
+        .handle_save_verb(SystemReactionCommand::Checkpoint {
+            name: "bridge".into(),
+            dispatch_source: "named:test".into(),
+            origin: own(),
+        });
+
+    capture.assert_logged(log::Level::Warn, "a connected client runs no save verbs");
+    assert_eq!(
+        std::fs::read(
+            postretro_sim::scripting::save_files::SaveDir::new(dir.path(), MOD_ID)
+                .character_path(0)
+        )
+        .unwrap(),
+        character
     );
 }
 

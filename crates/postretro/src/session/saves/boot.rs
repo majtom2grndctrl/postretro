@@ -53,6 +53,7 @@ pub(crate) fn load_save_slots(inputs: BootInputs) -> SaveSlots {
         continue_arrival: None,
         run_load_queued: false,
         spawn_checkpoint: None,
+        client_loadout: None,
         declared: inputs.declared,
         dir: Some(inputs.dir.clone()),
     };

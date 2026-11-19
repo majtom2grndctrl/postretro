@@ -379,6 +379,9 @@ fn client_drain_control(app: &mut App, controls: Vec<ServerControlMessage>) {
             // The latest loadout this client's host returned, at a level
             // start or checkpoint: what its character saves carry.
             ServerControlMessage::CharacterLoadout { loadout } => {
+                if let Some(session) = app.session.as_mut() {
+                    crate::session::store_saves::save_client_character_loadout(session, &loadout);
+                }
                 app.received_host_loadout = Some(loadout);
             }
             // The transport answers a challenge itself and never surfaces one.

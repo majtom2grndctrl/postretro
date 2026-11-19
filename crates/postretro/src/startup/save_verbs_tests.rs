@@ -861,3 +861,81 @@ fn later_checkpoint_in_one_tick_wins() {
         [Some("bridge".into()), Some("bridge".into())]
     );
 }
+
+// V3 and N8: a guest admitted at the host's lobby keeps its per-owner values
+// and loadout through the host's Continue, its final character returns them
+// unchanged, and the host's save files never hold them.
+#[test]
+fn lobby_guest_keeps_values_through_host_continue() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    set_xp(&app, 2.0);
+    save(&mut app);
+    app.handle_save_verb(new_run(0, "next"));
+    back_to_frontend(&mut app);
+    assert!(app.host_from_frontend(0));
+    let guest = {
+        let session = app.session.as_mut().unwrap();
+        let seats = session.seat_table.as_mut().unwrap();
+        let claim = postretro_net::wire::ConnectClaim {
+            player_id: postretro_net::wire::PlayerClaimId([0x42; 16]),
+            display_name: "Guest".into(),
+        };
+        let seat = seats.admit_or_reclaim(41, Some(claim), false).unwrap().seat;
+        let mut carried = CarriedState::default();
+        carried.reserve.set_exact("shells", 4);
+        seats.set_carried_state(seat, Some(carried));
+        seat
+    };
+    script_ctx(&app)
+        .slot_table
+        .borrow_mut()
+        .get_mut(crate::session::saves::test_fixtures::XP)
+        .unwrap()
+        .set_per_seat_value(guest, SlotValue::Number(9.0));
+
+    app.handle_save_verb(continue_run(0));
+    app.drain_level_requests();
+
+    let session = app.session.as_ref().unwrap();
+    let guest_carry = session
+        .seat_table
+        .as_ref()
+        .unwrap()
+        .carried_state(guest)
+        .cloned();
+    assert_eq!(guest_carry.unwrap().reserve.available("shells"), 4);
+    // What its final character reads: the seat's live value, unchanged.
+    assert_eq!(
+        script_ctx(&app)
+            .slot_table
+            .borrow()
+            .get(crate::session::saves::test_fixtures::XP)
+            .unwrap()
+            .per_seat_value(guest)
+            .cloned(),
+        Some(SlotValue::Number(9.0))
+    );
+    assert_eq!(
+        xp(&app),
+        Some(SlotValue::Number(2.0)),
+        "the host's own value"
+    );
+
+    // The host's files hold only its own character.
+    for path in [
+        saves(dir.path()).character_path(0),
+        saves(dir.path()).world_path(),
+        saves(dir.path()).run_path(0),
+    ] {
+        let bytes = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+        assert!(!bytes.contains(&"42".repeat(16)), "{}", path.display());
+        assert!(!bytes.contains("Guest"), "{}", path.display());
+        assert!(
+            !bytes.contains("9.0") && !bytes.contains(": 9"),
+            "{}",
+            path.display()
+        );
+    }
+}

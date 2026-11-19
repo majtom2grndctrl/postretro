@@ -45,6 +45,11 @@ impl LeaveCause {
     }
 }
 
+/// How long a client's own leave waits for its host's final character:
+/// the host's own closing window, so both give up on the same scale.
+pub(crate) const FINAL_CHARACTER_WAIT: std::time::Duration =
+    postretro_net::transport::SESSION_END_CLOSE_WINDOW;
+
 /// How loudly a refused verb reports. The rule the scheduler applies to a
 /// client's dropped tail steps: a mistake when this machine's own input or
 /// state fired it, routine when the host's timeline or a shared crossing did.
@@ -79,6 +84,9 @@ impl App {
             LeaveCause::Refused(_) | LeaveCause::LostHost | LeaveCause::NeverConnected => {}
         }
         let end_cause = cause.end_cause(self.join_facts.admitted);
+        if cause == LeaveCause::Own {
+            self.await_final_character_for_leave();
+        }
         let session_seat = self.save_character_on_leave();
         let Some(session) = self.session.as_mut() else {
             return false;
@@ -107,6 +115,11 @@ impl App {
             .occupancy_families
             .unload_level(&mut session.scripting.script_ctx.slot_table.borrow_mut());
         self.restore_store_after_leave(session_seat);
+        // Outside play seat 0 carries the selected character, which the leave
+        // just saved.
+        if let Some(session) = self.session.as_mut() {
+            crate::session::saves::set_seat_zero_carry_from_selection(session);
+        }
         self.forget_host_steering();
         self.finish_join_facts(end_cause);
         if self.level_is_installed_state() {
@@ -256,6 +269,76 @@ impl App {
         }
     }
 
+    /// A client's own leave asks its host for the final character and waits
+    /// for it at most [`FINAL_CHARACTER_WAIT`], pumping only the transport:
+    /// the leave discards everything else the host sends. A connection that
+    /// never participated has no character to return, so it does not wait.
+    /// The wait is bounded and blocks only when the host does not answer;
+    /// otherwise the reply arrives within a round trip.
+    fn await_final_character_for_leave(&mut self) {
+        if self.received_final_character.is_some() || !self.request_final_character_for_leave() {
+            return;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(endpoint) = session.net_endpoint.as_mut() else {
+            return;
+        };
+        let registry = session.scripting.script_ctx.registry.clone();
+        let deadline = std::time::Instant::now() + FINAL_CHARACTER_WAIT;
+        let mut last = std::time::Instant::now();
+        while std::time::Instant::now() < deadline {
+            let now = std::time::Instant::now();
+            let poll = endpoint.poll_world_less(now - last, &mut registry.borrow_mut());
+            last = now;
+            match poll {
+                netcode::WorldLessPoll::Client(controls) => {
+                    for control in controls {
+                        if let postretro_net::wire::ServerControlMessage::FinalCharacter {
+                            slots,
+                            loadout,
+                        } = control
+                        {
+                            self.received_final_character =
+                                Some(crate::session::store_saves::ReceivedFinalCharacter {
+                                    slots,
+                                    loadout,
+                                });
+                            return;
+                        }
+                    }
+                }
+                netcode::WorldLessPoll::Failed => break,
+                _ => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        log::warn!(
+            "[Net] the host did not return the final character within {} ms; saving the loadout it last sent",
+            FINAL_CHARACTER_WAIT.as_millis()
+        );
+    }
+
+    /// Ask the host for this client's final character. Returns whether the
+    /// request went out: a connection that never participated has none.
+    pub(crate) fn request_final_character_for_leave(&mut self) -> bool {
+        let participated = self.client_participated
+            || self.session.as_ref().is_some_and(|session| {
+                session
+                    .net_endpoint
+                    .as_ref()
+                    .and_then(netcode::NetEndpoint::client_per_owner_save_context)
+                    .is_some_and(|(_, participating, _)| participating)
+            });
+        participated
+            && self
+                .session
+                .as_mut()
+                .and_then(|session| session.net_endpoint.as_mut())
+                .is_some_and(netcode::NetEndpoint::request_final_character)
+    }
+
     /// Save a leaving client's character before its endpoint drops: the
     /// final values its host returned, else the values it last received. A
     /// client that never participated on this connection received no
@@ -277,6 +360,14 @@ impl App {
             return (None, false);
         };
         let participated = participated_before || participating || final_character.is_some();
+        if let Some(loadout) = final_character
+            .as_ref()
+            .and_then(|final_character| final_character.loadout.as_ref())
+        {
+            session
+                .saves
+                .set_client_loadout(Some(netcode::loadout_record_from_wire(loadout)));
+        }
         if let (
             Some(crate::session::store_saves::ReceivedFinalCharacter { slots, .. }),
             Some(seat),
@@ -302,6 +393,8 @@ impl App {
         if participated {
             crate::save_connected_client_per_owner_state(session);
         }
+        // The next session starts from the character's file.
+        session.saves.set_client_loadout(None);
         (local_seat, participated)
     }
 

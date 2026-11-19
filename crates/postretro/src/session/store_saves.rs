@@ -192,12 +192,16 @@ pub(crate) fn save_connected_client_per_owner_state(session: &mut super::Session
 
     let save_state =
         collected_per_owner_only_state(session.persisted_state.as_ref(), collected.per_owner);
-    // The character file keeps the loadout it holds; the host returns the
-    // live one at each level start and checkpoint.
+    // The loadout the host last returned, else the one this client joined
+    // with, which the character file already holds: never the boot file's
+    // once the host has sent one.
     let Some(mut record) = session.saves.selected_character().cloned() else {
         return;
     };
     record.per_owner = save_state.per_owner_for(&record.claim);
+    if let Some(loadout) = session.saves.client_loadout() {
+        record.loadout = loadout.clone();
+    }
     if session.saves.save_selected_character(record) {
         // Advance the retained per-owner document used by future client
         // saves and join-seed assembly; the boot world stays as it was.
@@ -227,4 +231,16 @@ pub(crate) fn maybe_save_connected_client_per_owner_state(
     {
         save_connected_client_per_owner_state(session);
     }
+}
+
+/// A connected client received its loadout from its host at a level start
+/// or checkpoint: its character saves now, carrying it.
+pub(crate) fn save_client_character_loadout(
+    session: &mut super::Session,
+    loadout: &postretro_net::wire::CarriedLoadoutWire,
+) {
+    session
+        .saves
+        .set_client_loadout(Some(netcode::loadout_record_from_wire(loadout)));
+    save_connected_client_per_owner_state(session);
 }

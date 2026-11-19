@@ -52,6 +52,9 @@ pub(crate) struct SaveSlots {
     /// The checkpoint whose spawn set arrival, respawn and late joiners use
     /// in the current level; `None` is the level-start set.
     spawn_checkpoint: Option<String>,
+    /// On a connected client, the loadout its host last returned: what its
+    /// character saves carry. `None` keeps the loadout it joined with.
+    client_loadout: Option<postretro_sim::scripting::save_files::LoadoutRecord>,
 }
 
 impl SaveSlots {
@@ -79,6 +82,25 @@ impl SaveSlots {
 
     pub(crate) fn run_active(&self) -> bool {
         self.run_active
+    }
+
+    pub(crate) fn client_loadout(
+        &self,
+    ) -> Option<&postretro_sim::scripting::save_files::LoadoutRecord> {
+        self.client_loadout.as_ref()
+    }
+
+    /// Record the loadout a client's host returned, as a character saves it:
+    /// never downed or dead. `None` clears it when the session ends.
+    pub(crate) fn set_client_loadout(
+        &mut self,
+        loadout: Option<postretro_sim::scripting::save_files::LoadoutRecord>,
+    ) {
+        self.client_loadout = loadout.map(|mut loadout| {
+            loadout.life_state = None;
+            loadout.health = loadout.health.filter(|health| *health > 0.0);
+            loadout
+        });
     }
 
     pub(crate) fn spawn_checkpoint(&self) -> Option<&str> {

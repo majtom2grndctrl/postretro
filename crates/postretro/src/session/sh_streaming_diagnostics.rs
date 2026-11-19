@@ -331,8 +331,8 @@ mod tests {
         capture.assert_logged(log::Level::Info, "1 installs");
     }
 
-    // streaming-drain-budget-spike AC 3: SH's miss buckets name their unit,
-    // episodes, beside the lightmap's block-frames.
+    // SH's miss buckets name their unit, episodes, beside the lightmap's
+    // block-frames.
     #[test]
     fn log_line_names_miss_buckets_in_episodes() {
         let capture = LogCapture::start();

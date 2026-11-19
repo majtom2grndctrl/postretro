@@ -8,15 +8,15 @@ Task 9 of `plan.md`. Measured values for the brief's measured rows, and a recomm
 
 On the showcase the budget itself holds back almost nothing: 2.2% of late lightmap block-frames and 0% of late SH cluster-frames at the production cap. What it does hold is in-hand bytes. Ready pairs the budget leaves behind fill the in-hand cap, which is four drain caps. The next demanded read then waits. That wait is 73% of the far-point walk's late lightmap block-frames.
 
-Raising the drain cap to 16 MiB clears the in-hand wait and cuts late items on the far-point walk: lightmap 180 → 145 and 147 block-frames, SH 44 → 37 cluster-frames. The binding limit then moves to the read permits. Past 16 MiB a larger cap buys little.
+Raising the drain cap to 16 MiB clears the in-hand wait and cuts late items on the far-point walk: lightmap 180 → 145 and 147 block-frames, SH 44 → 37 cluster-frames. The binding limit then moves to the read permits. Past 16 MiB a larger cap buys less: 32 MiB cuts the far-point walk a further 12% (to 130 and 127) and the random walk by 3 block-frames.
 
-The cap cannot simply be raised, because one byte does not cost the same for both resources. A warm lightmap install costs about 0.20 ms/MiB of CPU; an SH install costs about 1.0–1.3 ms/MiB, five to six times as much. A 16 MiB lightmap drain of the showcase's shape costs about 3.5 ms, inside the 4 ms ceiling. But the showcase already admits SH drains of 7.6–7.9 MiB at the production cap, about 9–13 ms with compose, and 10.8 MiB at 16 MiB, about 13–16 ms. The byte cap is too small for lightmaps and too large for SH.
+The cap cannot simply be raised, because one byte does not cost the same for both resources. A warm lightmap install costs about 0.20 ms/MiB of CPU; an SH install costs about 1.0–1.3 ms/MiB, five to six times as much. A 16 MiB lightmap drain of the showcase's shape costs about 3.5 ms, inside the 4 ms ceiling. But the showcase already admits SH drains of 7.6–7.9 MiB at the production cap, about 8–11 ms of SH install, and up to 10.8 MiB at 16 MiB, about 11–15 ms (the walk's largest SH share of any drain, `sh_max_drain_decoded_bytes`). The byte cap is too small for lightmaps and too large for SH.
 
 ## Recommendations
 
 | Assumption | Recommendation | Basis |
 |---|---|---|
-| Cap size | **Change, inside the byte-unit brief, not as a direct build.** Lightmap work per drain should rise to about 16 MiB. A shared byte cap of 16 MiB would also let SH drains reach about 11 MiB, roughly 13–16 ms of CPU. Do not go to 32 MiB: near-cap drains thrash the staging pool | Sweep; install cost |
+| Cap size | **Change, inside the byte-unit brief, not as a direct build.** Lightmap work per drain should rise to about 16 MiB. A shared byte cap of 16 MiB would also let SH drains reach about 11 MiB, roughly 11–15 ms of CPU. Avoid 32 MiB: near-cap lightmap drains are exposed to cold restaging | Sweep; install cost |
 | Byte unit | **Change: new brief.** Charge each resource for its estimated install time, fixed cost per item plus cost per MiB, instead of decoded bytes. Then size the budget in time (about 4 ms) | SH costs 5–6× a lightmap byte per MiB; SH drains already reach 7.9 MiB at the production cap on both maps |
 | Tie-break (SH first at equal class) | **Keep.** | Same-class cuts 33–48 per showcase walk, under the 100 that would run the severity read. No late SH cluster-frame is held by the budget, and completed far-point is 79 late blocks with SH off against 78 with SH on |
 
@@ -25,7 +25,7 @@ The cap cannot simply be raised, because one byte does not cost the same for bot
 - **The read permits** (32) become the limit once in-hand bytes free up, at either lever. A permit lever was not added: the decode and completion queues are sized to the permit count, so raising it changes a resource bound. It belongs in the follow-up that retunes the cap.
 - **Outside reach** is 251 of the random walk's 306 late block-frames at every cap. No drain or in-hand setting moves it; it is the lead distance against the walk's speed.
 - **Decode at one core** does not change the picture: far-point 180 late block-frames at default and at one core, SH 44 and 47.
-- **The staging pool** discards a buffer just larger than a request when the two cannot both be kept under its 64 MiB limit (`acquire_inner`). Drains that alternate around 32 MiB of staging (32 and 36 MiB buffers) therefore create a buffer on almost every drain and run at the cold rate, about 59 ms each. That rules out a 32 MiB play cap. The settling cap is 32 MiB, so settling drains of mixed sizes likely pay the same; no settling run measured it. A small direct fix, separate from the budget.
+- **The staging pool** discards a buffer just larger than a request when the two cannot both be kept under its 64 MiB limit (`acquire_inner`). It bites only for certain pairs of size classes: a request class at or under 32 MiB beside a free buffer larger than both it and 64 MiB less it, such as 32 and 36 MiB. Classes come from staged bytes, which pad each row to 256 B, not from decoded bytes. In the install-cost run, whose shuffled shapes mix sizes, drains alternating between the 32 and 36 MiB classes created a buffer on nearly every drain and ran at the cold rate, about 59 ms each. Back-to-back near-cap drains in play were not measured: at a 32 MiB cap the sweep's admitted-bytes p95 is 15.8 MiB. So a 32 MiB play cap exposes its near-cap lightmap drains to cold restaging. SH stages per chunk (at most about 4.6 MiB per acquire) and never reaches those classes. The settling cap is 32 MiB, so lightmap-heavy settling drains that straddle 32 MiB of staged bytes on consecutive drains could pay the same; no settling run measured it. A small direct fix, separate from the budget.
 
 ## Gate decision (AC 16)
 
@@ -50,13 +50,13 @@ Realtime medians of 3, SH on, after the spawn step. Repeats agree within 2 block
 | Showcase random | 1 | 306 | 9 | | |
 | Campaign-test, both walks | both | 0 | 0 | 1 | |
 
-SH's episode buckets equal its per-frame tally's causes on these walks. The spawn step is reported apart in `walks/realtime.jsonl` and is outside every share above.
+SH's episode buckets equal its per-frame tally's causes on these walks. The spawn step is reported apart in each walk result (the `_spawn` keys) and is outside every share above. Raw walk results were kept in the session scratchpad, not in the repository.
 
 ## Cap sweep (AC 17)
 
 Showcase, realtime, SH on, default cores, one lever moved at a time from production; `walk-sweep` at `e9b92a4f9`. Production repeated on that binary matches the matrix exactly. Points that moved the far-point total were run twice; repeats agree within 3 block-frames.
 
-| Lever | Far-point late lightmap (budget / in-hand / permit / in flight) | Far-point late SH | Random late lightmap | Random late SH | Largest drain | Admitted bytes p95 |
+| Lever | Far-point late lightmap (budget / in-hand / permit / in flight) | Far-point late SH | Random late lightmap | Random late SH | Largest drain | Far-point admitted bytes p95 |
 |---|---|---|---|---|---|---|
 | Drain 2 MiB | 562 (40 / 292 / 181 / 49) | 491 | 414 | 176 | 14.0 MiB, one pair | 5.2 MiB |
 | Drain 4 MiB | 322 (13 / 133 / 108 / 68) | 68 | 346 | 9 | 14.0 MiB, one pair | 6.1 MiB |
@@ -88,7 +88,7 @@ CPU only. GPU time needs a Metal System Trace with the owner present, and is out
 | SH chunk, install alone | 43–76 µs | 0.95–1.33 ms | 5 | about ±20%; one run 25% slow throughout |
 | SH chunk, install + compose | 44–76 µs | 1.18–1.53 ms | 5 (compose final in runs 4–5) | as above |
 
-The lightmap per-drain term is small and unstable (−47 to 185 µs). SH fits with a per-drain term give a negative intercept, so the SH model is per item plus per MiB. Compose adds about 0.3–0.5 ms per drain. Within one SH shape p95 is often 2–3× p50; the cause was not found. Debug build: lightmap 642 µs per drain + 21 µs per pair + 0.17 ms/MiB; SH 120 µs per chunk + 1.05 ms/MiB, 1.21 with compose.
+The lightmap per-drain term is small and unstable (−47 to 185 µs). SH fits with a per-drain term give a negative intercept, so the SH model is per item plus per MiB. Compose adds about 0.3–0.5 ms per drain. Within one SH shape the slowest of its 12 warm drains is often 2–3× the median; with 12 samples per shape that is one outlier, not a p95, and the cause was not found. Debug build: lightmap 642 µs per drain + 21 µs per pair + 0.17 ms/MiB; SH 120 µs per chunk + 1.05 ms/MiB, 1.21 with compose.
 
 **Priced at the fit** (release, range over runs):
 
@@ -101,7 +101,7 @@ The lightmap per-drain term is small and unstable (−47 to 185 µs). SH fits wi
 
 **Cold rate.** Lightmap cold drains run at 1.7–2.7 ms/MiB, about ten times the warm rate, as the brief expected. Each lightmap run has the same 52 cold drains: the first, and 51 near 32 MiB from the staging-pool behaviour under *Answer*. At 16 MiB the staging buffers are 16 and 20 MiB, which the pool keeps together, so no drain after the first runs cold. SH runs have 2–5 cold drains at 1.3–3.6 ms/MiB.
 
-**In play.** The showcase walks admit SH drains of up to 7.9 MiB at the production cap, and campaign-test's reach 7.9 MiB too. At the fitted SH rate that is 9–13 ms of CPU. In-engine dev-build logs on the stress hallway recorded a 34 ms SH drain that grew no pool (`plans/done/sh-streaming--pool-growth-device-limit/plan.md`). That figure is consistent with this rate.
+**In play.** The showcase walks admit SH drains of up to 7.9 MiB at the production cap, and campaign-test's reach 7.9 MiB too. At the fitted SH install rate that is about 8–11 ms of CPU, before compose. In-engine dev-build logs on the stress hallway recorded a 34 ms SH drain that grew no pool (`plans/done/sh-streaming--pool-growth-device-limit/plan.md`). That figure is consistent with this rate.
 
 **Caveats.** The lightmap fixture's irradiance is Rgba16Float; shipped irradiance is BC6H, so equal bytes hold more texels here. The SH fixture is synthetic all-L0 chunks of Rgba16Float atlas blocks and probe patches; which format the showcase streams was not established. SH eviction, which shares a drain with installs in play, costs about 0.4 ms/MiB more and is outside these figures.
 

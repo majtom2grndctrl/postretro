@@ -127,7 +127,7 @@ fn unset_levers_admit_against_the_production_budgets() {
     assert_eq!(admit(&mut level, true, &settling), (16, SETTLING));
 }
 
-// AC 8: from either lever, a play drain admits against the lever-set cap. At
+// From either lever, a play drain admits against the lever-set cap. At
 // half production, a drain production admits whole stops at the lever cap;
 // at twice production, a drain production would cut admits whole.
 #[test]
@@ -157,7 +157,7 @@ fn a_play_drain_admits_against_the_lever_set_cap_from_either_lever() {
     }
 }
 
-// AC 10: at a lever-set cap, a drain whose first item exceeds the cap admits
+// At a lever-set cap, a drain whose first item exceeds the cap admits
 // that item and nothing after it, though the rest would fit.
 #[test]
 fn a_first_item_over_the_lever_cap_admits_alone() {
@@ -175,7 +175,7 @@ fn a_first_item_over_the_lever_cap_admits_alone() {
     }
 }
 
-// AC 11 (P5): with either lever set, a settling drain still admits against
+// With either lever set, a settling drain still admits against
 // the settling budget, while a play drain of the same items reads the lever.
 #[test]
 fn settling_drains_admit_against_the_settling_budget_with_either_lever_set() {
@@ -285,7 +285,7 @@ fn cap_name(cap: Option<(&Lever, u64)>) -> String {
     )
 }
 
-// AC 9: the in-hand cap stays at its production total at every lever value.
+// The in-hand cap stays at its production total at every lever value.
 // Five 10 MiB mandatory pairs at lead 32 m: three submit (30 MiB), and the
 // fourth waits at the 32 MiB production total. A cap coupled to the lever
 // would stop after one at half production and submit all five at twice.
@@ -302,7 +302,7 @@ fn a_read_waits_at_the_production_in_hand_total_at_every_lever_value() {
     }
 }
 
-// AC 9, band half: at lead 0 m the two mandatory 6 MiB pairs submit first;
+// Band half: at lead 0 m the two mandatory 6 MiB pairs submit first;
 // with pool room, two of the three band pairs follow (12 MiB band in hand)
 // and the third waits at the 16 MiB production band total, with the full
 // cap's 32 MiB not reached. A band cap coupled to the lever would admit no
@@ -388,52 +388,114 @@ fn a_band_read_waits_at_half_the_walk_in_hand_cap_and_at_production_unset() {
     }
 }
 
-// --- AC 14 grep gate --------------------------------------------------------
+// --- Grep gate --------------------------------------------------------
 
 const DEV_TOOLS: &str = r#"#[cfg(feature = "dev-tools")]"#;
 const TEST: &str = "#[cfg(test)]";
 const TEST_OR_DEV_TOOLS: &str = r#"#[cfg(any(test, feature = "dev-tools"))]"#;
 const TEST_WITH_DEV_TOOLS: &str = r#"#[cfg(all(test, feature = "dev-tools"))]"#;
 
-/// Bracket depth change over `line`, skipping string and char literals and
-/// line comments. `in_string` carries an open string to the next line.
-fn bracket_delta(line: &str, in_string: &mut bool) -> i32 {
+/// What a scan is inside at a line break.
+#[derive(Clone, Copy, PartialEq)]
+enum Open {
+    Code,
+    /// A `"..."` string (or byte string).
+    Str,
+    /// A raw string closed by `"` and this many `#`.
+    Raw(usize),
+    /// A (nestable) block comment at this depth.
+    Block(u32),
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Bracket depth change over `line`, and the last code character on it.
+/// Brackets inside strings, raw strings (`r"..."`, `r#"..."#`, any hash
+/// count), char and byte literals, line comments and block comments do not
+/// count, and comments and whitespace are not code. `open` carries an
+/// unfinished string or block comment to the next line.
+fn scan_line(line: &str, open: &mut Open) -> (i32, Option<char>) {
     let chars: Vec<char> = line.chars().collect();
-    let mut delta = 0;
-    let mut index = 0;
+    let (mut delta, mut last, mut index) = (0, None, 0);
     while index < chars.len() {
         let c = chars[index];
-        if *in_string {
-            match c {
+        match *open {
+            Open::Str => match c {
                 '\\' => index += 1,
-                '"' => *in_string = false,
+                '"' => *open = Open::Code,
                 _ => {}
-            }
-        } else {
-            match c {
-                '"' => *in_string = true,
-                '/' if chars.get(index + 1) == Some(&'/') => break,
-                '\'' if chars.get(index + 2) == Some(&'\'') => index += 2,
-                '\'' if chars.get(index + 1) == Some(&'\\') => {
-                    index += 2;
-                    while index < chars.len() && chars[index] != '\'' {
-                        index += 1;
-                    }
+            },
+            Open::Raw(hashes) => {
+                if c == '"' && (1..=hashes).all(|n| chars.get(index + n) == Some(&'#')) {
+                    *open = Open::Code;
+                    index += hashes;
                 }
-                '(' | '[' | '{' => delta += 1,
-                ')' | ']' | '}' => delta -= 1,
-                _ => {}
+            }
+            Open::Block(depth) => {
+                if c == '*' && chars.get(index + 1) == Some(&'/') {
+                    *open = if depth == 1 {
+                        Open::Code
+                    } else {
+                        Open::Block(depth - 1)
+                    };
+                    index += 1;
+                } else if c == '/' && chars.get(index + 1) == Some(&'*') {
+                    *open = Open::Block(depth + 1);
+                    index += 1;
+                }
+            }
+            Open::Code => {
+                if c == '/' && chars.get(index + 1) == Some(&'/') {
+                    break;
+                }
+                if c == '/' && chars.get(index + 1) == Some(&'*') {
+                    *open = Open::Block(1);
+                    index += 2;
+                    continue;
+                }
+                if !c.is_whitespace() {
+                    last = Some(c);
+                }
+                match c {
+                    '"' => *open = Open::Str,
+                    'r' if index == 0
+                        || !is_ident(chars[index - 1])
+                        || (chars[index - 1] == 'b'
+                            && (index < 2 || !is_ident(chars[index - 2]))) =>
+                    {
+                        let hashes = chars[index + 1..].iter().take_while(|&&h| h == '#').count();
+                        if chars.get(index + 1 + hashes) == Some(&'"') {
+                            *open = Open::Raw(hashes);
+                            index += 1 + hashes;
+                        }
+                    }
+                    '\'' if chars.get(index + 1) == Some(&'\\') => {
+                        index += 3;
+                        while index < chars.len() && chars[index] != '\'' {
+                            index += 1;
+                        }
+                    }
+                    '\'' if chars.get(index + 2) == Some(&'\'') => index += 2,
+                    '(' | '[' | '{' => delta += 1,
+                    ')' | ']' | '}' => delta -= 1,
+                    _ => {}
+                }
             }
         }
         index += 1;
     }
-    delta
+    (delta, last)
 }
 
 /// `source` without each item gated by one of `gates`: the attribute, any
-/// attributes after it, and the item through its `;`, `,` or closing `}` at
-/// bracket depth zero. Formatted source keeps one attribute per line.
-fn strip_gated(source: &str, gates: &[&str]) -> String {
+/// attributes after it (multi-line ones included), and the item through the
+/// first line whose code ends in `;`, `,` or `}` at bracket depth zero, with
+/// comments, strings and char literals ignored. Formatted source keeps one
+/// gate per line. Panics naming `label` when depth goes negative or the file
+/// ends inside a gated item, rather than silently dropping production lines.
+fn strip_gated(label: &str, source: &str, gates: &[&str]) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let mut kept = Vec::new();
     let mut index = 0;
@@ -444,19 +506,25 @@ fn strip_gated(source: &str, gates: &[&str]) -> String {
             kept.push(line);
             continue;
         }
-        let (mut depth, mut in_string) = (0, false);
+        let gate_line = index;
+        let (mut depth, mut open, mut ended) = (0, Open::Code, false);
         while index < lines.len() {
-            let item = lines[index];
+            let (delta, last) = scan_line(lines[index], &mut open);
             index += 1;
-            let trimmed = item.trim();
-            if depth == 0 && !in_string && trimmed.starts_with("#[") {
-                continue;
-            }
-            depth += bracket_delta(item, &mut in_string);
-            if depth == 0 && !in_string && trimmed.ends_with([';', ',', '}']) {
+            depth += delta;
+            assert!(
+                depth >= 0,
+                "{label}:{index}: bracket depth went negative inside the item gated at line {gate_line}"
+            );
+            if depth == 0 && open == Open::Code && matches!(last, Some(';' | ',' | '}')) {
+                ended = true;
                 break;
             }
         }
+        assert!(
+            ended,
+            "{label}: the file ends inside the item gated at line {gate_line}"
+        );
     }
     kept.join("\n")
 }
@@ -486,7 +554,7 @@ fn strip_gated_drops_each_gated_item_whole_and_keeps_the_rest() {
     ]
     .join("\n");
     assert_eq!(
-        strip_gated(&source, &[DEV_TOOLS, TEST_OR_DEV_TOOLS]),
+        strip_gated("fixture", &source, &[DEV_TOOLS, TEST_OR_DEV_TOOLS]),
         [
             "fn kept() {}",
             "struct S {",
@@ -495,6 +563,52 @@ fn strip_gated_drops_each_gated_item_whole_and_keeps_the_rest() {
             "fn after() {}"
         ]
         .join("\n")
+    );
+}
+
+#[test]
+fn strip_gated_keeps_the_production_line_after_trailing_comments_attributes_and_literals() {
+    let leak = "pub(crate) fn leak(&self) -> Option<NonZeroU64> { self.play_drain_cap_override }";
+    let cases: [&[&str]; 7] = [
+        // A trailing comment after the terminator.
+        &[TEST, "const X: u64 = 1; // test only", leak],
+        // A multi-line attribute after the gate.
+        &[
+            TEST,
+            "#[allow(",
+            "    long_lint_name",
+            ")]",
+            "fn x() {}",
+            leak,
+        ],
+        // A bracket inside a block comment, then a multi-line one.
+        &[TEST, "fn a() { /* { */ }", leak],
+        &[TEST, "fn b() { /* {", "   { */ }", leak],
+        // Raw strings with a trailing backslash, and with hashes.
+        &[TEST, "const P: &str = r\"C:\\\";", leak],
+        &[TEST, "const Q: &str = r#\"a \" { \"#;", leak],
+        // Char and byte literals holding brackets and quotes.
+        &[TEST, "fn c() { let _ = ('{', b'}', '\\'', '\"'); }", leak],
+    ];
+    for lines in cases {
+        let source = lines.join("\n");
+        assert_eq!(strip_gated("fixture", &source, &[TEST]), leak, "{lines:?}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "the file ends inside the item gated")]
+fn strip_gated_panics_when_the_file_ends_inside_a_gated_item() {
+    strip_gated("fixture", "#[cfg(test)]\nfn open() {\n    body();", &[TEST]);
+}
+
+#[test]
+#[should_panic(expected = "bracket depth went negative")]
+fn strip_gated_panics_when_depth_goes_negative() {
+    strip_gated(
+        "fixture",
+        "struct S {\n    #[cfg(test)]\n    seam: u8\n}",
+        &[TEST],
     );
 }
 
@@ -578,7 +692,7 @@ fn ungated_mentions(dir: &Path, gates: &[&str], needles: &[&str]) -> Vec<String>
                 .any(|module| path.starts_with(module) || *path == module.with_extension("rs"))
         })
         .filter_map(|(path, source)| {
-            let production = strip_gated(&source, gates);
+            let production = strip_gated(&path.display().to_string(), &source, gates);
             needles
                 .iter()
                 .find(|needle| production.contains(**needle))
@@ -587,7 +701,7 @@ fn ungated_mentions(dir: &Path, gates: &[&str], needles: &[&str]) -> Vec<String>
         .collect()
 }
 
-// AC 14: the cap slider builds only with dev-tools. The renderer's whole
+// The cap slider builds only with dev-tools. The renderer's whole
 // debug UI, the lever's module included, is behind the feature; outside it,
 // and across the engine binary, the lever is named only in gated items.
 #[test]
@@ -595,7 +709,7 @@ fn drain_cap_slider_builds_only_with_dev_tools() {
     let renderer = workspace_root().join("crates/renderer/src");
     let render_mod = std::fs::read_to_string(renderer.join("render/mod.rs")).unwrap();
     assert!(render_mod.contains("mod debug_ui;"));
-    assert!(!strip_gated(&render_mod, &[DEV_TOOLS]).contains("mod debug_ui;"));
+    assert!(!strip_gated("render/mod.rs", &render_mod, &[DEV_TOOLS]).contains("mod debug_ui;"));
     let debug_ui = std::fs::read_to_string(renderer.join("render/debug_ui/mod.rs")).unwrap();
     assert!(debug_ui.contains("mod drain_cap_lever;"));
 
@@ -612,7 +726,7 @@ fn drain_cap_slider_builds_only_with_dev_tools() {
     assert!(in_engine.is_empty(), "{in_engine:#?}");
 }
 
-// AC 14: the walk overrides, the drain cap and the test-only in-hand lever,
+// The walk overrides, the drain cap and the test-only in-hand lever,
 // live only in the walk harness, which is test code.
 #[test]
 fn walk_drain_cap_override_lives_only_in_the_test_walk_harness() {
@@ -641,10 +755,13 @@ fn walk_drain_cap_override_lives_only_in_the_test_walk_harness() {
     )
     .unwrap();
     assert!(residency.contains("mod walk_measurement;"));
-    assert!(!strip_gated(&residency, &[TEST]).contains("mod walk_measurement"));
+    assert!(
+        !strip_gated("lightmap_residency/mod.rs", &residency, &[TEST])
+            .contains("mod walk_measurement")
+    );
 }
 
-// AC 14: both walk tallies, the same-class cut counter and SH's per-frame
+// Both walk tallies, the same-class cut counter and SH's per-frame
 // late tally, and the drain views they read build only for tests.
 #[test]
 fn walk_tallies_and_their_seams_are_test_only() {
@@ -669,7 +786,7 @@ fn walk_tallies_and_their_seams_are_test_only() {
     assert!(ungated.is_empty(), "{ungated:#?}");
 }
 
-// AC 14: the override seam builds only for tests and dev-tools; a production
+// The override seam builds only for tests and dev-tools; a production
 // build admits play drains against the constant alone.
 #[test]
 fn play_drain_cap_override_seam_is_test_or_dev_tools_only() {
@@ -683,7 +800,7 @@ fn play_drain_cap_override_seam_is_test_or_dev_tools_only() {
     assert!(ungated.is_empty(), "{ungated:#?}");
 }
 
-// AC 14: the in-hand lever's controller override, its setter and the
+// The in-hand lever's controller override, its setter and the
 // session's mutable controller view build only for tests; a production
 // build waits at the in-hand constants alone.
 #[test]
@@ -695,7 +812,7 @@ fn in_hand_cap_override_seam_is_test_only() {
     assert!(controller.contains(seams[0]));
     let ungated = ungated_mentions(&engine, &[TEST], &seams);
     assert!(ungated.is_empty(), "{ungated:#?}");
-    let production = strip_gated(&controller, &[TEST]);
+    let production = strip_gated("lightmap_streaming/controller.rs", &controller, &[TEST]);
     for (accessor, constant) in [
         ("in_hand_cap", "MAX_IN_HAND_PAIR_BYTES"),
         ("band_in_hand_cap", "MAX_BAND_IN_HAND_PAIR_BYTES"),
@@ -708,7 +825,7 @@ fn in_hand_cap_override_seam_is_test_only() {
     }
 }
 
-// AC 14: no player setting names the drain cap: nothing in the options,
+// No player setting names the drain cap: nothing in the options,
 // settings, persistence or save code, nor in the engine-owned UI and SDK
 // trees a player-facing menu is built from.
 #[test]
@@ -720,6 +837,8 @@ fn no_player_setting_names_the_drain_cap() {
         "drain-cap",
         "drain_budget",
         "drain budget",
+        "drainbudget",
+        "drain-budget",
         "install_decoded_bytes",
     ];
     let root = workspace_root();

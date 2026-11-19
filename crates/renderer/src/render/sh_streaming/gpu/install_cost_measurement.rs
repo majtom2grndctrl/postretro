@@ -1,9 +1,9 @@
-//! Measurement helper (streaming-drain-budget-spike, install-cost model): CPU
-//! time of SH drains as a cost per drain, per cluster chunk and per MiB, over
-//! drains of several chunk sizes and counts, then the same drains with the
-//! compose their installs trigger. A drain during which a staging pool (the SH
-//! pools' or the frame queue's) created a buffer runs at the cold rate and is
-//! listed apart, wherever it falls. Prints only.
+//! Measurement helper: CPU time of SH drains over drains of several chunk
+//! sizes and counts, then the same drains with the compose their installs
+//! trigger. The model is a cost per cluster chunk and per MiB; a per-drain
+//! term fits negative and is not offered. A drain during which a staging pool
+//! (the SH pools' or the frame queue's) created a buffer runs at the cold rate
+//! and is listed apart, wherever it falls. Prints only.
 //!
 //! Run: cargo test --release -p postretro-renderer --lib sh_install_cost_model \
 //!        -- --ignored --nocapture --test-threads=1
@@ -117,15 +117,11 @@ impl Rig {
             .capacity()
     }
 
-    /// Install `ready` and evict `retiring` in one drain, every ready
-    /// cluster mandatory, as the controller sends a burst it must admit.
-    fn drain(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &UploadQueue,
-        ready: &[u32],
-        retiring: &[u32],
-    ) -> postretro_level_loader::ShDrainOutcome {
+    /// The batch that installs `ready` and evicts `retiring` in one drain,
+    /// every ready cluster mandatory, as the controller sends a burst it must
+    /// admit. Production receives it already owned from the decode pool, so
+    /// callers build it before starting a timer.
+    fn batch(&self, ready: &[u32], retiring: &[u32]) -> ShDrainBatch {
         let state = &self.fixture.state;
         let prepared = ready
             .iter()
@@ -135,7 +131,7 @@ impl Rig {
                 chunk: self.chunks[cluster as usize].clone(),
             })
             .collect();
-        let batch = ShDrainBatch {
+        ShDrainBatch {
             generation: state.generation,
             content_tag: state.content_tag,
             target_add: ready.to_vec(),
@@ -144,7 +140,16 @@ impl Rig {
             mandatory: ready.to_vec(),
             ready: prepared,
             ..ShDrainBatch::default()
-        };
+        }
+    }
+
+    /// `ShResidencyState::drain` on a batch built beforehand.
+    fn drain(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &UploadQueue,
+        batch: ShDrainBatch,
+    ) -> postretro_level_loader::ShDrainOutcome {
         let f = &mut self.fixture;
         f.state
             .drain(device, queue, &mut f.sh, &f.weights, batch)
@@ -226,8 +231,9 @@ struct Frame {
 /// Evict `retiring` in a drain of its own, so the measured drain after it
 /// carries installs only, then wait for the GPU. Returns its CPU time.
 fn evict(rig: &mut Rig, device: &wgpu::Device, queue: &UploadQueue, retiring: &[u32]) -> u64 {
+    let batch = rig.batch(&[], retiring);
     let started = Instant::now();
-    let outcome = rig.drain(device, queue, &[], retiring);
+    let outcome = rig.drain(device, queue, batch);
     let micros = started.elapsed().as_micros() as u64;
     assert_eq!(
         outcome.evicted.len(),
@@ -246,8 +252,9 @@ fn frame(rig: &mut Rig, device: &wgpu::Device, queue: &UploadQueue, ready: &[u32
     let created_before = rig.created(queue);
     let growth_before = rig.growth_events();
     let scratch_before = rig.scratch_capacity();
+    let batch = rig.batch(ready, &[]);
     let started = Instant::now();
-    let outcome = rig.drain(device, queue, ready, &[]);
+    let outcome = rig.drain(device, queue, batch);
     let drain_micros = started.elapsed().as_micros() as u64;
     let created_after_drain = rig.created(queue);
     let compose_started = Instant::now();
@@ -314,11 +321,11 @@ fn sh_install_cost_model() {
         Vec::new(),
     );
     let mut drain = CostRun::new(
-        "SH install drain (whole ShResidencyState::drain; evictions run in a drain before it)",
+        "SH install drain (ShResidencyState::drain on a batch built beforehand, clones excluded; evictions run in a drain before it)",
         Vec::new(),
     );
     let mut composed = CostRun::new(
-        "SH drain + the compose its installs trigger (plan, encode, submit)",
+        "SH drain (batch built beforehand) + the compose its installs trigger (plan, encode, submit)",
         Vec::new(),
     );
     let mut notes = Vec::new();
@@ -415,4 +422,49 @@ fn sh_install_cost_model() {
     install.report(&context, &SHOWCASE_PRICES);
     drain.report(&context, &SHOWCASE_PRICES);
     composed.report(&context, &SHOWCASE_PRICES);
+}
+
+// Pin P12: a drain needing a staging class larger than every earlier drain's
+// finds none in the pool, so it runs cold and never counts warm. Both pools
+// the SH drain can draw from are watched, as in the measurement.
+#[test]
+fn sh_install_cost_run_reports_a_drain_larger_than_every_earlier_one_cold() {
+    let Some(ctx) =
+        bc_gpu_or_skip("sh_install_cost_run_reports_a_drain_larger_than_every_earlier_one_cold")
+    else {
+        return;
+    };
+    let device = &ctx.device;
+    let cluster_bricks = [2, 2, 1];
+    let chunk_bytes = Rig::new(device, &ctx.queue, sheet(cluster_bricks, 2)).chunks[0]
+        .bytes
+        .len() as u64;
+    // One small chunk fits the pool's smallest staging class; the large drain
+    // carries about 9 MiB of chunks, a class several times larger.
+    assert!(
+        chunk_bytes < MIB as u64 / 2,
+        "a chunk is far below the smallest class"
+    );
+    let large = (9.0 * MIB / chunk_bytes as f64).ceil() as u32;
+    let mut rig = Rig::new(device, &ctx.queue, sheet(cluster_bricks, large + 1));
+    let queue = UploadQueue::new(device, ctx.queue.clone(), true);
+    let small_set = vec![large];
+    let large_set: Vec<u32> = (0..large).collect();
+    let mut classes = Vec::new();
+    let mut retiring: Vec<u32> = Vec::new();
+    for ready in [&small_set, &small_set, &large_set, &small_set, &large_set] {
+        if !retiring.is_empty() {
+            evict(&mut rig, device, &queue, &retiring);
+        }
+        classes.push(frame(&mut rig, device, &queue, ready).drain_class);
+        retiring = ready.clone();
+    }
+    assert!(matches!(classes[0], DrainClass::Cold { .. }), "{classes:?}");
+    assert_eq!(classes[1], DrainClass::Warm, "{classes:?}");
+    assert!(
+        matches!(classes[2], DrainClass::Cold { .. }),
+        "the largest drain so far is cold: {classes:?}"
+    );
+    assert_eq!(classes[3], DrainClass::Warm, "{classes:?}");
+    assert_eq!(classes[4], DrainClass::Warm, "{classes:?}");
 }

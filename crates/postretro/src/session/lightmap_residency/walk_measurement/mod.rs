@@ -49,15 +49,17 @@
 // set does not hold, which the bound leaves out, so a real walk at `bound` can
 // grow where a walk of mandatory demand alone cannot.
 // `POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP` (MiB, a positive decimal: `4`, `16`,
-// `0.5`) replaces the play drain cap in every run through the seam the
-// dev-tools slider sets; settling keeps production, and so do the lightmap
-// in-hand caps unless the next lever sets them. Zero, negatives and
-// non-numbers are refused by name. A capped run's label and `walk-result`
-// line (`drain_cap_mib`, null when unset) carry the cap.
+// `0.5`) replaces the play drain cap in every walk run (not the bake-gap
+// replay in `world_poses`, which runs at production levers) through the seam
+// the dev-tools slider sets; the spawn step admits at this cap, and the walk
+// has no settling (production settling keeps its own budget). The lightmap
+// in-hand caps stay at production unless the next lever sets them. Zero,
+// negatives and non-numbers are refused by name. A capped run's label and
+// `walk-result` line (`drain_cap_mib`, null when unset) carry the cap.
 // `POSTRETRO_LIGHTMAP_WALK_IN_HAND_CAP` (MiB, the same form and refusals)
-// replaces the lightmap controller's in-hand pair byte total in every run; the
-// band cap is half of it, as in production. The label and `walk-result` line
-// (`in_hand_cap_mib`, null when unset) carry it. It has no dev-tools slider.
+// replaces the lightmap controller's in-hand pair byte total in every walk run
+// (not the bake-gap replay, as above); the band cap is half of it, as in
+// production. The label and `walk-result` line (`in_hand_cap_mib`, null when unset) carry it. It has no dev-tools slider.
 // Leave `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
 // `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
@@ -77,9 +79,9 @@
 // apart, since it admits a level-entry burst at the play cap that
 // production settles at its own: the lightmap controller's late block-frames
 // by cause, asserted to sum to its drawn-not-resident count, beside the
-// drawn blocks a held frame leaves uncounted; SH's late cluster-frames by
-// cause, classified every frame at drain 0's target update, beside its
-// episode buckets; and per drain, the decoded bytes admitted per resource,
+// walk-vs-controller gap lines (both asserted 0, research P9); SH's late
+// cluster-frames by cause, classified every frame at drain 0's target update,
+// beside its episode buckets; and per drain, the decoded bytes admitted per resource,
 // the largest drains, and same-class cuts (a cut admitting one resource and
 // leaving a same-class item of the other).
 //
@@ -543,7 +545,6 @@ fn run(
     }
     report.lightmap_decode = driver.session().ledger().decode_stats();
     let (counters, physical_reads, mirror) = driver.finish();
-    report.tallies.assert_sums(&counters);
     report.counters = Some(counters);
     report.physical_reads = physical_reads;
     report.wall = started.elapsed();
@@ -647,7 +648,8 @@ fn lightmap_residency_walks_from_prl() {
     let drain_cap = drain_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
     match drain_cap {
         Some(cap) => println!(
-            "play drain cap: {} MiB ({} bytes) in every run; settling keeps production",
+            "play drain cap: {} MiB ({} bytes) in every walk run; the spawn step admits at \
+             this cap, the walk has no settling",
             cap.mib, cap.bytes
         ),
         None => println!("play drain cap: production"),
@@ -691,6 +693,14 @@ fn lightmap_residency_walks_from_prl() {
                     sh,
                 },
                 &report,
+            );
+            // After the result line is printed and appended: a failing run
+            // keeps its evidence.
+            report.tallies.assert_sums(
+                report
+                    .counters
+                    .as_ref()
+                    .expect("the run recorded its counters"),
             );
             let own = &report.record;
             print_split("its own trip record", &trip_record::split(own, own), false);

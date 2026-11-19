@@ -293,6 +293,37 @@ fn drawn_block_whose_read_install_or_drain_failed_is_failed() {
     assert_eq!(count(&mut rig), only(|b| &mut b.read_in_flight));
 }
 
+// P8: the ordering the failed bucket sits first for. A drain the renderer
+// rolled back and a second prepare in the same counted frame that reads the
+// block again leave it InFlight when counted; it is still failed, in no read
+// bucket.
+#[test]
+fn drawn_block_rolled_back_and_re_requested_in_the_same_frame_is_still_failed() {
+    let mut rig = Rig::corridor(None);
+    let batch = rig.portal(6, &[]).unwrap();
+    rig.install_all(&batch, headroom(8));
+    rig.complete_all();
+
+    // The frame's first prepare drains the pair; the renderer rolls it back.
+    let batch = rig.portal(6, &[6]).unwrap();
+    assert_eq!(blocks_of(&batch), vec![5, 6]);
+    rig.controller.abort_drain();
+    assert_eq!(rig.controller.phase(6), BlockPhase::Absent);
+
+    // The same frame's second prepare (no count between) reads it again.
+    rig.requests.clear();
+    rig.portal(6, &[6]);
+    assert_eq!(rig.controller.phase(6), BlockPhase::InFlight, "read again");
+    assert!(rig.requested_blocks().contains(&6));
+
+    // Counted once: failed, and never read_in_flight.
+    assert_eq!(count(&mut rig), only(|b| &mut b.failed));
+
+    // The next frame classifies afresh.
+    rig.portal(6, &[6]);
+    assert_eq!(count(&mut rig), only(|b| &mut b.read_in_flight));
+}
+
 // P6: two drains in one frame (the completed walk). A pair deferred by the
 // pool in drain 0 and left past the cut in drain 1 is deferred: the frame's
 // latest drain to carry it deferred it. In the next frame, left past the cut

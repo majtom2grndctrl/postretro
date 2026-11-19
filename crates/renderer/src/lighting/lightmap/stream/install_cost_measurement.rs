@@ -1,8 +1,9 @@
-// Measurement helper (streaming-drain-budget-spike, install-cost model): CPU
-// time of lightmap drains as a cost per drain, per pair and per MiB, over
-// drains of several pair sizes and counts on a warm staging pool. A drain
-// during which a staging pool created a buffer runs at the cold rate and is
-// listed apart, wherever it falls. Prints only.
+// Measurement helper: CPU time of lightmap drains as a cost per drain, per
+// pair and per MiB, over drains of several pair sizes and counts on a warm
+// staging pool. A drain during which a staging pool created a buffer runs at
+// the cold rate and is listed apart, wherever it falls. Prints only.
+//
+// See: context/lib/rendering_pipeline.md §4 (Lightmap cell-block residency)
 //
 // Run: cargo test --release -p postretro-renderer --lib lightmap_install_cost_model \
 //        -- --ignored --nocapture --test-threads=1

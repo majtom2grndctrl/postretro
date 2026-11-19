@@ -89,12 +89,13 @@ struct LightmapLate {
     buckets: [u64; 9],
     /// The controller's drawn-not-resident block-frames.
     controller: u64,
-    /// The walk's tally past the controller's, summed per frame: drawn blocks
-    /// a held frame leaves uncounted, because the controller counts only the
-    /// drawn blocks it holds.
+    /// The walk's tally past the controller's, summed per frame. Expected 0:
+    /// a held frame counts every drawn block (research P9). The JSON key
+    /// `lm_held_frame_uncounted` is historical.
     uncounted: u64,
     uncounted_frames: u64,
-    /// The controller's count past the walk's, summed per frame.
+    /// The controller's count past the walk's, summed per frame. Expected 0.
+    /// The JSON key `lm_counted_beyond_walk` is historical.
     beyond_walk: u64,
 }
 
@@ -157,7 +158,10 @@ impl BudgetTallies {
 
     /// Each step kind's lightmap buckets sum to its drawn-not-resident
     /// block-frames, and both together equal the controller's run totals:
-    /// every counted frame was read once.
+    /// every counted frame was read once. Both walk-vs-controller gap lines
+    /// are 0 for each step kind (research P9). Callers run this after the
+    /// run's result line is printed and appended, so a failure keeps its
+    /// evidence.
     pub(super) fn assert_sums(&self, counters: &LightmapResidencyCounters) {
         for (label, step) in [("spawn step", &self.spawn), ("after spawn", &self.play)] {
             assert_eq!(
@@ -165,6 +169,12 @@ impl BudgetTallies {
                 step.lightmap.controller,
                 "{label}: lightmap cause buckets sum to the controller's drawn-not-resident \
                  block-frames"
+            );
+            assert_eq!(
+                (step.lightmap.uncounted, step.lightmap.beyond_walk),
+                (0, 0),
+                "{label}: walk tally past the controller's, and controller past the walk \
+                 tally, are both 0 (research P9)"
             );
         }
         assert_eq!(
@@ -194,9 +204,9 @@ impl BudgetTallies {
         }
         let (play, spawn) = (&self.play.lightmap, &self.spawn.lightmap);
         println!(
-            "   drawn blocks a held frame leaves uncounted (walk tally past the controller's, \
-             block-frames): after spawn {} in {} frames, spawn step {} in {} frames; controller \
-             past the walk tally: after spawn {}, spawn step {}",
+            "   walk tally past the controller's (expected 0, research P9; block-frames): after \
+             spawn {} in {} frames, spawn step {} in {} frames; controller past the walk tally \
+             (expected 0): after spawn {}, spawn step {}",
             play.uncounted,
             play.uncounted_frames,
             spawn.uncounted,
@@ -292,10 +302,10 @@ mod tests {
     }
 
     // P9, P13: the spawn step's buckets stay apart from play's; each sums to
-    // its own drawn-not-resident count; a held frame's walk-tally excess is
-    // the uncounted line, not a bucket.
+    // its own drawn-not-resident count; a walk-tally excess is the gap line,
+    // not a bucket.
     #[test]
-    fn spawn_and_play_sum_apart_and_a_held_frame_gap_is_reported_alone() {
+    fn spawn_and_play_sum_apart_and_a_gap_is_reported_alone() {
         let held = LightmapMissBuckets {
             read_in_flight: 2,
             ..LightmapMissBuckets::default()
@@ -306,7 +316,7 @@ mod tests {
         };
         let mut tallies = BudgetTallies::default();
         tallies.add(true, &frame(budget, 0, 3));
-        tallies.add(false, &frame(held, 0, 5));
+        tallies.add(false, &frame(held, 0, 2));
         tallies.add(false, &frame(budget, 1, 2));
 
         let counters = LightmapResidencyCounters {
@@ -325,9 +335,28 @@ mod tests {
         assert_eq!(keys["lm_late_held_by_drain_budget_spawn"], json!(3));
         assert_eq!(keys["lm_late_read_in_flight"], json!(2));
         assert_eq!(keys["lm_drawn_not_resident"], json!(5));
-        assert_eq!(keys["lm_held_frame_uncounted"], json!(3));
+        assert_eq!(keys["lm_held_frame_uncounted"], json!(0));
         assert_eq!(keys["lm_held_frame_uncounted_spawn"], json!(0));
         assert_eq!(keys["sh_frames_held_by_drain_budget"], Value::Null);
+    }
+
+    // P9: a walk tally past the controller's fails the run, and the gap is
+    // reported under its historical key.
+    #[test]
+    #[should_panic(expected = "both 0 (research P9)")]
+    fn a_walk_tally_past_the_controller_fails_the_gap_assertion() {
+        let held = LightmapMissBuckets {
+            read_in_flight: 2,
+            ..LightmapMissBuckets::default()
+        };
+        let mut tallies = BudgetTallies::default();
+        tallies.add(false, &frame(held, 0, 5));
+        assert_eq!(tallies.json(None)["lm_held_frame_uncounted"], json!(3));
+        tallies.assert_sums(&LightmapResidencyCounters {
+            drawn_not_resident: 2,
+            miss_buckets: held,
+            ..LightmapResidencyCounters::default()
+        });
     }
 
     #[test]

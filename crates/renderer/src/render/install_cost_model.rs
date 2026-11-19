@@ -107,10 +107,13 @@ pub(crate) fn fit(points: &[(f64, f64, f64)], intercept: bool) -> Option<LinearF
             a[row][n] += x[row] * point.2;
         }
     }
+    // Pivots are judged against the matrix scale: the entries reach ~1e7, so a
+    // fixed absolute floor would let a near-collinear set through as a noisy solve.
+    let scale = (0..n).map(|i| a[i][i].abs()).fold(0.0f64, f64::max);
     for pivot in 0..n {
         let best = (pivot..n).max_by(|&i, &j| a[i][pivot].abs().total_cmp(&a[j][pivot].abs()))?;
         a.swap(pivot, best);
-        if a[pivot][pivot].abs() < 1e-9 {
+        if a[pivot][pivot].abs() <= 1e-12 * scale {
             return None;
         }
         let pivot_row = a[pivot].clone();
@@ -237,41 +240,37 @@ impl CostRun {
                 .filter(|s| matches!(s.class, DrainClass::Excluded(_)))
                 .count(),
         );
+        // Per-shape samples are few (rounds per shape), and nearest-rank p95 is
+        // the max below 20 samples, so the shape table carries p50 and max only.
         println!(
-            "{:<24} {:>6} {:>8} {:>5} {:>8} {:>8} {:>8} {:>8}",
-            "shape", "items", "MiB", "warm", "p50 ms", "p95 ms", "max ms", "fit ms"
+            "{:<24} {:>6} {:>8} {:>5} {:>8} {:>8} {:>9} {:>9}",
+            "shape", "items", "MiB", "n", "p50 ms", "max ms", "fit ms", "fit0 ms"
         );
         for shape in &self.shapes {
             let warm = self.warm_sorted(|s| std::ptr::eq(s, shape));
-            let fitted = full.map_or(f64::NAN, |f| {
-                ms(f.predict_us(f64::from(shape.items), shape.mib()))
-            });
+            let (items, mib) = (f64::from(shape.items), shape.mib());
+            let fitted = full.map_or(f64::NAN, |f| ms(f.predict_us(items, mib)));
+            let fitted0 = through_origin.map_or(f64::NAN, |f| ms(f.predict_us(items, mib)));
             if warm.is_empty() {
                 println!(
-                    "{:<24} {:>6} {:>8.2} {:>5} {:>8} {:>8} {:>8} {:>8.2}",
-                    shape.label,
-                    shape.items,
-                    shape.mib(),
-                    0,
-                    "-",
-                    "-",
-                    "-",
-                    fitted
+                    "{:<24} {:>6} {:>8.2} {:>5} {:>8} {:>8} {:>9.2} {:>9.2}",
+                    shape.label, shape.items, mib, 0, "-", "-", fitted, fitted0
                 );
                 continue;
             }
             println!(
-                "{:<24} {:>6} {:>8.2} {:>5} {:>8.2} {:>8.2} {:>8.2} {:>8.2}",
+                "{:<24} {:>6} {:>8.2} {:>5} {:>8.2} {:>8.2} {:>9.2} {:>9.2}",
                 shape.label,
                 shape.items,
-                shape.mib(),
+                mib,
                 warm.len(),
                 ms(percentile(&warm, 0.5) as f64),
-                ms(percentile(&warm, 0.95) as f64),
                 ms(percentile(&warm, 1.0) as f64),
-                fitted
+                fitted,
+                fitted0
             );
         }
+        println!("fit ms: with per-drain term; fit0 ms: per item + per MiB only");
         let mut buckets: Vec<u32> = self.shapes.iter().map(|s| s.nominal_mib).collect();
         buckets.sort_unstable();
         buckets.dedup();
@@ -282,10 +281,11 @@ impl CostRun {
                 continue;
             }
             println!(
-                "  ~{bucket:>2} MiB: n {:>4}, p50 {:.2} ms, p95 {:.2} ms, max {:.2} ms",
+                "  ~{bucket:>2} MiB: n {:>4}, p50 {:.2} ms, p95 {:.2} ms (n {}), max {:.2} ms",
                 warm.len(),
                 ms(percentile(&warm, 0.5) as f64),
                 ms(percentile(&warm, 0.95) as f64),
+                warm.len(),
                 ms(percentile(&warm, 1.0) as f64),
             );
         }
@@ -333,15 +333,21 @@ impl CostRun {
                 );
             }
         }
-        if let Some(f) = full {
-            println!("priced at the fit:");
+        if full.is_some() || through_origin.is_some() {
+            println!("priced at the fit (with per-drain term | per item + per MiB only):");
+            let priced = |f: Option<LinearFit>, price: &Price| {
+                f.map_or("n/a".to_string(), |f| {
+                    format!("{:.2} ms", ms(f.predict_us(price.items, price.mib)))
+                })
+            };
             for price in prices {
                 println!(
-                    "  {:<34} {:>4} items {:>6.1} MiB -> {:.2} ms",
+                    "  {:<34} {:>4} items {:>6.1} MiB -> {} | {}",
                     price.label,
                     price.items,
                     price.mib,
-                    ms(f.predict_us(price.items, price.mib))
+                    priced(full, price),
+                    priced(through_origin, price)
                 );
             }
         }
@@ -416,6 +422,13 @@ mod tests {
         // Items and MiB in fixed proportion cannot separate.
         let collinear = [(1.0, 1.0, 5.0), (2.0, 2.0, 9.0), (4.0, 4.0, 17.0)];
         assert!(fit(&collinear, true).is_none());
+        // Near-collinear, with large magnitudes: the scale-relative pivot floor
+        // reports singular where an absolute 1e-9 would solve noise.
+        let near: Vec<(f64, f64, f64)> = [1.0e3, 2.0e3, 3.0e3, 4.0e3]
+            .iter()
+            .map(|&x| (x, x * (1.0 + 1e-15), 7.0 * x))
+            .collect();
+        assert!(fit(&near, false).is_none());
     }
 
     #[test]

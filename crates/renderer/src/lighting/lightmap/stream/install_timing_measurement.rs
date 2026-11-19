@@ -3,6 +3,10 @@
 // device, with the staging pool warm, next to the one cold first drain a
 // synchronous preload pays (capture's). Not a proof; prints only.
 //
+// For per-pair and per-MiB rates across item sizes, see
+// `install_cost_measurement.rs`; this helper measures one item size, and only
+// its first drain as cold.
+//
 // Run: cargo test -p postretro-renderer --lib lightmap_drain_install_timing \
 //        -- --ignored --nocapture
 //

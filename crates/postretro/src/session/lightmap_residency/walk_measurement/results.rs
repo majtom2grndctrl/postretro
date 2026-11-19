@@ -6,8 +6,8 @@
 // the matrix as separate interleaved invocations into one file and take
 // medians per cell. `POSTRETRO_LIGHTMAP_WALK_TAG` labels an invocation (a
 // repeat index, a build name). Matrix keys: prl, walk, reads, sh, cores,
-// lead_m, pools, drain_cap_mib and in_hand_cap_mib (each null at
-// production), planar, modes.
+// lead_m, pools, drain_cap_mib and in_hand_cap_mib (each null
+// when unset), planar, modes.
 //
 // `late_blocks` is the after-spawn total of drawn blocks still not resident
 // after each frame's last drain, in block-frames (deferred + left behind);
@@ -20,8 +20,8 @@
 // - `lm_late_<cause>`: the lightmap controller's drawn-not-resident
 //   block-frames by cause, summing to `lm_drawn_not_resident`.
 //   `lm_held_frame_uncounted` is the walk's tally past the controller's,
-//   summed per frame (drawn blocks a held frame leaves uncounted);
-//   `lm_counted_beyond_walk` the reverse.
+//   summed per frame, and `lm_counted_beyond_walk` the reverse; both are
+//   expected 0 (research P9), and the key names are historical.
 // - `sh_frames_<cause>`: drawn SH clusters not Sampleable, in cluster-frames,
 //   classified on every frame at the frame's first target update.
 //   `sh_episodes_<cause>`: SH's episode buckets, each episode filed by its

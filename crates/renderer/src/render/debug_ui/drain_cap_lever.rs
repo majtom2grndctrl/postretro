@@ -1,5 +1,5 @@
 //! Streaming tab's play drain cap lever: the shared per-drain install budget
-//! for SH and lightmaps, overridden live for the drain-budget spike.
+//! for SH and lightmaps, overridden live as a developer lever.
 //! See: context/lib/rendering_pipeline.md §4 · context/lib/experimental_spikes.md §Tuning levers
 //!
 //! The lever is plain data so the renderer never sees streaming types; the
@@ -29,9 +29,14 @@ pub struct StreamingDrainCapLever {
 }
 
 impl StreamingDrainCapLever {
-    /// The cap the next play drain admits against.
+    /// The cap the next play drain admits against. `Some(0)` counts as
+    /// production, matching the runtime, which maps a zero override to unset,
+    /// so the UI never shows a value the runtime does not apply.
     pub fn effective_bytes(&self) -> u64 {
-        self.cap_bytes.unwrap_or(self.production_bytes)
+        match self.cap_bytes {
+            Some(bytes) if bytes > 0 => bytes,
+            _ => self.production_bytes,
+        }
     }
 
     /// Overrides the cap with `mib` mebibytes, rounded to whole bytes and
@@ -123,6 +128,13 @@ mod tests {
         assert_eq!(lever.cap_bytes, Some(512 * 1024));
         lever.reset();
         assert_eq!(lever.cap_bytes, None);
+        assert_eq!(lever.effective_bytes(), PRODUCTION);
+    }
+
+    #[test]
+    fn zero_override_reads_as_production() {
+        let mut lever = lever();
+        lever.cap_bytes = Some(0);
         assert_eq!(lever.effective_bytes(), PRODUCTION);
     }
 

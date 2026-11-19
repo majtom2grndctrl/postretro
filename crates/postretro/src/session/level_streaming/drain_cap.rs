@@ -1,4 +1,4 @@
-//! The budget each drain admits against, and the spike's override of the
+//! The budget each drain admits against, and the developer override of the
 //! play cap: one seam the dev-tools slider and the walk measurement both set.
 //! See: context/lib/rendering_pipeline.md §4 · context/lib/experimental_spikes.md §Tuning levers
 

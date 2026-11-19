@@ -88,6 +88,8 @@ pub(crate) const MAX_IN_HAND_PAIR_BYTES: u64 = 4 * MAX_INSTALL_DECODED_BYTES_PER
 /// reads use, so prefetch can never keep them from submitting. The first
 /// band pair is always allowed, so one oversized band pair still streams.
 pub(crate) const MAX_BAND_PERMITS: usize = MAX_LIGHTMAP_PERMITS / 2;
+/// The production band in-hand total: half of `MAX_IN_HAND_PAIR_BYTES`, which
+/// `band_in_hand_cap()` returns outside tests.
 pub(crate) const MAX_BAND_IN_HAND_PAIR_BYTES: u64 = MAX_IN_HAND_PAIR_BYTES / 2;
 /// Failures after which a block is never requested again this generation:
 /// the first, then one retry after it leaves demand and returns (SH's

@@ -449,6 +449,9 @@ impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
 /// Visible misses are the view's drawn blocks in two buckets, which may
 /// overlap: outside the baked set, and not resident. The `miss_*` fields split
 /// not resident by cause, in the unit `miss_unit` names, and sum to it.
+/// Capture's forced-missing blocks (`force_missing_lightmap_blocks`) are never
+/// read; capture has no read issuer, so they land in `miss_read_in_flight`,
+/// and `forced_missing_blocks` counts them.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LightmapStreamingCountersJson {
     lead_metres: f32,

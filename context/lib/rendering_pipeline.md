@@ -221,7 +221,10 @@ decoded-byte budget it shares with lightmap blocks, always at least one, and sto
 than skipping ahead to smaller lower-priority work, so frame cost tracks bytes rather than
 cluster count. The budget's size, 8 MiB per play drain and 32 MiB per settling drain, is a tuning
 value, not a contract: a retune that keeps the one owner, the admission order and the lightmap
-in-hand totals lands without a brief (`plans/ready/streaming-drain-budget-spike`). In the dev-tools Streaming tab, a slider beside lead L overrides the play cap live, and a production button unsets it; settling and the lightmap in-hand totals keep production. It is not a player setting. A newly installed cluster remains unavailable to sampling until the next drain,
+in-hand totals lands without a brief. In the dev-tools Streaming tab, a slider beside lead L
+overrides the play cap live, and a production button unsets it; settling and the lightmap
+in-hand totals keep production. It is not a player setting.
+A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
 reaches the ambient floor.

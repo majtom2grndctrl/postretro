@@ -67,7 +67,8 @@ pub(super) struct FrameInput<'a> {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FrameOutcome {
     /// The controller's gauges: drawn outside the baked set, and drawn not
-    /// installed (on a non-portal frame, of the drawn blocks it holds).
+    /// installed. The walk tally never exceeds it and it never exceeds the walk
+    /// tally (research P9).
     pub(super) outside: u32,
     pub(super) not_resident: u32,
     /// Drawn blocks, every one the frame's cells draw on any path, still not

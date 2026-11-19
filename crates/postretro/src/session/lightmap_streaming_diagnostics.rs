@@ -403,9 +403,8 @@ mod tests {
         assert_eq!(live.lightmap_bytes_read, 7);
     }
 
-    // streaming-drain-budget-spike AC 3: the periodic line carries the
-    // controller's miss causes, in block-frames. Camera 6 draws block 6
-    // while its read is in flight.
+    // The periodic line carries the controller's miss causes, in
+    // block-frames. Camera 6 draws block 6 while its read is in flight.
     #[test]
     fn log_line_reports_not_resident_misses_by_cause_in_block_frames() {
         let capture = LogCapture::start();

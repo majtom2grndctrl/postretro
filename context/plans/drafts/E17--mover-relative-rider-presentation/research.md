@@ -23,7 +23,7 @@ Read at 8489a1fe. Symbols, not lines; the executor re-verifies.
 - `TransformSample` and `MovementOnlySample` carry no ground. The client reads `WireGroundRef::Mover` only to reject unknown movers (`unknown_ground_mover_id`) and to set the grounded stance bit (`wire_ground_ref_to_foundation_checked`).
 - Movers on a client are predicted, not delayed. `prepare_mover_apply` fast-forwards the received phase to `floor(estimated_server_tick)`, and `client_predict_loaded_movers_tick` advances them each fixed tick. Remotes sample `estimated_server_tick − interpolation_delay`, so they run one delay behind their mover.
 - The host seat has the same split at a smaller delay (`PRESENTATION_DELAY_TICKS` = `INPUT_BUFFER_TARGET`). Its movers are drawn at the registry blend of the current tick. Its client pawns sample the delayed buffer the host records each tick (`record_client_pawn_poses`). The host owns each client pawn's authoritative movement state, so ground is available where the pose is recorded.
-- `MoverHistoryBuffer` (`crates/netcode/src/client.rs`) is keyed by mover id and capped at `MOVER_HISTORY_LIMIT`. It records the authoritative sample and one predicted sample at the fast-forward tick on each apply, not every predicted tick. It answers whole ticks only, through `resolve_replay_tick` / `replay_pose` (`client/replay_poses.rs`). A fractional read resolves the two whole-tick poses around it by replay and blends them.
+- `MoverHistoryBuffer` (`crates/netcode/src/client.rs`) is keyed by mover id and capped at `MOVER_HISTORY_LIMIT`. It records the authoritative sample and one predicted sample at the fast-forward tick on each apply, not every predicted tick. It answers whole ticks only, through `resolve_replay_tick` / `replay_pose` (`client/replay_poses.rs`). The rebase reads only whole ticks that carried a rider sample. On a client, those are snapshot ticks the history holds as authoritative samples.
 
 ### Rebase contract
 
@@ -31,18 +31,19 @@ Read at 8489a1fe. Symbols, not lines; the executor re-verifies.
 sequenceDiagram
     participant Rec as "record (client apply / host tick)"
     participant Buf as "delayed rider buffer"
-    participant Hist as "mover history at the rider's tick"
-    participant Now as "render-time mover pose"
+    participant Hist as "authoritative mover pose at each sample's tick"
+    participant Now as "presented mover pose"
     participant Out as "presentation transform"
     Rec->>Buf: "pose + ground at tick t"
-    Buf->>Buf: "sample at delayed fractional tick τ"
-    Buf->>Hist: "same mover on both bracketing samples?"
-    Hist-->>Buf: "mover frame at τ"
-    Buf->>Now: "local = frame(τ)⁻¹ · pos"
-    Now-->>Out: "pos' = frame(now) · local; yaw += Δyaw_up if carry_yaw"
+    Buf->>Buf: "pick samples bracketing delayed tick τ"
+    Buf->>Hist: "same mover on both samples?"
+    Hist-->>Buf: "mover frame at t0 and at t1"
+    Buf->>Buf: "local_i = frame(t_i)⁻¹ · pos_i; blend local_0..local_1 at τ"
+    Buf->>Now: "pos' = frame(now) · local"
+    Now-->>Out: "yaw' = blended(yaw_i − moverYaw(t_i)) + moverYaw(now) if carry_yaw"
 ```
 
-The historical rider yaw already includes carry up to τ, so adding the world-up yaw from τ to now advances it once. Composing the full mover rotation into orientation would tilt the player.
+A world-space blend across a snapshot interval follows the chord. At the 2-tick snapshot spacing it is r·Δθ²/8 off the arc: 2e-4 m on the fixture (1 m, 1.2 rad/s), and 8e-4 m after one lost snapshot. Blending in the mover's frame is exact at any spacing. Each sample's mover pose is the authoritative one from its own snapshot, so no between-snapshot replay is read, and a trigger between snapshots cannot mislead it. On the host, a rider sample is recorded after the tick's movement under the pre-increment tick. Its mover pose is the end-of-tick pose of the same tick (pin P11).
 
 ## Local eye
 
@@ -90,3 +91,20 @@ The ordinary arm of `reconcile.rs` seeds `presentation_offset` with predicted-mi
 | `crates/postretro/src/main.rs` | ~13,100 | Split camera follow and yaw carry helpers out first |
 | `crates/sim/src/sim/mod.rs` | ~4,700 | Split foot probing out first |
 | `crates/netcode/src/interpolation.rs`, `scripting/frame_systems/mesh_render.rs`, `runtime_movers.rs` | 2,100–2,800, mostly tests | Extend at the boundary |
+
+## Pins
+
+| id | scenario | ordering | expected outcome |
+|---|---|---|---|
+| P1 | Mover correction lands on a zero-tick frame; a later frame ticks | Apply writes the corrected current pose before the ticks; previous moves only when a tick runs | No drawn step on the apply frame, later zero-tick frames, or the first ticking frame |
+| P2 | Mover correction seeded on frame N | Seed (snapshot apply) → advance → readers after the ticks (view yaw, remote rebase, foot probes, sound anchors, render) | Frame N draws the full residual; first shrink on N+1; one smoothing state per frame |
+| P3 | Own pawn on a gliding mover, zero-tick frames | Eye endpoints pushed per tick with the pawn offset baked in; smoothing advances per frame | The mover term at the eye comes from this frame's presented pose at render time |
+| P5 | One snapshot corrects a mover and moves the pawn's ground onto or off it | Mover seed and pawn reconcile in one apply | Mover share enters the eye once; eye moves by its own motion only |
+| P8 | Rider's tick precedes the oldest retained mover sample | Lookup falls back to the oldest sample's pose | Treated as missing history; sampled world pose |
+| P9 | Ground sample arrives after a newer sparse sample | Buffer inserts by tick; sparse fields filled at record time | Ground resolved from the latest at or before each tick, so a late arrival corrects later samples; no stale attach |
+| P10 | carry_yaw mover correction under a standing pawn | Apply-time yaw step on the settled yaw that commands read; drawn yaw assembled after the ticks | Settled yaw takes the full step at apply; only the drawn yaw glides |
+| P11 | Host pairs a rider sample with its mover pose | Rider samples recorded after movement, before the stamp advances, pre-increment label | Mover pose taken at the same seam and label; rider tick t pairs with the mover's end-of-tick t |
+| P4 | Pawn lands on a mover mid-glide | Ground becomes the mover, then the eye takes its presented pose | Residual at the eye's point enters the world offset with the sign that keeps the eye still |
+| P6 | Pawn teleports off a mover mid-glide | Teleport clears the world offset and cuts | Hand-off dropped; clean cut |
+| P7 | Rotation-only correction moves part of the mover's bounds by the floor | Snap is decided on the mover's bounds, not its origin | Deck snaps and the standing pawn's eye cuts on the same frame |
+| P12 | Mover despawns or rebinds under a standing pawn mid-glide | Smoothing clears, then the eye loses the mover term | Residual moves into the world offset; no eye step |

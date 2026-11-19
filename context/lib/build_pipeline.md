@@ -856,7 +856,7 @@ must still validate against its active adapter before allocation. The current re
 does this for decoded-PNG sprite collection frame counts before creating its `D2Array`;
 parsed array-backed `.prm` upload is downstream work and has no renderer path yet.
 
-**Surface map (specular slot).** The specular slot has two forms. Without a
+**Surface map (specular slot).** The specular slot has two forms, three once sharpness lands. Without a
 `{name}_h.png` sibling it is single-channel `R8Unorm` (wire tag 2), exactly as
 before. With one it is two-channel `Rg8Unorm` (wire tag 4): R specular (0 when
 `_s.png` is absent), G baked as `255 - height` from the author's mid-gray-centered
@@ -867,8 +867,12 @@ at bake time would silently reuse stale sidecars unless `STAGE_VERSION` bumps.
 `STAGE_VERSION` stays 3 —
 the widening is additive and every pre-existing `.prm` parses unchanged — and
 `PrmSlots` bits 4-7 stay reserved: height is not a fifth slot. The SPECULAR
-slot-mask bit is set if either sibling is present. See
+slot-mask bit is set if any sibling is present. See
 `resource_management.md` §4.6.
+
+A third form (decided, not yet built): a `{name}_p.png` sibling makes the slot
+`Rgba8Unorm` (wire tag 1). It is additive like height, and `STAGE_VERSION`
+stays 3. Layout: `resource_management.md` §4.7.
 
 **Byte accounting.** The `TextureMips` stage reports the texture memory a level
 costs, at `info` level: a grand total, a per-slot breakdown, a per-mip-level

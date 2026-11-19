@@ -503,9 +503,10 @@ fn capture_gpu_timing_state(
         return CaptureGpuTimingState::Unsupported;
     }
 
-    // The existing public snapshot accessor is a dev-tools diagnostic seam.
-    // Keep production capture explicit about that boundary instead of treating
-    // an inaccessible window as a zero-cost measurement.
+    // The debug UI's snapshot accessor is a dev-tools diagnostic seam, and
+    // capture keeps plain builds reporting that boundary instead of treating
+    // a window it does not read as a zero-cost measurement. Telemetry reads
+    // windows in every build through `take_gpu_timing_window`.
     #[cfg(feature = "dev-tools")]
     {
         CaptureGpuTimingState::Active

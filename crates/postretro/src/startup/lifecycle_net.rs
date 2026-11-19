@@ -325,11 +325,14 @@ impl App {
         self.anim_time = 0.0;
         self.boot_state = BootState::Frontend;
         // Unload runs before `begin_level_load` resets `level_timings`, so
-        // line C never carries it; this line is its only record.
+        // line C never carries it; this line and its `unload` event are its
+        // only record.
+        let unload_time = unload_started.elapsed();
         log::info!(
             "[Startup] unload_level={:.1}ms",
-            unload_started.elapsed().as_secs_f64() * 1000.0
+            unload_time.as_secs_f64() * 1000.0
         );
+        crate::startup::timing_events::emit_unload(unload_time);
     }
 
     /// Forget the installed level on a still-live endpoint. Both unload and

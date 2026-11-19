@@ -30,22 +30,47 @@ impl GeometryInstallMarks {
         self.last = now;
     }
 
-    /// One line: the total, each marked phase, and `other` for the time
-    /// between marks and the end of the install. `has_geometry` is false for
-    /// the empty install that releases a level's resources.
-    pub(super) fn log(&self, has_geometry: bool) {
-        let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
+    /// Freeze the install at the line and log it: the total, each marked
+    /// phase, and `other` for the time between marks and the end of the
+    /// install. `has_geometry` is false for the empty install that releases a
+    /// level's resources. The frozen snapshot is what the line formats, and
+    /// the set keeps it for the app's telemetry.
+    pub(super) fn log(&self, has_geometry: bool) -> GeometryInstallTiming {
         let total = self.start.elapsed();
         let marked: Duration = self.phases.iter().map(|(_, duration)| *duration).sum();
-        let mut line = format!("total={:.1}ms", ms(total));
+        let timing = GeometryInstallTiming {
+            has_geometry,
+            total,
+            phases: self.phases.clone(),
+            other: total.saturating_sub(marked),
+        };
+        log::info!("{}", timing.log_line());
+        timing
+    }
+}
+
+/// One set build's geometry install, frozen when its line was logged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeometryInstallTiming {
+    pub has_geometry: bool,
+    pub total: Duration,
+    pub phases: Vec<(&'static str, Duration)>,
+    pub other: Duration,
+}
+
+impl GeometryInstallTiming {
+    /// The `[Renderer] Geometry install timing:` line.
+    pub fn log_line(&self) -> String {
+        let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
+        let mut line = format!("total={:.1}ms", ms(self.total));
         for (phase, duration) in &self.phases {
             line.push_str(&format!(", {phase}={:.1}ms", ms(*duration)));
         }
-        line.push_str(&format!(
-            ", other={:.1}ms",
-            ms(total.saturating_sub(marked))
-        ));
-        log::info!("[Renderer] Geometry install timing: has_geometry={has_geometry}, {line}");
+        line.push_str(&format!(", other={:.1}ms", ms(self.other)));
+        format!(
+            "[Renderer] Geometry install timing: has_geometry={}, {line}",
+            self.has_geometry
+        )
     }
 }
 

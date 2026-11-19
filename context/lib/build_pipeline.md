@@ -337,7 +337,8 @@ Event durations come from the summary: stage transitions overlap under the TUI.
   while Lightmap Bake owns foreground focus.
 - **Logging** goes through a `CollectingLogger` (`logger.rs`) installed via `log::set_boxed_logger`,
   preserving `RUST_LOG`/verbose filtering while tallying warn-and-above records into a shared sink the
-  active reporter drains. Every build ends with a warning tally (count plus the formatted records),
+  active reporter drains. With telemetry on, a tee wraps it; records still reach it only through its
+  own filter. Every build ends with a warning tally (count plus the formatted records),
   printed on the normal screen even for warnings that scrolled out of the live TUI region.
 - **Build Summary.** A successful build hands `Reporter::finalize` one `BuildSummary`, printed to
   stdout as the same text by every frontend: stage timings and total, then detail blocks. The

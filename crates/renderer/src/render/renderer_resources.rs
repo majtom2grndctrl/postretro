@@ -355,7 +355,7 @@ pub(in crate::render) fn build_level_set_core(
     let extent = publish::build_level_extent_groups(device, context, &shadow, fog_pixel_scale);
 
     let has_geometry = world.has_geometry;
-    install_marks.log(has_geometry);
+    let geometry_install = install_marks.log(has_geometry);
     if has_geometry {
         log::info!(
             "[Renderer] Geometry installed: {} indices, bvh_leaves={}",
@@ -365,6 +365,7 @@ pub(in crate::render) fn build_level_set_core(
     }
     Ok(LevelResourceSet {
         id: context.id,
+        geometry_install,
         shadow,
         extent,
         samplers: Default::default(),

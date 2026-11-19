@@ -3327,3 +3327,167 @@ fn level_worker_spawns_only_from_tests() {
 
 #[path = "lifecycle_beside_tests.rs"]
 mod beside;
+
+// Telemetry P3: a loading-screen level change writes the old level's partial
+// windows and its unload, each naming the old level, then the new load's
+// geometry install (no running level), then the new load's phases naming
+// its generation. No unload carries a null level.
+#[test]
+fn telemetry_level_change_orders_old_unload_before_new_install_and_phases() {
+    use postretro_telemetry::Kind;
+    let test = "telemetry_level_change_orders_old_unload_before_new_install_and_phases";
+    let first = CommitCase::streamed_sh();
+    let second = CommitCase::textured();
+    let (hub, _scope) = telemetry_hub();
+    let Some(mut app) = gpu_app(test, &first) else {
+        return;
+    };
+    use_case(&mut app, &first, |_| {});
+    let exit = TestExit::default();
+    request_path(&mut app, &first.map);
+    run_to_commit(&mut app, &exit, "the first level");
+    settle_to_reveal(&mut app, "the first level");
+    app.level_timings.log_level_line();
+    retire_all(&mut app);
+    let old_level = postretro_telemetry::level().expect("the first level is running");
+    let before_change = lifecycle_events(&hub).len();
+
+    use_case(&mut app, &second, |_| {});
+    request_path(&mut app, &second.map);
+    run_to_commit(&mut app, &exit, "the second level");
+    settle_and_reveal(&mut app);
+    app.level_timings.log_level_line();
+    retire_all(&mut app);
+    let new_level = postretro_telemetry::level().expect("the second level is running");
+    assert_eq!(new_level.generation, old_level.generation + 1);
+
+    let events = lifecycle_events(&hub);
+    for event in events.iter().filter(|event| event.kind == Kind::Unload) {
+        assert!(
+            event.level.is_some(),
+            "an unload names its level: {event:?}"
+        );
+    }
+    let change: Vec<_> = events[before_change..].iter().collect();
+    let kinds: Vec<Kind> = change.iter().map(|event| event.kind).collect();
+    let unload = kinds
+        .iter()
+        .position(|kind| *kind == Kind::Unload)
+        .expect("the old level unloads");
+    for partial in &change[..unload] {
+        assert!(
+            matches!(
+                partial.kind,
+                Kind::ShStreamingWindow | Kind::LightmapStreamingWindow
+            ),
+            "only the old level's windows precede its unload: {kinds:?}"
+        );
+        assert_eq!(partial.level.as_ref(), Some(&old_level));
+    }
+    assert!(
+        change[..unload]
+            .iter()
+            .any(|event| event.payload["partial"] == serde_json::json!(true)),
+        "the streamed level's open SH window closes as a partial: {kinds:?}"
+    );
+    assert_eq!(change[unload].level.as_ref(), Some(&old_level));
+    assert_eq!(
+        payload_generation(change[unload]),
+        Some(old_level.generation)
+    );
+    assert_eq!(
+        kinds[unload + 1..],
+        [Kind::GeometryInstall, Kind::LoadPhases],
+        "{kinds:?}"
+    );
+    let install = change[unload + 1];
+    assert_eq!(
+        install.level, None,
+        "the loading-screen order runs no level"
+    );
+    assert_eq!(payload_generation(install), Some(new_level.generation));
+    let phases = change[unload + 2];
+    assert_eq!(phases.level.as_ref(), Some(&new_level));
+    assert_eq!(payload_generation(phases), Some(new_level.generation));
+    assert_eq!(
+        phases.payload["prl"].as_str(),
+        Some(new_level.map.as_str()),
+        "the load names its absolute .prl"
+    );
+    assert!(std::path::Path::new(&new_level.map).is_absolute());
+}
+
+// Telemetry P13: a load cancelled after its set build emits neither its
+// geometry install nor its phases; its generation shows as a gap.
+#[test]
+fn telemetry_load_cancelled_after_set_build_emits_nothing() {
+    use postretro_telemetry::Kind;
+    let test = "telemetry_load_cancelled_after_set_build_emits_nothing";
+    let case = CommitCase::textured();
+    let other = CommitCase::streamed_sh();
+    let (hub, _scope) = telemetry_hub();
+    let Some(mut app) = gpu_app(test, &case) else {
+        return;
+    };
+    use_case(&mut app, &case, |_| {});
+    let exit = TestExit::default();
+    request_path(&mut app, &case.map);
+    frame(&mut app, &exit);
+    let cancelled = active_generation(&app).unwrap();
+    let deadline = Instant::now() + APP_LOAD_TIMEOUT;
+    while !stages_ready(&app) {
+        assert!(Instant::now() < deadline, "the first load never got ready");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    use_case(&mut app, &other, |_| {});
+    request_path(&mut app, &other.map);
+    frame(&mut app, &exit);
+    run_to_commit(&mut app, &exit, "the superseding load");
+    settle_to_reveal(&mut app, "the superseding load");
+    app.level_timings.log_level_line();
+    retire_all(&mut app);
+    let events = lifecycle_events(&hub);
+    assert!(
+        events
+            .iter()
+            .all(|event| payload_generation(event) != Some(cancelled)),
+        "the cancelled load reports nothing: {events:?}"
+    );
+    let installs: Vec<u64> = events
+        .iter()
+        .filter(|event| event.kind == Kind::GeometryInstall)
+        .filter_map(payload_generation)
+        .collect();
+    assert_eq!(
+        installs,
+        [cancelled + 1],
+        "a gap at the cancelled generation"
+    );
+}
+
+// Telemetry: a level unloaded before its reveal writes its geometry install
+// and its unload naming it, and no load phases.
+#[test]
+fn telemetry_level_unloaded_before_reveal_writes_install_and_unload_only() {
+    use postretro_telemetry::Kind;
+    let test = "telemetry_level_unloaded_before_reveal_writes_install_and_unload_only";
+    let case = CommitCase::textured();
+    let (hub, _scope) = telemetry_hub();
+    let Some(mut app) = gpu_app(test, &case) else {
+        return;
+    };
+    use_case(&mut app, &case, |_| {});
+    let exit = TestExit::default();
+    request_path(&mut app, &case.map);
+    run_to_commit(&mut app, &exit, "the load");
+    let level = postretro_telemetry::level().expect("committed");
+    app.enqueue_level_request(LevelRequest::Unload);
+    app.drain_level_requests();
+    retire_all(&mut app);
+    assert_eq!(postretro_telemetry::level(), None);
+    let events = lifecycle_events(&hub);
+    let kinds: Vec<Kind> = events.iter().map(|event| event.kind).collect();
+    assert_eq!(kinds, [Kind::GeometryInstall, Kind::Unload], "{events:?}");
+    assert_eq!(events[1].level.as_ref(), Some(&level));
+    assert_eq!(payload_generation(&events[0]), Some(level.generation));
+}

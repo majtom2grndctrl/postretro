@@ -16,6 +16,8 @@ shambler.workspace = true
 glam.workspace = true
 anyhow.workspace = true
 log.workspace = true
+# Typed telemetry events beside the reporter output (development_guide.md §6.5).
+postretro-telemetry.workspace = true
 env_filter = "2"
 thiserror.workspace = true
 rayon.workspace = true
@@ -47,6 +49,7 @@ postretro-render-data.workspace = true
 postretro-physics.workspace = true
 
 [dev-dependencies]
+postretro-telemetry = { workspace = true, features = ["test-support"] }
 postretro-test-log-capture.workspace = true
 postretro-render-cpu = { workspace = true, features = ["test-support"] }
 # `sh_body::pre_flag`: upgrades a baseline compiler's pre-flag PRL so the

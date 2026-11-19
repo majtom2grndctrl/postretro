@@ -63,12 +63,17 @@ mod stress_gate_harness_tests;
 mod teleporter_unload_tests;
 #[cfg(test)]
 pub(crate) mod teleporters_surface_tests;
+pub(crate) mod timing_events;
 #[cfg(test)]
 mod traps_surface_tests;
 pub(crate) mod worker;
 
 pub(crate) use lifecycle::FRONTEND_CLEAR_COLOR;
-pub(crate) use session::{BootSession, PendingSessionInit, build_session};
+#[cfg(feature = "observe-live")]
+pub(crate) use session::observe_live_port_arg;
+pub(crate) use session::{
+    BootSession, PendingSessionInit, build_session, capture_arg, headless_arg,
+};
 pub(crate) use splash_lifecycle::BootDestination;
 
 /// What a frame path calls to end the event loop: the live loop in the
@@ -417,6 +422,7 @@ impl StartupTimings {
     pub(crate) fn log_level_line(&mut self) {
         self.record("first_level_frame");
         log::info!("{}", self.summary());
+        timing_events::emit_load_phases(self);
     }
 
     pub(crate) fn summary(&self) -> String {

@@ -228,13 +228,13 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
 - **Runtime:** the absent-specular placeholder is a 1×1 black `R8Unorm` texel.
   WGSL expands it to `(r, 0, 0, 1)`, whose `.g == 0` would read as maximum
   raise, so the march runs only when the loaded slot is `Rg8Unorm` (or
-  `Rgba8Unorm`, §4.7, decided, not yet built) — a has-depth bit decided from
-  the slot that actually loaded, never from the prefix. Every slot format
-  binds through the same group-1 texture entry
-  (`Float { filterable: true }`), so no bind-group layout changes. The surface
-  map costs exactly twice the single-channel specular slot it replaces and
-  nothing else; a 1024×1024 bundle's specular payload goes from 1,398,101 to
-  2,796,202 bytes across its 11 mip levels.
+  `Rgba8Unorm`, §4.7, decided, not yet built) — a has-depth bit decided from the
+  slot that actually loaded, never from the prefix. Every slot format binds
+  through the same group-1 texture entry (`Float { filterable: true }`), so no
+  bind-group layout changes. The surface map costs exactly twice the
+  single-channel specular slot it replaces and nothing else; a 1024×1024
+  bundle's specular payload goes from 1,398,101 to 2,796,202 bytes across its 11
+  mip levels.
 - **Shading:** the forward and kinematic-mover passes march the G channel with
   an exact texel-grid DDA before sampling any other slot; see
   `rendering_pipeline.md` §7.3 (Surface Depth) for the algorithm, the lighting
@@ -247,10 +247,11 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   correctly-named PNG". `materials.toml` (§4.5, decided, not yet built) carries
   glow strength, not depth. The four values ride in the per-material uniform's
   second 16-byte row. A material whose loaded specular slot has no height
-  channel (`R8Unorm`) gets an all-zero row and skips the march entirely. `tools/texture-tool`
-  derives its default height terrace count from the same prefixes (twice the
-  engine's count per direction, so its terraces land on engine plateaus); a
-  test in `postretro-render-data` keeps the two tables in step.
+  channel (`R8Unorm`) gets an all-zero row and skips the march entirely.
+  `tools/texture-tool` derives its default height terrace count from the same
+  prefixes (twice the engine's count per direction, so its terraces land on
+  engine plateaus); a test in `postretro-render-data` keeps the two tables in
+  step.
 - **Relief band:** at load, the renderer measures each uploaded mip's highest
   raise and lowest sink separately on the CPU (filtering can overshoot the
   base level). The uniform packs the band of the mip the march reads — the
@@ -261,17 +262,17 @@ rides in the **G channel of the specular slot**, which becomes a two-channel
   band. The march starts at the band's top, so a map that never exceeds
   mid-gray pays nothing for raise; an empty band (all mid-gray) uploads the
   same bytes as no map.
-- **Player on/off switch:** the renderer RETAINS each world/mover
-  material's uniform buffer handle alongside its bind group (`GpuTexture`),
-  plus the GPU-free `MaterialUniformPlan` that produced its contents, so
-  `Renderer::set_surface_depth_quality` can rewrite those 32 bytes in place.
-  The setting is **off/on** — no middle tier; see `player_options.md` §4. The
-  plan stores the material's own per-prefix tuning, unmodified by the switch,
-  and the facts taken from the slot that actually loaded (does it carry a
-  height channel, how many mips, its relief band), so a rewrite can turn the effect back on as
-  well as off and can never resurrect a march for a material with no height
-  sibling. The buffers live in the level's `gpu_textures` vector and die with
-  the level (§8.2).
+- **Player on/off switch:** the renderer RETAINS each world/mover material's
+  uniform buffer handle alongside its bind group (`GpuTexture`), plus the
+  GPU-free `MaterialUniformPlan` that produced its contents, so
+  `Renderer::set_surface_depth_quality` can rewrite those 32 bytes in place. The
+  setting is **off/on** — no middle tier; see `player_options.md` §4. The plan
+  stores the material's own per-prefix tuning, unmodified by the switch, and the
+  facts taken from the slot that actually loaded (does it carry a height
+  channel, how many mips, its relief band), so a rewrite can turn the effect
+  back on as well as off and can never resurrect a march for a material with no
+  height sibling. The buffers live in the level's `gpu_textures` vector and die
+  with the level (§8.2).
 
 ### 4.7 Sharpness Maps (decided, not yet built)
 

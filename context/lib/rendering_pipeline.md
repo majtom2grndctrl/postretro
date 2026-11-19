@@ -1070,8 +1070,8 @@ fields keep pixel, high and high's preset. The effective tier, style,
 fraction, steps, divisor and thickness log once on a
 `[Capture] Fluid reflections:` line.
 
-World and mover specular style likewise (decided, not yet built):
-`specular_style` takes `pixel` or `smooth` and stands in for
+Specular style in capture also comes from the scene file alone (decided, not
+yet built): `specular_style` takes `pixel` or `smooth` and stands in for
 `render.specular.style`. Absent keeps pixel; an unknown value rejects the scene.
 
 The planar layer (§7.3a) runs in capture exactly when `reflection_quality` is

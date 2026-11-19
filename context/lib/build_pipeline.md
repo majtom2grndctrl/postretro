@@ -856,19 +856,18 @@ must still validate against its active adapter before allocation. The current re
 does this for decoded-PNG sprite collection frame counts before creating its `D2Array`;
 parsed array-backed `.prm` upload is downstream work and has no renderer path yet.
 
-**Surface map (specular slot).** The specular slot has two forms, three once sharpness lands. Without a
-`{name}_h.png` sibling it is single-channel `R8Unorm` (wire tag 2), exactly as
-before. With one it is two-channel `Rg8Unorm` (wire tag 4): R specular (0 when
-`_s.png` is absent), G baked as `255 - height` from the author's mid-gray-centered
-height map. The stored byte carries no zero point: the runtime re-centers it on
-128 (`resource_management.md` §4.6). Keep it that way. The bundle hash covers
-source PNG bytes, not the bake transform, so changing what a stored byte means
-at bake time would silently reuse stale sidecars unless `STAGE_VERSION` bumps.
-`STAGE_VERSION` stays 3 —
-the widening is additive and every pre-existing `.prm` parses unchanged — and
-`PrmSlots` bits 4-7 stay reserved: height is not a fifth slot. The SPECULAR
-slot-mask bit is set if any sibling is present. See
-`resource_management.md` §4.6.
+**Surface map (specular slot).** The specular slot has two forms, three once
+sharpness lands. Without a `{name}_h.png` sibling it is single-channel `R8Unorm`
+(wire tag 2), exactly as before. With one it is two-channel `Rg8Unorm` (wire tag
+4): R specular (0 when `_s.png` is absent), G baked as `255 - height` from the
+author's mid-gray-centered height map. The stored byte carries no zero point:
+the runtime re-centers it on 128 (`resource_management.md` §4.6). Keep it that
+way. The bundle hash covers source PNG bytes, not the bake transform, so
+changing what a stored byte means at bake time would silently reuse stale
+sidecars unless `STAGE_VERSION` bumps. `STAGE_VERSION` stays 3 — the widening is
+additive and every pre-existing `.prm` parses unchanged — and `PrmSlots` bits
+4-7 stay reserved: height is not a fifth slot. The SPECULAR slot-mask bit is set
+if any sibling is present. See `resource_management.md` §4.6.
 
 A third form (decided, not yet built): a `{name}_p.png` sibling makes the slot
 `Rgba8Unorm` (wire tag 1). It is additive like height, and `STAGE_VERSION`

@@ -1314,3 +1314,78 @@ fn a_queued_grant_opens_on_the_next_run_after_a_skip() {
     tick(&mut reg, &mut runtime);
     assert_eq!(state(&reg, enemy), hold(SLAM), "the row opened on its run");
 }
+
+// P27 at production cadence, for every pair of decide phases: a queued grant
+// opens its rest's row at that enemy's first decide after the grant, so no
+// turn is held across a decide with its row still closed; the waiter is
+// granted on the tick the first's turn ends, as at 60 Hz; and both strike.
+#[test]
+fn a_queued_grant_opens_at_the_next_decide_and_the_waiter_follows_at_every_phase() {
+    let graph = queue_graph(
+        vec![queued(SLAM, always())],
+        vec![(SLAM, strike(2.0, 300.0, vec![token("melee")]))],
+        [0.0, 0.0],
+    );
+    let interval = crate::decide::DECIDE_INTERVAL_TICKS;
+    let identity_on = |phase: u64| {
+        (0..)
+            .find(|&identity| crate::decide::decides_on(phase, identity, interval))
+            .unwrap()
+    };
+    for first_phase in 0..interval {
+        for second_phase in 0..interval {
+            let mut reg = EntityRegistry::new();
+            budgets(&mut reg, (1, 0.0), (1, 0.0));
+            let mut runtime = AiRuntime::new();
+            let pawn = spawn_player(&mut reg, player_spot());
+            let enemies = [(0, first_phase), (1, second_phase)].map(|(index, phase)| {
+                let enemy = spawn_resting(&mut reg, index, &graph);
+                let mut brain = brain(&reg, enemy);
+                brain.schedule_identity = Some(identity_on(phase));
+                reg.set_component(enemy, brain).unwrap();
+                (enemy, identity_on(phase))
+            });
+            let label = format!("phases {first_phase}/{second_phase}");
+            // Per enemy: the tick a grant arrived while it rested, until its
+            // row opens.
+            let mut awaiting: [Option<u64>; 2] = [None, None];
+            let mut was_held = [false, false];
+            for tick in 1..=240_u64 {
+                tick_with(&mut reg, &mut runtime, &[]);
+                let held_now = enemies.map(|(enemy, _)| !held(&reg, enemy).is_empty());
+                for (slot, &(enemy, identity)) in enemies.iter().enumerate() {
+                    let decides = tick == 1 || crate::decide::decides_on(tick, identity, interval);
+                    let resting = state(&reg, enemy) == REST;
+                    if let Some(granted) = awaiting[slot] {
+                        if !resting {
+                            awaiting[slot] = None;
+                        } else {
+                            assert!(
+                                !decides || tick == granted,
+                                "{label}: enemy {slot} granted on {granted} still rests at its decide {tick}"
+                            );
+                        }
+                    }
+                    if held_now[slot] && !was_held[slot] && resting {
+                        awaiting[slot] = Some(tick);
+                    }
+                }
+                if held_now[1] && !was_held[1] {
+                    assert!(
+                        !held_now[0] && was_held[0],
+                        "{label}: the waiter is granted on the tick the first's turn ends ({tick})"
+                    );
+                }
+                was_held = held_now;
+                if player_hp(&reg, pawn) <= 98.0 {
+                    break;
+                }
+            }
+            assert!(
+                player_hp(&reg, pawn) <= 98.0,
+                "{label}: both strike, none starves: hp {}",
+                player_hp(&reg, pawn)
+            );
+        }
+    }
+}

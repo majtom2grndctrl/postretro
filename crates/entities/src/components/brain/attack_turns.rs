@@ -149,6 +149,9 @@ pub struct AttackTurnState {
     /// skip. A rest's queued row opens on a turn granted since its previous
     /// decide. 0 reads as 1.
     pub decide_span: u32,
+    /// The AI tick of this brain's latest decide. Between decides a turn
+    /// granted since then waits for the next decide to open its row.
+    pub last_decide_tick: u64,
 }
 
 impl AttackTurnState {
@@ -208,9 +211,11 @@ impl AttackTurnState {
     pub fn clear(&mut self) {
         let seen_tick = self.seen_tick;
         let decide_span = self.decide_span;
+        let last_decide_tick = self.last_decide_tick;
         *self = Self {
             seen_tick,
             decide_span,
+            last_decide_tick,
             ..Self::default()
         };
     }

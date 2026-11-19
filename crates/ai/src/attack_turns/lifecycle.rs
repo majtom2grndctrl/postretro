@@ -103,6 +103,11 @@ pub(crate) fn arbitrate_attack_turns(
             .executing_attack(outcome.id)
             .map(|name| attack_index(&outcome.brain.graph, name));
         let graph_reseated = outcome.graph_reseated;
+        // Between decides, a queued (marked) grant made since the brain's last
+        // decide waits for the next one, where a queued row opens on it or the
+        // hold's mark keeps it. At one decide a tick this never holds.
+        let awaiting_decide =
+            (!outcome.decide).then_some(outcome.brain.attack_turns.last_decide_tick);
         // One turn covers a repeating release's passes: once it has struck, a
         // turn it lost (a target switch, a tick with no target) is not
         // requested again, so the passes left whiff on the hard gate below
@@ -145,6 +150,8 @@ pub(crate) fn arbitrate_attack_turns(
             // and the row opens on it.
             draws_unchanged
                 && ((target.is_some() && mark == Some(turn.attack))
+                    || awaiting_decide
+                        .is_some_and(|since| !turn.until_cooldown && turn.granted_tick >= since)
                     || executing_attack == Some(turn.attack)
                     || (turn.until_cooldown && cooling_down(graph, cooldowns, turn.attack)))
         });

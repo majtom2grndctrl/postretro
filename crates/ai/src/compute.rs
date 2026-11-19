@@ -412,6 +412,7 @@ pub(super) fn evaluate(
                     .and_then(|choices| u32::try_from(turns.tick - choices.tick()).ok())
                     .unwrap_or(1)
                     .max(1);
+                brain.attack_turns.last_decide_tick = turns.tick;
                 // Turn facts read the previous tick's turns and line, against the
                 // target selected now.
                 let has_attack_turn = brain.attack_turns.holds_any();

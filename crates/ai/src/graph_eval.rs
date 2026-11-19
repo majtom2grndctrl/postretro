@@ -286,8 +286,8 @@ impl TurnGate<'_> {
             turn.attack == attack
                 && turn
                     .granted_tick
-                    .wrapping_add(u64::from(turns.decide_span.max(1)))
-                    == turns.seen_tick
+                    .saturating_add(u64::from(turns.decide_span.max(1)))
+                    >= turns.seen_tick
         })
     }
 

@@ -357,6 +357,12 @@ impl Shipped {
 /// `seconds`, its offense seated in `tell` as soon as it engages. Before each
 /// tick `place`, given the paths so far, may move the player. `attack` names
 /// the attack whose fires are recorded.
+thread_local! {
+    /// The decide phase a cadence row pins: `None` runs the brute deciding
+    /// every tick, as the timing rows here pin it.
+    static DECIDE_PHASE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 fn brute_run(
     tell: &str,
     attack: &str,
@@ -389,6 +395,19 @@ fn brute_run_in(
         home,
     );
     give_reference_armor(&mut shipped.reg, brute);
+    // A cadence row runs production's decide interval at a pinned phase.
+    if let Some(phase) = DECIDE_PHASE.get() {
+        shipped.runtime = AiRuntime::new();
+        let mut brain = shipped
+            .reg
+            .get_component::<BrainComponent>(brute)
+            .unwrap()
+            .clone();
+        brain.schedule_identity = (0..).find(|&identity| {
+            crate::decide::decides_on(phase, identity, crate::decide::DECIDE_INTERVAL_TICKS)
+        });
+        shipped.reg.set_component(brute, brain).unwrap();
+    }
     let mut run = BruteRun::default();
     let mut seated = false;
     for tick in 0..(seconds / DT) as usize {
@@ -1670,5 +1689,65 @@ fn shipped_brute_leap_that_falls_short_stands_from_its_moment() {
             "tick {tick}: the leap stands after its moment, {} m on from where it fell short",
             distance_xz(position, landed)
         );
+    }
+}
+
+/// The ticks each hit landed on, counted from the entry of `tell`.
+fn hits_from_tell(run: &BruteRun, tell: &str) -> Vec<usize> {
+    let entry = run.entered(tell);
+    run.hits
+        .iter()
+        .filter(|&&(tick, _)| tick >= entry)
+        .map(|&(tick, _)| tick - entry)
+        .collect()
+}
+
+// AC 37: at production cadence, counted from the tell's entry, the combo's
+// three jabs and the leap's hit land no earlier than at 60 Hz and at most one
+// decide interval later, for every decide phase. Guards (a hold's release, a
+// release's exit) wait for a decide; the clip moments themselves land on the
+// tick they fall.
+#[test]
+fn shipped_brute_combo_and_leap_land_within_one_decide_interval_at_every_phase() {
+    let combo = || {
+        brute_run(
+            "flurry",
+            "combo",
+            Vec3::new(1.5, 0.0, 0.0),
+            6.0,
+            |_, _, _| None,
+        )
+    };
+    let leap = || leap_run(12.0, false, 6.0);
+    // The attack's own hits: the combo's three jabs, the leap's landing. Later
+    // hits belong to later cycles, which a decide's delay shifts as a whole.
+    let cases: [(&str, usize, &dyn Fn() -> BruteRun); 2] =
+        [("flurry", 3, &combo), ("crouch", 1, &leap)];
+    for (tell, hits, run) in cases {
+        let first = |run: &BruteRun| -> Vec<usize> {
+            hits_from_tell(run, tell).into_iter().take(hits).collect()
+        };
+        let every_tick = first(&run());
+        assert_eq!(
+            every_tick.len(),
+            hits,
+            "{tell}: the 60 Hz run lands its hits"
+        );
+        for phase in 0..crate::decide::DECIDE_INTERVAL_TICKS {
+            DECIDE_PHASE.set(Some(phase));
+            let cadenced = first(&run());
+            DECIDE_PHASE.set(None);
+            assert_eq!(
+                cadenced.len(),
+                every_tick.len(),
+                "{tell}, phase {phase}: {cadenced:?} against {every_tick:?}"
+            );
+            for (at, base) in cadenced.iter().zip(&every_tick) {
+                assert!(
+                    *at >= *base && *at <= base + crate::decide::DECIDE_INTERVAL_TICKS as usize,
+                    "{tell}, phase {phase}: hits {cadenced:?} against 60 Hz {every_tick:?}"
+                );
+            }
+        }
     }
 }

@@ -251,19 +251,24 @@ Windows delivering the redraw that starts boot.
 ## Where player data lives
 
 Each game keeps its players' settings (`settings.toml`, which also holds the
-player's `player_id`) and saved state (`state.json`, one per mod) in its own
-per-user directory, named by the manifest's `name`. The launcher passes that name
+player's `player_id`) and saved games (one folder per mod) in its own per-user
+directory, named by the manifest's `name`. The launcher passes that name
 to the engine; `bin/postretro-tool run` passes it too, so an authoring run reads
 and writes exactly what your players' first launch will. Each platform spells
 the directory its own way:
 
-| Platform | Settings | Saved state |
+| Platform | Settings | Saved games |
 |---|---|---|
-| Windows | `%APPDATA%\<name>\config\settings.toml` | `%APPDATA%\<name>\data\<mod id>\state.json` |
-| macOS | `~/Library/Application Support/<name>/settings.toml` | `~/Library/Application Support/<name>/<mod id>/state.json` |
-| Linux | `~/.config/<name>/settings.toml` | `~/.local/share/<name>/<mod id>/state.json` |
+| Windows | `%APPDATA%\<name>\config\settings.toml` | `%APPDATA%\<name>\data\<mod id>\` |
+| macOS | `~/Library/Application Support/<name>/settings.toml` | `~/Library/Application Support/<name>/<mod id>/` |
+| Linux | `~/.config/<name>/settings.toml` | `~/.local/share/<name>/<mod id>/` |
 
 `<mod id>` is the `id` your mod's manifest declares, not the `mod` directory name.
+Inside it, `characters/<n>.json` holds each character slot, `runs/<n>.json` each
+run slot, `world.json` the progress no run resets, and `selection.json` the last
+selected character and run. A `state.json` from an earlier engine version is
+migrated into those files once, on the first launch that finds no `world.json`,
+and is left in place.
 
 macOS replaces each space in `<name>` with `-`. Linux lowercases it and drops
 its whitespace, honouring `XDG_CONFIG_HOME` and `XDG_DATA_HOME`. Windows and

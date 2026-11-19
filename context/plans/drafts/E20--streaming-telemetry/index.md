@@ -38,7 +38,7 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
   - A reply returns the pinned events at or after `since`, then the retained events from the oldest, in sequence order, with the next cursor, the oldest, the dropped count and the run.
   - A `since` beyond the next cursor, or an unknown kind in the filter, returns an error frame naming the current run and cursor.
   - The hello gains the run and protocol 2. A client finds the cursor by polling with `max` 0.
-  - Polling keeps the one-connection, single-slot contract and resumes across reconnects. Server push would need a writer not tied to a reply and per-client backpressure, which `done/E20--live-socket-channel` deferred.
+  - Polling keeps the one-connection, single-slot contract and resumes across reconnects.
   - Serving off the main thread amends `networking.md`'s "the main thread builds every reply" for this verb only. That rule exists because registry state is `!Send`. The ring is engine-blind plain data, and logs matter most when the frame loop has stalled. `dump` stays on the main thread.
 - **First consumer: a reducer in `tools/`.** It is stdlib Python with a unittest. It summarizes one telemetry file: a load-phase table, per-window miss buckets, CPU and GPU p50 and max across windows, and bake stage durations, joined per run and per load. It follows the reducer shape `E20--memory-visibility` set out. `tools/` ships in SDK bundles.
 - **Placement.**
@@ -50,10 +50,9 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
   - Migrating the measurement scrapers under `measurements/`: they are frozen evidence.
   - Converting other log lines into typed events: other subsystems add a kind later.
   - Building lightmap miss-cause buckets or per-stage bake cache-hit reporting: neither exists in source. The events carry what does.
-  - Resetting GPU windows at a level change.
-  - A size cap or rotation for the file: it is opt-in, and its growth is per load, per window and per stage.
-  - A long-poll, server push and concurrent clients. Connections are served to completion, so pollers close between polls. A wait field can be added later without a protocol bump.
-  - Fixing the hello's map, which is always empty.
+  - A size cap or rotation for the file: it is opt-in, and it grows at the File sink's rates.
+  - A long-poll, server push and concurrent clients. Push would need a writer not tied to a reply and per-client backpressure, which `done/E20--live-socket-channel` deferred. Connections are served to completion, so pollers close between polls. A wait field can be added later without a protocol bump.
+  - Fixing the hello's map, which is always empty: every event carries its level.
   - Live mutating verbs, the MCP frontend, record/replay, protocol-crate extraction: separate roadmap items.
   - Memory accounting: `E20--memory-visibility` owns it.
   - Dashboards or a TUI: an Epic 20 non-goal.
@@ -63,20 +62,22 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 ### Automated
 **One snapshot, two renderings:**
 - [ ] For each engine kind, one closed snapshot yields a payload and a log line that agree field for field. The fixtures are line C sums and contained marks, a miss bucket, a CPU row's average and max, and a GPU pass mean. A GPU pass with no samples reads absent, never zero.
-- [ ] With telemetry on and off, stderr is identical, the `prl-build --no-tui` stderr is identical, and the Build Summary stdout is identical. The existing log-capture and CLI-contract tests pass unchanged.
+- [ ] With telemetry on and off, stderr holds the same lines in the same order, apart from measured values. One fixed snapshot formats a byte-identical line with the sink on and off. The same holds for the `prl-build --no-tui` stderr and the Build Summary stdout. The existing log-capture and CLI-contract tests pass unchanged.
 - [ ] The engine built with no optional features writes the file sink, and so does `prl-build`.
 
 **Ordering (pins in `research.md`):**
-- [ ] A loading-screen level change writes, in order: the old level's partial windows, its unload naming it, the new load's geometry install, then the new load's phases naming its generation. No unload carries a null level (P3).
+- [ ] A loading-screen level change writes, in order: the old level's partial windows and its unload, each naming the old level in its envelope; the new load's geometry install; then the new load's phases naming its generation. No unload carries a null level (P3).
 - [ ] A load beside a running level reports `bundle_held`, `commit_checks` and `running_release` as phases, and its commit-frame group holds no `commit_checks`. Its geometry install carries the new load's generation while the envelope names the running level (P4).
 - [ ] A load cancelled after its set build emits neither geometry install nor load phases. Its generation shows as a gap (P13).
+- [ ] A level unloaded before its reveal writes its geometry install and its unload naming it, and no load phases. The reducer lists it as unloaded before reveal.
 - [ ] Events racing in from the main, upload, loader and logging threads land in strictly increasing sequence with no gap except evictions. A client polling during the race misses none (P5).
 - [ ] With GPU timing requested on an adapter without timestamp queries, `run_start` reads pending, and a later `producer_state` reads unsupported with its reason, before any GPU window could close (P1).
 
 **Streaming windows:**
 - [ ] An idle SH window emits neither a line nor an event, including at the session's end.
 - [ ] Unloading 2 s into an SH window that has counted something emits one partial carrying that elapsed time, and no line.
-- [ ] A session replaced within a level emits one partial, and the next window's totals restart (P9).
+- [ ] A session that has counted something since its last line, replaced within a level, emits one partial, and the next window's totals restart (P9). An idle one emits nothing.
+- [ ] A lightmap window that has counted something emits one partial when its session ends, and no line. A world-less clear ends both families' sessions with one partial each for those that have counted something.
 - [ ] A CPU window cleared at a level change emits nothing. A GPU window spanning a level change names the level current at its close.
 
 **Bake:**
@@ -84,11 +85,15 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 - [ ] A stage that produced no output emits a skip, not a finish.
 - [ ] A failing bake emits the stages it began, then an unsuccessful summary with no durations.
 - [ ] A bake that ends before its first stage writes `run_start` and `run_end` with its reason, and no stage events.
+- [ ] `prl-build --help` and a rejected argument write nothing to the file (P14).
 
 **Run bracketing:**
-- [ ] `run_start` lists every producer: enabled with timing on, and disabled with timing off, naming the variable.
+- [ ] In the engine and in `prl-build`, `run_start` is each run's first line, at sequence 0, ahead of every captured log record. With a relative `POSTRETRO_TELEMETRY`, it names the absolute path resolved against that process's working directory.
+- [ ] `run_start` lists every producer. CPU timing reads enabled with its variable set and disabled without it, naming the variable. GPU timing reads disabled without its variable, and pending with it. A later `producer_state` settles it to enabled on an adapter with timestamp queries.
+- [ ] A headless run with both timing variables set lists CPU and GPU timing as unsupported, each with its reason, and writes no timing windows. No producer reads pending at `run_end`.
 - [ ] A clean exit writes every open window's partial, then `run_end` as the last line. A record logged after `run_end` from any thread writes nothing (P6).
 - [ ] An error exit in the engine and in `prl-build`, a panic, and a capture or headless exit each write `run_end` naming its reason.
+- [ ] A panic the engine catches, such as a load task's or a streaming decode job's, writes no `run_end`, and later events still reach the file. A panic that ends the process writes `run_end` naming it, in the engine and in `prl-build` under both reporters (P6).
 - [ ] A killed process leaves every line written before the kill parseable.
 
 **File sink:**
@@ -100,6 +105,7 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 **Ring and live `events`:**
 - [ ] Overfilling events by count, events by bytes, and log records by count and by bytes each evicts oldest-first. Each stays at or below its caps, advances `dropped`, and keeps the sequence strictly increasing.
 - [ ] A client attaching after eviction past the latest load reads `run_start`, the latest producer states and that load's phases first, then the retained run from the oldest. A newer load arriving mid-pagination drops the superseded load's phases with `dropped` advanced (P2).
+- [ ] A client paging from 0 with a small `max`, while the latest load's phases are pinned and still newer than the oldest retained event, reads every event once, in sequence order, across all its polls (P2).
 - [ ] An over-cap message truncates and is flagged.
 - [ ] A `since` older than the oldest retained returns from the oldest, and the reply shows the gap.
 - [ ] A `since` equal to the next cursor returns empty.

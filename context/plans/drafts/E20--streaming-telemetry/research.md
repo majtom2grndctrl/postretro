@@ -61,11 +61,12 @@ All three landed.
 | Id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
 | P1 | GPU timing requested on an adapter without timestamp queries | `run_start` (GPU pending) → boot records → adapter created → `producer_state` | GPU reads unsupported, with its reason, before any GPU window could close |
-| P2 | Late attach after eviction; a newer load arrives mid-pagination | pinned events at or after `since` → retained run from `oldest` | client reads `run_start`, producer states and the latest load first; the superseded pin falls under the caps and `dropped` advances |
+| P2 | Late attach after eviction; a newer load arrives mid-pagination; small `max` | pinned events below `oldest` and at or after `since`, then the retained run from max(`since`, `oldest`), in one merged sequence order; a pin at or above `oldest` is served once, in its place | client reads `run_start`, producer states and the latest load first; the superseded pin falls under the caps and `dropped` advances |
 | P3 | Loading-screen level change | partial(old) → unload(old) → geometry_install(new gen) → load_phases(new gen) | unload never carries a null level; it captures the level before `unload_level` clears it |
 | P4 | Load beside a running level | geometry_install(new gen, envelope = running) … running_release → load_phases logged after reveal | line C holds `commit_checks` before `running_release`; its commit-frame group has none |
 | P5 | Concurrent emitters on main, upload, loader and logging threads | sequence taken, ring insert and file write under one lock | strictly increasing sequence; `t_ms` may run backward across it; a cursor never skips |
 | P6 | Exit with open windows and live background threads | partials → `run_end` → nothing | `run_end` last in file and ring, for clean, error, panic and `process::exit` paths |
+| P6b | A panic: a caught worker panic in the engine, or a TUI bake panic in `prl-build` | `run_end` written by an unwind guard around the main body, never by a panic hook; never waits on a sink lock the panicking thread may hold | a caught worker panic writes no `run_end` and the run continues; a panic that unwinds out of main writes `run_end` naming it; a TUI bake panic, which runs no hook, still writes it |
 | P7 | Overlapping, late-begun or zero-length bake stage | begin/end order = summary order; equal `t_ms` ordered by sequence | durations from the summary; transitions carry order only |
 | P8 | `max` 0 | returns at once | nothing returned; cursor unchanged |
 | P9 | Streaming events across levels or a session replacement | totals restart at a session's first window | differencing is valid only within one session |
@@ -73,6 +74,15 @@ All three landed.
 | P11 | Two processes append at once | one write call per whole line | lines interleave whole, never split |
 | P12 | Main thread blocked; `dump` then `events` | `dump` holds the transport up to 5 s | `events` answers at once once the `dump` has timed out |
 | P13 | A load superseded after its set build | set built (gen k) → cancel → no app take | no geometry_install or load_phases for k; gap explained as cancelled |
+| P14 | `prl-build` exits during argument parsing (`--help`, a rejected argument) | sink opened after argument parsing | nothing written; never a lone `run_start` |
+
+## Source pins
+
+| Area | Source fact | Consequence |
+|---|---|---|
+| Bake summary and exits | Success finalizes through the pipeline's reporter; `finalize_failure` is called by each frontend (plain `main`, the TUI worker) on its concrete reporter. `args.input` and `args.output` are in scope at both reporter construction sites. `--help` exits inside argument parsing, before the logger | The failed summary comes from the frontend's `Err`, not a reporter wrapper. Open the sink after argument parsing |
+| Geometry install total | `GeometryInstallMarks::log` recomputes its total from elapsed time at the line | Freeze the total at the line before handing the marks back |
+| Unload | Level identity is cleared at the start of unload; streaming sessions end later in it | Capture the unloading level before it is cleared, and pass it to the partials and the unload event |
 
 ## Detail review, round 1
 

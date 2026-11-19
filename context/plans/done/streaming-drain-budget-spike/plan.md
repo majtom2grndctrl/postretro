@@ -1,7 +1,7 @@
 # streaming-drain-budget-spike — plan of record
 
 mode: compact
-status: active
+status: done
 read at: 32ac4217e
 
 ## Corrections
@@ -57,7 +57,7 @@ Amendments to the briefed list: **waiting_on_permit** added, because the permit 
 | 15 Realtime medians of 3 per walk, by cause, both resources, both core settings | walk matrix, Task 6 | manual / measured | pass: Task 6 matrix, medians of 3, both walks, both core settings, both maps |
 | 16 Gate decision with thresholds and shares | findings note | manual / measured | pass: findings.md Gate decision; sweep opened on in-hand evidence |
 | 17 Cap sweep — if the gate opens | walk matrix with the override | conditional on gate | pass: findings.md Cap sweep, 2–32 MiB and in-hand 16–128 MiB, repeats where direction changed; drain CPU from the install model |
-| 18 Install cost CPU and GPU — if the gate opens | renderer tests plus Metal System Trace | conditional on gate | partial: CPU pass (lightmap 4 runs, SH 7 runs, release); GPU measured by Metal System Trace per drain (lightmap 42 µs/pair + 0.22 ms/MiB; SH copies 70 µs/chunk + 0.43 ms/MiB, compose 2.4 ms + 0.47 ms/MiB), but at the test's idle GPU clock (median 64–286 MHz), so not pinned: upper bounds. A pinned-clock figure needs an in-engine trace at a showcase burst |
+| 18 Install cost CPU and GPU — if the gate opens | renderer tests plus Metal System Trace | conditional on gate | partial: CPU pass (lightmap 4 runs, SH 7 runs, release); GPU measured by Metal System Trace per drain (lightmap 42 µs/pair + 0.22 ms/MiB; SH copies 70 µs/chunk + 0.43 ms/MiB, compose 2.4 ms + 0.47 ms/MiB), but at the test's idle GPU clock (median 64–286 MHz), so not pinned: upper bounds. A busy-GPU figure needs a rendered, repeatable path at a showcase burst: carried to the install-time budget follow-up, which needs a camera-path playback tool for it |
 | 19 Owner visual read of forced misses — if same-class cuts exceed the count | owner, in-engine | conditional on gate | not run: same-class cuts 33–48, under the stated 100 |
 | 20 Owner read with the slider at a showcase burst | owner, in-engine (dev-tools build) | manual | pass: owner read, untextured frozen bake. Pop-in visible almost only at 4 MiB; some stutter, not attributable to a setting (`findings.md` *Owner slider read*) |
 | 21 Findings note answering the cap question, per assumption | `findings.md` | manual | pass: findings.md Answer and Recommendations (tie-break keep; byte unit new brief; cap size inside it) |

@@ -1275,6 +1275,7 @@ render-pass encoder counts: those rows go missing from part of some traces, whic
 undercounts frames by up to a quarter and invents between-launch "regimes" that are not there.
 The engine renders no frames while its window is hidden or backgrounded,
 or while the screen is locked. Keep the window in front for the whole capture.
+The renderer's ignored install-cost tests (`install_cost_measurement.rs` beside the lightmap stream and the SH streaming GPU state) bracket each measured drain with labelled marker command buffers and write the drain order to the directory named by `POSTRETRO_INSTALL_COST_TRACE_DIR`, so a trace of them reduces per drain. Those tests wait for the GPU after every drain, so the GPU idles at a low clock and their figures are upper bounds.
 Each recording also leaves an `instruments*.ktrace` temp file of about 1 GB in
 `$TMPDIR`, and the `.trace` bundle stays wherever `--output` put it. Delete both once
 the export is parsed.

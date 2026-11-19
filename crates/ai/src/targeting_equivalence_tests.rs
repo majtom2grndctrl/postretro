@@ -326,7 +326,7 @@ fn random_scene(rng: &mut Lcg) -> Scene {
         // A non-finite position.
         let lost = peer_brain(&mut registry, lattice(rng), 50.0);
         set_faction(&mut registry, lost, rng.pick(&FACTION_VALUES));
-        let mut transform = registry.get_component::<Transform>(lost).unwrap().clone();
+        let mut transform = *registry.get_component::<Transform>(lost).unwrap();
         transform.position = rng.pick(&[
             Vec3::new(f32::NAN, 0.0, 1.0),
             Vec3::new(f32::INFINITY, 0.0, 0.0),

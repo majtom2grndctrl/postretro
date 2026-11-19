@@ -46,3 +46,16 @@ A 1024×1024 specular slot across 11 mips: R8 is 1,398,101 B, Rg8 2,796,202 B, R
 | P5 | A staged mod init commits while a level load is in flight | load dispatches at pixel → staged init commits smooth → load publishes | The published level draws smooth on its first frame. No further commit is needed |
 | P6 | Staged mod-init outcomes after smooth is active | smooth → failed → rejected → stale → committed with no start script | Smooth through failed, rejected and stale. Pixel after the committed no-start result |
 | P7 | Plane byte without `_h` | bake | Stored G = 127 (255 − 128). A stored 128 reads as authored 127, a trough of −1/128. Symbols: `surface_height_fraction_from_byte`, `bake_materials_into` |
+
+## Uniform constraints
+
+- **Material uniform.** `set_surface_depth_quality` rewrites all 32 bytes of the material uniform from `MaterialUniformPlan`. `SurfaceDepthUniform::resolve` returns `FLAT`, which zeroes the march word and its spare bits, in four cases: Off, a flat band, an untuned prefix, and a non-surface slot. Only `shininess` and `emissive_strength` keep their values through Off.
+- **Forward group-0 `Uniforms`.** Exactly 128 bytes, shared with billboard and wireframe (`pipeline_layout.rs`). Spare bits are in `spec_shadowmask_flags`, which billboard declares inert.
+- **Mover per-frame `KinematicLightParams`.** Has `_pad2`, written every frame.
+- **Planar mirror.** It copies the main group-0 bytes, so a style written outside `build_uniform_data` would miss the mirror.
+
+## Rivals
+
+- **Split sharpness from the snap.** Ship sharpness alone, either capped at today's 96 or evaluated per pixel. Bundling wins on two counts:
+  - without the snap, sharpness's headline use crawls;
+  - both changes edit the same two shader sites, so the Mac `Off` and register-cliff measurement runs once.

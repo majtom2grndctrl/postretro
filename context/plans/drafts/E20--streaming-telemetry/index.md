@@ -1,44 +1,59 @@
 # E20--streaming-telemetry
 
-Brief · compact · Epic 20 · reads: `context/lib/development_guide.md` §6.1, §6.4 · `context/lib/networking.md` §Not netcode: the live introspection channel · `context/lib/boot_sequence.md` §Startup timing vocabulary · `context/lib/rendering_pipeline.md` §Cluster SH residency, §12 · `context/lib/build_pipeline.md` (compiler reporters) · `context/lib/testing_guide.md` §Resource bounds · read at 32ac4217 · evidence: `research.md`
+Brief · compact · Epic 20 · reads: `context/lib/development_guide.md` §6.1, §6.4 · `context/lib/networking.md` §Not netcode: the live introspection channel · `context/lib/boot_sequence.md` §Startup timing vocabulary, §4 · `context/lib/rendering_pipeline.md` §Cluster SH residency, §12 · `context/lib/build_pipeline.md` (compiler reporters) · `context/lib/testing_guide.md` §3, §Resource bounds · read at 32ac4217 · evidence: `research.md`
 
 ## Problem
-Agents diagnosing a run read its diagnostics as text, and an agent attached to a running session cannot read them at all. This is a capability agents requested, and an active agent asked for these first events by name. Load phases, SH and lightmap streaming windows with their miss buckets, CPU stage and GPU pass timing windows, and `prl-build` bake stages each come from a typed snapshot. Each snapshot leaves its process only as one formatted log line on stderr, or as reporter text from the compiler. The observe-live socket carries none of it, and nothing retains recent log records. When this is done, one versioned envelope carries those four families as typed events. An agent that launched the run reads them from a JSONL file. An agent attached to a session someone else started pages them from a bounded in-process ring over observe-live, with recent log records alongside. Every existing log line and every reporter's output is unchanged.
+Agents diagnosing a run read its diagnostics as text, and an agent attached to a running session cannot read them at all. This is a capability agents requested, and an active agent asked for these first events by name. Load phases, geometry install, SH and lightmap streaming windows, CPU stage and GPU pass timing windows, and `prl-build` bake stages each come from a typed snapshot. Each snapshot leaves its process only as a formatted log line on stderr or as reporter text. The observe-live socket carries none of it, and nothing retains recent log records. When this is done, one versioned envelope carries those diagnostics as typed events. An agent that launched the run reads them from a JSONL file. An agent attached to a session someone else started pages them from a bounded in-process ring over observe-live, with recent log records alongside. Every existing log line and every reporter's output is unchanged.
 
 ## Decisions
 - **One snapshot, two renderings.** Each event is built at its log line's emit point from the same closed snapshot the line formats. No text is parsed back. Lines and reporter output stay byte-identical, because unit tests pin them and humans read them.
-- **A new leaf crate owns the envelope.** It holds the envelope, the version constant, the JSONL file sink, the ring and the tee logger, on std, serde and serde_json. postretro, renderer and level-compiler depend on it. Payload structs live with their producers. This is not the deferred `postretro-observability-protocol`, which waits on a second typed consumer (roadmap Epic 20). `postretro-stage-timing` stays engine-blind and serde-free.
-- **Envelope.** Each envelope has a schema version, run id, per-process monotonic sequence, monotonic milliseconds since process start, source (`engine` | `prl-build`), level, kind and payload. Level names the running level by its `LevelLoads` generation and map, and is null between levels. Load-family events also carry their own load's generation, because a load beside a running level differs from the running one.
-- **The run brackets itself.** `run_start` carries wall-clock epoch, argv, engine version, and every known producer with its state. The states are enabled, disabled (naming the variable that enables it) or unsupported (with a reason, such as no timestamp queries on the adapter). An absent family is therefore explained, never read as zero (the `cpu_timing` availability precedent, `networking.md`). `run_end` carries the exit reason. A file with no `run_end` is a crash or a kill.
+- **A new leaf crate owns the envelope**, its version and its sinks, on std, serde and serde_json only. Payload structs live with their producers. This is not the deferred `postretro-observability-protocol`, which waits on a second typed consumer (roadmap Epic 20). `postretro-stage-timing` stays engine-blind and serde-free.
+- **Envelope semantics.**
+  - Every envelope carries the run, a per-process sequence, monotonic time since process start, the source process, the running level and a kind.
+  - The running level is the generation and map captured at commit, and is null between levels.
+  - The sequence is the order in which events enter the ring and the file, so a cursor never skips one.
+  - Time can run backward across the sequence between threads.
+- **The run brackets itself.**
+  - `run_start` comes first. It carries wall-clock epoch, argv, engine version, the absolute sink path, and every known producer with its state: enabled, disabled (naming the variable that enables it), pending, or unsupported (with a reason). GPU timing reads pending until the renderer has its adapter. A `producer_state` event then settles it. An absent family is therefore explained, never read as zero (the `cpu_timing` availability precedent, `networking.md`).
+  - `run_end` carries the exit reason. It is written on every exit the process controls: clean, error, panic, and the `process::exit` paths of capture and headless runs. It comes after any final partial windows and is the run's last line; nothing writes after it. Only a kill leaves no `run_end`.
+  - The file is the record of a run's end. A socket client may see the connection drop first.
 - **Telemetry turns on no producer.** CPU and GPU timing keep their own `POSTRETRO_*` gates, and `run_start` reports them. GPU timing has adapter cost and adapter requirements, which a sink switch must not hide.
-- **First kinds:** boot, mod-init and level-load phases with their contained marks, unload, geometry install, the SH and lightmap streaming windows, the CPU and GPU timing windows, bake stage transitions and the bake summary, plus `log`, `run_start` and `run_end`.
-  - Streaming windows carry the window's deltas, the cumulative totals and the elapsed time, so any two events difference cleanly across a drop or a late attach.
-  - A streaming window still open at unload or `run_end` emits a final `partial` event with no log line.
-  - CPU and GPU partial windows stay discarded, as `discard_partial` already rules for level changes.
-  - The CPU window payload is `CpuWindowReport`, the same rendering the live `cpu_timing` dump section uses, so the two cannot drift.
-  - Load phases carry the `.prl` path. The bake summary carries the source map, the output `.prl` and cache skips, so a reducer joins a load to its bake.
-- **File sink: `POSTRETRO_TELEMETRY=<path>`, in every build.** Both the engine and `prl-build` read it, open the file for append, write one whole line per event and flush each line. Event rates are per-load, per-window and per-stage, so flushing every line is cheap and a crash keeps everything written before it. postretro-tool needs no change, because the processes it runs inherit the environment. A failed open or write warns once and disables the sink, and never blocks a frame or a bake.
-- **Bake events come from a `Reporter` decorator** in `prl-build`. It wraps whichever reporter `ReporterMode` picks. The plain and TUI reporters are untouched.
-- **The ring.** One process-wide ring holds typed events and log records, under separate count and byte caps. `run_start` and the latest event of each one-shot load kind are pinned outside the caps, so a late attach still sees what is running and how the level loaded. A log message over its cap truncates and is flagged. An eviction advances a dropped counter, so `seq` gaps are explained.
+- **First kinds:**
+  - **Load family.** Boot, mod-init and level-load phases with their contained marks, carrying the load's generation and its `.prl` path. Unload names the level it unloads. Geometry install is emitted by the app when it takes the load's set, under that load's generation. A set from a cancelled load emits nothing, and the renderer's own line is unchanged.
+  - **Streaming windows.** SH and lightmap windows carry deltas, cumulative totals, elapsed time and the streaming session they measure. Totals restart with each session. A session that ends with counts since its last close emits a final `partial` window: at unload, on replacement within a level, on a world-less clear, or at `run_end`. A partial has no log line. An idle window emits nothing.
+  - **Timing windows.** The CPU window payload is `CpuWindowReport`, the same rendering the live `cpu_timing` dump section uses. CPU windows are cleared at a level change, as today. GPU windows are never reset at a level change and may span one; each GPU window event carries the level current at its close.
+  - **Bake.** Bake stage transitions in every reporter mode, and a bake summary. The summary names the source map and the output `.prl`, so a reducer joins a load to its bake. Stage durations come from the summary alone, because transitions overlap or begin late under the TUI. A failed bake's summary carries no durations.
+  - **The rest:** `log`, `run_start`, `producer_state` and `run_end`.
+- **File sink: `POSTRETRO_TELEMETRY=<path>`, in every build.**
+  - The engine and `prl-build` both read it, and a relative path resolves against each process's working directory.
+  - Each process appends one whole line per event, flushed, so a crash keeps everything before it. Event and info-log rates are per load, per window, per stage and per actionable message (§6.1), so flushing every line is cheap.
+  - Captured log records go to the file as well as the ring.
+  - A failed open or write warns once and disables the sink, without deadlocking against its own warning. It never blocks a frame or a bake.
+- **The ring.**
+  - One process-wide ring holds typed events and log records under separate count and byte caps. A log message over its cap truncates and is flagged.
+  - Pinned outside the caps: `run_start`, the latest `producer_state` per producer, and the latest of each load-family kind. A superseded pin falls under the caps at once.
+  - An eviction advances a dropped counter. The oldest retained sequence ignores pins.
 - **Log capture.** The tee logger forwards to the existing logger with its filter unchanged. With a consumer present (the sink variable, or `--observe-live`), it raises the global max level to info and captures info and above. In `prl-build` it forwards a record to `CollectingLogger` only when that logger's own filter accepts it. With no consumer, logger setup is exactly today's, and a plain run formats no extra records.
 - **Live read: a cursor-polled `events` verb on observe-live, served on the transport thread.**
-  - A request carries `since`, `max`, an optional `kinds` filter, and an optional `wait_ms` long-poll capped at 2000 ms.
-  - A reply returns the events, `next`, `oldest`, `dropped` and `run`. The hello also gains `run`, `oldest` and `next`. Protocol goes from 1 to 2.
-  - Polling over the existing request/response transport keeps the one-connection, single-slot contract, and resumes across reconnects. Server push would need a writer not tied to a reply and per-client backpressure, which `done/E20--live-socket-channel` deferred.
-  - The transport thread serves `events` straight from the ring. It copies out under the lock and serializes outside it.
-  - This amends `networking.md`'s "the main thread builds every reply" for this verb only. That rule exists because registry state is `!Send`. The ring is engine-blind plain data, and logs matter most when the frame loop has stalled. `dump` stays on the main thread.
-- **Pollers close between polls.** Connections are served to completion, so an idle open connection locks out other clients. That is today's contract, not this brief's. `wait_ms` bounds each request's latency, not the lockout.
-- **First consumer: a reducer in `tools/`.** It is stdlib Python with a unittest, and it summarizes one telemetry file for an agent: load-phase table, per-window miss buckets, CPU and GPU p50 and max across windows, and bake stage durations, joined per run and per load. It follows the reducer shape `E20--memory-visibility` set out. `tools/` ships in SDK bundles, so a bundle holder can run it.
+  - A reply returns the pinned events at or after `since`, then the retained events from the oldest, in sequence order, with the next cursor, the oldest, the dropped count and the run.
+  - A `since` beyond the next cursor, or an unknown kind in the filter, returns an error frame naming the current run and cursor.
+  - The hello gains the run and protocol 2. A client finds the cursor by polling with `max` 0.
+  - Polling keeps the one-connection, single-slot contract and resumes across reconnects. Server push would need a writer not tied to a reply and per-client backpressure, which `done/E20--live-socket-channel` deferred.
+  - Serving off the main thread amends `networking.md`'s "the main thread builds every reply" for this verb only. That rule exists because registry state is `!Send`. The ring is engine-blind plain data, and logs matter most when the frame loop has stalled. `dump` stays on the main thread.
+- **First consumer: a reducer in `tools/`.** It is stdlib Python with a unittest. It summarizes one telemetry file: a load-phase table, per-window miss buckets, CPU and GPU p50 and max across windows, and bake stage durations, joined per run and per load. It follows the reducer shape `E20--memory-visibility` set out. `tools/` ships in SDK bundles.
 - **Placement.**
   - Recording is instrumentation in every build (§6.4).
   - The file sink is a surface, and it too ships in every build. This departs from §6.4, which puts surfaces behind features. The reason: the SDK engine carries only `dev-tools`, and `prl-build` has no features, so a gated sink would never reach a bundle holder's bake or run.
-  - The `events` verb rides the existing dependency-free `observe-live` feature. The SDK engine does not enable that feature, so the live half reaches engine developers only, and bundle holders get the file.
+  - The `events` verb rides the dependency-free `observe-live` feature. The SDK engine does not enable that feature, so the live half reaches engine developers only.
   - Nothing new links in release beyond the leaf crate.
 - **Non-goals:**
   - Migrating the measurement scrapers under `measurements/`: they are frozen evidence.
   - Converting other log lines into typed events: other subsystems add a kind later.
-  - Building lightmap miss-cause buckets: the lightmap event carries the counters that exist, and gains the buckets when they land.
-  - Server push and concurrent clients.
+  - Building lightmap miss-cause buckets or per-stage bake cache-hit reporting: neither exists in source. The events carry what does.
+  - Resetting GPU windows at a level change.
+  - A size cap or rotation for the file: it is opt-in, and its growth is per load, per window and per stage.
+  - A long-poll, server push and concurrent clients. Connections are served to completion, so pollers close between polls. A wait field can be added later without a protocol bump.
+  - Fixing the hello's map, which is always empty.
   - Live mutating verbs, the MCP frontend, record/replay, protocol-crate extraction: separate roadmap items.
   - Memory accounting: `E20--memory-visibility` owns it.
   - Dashboards or a TUI: an Epic 20 non-goal.
@@ -47,72 +62,92 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 ## Acceptance
 ### Automated
 **One snapshot, two renderings:**
-- [ ] For each engine kind, one closed snapshot yields a payload and a log line that agree field for field. The fixtures are line C sums and contained marks, a miss bucket, a CPU row's average and max, and a GPU pass mean. A GPU pass with no samples reads absent in the payload, never zero.
+- [ ] For each engine kind, one closed snapshot yields a payload and a log line that agree field for field. The fixtures are line C sums and contained marks, a miss bucket, a CPU row's average and max, and a GPU pass mean. A GPU pass with no samples reads absent, never zero.
 - [ ] With telemetry on and off, stderr is identical, the `prl-build --no-tui` stderr is identical, and the Build Summary stdout is identical. The existing log-capture and CLI-contract tests pass unchanged.
+- [ ] The engine built with no optional features writes the file sink, and so does `prl-build`.
 
-**Edges:**
-- [ ] An idle SH window emits neither a line nor an event.
-- [ ] Unloading 2 s into an SH window emits one `partial` event carrying that window's elapsed time and no line. A CPU window discarded at a level change emits nothing.
-- [ ] A load beside a running level reports `bundle_held` and `running_release`, and no `commit_checks`. Its envelope level names the running level, and its payload names the new load's generation.
-- [ ] A bake fixture's event stream lists the same stages, in order, as the Build Summary, minus the non-stage rows. A cached stage emits a skip, not a finish. A failing bake emits the stages it began, then an unsuccessful summary.
+**Ordering (pins in `research.md`):**
+- [ ] A loading-screen level change writes, in order: the old level's partial windows, its unload naming it, the new load's geometry install, then the new load's phases naming its generation. No unload carries a null level (P3).
+- [ ] A load beside a running level reports `bundle_held`, `commit_checks` and `running_release` as phases, and its commit-frame group holds no `commit_checks`. Its geometry install carries the new load's generation while the envelope names the running level (P4).
+- [ ] A load cancelled after its set build emits neither geometry install nor load phases. Its generation shows as a gap (P13).
+- [ ] Events racing in from the main, upload, loader and logging threads land in strictly increasing sequence with no gap except evictions. A client polling during the race misses none (P5).
+- [ ] With GPU timing requested on an adapter without timestamp queries, `run_start` reads pending, and a later `producer_state` reads unsupported with its reason, before any GPU window could close (P1).
 
-**Run header:**
-- [ ] `run_start` lists every producer: enabled with timing on, disabled (naming the variable) with timing off, and unsupported when GPU timing is requested on an adapter without timestamp queries.
-- [ ] A clean exit writes `run_end`, and a killed process leaves every line it wrote before the kill parseable.
+**Streaming windows:**
+- [ ] An idle SH window emits neither a line nor an event, including at the session's end.
+- [ ] Unloading 2 s into an SH window that has counted something emits one partial carrying that elapsed time, and no line.
+- [ ] A session replaced within a level emits one partial, and the next window's totals restart (P9).
+- [ ] A CPU window cleared at a level change emits nothing. A GPU window spanning a level change names the level current at its close.
+
+**Bake:**
+- [ ] A bake fixture's events list the same stages as the Build Summary, minus the non-stage rows, in summary order. Its summary durations equal the Build Summary's in both the plain and TUI reporter paths (P7).
+- [ ] A stage that produced no output emits a skip, not a finish.
+- [ ] A failing bake emits the stages it began, then an unsuccessful summary with no durations.
+- [ ] A bake that ends before its first stage writes `run_start` and `run_end` with its reason, and no stage events.
+
+**Run bracketing:**
+- [ ] `run_start` lists every producer: enabled with timing on, and disabled with timing off, naming the variable.
+- [ ] A clean exit writes every open window's partial, then `run_end` as the last line. A record logged after `run_end` from any thread writes nothing (P6).
+- [ ] An error exit in the engine and in `prl-build`, a panic, and a capture or headless exit each write `run_end` naming its reason.
+- [ ] A killed process leaves every line written before the kill parseable.
 
 **File sink:**
 - [ ] An unwritable path warns once, and the run completes.
-- [ ] An engine run and a bake appending to one path produce two runs with distinct ids, and every line parses.
+- [ ] A write that fails mid-run warns once and disables the sink without deadlocking. Later events still reach the ring and stderr (P10).
+- [ ] An engine run and a bake appending to one path at the same time produce two runs with distinct ids. Every line parses and is whole, including a log record at its message cap (P11).
+- [ ] A bake run from one working directory and an engine run of its output from another name the same absolute `.prl`, and the reducer joins them.
 
-**Ring bounds:**
-- [ ] Overfilling events by count, events by bytes, and log records by count and by bytes each evicts oldest-first. Each stays at or below its caps, advances `dropped`, and keeps `seq` strictly increasing.
-- [ ] Pinned events survive a full ring.
+**Ring and live `events`:**
+- [ ] Overfilling events by count, events by bytes, and log records by count and by bytes each evicts oldest-first. Each stays at or below its caps, advances `dropped`, and keeps the sequence strictly increasing.
+- [ ] A client attaching after eviction past the latest load reads `run_start`, the latest producer states and that load's phases first, then the retained run from the oldest. A newer load arriving mid-pagination drops the superseded load's phases with `dropped` advanced (P2).
 - [ ] An over-cap message truncates and is flagged.
+- [ ] A `since` older than the oldest retained returns from the oldest, and the reply shows the gap.
+- [ ] A `since` equal to the next cursor returns empty.
+- [ ] A `since` beyond the next cursor returns an error naming the run and cursor.
+- [ ] `max` 0 returns nothing and leaves the cursor unchanged (P8).
+- [ ] A `kinds` filter returns only those kinds and still advances the cursor past the events it filtered out. An unknown kind returns an error.
+- [ ] Two polls, the second from the first's cursor, with events written between them and no eviction, return disjoint results whose sequences run contiguous from the first `since`.
+- [ ] With the main thread blocked, `events` answers at once, both before any `dump` and after a `dump` has timed out. The `dump` times out as it does today (P12).
+- [ ] A protocol-1 client reads the hello, and a malformed `events` body returns an error frame.
 
 **Log capture:**
 - [ ] With a consumer present, an info record is captured while stderr's default filter still hides it, and a debug record outside the filter is not captured.
-- [ ] With no consumer, the global max level is unchanged.
+- [ ] With no consumer, the global max level is unchanged. This is checked in a test process with no other logger installed.
 - [ ] In `prl-build`, an info record does not reach the TUI warnings list.
 
-**Live `events` verb:**
-- [ ] `since` older than the oldest retained `seq` returns from the oldest, and `oldest` and `dropped` show the gap.
-- [ ] `since` equal to `next` returns empty.
-- [ ] `max` 0 returns nothing and leaves `next` unchanged.
-- [ ] A `kinds` filter returns only those kinds and still advances `next` past the events it filtered out.
-- [ ] Two polls with no events between them return disjoint, contiguous results.
-- [ ] `wait_ms` returns as soon as an event arrives, or at the cap when none does. A request over the cap is clamped.
-- [ ] With the main thread blocked, `events` still answers within its `wait_ms`, while a `dump` times out as it does today.
-- [ ] A protocol-1 client reads the hello, and `events` against a malformed body returns an error frame.
-
-**Allocation:**
-- [ ] With the sink and the ring enabled, a frame that closes no window allocates nothing (`alloc_probe`).
-
-**Reducer:**
-- [ ] The reducer's unittest summarizes a checked-in two-run sample (one bake, then an engine run) into the expected per-load and per-window tables.
+**Allocation and the reducer:**
+- [ ] With the sink and the ring enabled, the streaming windows' and the CPU timer's per-frame paths allocate nothing on a frame that closes no window and logs nothing at info (`alloc_probe`).
+- [ ] The reducer's unittest summarizes a checked-in two-run sample (a bake, then an engine run) into the expected per-load and per-window tables.
+- [ ] Every line of that sample parses as a current envelope in the leaf crate's tests.
 
 ### Manual
-- [ ] A stress-warren run through `postretro-tool run` with `POSTRETRO_TELEMETRY` and both timing variables set produces one file that holds the bake and the engine run. The reducer's tables match the stderr lines. Use Windows or Vulkan for GPU rows, because Metal reports GPU timing unsupported.
-- [ ] An agent polling `events` on a windowed session across a level change sees unload, load phases, then streaming windows, with no unexplained `seq` gap at default caps.
+- [ ] Bake a stress-warren map with `prl-build`, then run its output through `postretro-tool run`. Set the same absolute `POSTRETRO_TELEMETRY` path and both timing variables for both. The result is one file holding the bake and the engine run, and the reducer's tables match the stderr lines. Use Windows or Vulkan for GPU rows, because Metal reports GPU timing unsupported.
+- [ ] An agent polling `events` on a windowed session across a level change sees the old level's unload before the new level's load phases, every streaming window tagged with the level it measured, and no unexplained sequence gap at default caps.
 
 ## Path
-- Precedents: `CollectingLogger` / `LogSink` in level-compiler for a collecting `log` backend with a bounded queue. The `cpu_timing` live-only section for the shape of an availability field. `serve_connection` and `read_request_frame` for where the transport peeks the verb before the single-slot queue.
-- Emit points:
-  - `StartupTimings::log_level_line` and the boot and mod `summary` sites.
-  - `unload_level`.
-  - `GeometryInstallMarks::log` on the upload thread.
-  - `ShStreamingLogWindow::line_if_due` and `LightmapStreamingLogWindow`.
+- **Precedents:**
+  - `CollectingLogger` / `LogSink` in level-compiler, for a collecting `log` backend.
+  - The live `cpu_timing` section, for an availability shape.
+  - `serve_connection` / `read_request_frame`, for where the transport peeks the verb before the single-slot queue.
+  - test-log-capture's sequence-then-insert, for one-lock ordering.
+- **Emit points:**
+  - `StartupTimings::log_level_line` and the boot and mod summary sites.
+  - `unload_level`: capture the level before it is cleared.
+  - The app's take of the set: the renderer hands back `GeometryInstallMarks` as plain data.
+  - `ShStreamingLogWindow::line_if_due` and `LightmapStreamingLogWindow`, plus each session-ending path.
   - `FrameTimer::log_last_window`.
   - `FrameTiming::accumulate`.
-  - The `Reporter` calls in level-compiler `pipeline.rs`.
-- `StartupTimings` keeps its contained marks private. Expose a typed view; do not reparse `summary()`.
-- Rival shapes:
-  - A socket-only stream with no file. Rejected: the agent that launched the run is the common consumer, and bake events have no socket.
-  - A file only, with the hello naming the file's path. Rejected for two reasons:
-    - An active agent consumer reads the stream live.
-    - The MCP frontend (roadmap Epic 20) exposes live verbs as tools, and a path in the hello gives it no tool.
-- First slice: the leaf crate, `run_start`/`run_end`, line C as an event, and the file sink in the engine. This proves the snapshot-to-envelope path and append-mode framing before fanning out to the other emit points.
-- `startup/mod.rs` and level-compiler `main.rs` are past 800 lines. Keep new logic in new modules and add only calls there.
-- `ObserveResponse::Ok` carries `dump` today. Reshape the response vocabulary so `events` has its own body without breaking the dump path.
+  - The `Reporter` calls in level-compiler `pipeline.rs`, through a decorator around whichever reporter `ReporterMode` picks.
+- **Typed views.** `StartupTimings` keeps its contained marks private. Expose a typed view; do not reparse `summary()`. Nothing keeps the running level's generation after commit, so capture it there.
+- **Sink mechanics.**
+  - The leaf crate holds the envelope, the JSONL sink, the ring and the tee logger.
+  - Take the sequence, insert into the ring and write the line under one lock.
+  - Format any warning outside that lock.
+  - Serve `events` by copying out under the lock and serializing outside it.
+- **Process wiring.** postretro-tool needs no change, because child processes inherit the environment. `ObserveResponse::Ok` carries `dump` today, so reshape the response vocabulary to give `events` its own body.
+- **Rival shapes** (a socket-only stream; a file only, with the hello naming its path) are weighed in `research.md`.
+- **First slice:** the leaf crate, `run_start`/`run_end`, line C as an event, and the file sink in the engine. This proves snapshot-to-envelope and append framing before fanning out.
+- **Large files.** `startup/mod.rs` and level-compiler `main.rs` are past 800 lines. Put new logic in new modules and add only calls there.
 
 ## Open questions
 - Ring cap values (counts, bytes, message cap) — **delegated**: pick from a stress-warren session's observed rates and report them with that measurement.
@@ -125,16 +160,17 @@ Agents diagnosing a run read its diagnostics as text, and an agent attached to a
 | Envelope fields | serde snake_case | `v`, `run`, `seq`, `t_ms`, `source`, `level`, `kind`, `payload` |
 | Level | `Option<…>` | `{"gen": u64, "map": string}` or `null` |
 | Source | enum | `"engine"`, `"prl-build"` |
-| Kinds | enum, snake_case | `run_start`, `run_end`, `log`, `boot_phases`, `mod_phases`, `load_phases`, `unload`, `geometry_install`, `sh_streaming_window`, `lightmap_streaming_window`, `cpu_timing_window`, `gpu_timing_window`, `bake_stage`, `bake_summary` |
-| Producer state | enum | `"enabled"`, `"disabled"`, `"unsupported"` |
+| Kinds | enum, snake_case | `run_start`, `producer_state`, `run_end`, `log`, `boot_phases`, `mod_phases`, `load_phases`, `unload`, `geometry_install`, `sh_streaming_window`, `lightmap_streaming_window`, `cpu_timing_window`, `gpu_timing_window`, `bake_stage`, `bake_summary` |
+| Producer state | enum | `"enabled"`, `"disabled"`, `"pending"`, `"unsupported"` |
 | Env var | — | `POSTRETRO_TELEMETRY` |
-| Live verb | `ObserveRequest` variant | `{"verb":"events","since":u64,"max":u32,"kinds":[string]?,"wait_ms":u32?}` |
+| Live verb | `ObserveRequest` variant | `{"verb":"events","since":u64,"max":u32,"kinds":[string]?}` |
 | Live reply | response body | `events`, `next`, `oldest`, `dropped`, `run` |
-| Hello additions | `ServerHello` | `run`, `oldest`, `next`; `protocol` = 2 |
+| Hello addition | `ServerHello` | `run`; `protocol` = 2 |
 
 ## Wire format
-- **File:** UTF-8 JSONL, one envelope per line ending `\n`, written as one append per line and flushed.
+- **File:** UTF-8 JSONL, one envelope per line ending `\n`, each line written as a single append and flushed.
 - **Socket:** the existing observe-live framing (little-endian u32 length prefix, JSON body, 64 KiB request cap).
 - **Fields:**
-  - `seq` and `t_ms` are unsigned. `seq` starts at 0 at each `run_start`. Absent optional payload values serialize as `null`, never `0`.
-  - An empty `events` reply is `[]`. `oldest` equals `next` when nothing is retained.
+  - `seq` and `t_ms` are unsigned, and `seq` starts at 0 with each process's `run_start`.
+  - Absent optional payload values serialize as `null`, never `0`.
+  - An empty `events` reply is `[]`, and `oldest` equals `next` when nothing unpinned is retained.

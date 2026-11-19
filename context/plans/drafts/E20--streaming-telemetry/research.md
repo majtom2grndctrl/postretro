@@ -24,7 +24,7 @@ Measurement scrapers: `measurements/shadow-fill-cost/timing.py`, `measurements/r
 - observe-live:
   - It is strict request/response with one client, and each connection is served to completion (`second_client_waits_behind_open_first_client`).
   - The queue is a single-slot `sync_channel`. The main thread drains it at the Input stage, `OBSERVE_LIVE_REQUESTS_PER_FRAME` = 1, with a 5 s reply timeout.
-  - `ServerHello` is serialized once at spawn, so its `map` goes stale after a level change.
+  - `ServerHello` is serialized once at spawn; its `map` is empty from the start.
   - `OBSERVE_LIVE_PROTOCOL` = 1.
 - `LevelLoads::generation` increments when each load starts, including loads later cancelled. `ActiveLevelLoad` holds `generation` and `map_path`. `LoadOrder::Beside` runs a load while another level is still running.
 
@@ -55,3 +55,42 @@ All three landed.
 - `done/E20--live-socket-channel` made streaming and concurrent clients out of scope, and made the main thread build every reply. This brief amends the latter for one engine-blind verb.
 - `drafts/E20--memory-visibility` defers continuous telemetry here, and set the stdlib-Python reducer shape in `tools/`.
 - `development_guide.md` §6.4: instrumentation records in every build behind `POSTRETRO_*`; surfaces sit behind dependency-free features.
+
+## Ordering pins
+
+| Id | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | GPU timing requested on an adapter without timestamp queries | `run_start` (GPU pending) → boot records → adapter created → `producer_state` | GPU reads unsupported, with its reason, before any GPU window could close |
+| P2 | Late attach after eviction; a newer load arrives mid-pagination | pinned events at or after `since` → retained run from `oldest` | client reads `run_start`, producer states and the latest load first; the superseded pin falls under the caps and `dropped` advances |
+| P3 | Loading-screen level change | partial(old) → unload(old) → geometry_install(new gen) → load_phases(new gen) | unload never carries a null level; it captures the level before `unload_level` clears it |
+| P4 | Load beside a running level | geometry_install(new gen, envelope = running) … running_release → load_phases logged after reveal | line C holds `commit_checks` before `running_release`; its commit-frame group has none |
+| P5 | Concurrent emitters on main, upload, loader and logging threads | sequence taken, ring insert and file write under one lock | strictly increasing sequence; `t_ms` may run backward across it; a cursor never skips |
+| P6 | Exit with open windows and live background threads | partials → `run_end` → nothing | `run_end` last in file and ring, for clean, error, panic and `process::exit` paths |
+| P7 | Overlapping, late-begun or zero-length bake stage | begin/end order = summary order; equal `t_ms` ordered by sequence | durations from the summary; transitions carry order only |
+| P8 | `max` 0 | returns at once | nothing returned; cursor unchanged |
+| P9 | Streaming events across levels or a session replacement | totals restart at a session's first window | differencing is valid only within one session |
+| P10 | Sink write fails while its lock is held | warning formatted and emitted outside the sink lock | no deadlock; sink disabled; ring and stderr continue |
+| P11 | Two processes append at once | one write call per whole line | lines interleave whole, never split |
+| P12 | Main thread blocked; `dump` then `events` | `dump` holds the transport up to 5 s | `events` answers at once once the `dump` has timed out |
+| P13 | A load superseded after its set build | set built (gen k) → cancel → no app take | no geometry_install or load_phases for k; gap explained as cancelled |
+
+## Detail review, round 1
+
+- **Premise lens:** checked 32 Decision premises.
+  - Cache skips: the Reporter's skip means a stage produced no output; cache hits finish. Per-stage cache hits are counted only in a test seam.
+  - Timing windows across a level change: level change calls `level_changed` → `StageWindow::clear`, not `discard_partial`. GPU `FrameTiming` is reset only by capture.
+  - A beside load's line C is logged after it becomes the running level.
+  - GPU timestamp support is known only after renderer init.
+  - The hello is serialized once.
+  - postretro-tool sets the project root as working directory.
+  - Capture, headless and early-error exits use `process::exit`.
+  - Under the TUI, Reporter transitions overlap.
+  - Streaming sessions also end mid-level.
+- **Rows lens:** supplied the ordering pins above and the rows built on them.
+- **Subtract lens:** removed the long-poll, moved implementation detail to Path, cut wire facts restated in Decisions, and named the file-size and hello-map non-goals.
+- The owner approved the resulting Decisions.
+
+## Rival shapes
+
+- **Socket-only stream, no file.** Rejected: the agent that launched the run is the common consumer, and bake events have no socket.
+- **File only, with the hello naming its path.** Weighed at direction review. Rejected because an active agent consumer reads the stream live, and the MCP frontend exposes live verbs as tools; a path in a hello gives it no tool.

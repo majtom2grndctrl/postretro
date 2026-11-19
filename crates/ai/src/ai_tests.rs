@@ -14079,6 +14079,9 @@ mod clip_timed;
 #[path = "stance_pose_tests.rs"]
 mod stance_pose;
 
+#[path = "targeting_equivalence_tests.rs"]
+mod targeting_equivalence;
+
 #[test]
 fn contact_attack_deals_its_damage_type() {
     let mut reg = EntityRegistry::new();

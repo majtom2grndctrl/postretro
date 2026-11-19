@@ -420,6 +420,10 @@ pub(super) fn select_target_with_attacker_ledger(
 }
 
 #[cfg(test)]
+#[path = "targeting_reference.rs"]
+pub(crate) mod reference;
+
+#[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 

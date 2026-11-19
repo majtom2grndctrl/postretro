@@ -158,6 +158,7 @@ impl App {
                 .as_ref()
                 .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
                 .cloned(),
+            spawn_checkpoint: session.saves.spawn_checkpoint().map(str::to_owned),
         };
         let mut first_player_placement = None;
         let products = install_world_cpu_with_models(
@@ -264,6 +265,7 @@ impl App {
         // Retain spawn-point placements for the host's runtime seat-accept path:
         // each accepted client's descriptor pawn materializes from them later.
         self.host_spawn_points = products.spawn_points;
+        self.level_spawn_points = products.level_spawn_points;
 
         // The boot pawn exists before the regular host snapshot cadence (and in
         // single-player there is no `WeaponOwners` table at all), so establish its

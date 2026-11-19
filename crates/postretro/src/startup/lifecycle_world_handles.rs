@@ -58,6 +58,8 @@ pub(crate) struct WorldInstallProducts {
     /// The map's `player_spawn` placements, retained by the windowed host for the
     /// runtime net-slot accept path.
     pub(crate) spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+    /// Every `player_spawn`, keyed or not, for a later checkpoint's set.
+    pub(crate) level_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
 }
 
 /// Bind the installed first player to the host's seat (seat 0) and record the
@@ -136,4 +138,7 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// Seat-zero carried record, resolved by the caller before descriptor spawn. The
     /// world installer remains seat-table agnostic.
     pub(crate) local_carried_loadout: Option<postretro_combat_model::CarriedState>,
+    /// The checkpoint whose arrival set the level starts from: Continue's own
+    /// arrival at a saved checkpoint; `None` is the level-start set.
+    pub(crate) spawn_checkpoint: Option<String>,
 }

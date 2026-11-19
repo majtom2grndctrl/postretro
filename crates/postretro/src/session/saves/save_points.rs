@@ -12,6 +12,11 @@ use crate::session::progress_save::save_world_and_character;
 /// later gear; then the character, then the world. A destination with no
 /// catalog id (a path load) leaves the run's level unchanged.
 pub(crate) fn save_on_level_start(session: &mut Session, destination: Option<&str>) {
+    // A level start arrives at its level-start spawns; Continue's own arrival
+    // keeps the run's checkpoint set, which Continue chose.
+    if !session.saves.is_continue_arrival(destination) {
+        session.saves.set_spawn_checkpoint(None);
+    }
     if !session.state_store_lifecycle.can_save() {
         return;
     }
@@ -44,5 +49,6 @@ pub(crate) fn save_on_frontend_entry(session: &mut Session, played_level_unloade
     }
     session.saves.set_run_active(false);
     session.saves.set_run_load_queued(false);
+    session.saves.set_spawn_checkpoint(None);
     publish_save_rows(session);
 }

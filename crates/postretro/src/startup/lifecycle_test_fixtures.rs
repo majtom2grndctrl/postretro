@@ -243,6 +243,7 @@ pub(crate) fn test_app() -> App {
         published_level_identity: None,
         pending_splash_override: None,
         host_spawn_points: Vec::new(),
+        level_spawn_points: Vec::new(),
         spawn_poses: Default::default(),
         script_time: 0.0,
         anim_time: 0.0,
@@ -564,6 +565,7 @@ pub(crate) fn install_descriptor_world(
             suppress_host_replicated,
             suppress_boot_pawn: suppress_host_replicated,
             local_carried_loadout: None,
+            spawn_checkpoint: None,
         };
         install_world_cpu(
             handles,
@@ -630,6 +632,7 @@ pub(crate) fn install_capture_world(
         suppress_host_replicated: false,
         suppress_boot_pawn: true,
         local_carried_loadout: None,
+        spawn_checkpoint: None,
     };
     let products = install_world_cpu(
         handles,

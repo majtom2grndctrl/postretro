@@ -29,6 +29,51 @@ pub fn is_coop_only(spawn: &MapEntity) -> bool {
     })
 }
 
+/// `player_spawn` key: the checkpoint whose arrival set this spawn joins.
+/// Spawns without it form the level-start set.
+pub const CHECKPOINT_KEY: &str = "checkpoint";
+
+fn checkpoint_name(spawn: &MapEntity) -> Option<&str> {
+    spawn
+        .key_values
+        .get(CHECKPOINT_KEY)
+        .map(String::as_str)
+        .filter(|name| !name.is_empty())
+}
+
+/// The spawns arrival, respawn and late joiners use: a checkpoint's set when
+/// `checkpoint` names one, else the level-start set of unkeyed spawns. A
+/// checkpoint naming no spawn falls back to the level-start set, and a level
+/// whose spawns are all keyed starts from all of them, each with a warning.
+/// Map order is kept, so the ordinary spawn rules choose within the set.
+pub fn active_spawn_set(spawn_points: &[MapEntity], checkpoint: Option<&str>) -> Vec<MapEntity> {
+    if let Some(name) = checkpoint {
+        let set: Vec<MapEntity> = spawn_points
+            .iter()
+            .filter(|spawn| checkpoint_name(spawn) == Some(name))
+            .cloned()
+            .collect();
+        if !set.is_empty() {
+            return set;
+        }
+        log::warn!(
+            "[Loader] checkpoint `{name}` names no player_spawn; using the level-start spawns"
+        );
+    }
+    let level_start: Vec<MapEntity> = spawn_points
+        .iter()
+        .filter(|spawn| checkpoint_name(spawn).is_none())
+        .cloned()
+        .collect();
+    if level_start.is_empty() && !spawn_points.is_empty() {
+        log::warn!(
+            "[Loader] every player_spawn carries a `{CHECKPOINT_KEY}` key; the level start uses all of them"
+        );
+        return spawn_points.to_vec();
+    }
+    level_start
+}
+
 /// The order the first player tries spawn points in, each paired with whether
 /// it is [`COOP_ONLY_KEY`]: every open spawn in map order, then the co-op-only
 /// ones as a fallback. Reads each spawn's key once, so a malformed value warns
@@ -154,6 +199,69 @@ mod tests {
             first_player_spawn_order(&points),
             vec![(0, true), (1, true)]
         );
+    }
+
+    fn names(points: &[MapEntity]) -> Vec<Option<String>> {
+        points
+            .iter()
+            .map(|spawn| spawn.key_values.get(CHECKPOINT_KEY).cloned())
+            .collect()
+    }
+
+    #[test]
+    fn level_start_skips_keyed_spawns_unless_all_keyed() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let points = [
+            spawn(&[(CHECKPOINT_KEY, "bridge")]),
+            spawn(&[]),
+            spawn(&[(CHECKPOINT_KEY, "bridge")]),
+            spawn(&[(CHECKPOINT_KEY, "")]),
+        ];
+        assert_eq!(
+            names(&active_spawn_set(&points, None)),
+            [None, Some(String::new())]
+        );
+        assert_eq!(
+            names(&active_spawn_set(&points, Some("bridge"))),
+            [Some("bridge".into()), Some("bridge".into())]
+        );
+        capture.assert_not_logged(log::Level::Warn, "player_spawn");
+
+        let keyed = [
+            spawn(&[(CHECKPOINT_KEY, "a")]),
+            spawn(&[(CHECKPOINT_KEY, "b")]),
+        ];
+        assert_eq!(active_spawn_set(&keyed, None).len(), 2);
+        capture.assert_logged(
+            log::Level::Warn,
+            "every player_spawn carries a `checkpoint` key",
+        );
+    }
+
+    #[test]
+    fn fgd_declares_the_checkpoint_key_on_player_spawn() {
+        let fgd = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../sdk/TrenchBroom/postretro.fgd"),
+        )
+        .unwrap();
+        let block = fgd
+            .split("= player_spawn :")
+            .nth(1)
+            .and_then(|rest| rest.split("\n]").next())
+            .expect("the FGD declares player_spawn");
+        assert!(
+            block.contains(&format!("{CHECKPOINT_KEY}(string)")),
+            "player_spawn lacks `{CHECKPOINT_KEY}`: {block}"
+        );
+    }
+
+    #[test]
+    fn unknown_checkpoint_falls_back_to_level_start_set() {
+        let capture = postretro_test_log_capture::LogCapture::start();
+        let points = [spawn(&[(CHECKPOINT_KEY, "bridge")]), spawn(&[])];
+        assert_eq!(names(&active_spawn_set(&points, Some("vault"))), [None]);
+        capture.assert_logged(log::Level::Warn, "checkpoint `vault` names no player_spawn");
     }
 
     #[test]

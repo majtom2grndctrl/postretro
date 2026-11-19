@@ -49,6 +49,9 @@ pub(crate) struct SaveSlots {
     /// Continue or `newRun` queued its level: every later save verb is
     /// refused until the frontend is entered again.
     run_load_queued: bool,
+    /// The checkpoint whose spawn set arrival, respawn and late joiners use
+    /// in the current level; `None` is the level-start set.
+    spawn_checkpoint: Option<String>,
 }
 
 impl SaveSlots {
@@ -76,6 +79,19 @@ impl SaveSlots {
 
     pub(crate) fn run_active(&self) -> bool {
         self.run_active
+    }
+
+    pub(crate) fn spawn_checkpoint(&self) -> Option<&str> {
+        self.spawn_checkpoint.as_deref()
+    }
+
+    pub(crate) fn set_spawn_checkpoint(&mut self, checkpoint: Option<String>) {
+        self.spawn_checkpoint = checkpoint;
+    }
+
+    /// Whether a level start at `catalog_id` is Continue's own arrival.
+    pub(crate) fn is_continue_arrival(&self, catalog_id: Option<&str>) -> bool {
+        self.continue_arrival.is_some() && self.continue_arrival.as_deref() == catalog_id
     }
 
     pub(crate) fn run_load_queued(&self) -> bool {

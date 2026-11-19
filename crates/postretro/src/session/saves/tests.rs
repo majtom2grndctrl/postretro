@@ -1,13 +1,10 @@
 // Save slots at boot: migration from `state.json`, implicit slots, the stored
 // selection and the `saves.*` rows.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use postretro_entities::data_registry::{DEFAULT_ENEMY_FACTION_INDEX, PLAYER_FACTION_INDEX};
-use postretro_entities::slot_table::{
-    ReplicationScope, SlotOwnership, SlotRecord, SlotSchema, SlotType, SlotValue,
-};
+use postretro_entities::slot_table::SlotValue;
 use postretro_foundation::Seat;
 use postretro_net::wire::PlayerClaimId;
 use postretro_scripting_core::runtime::SavesManifest;

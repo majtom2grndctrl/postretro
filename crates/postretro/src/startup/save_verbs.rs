@@ -53,7 +53,7 @@ impl App {
                     .and_then(|()| self.delete_run_verb(index)),
             ),
             SystemReactionCommand::Checkpoint { name, .. } => {
-                log::debug!("[State] checkpoint `{name}` not yet handled");
+                self.checkpoint_step(&name);
                 return;
             }
             _ => return,
@@ -222,6 +222,13 @@ impl App {
         set_seat_zero_carry_from_selection(session);
         session.saves.set_run_active(true);
         session.saves.mark_continue_arrival(&level);
+        // Continue arrives at the run's checkpoint, if it reached one.
+        session.saves.set_spawn_checkpoint(
+            document
+                .level
+                .as_ref()
+                .and_then(|level| level.checkpoint.clone()),
+        );
         self.queue_run_level(level);
         Ok(())
     }
@@ -280,5 +287,69 @@ impl App {
             session.saves.set_run_load_queued(true);
         }
         self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(level)));
+    }
+}
+
+impl App {
+    /// A `checkpoint(name)` step on the host or in single player: the
+    /// checkpoint's spawn set takes over for respawn and late joiners, the
+    /// active run saves at it, then the character and the world save as they
+    /// are now. Outside a run only the character and world save; on a
+    /// connected client and in the frontend backdrop it does nothing.
+    fn checkpoint_step(&mut self, name: &str) {
+        if self.session_role() == SessionRole::Client {
+            log::debug!("[State] checkpoint `{name}` ignored on a connected client");
+            return;
+        }
+        if !self.played_level_present() {
+            log::debug!("[State] checkpoint `{name}` ignored outside a played level");
+            return;
+        }
+        self.harvest_seat_zero_for_save();
+        self.apply_spawn_checkpoint(Some(name.to_owned()));
+        let catalog_id = match self.active_level_source.as_ref() {
+            Some(LevelSource::Catalog(id)) => Some(id.clone()),
+            _ => None,
+        };
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        if !session.state_store_lifecycle.can_save() {
+            return;
+        }
+        if session.saves.run_active()
+            && let Some(catalog_id) = catalog_id
+        {
+            let (_, live) = collect_world_and_run(session);
+            if !session.saves.save_run_progress(
+                &catalog_id,
+                crate::session::saves::RunCheckpoint::Set(name.to_owned()),
+                live,
+            ) {
+                log::warn!(
+                    "[State] the run did not save at checkpoint `{name}`; keeping the character as it was"
+                );
+                return;
+            }
+        }
+        let _ = crate::session::progress_save::save_world_and_character(session);
+        publish_save_rows(session);
+    }
+
+    /// Make `checkpoint`'s spawn set the level's active set. Placements made
+    /// against the previous set reset, and respawn republishes against the
+    /// new one.
+    pub(crate) fn apply_spawn_checkpoint(&mut self, checkpoint: Option<String>) {
+        self.host_spawn_points = crate::scripting::builtins::player_spawn::active_spawn_set(
+            &self.level_spawn_points,
+            checkpoint.as_deref(),
+        );
+        if let Some(session) = self.session.as_mut() {
+            session.saves.set_spawn_checkpoint(checkpoint);
+            if let Some(seats) = session.seat_table.as_mut() {
+                seats.reset_placements_for_spawn_set();
+            }
+        }
+        self.refresh_respawn_placements();
     }
 }

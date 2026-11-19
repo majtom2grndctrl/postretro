@@ -78,6 +78,9 @@ mod lifecycle_unload_tests;
 mod lifecycle_world_cpu;
 #[path = "lifecycle_world_handles.rs"]
 mod lifecycle_world_handles;
+#[cfg(test)]
+#[path = "save_verbs_tests.rs"]
+mod save_verbs_tests;
 #[path = "session_entry.rs"]
 pub(crate) mod session_entry;
 #[cfg(test)]

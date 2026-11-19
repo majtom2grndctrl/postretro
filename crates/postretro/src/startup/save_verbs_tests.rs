@@ -344,9 +344,9 @@ fn continue_installs_run_with_its_character() {
     set(&app, GENERATOR, 5.0);
     // The run reaches `second` with the generator on.
     app.drain_level_requests();
-    app.enqueue_level_request(super::LevelRequest::Load(super::LevelSource::Catalog(
-        "second".into(),
-    )));
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("second".into()),
+    ));
     app.drain_level_requests();
     back_to_frontend(&mut app);
     character(&mut app, 1, "Ash");
@@ -366,7 +366,7 @@ fn continue_installs_run_with_its_character() {
     assert!(
         app.level_requests.iter().any(|request| matches!(
             request,
-            super::LevelRequest::Load(super::LevelSource::Catalog(id)) if id == "second"
+            crate::startup::LevelRequest::Load(crate::startup::LevelSource::Catalog(id)) if id == "second"
         )),
         "Continue queues the run's level"
     );
@@ -571,16 +571,16 @@ fn failed_load_still_continues_at_destination() {
     app.handle_save_verb(new_run(0, "next"));
     // The level start names `second`, whose file never loads.
     app.drain_level_requests();
-    app.enqueue_level_request(super::LevelRequest::Load(super::LevelSource::Catalog(
-        "second".into(),
-    )));
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("second".into()),
+    ));
     app.drain_level_requests();
     back_to_frontend(&mut app);
 
     app.handle_save_verb(continue_run(0));
     assert!(app.level_requests.iter().any(|request| matches!(
         request,
-        super::LevelRequest::Load(super::LevelSource::Catalog(id)) if id == "second"
+        crate::startup::LevelRequest::Load(crate::startup::LevelSource::Catalog(id)) if id == "second"
     )));
 }
 
@@ -590,7 +590,7 @@ fn install_pawn(app: &mut App, played: bool, shells: u32) {
     use postretro_entities::components::health::HealthComponent;
     use postretro_entities::data_descriptors::HealthDescriptor;
     use postretro_entities::{AmmoReserve, Transform};
-    app.boot_state = super::BootState::Running;
+    app.boot_state = crate::startup::BootState::Running;
     app.backdrop_installed = !played;
     let ctx = script_ctx(app);
     let session = app.session.as_mut().unwrap();
@@ -632,9 +632,9 @@ fn new_character_carries_gear_and_second_starts_empty() {
 
     // The first level: a pickup, then the level start of the second.
     install_pawn(&mut app, true, 9);
-    app.enqueue_level_request(super::LevelRequest::Load(super::LevelSource::Catalog(
-        "second".into(),
-    )));
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("second".into()),
+    ));
     app.drain_level_requests();
     assert_eq!(carry(&app).unwrap().reserve.available("shells"), 9);
     let saved = read_document(&saves(dir.path()).character_path(0))
@@ -646,4 +646,218 @@ fn new_character_carries_gear_and_second_starts_empty() {
     character(&mut app, 1, "Ash");
     app.handle_save_verb(new_run(1, "next"));
     assert_eq!(carry(&app), None, "a second new character starts with none");
+}
+
+fn checkpoint(name: &str) -> SystemReactionCommand {
+    SystemReactionCommand::Checkpoint {
+        name: name.into(),
+        dispatch_source: src(),
+        origin: origin(),
+    }
+}
+
+/// `next`'s spawns: two at the level start, two at checkpoint `bridge`.
+fn spawn_points() -> Vec<postretro_sim::scripting::map_entity::MapEntity> {
+    let mut points = super::spawn_pose_handoff_fixtures::spawn_points(4);
+    for point in &mut points[2..] {
+        point
+            .key_values
+            .insert("checkpoint".into(), "bridge".into());
+    }
+    points
+}
+
+/// A run of Vex's in progress at `next`, with `next`'s spawns installed at
+/// its level-start set.
+fn run_in_next(dir: &std::path::Path) -> App {
+    let mut app = frontend(dir);
+    script_ctx(&app).data_registry.borrow_mut().entities =
+        super::spawn_pose_handoff_fixtures::descriptors();
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+    app.drain_level_requests();
+    played_next(&mut app);
+    app
+}
+
+/// `next` installed and played, at its level-start set.
+fn played_next(app: &mut App) {
+    install_pawn(app, true, 9);
+    app.active_level_source = Some(crate::startup::LevelSource::Catalog("next".into()));
+    app.level_spawn_points = spawn_points();
+    let checkpoint = app
+        .session
+        .as_ref()
+        .unwrap()
+        .saves
+        .spawn_checkpoint()
+        .map(str::to_owned);
+    app.apply_spawn_checkpoint(checkpoint);
+}
+
+fn run_level(dir: &std::path::Path) -> (String, Option<String>) {
+    let level = run_file(dir, 0).unwrap().level.unwrap();
+    (level.catalog_id, level.checkpoint)
+}
+
+fn active_keys(app: &App) -> Vec<Option<String>> {
+    app.host_spawn_points
+        .iter()
+        .map(|spawn| spawn.key_values.get("checkpoint").cloned())
+        .collect()
+}
+
+#[test]
+fn checkpoint_saves_and_continue_arrives_in_its_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = run_in_next(dir.path());
+    assert_eq!(active_keys(&app), [None, None]);
+
+    app.handle_save_verb(checkpoint("bridge"));
+
+    assert_eq!(
+        run_level(dir.path()),
+        ("next".into(), Some("bridge".into()))
+    );
+    assert!(saves(dir.path()).character_path(0).exists());
+    assert_eq!(
+        active_keys(&app),
+        [Some("bridge".into()), Some("bridge".into())]
+    );
+    // Respawn and late joiners choose within the checkpoint's set.
+    let ctx = script_ctx(&app);
+    let published = ctx.respawn_placements.borrow();
+    assert_eq!(
+        published
+            .map_order
+            .iter()
+            .map(|placement| placement.map_index)
+            .collect::<Vec<_>>(),
+        [0, 1],
+        "indices into the active set: the two bridge spawns"
+    );
+    drop(published);
+
+    // Continue arrives at `bridge`, and keeps it at its own level start (P11).
+    back_to_frontend(&mut app);
+    app.handle_save_verb(continue_run(0));
+    app.drain_level_requests();
+    assert_eq!(
+        app.session.as_ref().unwrap().saves.spawn_checkpoint(),
+        Some("bridge")
+    );
+    assert_eq!(
+        run_level(dir.path()),
+        ("next".into(), Some("bridge".into()))
+    );
+    played_next(&mut app);
+    assert_eq!(
+        active_keys(&app),
+        [Some("bridge".into()), Some("bridge".into())]
+    );
+
+    // Quitting and Continue again with no save point between: `bridge` again.
+    back_to_frontend(&mut app);
+    app.handle_save_verb(continue_run(0));
+    app.drain_level_requests();
+    assert_eq!(
+        app.session.as_ref().unwrap().saves.spawn_checkpoint(),
+        Some("bridge")
+    );
+}
+
+#[test]
+fn unknown_checkpoint_falls_back_and_level_start_clears() {
+    let capture = postretro_test_log_capture::LogCapture::start();
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = run_in_next(dir.path());
+
+    app.handle_save_verb(checkpoint("vault"));
+    capture.assert_logged(log::Level::Warn, "checkpoint `vault` names no player_spawn");
+    assert_eq!(active_keys(&app), [None, None]);
+
+    app.handle_save_verb(checkpoint("bridge"));
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("second".into()),
+    ));
+    app.drain_level_requests();
+    assert_eq!(run_level(dir.path()), ("second".into(), None));
+    assert_eq!(app.session.as_ref().unwrap().saves.spawn_checkpoint(), None);
+}
+
+#[test]
+fn checkpoint_scope_by_run_and_scene() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = run_in_next(dir.path());
+    // Outside an active run: only the character saves.
+    back_to_frontend(&mut app);
+    let run_before = std::fs::read(saves(dir.path()).run_path(0)).unwrap();
+    app.session.as_mut().unwrap().modal_stack.clear_pushed();
+    played_next(&mut app);
+    app.handle_save_verb(checkpoint("bridge"));
+    assert_eq!(
+        std::fs::read(saves(dir.path()).run_path(0)).unwrap(),
+        run_before
+    );
+    let saved = read_document(&saves(dir.path()).character_path(0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.seats[0].loadout.reserve.get("shells"), Some(&9));
+
+    // In the frontend backdrop: nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    install_pawn(&mut app, false, 9);
+    let before = std::fs::read(saves(dir.path()).character_path(0)).unwrap();
+    app.handle_save_verb(checkpoint("bridge"));
+    assert_eq!(
+        std::fs::read(saves(dir.path()).character_path(0)).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn checkpoint_and_load_level_in_one_reaction_resume_destination() {
+    for checkpoint_first in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = run_in_next(dir.path());
+        let load = || {
+            crate::startup::LevelRequest::Load(crate::startup::LevelSource::Catalog(
+                "second".into(),
+            ))
+        };
+        if checkpoint_first {
+            app.handle_save_verb(checkpoint("bridge"));
+            app.enqueue_level_request(load());
+        } else {
+            app.enqueue_level_request(load());
+            app.handle_save_verb(checkpoint("bridge"));
+        }
+        app.drain_level_requests();
+        assert_eq!(
+            run_level(dir.path()),
+            ("second".into(), None),
+            "checkpoint first: {checkpoint_first}"
+        );
+    }
+}
+
+#[test]
+fn later_checkpoint_in_one_tick_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = run_in_next(dir.path());
+    app.level_spawn_points[0]
+        .key_values
+        .insert("checkpoint".into(), "gate".into());
+    app.handle_save_verb(checkpoint("gate"));
+    app.handle_save_verb(checkpoint("bridge"));
+    assert_eq!(
+        run_level(dir.path()),
+        ("next".into(), Some("bridge".into()))
+    );
+    assert_eq!(
+        active_keys(&app),
+        [Some("bridge".into()), Some("bridge".into())]
+    );
 }

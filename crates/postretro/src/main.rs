@@ -1182,6 +1182,9 @@ pub(crate) struct App {
     /// (spawn-point / built-in-handled / remaining-entity bookkeeping) now lives
     /// as locals inside `install_world_cpu`; only this host copy outlives install.
     host_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
+    /// Every `player_spawn` of the installed level; `host_spawn_points` is the
+    /// active set drawn from it.
+    level_spawn_points: Vec<crate::scripting::map_entity::MapEntity>,
     /// Each remote seat's resolved spawn pose on the installed level.
     spawn_poses: crate::spawn_pose::SpawnPoseResolver,
 

@@ -875,6 +875,17 @@ impl SeatTable {
         self.overflow_warned.clear();
     }
 
+    /// A checkpoint changed the level's arrival set: every placement index
+    /// names a spawn of the old set, so the level-scoped placements reset as
+    /// at a level unload. Live pawns stay where they stand.
+    pub fn reset_placements_for_spawn_set(&mut self) {
+        self.placement_assignments.clear();
+        self.level_spawn_placements.clear();
+        self.overflow_cursor = 0;
+        self.overflow_warned.clear();
+        self.roster_dirty = true;
+    }
+
     /// Placements held for seats other than `seat`: every other seat's
     /// assignment, connected or held, plus the spawn each live install-time pawn
     /// took. Read from durable associations, so a pawn that walks away still

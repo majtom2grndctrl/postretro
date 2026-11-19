@@ -2033,9 +2033,10 @@ impl App {
         if let Some(session) = self.session.as_mut() {
             session.debug_ui = None;
         }
-        // A frontend backdrop's pawn is never harvested: outside play seat 0
-        // carries the selected character.
-        let harvest = !self.backdrop_installed;
+        // Only a played level's pawns are harvested: a backdrop's never is, and
+        // a pawn left bound by an earlier suspend (a suspend does not unload)
+        // is not one the selected character holds.
+        let harvest = self.played_level_present();
         if let Some(session) = self.session.as_mut().filter(|_| harvest) {
             let registry = session.scripting.script_ctx.registry.borrow();
             if let Some(seats) = session.seat_table.as_mut() {

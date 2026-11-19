@@ -1406,3 +1406,24 @@ fn frontend_entry_keeps_harvested_gear_when_the_character_write_fails() {
 
     assert_eq!(carry(&app).unwrap().reserve.available("shells"), 31);
 }
+
+// Review round 4: a second suspend at the resumed frontend never re-harvests
+// the pawn the first suspend left bound into another character.
+#[test]
+fn second_suspend_never_reharvests_a_stale_pawn_into_another_character() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+    app.drain_level_requests();
+    install_pawn(&mut app, true, 9);
+    app.suspend_platform();
+    app.boot_state = crate::startup::BootState::Frontend;
+    present_frontend(&mut app);
+    character(&mut app, 1, "Ash");
+    assert_eq!(carry(&app), None);
+
+    app.suspend_platform();
+
+    assert_eq!(carry(&app), None, "Ash never takes Vex's gear");
+}

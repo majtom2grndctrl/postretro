@@ -134,6 +134,10 @@ Round 3 (round-2 fix commit only): 1 adversarial tester (opus).
 - 🟡 fixed: a suspend while a run's level plays now saves the character and world, ends the run and clears the session level, so the resumed frontend runs every verb with or without a backdrop (`suspend_during_a_played_run_level_saves_and_frees_the_verbs`).
 - 🟢 fixed: with no character selected or no saves, frontend entry empties seat 0 (fresh start in the degraded mode too); a failed run load returns through the ordinary frontend route, backdrop included; the carry comment no longer over-promises a retry.
 
+Round 4 (round-3 fix commit only): 1 adversarial tester (opus).
+- 🟡 fixed: a suspend does not unload, so its seat-0 pawn stays bound; a second suspend at the resumed frontend re-harvested it into a newly selected character. The suspend harvest now gates on a played level being installed, as the exit save does (`second_suspend_never_reharvests_a_stale_pawn_into_another_character`).
+- 🟢 fixed: the reset comment no longer claims the resume always enters the frontend (a CLI boot map reloads instead).
+
 ## Follow-ups (not in this brief)
 - `prl-build`'s `find_scripts_build` does not know Cargo 1.100's build-dir layout (`target/<profile>/build/<pkg>/<hash>/out/`), so four data-script tests fail on current stable. Unrelated to this branch.
 - An asynchronous pending leave would avoid the up-to-2 s frame hold when a host never answers the final-character request.

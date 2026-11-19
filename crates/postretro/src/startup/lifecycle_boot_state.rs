@@ -23,7 +23,7 @@ impl App {
 
     pub(crate) fn reset_boot_state_after_suspend(&mut self) {
         // Read before the reset: the suspend harvested a played level's pawns,
-        // and the resume enters the frontend.
+        // and the resume enters the frontend (or reloads a CLI boot map).
         let played = self.played_level_present();
         // Reset the boot state so `resumed()` re-runs window + renderer
         // creation. Without this, the `Booting` guard in `resumed()` would
@@ -48,10 +48,11 @@ impl App {
         // A waiting host or join press waited on an unload or close this
         // reset no longer tracks: it ends, and the player presses again.
         self.cancel_pending_entry("a suspend");
-        // The resume lands on the frontend, which saves the character and
-        // world a played level leaves and ends any run in play and its
-        // queued load, as every frontend entry does. The played level is gone,
-        // so no session level stays installed for the verbs to wait on.
+        // The resume leaves the played level, which saves the character and
+        // world it leaves and ends any run in play and its queued load, as
+        // every frontend entry does. No session level stays for the verbs to
+        // wait on; the suspend keeps the level's pawns bound, which the next
+        // suspend's harvest gate skips.
         if self.session_role() != crate::session::role_state::SessionRole::Client
             && let Some(session) = self.session.as_mut()
         {

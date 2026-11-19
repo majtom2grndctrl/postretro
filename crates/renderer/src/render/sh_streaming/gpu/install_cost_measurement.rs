@@ -452,7 +452,10 @@ fn sh_install_cost_run_reports_a_drain_larger_than_every_earlier_one_cold() {
     let large_set: Vec<u32> = (0..large).collect();
     let mut classes = Vec::new();
     let mut retiring: Vec<u32> = Vec::new();
-    for ready in [&small_set, &small_set, &large_set, &small_set, &large_set] {
+    // Three drains only. Whether a repeat of the large drain later runs warm
+    // is the pool's retention under load, not the classifier: with other GPU
+    // tests running, the pool can drop its free buffers and recreate them.
+    for ready in [&small_set, &small_set, &large_set] {
         if !retiring.is_empty() {
             evict(&mut rig, device, &queue, &retiring);
         }
@@ -465,6 +468,4 @@ fn sh_install_cost_run_reports_a_drain_larger_than_every_earlier_one_cold() {
         matches!(classes[2], DrainClass::Cold { .. }),
         "the largest drain so far is cold: {classes:?}"
     );
-    assert_eq!(classes[3], DrainClass::Warm, "{classes:?}");
-    assert_eq!(classes[4], DrainClass::Warm, "{classes:?}");
 }

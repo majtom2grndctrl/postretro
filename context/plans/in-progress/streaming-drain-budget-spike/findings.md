@@ -118,6 +118,10 @@ A lightmap pair costs about three times as much per item on the GPU as on the CP
 
 **Caveats.** The lightmap fixture's irradiance is Rgba16Float; shipped irradiance is BC6H, so equal bytes hold more texels here. The SH fixture is synthetic all-L0 chunks of Rgba16Float atlas blocks and probe patches; which format the showcase streams was not established. SH eviction, which shares a drain with installs in play, costs about 0.4 ms/MiB more and is outside these figures.
 
+## Owner slider read (AC 20)
+
+The owner ran the showcase in a dev-tools profiling build on 2026-11-19 and moved the play drain cap back and forth while moving fast into areas not yet loaded. The frozen bake carries no texture keys, so every surface drew the placeholder; late lighting reads at least as plainly on it. Almost all the pop-in the owner noticed was at 4 MiB. They also saw some stutter, but could not tie more of it to any one setting. The slider does not log its changes, so the run's log cannot attribute its bursts to a cap. Its two large 5 s windows held 1,906 and 4,016 late block-frames, mostly the permit and in-hand waits, with 246 and 421 held by the budget. SH had no miss episode. The read agrees with the sweep: at 4 MiB the far-point walk has 322 late block-frames against 180 at production.
+
 ## Records (AC 22)
 
 - **Showcase copy.** The frozen `.map` from `lightmap-compact-storage` (sha256 `6f937774718de8bb…`, the adjacent game project's 0.1 m source with worldspawn `_lightmap_density` 0.0125), rebaked at `32ac4217e` with `--no-cache` in 3,072 s: PRL sha256 `7de8f52003383790…`, pool 1,744 MiB. The old PRL no longer loads, so every prior number was re-measured on this bake. Completed baselines reproduce `lightmap-compact-storage`'s figures exactly. Campaign-test was rebaked at the same commit.

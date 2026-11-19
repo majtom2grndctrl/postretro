@@ -1,7 +1,7 @@
 # E10--ai-tick-scheduling — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: ecd9489e0
 
 Brief read at efdab38d6; `perf-ai-tick-cost` landed since. Every source symbol the Decisions and Path cite was re-read at ecd9489e0. None of the Decisions rests on a false premise. The corrections below fix Path claims and descriptions of today's code.

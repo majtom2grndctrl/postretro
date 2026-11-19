@@ -41,7 +41,7 @@ Proof names are the planned test names; every row is automated unless marked man
 | S3 Non-initial life state at level start continues initial (P4) | `level_start_save_stores_initial_life_state` | achievable as stated |
 | S4 Mid-level pickup, quit, Continue holds weapon at last save point | `quit_after_pickup_continues_with_weapon_at_last_save_point` | achievable as stated |
 | S5 Crash (drop without exit path) loses only play since last save point | `dropped_app_loses_only_play_since_last_save_point` | achievable as stated |
-| S6 Dev-picker `loadLevel` and path `restartLevel` after Continue+return leave run byte-identical, write character | `dev_picker_and_path_restart_leave_run_file_untouched` | achievable as stated |
+| S6 Dev-picker `loadLevel` and path `restartLevel` after Continue+return leave run byte-identical, write character | `save_verbs_tests::dev_picker_load_after_continue_leaves_run_file_untouched` + `save_points_tests::path_load_leaves_run_file_untouched_and_writes_character` | achievable as stated |
 | S7 Saved downed/dead continues initial at full health | `downed_character_continues_initial_at_full_health` | achievable as stated |
 | S8 Only host/SP writes world and run | `client_never_writes_world_or_run_files` | achievable as stated |
 | C1 `checkpoint` saves run+character; Continue arrives in set; co-op seats spread | `checkpoint_saves_and_continue_arrives_in_its_set` + `coop_continue_spreads_seats_over_checkpoint_set` | achievable as stated |
@@ -61,7 +61,7 @@ Proof names are the planned test names; every row is automated unless marked man
 | R8 Selecting B after A: per-owner slots B's or default, none A's | `select_character_replaces_per_owner_values` | achievable as stated |
 | R9 Non-persisted mod slots default after `newRun`/Continue; engine slots unchanged; level change keeps both | `store_reload_resets_mod_slots_and_keeps_engine_slots` | achievable as stated |
 | R10 `deleteCharacter` selected, `loadLevel` spawns empty, writes no character (P12) | `deleted_selection_spawns_empty_and_writes_nothing` | achievable as stated |
-| R11 `persist: true` global set outside run survives return + select | `world_global_outside_run_survives_frontend_and_select` | achievable as stated |
+| R11 `persist: true` global set outside run survives return + select | `save_verbs_tests::world_global_outside_run_survives_frontend_and_select` | achievable as stated |
 | R12 Migrated global now `persist: "run"` → implicit run (no block) / dropped (block); never world | `migrated_run_scoped_global_routes_by_saves_block` | achievable as stated |
 | R13 `persist: true` global written in run survives return + verbs + restart | `world_global_in_run_survives_verbs_and_restart` | achievable as stated |
 | R14 Boot-restored selection then join/load sends and spawns that loadout; join save keeps it (P1) | `boot_selection_seeds_join_and_spawn_loadout` | achievable as stated |

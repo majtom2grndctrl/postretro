@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use postretro_entities::ScriptCtx;
 use postretro_entities::ReactionDescriptor;
+use postretro_entities::ScriptCtx;
 use postretro_scripting_core::primitives_registry::PrimitiveRegistry;
 use postretro_scripting_core::runtime::{
     ModManifestResult, SavesManifest, ScriptRuntime, ScriptRuntimeConfig,
@@ -127,11 +127,27 @@ fn saves_surface_fixture_ts_and_luau_load() {
     assert_eq!(ts.manifest.reactions.len(), 3 * 3 + 4 * 4 + 1);
     for (name, primitive, args) in [
         ("runs.continue.0", "continueRun", json!({ "index": 0 })),
-        ("runs.new.2", "newRun", json!({ "index": 2, "map": "campaign-test" })),
+        (
+            "runs.new.2",
+            "newRun",
+            json!({ "index": 2, "map": "campaign-test" }),
+        ),
         ("runs.delete.1", "deleteRun", json!({ "index": 1 })),
-        ("characters.select.0", "selectCharacter", json!({ "index": 0 })),
-        ("characters.create.3", "createCharacter", json!({ "index": 3 })),
-        ("characters.delete.2", "deleteCharacter", json!({ "index": 2 })),
+        (
+            "characters.select.0",
+            "selectCharacter",
+            json!({ "index": 0 }),
+        ),
+        (
+            "characters.create.3",
+            "createCharacter",
+            json!({ "index": 3 }),
+        ),
+        (
+            "characters.delete.2",
+            "deleteCharacter",
+            json!({ "index": 2 }),
+        ),
         ("level.bridge", "checkpoint", json!({ "name": "bridge" })),
     ] {
         for (runtime, manifest) in [("TS", &ts.manifest), ("Luau", &luau.manifest)] {

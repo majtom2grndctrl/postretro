@@ -939,3 +939,155 @@ fn lobby_guest_keeps_values_through_host_continue() {
         );
     }
 }
+
+/// Load catalog `map` from the frontend as `loadLevel` does, then stand in
+/// it with seat 0 holding `shells`.
+fn load_and_play(app: &mut App, map: &str, shells: u32) {
+    app.session.as_mut().unwrap().modal_stack.clear_pushed();
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog(map.into()),
+    ));
+    app.drain_level_requests();
+    install_pawn(app, true, shells);
+}
+
+// R11: a world global set in a `loadLevel` level outside any run survives
+// the return to the frontend and a selection.
+#[test]
+fn world_global_outside_run_survives_frontend_and_select() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    load_and_play(&mut app, "next", 1);
+    set(&app, SCORE, 7.0);
+
+    back_to_frontend(&mut app);
+    app.handle_save_verb(select(0));
+
+    assert_eq!(number(&app, SCORE), Some(SlotValue::Number(7.0)));
+}
+
+// R13: a world global written in a run survives the frontend, each reload
+// verb and a restart.
+#[test]
+fn world_global_in_run_survives_verbs_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+    app.drain_level_requests();
+    install_pawn(&mut app, true, 1);
+    set(&app, SCORE, 8.0);
+    back_to_frontend(&mut app);
+
+    app.handle_save_verb(select(0));
+    assert_eq!(number(&app, SCORE), Some(SlotValue::Number(8.0)), "select");
+    app.handle_save_verb(continue_run(0));
+    assert_eq!(
+        number(&app, SCORE),
+        Some(SlotValue::Number(8.0)),
+        "continue"
+    );
+    back_to_frontend(&mut app);
+    app.handle_save_verb(new_run(1, "second"));
+    assert_eq!(number(&app, SCORE), Some(SlotValue::Number(8.0)), "newRun");
+
+    let mut later = app_with_store(dir.path());
+    boot(&mut later, SAVES);
+    later.session.as_mut().unwrap();
+    crate::session::saves::test_fixtures::present_frontend(&mut later);
+    later.handle_save_verb(select(0));
+    assert_eq!(
+        number(&later, SCORE),
+        Some(SlotValue::Number(8.0)),
+        "restart"
+    );
+}
+
+// S6: after Continue and a return to the frontend, a dev-picker load and its
+// level start leave the run file untouched and write the character.
+#[test]
+fn dev_picker_load_after_continue_leaves_run_file_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    character(&mut app, 0, "Vex");
+    app.handle_save_verb(new_run(0, "next"));
+    back_to_frontend(&mut app);
+    app.handle_save_verb(continue_run(0));
+    back_to_frontend(&mut app);
+    let run_before = std::fs::read(saves(dir.path()).run_path(0)).unwrap();
+
+    load_and_play(&mut app, "second", 13);
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("next".into()),
+    ));
+    app.drain_level_requests();
+
+    assert_eq!(
+        std::fs::read(saves(dir.path()).run_path(0)).unwrap(),
+        run_before
+    );
+    let saved = read_document(&saves(dir.path()).character_path(0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.seats[0].loadout.reserve.get("shells"), Some(&13));
+}
+
+// R19: a mod without a `saves` block keeps per-owner and global progress and
+// faction sentiment across a restart, its one run active throughout, also
+// after the frontend and another level.
+#[test]
+fn mod_without_saves_block_keeps_progress_and_sentiment() {
+    use postretro_entities::data_registry::{DEFAULT_ENEMY_FACTION_INDEX, PLAYER_FACTION_INDEX};
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_store(dir.path());
+    boot(&mut app, None);
+    present_frontend(&mut app);
+    for id in ["next", "second"] {
+        script_ctx(&app)
+            .data_registry
+            .borrow_mut()
+            .maps
+            .push(ModMapEntry {
+                id: id.into(),
+                path: format!("maps/{id}-never-read.prl"),
+                name: id.into(),
+                tags: Vec::new(),
+                loading_tree: Vec::new(),
+            });
+    }
+    load_and_play(&mut app, "next", 1);
+    set(&app, SCORE, 3.0);
+    set(&app, GENERATOR, 4.0);
+    set_xp(&app, 5.0);
+    script_ctx(&app)
+        .faction_sentiment
+        .borrow_mut()
+        .set(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX, -0.5, 0.0)
+        .unwrap();
+    back_to_frontend(&mut app);
+    assert!(
+        app.session.as_ref().unwrap().saves.run_active(),
+        "after the frontend"
+    );
+    load_and_play(&mut app, "second", 1);
+    app.enqueue_level_request(crate::startup::LevelRequest::Load(
+        crate::startup::LevelSource::Catalog("next".into()),
+    ));
+    app.drain_level_requests();
+    drop(app);
+
+    let mut later = app_with_store(dir.path());
+    boot(&mut later, None);
+    assert!(later.session.as_ref().unwrap().saves.run_active());
+    assert_eq!(number(&later, SCORE), Some(SlotValue::Number(3.0)));
+    assert_eq!(number(&later, GENERATOR), Some(SlotValue::Number(4.0)));
+    assert_eq!(xp(&later), Some(SlotValue::Number(5.0)));
+    assert_eq!(
+        script_ctx(&later)
+            .faction_sentiment
+            .borrow()
+            .get(PLAYER_FACTION_INDEX, DEFAULT_ENEMY_FACTION_INDEX),
+        Some(-0.5)
+    );
+}

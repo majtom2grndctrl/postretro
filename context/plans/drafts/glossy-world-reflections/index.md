@@ -32,6 +32,7 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
   - Mover-aware captures: draft `mover-aware-reflection-captures.md` owns them.
   - A PBR importer in `postretro-tool`: `specular-texel-sharpness` holds that non-goal and documents the conversion instead.
   - Dynamic entities in world-face reflections: probe-only means movers, characters, projectiles and dynamic lights never appear there.
+  - Fluid surfaces in captures: water stays absent from every capture, as today, so a glossy wall shows the pool's bed, not its surface.
   - Reflections of reflections: a glossy face appears in other probes' captures with its diffuse and highlights only.
   - A per-material reflectivity override or opt-out in `materials.toml` (owner, deferred). Strength already uses water's reflectance meaning, so a later override is purely additive.
   - The roughness→`_p` conversion formula: the sharpness brief owns its doc row.
@@ -47,7 +48,7 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
 **Placement and capture**
 - [ ] Derived probes on a floor, a wall, a down-facing ceiling and a 45° slope each sit on their face's front side, lifted along its normal. Coplanar glossy faces of one group share a probe; faces on different planes, or on one plane facing opposite ways, never share a derived probe.
 - [ ] A `reflection_volume` claims glossy world faces inside it. A box over neither water nor glossy faces drops with a warning.
-- [ ] In one authored box binding a glossy floor and a glossy wall, the floor reflects the wall and the wall reflects the floor; in one binding a pool and a glossy wall, the pool reflects the wall and the wall reflects the pool (pin P3).
+- [ ] In one authored box binding a glossy floor and a glossy wall, the floor reflects the wall and the wall reflects the floor; in one binding a pool and a glossy wall, the pool reflects the wall, and the wall reflects the room with the pool's bed where the water lies, as captures hold no fluid surface today (pin P3).
 - [ ] An authored box binding faces on several planes, including a pool above a lower glossy floor, keeps each probe's capture point on the front side of every face that probe binds, or a face it cannot serve binds nothing and the warning names it (pin P4).
 - [ ] An unobstructed glossy floor and wall reflect over their whole area: no fragment lies in capture shadow cast by the reflector's own surface.
 - [ ] A glossy inlay set flush in a floor whose material does not reflect reflects over its whole area, and on a glossy floor crossed by a coplanar matte strip, glossy fragments beyond the strip from the capture point lie outside capture shadow: no face in the reflector's plane casts capture shadow on a bound face (pin P2).
@@ -111,7 +112,7 @@ Owner-requested capability, for a genre-staple look: polished floors and walls t
 - Surface Depth materials: does the overlay rerun the march, matching highlights at a march per glossy pixel, or reflect about the unmarched plane and normal map, so carved glossy texels mismatch? — owner — **blocks build**
 - Counsel on Tencent WO2026113651A1 claim 1 for world faces. — owner, with counsel — **blocks build**
 - Sharpness floor value (estimate n ≈ 6–16). — **delegated**
-- Capture point and warning for an authored box binding faces on several planes. Generalize `_capture_offset` to in-plane. — **delegated**
+- How `_capture_offset` applies to each per-facing probe of one authored box. — **delegated**
 - Whether the planar mirror view records the overlay. — **delegated**
 - A mover face coplanar with a glossy world face takes the world's reflection under the overlay's `Equal`. — **delegated**: suppress it or record it as an accepted limit.
 - Overlay cost ceiling on the 5300M. — **delegated**: the executor measures the first slice and proposes a ceiling at the resumable plan stop.

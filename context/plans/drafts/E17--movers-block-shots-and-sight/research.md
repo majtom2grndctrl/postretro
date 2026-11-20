@@ -23,7 +23,7 @@ Both mechanisms meet the owner rule (2026-10-30: smoothest co-op presentation th
 
 The cheaper rival is to keep both steps and switch them to the combined cast: the FIRE-time hold distance and the release-time cast. Both read one moment's poses. A FIRE-time distance cannot see a door that closes or opens in flight. A release-time cast meets a door that closed behind a rocket already past it, and misses one the rocket struck that opened before release. Only a per-tick step sees each mover when the projectile reaches it.
 
-The FIRE-frozen static distance existed for the late-start case: a start admitted late after a stall fires from the pawn's live eye, so the host ray can meet the world beyond the declared point. The march starts from the same frozen origin and finds that contact itself.
+The FIRE-frozen static distance existed for the late-start case (see Credit rule). The march starts from the same frozen origin and finds that contact itself.
 
 ## Credit rule (owner, 2026-11-20)
 
@@ -31,10 +31,14 @@ The owner asked for the client to get credit for the impact it saw on screen, as
 
 - **Late start.** The host fires from the pawn's live eye, so the two paths diverge. A distance measured on the host path lands mid-air short of the host's wall (the netcode late-strafe test: declared about 10.2, wall about 12). An off-path record takes the host's own contact.
 - **Agreement at a wall.** Declared and host distances differ by float noise, and a declared point has no host surface for the zero-radius nudge. A host contact at the declared point decides with its own surface.
-- **Direct hits.** A blast with no impact target loses the weapon's direct damage and knockback, which the modder reference promises compose with splash. A credited enemy hit takes the declared enemy as its target.
+- **Direct hits.** A blast with no impact target loses the weapon's direct push, which the modder reference promises composes with splash (a splash rocket deals no direct health damage). A credited enemy hit takes the declared enemy as its target, including an enemy flush against a wall the host also has; a host contact at the point decides only for a world record.
 - **Records.** The first valid record counts, as presentation reads today. An empty declaration means the client saw no impact.
 
-Entities never cut the host path short, so a direct hit the host's flight passes by still detonates, closing `networking.md` §Combat authority's known gap. The client selects only which on-path point counts. A dishonest point is anti-cheat, a non-goal.
+Entities never cut the host path short, so a direct hit the host's flight passes by still detonates, closing `networking.md` §Combat authority's known gap. The client selects only which on-path point counts, so one authoritative blast reaches every peer. A dishonest point is anti-cheat, a non-goal.
+
+The tolerance's floor is not prediction error alone. The host rebuilds a non-late launch converging on the target's live position while the client converged on its rendered one, so the paths diverge by up to the muzzle's offset from the eye (P25).
+
+Observer flight today: the end-point hook holds a display rocket still at its contact for about one round trip, until peers acknowledge, then flashes; the flight starts a tick ahead of the march. Client splash rockets instead step with the march and vanish at its deciding point without a flash (owner).
 
 ## Corrections to the 2026-10-31 draft
 
@@ -46,7 +50,7 @@ Entities never cut the host path short, so a direct hit the host's flight passes
 | `split_for_blocking` is the only `&mut` table use after Movers | SteerAgents calls `yield_agent_as_corpse` first. The Ai stage already holds a shared borrow (`MoverNav { poses }`). |
 | Client shot vs presented pose: error under 0.1 m, one tick | `ready/E17--mover-relative-rider-presentation` smooths mover corrections, render-only. The drawn mover trails a correction until it converges (its research measures about 0.16 m under the mandated profile). Decision unchanged: presentation never feeds collision. |
 | Paths `postretro/src/sim`, `weapon/mod.rs` | `crates/sim/src/{sim,weapon}/`. The tick entry is `sim/tick_start.rs`. `resolve_client_shot` and the local and remote weapon commands moved to submodules. |
-| Docs to amend: scripting-reference splash note | The brief's Docs decision holds the full list. Also amend the `splash.rs` doc comment, which says movers do not participate. |
+| Docs to amend: scripting-reference splash note | The brief's Docs decision lists the human-facing files. Also amend the `splash.rs` doc comment, which says movers do not participate. |
 
 ## AI line-of-sight sites (E10 branch)
 
@@ -62,14 +66,14 @@ Host tick as built: declarations drain before Movers publishes the tick's poses,
 
 | Id | Scenario | Ordering | Expected outcome |
 |---|---|---|---|
-| P1 | Client rocket and host rocket fired on one tick along one path; a door slides across it | Both drains run each host tick; the march's first step is on the tick after FIRE | Each march advances exactly one step per host tick against that tick's published poses; both rockets meet the door on the same tick |
+| P1 | Client rocket and host rocket fired on one tick along one path; a door slides across it | Declarations drain each host tick; the march's first step is on the tick after FIRE | Each march advances exactly one step per host tick against that tick's published poses; both rockets meet the door on the same tick |
 | P2 | A door closes behind a client rocket the march has already carried past it, before release; the client declared a contact beyond the door | Door closes after the cursor passes its plane | Host detonates at the next deciding point ahead, never at the door |
 | P3 | A client rocket strikes a closed door; the door opens before the declaration arrives | March contact at the door on tick C; door opens; declaration in hand at R > C | Host detonates at the point found on tick C |
 | P4 | Declaration in hand before the march reaches a closed door | Declaration first; march contact later | Releases at the door; the door shields its far side |
 | P5 | Declaration arrives after the march reached a closed door | March contact on C; declaration at R > C | Releases on R at the door; the door shields its far side |
 | P6 | A client rocket strikes a door on C; the door opens before release on R | Contact pose differs from release pose | Centre is the deciding point found by tick C; occlusion and the entity set read tick R's table |
 | P7 | Client rocket declared on an enemy behind a door the host closed before the march reached it | March contact at the door, nearer than the declared enemy | Blast at the door; the enemy takes no damage |
-| P8 | Declared entity contact the host's flight passes by | March reaches the declared distance with no world contact before it | Blast at the declared point, with the declared enemy as impact target: direct damage and knockback plus splash |
+| P8 | Declared entity contact the host's flight passes by | March reaches the declared distance with no world contact before it | Blast at the declared point, with the declared enemy as impact target: the direct push plus splash |
 | P9 | The march reaches range or lifetime before its own contact and any on-path declared point | March resolves empty, whenever the declaration arrives | FIRE stands, hit refused, no host blast |
 | P10 | March contact exactly at the range or lifetime boundary, including a lifetime of 0 | Contact in the final segment | Contact wins over expiry, as for a host rocket; a zero lifetime resolves empty on the first step |
 | P11 | Client and host disagree on a door | Client declares the wall (door predicted open) while the host's door is closed at arrival; and the reverse | Host door closed: blast at the door (host contact nearer). Host door open: blast at the client's declared point |
@@ -84,5 +88,14 @@ Host tick as built: declarations drain before Movers publishes the tick's poses,
 | P20 | As P2, but the client saw the door close in front of its rocket and declared it | Host door closes after the cursor passes its plane; declared point at the door | Blast at the door's plane; occlusion per P21 |
 | P21 | Blast centre inside a mover hull at detonation or release | Enclosed at step start, or covered between contact and release | Side the projectile came from damaged; far side shielded |
 | P22 | Declared point at the launch point, or a rocket launched inside a mover hull | Point reached before any step; FIRE on tick F | Blast on F+1 in the Projectiles stage, before AI; never on F |
-| P23 | Splash declaration with several valid records | One shot, several records | The first valid record counts |
+| P23 | Splash declaration with several valid records | One shot, several records | The first valid record counts. If it is off-path, the host's own march contact decides and later records are ignored |
 | P24 | A host rocket and a client blast land on one target on one tick | Both in the Projectiles stage | Client blasts resolve before host projectile impacts, as remote declarations ingest today; kill credit follows that order |
+| P25 | Non-late client rocket at an enemy that moved between the client's view and the host's, from a muzzle off the eye | Client converges on the rendered enemy; the host's rebuild converges on the wall behind | Declared point counts as on-path: blast at it, the enemy as impact target, at short and full range |
+| P26 | Declared point at the on-path tolerance | Just inside, with the host's wall beyond; just outside | Inside: blast at the declared point, short of the wall. Outside: the host's own march contact |
+| P27 | Declared enemy killed or removed after the client's contact, before release | Enemy gone on tick D; release on R ≥ D | Blast at the declared point with the declared normal, no impact target, no direct push; never moved to the host's march contact |
+| P28 | Declared enemy pressed against a wall or door the host also has | Host contact within the tolerance beyond the enemy's point | Blast at the declared point, the enemy as impact target, the wall shielding its far side |
+| P29 | Splash declaration whose records are all invalid | Each non-finite or beyond range | As empty: no blast, FIRE stands, hit refused |
+| P30 | Blast centred inside a hull with no outside position behind it: launched inside, or the snap covered the previous position | Enclosed at launch or at step start | The side the reverse flight direction leaves the hull through takes the blast; the far side is shielded |
+| P31 | Projectile enclosed at step start with zero remaining range or lifetime | Enclosed and expiring on one step | Enclosure is a contact, and contact wins over expiry (P10): detonates per P30 |
+| P32 | Observer flight of a client rocket | Declaration before the march contact; declaration on R after a contact on C; declared point behind the flight's end | Flight vanishes at the deciding point or march contact on C with no flash; a blast behind it appears on R at the declared point; with no contact, it ends at the path's end |
+| P33 | Empty declaration after a march contact | March contact on C; empty declaration on R | No blast; FIRE stands, hit refused; the observer flight already ended on C |

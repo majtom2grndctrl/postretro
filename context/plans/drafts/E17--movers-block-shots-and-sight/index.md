@@ -46,29 +46,41 @@ Host shots:
 - [ ] Host-player and NPC hitscan stop at a closed mover with a world contact, and the target behind takes no damage. Through the gap the target is hit. A mover and an entity at equal distance give the world contact.
 - [ ] Host-player, NPC and trap projectiles impact a closed mover, including a mover that moves into a projectile already in flight. A mover that opens before arrival lets it through.
 - [ ] A composed muzzle on the far side of a mover from the eye launches from the eye.
-- [ ] A mover between blast and target blocks splash damage, and a target on the blast side takes it. A blast centred on a mover face damages the blast side only.
+- [ ] A mover between blast and target blocks splash damage, and a target on the blast side takes it. A blast centred on a mover face damages the blast side only. A zero-radius blast on either face of a rotated door damages that face's side only.
+- [ ] On the tick a door closes, a host rocket in flight, an NPC's sight and the host player's hitscan all meet it, including when the blocking pass reverses the door that tick (P15).
 
 Connected client:
 - [ ] A client's hitscan stops at the mover in its prediction and declares a world contact, which the host accepts. With the mover open, the client hits the target behind and the host accepts. A mover the host has already closed, still open in the client's prediction, does not refuse the client's hit.
-- [ ] Client predicted projectiles and splash meet movers as host ones do.
+- [ ] Client predicted projectiles and splash meet movers as host ones do. A connected client's composed muzzle across a mover closed in its prediction launches from the eye.
 - [ ] A client rocket striking a closed door in front of a wall: the host blast and damage land at the door on the tick the march reaches it. That point is within the existing splash tolerance of the client's, and the tick is no later than with no wall behind the door.
-- [ ] A door moving into a client rocket's path mid-flight: the host detonates on the door, where the client did, within the client's mover-prediction error. A door that opens before the rocket arrives: the host detonates at the wall behind.
+- [ ] A door moving into a client rocket's path mid-flight: the host detonates on the door, where the client did, within the client's mover-prediction error plus one client frame's mover travel (P14). A door that opens before the rocket arrives: the host detonates at the wall behind.
+- [ ] A host rocket and a client rocket fired on one tick along one path meet a door moving across it on the same tick. The client shot's march takes no step on its FIRE tick and one step per host tick after (P1).
+- [ ] A door that closes behind a client rocket after the host's march has passed it does not detonate it: the host blast lands at the next contact ahead. A door the rocket struck that opens before the declaration arrives still takes the blast at the point the march found (P2, P3).
+- [ ] A client rocket at a closed door releases at the door whether its declaration arrives before the march reaches the door or after. In both, the door shields a target on its far side (P4, P5).
+- [ ] A client blast released after the door it struck has opened damages a target behind the door's old position: occlusion reads the release tick's poses (P6).
+- [ ] A client rocket declared on an enemy behind a door the host closed before its march arrived detonates at the door, and the enemy takes no damage. An entity contact released before the march finds a wall is tested no farther than the march has stepped (P7, P8).
+- [ ] A client rocket whose host march ends at range or lifetime with no contact sets off no host blast, and its hit is refused. A contact in the march's final segment detonates there (P9, P10).
+- [ ] A client that predicts a door open and declares the wall behind it, while the host's door is closed when the march arrives, gets the host blast at the door. With the doors reversed, the blast lands at the wall (P11).
 - [ ] A client splash shot admitted late after a stall still detonates at the host's own first contact along the live-eye ray, mover or wall.
-- [ ] A shot's march state is gone once the shot closes, expires or its client leaves. With no open client splash shots, the host does no march work.
+- [ ] A shot's march state is gone once the shot closes or expires, its client leaves, its pawn is removed, or the level unloads. A resolved march casts nothing more while its shot waits for a declaration. With no open client splash shots, the host does no march work.
 - [ ] With no movers, client splash centres and release ticks are identical to today.
 
 NPCs:
 - [ ] An NPC facing a target behind a closed mover does not acquire it, fill its awareness meter, or fire; through the gap it acquires. A dormant check behaves the same.
 - [ ] A door closing on an NPC's retained target stops its fire after the grace window. When the door reopens it fires on its first run after. A target its graph dropped while the door was closed is acquired again only after two passing checks in a row refill the meter.
-- [ ] A combat slot behind a closed mover scores as having no line of sight; one through the gap scores as clear. An allied NPC behaves as an enemy does.
+- [ ] An NPC that fires inside the grace window after a door closes on its target hits the door, and the target takes no damage (P13).
+- [ ] A combat slot behind a closed mover scores as having no line of sight; one through the gap scores as clear. With a closed mover across a candidate slot's line, the cached and uncached slot batches choose the same slots. An allied NPC behaves as an enemy does.
 
 Unchanged:
 - [ ] Static line of sight still ignores movers. Host validation accepts and refuses exactly what it does today.
+- [ ] Grep gate: every hitscan, projectile, muzzle, splash and NPC sight site calls a combined query; static line of sight remains only in host hit validation. No shot, splash or sight consumer branches on whether a hit came from a mover, and that read is public outside the physics crate.
+- [ ] Grep gate: every client shot path (hitscan, muzzle, predicted projectile) builds its mover poses from the table its movement prediction reads, and none from a presentation pose.
+- [ ] Grep gate: the human-facing docs and `content/dev` READMEs this brief amends no longer say movers pass shots, splash or sight.
 - [ ] On levels with no movers, the existing weapon, projectile, splash, perception, awareness and determinism suites pass unchanged, and headless byte identity holds (regression guard).
 
 Scale (measured, not gated; `testing_guide.md` §Resource bounds):
-- [ ] On E10's multi-arena and packed stress rows, with closing doors added in each arena: NPC line-of-sight cost per acquisition check and per tick, reported against the same rows without movers.
-- [ ] Host march cost per tick, reported with four clients firing splash weapons continuously.
+- [ ] On E10's multi-arena and packed stress rows, with closing doors added in each arena: NPC line-of-sight cost per acquisition check and per tick, reported against the same rows without movers, on the machine class, worker count and cache mode of E10's runs.
+- [ ] Host march cost per tick, reported with four clients firing splash weapons continuously, on the same machine class, worker count and cache mode.
 
 ### Manual
 - [ ] Listen host and one client with simulated lag, on `content/dev/maps/mover-setpiece.map`: fire at the sliding wall from both sides, closed and open. Rocket the moving wall, and check that the shooter's burst and the observer's land together.

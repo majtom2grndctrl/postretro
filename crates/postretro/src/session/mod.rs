@@ -920,6 +920,10 @@ fn build_scripting_core(
     register_emitter_reaction_primitives(&mut reaction_registry);
     register_npc_state_reaction_primitives(&mut reaction_registry);
     register_grant_reactions(&mut reaction_registry);
+    postretro_sim::status_commands::register_status_reactions(
+        &mut reaction_registry,
+        script_ctx.owner_slot_writes_enabled.clone(),
+    );
     register_fog_reaction_primitives(&mut reaction_registry);
     register_light_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(

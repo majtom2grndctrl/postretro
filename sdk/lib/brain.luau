@@ -128,6 +128,16 @@ function BrainSdk.defense(layer: any): { current: RuntimeGuardNode, capacity: Ru
   })
 end
 
+--- `true` while the brain entity carries a live instance of `status`, from
+--- any applier. A status `defineMod` does not register fails load.
+function BrainSdk.hasStatus(status: any): RuntimeGuardNode
+  local name = "@invalid"
+  if type(status) == "table" and rawget(status, "kind") == "status" and type(rawget(status, "name")) == "string" then
+    name = rawget(status, "name")
+  end
+  return input("@status." .. name)
+end
+
 -- The attack name a turn fact reads. Anything but an attack handle (a bare
 -- string, nil, a stance) raises at the call, naming the fact.
 local function attackHandleName(fact: string, attack: any): string

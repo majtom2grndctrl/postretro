@@ -472,6 +472,7 @@ mod tests {
                 "brain",
                 "candidate",
                 "defense",
+                "hasStatus",
                 "state",
                 "attackTurnHeld",
                 "attackTurnFree",

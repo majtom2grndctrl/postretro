@@ -53,6 +53,10 @@ export interface NpcGroup {
   update(fields: NpcStateUpdateArgs): GroupCommand;
   /** Damage each NPC by a finite, non-negative amount. */
   damage(amount: number, options?: DamageOptions): GroupCommand;
+  /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): GroupCommand;
+  /** Remove every applier's instance of `status` from each NPC. */
+  clearStatus(status: import("postretro").Status): GroupCommand;
 }
 
 /**
@@ -77,6 +81,10 @@ export interface PlayerGroup {
    * that layer warns and is skipped.
    */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): GroupCommand;
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): GroupCommand;
+  /** Remove every applier's instance of `status`. */
+  clearStatus(status: import("postretro").Status): GroupCommand;
   /** Add `delta` to each player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): GroupCommand;
   /**
@@ -124,6 +132,10 @@ export interface ActivatorsTarget {
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Refill this fire's activators' `layer`: omit `amount` to fill, or add it, clamped to capacity. */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): SubjectTokenCommand;
+  /** Remove every applier's instance of `status`. */
+  clearStatus(status: import("postretro").Status): SubjectTokenCommand;
   /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -147,6 +159,10 @@ export interface PlayerTarget {
   grantAmmo(type: string, amount: number): SubjectTokenCommand;
   /** Refill this event's player's `layer`: omit `amount` to fill, or add it, clamped to capacity. */
   grantLayer(layer: import("postretro").DefenseLayer, amount?: number): SubjectTokenCommand;
+  /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Applied at the next fixed tick when it fires outside one. */
+  applyStatus(status: import("postretro").Status): SubjectTokenCommand;
+  /** Remove every applier's instance of `status`. */
+  clearStatus(status: import("postretro").Status): SubjectTokenCommand;
   /** Add `delta` to this event's player's value of a per-owner numeric slot. */
   addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
 }
@@ -193,6 +209,8 @@ function playerVerbs<R>(make: CommandBuilder<R>) {
     grantAmmo: (type: string, amount: number): R => make("grantAmmo", { type, amount }),
     grantLayer: (layer: import("postretro").DefenseLayer, amount?: number): R =>
       make("grantLayer", amount === undefined ? { layer } : { layer, amount }),
+    applyStatus: (status: import("postretro").Status): R => make("applyStatus", { status }),
+    clearStatus: (status: import("postretro").Status): R => make("clearStatus", { status }),
     addSlot: (slot: StateRef<number>, delta: number): R =>
       make("addSlot", { slot: slot.slot, delta }),
   };
@@ -210,6 +228,8 @@ export function npcs(filter?: NpcGroupFilter): NpcGroup {
     update: (fields: NpcStateUpdateArgs) => make("updateNpcState", fields),
     damage: (amount: number, options?: DamageOptions) =>
       make("applyDamage", damageArgs(amount, options)),
+    applyStatus: (status: import("postretro").Status) => make("applyStatus", { status }),
+    clearStatus: (status: import("postretro").Status) => make("clearStatus", { status }),
   });
 }
 

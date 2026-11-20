@@ -2398,6 +2398,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this fire's activators: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this fire's activators' value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2434,6 +2438,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): SubjectTokenCommand;
     /** Refill `layer` on this event's player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A pawn without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): SubjectTokenCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): SubjectTokenCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): SubjectTokenCommand;
     /** Add `delta` to this event's player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): SubjectTokenCommand;
   }
@@ -2536,6 +2544,12 @@ declare module "postretro" {
     /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0; a bad reference drops the policy at install. */
     defense(layer: DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
     setState(name: string, value: NumberValue): Effect;
+    /** Whether the target carries a live instance of `status`, from any applier, at this fire. A bad reference drops the policy at install. */
+    hasStatus(status: Status): BoolRef;
+    /** Apply `status` to the target. The applier is this impact's damager, or with none its source id (`fluid.<name>`, `script.applyDamage`); one applier's applications on one fixed tick count once. A target at health ≤ 0 accepts none. */
+    applyStatus(status: Status): Effect;
+    /** Remove every applier's instance of `status` from the target. */
+    clearStatus(status: Status): Effect;
   }
   export interface SourceHandle {
     readonly [sourceBrand]: true;
@@ -2552,8 +2566,8 @@ declare module "postretro" {
     /** Adjust this faction's sentiment toward another impact recipient. Negative values degrade the relationship; positive values strengthen its bond. */
     adjustSentimentToward(toward: TargetHandle | SourceHandle, delta: NumberValue): Effect;
   }
-  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included. */
-  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef }>;
+  /** One impact's facts. `amount` is points dealt: the total drained from layers and health after type multipliers and resistances. `raw` is the incoming amount after hit zones, before type and layers; `absorbed` is the layers' share of `amount`; `broke` is true when this hit took some layer from above zero to zero; `type(damageType)` is true when the hit dealt that type, the mod's default included; `status(h)` is true when this impact is a tick of `h`, the guard that keeps an igniting policy from reapplying a burn from its own ticks. */
+  export type Impact = Readonly<{ target: TargetHandle; source: SourceHandle; amount: NumberRef; raw: NumberRef; absorbed: NumberRef; broke: BoolRef; type(damageType: DamageType): BoolRef; status(status: Status): BoolRef }>;
   export interface ImpactEvent {
     readonly kind: "impact";
     readonly isOverride: boolean;
@@ -2677,6 +2691,10 @@ declare module "postretro" {
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number, options?: DamageOptions): GroupCommand;
+    /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status` from each NPC. */
+    clearStatus(status: Status): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
   export type RespawnOptions = { health?: number; lifeState?: string };
@@ -2694,6 +2712,10 @@ declare module "postretro" {
     grantAmmo(type: string, amount: number): GroupCommand;
     /** Refill `layer` on each player: omit `amount` to fill to capacity, or add a finite, non-negative `amount`, clamped to capacity. A player without that layer warns and is skipped. */
     grantLayer(layer: DefenseLayer, amount?: number): GroupCommand;
+    /** Apply `status` as `script.applyStatus`; a subject without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
+    applyStatus(status: Status): GroupCommand;
+    /** Remove every applier's instance of `status`. Host and single player only. */
+    clearStatus(status: Status): GroupCommand;
     /** Add `delta` to each player's value of a per-owner numeric slot. */
     addSlot(slot: StateRef<number>, delta: number): GroupCommand;
     /** Fire `fire` once per player whenever `edge`'s condition crosses for that player, or, for `assistReceived()` / `assistGiven()`, once per completed assist on its target or helper. Evaluated on the host (and in single player) once per authoritative tick, after the tick settles; a connected client registers nothing. Effective only when returned under a manifest's `playerEvents`; `options.levels` scopes a `ModManifest` entry. */
@@ -3267,6 +3289,9 @@ declare module "postretro" {
 
   /** Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current.le(0)`. An entity without the layer reads `0`; a bad reference fails load. */
   export function defense(layer: DefenseLayer): Readonly<{ current: RuntimeGuardNode; capacity: RuntimeGuardNode }>;
+
+  /** `true` while the brain entity carries a live instance of `status`, from any applier: `{ to: "flee", when: hasStatus(burning) }`. A status `defineMod` does not register fails load. */
+  export function hasStatus(status: Status): RuntimeGuardNode;
 
   /** `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle throws at the call. Reading it registers no attack. */
   export function attackTurnHeld(attack: Attack): RuntimeGuardNode;

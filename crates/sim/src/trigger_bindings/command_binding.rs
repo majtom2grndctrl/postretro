@@ -297,6 +297,23 @@ pub(super) fn bind_command_at(
                 amount: args.amount,
             })
         }
+        crate::status_commands::APPLY_STATUS | crate::status_commands::CLEAR_STATUS => {
+            let status = match crate::status_commands::status_name(primitive, args) {
+                Ok(status) => status,
+                Err(error) => {
+                    log::warn!(
+                        "[Trigger] {primitive} has a bad status reference; not binding: {error}"
+                    );
+                    return None;
+                }
+            };
+            let target = target(primitive)?;
+            Some(if primitive == crate::status_commands::APPLY_STATUS {
+                BoundTriggerCommand::ApplyStatus { target, status }
+            } else {
+                BoundTriggerCommand::ClearStatus { target, status }
+            })
+        }
         "grantLayer" => {
             let args: GrantLayerArgs = match serde_json::from_value::<GrantLayerArgs>(args.clone())
             {

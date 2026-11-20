@@ -19,6 +19,10 @@ pub const STATUS_DURATION_MS_MAX: f32 = 600_000.0;
 /// Literal range of `maxStacks`.
 pub const STATUS_MAX_STACKS_RANGE: (u8, u8) = (1, 64);
 
+/// Prefix of the per-entity status Bools: `@status.<name>` holds while the
+/// entity carries a live instance of that registered status.
+pub const STATUS_INPUT_PREFIX: &str = "@status.";
+
 /// Source id of an application whose impact had no damager and that came
 /// from a reaction verb rather than an impact (`players().applyStatus`).
 pub const APPLY_STATUS_SOURCE_ID: &str = "script.applyStatus";

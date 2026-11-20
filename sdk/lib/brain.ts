@@ -212,6 +212,18 @@ export function defense(
   });
 }
 
+/** `true` while the brain entity carries a live instance of `status`, from
+ * any applier: `{ to: "flee", when: hasStatus(burning) }`. A status
+ * `defineMod` does not register fails load. */
+export function hasStatus(status: import("postretro").Status): RuntimeGuardNode {
+  const handle = status as { kind?: unknown; name?: unknown } | null;
+  const name =
+    handle !== null && typeof handle === "object" && handle.kind === "status" && typeof handle.name === "string"
+      ? handle.name
+      : "@invalid";
+  return runtime.read(`@status.${name}`) as RuntimeGuardNode;
+}
+
 /** The attack name a turn fact reads. Anything but an attack handle (a bare
  * string, `undefined`, a stance) throws at the call, naming the fact. */
 function attackHandleName(fact: string, attack: unknown): string {

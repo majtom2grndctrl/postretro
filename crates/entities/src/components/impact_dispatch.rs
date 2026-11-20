@@ -27,6 +27,9 @@ pub const IMPACT_BROKE_INPUT: &str = "@impact.broke";
 /// dealt that registered type, the mod's default included. Each binds against
 /// the registered vocabulary, so a type's identity never enters the IR.
 pub const IMPACT_TYPE_INPUT_PREFIX: &str = "@impact.type.";
+/// Prefix of the per-status Bools: `@impact.status.<name>` is true when the
+/// hit is a tick of that registered status.
+pub const IMPACT_STATUS_INPUT_PREFIX: &str = "@impact.status.";
 
 pub const IMPACT_DISPATCH_INPUTS: [(&str, IrType); 7] = [
     (IMPACT_AMOUNT_INPUT, IrType::Number),

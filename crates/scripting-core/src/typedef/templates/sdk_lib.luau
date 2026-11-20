@@ -642,6 +642,11 @@ export type ActivatorsTarget = {
   --- Refill `layer` on this fire's activators: omit `amount` to fill to
   --- capacity, or add it, clamped to capacity.
   grantLayer: (self: ActivatorsTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
+  --- Apply `status` as `script.applyStatus`; a subject without health warns
+  --- and is skipped. Host and single player only.
+  applyStatus: (self: ActivatorsTarget, status: Status) -> SubjectTokenCommand,
+  --- Remove every applier's instance of `status`.
+  clearStatus: (self: ActivatorsTarget, status: Status) -> SubjectTokenCommand,
   --- Add `delta` to this fire's activators' value of a per-owner numeric slot.
   addSlot: (self: ActivatorsTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -683,6 +688,11 @@ export type PlayerTarget = {
   --- Refill `layer` on this event's player: omit `amount` to fill to
   --- capacity, or add it, clamped to capacity.
   grantLayer: (self: PlayerTarget, layer: DefenseLayer, amount: number?) -> SubjectTokenCommand,
+  --- Apply `status` as `script.applyStatus`; a subject without health warns
+  --- and is skipped. Host and single player only.
+  applyStatus: (self: PlayerTarget, status: Status) -> SubjectTokenCommand,
+  --- Remove every applier's instance of `status`.
+  clearStatus: (self: PlayerTarget, status: Status) -> SubjectTokenCommand,
   --- Add `delta` to this event's player's value of a per-owner numeric slot.
   addSlot: (self: PlayerTarget, slot: StateRef<number>, delta: number) -> SubjectTokenCommand,
 }
@@ -771,6 +781,7 @@ type ImpactEffectWire =
   | { primitive: "grantHealth", target: "@impact.source", args: { amount: any } }
   | { primitive: "grantAmmo", target: "@impact.source", args: { type: string, amount: any } }
   | { primitive: "grantLayer", target: "@impact.source", args: { layer: DefenseLayer, amount: any? } }
+  | { primitive: "applyStatus" | "clearStatus", target: "@impact.target", args: { status: Status } }
   | { primitive: "setLifeState", target: "@impact.source", args: { state: string } }
   | { primitive: "adjustSentiment", target: "@impact.target" | "@impact.source", args: { toward: "@impact.target" | "@impact.source", delta: any } }
   | { primitive: "slot.set", args: { slot: string, value: any } }
@@ -800,6 +811,14 @@ export type TargetHandle = {
   --- without that layer reads 0; a bad reference drops the policy at install.
   defense: (self: TargetHandle, layer: DefenseLayer) -> { current: NumberRef, capacity: NumberRef },
   setState: (self: TargetHandle, name: string, value: NumberValue) -> Effect,
+  --- Whether the target carries a live instance of `status` at this fire.
+  hasStatus: (self: TargetHandle, status: Status) -> BoolRef,
+  --- Apply `status` to the target. The applier is this impact's damager, or
+  --- with none its source id; one applier's applications on one fixed tick
+  --- count once. A target at health <= 0 accepts none.
+  applyStatus: (self: TargetHandle, status: Status) -> Effect,
+  --- Remove every applier's instance of `status` from the target.
+  clearStatus: (self: TargetHandle, status: Status) -> Effect,
 }
 export type SourceHandle = {
   __impactSourceBrand: true,
@@ -827,8 +846,9 @@ export type SourceHandle = {
 }
 --- One impact's facts. `amount` is points dealt; `raw` is the incoming amount
 --- after hit zones; `absorbed` is the layers' share; `broke` is true when this hit
---- emptied a layer; `type(damageType)` is true when the hit dealt that type.
-export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef, raw: NumberRef, absorbed: NumberRef, broke: BoolRef, type: (damageType: DamageType) -> BoolRef }
+--- emptied a layer; `type(damageType)` is true when the hit dealt that type;
+--- `status(h)` is true when this impact is a tick of `h`.
+export type Impact = { target: TargetHandle, source: SourceHandle, amount: NumberRef, raw: NumberRef, absorbed: NumberRef, broke: BoolRef, type: (damageType: DamageType) -> BoolRef, status: (status: Status) -> BoolRef }
 export type ImpactEvent = {
   kind: "impact",
   isOverride: boolean,
@@ -1031,6 +1051,11 @@ export type NpcGroup = {
   update: (self: NpcGroup, fields: NpcStateUpdateArgs) -> GroupCommand,
   --- Damage each NPC by a finite, non-negative amount.
   damage: (self: NpcGroup, amount: number, options: DamageOptions?) -> GroupCommand,
+  --- Apply `status` to each NPC as `script.applyStatus`; one without health
+  --- warns and is skipped.
+  applyStatus: (self: NpcGroup, status: Status) -> GroupCommand,
+  --- Remove every applier's instance of `status` from each NPC.
+  clearStatus: (self: NpcGroup, status: Status) -> GroupCommand,
 }
 --- Options for relocating a player to its seat placement on the next tick.
 --- `health` lies in (0, max] and defaults to the pawn's maximum; a value
@@ -1057,6 +1082,11 @@ export type PlayerGroup = {
   --- Refill `layer` on each player: omit `amount` to fill to capacity, or
   --- add it, clamped to capacity.
   grantLayer: (self: PlayerGroup, layer: DefenseLayer, amount: number?) -> GroupCommand,
+  --- Apply `status` as `script.applyStatus`; a subject without health warns
+  --- and is skipped. Host and single player only.
+  applyStatus: (self: PlayerGroup, status: Status) -> GroupCommand,
+  --- Remove every applier's instance of `status`.
+  clearStatus: (self: PlayerGroup, status: Status) -> GroupCommand,
   --- Add `delta` to each player's value of a per-owner numeric slot.
   addSlot: (self: PlayerGroup, slot: StateRef<number>, delta: number) -> GroupCommand,
   --- Fire `fire` once per player whenever `edge`'s condition crosses for that
@@ -2222,6 +2252,9 @@ declare function state(name: string): RuntimeGuardNode
 
 --- Read the brain entity's own defense layer as guard inputs, as `state(name)` reads its own state: `defense(armor).current:le(0)`. An entity without the layer reads `0`; a bad reference fails load.
 declare function defense(layer: DefenseLayer): { current: RuntimeGuardNode, capacity: RuntimeGuardNode }
+
+--- `true` while the brain entity carries a live instance of `status`, from any applier. A status `defineMod` does not register fails load.
+declare function hasStatus(status: Status): RuntimeGuardNode
 
 --- `true` while the enemy holds a turn for `attack`, one of its archetype's attacks, as of the previous tick. Naming another attack fails load; anything but an attack handle raises at the call. Reading it registers no attack.
 declare function attackTurnHeld(attack: Attack): RuntimeGuardNode

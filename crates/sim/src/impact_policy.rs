@@ -413,7 +413,9 @@ impl ImpactPolicyRuntime {
                         | BoundEffect::GrantAmmo { .. }
                         | BoundEffect::GrantLayer { .. }
                         | BoundEffect::AdjustSentiment { .. }
-                        | BoundEffect::SetLifeState { .. } => self.consequential.push(planned),
+                        | BoundEffect::SetLifeState { .. }
+                        | BoundEffect::ApplyStatus { .. }
+                        | BoundEffect::ClearStatus { .. } => self.consequential.push(planned),
                     }
                 }
             }
@@ -489,6 +491,16 @@ impl ImpactPolicyRuntime {
                                 );
                             }
                         }
+                        (
+                            CommandRecipients::One(recipient),
+                            ImpactEffect::ApplyStatus { status },
+                        ) => {
+                            if let Some(recipient) =
+                                Self::resolve_command_recipient(registry, dispatch, recipient)
+                            {
+                                Self::apply_status(registry, dispatch, recipient, status);
+                            }
+                        }
                         (CommandRecipients::One(recipient), effect) => {
                             if let Some(recipient) =
                                 Self::resolve_command_recipient(registry, dispatch, recipient)
@@ -544,6 +556,25 @@ impl ImpactPolicyRuntime {
             return;
         };
         record.set_per_seat_value(seat, value);
+    }
+
+    /// `impact.target.applyStatus(h)`: the applier is this impact's live
+    /// damager, or with none its source id, so a tick of `scalding` keys a
+    /// status it applies to `fluid.<name>`. The source id is what the
+    /// instance's ticks credit.
+    fn apply_status(
+        registry: &mut EntityRegistry,
+        dispatch: &ImpactDispatch,
+        target: EntityId,
+        status: u16,
+    ) {
+        use postretro_entities::components::statuses::StatusApplier;
+        let source = registry.intern_status_source(&dispatch.source_id);
+        let applier = match dispatch.source.filter(|source| registry.exists(*source)) {
+            Some(damager) => StatusApplier::Entity(damager),
+            None => StatusApplier::Source(source),
+        };
+        registry.apply_status(target, status, applier, source);
     }
 
     fn resolve_command_recipient(

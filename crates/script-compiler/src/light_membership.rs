@@ -598,6 +598,7 @@ const BRAIN_LUAU_FIELDS: &[&str] = &[
     "brain",
     "candidate",
     "defense",
+    "hasStatus",
     "state",
     "attackTurnHeld",
     "attackTurnFree",

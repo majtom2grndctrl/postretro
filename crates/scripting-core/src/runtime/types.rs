@@ -405,7 +405,8 @@ pub(crate) fn check_entity_defense_references(
 }
 
 /// Fail load, naming the key path, on a `@defense.<layer>` guard input whose
-/// layer no `defineMod` registers.
+/// layer no `defineMod` registers, or a `@status.<status>` input whose status
+/// none registers.
 fn check_guard_layer_reads(
     value: &serde_json::Value,
     path: &str,
@@ -425,6 +426,16 @@ fn check_guard_layer_reads(
                         "`{path}` reads `{name}`, which names no defense layer `defineMod` registers"
                     ));
                 }
+            }
+            if object.get("op").and_then(serde_json::Value::as_str) == Some("input")
+                && let Some(name) = object.get("name").and_then(serde_json::Value::as_str)
+                && let Some(status) =
+                    name.strip_prefix(postretro_foundation::status::STATUS_INPUT_PREFIX)
+                && vocabulary.status_index(status).is_none()
+            {
+                return Err(format!(
+                    "`{path}` reads `{name}`, which names no status `defineMod` registers"
+                ));
             }
             for (key, child) in object {
                 check_guard_layer_reads(child, &format!("{path}.{key}"), vocabulary)?;
@@ -963,6 +974,38 @@ mod guard_layer_read_tests {
             let error = check_guard_layer_reads(&guard(name), "behavior", &vocabulary).unwrap_err();
             assert!(
                 error.starts_with("`behavior.graph.transitions[0].when.a` reads"),
+                "{error}"
+            );
+        }
+    }
+    // A brain guard's `hasStatus(h)` of a status `defineMod` does not register
+    // fails load naming the key path, as a bad layer read does.
+    #[test]
+    fn brain_guard_status_read_of_an_unregistered_status_fails_load() {
+        let vocabulary = DefenseVocabulary {
+            statuses: postretro_foundation::status::parse_statuses(
+                Some(&serde_json::json!([
+                    { "kind": "status", "name": "burning", "damage": 1, "tickMs": 500 }
+                ])),
+                |_| None,
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+        let guard = |name: &str| {
+            serde_json::json!({ "graph": { "transitions": [
+                { "when": { "op": "input", "name": name } }
+            ] } })
+        };
+        assert_eq!(
+            check_guard_layer_reads(&guard("@status.burning"), "behavior", &vocabulary),
+            Ok(())
+        );
+        for name in ["@status.ice", "@status.@invalid"] {
+            let error = check_guard_layer_reads(&guard(name), "behavior", &vocabulary).unwrap_err();
+            assert!(
+                error.starts_with("`behavior.graph.transitions[0].when` reads")
+                    && error.contains("no status"),
                 "{error}"
             );
         }

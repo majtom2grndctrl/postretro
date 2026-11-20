@@ -29,6 +29,12 @@ pub enum EntityInputHandle {
     /// `@impact.type.<name>`: whether this hit dealt the registered type at
     /// this index.
     ImpactType(u16),
+    /// `@impact.status.<name>`: whether this hit is a tick of the registered
+    /// status at this index.
+    ImpactStatus(u16),
+    /// `impact.target.hasStatus(h)`: whether the target carries the status at
+    /// this index, from the fire's snapshot.
+    TargetStatus(u16),
     /// `impact.target.defense(h)`: a target layer read, by bound index.
     Defense(usize),
     /// `h.current.byPlayer(impact.source)`: the source player's layer read.
@@ -80,6 +86,11 @@ pub struct EntityScope {
     owner_life_state: Option<u8>,
     /// The damage type this fire's hit dealt, refreshed each fire.
     impact_type: Option<u16>,
+    /// The status this fire is a tick of, refreshed each fire.
+    impact_status: Option<u16>,
+    /// The target's live statuses, one bit per kind, snapshotted with its
+    /// state.
+    target_statuses: u64,
     /// The target's layer reads, snapshotted with its state.
     target_defense: crate::components::defense_layers::DefenseReads,
     /// The source player's layer reads; none for a source that is not a
@@ -112,6 +123,16 @@ impl EntityScope {
             .is_some()
     }
 
+    /// The registered index of status `name`, `None` when no `defineMod`
+    /// registers it: a status read or effect of any other name fails its bind.
+    pub fn status_index(&self, name: &str) -> Option<u16> {
+        self.registry
+            .borrow()
+            .defense_vocabulary()
+            .status_index(name)
+            .and_then(|index| u16::try_from(index).ok())
+    }
+
     /// Construct the host-authoritative impact-policy composite scope.
     ///
     /// Entity state itself is host-only. Bare global-store outputs still use
@@ -130,6 +151,8 @@ impl EntityScope {
             owner_engine: [None; PlayerSlot::ALL.len()],
             owner_life_state: None,
             impact_type: None,
+            impact_status: None,
+            target_statuses: 0,
             target_defense: Default::default(),
             owner_defense: Default::default(),
             owner_defense_names: RefCell::new(Vec::new()),
@@ -146,6 +169,7 @@ impl EntityScope {
             self.dispatch.seed(name, value)?;
         }
         self.impact_type = dispatch.damage_type;
+        self.impact_status = dispatch.status;
         let registry = self.registry.clone();
         let registry = registry.borrow();
         self.seed_owner_seat_from_registry(&registry, dispatch.source);
@@ -168,6 +192,7 @@ impl EntityScope {
             self.dispatch.seed(name, value)?;
         }
         self.impact_type = dispatch.damage_type;
+        self.impact_status = dispatch.status;
         self.seed_owner_seat_from_registry(registry, dispatch.source);
         self.seed_target_from_registry(registry, dispatch.target);
         Ok(())
@@ -196,6 +221,7 @@ impl EntityScope {
         drop(names);
 
         self.target_defense.seed(registry, Some(target));
+        self.target_statuses = registry.status_presence_bits(target);
 
         let handles = self.store_handles.borrow();
         let mut store_snapshot = self.store_snapshot.borrow_mut();
@@ -391,6 +417,22 @@ impl BindingScope for EntityScope {
             });
         }
 
+        // An unregistered status fails the bind, as an unregistered type does.
+        if let Some(status) =
+            name.strip_prefix(crate::components::health::IMPACT_STATUS_INPUT_PREFIX)
+        {
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::ImpactStatus(self.status_index(status)?),
+                ir_type: IrType::Bool,
+            });
+        }
+        if let Some(status) = name.strip_prefix(postretro_foundation::status::STATUS_INPUT_PREFIX) {
+            return Some(ResolvedInput {
+                handle: EntityInputHandle::TargetStatus(self.status_index(status)?),
+                ir_type: IrType::Bool,
+            });
+        }
+
         // A layer no `defineMod` registers fails the bind, so the policy
         // holding it drops at install.
         if let Some((layer, capacity)) = postretro_foundation::defense::defense_input(name) {
@@ -505,6 +547,12 @@ impl BindingScope for EntityScope {
                 IrValue::Bool(self.owner_life_state == Some(*id))
             }
             EntityInputHandle::ImpactType(index) => IrValue::Bool(self.impact_type == Some(*index)),
+            EntityInputHandle::ImpactStatus(index) => {
+                IrValue::Bool(self.impact_status == Some(*index))
+            }
+            EntityInputHandle::TargetStatus(index) => {
+                IrValue::Bool(*index < 64 && self.target_statuses & (1 << index) != 0)
+            }
             // An entity without that layer reads 0, as an unset state does.
             EntityInputHandle::Defense(index) => {
                 IrValue::Number(self.target_defense.get(*index).unwrap_or(0.0))

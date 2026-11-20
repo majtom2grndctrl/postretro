@@ -19,11 +19,11 @@ use serde_json::{Value, json};
 
 use super::teleport_tick_tests::{Rig, classic};
 
-const BURNING: u16 = 0;
-const WET: u16 = 1;
-const CORRODING: u16 = 2;
+pub(super) const BURNING: u16 = 0;
+pub(super) const WET: u16 = 1;
+pub(super) const CORRODING: u16 = 2;
 
-fn declarations(burning: Value) -> Vec<postretro_foundation::status::StatusDeclaration> {
+pub(super) fn declarations(burning: Value) -> Vec<postretro_foundation::status::StatusDeclaration> {
     parse_statuses(
         Some(&json!([
             burning,
@@ -35,7 +35,7 @@ fn declarations(burning: Value) -> Vec<postretro_foundation::status::StatusDecla
     .unwrap()
 }
 
-fn burning(stacking: &str, tick_ms: f32, duration_ms: Option<f32>) -> Value {
+pub(super) fn burning(stacking: &str, tick_ms: f32, duration_ms: Option<f32>) -> Value {
     let mut burning = json!({
         "kind": "status", "name": "burning", "damage": 4, "tickMs": tick_ms,
         "stacking": stacking, "maxStacks": 3,
@@ -47,7 +47,7 @@ fn burning(stacking: &str, tick_ms: f32, duration_ms: Option<f32>) -> Value {
     burning
 }
 
-fn install(registry: &mut EntityRegistry, burning: Value) {
+pub(super) fn install(registry: &mut EntityRegistry, burning: Value) {
     registry.set_defense_vocabulary(Arc::new(DefenseVocabulary {
         layers: Vec::new(),
         damage_types: vec![DamageTypeDeclaration {
@@ -62,13 +62,13 @@ fn install(registry: &mut EntityRegistry, burning: Value) {
     }));
 }
 
-struct World {
-    rig: Rig,
-    enemy: EntityId,
+pub(super) struct World {
+    pub(super) rig: Rig,
+    pub(super) enemy: EntityId,
 }
 
 impl World {
-    fn new(burning: Value) -> Self {
+    pub(super) fn new(burning: Value) -> Self {
         let mut rig = Rig::new(vec![classic(
             Vec3::new(0.0, -50.0, 0.0),
             1.0,
@@ -81,33 +81,36 @@ impl World {
         Self { rig, enemy }
     }
 
-    fn registry(&self) -> std::cell::RefMut<'_, EntityRegistry> {
+    pub(super) fn registry(&self) -> std::cell::RefMut<'_, EntityRegistry> {
         self.rig.ctx.registry.borrow_mut()
     }
 
-    fn health(&self, entity: EntityId) -> f32 {
+    pub(super) fn health(&self, entity: EntityId) -> f32 {
         self.rig.health(entity)
     }
 
-    fn tick(&mut self) -> super::TickEvents {
+    pub(super) fn tick(&mut self) -> super::TickEvents {
         self.rig.tick()
     }
 
     /// One tick whose AI stage runs `apply`: an in-tick application.
-    fn tick_applying(&mut self, mut apply: impl FnMut(&mut EntityRegistry)) -> super::TickEvents {
+    pub(super) fn tick_applying(
+        &mut self,
+        mut apply: impl FnMut(&mut EntityRegistry),
+    ) -> super::TickEvents {
         self.rig.tick_with(&[], |registry| apply(registry))
     }
 
-    fn host_tick(&self) -> u64 {
+    pub(super) fn host_tick(&self) -> u64 {
         self.rig.ctx.registry.borrow().host_tick()
     }
 
-    fn source(&self, id: &str) -> u16 {
+    pub(super) fn source(&self, id: &str) -> u16 {
         self.registry().intern_status_source(id)
     }
 }
 
-fn spawn(rig: &Rig, max: f32) -> EntityId {
+pub(super) fn spawn(rig: &Rig, max: f32) -> EntityId {
     let mut registry = rig.ctx.registry.borrow_mut();
     let entity = registry.spawn(Transform::default());
     registry
@@ -128,11 +131,11 @@ fn spawn(rig: &Rig, max: f32) -> EntityId {
     entity
 }
 
-fn applier(world: &World, name: &str) -> StatusApplier {
+pub(super) fn applier(world: &World, name: &str) -> StatusApplier {
     StatusApplier::Source(world.source(name))
 }
 
-fn apply(
+pub(super) fn apply(
     registry: &mut EntityRegistry,
     target: EntityId,
     status: u16,
@@ -143,7 +146,7 @@ fn apply(
 }
 
 /// Ticks `n` times, returning the host ticks on which the target lost health.
-fn damage_ticks(world: &mut World, target: EntityId, n: usize) -> Vec<u64> {
+pub(super) fn damage_ticks(world: &mut World, target: EntityId, n: usize) -> Vec<u64> {
     let mut landed = Vec::new();
     for _ in 0..n {
         let before = world.health(target);
@@ -574,5 +577,85 @@ fn status_hot_reload_preserves_phase_and_applies_changes() {
         landed_before - world.health(enemy),
         20.0,
         "stacks clamp to 1 at 10 each"
+    );
+}
+
+// A status with `type` omitted ticks as the mod's `defaultDamageType`; a
+// typed one drains layers before health by its matrix and restamps the
+// layers' recharge delay.
+#[test]
+fn status_ticks_are_typed_hits_through_layers() {
+    use postretro_entities::components::defense_layers::{DefenseLayer, DefenseLayersComponent};
+    let mut world = World::new(burning("refresh", 500.0, None));
+    let enemy = world.enemy;
+    {
+        let mut registry = world.registry();
+        let mut vocabulary = (**registry.defense_vocabulary()).clone();
+        vocabulary.layers = vec!["shield".to_string()];
+        vocabulary.damage_types[0].matrix.insert(
+            "shield".to_string(),
+            postretro_foundation::defense::PoolMultiplier::Scale(2.0),
+        );
+        vocabulary.default_damage_type = Some(0);
+        registry.set_defense_vocabulary(Arc::new(vocabulary));
+        registry
+            .set_component(
+                enemy,
+                DefenseLayersComponent {
+                    descriptor: None,
+                    layers: vec![DefenseLayer {
+                        name: "shield".to_string(),
+                        value: 100.0,
+                        capacity: 100.0,
+                        recharge_delay_ms: 3000.0,
+                        recharge_rate: 0.0,
+                        resist: Vec::new(),
+                        refill: Default::default(),
+                    }],
+                    health_resist: Vec::new(),
+                    last_hit_tick: None,
+                },
+            )
+            .unwrap();
+    }
+    let a = applier(&world, "weapon.incendiary");
+    world.tick_applying(|registry| {
+        apply(registry, enemy, BURNING, a);
+        apply(registry, enemy, CORRODING, a);
+    });
+    let health_before = world.health(enemy);
+    world.registry().take_impact_dispatches();
+    for _ in 0..60 {
+        world.tick();
+    }
+    let dispatches = world.registry().take_impact_dispatches();
+    let burn = dispatches
+        .iter()
+        .find(|d| d.status == Some(BURNING))
+        .unwrap();
+    let corrode = dispatches
+        .iter()
+        .find(|d| d.status == Some(CORRODING))
+        .unwrap();
+    assert_eq!(burn.damage_type, Some(0));
+    assert_eq!(
+        corrode.damage_type,
+        Some(0),
+        "untyped takes the default type"
+    );
+    assert!(burn.absorbed > 0.0, "the shield absorbed the burn");
+    assert_eq!(
+        world.health(enemy),
+        health_before,
+        "layers drained before health"
+    );
+    let registry = world.registry();
+    let layers = registry
+        .get_component::<DefenseLayersComponent>(enemy)
+        .unwrap();
+    assert_eq!(layers.layers[0].value, 100.0 - 2.0 * 4.0 * 2.0 - 2.0 * 2.0);
+    assert!(
+        layers.last_hit_tick.is_some(),
+        "a tick restamps the recharge delay"
     );
 }

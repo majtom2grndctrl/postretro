@@ -55,6 +55,14 @@ pub(super) enum BoundEffect {
     SetLifeState {
         state: String,
     },
+    /// `impact.target.applyStatus(h)`: the registered status index.
+    ApplyStatus {
+        status: u16,
+    },
+    /// `impact.target.clearStatus(h)`: the registered status index.
+    ClearStatus {
+        status: u16,
+    },
 }
 
 /// Which opaque impact command-target token a planned effect resolves at apply.
@@ -268,6 +276,25 @@ pub(super) fn bind_effect(entry: &Value, scope: &EntityScope) -> Result<BoundEff
                 amount,
             })
         }
+        "applyStatus" | "clearStatus" => {
+            require_impact_token(target, primitive, IMPACT_TARGET_TOKEN)?;
+            let handle = postretro_foundation::defense::HandleRef::from_json(
+                args.get("status")
+                    .ok_or_else(|| format!("{primitive} args is missing `status`"))?,
+            )
+            .map_err(|error| format!("{primitive} `status`: {error}"))?;
+            let name = handle
+                .expect_status()
+                .map_err(|error| format!("{primitive} `status`: {error}"))?;
+            let status = scope.status_index(name).ok_or_else(|| {
+                format!("{primitive} `status`: `{name}` is not a registered status")
+            })?;
+            Ok(if primitive == "applyStatus" {
+                BoundEffect::ApplyStatus { status }
+            } else {
+                BoundEffect::ClearStatus { status }
+            })
+        }
         "adjustSentiment" => {
             let from_recipient = impact_recipient(target, primitive)?;
             let to_recipient = impact_recipient(
@@ -439,6 +466,14 @@ pub(super) fn plan_effect(effect: &BoundEffect, scope: &EntityScope) -> PlannedE
                 pool: pool.clone(),
                 amount: number(eval_value(amount, scope)),
             },
+        },
+        BoundEffect::ApplyStatus { status } => PlannedEffect::Command {
+            recipients: CommandRecipients::One(CommandRecipient::Target),
+            effect: ImpactEffect::ApplyStatus { status: *status },
+        },
+        BoundEffect::ClearStatus { status } => PlannedEffect::Command {
+            recipients: CommandRecipients::One(CommandRecipient::Target),
+            effect: ImpactEffect::ClearStatus { status: *status },
         },
         BoundEffect::GrantLayer { layer, amount } => PlannedEffect::Command {
             recipients: CommandRecipients::One(CommandRecipient::Source),

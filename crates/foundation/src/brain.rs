@@ -232,6 +232,9 @@ pub enum BrainInputRef<'a> {
     /// `@attackTurnFree.<attack>`: one of the brain archetype's attacks, checked
     /// at load. Projects as a boolean.
     AttackTurnFree(&'a str),
+    /// `@status.<status>`: whether the brain entity carries that registered
+    /// status, checked at load. Projects as a boolean.
+    Status(&'a str),
 }
 
 /// The attack name a named attack-turn read carries, or `None` for any other
@@ -253,6 +256,9 @@ pub fn resolve_brain_input(name: &str) -> Option<BrainInputRef<'_>> {
     }
     if let Some(attack) = name.strip_prefix(ATTACK_TURN_HELD_INPUT_PREFIX) {
         return (!attack.is_empty()).then_some(BrainInputRef::AttackTurnHeld(attack));
+    }
+    if let Some(status) = name.strip_prefix(crate::status::STATUS_INPUT_PREFIX) {
+        return (!status.is_empty()).then_some(BrainInputRef::Status(status));
     }
     if let Some(attack) = name.strip_prefix(ATTACK_TURN_FREE_INPUT_PREFIX) {
         return (!attack.is_empty()).then_some(BrainInputRef::AttackTurnFree(attack));
@@ -290,7 +296,9 @@ impl BindingScope for BrainValidationScope {
         let ir_type = match resolve_brain_input(name)? {
             BrainInputRef::Fixed { ir_type, .. } => ir_type,
             BrainInputRef::State(_) | BrainInputRef::Defense { .. } => IrType::Number,
-            BrainInputRef::AttackTurnHeld(_) | BrainInputRef::AttackTurnFree(_) => IrType::Bool,
+            BrainInputRef::AttackTurnHeld(_)
+            | BrainInputRef::AttackTurnFree(_)
+            | BrainInputRef::Status(_) => IrType::Bool,
         };
         Some(ResolvedInput {
             handle: ir_type,

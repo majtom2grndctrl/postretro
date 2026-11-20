@@ -108,6 +108,15 @@ local function defenseInput(layer: any, capacity: boolean): string
   return "@defense." .. name .. (if capacity then ".capacity" else "")
 end
 
+-- The registered name a status handle reads; a bad reference (a bare string,
+-- another kind's handle) names no status, so its bind fails at install.
+local function statusName(status: any): string
+  if type(status) == "table" and rawget(status, "kind") == "status" and type(rawget(status, "name")) == "string" then
+    return rawget(status, "name")
+  end
+  return "@invalid"
+end
+
 IMPACT_TARGET = table.freeze({
   healthBefore = numberRef({ op = "input", name = "@impact.healthBefore" }),
   healthAfter = numberRef({ op = "input", name = "@impact.healthAfter" }),
@@ -139,6 +148,15 @@ IMPACT_TARGET = table.freeze({
   end,
   setState = function(_self: TargetHandle, name: string, value: NumberValue): Effect
     return impactEffect("setState", { name = name, value = numberNode(value) })
+  end,
+  hasStatus = function(_self: TargetHandle, status: Status): BoolRef
+    return boolRef({ op = "input", name = "@status." .. statusName(status) })
+  end,
+  applyStatus = function(_self: TargetHandle, status: Status): Effect
+    return impactEffect("applyStatus", { status = status })
+  end,
+  clearStatus = function(_self: TargetHandle, status: Status): Effect
+    return impactEffect("clearStatus", { status = status })
   end,
 })
 
@@ -206,6 +224,9 @@ local IMPACT: Impact = table.freeze({
   broke = boolRef({ op = "input", name = "@impact.broke" }),
   type = function(damageType: DamageType): BoolRef
     return boolRef({ op = "input", name = "@impact.type." .. impactTypeName(damageType) })
+  end,
+  status = function(status: Status): BoolRef
+    return boolRef({ op = "input", name = "@impact.status." .. statusName(status) })
   end,
 })
 

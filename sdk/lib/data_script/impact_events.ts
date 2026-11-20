@@ -23,6 +23,7 @@ type ImpactEffectWire =
   | { primitive: "grantAmmo"; target: "@impact.source"; args: { type: string; amount: RuntimeValue } }
   | { primitive: "grantLayer"; target: "@impact.source"; args: { layer: import("postretro").DefenseLayer; amount?: RuntimeValue } }
   | { primitive: "setLifeState"; target: "@impact.source"; args: { state: string } }
+  | { primitive: "applyStatus" | "clearStatus"; target: "@impact.target"; args: { status: import("postretro").Status } }
   | { primitive: "adjustSentiment"; target: "@impact.target" | "@impact.source"; args: { toward: "@impact.target" | "@impact.source"; delta: RuntimeValue } }
   | { primitive: "slot.set"; args: { slot: string; value: RuntimeValue } }
   | { primitive: "slot.set"; target: "@impact.source"; args: { slot: string; value: RuntimeValue } };
@@ -50,6 +51,12 @@ export interface TargetHandle {
   /** The impact target's own layer, read before this fire's effects: `current` and `capacity`. A target without that layer reads 0. */
   defense(layer: import("postretro").DefenseLayer): Readonly<{ current: NumberRef; capacity: NumberRef }>;
   setState(name: string, value: NumberValue): Effect;
+  /** Whether the target carries a live instance of `status`, from any applier, at this fire. */
+  hasStatus(status: import("postretro").Status): BoolRef;
+  /** Apply `status` to the target. The applier is this impact's damager, or with none its source id; one applier's applications on one tick count once. A target at health ≤ 0 accepts none. */
+  applyStatus(status: import("postretro").Status): Effect;
+  /** Remove every applier's instance of `status` from the target. */
+  clearStatus(status: import("postretro").Status): Effect;
 }
 
 export interface SourceHandle {
@@ -109,6 +116,8 @@ export type Impact = Readonly<{
   broke: BoolRef;
   /** True when the hit dealt `damageType`, the mod's default type included. */
   type(damageType: import("postretro").DamageType): BoolRef;
+  /** True when this impact is a tick of `status`: guard an igniting policy with it so a burn never reapplies itself from its own ticks. */
+  status(status: import("postretro").Status): BoolRef;
 }>;
 
 export interface ImpactEvent {
@@ -185,6 +194,16 @@ function defenseInput(layer: unknown, capacity: boolean): string {
   return `@defense.${name}${capacity ? ".capacity" : ""}`;
 }
 
+/** The registered name a status handle reads; a bad reference (a bare
+ * string, another kind's handle) names no status, so its bind fails at
+ * install. */
+function statusName(status: unknown): string {
+  const handle = status as { kind?: unknown; name?: unknown } | null;
+  return handle !== null && typeof handle === "object" && handle.kind === "status" && typeof handle.name === "string"
+    ? handle.name
+    : "@invalid";
+}
+
 const IMPACT_TARGET: TargetHandle = Object.freeze({
   healthBefore: numberRef({ op: "input", name: "@impact.healthBefore" }),
   healthAfter: numberRef({ op: "input", name: "@impact.healthAfter" }),
@@ -214,6 +233,15 @@ const IMPACT_TARGET: TargetHandle = Object.freeze({
   },
   setState(name, value) {
     return impactEffect("setState", { name, value: numberNode(value) });
+  },
+  hasStatus(status) {
+    return boolRef({ op: "input", name: `@status.${statusName(status)}` });
+  },
+  applyStatus(status) {
+    return impactEffect("applyStatus", { status });
+  },
+  clearStatus(status) {
+    return impactEffect("clearStatus", { status });
   },
 });
 
@@ -265,6 +293,8 @@ const IMPACT: Impact = Object.freeze({
   broke: boolRef({ op: "input", name: "@impact.broke" }),
   type: (damageType: import("postretro").DamageType) =>
     boolRef({ op: "input", name: `@impact.type.${impactTypeName(damageType)}` }),
+  status: (status: import("postretro").Status) =>
+    boolRef({ op: "input", name: `@impact.status.${statusName(status)}` }),
 });
 
 /**

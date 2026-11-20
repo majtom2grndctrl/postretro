@@ -2,7 +2,7 @@
 // while NPCs fight them ends every turn on them (recording its refresh),
 // stops a burst aimed at them, frees the slot, and clears the wait clock, on
 // the respawn tick; noticing them again starts a new wait.
-// See: context/plans/in-progress/E10--ai-tick-scheduling/index.md (Acquiring,
+// See: context/plans/done/E10--ai-tick-scheduling/index.md (Acquiring,
 //      losing and resets; P47)
 //      context/lib/entity_model.md §7c (Attack budget)
 

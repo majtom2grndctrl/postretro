@@ -2,7 +2,7 @@
 // candidate through its own meter, filled and drained at its 15 Hz acquisition
 // checks; hits, the aggro gate, target loss and switches set or clear meters.
 // A screen at x = 5 hides whatever stands behind it from an NPC at the origin.
-// See: context/plans/in-progress/E10--ai-tick-scheduling/index.md (An NPC
+// See: context/plans/done/E10--ai-tick-scheduling/index.md (An NPC
 //      notices through a per-candidate meter; P31–P37, P41, P43, P53, P55,
 //      P57, P58, P63, P65)
 //      context/lib/entity_model.md §7c

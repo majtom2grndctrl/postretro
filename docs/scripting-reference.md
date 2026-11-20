@@ -1733,6 +1733,8 @@ defineEntity({
 | `candidate.sentiment` | `@candidate.sentiment` | `number` | Directional sentiment toward the candidate: negative hostile, zero neutral, positive allied. |
 | `candidate.damageDealtToMe` | `@candidate.damageDealtToMe` | `number` | Accumulated positive damage this candidate has dealt to this enemy, or `0` when absent from its attacker ledger. |
 | `candidate.timeSinceDamageFromCandidate` | `@candidate.timeSinceDamageFromCandidate` | `number` | Milliseconds since this candidate last damaged this enemy, or `1e9` when it has not. |
+
+When a player respawns, every enemy forgets what that player did before: `candidate.damageDealtToMe` reads `0` and `candidate.timeSinceDamageFromCandidate` reads `1e9` again, and a shot the player fired before respawning that lands afterwards still deals damage but adds nothing to either. Enemies that were targeting the player drop it on the respawn tick and notice the player again through a fresh fill of their `awareness`, unless the player hits one of them first.
 | `candidate.tolerance` | `@candidate.tolerance` | `number` | Resolved retaliation tolerance: archetype override, then directional faction relationship, else `f32::MAX`. |
 
 An activity is either a leaf or a composite:

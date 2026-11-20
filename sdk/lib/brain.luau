@@ -12,9 +12,10 @@
 -- SYNC OBLIGATION: `brain` mirrors the `BRAIN_INPUTS` table in
 -- `crates/foundation/src/brain.rs`; `candidate` mirrors `CANDIDATE_INPUTS` in
 -- `crates/foundation/src/candidate.rs`. `brain.ts` carries both sets. Adding an
--- input means editing both preludes; the SDK-helper drift tests in
--- `crates/scripting-core/src/data_descriptors/tests/behavior.rs` fail until
--- they agree.
+-- input means editing both preludes and both typedef templates;
+-- `brain_input_typedefs_match_the_foundation_table` (in
+-- `crates/sim/src/scripting/typedef/tests/surface.rs`) fails until the
+-- templates agree with the table.
 -- See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
 local function input(name: string): RuntimeGuardNode

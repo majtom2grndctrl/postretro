@@ -10,9 +10,10 @@
 // SYNC OBLIGATION: `brain` mirrors the `BRAIN_INPUTS` table in
 // `crates/foundation/src/brain.rs`; `candidate` mirrors `CANDIDATE_INPUTS` in
 // `crates/foundation/src/candidate.rs`. `brain.luau` carries both sets. Adding
-// an input means editing both preludes; the SDK-helper drift tests in
-// `crates/scripting-core/src/data_descriptors/tests/behavior.rs` fail until
-// they agree.
+// an input means editing both preludes and both typedef templates;
+// `brain_input_typedefs_match_the_foundation_table` (in
+// `crates/sim/src/scripting/typedef/tests/surface.rs`) fails until the
+// templates agree with the table.
 // See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
 import type { RuntimeGuardNode } from "postretro";
@@ -135,10 +136,12 @@ export interface CandidateInputs {
    * negative hostile, zero neutral, positive allied (number). */
   readonly sentiment: RuntimeGuardNode;
   /** Accumulated positive damage this candidate has dealt to the evaluating
-   * enemy, or zero when it has not damaged that enemy (number). */
+   * enemy, or zero when it has not damaged that enemy since its latest
+   * respawn (number). */
   readonly damageDealtToMe: RuntimeGuardNode;
   /** Milliseconds since this candidate last damaged the evaluating enemy, or
-   * `1e9` when it has not damaged that enemy (number). */
+   * `1e9` when it has not damaged that enemy since its latest respawn
+   * (number). */
   readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
   /** Retaliation tolerance resolved from this enemy's archetype override, then
    * its directed faction pair toward this candidate, or `f32::MAX` when

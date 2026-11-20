@@ -3238,9 +3238,9 @@ declare module "postretro" {
     readonly died: RuntimeGuardNode;
     /** Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number). */
     readonly sentiment: RuntimeGuardNode;
-    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number). */
+    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy since its latest respawn (number). */
     readonly damageDealtToMe: RuntimeGuardNode;
-    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number). */
+    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy since its latest respawn (number). */
     readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
     /** Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number). */
     readonly tolerance: RuntimeGuardNode;

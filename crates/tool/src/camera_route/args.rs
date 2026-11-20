@@ -8,7 +8,9 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use postretro_camera_route::{DEFAULT_HFOV_DEGREES, DEFAULT_STEPS, WALK_SEED, WalkKind};
+use postretro_camera_route::{
+    DEFAULT_HFOV_DEGREES, DEFAULT_STEPS, GeneratedKind, Smoothing, WALK_SEED, WalkKind,
+};
 
 use crate::flag::match_flag;
 
@@ -25,7 +27,12 @@ const MAX_PITCH_DEGREES: f32 = 89.0;
 pub(super) struct GenerateArgs {
     /// The level path as typed: the bake identity records it verbatim.
     pub(super) level: String,
-    pub(super) kind: WalkKind,
+    pub(super) kind: GeneratedKind,
+    /// The walk the route follows: an exact kind's own, or `--walk` for a
+    /// smoothed route.
+    pub(super) walk: WalkKind,
+    /// A smoothed route's limits; `None` for the exact kinds.
+    pub(super) smoothing: Option<Smoothing>,
     /// The path's seed; the eyes draw from `seed ^ EYE_STREAM_SALT`.
     pub(super) seed: u64,
     pub(super) steps: usize,
@@ -41,6 +48,9 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
     let mut steps = None;
     let mut pitch = None;
     let mut hfov = None;
+    let mut walk = None;
+    let mut speed = None;
+    let mut turn_cap = None;
     let mut out = None;
     let mut index = 0;
 
@@ -72,6 +82,14 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
             set_once(&mut pitch, parse_pitch(&value)?, "--pitch")?;
         } else if let Some(value) = value_of("--hfov")? {
             set_once(&mut hfov, parse_hfov(&value)?, "--hfov")?;
+        } else if let Some(value) = value_of("--walk")? {
+            set_once(&mut walk, parse_walk(&value)?, "--walk")?;
+        } else if let Some(value) = value_of("--speed")? {
+            let value = parse_limit(&value, "--speed", "metres per second")?;
+            set_once(&mut speed, value, "--speed")?;
+        } else if let Some(value) = value_of("--turn-cap")? {
+            let value = parse_limit(&value, "--turn-cap", "degrees per second")?;
+            set_once(&mut turn_cap, value, "--turn-cap")?;
         } else if let Some(value) = value_of("-o")? {
             set_once(&mut out, PathBuf::from(value), "-o")?;
         } else if let Some(value) = value_of("--out")? {
@@ -90,9 +108,39 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
         }
     }
 
+    let kind = kind.ok_or_else(|| usage("generate-camera-route requires --kind <kind>"))?;
+    let (walk, smoothing) = match kind {
+        GeneratedKind::FarPoint | GeneratedKind::Random => {
+            let smoothed_only = [
+                ("--walk", walk.is_some()),
+                ("--speed", speed.is_some()),
+                ("--turn-cap", turn_cap.is_some()),
+            ];
+            if let Some((flag, _)) = smoothed_only.into_iter().find(|&(_, given)| given) {
+                return Err(usage(&format!("{flag} applies only to --kind smoothed")));
+            }
+            let walk = if kind == GeneratedKind::Random {
+                WalkKind::Random
+            } else {
+                WalkKind::FarPointTour
+            };
+            (walk, None)
+        }
+        GeneratedKind::Smoothed => {
+            let defaults = Smoothing::default();
+            let smoothing = Smoothing {
+                speed: speed.unwrap_or(defaults.speed),
+                turn_cap_degrees: turn_cap.unwrap_or(defaults.turn_cap_degrees),
+            };
+            (walk.unwrap_or(WalkKind::FarPointTour), Some(smoothing))
+        }
+    };
+
     Ok(GenerateArgs {
         level: level.ok_or_else(|| usage("generate-camera-route requires a level path"))?,
-        kind: kind.ok_or_else(|| usage("generate-camera-route requires --kind <kind>"))?,
+        kind,
+        walk,
+        smoothing,
         seed: seed.unwrap_or(WALK_SEED),
         steps: steps.unwrap_or(DEFAULT_STEPS),
         pitch_degrees: pitch.unwrap_or(0.0),
@@ -101,17 +149,36 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
     })
 }
 
-/// The kinds this verb generates.
-const KINDS: [WalkKind; 2] = [WalkKind::FarPointTour, WalkKind::Random];
+fn parse_kind(value: &str) -> Result<GeneratedKind, String> {
+    GeneratedKind::from_key(value).ok_or_else(|| {
+        let valid: Vec<&str> = GeneratedKind::ALL.iter().map(|kind| kind.key()).collect();
+        usage(&format!(
+            "unknown --kind {value:?}; valid kinds: {}",
+            valid.join(", ")
+        ))
+    })
+}
 
-fn parse_kind(value: &str) -> Result<WalkKind, String> {
-    WalkKind::from_key(value)
-        .filter(|kind| KINDS.contains(kind))
+fn parse_walk(value: &str) -> Result<WalkKind, String> {
+    WalkKind::from_key(value).ok_or_else(|| {
+        let valid: Vec<&str> = WalkKind::ALL.iter().map(|walk| walk.key()).collect();
+        usage(&format!(
+            "unknown --walk {value:?}; valid walks: {}",
+            valid.join(", ")
+        ))
+    })
+}
+
+/// A smoothed route's speed or turn cap: finite and above zero, never
+/// clamped, since a mod moves at its own speeds.
+fn parse_limit(value: &str, flag: &str, unit: &str) -> Result<f32, String> {
+    value
+        .parse::<f32>()
+        .ok()
+        .filter(|limit| limit.is_finite() && *limit > 0.0)
         .ok_or_else(|| {
-            let valid: Vec<&str> = KINDS.iter().map(|kind| kind.key()).collect();
             usage(&format!(
-                "unknown --kind {value:?}; valid kinds: {}",
-                valid.join(", ")
+                "{flag} expects a finite positive value in {unit}, got {value:?}"
             ))
         })
 }
@@ -181,7 +248,8 @@ fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), String>
 pub(super) fn usage(message: &str) -> String {
     format!(
         "{message}\n\nUsage: postretro-tool generate-camera-route <level.prl> \\
-         --kind far-point|random [--seed <u64>] [--steps <n>] [--pitch <degrees>] \\
-         [--hfov <degrees>] -o <out-file>"
+         --kind far-point|random|smoothed [--seed <u64>] [--steps <n>] [--pitch <degrees>] \\
+         [--hfov <degrees>] [--walk far-point|random] [--speed <m/s>] [--turn-cap <deg/s>] \\
+         -o <out-file>"
     )
 }

@@ -160,3 +160,125 @@ pub(crate) fn solid_world() -> LevelWorld {
     let cells = vec![cell(Vec3::ZERO, Vec3::splat(EDGE), true, false)];
     assemble(cells, &[], CellLocatorChild::Cell(0), Vec::new())
 }
+
+/// Tile edge and height for `tile_world`, metres.
+const TILE: f32 = 4.0;
+const TILE_HEIGHT: f32 = 3.0;
+
+/// A world of 4 m tiles on x/z: `layout[row][col]` names each tile's open
+/// cell, `None` the shared solid cell, numbered after the open ones. A cell
+/// may span tiles, so it can be non-convex. Each tile face between two open
+/// cells is a portal whose polygon is that face. The locator splits columns
+/// on x, then each column's rows on z.
+pub(crate) fn tile_world(layout: &[&[Option<usize>]]) -> LevelWorld {
+    use CellLocatorChild::{Cell, Node};
+
+    let rows = layout.len();
+    let cols = layout[0].len();
+    let solid = layout
+        .iter()
+        .flat_map(|row| row.iter().flatten())
+        .max()
+        .map_or(0, |&max| max + 1);
+    let tile = |row: usize, col: usize| layout[row][col].unwrap_or(solid);
+    let tile_min = |row: usize, col: usize| Vec3::new(col as f32 * TILE, 0.0, row as f32 * TILE);
+
+    let mut cells: Vec<CellData> = (0..=solid)
+        .map(|id| cell(Vec3::MAX, Vec3::MIN, id == solid, false))
+        .collect();
+    for row in 0..rows {
+        for col in 0..cols {
+            let data = &mut cells[tile(row, col)];
+            let min = tile_min(row, col);
+            data.bounds_min = data.bounds_min.min(min);
+            data.bounds_max = data
+                .bounds_max
+                .max(min + Vec3::new(TILE, TILE_HEIGHT, TILE));
+        }
+    }
+
+    let mut pairs = Vec::new();
+    let mut polygons = Vec::new();
+    let up = Vec3::Y * TILE_HEIGHT;
+    for row in 0..rows {
+        for col in 0..cols {
+            let here = tile(row, col);
+            // The face toward the next column (+x), then the next row (+z).
+            for (next, normal, span) in [
+                (
+                    (col + 1 < cols).then(|| tile(row, col + 1)),
+                    Vec3::X,
+                    Vec3::Z,
+                ),
+                (
+                    (row + 1 < rows).then(|| tile(row + 1, col)),
+                    Vec3::Z,
+                    Vec3::X,
+                ),
+            ] {
+                let Some(next) = next.filter(|&next| next != here && next != solid) else {
+                    continue;
+                };
+                if here == solid {
+                    continue;
+                }
+                let base = tile_min(row, col) + normal * TILE;
+                let side = span * TILE;
+                pairs.push((here, next));
+                polygons.push(vec![base, base + side, base + side + up, base + up]);
+            }
+        }
+    }
+
+    fn split(
+        nodes: &mut Vec<CellLocatorNodeData>,
+        (lo, hi): (usize, usize),
+        normal: Vec3,
+        leaf: &dyn Fn(usize) -> CellLocatorChild,
+    ) -> CellLocatorChild {
+        if hi - lo == 1 {
+            return leaf(lo);
+        }
+        let mid = (lo + hi) / 2;
+        let back = split(nodes, (lo, mid), normal, leaf);
+        let front = split(nodes, (mid, hi), normal, leaf);
+        nodes.push(plane(normal, mid as f32 * TILE, back, front));
+        Node(nodes.len() - 1)
+    }
+    let mut nodes = Vec::new();
+    let columns: Vec<CellLocatorChild> = (0..cols)
+        .map(|col| split(&mut nodes, (0, rows), Vec3::Z, &|row| Cell(tile(row, col))))
+        .collect();
+    let root = split(&mut nodes, (0, cols), Vec3::X, &|col| columns[col]);
+
+    let mut world = assemble(cells, &pairs, root, nodes);
+    for (portal, polygon) in world.portals.iter_mut().zip(polygons) {
+        portal.polygon = polygon;
+    }
+    world
+}
+
+/// The smoothed-route layout, rows of +z from the top: a straight corridor
+/// 0–1–2 into 3, an L turn north into 4, then cell 5, three tiles in an L
+/// whose straight line from 4's portal to 6's crosses the solid tile in its
+/// crook; and the pair 7–8, joined to nothing else, so walks teleport to and
+/// from it.
+pub(crate) fn smoothed_world() -> LevelWorld {
+    const N: Option<usize> = None;
+    tile_world(&[
+        &[
+            Some(0),
+            Some(1),
+            Some(2),
+            Some(3),
+            N,
+            N,
+            N,
+            Some(7),
+            Some(8),
+        ],
+        &[N, N, N, Some(4), N, N, N, N, N],
+        &[N, N, N, Some(5), N, N, N, N, N],
+        &[N, N, N, Some(5), Some(5), Some(6), N, N, N],
+    ])
+}

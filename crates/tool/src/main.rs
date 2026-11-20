@@ -86,8 +86,9 @@ USAGE:
   postretro-tool solve-weapon-mount <skeleton.gltf> --weapon <weapon.gltf> [--check] [options]
   postretro-tool mint-identity <mod> [--project <dir> | --manifest <path>]
   postretro-tool prl-sections <level.prl>
-  postretro-tool generate-camera-route <level.prl> --kind far-point|random [--seed <u64>]
-                [--steps <n>] [--pitch <degrees>] [--hfov <degrees>] -o <out-file>
+  postretro-tool generate-camera-route <level.prl> --kind far-point|random|smoothed
+                [--seed <u64>] [--steps <n>] [--pitch <degrees>] [--hfov <degrees>]
+                [--walk far-point|random] [--speed <m/s>] [--turn-cap <deg/s>] -o <out-file>
 
 COMMANDS:
   dist                 Assemble a runnable player distribution payload
@@ -106,7 +107,9 @@ COMMANDS:
   generate-camera-route
                        Write a level's seeded camera route as a pose file:
                        the residency walk's exact frames (far-point tour or
-                       random walk); needs no project, GPU or engine
+                       random walk), or a smoothed flight through the walk's
+                       cells (default 8 m/s, 270 deg/s turn cap); needs no
+                       project, GPU or engine
 
 HELPER BINARIES:
   The tool compiles nothing. Each helper defaults to a conventional path beside

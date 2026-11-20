@@ -10,8 +10,8 @@
 use std::ffi::OsString;
 
 use postretro_camera_route::{
-    CADENCE_HZ, DEFAULT_ASPECT, GeneratedKind, PoseFile, Projection, RouteHeader, RouteOrigin,
-    bake_identity, exact_route_seeded, format_pose_file,
+    CADENCE_HZ, DEFAULT_ASPECT, PoseFile, Projection, RouteHeader, RouteOrigin, bake_identity,
+    exact_route_seeded, format_pose_file, smoothed_route_seeded,
 };
 use postretro_level_loader::LevelWorld;
 
@@ -28,11 +28,13 @@ pub(crate) fn run(args: Vec<OsString>) -> Result<i32, String> {
     let file = generate(&world, &args)?;
     std::fs::write(&args.out, format_pose_file(&file))
         .map_err(|error| format!("write {}: {error}", args.out.display()))?;
+    let cuts = file.poses.iter().filter(|pose| pose.cut).count();
     println!(
-        "Wrote {}: {} poses, {} route, seed {:#x}, {} steps, from {}",
+        "Wrote {}: {} poses ({cuts} cuts), {} route over the {} walk, seed {:#x}, {} steps, from {}",
         args.out.display(),
         file.poses.len(),
         args.kind.key(),
+        args.walk.key(),
         args.seed,
         args.steps,
         args.level,
@@ -46,22 +48,37 @@ fn generate(world: &LevelWorld, args: &GenerateArgs) -> Result<PoseFile, String>
     // Degrees to radians exactly as the walk converts its pitch, so a pose
     // fingerprints as the walk's frame at any pitch.
     let pitch = args.pitch_degrees.to_radians();
-    let route =
-        exact_route_seeded(world, args.kind, args.steps, pitch, args.seed).map_err(|error| {
-            format!(
-                "level {}: {error}; a route needs camera cells with a portal between them",
-                args.level
-            )
-        })?;
-    let params = [
+    let level_error = |error| {
+        format!(
+            "level {}: {error}; a route needs camera cells with a portal between them",
+            args.level
+        )
+    };
+    let mut params = vec![
         ("seed", format!("{:#x}", args.seed)),
         ("steps", args.steps.to_string()),
         ("pitch", args.pitch_degrees.to_string()),
         ("hfov", args.hfov_degrees.to_string()),
     ];
+    let (poses, spawn) = match args.smoothing {
+        None => {
+            let route = exact_route_seeded(world, args.walk, args.steps, pitch, args.seed)
+                .map_err(level_error)?;
+            (route.poses, Some(route.spawn))
+        }
+        Some(smoothing) => {
+            let route =
+                smoothed_route_seeded(world, args.walk, args.steps, pitch, args.seed, smoothing)
+                    .map_err(level_error)?;
+            params.insert(0, ("walk", args.walk.key().to_string()));
+            params.push(("speed", smoothing.speed.to_string()));
+            params.push(("turn_cap", smoothing.turn_cap_degrees.to_string()));
+            (route.poses, None)
+        }
+    };
     Ok(PoseFile {
         header: RouteHeader {
-            origin: RouteOrigin::Generated(GeneratedKind::exact(args.kind)),
+            origin: RouteOrigin::Generated(args.kind),
             params: params
                 .into_iter()
                 .map(|(key, value)| (key.to_string(), value))
@@ -72,8 +89,8 @@ fn generate(world: &LevelWorld, args: &GenerateArgs) -> Result<PoseFile, String>
             },
             bake: bake_identity(&args.level, world),
             cadence_hz: CADENCE_HZ,
-            spawn: Some(route.spawn),
+            spawn,
         },
-        poses: route.poses,
+        poses,
     })
 }

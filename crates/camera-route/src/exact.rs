@@ -43,6 +43,10 @@ pub enum RouteError {
     NoCameraCells,
     #[error("no portal between camera cells")]
     NoPortalBetweenCameraCells,
+    #[error("a smoothed route's speed must be finite and positive")]
+    NonPositiveSpeed,
+    #[error("a smoothed route's turn cap must be finite and positive")]
+    NonPositiveTurnCap,
 }
 
 /// The walk of `kind` at the harness's seed, as exact frames at `pitch`
@@ -57,8 +61,7 @@ pub fn exact_route(
 }
 
 /// [`exact_route`] with the path seeded from `seed` and the eyes from
-/// `seed ^ EYE_STREAM_SALT`. A level whose camera cells share no portal
-/// fails: a route over it would be all teleports.
+/// `seed ^ EYE_STREAM_SALT`.
 pub fn exact_route_seeded(
     world: &LevelWorld,
     kind: WalkKind,
@@ -66,6 +69,13 @@ pub fn exact_route_seeded(
     pitch: f32,
     seed: u64,
 ) -> Result<ExactRoute, RouteError> {
+    walkable(world, steps)?;
+    ExactRoute::of_walk(world, &Walk::build_seeded(world, kind, steps, seed), pitch)
+}
+
+/// Refuses zero steps and a level whose camera cells share no portal: a
+/// route over it would be all teleports.
+pub(crate) fn walkable(world: &LevelWorld, steps: usize) -> Result<(), RouteError> {
     if steps == 0 {
         return Err(RouteError::ZeroSteps);
     }
@@ -76,7 +86,7 @@ pub fn exact_route_seeded(
     if adjacency.iter().all(Vec::is_empty) {
         return Err(RouteError::NoPortalBetweenCameraCells);
     }
-    ExactRoute::of_walk(world, &Walk::build_seeded(world, kind, steps, seed), pitch)
+    Ok(())
 }
 
 impl ExactRoute {

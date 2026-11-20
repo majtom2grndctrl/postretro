@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use glam::Vec3;
 use postretro_camera_route::{
-    DEFAULT_ASPECT, WALK_SEED, WalkKind, bake_token, exact_route, parse_pose_file, pose_fingerprint,
+    DEFAULT_ASPECT, GeneratedKind, Smoothing, WALK_SEED, WalkKind, bake_token, exact_route,
+    parse_pose_file, pose_fingerprint,
 };
 use postretro_level_loader::{CellData, CellLocatorChild, CellLocatorNodeData, LevelWorld};
 
@@ -77,15 +78,12 @@ fn generate_camera_route_writes_identical_bytes_on_two_runs() {
 #[test]
 fn generate_camera_route_from_another_path_or_a_copy_differs_only_in_the_bake_line() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let extra = ["--kind", "far-point", "--steps", "80"];
-    let original = generate_to(&fixture(), &dir.path().join("a.route"), &extra).expect("run");
 
     // The same file spelled another way.
     let respelled = fixture()
         .parent()
         .expect("fixture directory")
         .join("../test-fixtures/sh-streaming-hinted-door.prl");
-    let other_path = generate_to(&respelled, &dir.path().join("b.route"), &extra).expect("run");
 
     // A copy with another modification time.
     let copy = dir.path().join("copy.prl");
@@ -97,22 +95,110 @@ fn generate_camera_route_from_another_path_or_a_copy_differs_only_in_the_bake_li
             file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
         })
         .expect("set the copy's mtime");
-    let copied = generate_to(&copy, &dir.path().join("c.route"), &extra).expect("run");
 
-    let (bake, rest) = split_bake(&original);
-    for (label, text, differs) in [
-        ("another path", &other_path, &["prl"][..]),
-        ("a copy", &copied, &["mtime", "prl"][..]),
+    for extra in [
+        &["--kind", "far-point", "--steps", "80"][..],
+        &["--kind", "smoothed", "--steps", "40"][..],
     ] {
-        let (other_bake, other_rest) = split_bake(text);
-        assert_eq!(
-            rest, other_rest,
-            "{label}: every line but the bake line is identical"
-        );
-        for key in ["id51", "walk_epoch", "size", "mtime", "prl"] {
-            let same = bake_token(&bake, key) == bake_token(&other_bake, key);
-            assert_eq!(!same, differs.contains(&key), "{label}: bake token {key}");
+        let original = generate_to(&fixture(), &dir.path().join("a.route"), extra).expect("run");
+        let other_path = generate_to(&respelled, &dir.path().join("b.route"), extra).expect("run");
+        let copied = generate_to(&copy, &dir.path().join("c.route"), extra).expect("run");
+
+        let (bake, rest) = split_bake(&original);
+        for (label, text, differs) in [
+            ("another path", &other_path, &["prl"][..]),
+            ("a copy", &copied, &["mtime", "prl"][..]),
+        ] {
+            let (other_bake, other_rest) = split_bake(text);
+            assert_eq!(
+                rest, other_rest,
+                "{extra:?}, {label}: every line but the bake line is identical"
+            );
+            for key in ["id51", "walk_epoch", "size", "mtime", "prl"] {
+                let same = bake_token(&bake, key) == bake_token(&other_bake, key);
+                assert_eq!(
+                    !same,
+                    differs.contains(&key),
+                    "{extra:?}, {label}: bake token {key}"
+                );
+            }
         }
+    }
+}
+
+/// Every consecutive pair across no cut moves at most `speed` / 60 m and
+/// turns at most `turn_cap` / 60 degrees, the short way.
+fn assert_within_limits(file: &postretro_camera_route::PoseFile, speed: f32, turn_cap: f32) {
+    let stride = speed / 60.0;
+    let turn = turn_cap.to_radians() / 60.0;
+    let wrap = |angle: f32| {
+        use std::f32::consts::{PI, TAU};
+        angle - TAU * ((angle + PI) / TAU).floor()
+    };
+    let (mut moved_max, mut turned_max) = (0.0f32, 0.0f32);
+    for pair in file.poses.windows(2) {
+        if pair[1].cut {
+            continue;
+        }
+        moved_max = moved_max.max(pair[0].eye.distance(pair[1].eye));
+        turned_max = turned_max.max(wrap(pair[1].yaw - pair[0].yaw).abs());
+    }
+    assert!(moved_max <= stride + 1e-4, "{moved_max} m over {stride}");
+    assert!(turned_max <= turn + 1e-5, "{turned_max} rad over {turn}");
+    assert!(moved_max > stride - 1e-4, "the route reaches its speed");
+}
+
+#[test]
+fn generate_camera_route_smoothed_is_deterministic_keeps_its_limits_and_names_them() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (extra, walk, speed, turn_cap) in [
+        (
+            &["--kind", "smoothed", "--steps", "60"][..],
+            "far-point",
+            8.0,
+            270.0,
+        ),
+        (
+            &[
+                "--kind",
+                "smoothed",
+                "--steps",
+                "60",
+                "--walk",
+                "random",
+                "--speed",
+                "5.5",
+                "--turn-cap",
+                "120",
+                "--pitch",
+                "-10",
+            ][..],
+            "random",
+            5.5,
+            120.0,
+        ),
+    ] {
+        let a = generate_to(&fixture(), &dir.path().join("a.route"), extra).expect("first run");
+        let b = generate_to(&fixture(), &dir.path().join("b.route"), extra).expect("second run");
+        assert_eq!(a, b, "{extra:?}");
+        assert!(a.starts_with("postretro-camera-route 1\norigin generated smoothed\n"));
+        assert!(!a.contains("\nspawn "), "a smoothed file has no walk spawn");
+        let file = parse_pose_file(&a).expect("a valid pose file");
+        let keys: Vec<&str> = file.header.params.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "walk", "seed", "steps", "pitch", "hfov", "speed", "turn_cap"
+            ]
+        );
+        assert_eq!(file.header.param("walk"), Some(walk));
+        assert_eq!(file.header.param("speed"), Some(speed.to_string().as_str()));
+        assert_eq!(
+            file.header.param("turn_cap"),
+            Some(turn_cap.to_string().as_str())
+        );
+        assert!(file.poses.iter().all(|pose| pose.walk.is_some()));
+        assert_within_limits(&file, speed, turn_cap);
     }
 }
 
@@ -124,13 +210,29 @@ fn generate_camera_route_defaults_reproduce_the_walk_frames_and_projection() {
         parsed,
         GenerateArgs {
             level: "level.prl".into(),
-            kind: WalkKind::Random,
+            kind: GeneratedKind::Random,
+            walk: WalkKind::Random,
+            smoothing: None,
             seed: WALK_SEED,
             steps: 2_000,
             pitch_degrees: 0.0,
             hfov_degrees: 100.0,
             out: PathBuf::from("out.route"),
         }
+    );
+    // A smoothed route follows the far-point walk at 8 m/s and 270°/s
+    // unless told otherwise.
+    let smoothed = parse_args(os(&["level.prl", "--kind", "smoothed", "-o", "o"])).expect("args");
+    assert_eq!(
+        (smoothed.kind, smoothed.walk, smoothed.smoothing),
+        (
+            GeneratedKind::Smoothed,
+            WalkKind::FarPointTour,
+            Some(Smoothing {
+                speed: 8.0,
+                turn_cap_degrees: 270.0
+            })
+        )
     );
 
     let level = fixture().to_str().expect("utf-8").to_string();
@@ -178,10 +280,30 @@ fn generate_camera_route_defaults_reproduce_the_walk_frames_and_projection() {
 
 #[test]
 fn generate_camera_route_refuses_bad_parameters_naming_them() {
+    let smoothed = |flag: &'static str, value: &'static str| {
+        ["l.prl", "--kind", "smoothed", flag, value, "-o", "o"]
+    };
+    let mut cases: Vec<(Vec<&str>, &str)> = Vec::new();
+    for value in ["0", "-1", "-0", "NaN", "inf", "fast"] {
+        cases.push((smoothed("--speed", value).to_vec(), "--speed"));
+        cases.push((smoothed("--turn-cap", value).to_vec(), "--turn-cap"));
+    }
+    cases.push((smoothed("--walk", "spiral").to_vec(), "--walk"));
+    for (flag, value) in [("--walk", "random"), ("--speed", "8"), ("--turn-cap", "90")] {
+        for kind in ["far-point", "random"] {
+            let args = vec!["l.prl", "--kind", kind, flag, value, "-o", "o"];
+            cases.push((args, flag));
+        }
+    }
+    for (args, named) in &cases {
+        let error = parse_args(os(args)).expect_err("refused");
+        assert!(error.contains(named), "{args:?}: {error}");
+    }
+
     for (args, named) in [
         (
-            &["l.prl", "--kind", "smoothed", "-o", "o"][..],
-            "far-point, random",
+            &["l.prl", "--kind", "spiral", "-o", "o"][..],
+            "far-point, random, smoothed",
         ),
         (&["l.prl", "--kind", "spiral", "-o", "o"][..], "--kind"),
         (&["l.prl", "-o", "o"][..], "--kind"),
@@ -227,9 +349,25 @@ fn generate_camera_route_refuses_bad_parameters_naming_them() {
             "--hfov=60",
             "--out=o"
         ]))
-        .map(|a| (a.kind, a.seed, a.hfov_degrees)),
-        Ok((WalkKind::FarPointTour, 12, 60.0))
+        .map(|a| (a.kind, a.walk, a.seed, a.hfov_degrees)),
+        Ok((GeneratedKind::FarPoint, WalkKind::FarPointTour, 12, 60.0))
     );
+}
+
+#[test]
+fn generate_camera_route_refuses_a_non_positive_speed_or_turn_cap_before_reading_or_writing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("out.route");
+    for (flag, value) in [("--speed", "0"), ("--turn-cap", "-90"), ("--speed", "NaN")] {
+        let extra = ["--kind", "smoothed", flag, value];
+        // A level that cannot be read: the parameter is refused before it.
+        let missing = dir.path().join("missing.prl");
+        for level in [fixture(), missing] {
+            let error = generate_to(&level, &out, &extra).expect_err("refused");
+            assert!(error.contains(flag), "{error}");
+            assert!(!out.exists(), "nothing written");
+        }
+    }
 }
 
 #[test]

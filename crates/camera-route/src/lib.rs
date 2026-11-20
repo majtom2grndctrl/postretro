@@ -10,12 +10,15 @@ mod bake;
 mod exact;
 mod path;
 mod pose_file;
+mod smoothed;
 mod walk;
 
 #[cfg(test)]
 mod exact_tests;
 #[cfg(test)]
 mod pose_file_tests;
+#[cfg(test)]
+mod smoothed_tests;
 #[cfg(test)]
 mod test_fixtures;
 
@@ -30,6 +33,10 @@ pub use path::{
 pub use pose_file::{
     GeneratedKind, POSE_FILE_MAGIC, ParseReason, PoseFile, PoseFileError, Projection, RouteHeader,
     RouteOrigin, format_pose_file, parse_pose_file,
+};
+pub use smoothed::{
+    DEFAULT_SPEED, DEFAULT_TURN_CAP_DEGREES, DETOUR_STREAM_SALT, SmoothedRoute, Smoothing,
+    smoothed_route_seeded,
 };
 pub use walk::{EYE_TRIES, MAX_DWELL_FRAMES, RUN_SPEED, Walk, camera_graph, eye_point};
 

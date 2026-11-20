@@ -93,7 +93,7 @@ export default defineMod({
 - [ ] A trigger-bound lethal `applyDamage` with a `setHealth` recovery policy recovers before the sweep, with or without another hit on that tick, and `playerDied` never fires; a player-event script impact after tick N evaluates before tick N+1's sweep whether N+1 runs in the same frame or the next (P13, P14).
 - [ ] A trigger-bound lethal `applyDamage` with a `setHealth` recovery policy on an enemy whose `burning` tick is due recovers before the status stage, and the tick lands, with or without another hit earlier that tick; a trigger-bound `applyDamage` whose policy clears `burning` leaves no tick either way (P30).
 - [ ] A script impact that lands before a weapon hit in the same tick evaluates before that hit's impact, in landing order, and is not dropped.
-- [ ] A frame-end policy on script damage to the local pawn reads `player.health` as post-damage health; an `impact.source.grantHealth` row on script damage grants nothing; a script-damaged enemy enters the damaged-enemy roster as an in-tick hit does (P16).
+- [ ] A frame-end policy on script damage to the local pawn reads `player.health` as post-damage health, and so does a policy on trigger-bound or player-event script damage evaluated in-tick, with or without another hit that tick; an `impact.source.grantHealth` row on script damage grants nothing; a script-damaged enemy enters the damaged-enemy roster as an in-tick hit does (P16).
 - [ ] A connected client running a raw-tag `applyDamage` evaluates no policy (regression guard).
 
 **Ticks and credit**
@@ -108,15 +108,19 @@ export default defineMod({
 - [ ] Eight pellets from one applier on one tick add one stack; two appliers on one tick create two instances that tick, stack to `maxStacks` and credit independently.
 - [ ] `"refresh"` resets time left without moving the tick phase; `"stack"` caps at `maxStacks` and multiplies damage; a `"stack"` application at `maxStacks` adds nothing and still resets time left.
 - [ ] `tickMs` and `durationMs` round up to whole fixed ticks: an unrefreshed `burning` (500 / 3000) applied by a hit lands its first tick `tickMs` later, then every `tickMs`, exactly six ticks, the last on its expiry tick and none after; `tickMs` 1 and 16 each tick every fixed tick at 60 Hz, and 17 ticks every second fixed tick (P5).
-- [ ] A weapon hit that refreshes or stacks the instance on that same tick keeps it, lands that tick's damage at the phase it already had, and ticks on; an instance with `durationMs` omitted ticks until cleared (P2).
+- [ ] A weapon hit that refreshes or stacks an instance on its expiry tick keeps it, lands that tick's damage at the phase it already had, and ticks on; an instance with `durationMs` omitted ticks until cleared (P2).
+- [ ] An unguarded `"refresh"` policy that reapplies `burning` from its own tick on the expiry tick keeps that instance, with its tick phase unmoved, and the next tick follows one `tickMs` later; the scripting-reference recipe for an igniting policy guards with `impact.status(h)`, and its fixture shows the guarded burn expiring (P1).
+- [ ] An applier who rejoins with a new pawn and reapplies `burning` creates a second instance; the old one credits only its source id until it ends (P23).
 - [ ] Two appliers' `burning` instances both due on the lethal tick land in instance creation order; the first credits its applier's player (P7).
 - [ ] A tick's own policy changes the instance set at once: a `burning` tick that clears `burning` leaves none, one that applies `corroding` leaves a `corroding` instance that does not tick this tick, and a `corroding` instance cleared by an earlier tick's policy on the same tick does not land (P8).
 - [ ] Two `"stack"` applications from UI presses in two frames with no tick between add one stack, counted on the next fixed tick, and the instance's first tick lands `tickMs` after that tick (P10).
 - [ ] A `players().applyStatus(burning)` from a player event after tick N, and one from a policy at the post-player-event evaluation point, each count on tick N+1: they dedupe with N+1's applications by that applier, and the first tick lands `tickMs` after N+1 (P27).
+- [ ] A remote client's incendiary hit that waited on fire authorization on tick N applies `burning` counted on tick N: it dedupes with that applier's other tick-N hits and its first tick lands `tickMs` after N (P33).
 - [ ] A UI press that applies `burning` and a crossing that clears it in the same frame leave no instance on the next tick; the reverse order leaves one; a trigger-bound clear on the tick a latched application applies removes it before its tick (P25).
 - [ ] A latched application is dropped when, by the tick it would apply, its target has despawned, died, respawned or rejoined, or hot reload removed its kind; a frame-end policy that despawns and applies to one target leaves nothing; level change and same-map restart discard every latched application (P26).
 - [ ] A `burning` applied by a policy on script `applyDamage` keys to `script.applyDamage`, and one applied by a policy on a `scalding` tick keys to `fluid.lava`; each is a separate instance from a `script.applyStatus` burn, and its ticks credit that source id and no player (P29).
-- [ ] `durationMs` below `tickMs` or above 600000, `tickMs` below 1 or above 60000, `damage` outside [0, 1e6], `maxStacks` outside [1, 64], a 65th status, an unknown key and a bad handle each reject load naming the key path; the boundary values load.
+- [ ] `durationMs` below `tickMs` or above 600000, `tickMs` below 1 or above 60000, `damage` outside [0, 1e6], `maxStacks` outside [1, 64], a 65th status, an unknown key and a bad `type` handle each reject load naming the key path; the boundary values load.
+- [ ] A status handle not listed in `statuses` fails where a bad damage-type reference fails on that surface: load fails on a fluid `status` and a brain-guard `hasStatus`, install drops that one impact policy or reaction, and a HUD `.active` binding warns once at tree build.
 - [ ] A status with `type` omitted ticks as the mod's `defaultDamageType`, or untyped ×1 when the mod declares none.
 - [ ] Clear removes every applier's instance. A trigger-bound `clearStatus` on the tick an instance is due removes it before its tick lands; a clear from a player event or a frame drain after that tick leaves the tick landed (P9).
 - [ ] Death latch (the in-tick sweep and the post-tick remote-hit sweep), respawn, level change, same-map restart, rejoin and loading a save each leave no instance; a checkpoint save mid-burn leaves the burn ticking; an entity at health ≤ 0 refuses a new instance; a deferred `setHealth` recovery after the latch starts with none, while an immediate recovery before the sweep keeps its instances (P11, P12).
@@ -124,7 +128,7 @@ export default defineMod({
 - [ ] Hot reload keeps live instances and their next due tick, drops a removed kind, and applies a changed `damage` or `type` from the next tick; a changed `tickMs` spaces the ticks after that next one; a changed `durationMs` leaves time left unchanged until the next application; a lowered `maxStacks` clamps stacks on the next tick (P19).
 
 **Fluids**
-- [ ] A player wading ankle-deep in `lava` takes `scalding` ticks; after leaving, exactly one more tick lands within `tickMs`, then none; standing exactly on the surface takes none; a fluid without `status` applies none; an enemy in the fluid takes none (P4).
+- [ ] A player wading ankle-deep in `lava` takes `scalding` ticks; after leaving, exactly one more tick lands within `tickMs`, then none; standing exactly on the surface takes none; a fluid without `status` applies none; an enemy in the fluid takes none; re-entering lava on a lingering instance's last tick keeps it and its phase (P4).
 - [ ] A remote pawn in `lava` with no command for 30 ticks keeps taking `scalding` ticks; a pawn respawned out of lava takes none before its next command (P17).
 - [ ] A fluid `status` leaves the replicated fluid table at name and viscosity.
 
@@ -137,7 +141,6 @@ export default defineMod({
 - [ ] A peer one `WIRE_VERSION` behind is refused at handshake, a snapshot one `SNAPSHOT_VERSION` behind is rejected, and the tuning payload epoch advances.
 - [ ] A connected client creates no instance, lands no tick and applies no `applyStatus` or `clearStatus` from a UI press or crossing; its health moves only by snapshot.
 - [ ] `players().applyStatus` skips a subject without health and warns.
-- [ ] An unguarded `"refresh"` policy that reapplies `burning` from its own tick on the expiry tick keeps that instance, with its tick phase unmoved, and the next tick follows one `tickMs` later; the scripting-reference recipe for an igniting policy guards with `impact.status(h)`, and its fixture shows the guarded burn expiring (P1).
 - [ ] The Scripting surface example installs as a `content/dev` mod in TS and Luau, type-checks with `tsc --noEmit` including `emitter()`, and its fixture shows `burning`, `scalding`, `corroding` and `wet` behaving as declared.
 
 **Bounds**

@@ -316,6 +316,7 @@ fn spawn_volume(
 
 fn attach_brain(registry: &mut EntityRegistry, id: EntityId) {
     let graph = postretro_foundation::BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: postretro_foundation::BehaviorGraphEnvelope {
             initial: "idle".to_string(),

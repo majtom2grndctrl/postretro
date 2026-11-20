@@ -614,6 +614,7 @@ fn plan_movement_replace(
     refreshed.life_state = live.life_state;
     refreshed.life_state_elapsed_ticks = live.life_state_elapsed_ticks;
     refreshed.life_state_entry = live.life_state_entry;
+    refreshed.life_counter = live.life_counter;
     refreshed.life_state_table_revision = live.life_state_table_revision;
     postretro_foundation::carry_life_state_stamps(live, &mut refreshed);
     // Assist progress is accumulator output, not tuning: the HUD reads it
@@ -1613,6 +1614,8 @@ mod tests {
         // The accumulator keys on the entry count; a rebuilt 0 would read as a
         // fresh entry and restart progress.
         live.life_state_entry = 5;
+        // A reload is no respawn: the life counter rides the rebuild.
+        live.life_counter = 4;
         registry.set_component(id, live).unwrap();
         registry
             .set_component(
@@ -1634,6 +1637,7 @@ mod tests {
         assert_eq!(component.assist_progress, 0.4);
         assert_eq!(component.assist_received_progress, 0.7);
         assert_eq!(component.life_state_entry, 5);
+        assert_eq!(component.life_counter, 4);
     }
 
     #[test]

@@ -56,6 +56,7 @@ fn tick(
             factions,
             faction_sentiment: sentiment,
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -115,7 +116,7 @@ fn a_pass_after_pawn_changes_selects_what_the_reference_scan_selects() {
     let factions = FactionRegistry::default();
     let sentiment = RefCell::new(FactionSentimentState::default());
     let mut registry = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy = spawn_engaged(&mut registry, Vec3::ZERO, &chase_graph(), "engage");
     set_faction(&mut registry, enemy, 1.0);
     let player = spawn_player(&mut registry, Vec3::new(6.0, 0.0, 0.0));
@@ -168,7 +169,7 @@ fn due_selection_log(
     let live = LiveFactionSentiment::with_empty_overlay(&factions);
     let index = PawnIndex::for_test(registry);
     let faction = crate::compute::entity_faction(registry, enemy);
-    let offers = targeting::target_offers(&index, &live, Vec3::ZERO, faction, Some(enemy), None);
+    let offers = targeting::scanned_offers(&index, &live, Vec3::ZERO, faction, Some(enemy), None);
     let mut sighted = Vec::new();
     let mut perception = |target: TargetPawn| {
         sighted.push(target.entity);
@@ -242,6 +243,7 @@ fn a_due_selection_refreshes_only_hostiles_up_to_the_first_eligible_and_ledger_a
             attacker,
             accumulated_damage: 1.0,
             time_since_damage_ms: 100.0,
+            life: 0,
         });
 
         // The nearest hostile is blind: the first eligible is the second.
@@ -265,6 +267,111 @@ fn a_due_selection_refreshes_only_hostiles_up_to_the_first_eligible_and_ledger_a
         counts[0], counts[1],
         "the refresh count ignores the allied horde"
     );
+}
+
+/// One acquisition check for `enemy` with every candidate visible, logging the
+/// candidates refreshed and the line-of-sight tests run: with `retained`, the
+/// engaged scan that stops at the first eligible hostile; without, the
+/// noticing scan an NPC without a target runs.
+fn check_log(
+    registry: &EntityRegistry,
+    enemy: EntityId,
+    retained: Option<EntityId>,
+) -> (Vec<EntityId>, Vec<EntityId>) {
+    let factions = FactionRegistry::default();
+    let live = LiveFactionSentiment::with_empty_overlay(&factions);
+    let index = PawnIndex::for_test(registry);
+    let faction = crate::compute::entity_faction(registry, enemy);
+    let mut sighted = Vec::new();
+    let mut perception = |target: TargetPawn| {
+        sighted.push(target.entity);
+        Some(perception::RawTargetPerception {
+            target: target.entity,
+            visible: true,
+            enemy_eye: Vec3::ZERO,
+            target_aim: target.position,
+        })
+    };
+    let ledger = [None; RECENT_ATTACKER_LEDGER_CAPACITY];
+    REFRESHES.with(|log| *log.borrow_mut() = Some(Vec::new()));
+    match retained {
+        Some(retained) => {
+            let offers = targeting::target_offers(Vec3::ZERO, Some(retained));
+            let retained = targeting::target_candidate(registry, retained, Vec3::ZERO);
+            targeting::select_target_with_attacker_ledger(
+                retained,
+                &offers,
+                &index,
+                registry,
+                &live,
+                Some(enemy),
+                faction,
+                None,
+                &mut CandidateScope::for_validation(),
+                &ledger,
+                None,
+                RetaliationDescriptor::default(),
+                STEER_DT * 1_000.0,
+                &mut perception,
+            );
+        }
+        None => {
+            let mut meters = Default::default();
+            targeting::notice_target(
+                Vec3::ZERO,
+                &index,
+                registry,
+                &live,
+                Some(enemy),
+                faction,
+                None,
+                &mut CandidateScope::for_validation(),
+                &ledger,
+                RetaliationDescriptor::default(),
+                STEER_DT * 1_000.0,
+                &mut meters,
+                Default::default(),
+                &mut perception,
+            );
+        }
+    }
+    let refreshed = REFRESHES.with(|log| log.borrow_mut().take()).unwrap();
+    (refreshed, sighted)
+}
+
+// AC 21: counted at the candidate-refresh seam, an NPC with a target and
+// eight hostile pawns in reach (none on its attacker ledger) refreshes and
+// tests line of sight for none past the first eligible one; the same NPC
+// without a target refreshes and tests up to eight, its meters' bound.
+#[test]
+fn targeted_npc_stops_at_first_eligible_untargeted_scans_eight() {
+    let mut registry = EntityRegistry::new();
+    let enemy = peer(&mut registry, Vec3::ZERO, 1.0);
+    let target = spawn_player(&mut registry, Vec3::new(1.0, 0.0, 0.0));
+    set_faction(&mut registry, target, 0.0);
+    let hostiles: Vec<EntityId> = (0..8)
+        .map(|i| {
+            let player = spawn_player(&mut registry, Vec3::new(3.0 + i as f32, 0.0, 0.0));
+            set_faction(&mut registry, player, 0.0);
+            player
+        })
+        .collect();
+    // A ninth past the bound.
+    let ninth = spawn_player(&mut registry, Vec3::new(20.0, 0.0, 0.0));
+    set_faction(&mut registry, ninth, 0.0);
+
+    let (refreshed, sighted) = check_log(&registry, enemy, Some(target));
+    assert_eq!(refreshed, vec![hostiles[0]], "none past the first eligible");
+    assert_eq!(sighted, vec![hostiles[0]]);
+
+    // Without a target the retained pawn is a candidate too: the nearest
+    // eight pass and fill the bound, and the ninth is never refreshed.
+    let (refreshed, sighted) = check_log(&registry, enemy, None);
+    let mut expected = vec![target];
+    expected.extend_from_slice(&hostiles[..7]);
+    assert_eq!(refreshed, expected, "up to eight");
+    assert_eq!(sighted, expected);
+    assert!(!refreshed.contains(&ninth));
 }
 
 fn chase_wave(brains: usize, props: usize) -> (EntityRegistry, Vec<EntityId>) {
@@ -296,7 +403,7 @@ fn chase_wave(brains: usize, props: usize) -> (EntityRegistry, Vec<EntityId>) {
 }
 
 fn pass_with_walk_count(registry: &mut EntityRegistry) -> usize {
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let factions = FactionRegistry::default();
     let sentiment = RefCell::new(FactionSentimentState::default());
     column_walks::reset();

@@ -304,6 +304,7 @@ fn descriptor_hit_credits_owner_and_despawns(meshless: bool) {
             0,
         ),
         pawn,
+        pawn_life: 0,
         weapon,
         fire_tick: 1,
         damage: 48.0,

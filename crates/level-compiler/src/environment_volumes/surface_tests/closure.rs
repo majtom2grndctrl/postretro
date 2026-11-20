@@ -437,9 +437,20 @@ fn e24_fixture_stays_closed_and_unmoved() {
     assert_nothing_else_moves(&before, &after, TOLERANCE);
 }
 
+/// The section's bytes in the v1 layout the hashes below were captured in:
+/// v2 inserts the AI lead's flag and value (5 bytes) after the level gravity.
+fn v1_bytes(section: &EnvironmentVolumesSection) -> Vec<u8> {
+    assert_eq!(section.ai_wake_lead, None, "v1 carries no AI lead");
+    let v2 = section.to_bytes();
+    let mut v1 = 1_u16.to_le_bytes().to_vec();
+    v1.extend_from_slice(&v2[2..6]);
+    v1.extend_from_slice(&v2[11..]);
+    v1
+}
+
 // Regression guard: a level whose fluid faces have no seam to close keeps the
 // id-52 bytes the compiler wrote before closure existed (blake3, captured
-// from the push-cut-gated compiler).
+// from the push-cut-gated compiler), in the v1 layout.
 #[test]
 fn levels_with_no_open_seam_keep_their_bytes_from_before_closure() {
     let fixtures: [(&str, Vec<String>, Vec<String>); 3] = [
@@ -468,7 +479,7 @@ fn levels_with_no_open_seam_keep_their_bytes_from_before_closure() {
     ];
     for (hash, world, volumes) in fixtures {
         let (_, section) = compile(&world, &volumes);
-        assert_eq!(blake3::hash(&section.to_bytes()).to_hex().as_str(), hash);
+        assert_eq!(blake3::hash(&v1_bytes(&section)).to_hex().as_str(), hash);
     }
 
     // The e24 fixture, encoded as the pipeline encodes it, captured the same
@@ -484,7 +495,7 @@ fn levels_with_no_open_seam_keep_their_bytes_from_before_closure() {
         &mut texture_names,
     );
     assert_eq!(
-        blake3::hash(&section.to_bytes()).to_hex().as_str(),
+        blake3::hash(&v1_bytes(&section)).to_hex().as_str(),
         "48901a4beaf980c347fd8ef3da19f6da59fe975de96e97035fdc10fe50338e5c"
     );
 }

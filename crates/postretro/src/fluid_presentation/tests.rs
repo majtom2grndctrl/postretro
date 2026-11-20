@@ -629,6 +629,7 @@ fn installed_fluid_surfaces_draw_only_where_the_fluid_has_a_local_presentation()
     let mut world = level_world("pool", 1);
     world.environment_volumes = EnvironmentVolumesSection {
         level_gravity: LEVEL_GRAVITY,
+        ai_wake_lead: None,
         volumes: vec![
             fluid_record("water", 0.0),
             fluid_record("sludge", 4.0),
@@ -706,6 +707,7 @@ fn app_fluid_eye_presents_the_local_fluid_and_unload_clears_it() {
     let mut world = level_world("pool", 1);
     world.environment_volumes = EnvironmentVolumesSection {
         level_gravity: LEVEL_GRAVITY,
+        ai_wake_lead: None,
         volumes: vec![fluid_record("water", 0.0)],
     };
     install_environment(&mut app, world);
@@ -1230,6 +1232,7 @@ fn eye_placed_under_a_fluid_or_in_an_unpresented_one_has_frame_fog_weight_zero_w
         let mut world = level_world("pool", 1);
         world.environment_volumes = EnvironmentVolumesSection {
             level_gravity: LEVEL_GRAVITY,
+            ai_wake_lead: None,
             volumes: vec![deep_water_record()],
         };
         install_environment(&mut app, world);
@@ -1499,6 +1502,7 @@ fn a_zero_opacity_fluid_draws_only_when_it_declares_fog() {
         let mut world = level_world("pool", 1);
         world.environment_volumes = EnvironmentVolumesSection {
             level_gravity: LEVEL_GRAVITY,
+            ai_wake_lead: None,
             volumes: vec![fluid_record("water", 0.0)],
         };
         install_environment(&mut app, world);
@@ -1602,6 +1606,7 @@ fn a_zero_opacity_fog_free_fluid_draws_only_where_a_face_binds_a_probe() {
         let mut world = level_world("pool", 1);
         world.environment_volumes = EnvironmentVolumesSection {
             level_gravity: LEVEL_GRAVITY,
+            ai_wake_lead: None,
             volumes: vec![fluid_record("water", 0.0), fluid_record("water", 4.0)],
         };
         world.reflection_probes = section;

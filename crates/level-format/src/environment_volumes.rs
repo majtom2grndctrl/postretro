@@ -1,5 +1,6 @@
-// EnvironmentVolumes PRL section (ID 52): the level default gravity plus every
-// static regional volume (gravity, push, fluid) as convex brush leaves.
+// EnvironmentVolumes PRL section (ID 52): the level default gravity, the
+// level's AI lead, and every static regional volume (gravity, push, fluid) as
+// convex brush leaves.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use crate::convex_leaf_codec::{
@@ -10,7 +11,13 @@ use crate::convex_leaf_codec::{
 /// Every decode error names this section.
 const SECTION: &str = "environment volumes";
 
-pub const ENVIRONMENT_VOLUMES_VERSION: u16 = 1;
+/// v2 adds the worldspawn `ai_wake_lead` after the level gravity. A v1
+/// section still loads, as a level that does not author it.
+pub const ENVIRONMENT_VOLUMES_VERSION: u16 = 2;
+/// The version before `ai_wake_lead`; it decodes with the lead absent.
+const VERSION_WITHOUT_AI_LEAD: u16 = 1;
+/// Version, level gravity, AI lead flag and value, volume count.
+const HEADER_SIZE: usize = 2 + 4 + 1 + 4 + 4;
 
 /// Level default gravity when worldspawn `initialGravity` is absent, m/s².
 /// Negative values accelerate downward in engine space. Quake's 800 u/s² at
@@ -38,6 +45,10 @@ pub const MIN_VERTICES_PER_FACE: usize = 3;
 pub struct EnvironmentVolumesSection {
     /// Level default gravity, m/s², signed vertical (negative = downward).
     pub level_gravity: f32,
+    /// Worldspawn `ai_wake_lead`, metres: how far past each player's cell the
+    /// AI scheduler still counts NPCs as perceived. Absent when the map does
+    /// not author it; the runtime then uses its own default. Finite and >= 0.
+    pub ai_wake_lead: Option<f32>,
     /// Volumes in source map entity order; that order is the overlap rule's
     /// final tiebreak, so it is persistent.
     pub volumes: Vec<EnvironmentVolumeRecord>,
@@ -100,6 +111,7 @@ impl Default for EnvironmentVolumesSection {
     fn default() -> Self {
         Self {
             level_gravity: DEFAULT_WORLD_GRAVITY_MPS2,
+            ai_wake_lead: None,
             volumes: Vec::new(),
         }
     }
@@ -107,8 +119,7 @@ impl Default for EnvironmentVolumesSection {
 
 impl EnvironmentVolumesSection {
     pub fn byte_len(&self) -> usize {
-        2 + 4
-            + 4
+        HEADER_SIZE
             + self
                 .volumes
                 .iter()
@@ -130,6 +141,8 @@ impl EnvironmentVolumesSection {
         let mut out = Vec::with_capacity(self.byte_len());
         out.extend_from_slice(&ENVIRONMENT_VOLUMES_VERSION.to_le_bytes());
         write_f32(&mut out, self.level_gravity);
+        out.push(u8::from(self.ai_wake_lead.is_some()));
+        write_f32(&mut out, self.ai_wake_lead.unwrap_or(0.0));
         write_count(&mut out, self.volumes.len());
         for volume in &self.volumes {
             out.extend_from_slice(&volume.source_entity.to_le_bytes());
@@ -159,10 +172,24 @@ impl EnvironmentVolumesSection {
     pub fn from_bytes(data: &[u8]) -> crate::Result<Self> {
         let mut r = SectionReader::new(data, SECTION);
         let version = r.u16("version")?;
-        if version != ENVIRONMENT_VOLUMES_VERSION {
+        if version != ENVIRONMENT_VOLUMES_VERSION && version != VERSION_WITHOUT_AI_LEAD {
             return r.invalid(format!("unsupported version {version}"));
         }
         let level_gravity = r.finite_f32("level gravity")?;
+        let ai_wake_lead = if version == VERSION_WITHOUT_AI_LEAD {
+            None
+        } else {
+            let present = r.flag("AI lead flag")?;
+            let lead = r.finite_f32("AI lead")?;
+            let lead = optional(&r, present, lead, 0.0, "AI lead")?;
+            if lead.is_some_and(|lead| lead < 0.0) {
+                return r.invalid(format!(
+                    "AI lead {} is negative; it is metres >= 0",
+                    lead.unwrap_or_default()
+                ));
+            }
+            lead
+        };
         let volume_count = r.bounded_count("volume count", MIN_VOLUME_SIZE)?;
         let mut volumes = Vec::with_capacity(volume_count);
         for i in 0..volume_count {
@@ -171,6 +198,7 @@ impl EnvironmentVolumesSection {
         r.finish()?;
         Ok(Self {
             level_gravity,
+            ai_wake_lead,
             volumes,
         })
     }
@@ -285,6 +313,7 @@ mod tests {
     fn sample() -> EnvironmentVolumesSection {
         EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: vec![
                 EnvironmentVolumeRecord {
                     source_entity: 3,
@@ -333,9 +362,13 @@ mod tests {
         }
     }
 
-    /// Byte offset of volume 0's gravity flag: version, level gravity, count,
-    /// source entity, priority.
-    const FIRST_GRAVITY_FLAG: usize = 2 + 4 + 4 + 4 + 4;
+    /// Byte offset of volume 0's gravity flag: header, source entity,
+    /// priority.
+    const FIRST_GRAVITY_FLAG: usize = HEADER_SIZE + 4 + 4;
+    /// Byte offsets of the AI lead flag and value, and the volume count.
+    const AI_LEAD_FLAG: usize = 6;
+    const AI_LEAD: usize = 7;
+    const VOLUME_COUNT: usize = 11;
 
     fn assert_rejected(bytes: &[u8], expected: &str) {
         let error = EnvironmentVolumesSection::from_bytes(bytes)
@@ -367,10 +400,15 @@ mod tests {
     fn a_level_with_no_volumes_still_carries_its_default_gravity() {
         let section = EnvironmentVolumesSection {
             level_gravity: 4.0,
+            ai_wake_lead: None,
             volumes: Vec::new(),
         };
         let bytes = section.to_bytes();
-        assert_eq!(bytes.len(), 10, "version + gravity + zero count");
+        assert_eq!(
+            bytes.len(),
+            15,
+            "version + gravity + absent AI lead + zero count"
+        );
         let decoded = EnvironmentVolumesSection::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.level_gravity, 4.0);
         assert!(decoded.volumes.is_empty());
@@ -380,29 +418,83 @@ mod tests {
     fn wire_layout_follows_the_documented_field_order() {
         let section = EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: vec![sample().volumes.swap_remove(1)],
         };
         let bytes = section.to_bytes();
         let f32_at = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
         let u32_at = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), 1);
+        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), 2);
         assert_eq!(f32_at(2), -9.81);
-        assert_eq!(u32_at(6), 1, "volume count");
-        assert_eq!(u32_at(10), 4, "source entity");
-        assert_eq!(u32_at(14) as i32, -2, "priority");
-        assert_eq!(bytes[18], 0, "gravity absent");
-        assert_eq!(f32_at(19), 0.0, "absent gravity written as zero");
-        assert_eq!(bytes[23], 1, "push present");
-        assert_eq!([f32_at(24), f32_at(28), f32_at(32)], [0.0, 15.0, -8.0]);
-        assert_eq!(u32_at(36), 0, "empty fluid name = dry");
-        assert_eq!(u32_at(40), 1, "brush count");
+        assert_eq!(bytes[AI_LEAD_FLAG], 0, "AI lead absent");
+        assert_eq!(f32_at(AI_LEAD), 0.0, "absent AI lead written as zero");
+        assert_eq!(u32_at(VOLUME_COUNT), 1, "volume count");
+        assert_eq!(u32_at(15), 4, "source entity");
+        assert_eq!(u32_at(19) as i32, -2, "priority");
+        assert_eq!(bytes[23], 0, "gravity absent");
+        assert_eq!(f32_at(24), 0.0, "absent gravity written as zero");
+        assert_eq!(bytes[28], 1, "push present");
+        assert_eq!([f32_at(29), f32_at(33), f32_at(37)], [0.0, 15.0, -8.0]);
+        assert_eq!(u32_at(41), 0, "empty fluid name = dry");
+        assert_eq!(u32_at(45), 1, "brush count");
     }
 
     #[test]
     fn rejects_unsupported_version() {
         let mut bytes = sample().to_bytes();
-        bytes[..2].copy_from_slice(&2_u16.to_le_bytes());
-        assert_rejected(&bytes, "unsupported version 2");
+        bytes[..2].copy_from_slice(&3_u16.to_le_bytes());
+        assert_rejected(&bytes, "unsupported version 3");
+    }
+
+    #[test]
+    fn the_ai_lead_round_trips_when_authored_and_zero() {
+        for lead in [Some(24.5), Some(0.0), None] {
+            let section = EnvironmentVolumesSection {
+                ai_wake_lead: lead,
+                ..sample()
+            };
+            let bytes = section.to_bytes();
+            assert_eq!(section.byte_len(), bytes.len());
+            let decoded = EnvironmentVolumesSection::from_bytes(&bytes).unwrap();
+            assert_eq!(decoded.ai_wake_lead, lead);
+            assert_eq!(decoded, section);
+        }
+    }
+
+    #[test]
+    fn a_version_1_section_loads_with_the_ai_lead_absent() {
+        let section = sample();
+        let v2 = section.to_bytes();
+        // v1 is v2 without the AI lead flag and value.
+        let mut v1 = Vec::with_capacity(v2.len() - 5);
+        v1.extend_from_slice(&1_u16.to_le_bytes());
+        v1.extend_from_slice(&v2[2..AI_LEAD_FLAG]);
+        v1.extend_from_slice(&v2[VOLUME_COUNT..]);
+        let decoded = EnvironmentVolumesSection::from_bytes(&v1).unwrap();
+        assert_eq!(decoded.ai_wake_lead, None);
+        assert_eq!(decoded, section);
+    }
+
+    #[test]
+    fn rejects_a_negative_non_finite_or_stray_ai_lead() {
+        let with_lead = |lead: f32| {
+            EnvironmentVolumesSection {
+                ai_wake_lead: Some(lead),
+                ..sample()
+            }
+            .to_bytes()
+        };
+        assert_rejected(&with_lead(-1.0), "AI lead -1 is negative");
+        assert_rejected(&with_lead(f32::NAN), "AI lead is not finite");
+        assert_rejected(&with_lead(f32::INFINITY), "AI lead is not finite");
+
+        let mut bytes = sample().to_bytes();
+        bytes[AI_LEAD_FLAG] = 2;
+        assert_rejected(&bytes, "AI lead flag must be 0 or 1");
+
+        let mut bytes = sample().to_bytes();
+        bytes[AI_LEAD..AI_LEAD + 4].copy_from_slice(&8.0_f32.to_le_bytes());
+        assert_rejected(&bytes, "AI lead is absent but its value is not zero");
     }
 
     #[test]
@@ -428,10 +520,11 @@ mod tests {
     fn rejects_counts_the_remaining_bytes_cannot_hold_before_allocating() {
         let mut bytes = EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: Vec::new(),
         }
         .to_bytes();
-        bytes[6..10].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes[VOLUME_COUNT..VOLUME_COUNT + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_rejected(&bytes, "volume count");
 
         let mut bytes = sample().to_bytes();

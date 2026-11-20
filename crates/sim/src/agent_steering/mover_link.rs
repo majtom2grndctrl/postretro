@@ -20,12 +20,23 @@ const BOARD_RADIUS_FACTOR: f32 = 3.0;
 /// a rider keeps its ride exactly as long as it keeps from stopping its mover.
 const RIDE_AIRBORNE_GRACE_MS: f32 = crate::kinematic_mover::RIDER_GRACE_MS;
 
-/// What the ride code reads besides the agent: this tick's docks and movers.
+/// What the ride code reads besides the agent: this tick's docks and movers,
+/// and the agent's step.
 #[derive(Clone, Copy)]
 pub(super) struct RideWorld<'a> {
     pub gate: NavGate<'a>,
     pub collision: &'a CombinedCollisionWorld<'a>,
+    /// The step's span in seconds: `ticks` fixed ticks.
     pub dt: f32,
+    /// The fixed ticks the step spans, at least 1.
+    pub ticks: u32,
+}
+
+impl RideWorld<'_> {
+    /// One fixed tick's delta.
+    fn tick_dt(&self) -> f32 {
+        self.dt / self.ticks.max(1) as f32
+    }
 }
 
 /// What the ride asks of this tick's motion.
@@ -82,10 +93,11 @@ pub(super) fn advance(
     if standing_on == Some(ride.mover_id) {
         agent.ride_airborne_ticks = 0;
     } else if agent.ground == GroundRef::Airborne
-        && (agent.ride_airborne_ticks as f32) * world.dt * 1000.0 < RIDE_AIRBORNE_GRACE_MS
+        && airborne_ms_through_this_step(agent.ride_airborne_ticks, world) < RIDE_AIRBORNE_GRACE_MS
     {
-        // A short hop off the deck keeps the ride and its exit.
-        agent.ride_airborne_ticks += 1;
+        // A short hop off the deck keeps the ride and its exit. The count is
+        // in elapsed ticks, so a step spanning several spends them all.
+        agent.ride_airborne_ticks = agent.ride_airborne_ticks.saturating_add(world.ticks.max(1));
     } else {
         // Stepped onto the landing, knocked off, or airborne past the grace.
         // Either way the plan is over.
@@ -100,7 +112,7 @@ pub(super) fn advance(
     };
     if ride.departed || Some(docked) != ride.board_waypoint {
         if Some(docked) == ride.exit_waypoint {
-            return walk_towards(agent, position, ride.exit_point);
+            return walk_towards(agent, position, ride.exit_point, world.dt);
         }
         // A stop with no planned exit: a passed landing, a hold elsewhere, or a
         // full cycle back to where it got on.
@@ -113,6 +125,16 @@ pub(super) fn advance(
     }
     leave_ride(agent);
     RideStep::Free
+}
+
+/// How long a rider found airborne at this step has been off its mover, counted
+/// as the 60 Hz rider counts it: the ticks already spent airborne, then this
+/// step's own ticks but its last. A step that finds the body airborne found it
+/// airborne for its whole span, so a dormant step spends that span against the
+/// grace here, not at its next step. At one tick this is the count alone.
+fn airborne_ms_through_this_step(airborne_ticks: u32, world: RideWorld<'_>) -> f32 {
+    let ticks = airborne_ticks.saturating_add(world.ticks.max(1) - 1);
+    ticks as f32 * world.tick_dt() * 1000.0
 }
 
 /// The boarding walk. `Some` overrides path steering this tick.
@@ -130,7 +152,7 @@ fn board(
             // On the deck while it waits: walk well onto it before standing
             // still, so a lift leaving or an overhang does not catch the body
             // on the rim.
-            return Some(walk_towards(agent, position, plan.board_point));
+            return Some(walk_towards(agent, position, plan.board_point, world.dt));
         }
         if !world.gate.rests_at_stops(plan.mover_id) {
             give_up_boarding(agent);
@@ -157,7 +179,7 @@ fn board(
         return None;
     }
     boarding_walk_due(agent, position, plan)
-        .then(|| walk_towards(agent, position, plan.board_point))
+        .then(|| walk_towards(agent, position, plan.board_point, world.dt))
 }
 
 /// A body a watched mover carries off rides it, planned or not: it was standing
@@ -208,10 +230,18 @@ fn standing_on(agent: &AgentComponent) -> Option<u32> {
 }
 
 /// Boarding and exit walks keep the base speed: a ride is an engine maneuver
-/// timed against the dock, not the activity's authored pace.
-fn walk_towards(agent: &AgentComponent, position: Vec3, target: Vec3) -> RideStep {
+/// timed against the dock, not the activity's authored pace. A step that would
+/// pass `target` (`dt` spans the whole step) slows to land on it, so a long
+/// dormant step never overshoots the boarding point.
+fn walk_towards(agent: &AgentComponent, position: Vec3, target: Vec3, dt: f32) -> RideStep {
     let offset = Vec3::new(target.x - position.x, 0.0, target.z - position.z);
-    RideStep::Walk(offset.normalize_or_zero() * agent.move_speed)
+    let distance = offset.length();
+    let speed = if dt > 0.0 {
+        agent.move_speed.min(distance / dt)
+    } else {
+        agent.move_speed
+    };
+    RideStep::Walk(offset.normalize_or_zero() * speed)
 }
 
 fn start_ride(agent: &mut AgentComponent, ride: AgentRide) {

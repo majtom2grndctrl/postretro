@@ -711,6 +711,7 @@ fn damageable(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
 fn enemy(registry: &mut EntityRegistry, position: Vec3) -> EntityId {
     let id = damageable(registry, position);
     let graph = postretro_foundation::BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: postretro_foundation::BehaviorGraphEnvelope {
             initial: "idle".to_string(),

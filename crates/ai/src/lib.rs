@@ -17,6 +17,7 @@ mod candidate_scope;
 mod clip_clock;
 mod combat_slots;
 mod compute;
+mod decide;
 mod engaged_motion;
 mod engine_floor;
 mod facing;
@@ -77,7 +78,7 @@ mod alloc_probe_tests {
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::ai_host::SimAiHost;
-use crate::ai_host::{AiHost, AiTickInputs, AiTickResult, ai_stage};
+use crate::ai_host::{AiHost, AiRun, AiTickInputs, AiTickResult, ai_stage};
 use crate::sim::cpu_stages::SimStage;
 #[cfg(any(test, feature = "test-support"))]
 use crate::{collision::CollisionWorld, nav::NavGraph};
@@ -113,7 +114,7 @@ use postretro_entities::components::health::{
 #[cfg(test)]
 use postretro_foundation::DamagePayload;
 #[cfg(test)]
-use targeting::{acquisition_due, select_target, target_candidate, target_offers};
+use targeting::{scanned_offers, select_target, target_candidate};
 
 /// Event name fired once per enemy attack that lands this tick. Mirrors the
 /// weapon-fire event precedent (`"activate"`/`"impact"`): the tick returns the
@@ -163,12 +164,28 @@ pub(crate) struct EnemySnapshot {
     position: Vec3,
     rotation: Quat,
     brain: BrainComponent,
+    /// Ticks since this brain's last run: its clocks advance by all of them.
+    span: u32,
+    /// The brain comes back to the AI set this run (it was held, quiescent,
+    /// dead or inventory-owned last tick): it decides, whatever its phase.
+    returned: bool,
+    /// A dormant run's decide, which replaces the 15 Hz phase; `None` on an
+    /// ordinary run.
+    dormant_decide: Option<bool>,
 }
 
 /// One enemy's resolved outcome after evaluating its brain this tick, applied in
 /// a second pass under `&mut registry`.
 pub(crate) struct EnemyOutcome {
     pub(crate) id: EntityId,
+    /// Ticks since this brain's last run; its timers covered all of them.
+    pub(crate) span: u32,
+    /// A dormant run: facing slews over the whole span. Any other run, a
+    /// move-up included, slews one tick.
+    pub(crate) dormant: bool,
+    /// This tick decided: acquisition, guards, selectors and combat-slot
+    /// choice ran. Off it, the enemy acts on its last decide's choices.
+    pub(crate) decide: bool,
     /// This enemy's position as snapshotted, carried forward so combat-slot
     /// resolution needs nothing but the outcomes.
     pub(crate) position: Vec3,
@@ -178,6 +195,8 @@ pub(crate) struct EnemyOutcome {
     pub(crate) enemy_eye_offset: Vec3,
     pub(crate) target_aim: Option<Vec3>,
     pub(crate) brain: BrainComponent,
+    /// This tick's resolved motion verb, after a flinch's stagger plants it.
+    pub(crate) motion: Option<postretro_foundation::MotionVerb>,
     steering: SteeringIntent,
     /// A `leap` travelling to its spot: its `MoveTo` is paced to the clip
     /// moment. `None` for any other steering.
@@ -268,6 +287,23 @@ pub(crate) enum AttackOutcome {
 /// Their lifecycle is reconciled together before compute: newly seen graphs
 /// bind, changed descriptors cancel old execution, and dead actors are pruned.
 pub struct AiRuntime {
+    /// The brains in the AI set last tick, run or skipped by the schedule.
+    presence: attack_turns::Presence,
+    /// This tick's skipped holders. Reused storage.
+    skipped: Vec<attack_turns::SkippedHolder>,
+    /// Ticks between a brain's decides: [`decide::DECIDE_INTERVAL_TICKS`]
+    /// outside unit suites that pin graph semantics a tick at a time. A brain
+    /// also decides off its phase on a reseat, with no selector memo for its
+    /// path (its first run, a run after a closed aggro gate), and on its
+    /// return to the AI set.
+    decide_interval: u64,
+    /// An NPC without a target takes the best candidate on sight instead of
+    /// noticing through its awareness meters: today's 60 Hz semantics, which
+    /// the graph, turn and clip unit suites pin. Production always meters.
+    notice_on_sight: bool,
+    /// Each brain's selector rows from its last decide, for the ticks between.
+    /// Host-only, pruned with live brains.
+    selector_memo: HashMap<EntityId, brain_scope::SelectorChoices>,
     /// Route-search scratch for the pass's reachability and positioning
     /// queries. Contents never carry between queries.
     nav_scratch: crate::nav::NavScratch,
@@ -328,6 +364,7 @@ impl AiRuntime {
     /// budgets. Call on level unload, before the next level's first tick.
     pub fn clear_level_state(&mut self) {
         self.turns.clear_level_state();
+        self.presence.clear();
     }
 
     pub fn new() -> Self {
@@ -341,6 +378,37 @@ impl AiRuntime {
             los_grace: HashMap::new(),
             weapons: weapon_controller::AiWeaponControllers::default(),
             turns: attack_turns::AttackTurnRuntime::default(),
+            presence: attack_turns::Presence::default(),
+            skipped: Vec::new(),
+            selector_memo: HashMap::new(),
+            decide_interval: decide::DECIDE_INTERVAL_TICKS,
+            notice_on_sight: false,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl AiRuntime {
+    /// A runtime whose brains decide every tick and take the best candidate
+    /// on sight: the 60 Hz granularity and first-sight acquisition the graph,
+    /// turn and clip unit suites pin. Production decides every
+    /// [`decide::DECIDE_INTERVAL_TICKS`] and notices through the awareness
+    /// meters; the decide, awareness and stress rows run that.
+    pub fn deciding_every_tick() -> Self {
+        Self {
+            decide_interval: 1,
+            notice_on_sight: true,
+            ..Self::new()
+        }
+    }
+
+    /// A production-cadence runtime whose brains take the best candidate on
+    /// sight: for rows about decide cadence, turns or engaged motion that
+    /// predate the awareness meters and are not about noticing.
+    pub fn noticing_on_sight() -> Self {
+        Self {
+            notice_on_sight: true,
+            ..Self::new()
         }
     }
 }
@@ -397,6 +465,7 @@ macro_rules! test_tick_runner {
                 clips: $clips,
                 // The stage frame is the other build's `SimStage` too: AI
                 // sub-stages report only through the same-build runner.
+                schedule: Default::default(),
                 cpu: None,
             };
             let mut on_impact = |registry: &mut $crate::__postretro_entities::EntityRegistry| {
@@ -492,6 +561,7 @@ pub(crate) fn run_ai_tick_with_navigation(
             factions: &factions,
             faction_sentiment: &faction_sentiment,
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -534,6 +604,7 @@ where
         faction_sentiment,
         clips,
         cpu,
+        schedule,
     } = inputs;
     let dt_ms = tick_dt.max(0.0) * 1000.0;
 
@@ -550,6 +621,11 @@ where
         los_grace,
         weapons,
         turns,
+        presence,
+        skipped,
+        selector_memo,
+        decide_interval,
+        notice_on_sight,
     } = runtime;
     turns.begin_tick(dt_ms, registry);
     turns.sync_pools(attack_turns::running_attack_pools(registry));
@@ -571,8 +647,14 @@ where
     blocked_warned.retain(|id| programs.get(*id).is_some());
     reseat_warned.retain(|id| programs.get(*id).is_some());
     los_grace.retain(|id, _| programs.get(*id).is_some());
+    selector_memo.retain(|id, _| programs.get(*id).is_some());
 
-    // Pass 1: snapshot every brain-bearing enemy under the immutable borrow.
+    // Pass 1: snapshot every brain-bearing enemy the schedule runs under the
+    // immutable borrow. One it skips stays in the AI set as a holder only:
+    // no clone, no evaluation.
+    presence.begin();
+    skipped.clear();
+    let mut remapped_while_skipped = Vec::new();
     let snapshots: Vec<EnemySnapshot> = registry
         .iter_with_kind(ComponentKind::Brain)
         .filter_map(|(id, value)| {
@@ -585,23 +667,67 @@ where
             let ComponentValue::Brain(brain) = value else {
                 return None;
             };
+            let present_last_tick = presence.was_present(id);
+            let run = schedule.run(id);
+            if run == AiRun::Skip {
+                // A skip keeps a brain in the set only if it was in it: one
+                // returning from outside comes back on its next run, holding
+                // nothing.
+                if present_last_tick {
+                    presence.mark(id);
+                    let mut held = brain.attack_turns;
+                    held.request = None;
+                    let before = held;
+                    turns.remap_brain(&mut held);
+                    if held != before {
+                        remapped_while_skipped.push(id);
+                    }
+                    skipped.push(attack_turns::SkippedHolder {
+                        id,
+                        pool: attack_turns::attack_pool_of(&turns.budgets, brain),
+                        turns: held,
+                    });
+                }
+                return None;
+            }
+            // Marked present only once it can run: a brain with no transform
+            // is neither snapshotted nor skipped, so it is out of the set.
             let transform = registry.get_component::<Transform>(id).ok()?;
+            presence.mark(id);
             let mut brain = brain.clone();
-            attack_turns::admit(&mut brain.attack_turns, turns.tick);
+            let returned =
+                attack_turns::returns_to_set(&brain.attack_turns, turns.tick, present_last_tick);
+            let span = attack_turns::admit(&mut brain.attack_turns, turns.tick, present_last_tick);
             turns.remap_brain(&mut brain.attack_turns);
             Some(EnemySnapshot {
                 id,
                 position: transform.position,
                 rotation: transform.rotation,
                 brain,
+                span,
+                returned,
+                dormant_decide: match run {
+                    AiRun::RunDormant { decide } => Some(decide),
+                    AiRun::Run | AiRun::Skip => None,
+                },
             })
         })
         .collect();
+    // A token shift reaches a skipped holder's stored turns now: its next run
+    // reads them under the new ids. Rare (a reload that moves tokens).
+    for id in remapped_while_skipped {
+        if let Ok(brain) = registry.get_component::<BrainComponent>(id) {
+            let mut brain = brain.clone();
+            turns.remap_brain(&mut brain.attack_turns);
+            let _ = registry.set_component(id, brain);
+        }
+    }
     // The turn facts guards read this tick describe the line as it stood
     // after the previous tick.
     let attack_turns::AttackTurnRuntime {
         budgets, previous, ..
     } = &mut *turns;
+    let run_count = snapshots.len();
     previous.rebuild(
         budgets,
         snapshots
@@ -612,7 +738,18 @@ where
                 slot: slot as u32,
                 pool: attack_turns::attack_pool_of(budgets, &snapshot.brain),
                 turns: &snapshot.brain.attack_turns,
-            }),
+            })
+            .chain(
+                skipped
+                    .iter()
+                    .enumerate()
+                    .map(|(index, holder)| attack_turns::LineEntry {
+                        entity: holder.id,
+                        slot: (run_count + index) as u32,
+                        pool: holder.pool,
+                        turns: &holder.turns,
+                    }),
+            ),
     );
 
     // Every enemy's candidates, read once for the pass. Built here, after the
@@ -652,6 +789,9 @@ where
             cpu,
             nav_scratch,
             pawns,
+            selector_memo,
+            *decide_interval,
+            *notice_on_sight,
         )
     };
 
@@ -666,7 +806,7 @@ where
     );
 
     let _apply_stage = ai_stage(cpu, SimStage::AiApply);
-    attack_turns::arbitrate_attack_turns(&mut outcomes, programs, turns, weapons);
+    attack_turns::arbitrate_attack_turns(&mut outcomes, skipped, programs, turns, weapons);
 
     apply::apply_outcomes(
         registry,

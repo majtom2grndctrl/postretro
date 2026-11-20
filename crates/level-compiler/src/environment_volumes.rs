@@ -141,8 +141,10 @@ fn encode_section(
             started.elapsed().as_secs_f64() * 1000.0,
         );
     }
+    // The AI lead is a worldspawn key, not a volume: the pipeline sets it.
     EnvironmentVolumesSection {
         level_gravity,
+        ai_wake_lead: None,
         volumes: records,
     }
 }

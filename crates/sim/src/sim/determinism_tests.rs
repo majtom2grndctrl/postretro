@@ -1295,10 +1295,10 @@ fn spawn_roll_enemy(registry: &mut EntityRegistry, role: Role) -> EntityId {
     });
     let mut brain = BrainComponent::from_graph(&roll_enemy_graph());
     brain.home_anchor = position;
-    brain.seed_behavior_draws(postretro_foundation::behavior_draw_seed(
+    brain.seed_identity(
         "roller",
         postretro_foundation::BehaviorDrawSalt::Placement(placement),
-    ));
+    );
     registry
         .set_component(id, brain)
         .expect("roll enemy brain attaches");
@@ -1319,10 +1319,10 @@ fn spawn_hold_enemy(registry: &mut EntityRegistry, role: Role) -> EntityId {
     });
     let mut brain = BrainComponent::from_graph(&hold_enemy_graph());
     brain.home_anchor = position;
-    brain.seed_behavior_draws(postretro_foundation::behavior_draw_seed(
+    brain.seed_identity(
         "holder",
         postretro_foundation::BehaviorDrawSalt::Placement(placement),
-    ));
+    );
     registry
         .set_component(id, brain)
         .expect("hold enemy brain attaches");
@@ -1367,6 +1367,7 @@ fn hold_enemy_graph() -> BehaviorGraphDescriptor {
         },
     };
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "brace".to_string(),
@@ -1474,6 +1475,7 @@ fn roll_enemy_graph() -> BehaviorGraphDescriptor {
         ..leaf()
     };
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "wait".to_string(),
@@ -1827,7 +1829,7 @@ fn test_tick_runner_nav_bridge_preserves_section_and_path_queries() {
     }
     let world = floor_world();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let mut mover_states = MoverTickStateTable::default();
     run_driven_agent_sim_tick(
         registry.clone(),
@@ -1871,6 +1873,7 @@ fn brain_in_state(graph: &BehaviorGraphDescriptor, state: &str) -> BrainComponen
 
 fn enemy_graph(move_speed: f32, locomotion_animation: &str) -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
@@ -2169,7 +2172,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let mut mover_states = MoverTickStateTable::default();
     let empty_hit_zones = HitZoneStore::new();
 
@@ -2223,7 +2226,7 @@ fn simulate_tick_scales_walk_rate_from_post_steering_velocity_and_skips_sub_epsi
     // values as the non-walk setup above. A runtime cache is registry-scoped,
     // so use a fresh one rather than intentionally treating this new entity as
     // a hot graph replacement.
-    ai_runtime = postretro_ai::AiRuntime::new();
+    ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let enemy = {
         let mut registry = registry.borrow_mut();
@@ -4034,16 +4037,17 @@ fn assert_hold_release_positive_anchors(run: &SimRun) {
             .collect::<Vec<_>>(),
         [Role::Alpha, Role::Beta]
     );
-    let entry = first_hold(0);
-    assert_eq!(
-        entry,
-        first_hold(1),
-        "both enter their first hold on one tick"
+    // Each decides on its own placement's phase, so their first holds may
+    // fall on different ticks of one decide interval.
+    let entry = first_hold(0).max(first_hold(1));
+    assert!(
+        first_hold(0).abs_diff(first_hold(1)) < 4,
+        "both enter their first hold within one decide interval"
     );
     let draws = &run.events[entry].hold_releases;
     assert_ne!(
         draws[0].1, draws[1].1,
-        "two same-descriptor enemies entering holds on one tick draw differently"
+        "two same-descriptor enemies entering their first holds draw differently"
     );
     for (role_index, (role, _)) in draws.iter().enumerate() {
         let mut role_draws = run
@@ -5035,7 +5039,7 @@ fn clip_timed_fire_ticks(ticks_per_frame: usize, time_scale: f64, ticks: usize) 
     let world = floor_world();
     let nav_graph = open_floor_nav_graph();
     let mut progress = ProgressTracker::new();
-    let mut ai_runtime = postretro_ai::AiRuntime::new();
+    let mut ai_runtime = postretro_ai::AiRuntime::noticing_on_sight();
     let mut mover_states = MoverTickStateTable::default();
     let registry = Rc::new(RefCell::new(EntityRegistry::new()));
     let player = {

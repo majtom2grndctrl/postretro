@@ -12,22 +12,22 @@ use super::*;
 use crate::collision::moving::{CombinedCollisionWorld, MoverCollider, MoverPose, MoverPoseSource};
 use crate::collision::{CollisionWorld, SKIN_DISTANCE};
 
-const DT: f32 = 1.0 / 60.0;
-const ENV: EnvironmentView<'static> = EnvironmentView::level_only(-20.0);
-const MOVER: u32 = 3;
-const RADIUS: f32 = 0.35;
-const HEIGHT: f32 = 1.8;
-const SPEED: f32 = 4.0;
+pub(super) const DT: f32 = 1.0 / 60.0;
+pub(super) const ENV: EnvironmentView<'static> = EnvironmentView::level_only(-20.0);
+pub(super) const MOVER: u32 = 3;
+pub(super) const RADIUS: f32 = 0.35;
+pub(super) const HEIGHT: f32 = 1.8;
+pub(super) const SPEED: f32 = 4.0;
 
 /// How close a body's displacement stays to its mover's carry.
-const CARRY_TOLERANCE: f32 = 1.0e-4;
+pub(super) const CARRY_TOLERANCE: f32 = 1.0e-4;
 
 /// Capsule-centre height of an agent resting on a surface at `floor_y`.
-fn rest_y(floor_y: f32) -> f32 {
+pub(super) fn rest_y(floor_y: f32) -> f32 {
     floor_y + HEIGHT / 2.0 + SKIN_DISTANCE
 }
 
-fn floor_world() -> CollisionWorld {
+pub(super) fn floor_world() -> CollisionWorld {
     let span = 60.0;
     CollisionWorld::from_triangles_for_test(
         vec![
@@ -41,7 +41,7 @@ fn floor_world() -> CollisionWorld {
 }
 
 /// A solid mover-local box, wound outward.
-fn solid_box(min: Vec3, max: Vec3) -> MoverCollider {
+pub(super) fn solid_box(min: Vec3, max: Vec3) -> MoverCollider {
     let at = |x: bool, y: bool, z: bool| {
         Vec3::new(
             if x { max.x } else { min.x },
@@ -123,12 +123,12 @@ fn solid_box(min: Vec3, max: Vec3) -> MoverCollider {
 }
 
 /// One mover's pose, advanced tick by tick.
-struct MoverTrack {
-    pose: MoverPose,
+pub(super) struct MoverTrack {
+    pub(super) pose: MoverPose,
 }
 
 impl MoverTrack {
-    fn at(position: Vec3) -> Self {
+    pub(super) fn at(position: Vec3) -> Self {
         Self {
             pose: MoverPose {
                 transform: Transform {
@@ -146,7 +146,7 @@ impl MoverTrack {
         }
     }
 
-    fn advance(&mut self, velocity: Vec3) {
+    pub(super) fn advance(&mut self, velocity: Vec3) {
         self.pose.linear_velocity = velocity;
         self.pose.tick_delta = velocity * DT;
         self.pose.transform.position += self.pose.tick_delta;
@@ -161,7 +161,7 @@ impl MoverPoseSource for MoverTrack {
 
 /// An agent at rest at `position`, already following a straight path to `goal`
 /// when one is given.
-fn spawn(registry: &mut EntityRegistry, position: Vec3, goal: Option<Vec3>) -> EntityId {
+pub(super) fn spawn(registry: &mut EntityRegistry, position: Vec3, goal: Option<Vec3>) -> EntityId {
     let id = registry.spawn(Transform {
         position,
         ..Transform::default()
@@ -177,11 +177,11 @@ fn spawn(registry: &mut EntityRegistry, position: Vec3, goal: Option<Vec3>) -> E
     id
 }
 
-fn position(registry: &EntityRegistry, id: EntityId) -> Vec3 {
+pub(super) fn position(registry: &EntityRegistry, id: EntityId) -> Vec3 {
     registry.get_component::<Transform>(id).unwrap().position
 }
 
-fn agent(registry: &EntityRegistry, id: EntityId) -> &AgentComponent {
+pub(super) fn agent(registry: &EntityRegistry, id: EntityId) -> &AgentComponent {
     registry.get_component::<AgentComponent>(id).unwrap()
 }
 

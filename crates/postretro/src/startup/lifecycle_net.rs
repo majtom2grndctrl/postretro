@@ -220,6 +220,7 @@ impl App {
         self.drop_script_ghost_audio();
         self.clear_surface_lifetime_level_state();
         self.nav_graph = None;
+        self.npc_scheduler = None;
         // No volume of this level may resolve after it unloads; the next install
         // supplies its own set.
         self.environment_volumes = postretro_collision::EnvironmentVolumes::empty();

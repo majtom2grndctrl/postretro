@@ -902,6 +902,14 @@ declare module "postretro" {
     recencyWeight?: number;
   };
 
+  /** How fast an NPC without a target notices each candidate: one meter per candidate, for the nearest eight. */
+  export type AwarenessDescriptor = {
+    /** Optional milliseconds, default 1000; finite and >= 0. The meter fills over this while the NPC sees the candidate on consecutive checks and they pass its candidacy; a first sighting gains nothing. 0 acts as one check. */
+    fillMs?: number;
+    /** Optional milliseconds, default 2000; finite and >= 0. The meter drains over this while the candidate is out of sight or fails its candidacy. 0 empties it on the first check that misses them. */
+    drainMs?: number;
+  };
+
   /** Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy. */
   export type BehaviorGraphDescriptor = {
     /** Root initial activity, or a stance handle to start in its rest. It is also forced when the aggro gate closes. */
@@ -924,6 +932,12 @@ declare module "postretro" {
     moveSpeed: number;
     /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default. */
     engagementRadius?: number;
+    /** Optional; default false. True keeps this archetype's NPCs out of the dormant tier: they keep full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. Costs full rate for those NPCs only. A placed NPC's `always_active` map key (0 or 1) overrides it; NPCs a spawner releases take this value. A reload moves live NPCs placed without the key. */
+    alwaysActive?: boolean;
+    /** Optional metres, default 100; finite and > 0. An engaged NPC whose target is farther than this (horizontal distance) heads straight for it under `chaseTarget`, `strafe` and `reposition` instead of claiming a combat slot, and claims slots again once the target is 10 m inside. A value below the archetype's largest attack standoff plus 10 m is raised to that, with a warning at load and on each reload. */
+    tacticalRange?: number;
+    /** Optional. How fast an NPC notices each candidate: awareness fills over `fillMs` (default 1000) while it sees them and they pass its candidacy, drains over `drainMs` (default 2000) otherwise, and full awareness targets them. Each ≥ 0. Checked at the NPC's decide rate, about every 67 ms in view; shorter differences are not distinguishable. */
+    awareness?: AwarenessDescriptor;
   };
 
   /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, `slide`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */
@@ -3163,7 +3177,7 @@ declare module "postretro" {
     readonly timeInActivityMs: RuntimeGuardNode;
     /** Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeGuardNode;
-    /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
+    /** `true` on the enemy's decide ticks, where acquisition is checked: 15 times a second in view or engaged, every 2 s dormant (boolean). */
     readonly acquisitionDue: RuntimeGuardNode;
     /** The enemy's current hit points (number). */
     readonly health: RuntimeGuardNode;
@@ -3205,6 +3219,8 @@ declare module "postretro" {
     readonly activityRoll: RuntimeGuardNode;
     /** Points drained from this enemy's defense layers and health since the currently-evaluated activity was entered, counting every damage producer, `applyDamage` included. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own sum, which resets to 0 when that level is entered (number). */
     readonly damageInActivity: RuntimeGuardNode;
+    /** Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number). */
+    readonly awareness: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -3222,9 +3238,9 @@ declare module "postretro" {
     readonly died: RuntimeGuardNode;
     /** Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number). */
     readonly sentiment: RuntimeGuardNode;
-    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number). */
+    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy since its latest respawn (number). */
     readonly damageDealtToMe: RuntimeGuardNode;
-    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number). */
+    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy since its latest respawn (number). */
     readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
     /** Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number). */
     readonly tolerance: RuntimeGuardNode;

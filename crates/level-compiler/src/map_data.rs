@@ -768,6 +768,9 @@ pub struct MapData {
     /// Worldspawn `initialGravity` (m/s², negative = downward). When absent,
     /// `parse_map_file` uses `DEFAULT_WORLD_GRAVITY_MPS2`.
     pub initial_gravity: f32,
+    /// Worldspawn `ai_wake_lead` (metres, finite, >= 0). `None` when absent;
+    /// the runtime then uses its default AI lead.
+    pub ai_wake_lead: Option<f32>,
     /// Worldspawn `_lightmap_density` (meters per texel). `None` when the KVP
     /// is absent or invalid (non-finite/≤0 are logged and discarded at parse
     /// time per `build_pipeline.md` §Built-in Classname Routing). The compiler

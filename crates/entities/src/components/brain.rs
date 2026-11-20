@@ -35,10 +35,15 @@ use postretro_foundation::{
 use super::mesh::MeshComponent;
 
 mod attack_turns;
+mod awareness;
 mod clip_clock;
 pub use attack_turns::{
     AttackPoolId, AttackTokenId, AttackTurnState, HeldTurn, MAX_ATTACK_DRAWS, MAX_HELD_TURNS,
     MAX_UNDRAWN_TURNS, ResolvedDraw, ResolvedDraws, TurnRequest, WaitClock,
+};
+pub use awareness::{
+    AWARENESS_FULL_EPSILON, AWARENESS_METER_CAPACITY, AwarenessCheck, AwarenessMeter,
+    AwarenessMeters,
 };
 pub use clip_clock::{ClipClock, ClipFacts, Stagger, note_replaced_mesh};
 
@@ -55,6 +60,11 @@ pub struct RecentAttacker {
     pub attacker: EntityId,
     pub accumulated_damage: f32,
     pub time_since_damage_ms: f32,
+    /// The attacker's life counter when it hit: a respawn clears the entry,
+    /// so `@candidate.damageDealtToMe` and `timeSinceDamageFromCandidate`
+    /// restart. Host-local, like the counter itself.
+    #[serde(skip)]
+    pub life: u32,
 }
 
 /// A brain's memory of a knockback launch. An enemy is launched while
@@ -192,6 +202,11 @@ pub struct BrainComponent {
     /// brains predate this field and begin with no remembered attackers.
     #[serde(default = "default_recent_attackers")]
     pub recent_attackers: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CAPACITY],
+    /// Per-candidate awareness meters, bound to the nearest few: how an NPC
+    /// without a target notices each candidate. Old serialized brains predate
+    /// this field and begin noticing no one.
+    #[serde(default)]
+    pub awareness: AwarenessMeters,
     /// World position of the most recent visible target or damage attacker.
     /// This host-only memory lets authored behavior choose how to investigate
     /// a stimulus without making its source a selectable target.
@@ -223,10 +238,22 @@ pub struct BrainComponent {
     /// so a same-named attack inherits its remaining cooldown.
     #[serde(default, deserialize_with = "deserialize_attack_cooldowns")]
     pub attack_cooldown_remaining_ms: BTreeMap<String, f32>,
-    /// Think-stride counter: incremented each tick by the FSM and compared
-    /// against a distance-derived stride to time-slice target acquisition for
-    /// distant enemies. Seeded to `0` at spawn.
-    pub think_stride_counter: u32,
+    /// The NPC's schedule identity: its behavior-draw salt word (map
+    /// placement, or spawner and spawn count), stored at seeding. It staggers
+    /// the NPC's decide and dormant phases. `None` until seeded; the AI then
+    /// uses the registry index, replay-stable only under a fixed spawn order.
+    #[serde(default)]
+    pub schedule_identity: Option<u64>,
+    /// Whether the NPC stays out of the dormant tier: the archetype's
+    /// `alwaysActive`, or its placement's `always_active` key, which wins.
+    /// Set-piece state read at spawn; a reload moves only `FromArchetype`.
+    #[serde(default)]
+    pub always_active: AlwaysActive,
+    /// The NPC routes toward its target, choosing no combat slot: its target
+    /// was past its tactical line at a decide and has not since come the
+    /// margin inside it.
+    #[serde(default)]
+    pub beyond_tactical_range: bool,
     /// Last locomotion intent applied to animation selection. This latches the
     /// idle/walk decision so an enemy in `Alert` switches once on stop/resume
     /// instead of re-requesting the same animation every tick.
@@ -276,6 +303,14 @@ pub struct BrainComponent {
     /// so absent values default open.
     #[serde(default = "default_aggro_armed")]
     pub aggro_armed: bool,
+    /// The aggro gate closed since this brain last ran. Set by
+    /// [`Self::set_aggro_armed`]`(false)` and cleared by the AI at the brain's
+    /// next run, which stands it down as a closed gate does (target, combat
+    /// slot and turns dropped, path reseated to `initial`) even when the gate
+    /// has reopened by then. Until that run a hit is still judged against the
+    /// target it holds. Old serialized brains carry no pending close.
+    #[serde(default)]
+    pub aggro_closed_since_run: bool,
     /// Cached nav-path verdict for the selected target. It is recomputed on
     /// acquisition-due ticks and deliberately omitted from serialized brain
     /// state so a restored brain never trusts a path query from an older map
@@ -289,6 +324,10 @@ pub struct BrainComponent {
     /// target. Cleared when aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
+    /// [`Self::acquired_target`]'s life counter when acquired: a respawn of
+    /// the target since then runs the respawn drop. Host-local.
+    #[serde(skip)]
+    pub acquired_target_life: u32,
     /// Target whose retention was acquired by the engine-owned retaliation
     /// preference rather than ordinary pure-distance ranking. It is keyed to
     /// the retained target and cleared with every ordinary target-loss path;
@@ -399,6 +438,38 @@ pub struct BrainComponent {
     pub entry_event_pending: bool,
 }
 
+/// Which `alwaysActive` an NPC follows: its archetype's (live across
+/// reloads), or its placement's `always_active` key, on or off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AlwaysActive {
+    #[default]
+    FromArchetype,
+    On,
+    Off,
+}
+
+impl AlwaysActive {
+    /// The placement key's value: `"1"` on, `"0"` off. Anything else is not a
+    /// value (`prl-build` refuses it by name).
+    pub fn from_placement_key(value: &str) -> Option<Self> {
+        match value.trim() {
+            "1" => Some(Self::On),
+            "0" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    /// Whether the NPC stays out of the dormant tier, given its archetype's
+    /// live `alwaysActive`.
+    pub fn resolve(self, archetype: bool) -> bool {
+        match self {
+            Self::FromArchetype => archetype,
+            Self::On => true,
+            Self::Off => false,
+        }
+    }
+}
+
 impl BrainComponent {
     /// Materialize a fresh brain from an authored `components.behavior` graph.
     /// Seeded in the graph's `initial` state with every timer at rest.
@@ -409,13 +480,16 @@ impl BrainComponent {
             damage_bearing: 0.0,
             damage_source_known: false,
             recent_attackers: default_recent_attackers(),
+            awareness: AwarenessMeters::default(),
             last_known_target_pos: None,
             time_since_target_visible: default_time_since_target_visible(),
             home_anchor: Vec3::ZERO,
             patrol_cursor: 0,
             patrol_direction: 1,
             attack_cooldown_remaining_ms: BTreeMap::new(),
-            think_stride_counter: 0,
+            schedule_identity: None,
+            always_active: AlwaysActive::FromArchetype,
+            beyond_tactical_range: false,
             locomotion_moving: false,
             launch: LaunchState::default(),
             presented_travel_variant: TravelVariant::Base,
@@ -425,8 +499,10 @@ impl BrainComponent {
             attack_turns: AttackTurnState::default(),
             attack_pool: None,
             aggro_armed: true,
+            aggro_closed_since_run: false,
             target_reachable: false,
             acquired_target: None,
+            acquired_target_life: 0,
             retaliation_acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
@@ -584,6 +660,18 @@ impl BrainComponent {
     /// every seated level's roll and release time: the first evaluation reads
     /// this enemy's own salted draws, and seeding twice is the same as seeding
     /// once.
+    /// Seed the draws for `descriptor` under `salt`, and take the salt's word
+    /// as the NPC's schedule identity: one identity for its draws and its
+    /// decide and dormant phases.
+    pub fn seed_identity(
+        &mut self,
+        descriptor: &str,
+        salt: postretro_foundation::BehaviorDrawSalt,
+    ) {
+        self.seed_behavior_draws(postretro_foundation::behavior_draw_seed(descriptor, salt));
+        self.schedule_identity = Some(salt.word());
+    }
+
     pub fn seed_behavior_draws(&mut self, seed: u64) {
         self.behavior_draws.reseed(seed);
         let active_depth = self.active_depth();
@@ -609,6 +697,12 @@ impl BrainComponent {
     /// recency. At capacity, preserve the more recent and more damaging entries
     /// first; a final entity-id tie keeps replacement deterministic.
     pub fn record_attacker_damage(&mut self, attacker: EntityId, damage: f32) {
+        self.record_attacker_damage_in_life(attacker, damage, 0);
+    }
+
+    /// [`Self::record_attacker_damage`] from an attacker in its life `life`:
+    /// an entry from an earlier life restarts.
+    pub fn record_attacker_damage_in_life(&mut self, attacker: EntityId, damage: f32, life: u32) {
         if !damage.is_finite() || damage <= 0.0 {
             return;
         }
@@ -619,6 +713,15 @@ impl BrainComponent {
             .flatten()
             .find(|entry| entry.attacker == attacker)
         {
+            if entry.life != life {
+                *entry = RecentAttacker {
+                    attacker,
+                    accumulated_damage: damage,
+                    time_since_damage_ms: 0.0,
+                    life,
+                };
+                return;
+            }
             entry.accumulated_damage = (entry.accumulated_damage.max(0.0) + damage).min(f32::MAX);
             entry.time_since_damage_ms = 0.0;
             return;
@@ -628,6 +731,7 @@ impl BrainComponent {
             attacker,
             accumulated_damage: damage,
             time_since_damage_ms: 0.0,
+            life,
         };
         if let Some(empty) = self
             .recent_attackers
@@ -657,10 +761,93 @@ impl BrainComponent {
     /// downstream aging site, so moving it there would introduce a one-tick
     /// skew between the two facts.
     pub fn age_recent_attackers(&mut self, dt_ms: f32) {
+        self.age_recent_attackers_over(dt_ms, dt_ms);
+    }
+
+    /// [`Self::age_recent_attackers`] for a run spanning several ticks: an
+    /// entry hit since the last run (still at 0) ages one tick, `tick_dt_ms`,
+    /// as at 60 Hz, never the time before its hit; the rest age the whole
+    /// span, `span_dt_ms`.
+    pub fn age_recent_attackers_over(&mut self, span_dt_ms: f32, tick_dt_ms: f32) {
         for entry in self.recent_attackers.iter_mut().flatten() {
             entry.time_since_damage_ms =
-                (entry.time_since_damage_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE);
+                age_damage_clock(entry.time_since_damage_ms, span_dt_ms, tick_dt_ms);
         }
+    }
+
+    /// Open or close the aggro gate. Closing it empties every awareness
+    /// meter at the close itself, even if it reopens before the NPC next
+    /// runs: the next sighting of anyone is a first sighting. A close also
+    /// latches [`Self::aggro_closed_since_run`], so the NPC's next run stands
+    /// it down even when the gate has reopened by then.
+    pub fn set_aggro_armed(&mut self, armed: bool) {
+        if !armed {
+            self.awareness.empty();
+            self.aggro_closed_since_run = true;
+        }
+        self.aggro_armed = armed;
+    }
+
+    /// The closed gate's stand-down, for a run that finds the gate reopened
+    /// since a close it has not yet run under: the target, its retaliation
+    /// mark and combat slot drop, every turn, request and wait clock ends,
+    /// and the path reseats to `initial`. Returns whether the path moved.
+    pub fn stand_down_closed_gate(&mut self) -> bool {
+        self.acquired_target = None;
+        self.acquired_target_life = 0;
+        self.retaliation_acquired_target = None;
+        self.combat_slot = None;
+        self.combat_slot_hold_ticks = 0;
+        self.beyond_tactical_range = false;
+        self.attack_turns.clear();
+        !self.is_seated_at_initial() && self.reseat_to_initial()
+    }
+
+    /// The respawn drop: forget what this NPC keeps about every pawn that
+    /// respawned since it was stamped. `life_of` gives a pawn's life counter
+    /// now, `None` for an entity that is no pawn. A target lost this way
+    /// frees its combat slot and retaliation mark; turns on the pawn end
+    /// (arbitration records their refresh and stops a burst on them); the
+    /// wait clock and request on it clear; its ledger entry and meter go, so
+    /// it is noticed again through a fresh fill. Returns whether the target
+    /// dropped.
+    pub fn drop_respawned(&mut self, life_of: impl Fn(EntityId) -> Option<u32>) -> bool {
+        let stale = |pawn: EntityId, life: u32| life_of(pawn).is_some_and(|now| now != life);
+        let target_dropped = self
+            .acquired_target
+            .is_some_and(|target| stale(target, self.acquired_target_life));
+        if target_dropped {
+            self.acquired_target = None;
+            self.acquired_target_life = 0;
+            self.retaliation_acquired_target = None;
+            self.combat_slot = None;
+            self.combat_slot_hold_ticks = 0;
+            self.beyond_tactical_range = false;
+        }
+        self.attack_turns
+            .retain_held(|turn| !stale(turn.target, turn.target_life));
+        if self
+            .attack_turns
+            .wait
+            .is_some_and(|wait| stale(wait.target, wait.target_life))
+        {
+            self.attack_turns.wait = None;
+        }
+        if self
+            .attack_turns
+            .request
+            .is_some_and(|request| stale(request.target, request.target_life))
+        {
+            self.attack_turns.request = None;
+        }
+        for entry in self.recent_attackers.iter_mut() {
+            if entry.is_some_and(|entry| stale(entry.attacker, entry.life)) {
+                *entry = None;
+            }
+        }
+        self.awareness
+            .forget_where(|meter| stale(meter.candidate, meter.life));
+        target_dropped
     }
 
     /// Lookup used by the allocation-free candidate refresh path.
@@ -1074,7 +1261,20 @@ const fn default_aggro_armed() -> bool {
     true
 }
 
-const fn default_time_since_damage_ms() -> f32 {
+/// Advance a damage-recency clock over a run spanning several ticks. A clock
+/// at 0 was zeroed by a hit since the last run, and any hit moves its NPC to
+/// a running tier by the next tick, so it ages one tick, `tick_dt_ms`, exactly
+/// as at 60 Hz; any other ages the whole span.
+pub fn age_damage_clock(clock_ms: f32, span_dt_ms: f32, tick_dt_ms: f32) -> f32 {
+    let dt_ms = if clock_ms == 0.0 {
+        tick_dt_ms
+    } else {
+        span_dt_ms
+    };
+    (clock_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE)
+}
+
+pub(crate) const fn default_time_since_damage_ms() -> f32 {
     BRAIN_NO_TARGET_DISTANCE
 }
 
@@ -1242,6 +1442,105 @@ mod tests {
 
     // The walk-cycle rate scaling on host and client reads a state as the
     // locomotion clip's variant only by this naming rule.
+    // P47: the respawn drop forgets, for every pawn whose life moved on since
+    // it was stamped, the target with its slot and retaliation mark, turns,
+    // wait clock, request, ledger entry and meter; another pawn's stay.
+    #[test]
+    fn drop_respawned_forgets_only_what_was_kept_about_an_earlier_life() {
+        let respawned = EntityId::from_raw(7);
+        let other = EntityId::from_raw(8);
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.acquired_target = Some(respawned);
+        brain.retaliation_acquired_target = Some(respawned);
+        brain.combat_slot = Some(Vec3::X);
+        brain.combat_slot_hold_ticks = 5;
+        for (target, attack) in [(respawned, 0), (other, 1)] {
+            assert!(brain.attack_turns.hold(HeldTurn {
+                attack,
+                target,
+                target_life: 0,
+                pool: AttackPoolId::Default,
+                draws: ResolvedDraws::NONE,
+                until_cooldown: true,
+                granted_tick: 1,
+            }));
+        }
+        brain.attack_turns.wait = Some(WaitClock {
+            since_tick: 3,
+            target: respawned,
+            target_life: 0,
+        });
+        brain.record_attacker_damage_in_life(respawned, 4.0, 0);
+        brain.record_attacker_damage_in_life(other, 2.0, 0);
+        brain.awareness.record_hit(respawned, 3.0, 0);
+        brain.awareness.record_hit(other, 3.0, 0);
+        let life_of = |pawn: EntityId| Some(u32::from(pawn == respawned));
+
+        assert!(brain.drop_respawned(life_of), "the target dropped");
+        assert_eq!(brain.acquired_target, None);
+        assert_eq!(brain.retaliation_acquired_target, None);
+        assert_eq!(brain.combat_slot, None);
+        assert_eq!(brain.combat_slot_hold_ticks, 0);
+        let held: Vec<_> = brain.attack_turns.held().map(|turn| turn.target).collect();
+        assert_eq!(held, vec![other]);
+        assert_eq!(brain.attack_turns.wait, None);
+        assert_eq!(brain.recent_attacker(respawned), None);
+        assert!(brain.recent_attacker(other).is_some());
+        assert!(brain.awareness.meter(respawned).is_none());
+        assert!(brain.awareness.meter(other).is_some());
+        assert!(
+            !brain.drop_respawned(life_of),
+            "nothing left to drop: a stored difference, applied once"
+        );
+        // A pawn that is no pawn of the pass drops nothing.
+        brain.record_attacker_damage_in_life(other, 1.0, 5);
+        brain.drop_respawned(|_| None);
+        assert!(brain.recent_attacker(other).is_some());
+    }
+
+    // P41: a close latches until the NPC's next run, whatever opens the gate
+    // again before it; the stand-down that run applies drops the target, its
+    // slot and turns, and leaves the meters the close emptied.
+    #[test]
+    fn closing_the_aggro_gate_latches_its_stand_down_until_the_next_run() {
+        let target = EntityId::from_raw(7);
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.awareness.record_hit(target, 3.0, 0);
+        brain.acquired_target = Some(target);
+        brain.combat_slot = Some(Vec3::X);
+        brain.combat_slot_hold_ticks = 5;
+        brain.beyond_tactical_range = true;
+        assert!(brain.attack_turns.hold(HeldTurn {
+            attack: 0,
+            target,
+            target_life: 0,
+            pool: AttackPoolId::Default,
+            draws: ResolvedDraws::NONE,
+            until_cooldown: true,
+            granted_tick: 1,
+        }));
+        assert!(!brain.aggro_closed_since_run, "a fresh brain has no close");
+
+        brain.set_aggro_armed(false);
+        brain.set_aggro_armed(true);
+        assert!(brain.aggro_armed);
+        assert!(brain.aggro_closed_since_run, "the reopen keeps the latch");
+        assert!(brain.awareness.is_empty(), "the close emptied the meters");
+        assert_eq!(
+            brain.acquired_target,
+            Some(target),
+            "the target stands until the run"
+        );
+
+        brain.stand_down_closed_gate();
+        assert_eq!(brain.acquired_target, None);
+        assert_eq!(brain.combat_slot, None);
+        assert_eq!(brain.combat_slot_hold_ticks, 0);
+        assert!(!brain.beyond_tactical_range);
+        assert!(!brain.attack_turns.holds_any());
+        assert!(brain.is_seated_at_initial());
+    }
+
     #[test]
     fn travel_variant_of_state_names_only_the_base_and_its_three_suffixes() {
         assert_eq!(
@@ -1279,6 +1578,7 @@ mod tests {
         use postretro_foundation::{BRAIN_TARGET_DISTANCE_INPUT, IrNode, IrValue};
 
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "rest".to_string(),
@@ -1550,17 +1850,20 @@ mod tests {
                 attacker: EntityId::from_raw((index + 10) as u32),
                 accumulated_damage: 10.0,
                 time_since_damage_ms: 50.0,
+                life: 0,
             });
         }
         brain.recent_attackers[0] = Some(RecentAttacker {
             attacker: EntityId::from_raw(2),
             accumulated_damage: 1.0,
             time_since_damage_ms: 100.0,
+            life: 0,
         });
         brain.recent_attackers[1] = Some(RecentAttacker {
             attacker: EntityId::from_raw(3),
             accumulated_damage: 9.0,
             time_since_damage_ms: 100.0,
+            life: 0,
         });
         let newcomer = EntityId::from_raw(99);
         brain.record_attacker_damage(newcomer, 4.0);
@@ -1589,6 +1892,7 @@ mod tests {
                 attacker: EntityId::from_raw((index + 20) as u32),
                 accumulated_damage: 1.0,
                 time_since_damage_ms: 100.0,
+                life: 0,
             });
         }
         brain.record_attacker_damage(EntityId::from_raw(99), 1.0);

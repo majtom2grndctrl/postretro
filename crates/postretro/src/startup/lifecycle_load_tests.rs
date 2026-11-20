@@ -3349,6 +3349,15 @@ fn telemetry_level_change_orders_old_unload_before_new_install_and_phases() {
     run_to_commit(&mut app, &exit, "the first level");
     settle_to_reveal(&mut app, "the first level");
     app.level_timings.log_level_line();
+    // The held view targets no SH cell, so the level reveals with its window
+    // empty. An in-play frame that sees cell 0 targets its cluster and counts
+    // the visible miss, so the window has counted something to close.
+    skipped_level_frame(&mut app);
+    let sh = app.session.as_ref().unwrap().sh_streaming.as_ref();
+    assert!(
+        sh.expect("the first level streams SH").settle_set_targets() > Some(0),
+        "the in-play frame targets the cluster"
+    );
     retire_all(&mut app);
     let old_level = postretro_telemetry::level().expect("the first level is running");
     let before_change = lifecycle_events(&hub).len();

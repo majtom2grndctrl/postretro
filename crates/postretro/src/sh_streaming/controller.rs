@@ -391,6 +391,11 @@ pub(crate) struct ShResidencyController {
     full_demand: bool,
     hold: hold::HoldState,
     counters: ShResidencyCounters,
+    /// The latest target update's drawn, not-Sampleable clusters by cause,
+    /// classified every frame rather than once per episode: the walk
+    /// measurement's per-frame tally, in cluster-frames.
+    #[cfg(test)]
+    latest_update_miss_frames: postretro_renderer::ShMissBuckets,
 }
 
 impl ShResidencyController {
@@ -469,6 +474,8 @@ impl ShResidencyController {
             full_demand: false,
             hold: hold::HoldState::default(),
             counters: ShResidencyCounters::default(),
+            #[cfg(test)]
+            latest_update_miss_frames: postretro_renderer::ShMissBuckets::default(),
         })
     }
 
@@ -585,6 +592,14 @@ impl ShResidencyController {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(crate) fn last_frame_drawn_not_resident(&self) -> u32 {
         self.counters.last_frame_drawn_not_resident
+    }
+
+    /// The latest target update's drawn, not-Sampleable clusters by cause,
+    /// each counted on that update whatever its episode: one frame's
+    /// cluster-frames when read once per frame.
+    #[cfg(test)]
+    pub(crate) fn latest_update_miss_frames(&self) -> postretro_renderer::ShMissBuckets {
+        self.latest_update_miss_frames
     }
 
     pub(crate) fn report_snapshot(&self) -> ShResidencyControllerSnapshot {

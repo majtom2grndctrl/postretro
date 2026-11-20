@@ -95,6 +95,8 @@ mod dx12_fxc_test;
 #[cfg(test)]
 pub(crate) mod gpu_test_harness;
 #[cfg(test)]
+pub(crate) mod install_cost_model;
+#[cfg(test)]
 mod lightmap_residency_test;
 #[cfg(test)]
 mod render_extent_gpu_test;
@@ -247,7 +249,9 @@ pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,
 };
-pub use lightmap_streaming::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
+pub use lightmap_streaming::{
+    LightmapMissBuckets, LightmapStreamingLiveDiagnostics, StreamingReachLever,
+};
 pub use model_cache::{
     CachedModel, ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey,
     ModelEntryIdentity,
@@ -331,7 +335,8 @@ pub use rigid_occluder_depth::MoverOccluderAabb;
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
     AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow, LightmapStreamingTab,
-    NetworkLagLever, NetworkSessionRole, TriggerDiagnosticsRow, draw_diagnostics_panel,
+    NetworkLagLever, NetworkSessionRole, StreamingDrainCapLever, TriggerDiagnosticsRow,
+    draw_diagnostics_panel,
 };
 // Every build: telemetry emits each closed window (`take_gpu_timing_window`).
 pub use frame_timing::{FrameTimingSnapshot, PassTiming};

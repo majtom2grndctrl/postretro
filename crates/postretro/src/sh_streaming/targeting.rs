@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use postretro_renderer::ShMissBuckets;
 use postretro_visibility::VisibleCells;
 
 use crate::streaming::cell_demand::DemandFrame;
@@ -22,6 +23,21 @@ enum MissCause {
     AtWholeMapCap,
 }
 
+impl MissCause {
+    fn bucket(self, buckets: &mut ShMissBuckets) -> &mut u64 {
+        match self {
+            Self::OutsideReach => &mut buckets.outside_reach,
+            Self::TrimmedByPressure => &mut buckets.trimmed_by_pressure,
+            Self::ReadInFlight => &mut buckets.read_in_flight,
+            Self::HeldByDrainBudget => &mut buckets.held_by_drain_budget,
+            Self::AwaitingCompose => &mut buckets.awaiting_compose,
+            Self::Failed => &mut buckets.failed,
+            Self::DeviceLimited => &mut buckets.device_limited,
+            Self::AtWholeMapCap => &mut buckets.at_whole_map_cap,
+        }
+    }
+}
+
 impl ShResidencyController {
     /// Uses monotonic render seconds, not a frame count, so the two-second
     /// retention window is identical at 30, 60, and 144 Hz. The horizon is
@@ -37,6 +53,10 @@ impl ShResidencyController {
         monotonic_seconds: f64,
     ) -> Result<(), ShResidencyControllerError> {
         self.validate_time(monotonic_seconds)?;
+        #[cfg(test)]
+        {
+            self.latest_update_miss_frames = ShMissBuckets::default();
+        }
         let hysteresis_seconds = self.begin_frame_hold(reach.as_ref(), monotonic_seconds);
         let visible = self.frame_visible_clusters(visible, reach.as_ref())?;
         self.reach
@@ -197,7 +217,8 @@ impl ShResidencyController {
     ///
     /// `drawn` is the frame's real drawn set, whatever targeting may read of
     /// it. Each miss lands in one bucket, read from the cluster's state before
-    /// this frame retargets it.
+    /// this frame retargets it. Test builds also classify every missing
+    /// drawn cluster at this same point, episode or not.
     pub(super) fn record_visible_misses(
         &mut self,
         drawn: &BTreeSet<u32>,
@@ -205,32 +226,26 @@ impl ShResidencyController {
         self.prior_visible_misses.retain(|id| drawn.contains(id));
         let mut not_sampleable = 0u32;
         for &cluster_id in drawn {
-            let sampleable =
-                self.states[cluster_id as usize].state == ClusterResidencyState::Sampleable;
-            not_sampleable += u32::from(!sampleable);
-            if !sampleable && self.prior_visible_misses.insert(cluster_id) {
+            let missing =
+                self.states[cluster_id as usize].state != ClusterResidencyState::Sampleable;
+            not_sampleable += u32::from(missing);
+            #[cfg(test)]
+            if missing {
+                *self
+                    .miss_cause(cluster_id)
+                    .bucket(&mut self.latest_update_miss_frames) += 1;
+            }
+            if missing && self.prior_visible_misses.insert(cluster_id) {
                 Self::increment_counter(&mut self.counters.misses, "visible misses")?;
-                let bucket = self.miss_bucket(cluster_id);
-                Self::increment_counter(bucket, "visible miss bucket")?;
+                let cause = self.miss_cause(cluster_id);
+                Self::increment_counter(
+                    cause.bucket(&mut self.counters.miss_buckets),
+                    "visible miss bucket",
+                )?;
             }
         }
         self.counters.last_frame_drawn_not_resident = not_sampleable;
         Ok(())
-    }
-
-    fn miss_bucket(&mut self, cluster_id: u32) -> &mut u64 {
-        let cause = self.miss_cause(cluster_id);
-        let buckets = &mut self.counters.miss_buckets;
-        match cause {
-            MissCause::OutsideReach => &mut buckets.outside_reach,
-            MissCause::TrimmedByPressure => &mut buckets.trimmed_by_pressure,
-            MissCause::ReadInFlight => &mut buckets.read_in_flight,
-            MissCause::HeldByDrainBudget => &mut buckets.held_by_drain_budget,
-            MissCause::AwaitingCompose => &mut buckets.awaiting_compose,
-            MissCause::Failed => &mut buckets.failed,
-            MissCause::DeviceLimited => &mut buckets.device_limited,
-            MissCause::AtWholeMapCap => &mut buckets.at_whole_map_cap,
-        }
     }
 
     /// The cluster's own state names the cause: no cluster waits on another.

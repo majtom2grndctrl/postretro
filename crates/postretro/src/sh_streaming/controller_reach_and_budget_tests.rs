@@ -992,6 +992,60 @@ fn visible_miss_lands_in_exactly_one_bucket() {
     }
 }
 
+// P10: a teleport draws cluster 1 while its read is in flight, then it sits
+// Ready for five frames, as a cluster left past each drain's cut does (no
+// drain runs between: both tallies read only the cluster's state). The
+// episode takes its cause from its first frame; the per-frame tally
+// classifies every frame at the same point, before that frame's admission
+// (P14).
+#[test]
+fn per_frame_miss_tally_files_each_frame_where_the_episode_files_the_first() {
+    let mut controller = cluster_one_lead();
+    let request = controller.take_next_request().unwrap().unwrap();
+    assert_eq!(request.cluster_id, 1);
+    let drawn = VisibleCells::Culled(vec![1]);
+    let before = misses(&controller);
+    let in_flight = postretro_renderer::ShMissBuckets {
+        read_in_flight: 1,
+        ..Default::default()
+    };
+    let held = postretro_renderer::ShMissBuckets {
+        held_by_drain_budget: 1,
+        ..Default::default()
+    };
+
+    controller.update_targets(&drawn, None, 1.0).unwrap();
+    assert_eq!(controller.latest_update_miss_frames(), in_flight);
+    admit_ready(&mut controller, 1);
+    for frame in 0..5 {
+        controller
+            .update_targets(&drawn, None, 1.1 + f64::from(frame) * 0.1)
+            .unwrap();
+        assert_eq!(
+            controller.latest_update_miss_frames(),
+            held,
+            "frame {frame}"
+        );
+    }
+
+    let (count, buckets) = misses(&controller);
+    assert_eq!(count - before.0, 1, "one episode");
+    assert_eq!(buckets.read_in_flight - before.1.read_in_flight, 1);
+    assert_eq!(
+        buckets.held_by_drain_budget - before.1.held_by_drain_budget,
+        0
+    );
+
+    // Admitted and composed, it draws lit: the next update counts nothing.
+    assert_eq!(take_batch(&mut controller, true), vec![1]);
+    controller.promote_composed_clusters();
+    controller.update_targets(&drawn, None, 2.0).unwrap();
+    assert_eq!(
+        controller.latest_update_miss_frames(),
+        postretro_renderer::ShMissBuckets::default()
+    );
+}
+
 // A Settling frame presents nothing and counts nothing; the reveal frame
 // counts a still-cold visible cluster once.
 #[test]

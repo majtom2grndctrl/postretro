@@ -7,6 +7,8 @@ mod compaction_timing_measurement;
 mod counters;
 mod execute;
 #[cfg(test)]
+mod install_cost_measurement;
+#[cfg(test)]
 mod install_timing_measurement;
 #[cfg(test)]
 mod tests;

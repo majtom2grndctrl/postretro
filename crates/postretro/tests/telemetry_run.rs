@@ -1,14 +1,66 @@
 // The engine's telemetry run through the real binary, built with no
 // optional feature: the file sink is written in every build, `run_start` is
 // the first line ahead of every captured record, and an error exit ends with
-// `run_end` naming it. In this container no window can open, which is itself
-// the error exit under test.
+// `run_end` naming it. The error exit under test is a boot map that does not
+// exist: where no window can open the run fails at the window, and where one
+// can, the boot map load fails and exits non-zero. A windowed run on a
+// sleeping or locked display stalls before either, so every launch here is
+// bounded by `RUN_LIMIT`.
 // See: context/lib/development_guide.md §6.5
 
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use postretro_telemetry::{Envelope, ExitReason, Kind, RunEnd, RunStart, TELEMETRY_ENV};
+
+/// How long a launched engine may run before the test kills it. Every run
+/// here ends on its own in a few seconds; a window stalled on a sleeping or
+/// locked display would otherwise hang the suite.
+const RUN_LIMIT: Duration = Duration::from_secs(30);
+
+/// Runs the engine to its exit, or kills it and fails the test once it passes
+/// [`RUN_LIMIT`].
+fn run_bounded(command: &mut Command, what: &str) -> Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("launch {what}: {e}"));
+    // Drain both pipes while waiting, so a full pipe cannot stall the child.
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).ok();
+            bytes
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().unwrap()));
+    let stderr = drain(Box::new(child.stderr.take().unwrap()));
+    let deadline = Instant::now() + RUN_LIMIT;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll the engine") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().ok();
+            child.wait().ok();
+            panic!(
+                "{what} did not exit within {}s; killed. A sleeping or locked \
+                 display stalls a windowed run. stderr:\n{}",
+                RUN_LIMIT.as_secs(),
+                String::from_utf8_lossy(&stderr.join().unwrap_or_default())
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    Output {
+        status,
+        stdout: stdout.join().unwrap(),
+        stderr: stderr.join().unwrap(),
+    }
+}
 
 fn events(path: &Path) -> Vec<Envelope> {
     std::fs::read_to_string(path)
@@ -21,19 +73,20 @@ fn events(path: &Path) -> Vec<Envelope> {
 #[test]
 fn an_engine_run_writes_the_sink_and_brackets_its_exit() {
     let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_postretro"))
-        .current_dir(dir.path())
-        // A path that names no map: whether or not a window opens, the run
-        // ends on its own with an error.
-        .arg("no-such-map.prl")
-        .env(TELEMETRY_ENV, "t.jsonl")
-        .env_remove("POSTRETRO_CPU_TIMING")
-        .env_remove("POSTRETRO_GPU_TIMING")
-        .env_remove("RUST_LOG")
-        .env("WAYLAND_DISPLAY", "")
-        .env("DISPLAY", "")
-        .output()
-        .expect("launch postretro");
+    let output = run_bounded(
+        Command::new(env!("CARGO_BIN_EXE_postretro"))
+            .current_dir(dir.path())
+            // A path that names no map: whether or not a window opens, the
+            // run ends on its own with an error.
+            .arg("no-such-map.prl")
+            .env(TELEMETRY_ENV, "t.jsonl")
+            .env_remove("POSTRETRO_CPU_TIMING")
+            .env_remove("POSTRETRO_GPU_TIMING")
+            .env_remove("RUST_LOG")
+            .env("WAYLAND_DISPLAY", "")
+            .env("DISPLAY", ""),
+        "postretro",
+    );
     assert!(!output.status.success());
     let events = events(&dir.path().join("t.jsonl"));
     assert!(
@@ -75,14 +128,15 @@ fn an_engine_run_writes_the_sink_and_brackets_its_exit() {
 #[test]
 fn without_the_sink_variable_the_engine_writes_no_file() {
     let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_postretro"))
-        .current_dir(dir.path())
-        .arg("no-such-map.prl")
-        .env_remove(TELEMETRY_ENV)
-        .env("WAYLAND_DISPLAY", "")
-        .env("DISPLAY", "")
-        .output()
-        .expect("launch postretro");
+    let output = run_bounded(
+        Command::new(env!("CARGO_BIN_EXE_postretro"))
+            .current_dir(dir.path())
+            .arg("no-such-map.prl")
+            .env_remove(TELEMETRY_ENV)
+            .env("WAYLAND_DISPLAY", "")
+            .env("DISPLAY", ""),
+        "postretro",
+    );
     assert!(!output.status.success());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
@@ -94,14 +148,15 @@ fn without_the_sink_variable_the_engine_writes_no_file() {
 #[test]
 fn a_headless_run_lists_timing_unsupported_and_ends_through_its_exit() {
     let dir = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_postretro"))
-        .current_dir(dir.path())
-        .args(["--headless", "no-such-runspec.json"])
-        .env(TELEMETRY_ENV, "t.jsonl")
-        .env("POSTRETRO_CPU_TIMING", "1")
-        .env("POSTRETRO_GPU_TIMING", "1")
-        .output()
-        .expect("launch postretro --headless");
+    let output = run_bounded(
+        Command::new(env!("CARGO_BIN_EXE_postretro"))
+            .current_dir(dir.path())
+            .args(["--headless", "no-such-runspec.json"])
+            .env(TELEMETRY_ENV, "t.jsonl")
+            .env("POSTRETRO_CPU_TIMING", "1")
+            .env("POSTRETRO_GPU_TIMING", "1"),
+        "postretro --headless",
+    );
     assert!(!output.status.success());
     let events = events(&dir.path().join("t.jsonl"));
     let start: RunStart = serde_json::from_value(events[0].payload.clone()).unwrap();

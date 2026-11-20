@@ -461,6 +461,8 @@ impl UploadOrderSh {
 mod depth_tile_texel_tests;
 #[path = "direct_split_tests.rs"]
 mod direct_split_tests;
+#[path = "install_cost_measurement.rs"]
+mod install_cost_measurement;
 #[path = "limit_tests.rs"]
 mod limit_tests;
 #[path = "mover_depth_tile_tests.rs"]

@@ -1064,7 +1064,7 @@ fn retirement_empties_the_old_completion_queue_its_issuer_is_blocked_on() {
 
 /// Whether a source file is itself a test module or test fixture, by the
 /// crate's naming convention.
-fn is_test_source(path: &std::path::Path) -> bool {
+pub(super) fn is_test_source(path: &std::path::Path) -> bool {
     let stem = path.file_stem().unwrap().to_string_lossy();
     stem == "tests"
         || stem.ends_with("_tests")

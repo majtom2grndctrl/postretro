@@ -969,3 +969,39 @@
 "_falloff_range" "768"
 "_color" "255 236 214"
 }
+// Lava puddle: an ankle-deep `fluid_volume` `lava` on the wing floor, x 2112-2336, y 704-912, surface at z 8. Lava's `status` scalds whatever stands in it.
+{
+"classname" "fluid_volume"
+"fluid" "lava"
+{
+( 2112 912 0 ) ( 2112 704 8 ) ( 2112 704 0 ) fluids/lava_64 0 0 0 1 1
+( 2112 704 0 ) ( 2336 704 8 ) ( 2336 704 0 ) fluids/lava_64 0 0 0 1 1
+( 2112 704 0 ) ( 2336 912 0 ) ( 2112 912 0 ) fluids/lava_64 0 0 0 1 1
+( 2112 912 8 ) ( 2336 704 8 ) ( 2112 704 8 ) fluids/lava_64 0 0 0 1 1
+( 2336 912 0 ) ( 2112 912 8 ) ( 2112 912 0 ) fluids/lava_64 0 0 0 1 1
+( 2336 704 0 ) ( 2336 912 8 ) ( 2336 912 0 ) fluids/lava_64 0 0 0 1 1
+}
+}
+// Burn trap: a touch `trigger_volume` tagged `burn_trap`, x 2128-2320, y 592-672. The dev mod's `burnTraps` trigger event sets whoever enters on fire.
+{
+"classname" "trigger_volume"
+"activation" "touch"
+"fire_mode" "multiple"
+"rearm_ms" "3000"
+"_tags" "burn_trap"
+{
+( 2128 672 0 ) ( 2128 592 128 ) ( 2128 592 0 ) debug_ceiling_grey 0 0 0 1 1
+( 2128 592 0 ) ( 2320 592 128 ) ( 2320 592 0 ) debug_ceiling_grey 0 0 0 1 1
+( 2128 592 0 ) ( 2320 672 0 ) ( 2128 672 0 ) debug_ceiling_grey 0 0 0 1 1
+( 2128 672 128 ) ( 2320 592 128 ) ( 2128 592 128 ) debug_ceiling_grey 0 0 0 1 1
+( 2320 672 0 ) ( 2128 672 128 ) ( 2128 672 0 ) debug_ceiling_grey 0 0 0 1 1
+( 2320 592 0 ) ( 2320 672 128 ) ( 2320 672 0 ) debug_ceiling_grey 0 0 0 1 1
+}
+}
+// Trap victim: a reference enemy across the wing from the burn trap; entering the trap kills it with script fire damage.
+{
+"classname" "reference_enemy"
+"origin" "2224 960 16"
+"angles" "0 270 0"
+"_tags" "enemy trap_victim"
+}

@@ -656,6 +656,187 @@ armor with a `corrosive` one (`{ armor: 2 }`) to give each weapon a job.
 
 ---
 
+## Statuses
+
+A **status** is an effect that lives on an entity for a while: damage over
+time such as burning or corrosion, or with `damage: 0` a **marker** such as
+wet that other rules read. You declare statuses, list them in `defineMod`,
+and apply them from impact policies, reactions and fluids. Every damaging
+tick is a typed hit: it drains layers and health by its damage type's matrix,
+runs impact policies, and credits whoever applied it.
+
+### Declaring and registering
+
+```typescript
+// scripts/statuses.ts — each is named by its binding when scripts build
+import { defineStatus, emitter } from "postretro";
+import { acid, fireDamage } from "./damage-types";
+
+export const burning = defineStatus({
+  damage: 4, type: fireDamage, tickMs: 500, durationMs: 3000,
+  stacking: "stack", maxStacks: 3,
+  presentation: {
+    emitter: emitter({ sprite: "ember", rate: 24, lifetime: 0.6, velocity: [0, 1.5, 0] }),
+    tickSound: "burn_tick",
+  },
+});
+export const corroding = defineStatus({ damage: 2, type: acid, tickMs: 1000 }); // until cleared
+export const wet = defineStatus({ damage: 0, tickMs: 500, durationMs: 5000 }); // a marker
+
+// start-script.ts
+export default defineMod({
+  /* … */
+  damageTypes: [fireDamage, acid],
+  statuses: [burning, corroding, wet],
+});
+```
+
+Luau passes each name explicitly:
+`Postretro.defineStatus("burning", { damage = 4, type = fire, tickMs = 500 })`.
+
+In TypeScript, don't bind a declaration to a name the SDK already uses, such as
+`fire`, `wait` or `players`. The script fails to load with
+`redeclaration of 'fire'`. Name the binding something else and pass the name
+explicitly: `export const fireDamage = defineDamageType("fire", { health: 1.25 })`
+declares a type named `fire`.
+
+| Field | Range | What it does |
+|---|---|---|
+| `damage` | `0`–`1000000` | Damage per tick per stack. `0` makes a marker: its ticks deal nothing, run no impact policy and restart no layer delay. |
+| `type` | a damage-type handle, optional | The type each tick deals. Leave it out to deal `defaultDamageType`. |
+| `tickMs` | `1`–`60000` | Time between ticks. |
+| `durationMs` | `tickMs`–`600000`, optional | How long an instance lasts after its last application. Leave it out to last until cleared. |
+| `stacking` | `"refresh"` (default) or `"stack"` | What reapplying does: see below. |
+| `maxStacks` | `1`–`64`, default `1` | The most stacks one applier builds with `"stack"`. |
+| `presentation` | optional | `{ emitter?, tickSound? }`: see [Showing a status](#showing-a-status). |
+
+- `tickMs` and `durationMs` round up to whole fixed ticks (60 per second), as
+  weapon timings do: `tickMs` 1 through 16 ticks every fixed tick.
+- A mod registers at most 64 statuses; more fails the load. A bad handle, or
+  a value out of range, fails the load naming the field.
+- Hot reload keeps live instances by status name, drops those whose status
+  was removed, and applies changed fields from the next tick.
+
+### Instances, stacking and timing
+
+- **One instance per status and applier.** The applier is the applying hit's
+  damager, or with none its source: `fluid.lava` for lava, `script.applyStatus`
+  for a reaction. Two players burning one enemy each own an instance: each
+  ticks, stacks and lasts on its own and credits its own player.
+- **One application per applier per tick.** Eight pellets from one shotgun
+  blast, or a rocket and its splash, apply once.
+- **`"refresh"`** resets the time left. **`"stack"`** adds a stack up to
+  `maxStacks` and resets the time left; a tick deals `damage × stacks`.
+- **Ticks.** An instance first ticks `tickMs` after it is created, then every
+  `tickMs`. Reapplying never moves the tick phase. A tick due on the tick the
+  instance runs out still lands; then it ends.
+- **Limits.** An entity holds at most 16 instances. A new one on a full
+  entity replaces the one with the least time left.
+- **Deaths.** A lethal tick kills on its own tick and credits the applier.
+  A tick due on a target already at health 0 or below is skipped, so another
+  hit's death plays alone. An entity at health 0 or below takes no new status.
+- **What clears them.** Death, respawn, a level change, a restart and a
+  rejoin clear every status. Saves record none.
+
+### Applying, clearing and reading
+
+| Where | Apply | Clear | Read |
+|---|---|---|---|
+| Impact policy | `impact.target.applyStatus(h)` | `impact.target.clearStatus(h)` | `impact.target.hasStatus(h)`, `impact.status(h)` |
+| Reaction | `players().applyStatus(h)`, `npcs({ tag }).applyStatus(h)`, `on.activators.applyStatus(h)`, `on.player.applyStatus(h)` | the same subjects' `.clearStatus(h)` | — |
+| Fluid | `defineFluid({ …, status: h })` | — | — |
+| Brain guard | — | — | `hasStatus(h)` |
+| HUD | — | — | `h.active` |
+
+- `hasStatus(h)` holds while any applier's instance of `h` is live on that
+  entity. `clearStatus(h)` removes every applier's.
+- `impact.status(h)` holds when this impact *is a tick of* `h`. Every other
+  hit reads it false.
+- A policy's `applyStatus` applies with the impact's damager as applier. A
+  reaction applies as `script.applyStatus`, on the host only; a subject
+  without health is skipped with a warning. An application made outside a
+  fixed tick, such as from a UI press or a `wait`, applies at the next tick.
+- A fluid's `status` applies every tick to each player whose body is in that
+  fluid at any depth, as `fluid.<name>`. After the player leaves, one more
+  tick can land. Fluid statuses reach players only; to hurt an enemy standing
+  in lava, cover the lava with a `trigger_volume` and apply the status from a
+  reaction.
+- In a brain transition, `{ to: "flee", when: hasStatus(burning) }` flees
+  while the enemy burns.
+- `h.active` is true while the local player carries `h`. Use it in a HUD
+  widget's `visibleWhen: stateEquals(burning.active, true)`. It reads only
+  your own player: it takes no `byPlayer`.
+
+### Recipe: fire ignites
+
+A burn tick is itself a fire hit. A policy that lights `burning` on every fire
+hit would relight it from its own ticks, and the burn would never end. Guard
+it with `impact.status(burning)`:
+
+```typescript
+import { defineImpactEvent, when } from "postretro";
+
+export const ignite = defineImpactEvent("statuses.ignite", { tag: "enemy" }, (impact) => [
+  // Fire lights what is not already a burn tick and not wet.
+  when(
+    impact.type(fireDamage).and(impact.status(burning).not()).and(impact.target.hasStatus(wet).not()),
+    [impact.target.applyStatus(burning)],
+  ),
+  // Acid dries a wet target.
+  when(impact.type(acid), [impact.target.clearStatus(wet)]),
+  // A burn kill plays its own death.
+  when(impact.status(burning).and(impact.target.healthAfter.le(0)), [impact.target.playAnim("burn_death")]),
+]);
+```
+
+```lua
+local ignite = Postretro.defineImpactEvent("statuses.ignite", { tag = "enemy" }, function(impact)
+  local target = impact.target
+  local isFire, burnTick, isWet = impact.type(fire), impact.status(burning), target:hasStatus(wet)
+  local lights = isFire["and"](isFire, burnTick["not"](burnTick))
+  lights = lights["and"](lights, isWet["not"](isWet))
+  return {
+    { when = lights, ["do"] = { target:applyStatus(burning) } },
+    { when = impact.type(acid), ["do"] = { target:clearStatus(wet) } },
+    { when = burnTick["and"](burnTick, target.healthAfter:le(0)), ["do"] = { target:playAnim("burn_death") } },
+  }
+end)
+```
+
+With the guard, one fire hit burns six times over three seconds and goes out.
+Each new fire hit stacks it again, up to three stacks.
+
+Lava that scalds, and a cure:
+
+```typescript
+export const scalding = defineStatus({ damage: 10, type: fireDamage, tickMs: 250, durationMs: 250 });
+export const lava = defineFluid({
+  name: "lava", viscosity: 0.6, viewTint: [1, 0.35, 0.05, 0.8], muffle: 0.9, surfaceOpacity: 1,
+  status: scalding,
+});
+export const cure = defineReaction("statuses.cure", players().clearStatus(corroding));
+```
+
+The dev mod carries this example, an incendiary rifle, a lava pool and a burn
+trap: see `content/dev/scripts/statuses.ts` and `status-hazards.ts`, and the
+lava and trap rows in `content/dev/maps/e24-environment-test.README.md`.
+
+### Showing a status
+
+`presentation` is optional and shows on every machine:
+
+- `emitter`: an `emitter()` value that follows each afflicted entity while
+  it carries the status. Your own player gets none, so it never fills your
+  view. A `presentation.emitter` that is not an `emitter()` value fails the
+  load.
+- `tickSound`: a sound played at the entity every `tickMs` while it carries
+  the status, starting one `tickMs` after the status appears.
+
+**In co-op,** the host runs every status; clients run none. Each entity's
+statuses reach clients by name, and each client shows them with its own
+declaration of that name, as fluids do. A client whose mod lacks a status
+shows nothing for it. Statuses do not affect who can join.
+
 ## Attack tokens and budgets
 
 An enemy attack starts only while its enemy holds a turn for it, so a group

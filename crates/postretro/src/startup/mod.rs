@@ -60,6 +60,8 @@ pub(crate) mod splash_lifecycle;
 pub(crate) mod staged_manifest_lifecycle;
 pub(crate) mod start_pose;
 #[cfg(test)]
+mod status_content_tests;
+#[cfg(test)]
 mod stress_gate_harness_tests;
 #[cfg(test)]
 mod teleporter_unload_tests;

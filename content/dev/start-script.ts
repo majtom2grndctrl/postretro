@@ -15,13 +15,24 @@ import { onStateCrossing } from "postretro/ui";
 import { armor, shield } from "./scripts/defenses";
 import { heavy, melee, ranged } from "./scripts/attack-tokens";
 import {
+  acid,
   ballistic,
   corrosive,
   explosive,
+  fireDamage,
   flechette,
   plasma,
   shock,
 } from "./scripts/damage-types";
+import { burning, corroding, scalding, wet } from "./scripts/statuses";
+import {
+  burnTrapFire,
+  burnTraps,
+  cure,
+  ignite,
+  incendiaryRifleEntity,
+  lava,
+} from "./scripts/status-hazards";
 import {
   acidRifleEntity,
   arcRifleEntity,
@@ -99,6 +110,7 @@ import {
   reloadMeterTree,
   revivingMeterTree,
   spreadReticle,
+  statusReadout,
   xpReadout,
 } from "./scripts/hud";
 import { pauseMenu } from "./scripts/pause-menu";
@@ -199,6 +211,7 @@ export default defineMod({
     openSeatsReadout,
     playerListReadout,
     spreadReticle,
+    statusReadout,
     reloadMeterTree,
     bleedOutMeterTree,
     revivingMeterTree,
@@ -235,6 +248,8 @@ export default defineMod({
     splashSound,
     booster,
     overload,
+    cure,
+    burnTrapFire,
   ],
   // Host decisions per player, with own-state feedback local to each machine.
   playerEvents: [
@@ -260,14 +275,19 @@ export default defineMod({
     factionSentimentBackstab,
     ...playerDeath.events,
     shieldBreak,
+    // Statuses (scripts/status-hazards.ts): fire ignites enemies.
+    ignite,
   ],
-  triggerEvents: [...factionSentimentTriggerEvents, boosterPads],
+  triggerEvents: [...factionSentimentTriggerEvents, boosterPads, burnTraps],
   stores: [runCounter, progression, closetStore, leveling, a11yStrobeStore, swimStats, kingHill],
   // Registration lists each handle, as `stores` does; the default is one of
   // them, dealt by anything that names no type.
   defenseLayers: [shield, armor],
-  damageTypes: [ballistic, plasma, explosive, shock, corrosive, flechette],
+  damageTypes: [ballistic, plasma, explosive, shock, corrosive, flechette, fireDamage, acid],
   defaultDamageType: ballistic,
+  // Damage over time and markers (scripts/statuses.ts), applied by `ignite`,
+  // the burn trap and lava.
+  statuses: [burning, scalding, corroding, wet],
   // Attack tokens: three melee draws, two rifle bursts and one heavy attack
   // per target at once (scripts/attack-tokens.ts). An `ai_attack_pool` whose
   // `budget_profile` is `arena` gives its members one melee and one ranged
@@ -285,7 +305,8 @@ export default defineMod({
   ],
   // Fluids a map's `fluid_volume` names through its `fluid` key. The stress
   // fixture (maps/stress-env-volumes.map) and the playtest map
-  // (maps/e24-environment-test.map) name both. Sounds reuse existing dev keys.
+  // (maps/e24-environment-test.map) name water and sludge; the playtest map
+  // also has a lava pool. Sounds reuse existing dev keys.
   fluids: [
     defineFluid({
       name: "water",
@@ -307,6 +328,7 @@ export default defineMod({
       surfaceOpacity: 0.95,
       enterSound: "fixtures/land",
     }),
+    lava,
   ],
   // Fixture-only mod-global tier: this composes on the tagged trap-pools map
   // while its level-local script owns the independent closet_trap count pool.
@@ -407,6 +429,8 @@ export default defineMod({
     shieldedEnemyEntity,
     arcRifleEntity,
     acidRifleEntity,
+    // Statuses: fires `fire`, igniting enemies (scripts/status-hazards.ts).
+    incendiaryRifleEntity,
     enemyRifleEntity,
     enemyRifleLongEntity,
     enemyRifleBurstEntity,

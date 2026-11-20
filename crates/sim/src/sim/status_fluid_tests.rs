@@ -19,7 +19,7 @@ use super::status_tick_tests::{World, burning, spawn};
 const SCALDING: u16 = 0;
 /// A pawn's capsule centre when its feet rest at y = 0 (reach 1.2 m).
 const STAND_Y: f32 = 1.2;
-const IN_LAVA: Vec3 = Vec3::new(30.0, STAND_Y, 0.0);
+pub(super) const IN_LAVA: Vec3 = Vec3::new(30.0, STAND_Y, 0.0);
 const IN_WATER: Vec3 = Vec3::new(70.0, STAND_Y, 0.0);
 const ON_SURFACE: Vec3 = Vec3::new(110.0, STAND_Y, 0.0);
 const DRY: Vec3 = Vec3::new(-30.0, STAND_Y, 0.0);
@@ -51,7 +51,7 @@ fn volume(source_entity: u32, fluid: u16, min: Vec3, max: Vec3) -> EnvironmentVo
 /// Ankle-deep lava (fluid 0) at x in [20, 40], ankle-deep water (fluid 1,
 /// no status) at x in [60, 80], and lava whose surface is exactly at the
 /// feet at x in [100, 120].
-fn pools() -> EnvironmentVolumes {
+pub(super) fn pools() -> EnvironmentVolumes {
     EnvironmentVolumes::build(vec![
         volume(
             1,

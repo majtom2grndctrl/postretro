@@ -1,8 +1,8 @@
 # Environment-volume playtest hall: fluids, gravity and push
 
 A sealed hall of small areas, one per environment-volume behaviour, for the
-manual swim, low-gravity and co-op playtests. Its fluids, `water` and `sludge`,
-come from content/dev's manifest (`start-script.ts`); the player's swim tuning
+manual swim, low-gravity, hazard and co-op playtests. Its fluids, `water`,
+`sludge` and `lava`, come from content/dev's manifest (`start-script.ts`); the player's swim tuning
 is the `movement.swim` block in `scripts/player.ts`. Build and run it:
 
 ```bash
@@ -38,6 +38,9 @@ You spawn in the pool room, facing the pool.
 | Partial push | Wing, x 1616–2000, y 448–640 | One two-brush `fluid_volume` (`fluids/water_128`) under a `push_volume` `6 0 0` over x 1616–1904 | The pushed part drifts east and the rest stays still, with the east brush's face split at x 1904 and no surface between the brushes. |
 | Bending river | Wing, east, an L from x 2064 to 2512 then north to y 960 | One two-brush `fluid_volume` (`fluids/water_neon_64`) under two `push_volume`s, `6 0 0` then `0 6 0`, both `force` `0` | The surface drifts along each bend; swimming in it, nothing pushes you. |
 | Force-3 trap | Wing, x 1616–1872, y 768–960 | `fluid_volume` `water`, `fluids/water_64` at scale 1, plus a `push_volume` `0 -3 0`, `force` `3` | The surface drifts gently south, but the current shoves three times as hard as it looks. |
+| Lava puddle | Wing, x 2112–2336, y 704–912, on the floor | `fluid_volume` `lava`, `fluids/lava_64`, surface at z 8 (ankle-deep) | Lava's `status` is `scalding` (`scripts/statuses.ts`): standing in it at any depth deals 10 fire every quarter second, draining your shield before your health, and one more tick lands just after you step out. |
+| Burn trap | Wing, x 2128–2320, y 592–672, just south of the lava | Touch `trigger_volume` tagged `burn_trap`, `rearm_ms` 3000 | The dev mod's `burnTraps` trigger event sets whoever enters on fire (`burning` ticks for three seconds) and kills the trap victim with script fire damage. |
+| Trap victim | Wing, (2224, 960), facing south | `reference_enemy` tagged `enemy trap_victim` | Killed by the burn trap from across the room: it plays its death and the corpse despawns, as a weapon kill's does. |
 
 ## Manual checks
 
@@ -49,6 +52,14 @@ You spawn in the pool room, facing the pool.
   pool, and reach and leave its floating block. Walk out through a doorway and
   confirm normal gravity returns at once.
 - **Fluid motion:** in the wing, compare the still pool with the current pool, and check that standing in the current carries you the way, and at about the speed, its surface moves. Check the bending river pushes nothing and the force-3 pool shoves harder than it looks. Look closely at cell borders on the still and fine pools for smear, and at a view-filling still pool for flicker.
+- **Statuses:** walk into the lava puddle: it sizzles every tick, your shield and then
+  health drop while you stand in it and stop just after you leave, and the HUD's
+  `SCALDING` indicator shows meanwhile. Walk through the burn trap: `BURNING`
+  shows, you take damage every half second for three seconds, and the indicator
+  clears; the trap victim across the room plays its death, and its corpse
+  despawns a moment later. Switch to the incendiary rifle (last in the loadout) on a map with
+  enemies, such as `combat-demo` (its reference enemy): a hit sets it burning with embers and
+  a tick sound, and both stop when it goes out.
 - **Co-op:** host this map, join with a second client, and repeat the swim,
   the low-gravity room, the updraft, the wind corridor and the current on the
   client. The client should show no visible corrections.

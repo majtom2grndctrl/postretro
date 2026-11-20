@@ -1,7 +1,7 @@
 # emissive-volumes — plan of record
 
 mode: resumable
-status: approved
+status: landed
 read at: 6e22d5262
 
 Branch: `feature/emissive-volumes`. Source re-verified at 6e22d5262 by four read-only passes (material/strength, renderer, compiler/PRL, scripting/net/clamp). The brief's `eb44499` reads are 562 commits stale; the corrections below supersede them.
@@ -150,3 +150,11 @@ The integration branch `claude/blissful-hawking-klwrdj` merged f9c0d8338 (2026-1
 - E16 also bumps `WIRE_VERSION` 41→42 and `SNAPSHOT_VERSION` 25→26. Whichever of the two lands on main second needs 43/27, with both features named in the version prose.
 - PRL id 60 (Emissive) precedes E25's reserved Seams 61; the section registry's "first unassigned id" check moves to 62 once both land.
 - E25 splits `parse.rs` and moves `parse_fog_tint` into `parse/fog_volumes.rs` (`pub(super)`); `parse/emissive_volumes.rs` must call it there.
+
+## Merge with main and final gate (2026-11-20)
+
+Merged origin/main (91 commits, E25 level seams landed) at c4c64ac65. On main, E25's `Seam` took component kind 29, so `EmissiveVolume` moved to 30 (registry, wire constant, pinned tests, handshake and `networking.md` prose); PRL `Emissive` 60 sits before `Seams` 61, and the free-id check moves to 62; `parse_fog_tint` is reached through `parse/fog_volumes.rs`. Main is still at `WIRE_VERSION` 41 / `SNAPSHOT_VERSION` 25, so this branch's 42/26 stands; E16 status effects, if it lands after this, needs 43/27 and a kind after 30. Main also needed two fixes this gate surfaced: the seam checkpoint test fixture lacked `CreateCharacter`'s new `name` field, and a `type_complexity` clippy lint in `ai/clip_timed_shipped_tests.rs`.
+
+Gate after the merge: `cargo test --workspace --features postretro/dev-tools` 107 targets pass; `telemetry_run` failed in the batch with a stalled window and passed 2/2 rerun with the display awake (environmental, as at preflight); xtask `seam_gates::retired_streaming_split_classname_appears_only_in_plans` fails locally only on the gitignored stale `dist/postretro-dev-sdk/` bundle (no tracked file matches). clippy `-D warnings` clean with and without dev-tools; fmt clean.
+
+Owner played `emissive-volumes-demo` on Windows and on the Mac: "Looks solid."

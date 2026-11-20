@@ -1344,6 +1344,8 @@ CPU and GPU windows never align: the GPU window counts completed readbacks. Surf
 
 **Planar cost.** Mac perf target, native 1440p, scale ½, lake poses: the planar group costs about 1.0–1.1 ms of GPU and replaces a 7.4–7.6 ms SSR pass at very high; ultra costs the same. CPU at a 1280×720 scene: about 0.31 ms of `mirror_walk` and 0.07 ms of `rec_planar`.
 
+**Emissive-volume fixture.** `tools/gen_emissive_stress.py` writes one sealed room with two 16 × 16 panel grids, glowing on one side and without `_e` on the other, and 0, 1 or 256 `emissive_volume` brushes (`--animate 16` pulses the diagonal). Its maps are `content/dev/maps/emissive-volumes-stress-*.map`. Forward GPU time comes from a Metal System Trace on the Mac target; CPU cost is the `emissive_update` row, and uploaded entries are `emissive_uploaded`. The first frame after a load uploads all 257 table entries by design.
+
 ### Indirect-Call Validation
 
 Release builds create the wgpu instance with indirect-call validation off, with or without `dev-tools`; debug builds keep wgpu's default, on. Windowed and offscreen-capture renderers share the policy, and no other wgpu validation flag changes. `WGPU_VALIDATION_INDIRECT_CALL` overrides that one bit in any build: unset applies the build default, `0` clears it, and any other value, empty included, sets it. Like `WGPU_BACKEND` it is a wgpu-named safety toggle, not `POSTRETRO_*` instrumentation (`development_guide.md` §6.4). The renderer logs the effective state once at instance creation, noting when the override set it. Release safety rests on the indirect-args invariant (§5). Set it to `1` for a same-binary baseline when measuring the validation's `render_submit` cost.

@@ -5,7 +5,7 @@
 //! presents. The local half is the sim primitive and bridge tests.
 //! See: context/lib/networking.md §Presentation state · scripting.md §10.2a
 //!
-//! Pin map (`context/plans/in-progress/emissive-volumes/research.md`):
+//! Pin map (`context/plans/done/emissive-volumes/research.md`):
 //! P1 and P31 `p31_*` · P30 `p30_*` · P32 `p32_*` · P5 and P33 `p33_*` · P44 `p44_*` ·
 //! P6 on a finite run's last frame `p06_*`.
 use super::parity::{Kind, RED, approx, fire_on, host_write, joined, parity_world, record};

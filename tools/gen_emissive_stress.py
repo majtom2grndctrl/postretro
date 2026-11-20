@@ -1,8 +1,7 @@
 """Emissive-volume GPU and CPU measurement fixture.
 
-Governing doc: context/plans/in-progress/emissive-volumes/measurement.md (moves
-with the plan folder; the procedure lands in rendering_pipeline.md §12 when
-the plan closes).
+Fixture summary: rendering_pipeline.md §12, Emissive-volume fixture. The full
+run procedure is context/plans/done/emissive-volumes/measurement.md.
 
 One sealed room, two measurement views from one pedestal:
 

@@ -5,7 +5,7 @@
 //! restart, map change), not its range.
 //! See: context/lib/networking.md §Presentation state · scripting.md §10.2, §10.2a
 //!
-//! Pin map (`context/plans/in-progress/emissive-volumes/research.md`):
+//! Pin map (`context/plans/done/emissive-volumes/research.md`):
 //! P6 `p06_*` · P7 `p07_*` · P8 `p08_*` · P9 `p09_*` · P10 `p10_*` · P11 `p11_*`
 //! · P13 `p13_*` · P19 `p19_*` · P20 `p20_*` · P21 `p21_*` · P22 `p22_*`
 //! · P23 `p23_*` · P24 `p24_*` · P25 `p25_*` · P26 `p26_*` · P35 `p35_*`

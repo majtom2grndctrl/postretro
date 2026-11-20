@@ -30,6 +30,10 @@ impl App {
     /// new load's own counter, which the old stages never credit.
     pub(in crate::startup) fn begin_level_load(&mut self, load: InFlightLevelLoad) {
         let superseded = self.cancel_active_level_load();
+        if superseded {
+            // The superseded load's arrivals never reach a level.
+            self.clear_seam_crossing();
+        }
         self.level_timings = StartupTimings::new();
         let progress = superseded
             .then(|| self.supersede_loading_screen(&load.entry))
@@ -367,6 +371,7 @@ impl App {
         if self.boot_state != BootState::Loading || !self.cancel_active_level_load() {
             return;
         }
+        self.clear_seam_crossing();
         self.level_load = None;
         self.end_loading_screen();
         if let Some(renderer) = self.renderer.as_mut() {
@@ -383,6 +388,7 @@ impl App {
     /// offered (pin P7), and its stages join through the retirement list on
     /// later frames, Booting and Splash included (pins P6, P22).
     pub(crate) fn cancel_level_load_for_suspend(&mut self) {
+        self.clear_seam_crossing();
         self.cancel_active_level_load();
     }
 }

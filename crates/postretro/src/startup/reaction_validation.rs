@@ -254,6 +254,7 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
                     SequenceTarget::Activators
                         | SequenceTarget::FiredTrigger
                         | SequenceTarget::FiredTeleporter
+                        | SequenceTarget::FiredSeam
                         | SequenceTarget::EventPlayer
                 ) || args_read_emitter(&step.args)
                     || args_read_audience(&step.args)
@@ -266,7 +267,7 @@ pub(crate) fn validate_reaction_bodies_pass_a(script_ctx: &ScriptCtx) {
             let step_index = wait_pos + 1 + offset;
             let primitive = &steps[step_index].primitive;
             log::error!(
-                "[Scripting] reaction `{name}` step {step_index} (`{primitive}`): a post-`wait` step reads fire context (`@activators`/`@trigger`/`@player`, `byPlayer(on.player)`, a dispatch input, an audience token, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
+                "[Scripting] reaction `{name}` step {step_index} (`{primitive}`): a post-`wait` step reads fire context (`@activators`/`@trigger`/`@teleporter`/`@seam`/`@player`, `byPlayer(on.player)`, a dispatch input, an audience token, or `at: on.emitter` in its raw args) that no `wait` survives; dropping the reaction (V4a)"
             );
             data_registry.reactions[index].descriptor = ReactionDescriptor::Sequence(Vec::new());
             continue;
@@ -411,6 +412,9 @@ fn scoped_fire_targets(
                         )),
                         SequenceTarget::FiredTeleporter => Some(format!(
                             "sequence step {step_index} target sentinel `@teleporter`"
+                        )),
+                        SequenceTarget::FiredSeam => Some(format!(
+                            "sequence step {step_index} target sentinel `@seam`"
                         )),
                         SequenceTarget::EventPlayer => Some(format!(
                             "sequence step {step_index} target sentinel `@player`"

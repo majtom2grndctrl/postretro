@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::data_descriptors::{
     ComposedPlayerEvent, CrossingDescriptor, EntityTypeDescriptor, NamedReaction,
-    PlayerEventDescriptor, PlayerEventSource, TeleportEventDescriptor, TriggerEventDescriptor,
-    TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
+    PlayerEventDescriptor, PlayerEventSource, SeamEventDescriptor, TeleportEventDescriptor,
+    TriggerEventDescriptor, TriggerPoolDescriptor, VolumeTriggerEventDescriptor,
 };
 use postretro_foundation::{
     FluidRegistry, GhostStyleRegistry, ModMapEntry, WeaponPlacementDescriptor,
@@ -747,6 +747,7 @@ pub struct DataRegistry {
     /// declared them — so the retained list is also the active one.
     level_trigger_events: Vec<VolumeTriggerEventDescriptor>,
     level_teleport_events: Vec<TeleportEventDescriptor>,
+    level_seam_events: Vec<SeamEventDescriptor>,
     level_trigger_pools: Vec<TriggerPoolDescriptor>,
     /// Level player events from `setupLevel()`. They belong to their level,
     /// so the retained list composes unfiltered.
@@ -1124,6 +1125,17 @@ impl DataRegistry {
         &self.level_teleport_events
     }
 
+    /// Append the level's seam member bindings (`s.on("arrive", …)`).
+    /// Retained through recomposition.
+    pub fn set_level_seam_events(&mut self, events: Vec<SeamEventDescriptor>) {
+        self.level_seam_events.extend(events);
+    }
+
+    /// Level seam member bindings, in authored order.
+    pub fn seam_events(&self) -> &[SeamEventDescriptor] {
+        &self.level_seam_events
+    }
+
     /// Level member trigger events (`t.on`), in authored order. They bind after
     /// the active mod-global [`Self::trigger_events`] on a shared edge.
     pub fn volume_trigger_events(&self) -> &[VolumeTriggerEventDescriptor] {
@@ -1150,6 +1162,7 @@ impl DataRegistry {
         self.level_crossings.clear();
         self.level_trigger_events.clear();
         self.level_teleport_events.clear();
+        self.level_seam_events.clear();
         self.level_trigger_pools.clear();
         self.level_player_events.clear();
     }
@@ -1174,6 +1187,7 @@ impl DataRegistry {
             && self.level_crossings.is_empty()
             && self.level_trigger_events.is_empty()
             && self.level_teleport_events.is_empty()
+            && self.level_seam_events.is_empty()
             && self.level_trigger_pools.is_empty()
             && self.level_player_events.is_empty()
             && self.entities.is_empty()

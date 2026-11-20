@@ -582,6 +582,7 @@ impl Consumer {
             &edges,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut triggers,
                 bridge: &bridge,
                 bindings: &bindings,

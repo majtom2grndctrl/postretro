@@ -1379,6 +1379,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                 &script_ctx,
                 &crate::trigger_commands::TriggerFireContext {
                     fired_teleporter: None,
+                    fired_seam: None,
                     fired_trigger: Some(event.fire.trigger),
                     activator: Some(player),
                     occupancy,

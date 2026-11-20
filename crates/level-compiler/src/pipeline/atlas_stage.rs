@@ -101,7 +101,7 @@ pub(super) fn prepare_atlas_stage(
 
     let partition = plan_cell_partition(CellPartitionInputs {
         generated_portals: inputs.generated_portals,
-        streaming_seam_regions: &inputs.map_data.streaming_seam_regions,
+        streaming_split_regions: &inputs.map_data.streaming_split_regions,
         stream_resident_regions: &inputs.map_data.stream_resident_regions,
         stream_priority_regions: &inputs.map_data.stream_priority_regions,
         leaves,

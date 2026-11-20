@@ -508,6 +508,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     let mut pending_mover_events = Vec::new();
     let mut pending_trigger_residuals = Vec::new();
     let mut pending_teleport_residuals = Vec::new();
+    let mut pending_seam_residuals = Vec::new();
     let mut pending_player_event_residuals = Vec::new();
     let mut repointed_pawns = Vec::new();
 
@@ -809,6 +810,17 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             let teleport_before =
                 crate::runtime_teleporters::local_teleport_identity(&script_ctx.registry.borrow());
             let pending_tick = sim::begin_tick(&script_ctx.registry, Some(&script_ctx));
+            // Seam arms and disarms queued last tick apply beside the
+            // teleporters'; a touch seam armed from disarmed admits its
+            // unlatched standing occupants this tick.
+            {
+                let mut newly_armed = Vec::new();
+                postretro_sim::seam_commands::apply_pending_seam_mutations(
+                    &script_ctx,
+                    &mut newly_armed,
+                );
+                app.seam_stage.note_newly_armed(&newly_armed);
+            }
             // Recharge right after `begin_tick` and before the tick's game
             // logic, so layer values settle at tick start and every later
             // consumer this tick reads the same recharged value.
@@ -839,6 +851,12 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             // turned through the teleport frame exactly once; the local sum
             // also rides on the presentation camera aim below.
             let mut local_respawn_yaw = 0.0;
+            // Every respawn latches against the seams it lands in, before
+            // this tick's trigger stage sees it.
+            for turn in &respawn_turns {
+                app.seam_stage
+                    .latch_spawned_in(&script_ctx.registry.borrow(), turn.pawn);
+            }
             for turn in respawn_turns {
                 if Some(turn.pawn) == local_pawn {
                     command.movement.facing_yaw += turn.yaw_delta;
@@ -988,6 +1006,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &touch_drop_edges,
                 Some(sim::TriggerTickContext {
                     teleporters: Some(&app.teleporter_bindings),
+                    seams: Some(sim::SeamTickContext {
+                        stage: &mut app.seam_stage,
+                        bindings: &app.seam_bindings,
+                    }),
                     system: trigger_system,
                     bridge: trigger_volume_bridge,
                     bindings: trigger_bindings,
@@ -1178,6 +1200,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             pending_death_events.extend(tick_events.death);
             pending_trigger_residuals.extend(tick_events.trigger_residuals);
             pending_teleport_residuals.extend(tick_events.teleport_residuals);
+            pending_seam_residuals.extend(tick_events.seam_residuals);
 
             crate::runtime_teleporters::push_local_traveller_cues(
                 &mut app.pending_teleport_sounds,
@@ -1432,6 +1455,18 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             &script_ctx,
             &mut pending_trigger_follow_ups,
         );
+        postretro_sim::seam_system::drain_seam_residuals(
+            &pending_seam_residuals,
+            &app.seam_bindings,
+            &session.scripting.scheduler,
+            postretro_sim::residual_drain::ResidualRegistries {
+                sequence: &session.scripting.sequence_registry,
+                reaction: &session.scripting.reaction_registry,
+                system: &session.scripting.system_registry,
+            },
+            &script_ctx,
+            &mut pending_trigger_follow_ups,
+        );
         if !pending_trigger_follow_ups.is_empty() {
             // Direct residual work has already been partitioned and
             // run above. Follow-up names advance by bounded FIFO
@@ -1593,6 +1628,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     if !script_ctx.system_commands.is_empty() {
         app.dispatch_system_commands();
     }
+    // Every script level verb this frame has run: a seam activated this
+    // frame requests its level change only if none did.
+    app.pick_seam_level_request();
 
     app.update_player_options(frame_dt, options_menu_was_open);
     app.commit_render_extents();

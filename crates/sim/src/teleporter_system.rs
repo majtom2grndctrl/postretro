@@ -84,7 +84,7 @@ fn invalid_scope(descriptor: &ReactionDescriptor) -> bool {
     }
     match descriptor {
         ReactionDescriptor::Primitive(p) => {
-            p.target.as_deref() == Some("@trigger") || invalid_args(&p.args)
+            matches!(p.target.as_deref(), Some("@trigger" | "@seam")) || invalid_args(&p.args)
         }
         ReactionDescriptor::Sequence(steps) => {
             let mut waited = false;
@@ -100,7 +100,9 @@ fn invalid_scope(descriptor: &ReactionDescriptor) -> bool {
                 invalid_args(&step.args)
                     || matches!(
                         step.id,
-                        SequenceTarget::FiredTrigger | SequenceTarget::EventPlayer
+                        SequenceTarget::FiredTrigger
+                            | SequenceTarget::FiredSeam
+                            | SequenceTarget::EventPlayer
                     )
                     || (waited
                         && matches!(

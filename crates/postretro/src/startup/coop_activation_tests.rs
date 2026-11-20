@@ -480,6 +480,7 @@ impl Host {
             &edges,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut self.triggers,
                 bridge: &self.bridge,
                 bindings: &bindings,

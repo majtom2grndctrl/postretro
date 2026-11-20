@@ -51,6 +51,7 @@ mod revive_marker_surface_tests;
 #[cfg(test)]
 mod save_points_tests;
 pub(crate) mod save_verbs;
+mod seam_level_change;
 pub(crate) mod session;
 pub(crate) mod settle_log;
 pub(crate) mod settling;
@@ -133,6 +134,13 @@ pub(crate) enum LevelRequest {
     /// backdrop load. Only the relevel-following path makes one:
     /// `follow_relevel_catalog`, including its adoption of a queued load.
     HostLevel(String),
+    /// A level seam's classic level change: the catalog level its activated
+    /// seam targets, carrying the seam's name for the arrival harvest, the
+    /// level-start save and the destination's spawn set.
+    Seam {
+        catalog_id: String,
+        seam: String,
+    },
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     Unload,
 }

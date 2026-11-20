@@ -286,6 +286,11 @@ pub enum FireSubject {
         player: Option<Seat>,
         teleporter: EntityId,
     },
+    /// A level seam's `arrive` event for one arriving pawn.
+    Seam {
+        player: Option<Seat>,
+        seam: EntityId,
+    },
     /// A `wait` landing whose subject left during the wait: what the same step
     /// routed to them before the wait presents on no machine. A sound the
     /// source plays everywhere by default (a trigger's, a teleport's) still
@@ -516,7 +521,11 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
         (EveryMachine(_), Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
         (HostOnly(_), Some(Everyone)) => Recipients::Everyone,
         (
-            HostOnly(FireSubject::Trigger { player, .. } | FireSubject::Teleport { player, .. }),
+            HostOnly(
+                FireSubject::Trigger { player, .. }
+                | FireSubject::Teleport { player, .. }
+                | FireSubject::Seam { player, .. },
+            ),
             Some(Activators),
         ) => Recipients::Seats(player.iter().copied().collect()),
         (HostOnly(FireSubject::Trigger { occupants, .. }), Some(Audience::Trigger)) => {
@@ -524,13 +533,17 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
         }
         (
             HostOnly(
-                FireSubject::Trigger { .. } | FireSubject::Teleport { .. } | FireSubject::None,
+                FireSubject::Trigger { .. }
+                | FireSubject::Teleport { .. }
+                | FireSubject::Seam { .. }
+                | FireSubject::None,
             ),
             Option::None,
         ) if sound => Recipients::Everyone,
-        (HostOnly(FireSubject::Teleport { player, .. }), Option::None) => {
-            player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat]))
-        }
+        (
+            HostOnly(FireSubject::Teleport { player, .. } | FireSubject::Seam { player, .. }),
+            Option::None,
+        ) => player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat])),
         (HostOnly(FireSubject::Trigger { player, .. }), Option::None) => {
             Recipients::Seats(player.iter().copied().collect())
         }
@@ -836,6 +849,12 @@ mod audience_tests {
             })
         };
         let event = |player| FireOrigin::HostOnly(FireSubject::PlayerEvent { player });
+        let seam = |player| {
+            FireOrigin::HostOnly(FireSubject::Seam {
+                player,
+                seam: EntityId::from_raw(9),
+            })
+        };
         let none = FireOrigin::HostOnly(FireSubject::None);
         let departed =
             |sounds_everywhere| FireOrigin::HostOnly(FireSubject::Departed { sounds_everywhere });
@@ -873,6 +892,23 @@ mod audience_tests {
                 Recipients::Seats(vec![Seat(0), Seat(2)]),
             ),
             (trigger(None), Some(Player), false, Recipients::Skip),
+            // A seam arrival routes as a teleport does: to the arriving
+            // player, with an unseated pawn presenting locally.
+            (seam(Some(Seat(1))), None, true, Recipients::Everyone),
+            (
+                seam(Some(Seat(1))),
+                None,
+                false,
+                Recipients::Seats(vec![Seat(1)]),
+            ),
+            (seam(None), None, false, Recipients::Local),
+            (
+                seam(Some(Seat(1))),
+                Some(Activators),
+                false,
+                Recipients::Seats(vec![Seat(1)]),
+            ),
+            (seam(None), Some(Trigger), false, Recipients::Skip),
             (
                 event(Some(Seat(3))),
                 None,

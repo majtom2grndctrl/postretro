@@ -90,7 +90,7 @@ export interface PlayerGroup {
 }
 
 /** The subject a token command addresses: this fire's activators, the volume that fired, the teleporter that fired, or the event's player. */
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player";
 
 /**
  * One subject-token command: a primitive descriptor whose `target` names the
@@ -107,6 +107,7 @@ export type SubjectTokenCommand = {
 declare const activatorsTargetBrand: unique symbol;
 declare const triggerTargetBrand: unique symbol;
 declare const teleporterTargetBrand: unique symbol;
+declare const seamTargetBrand: unique symbol;
 declare const playerTargetBrand: unique symbol;
 
 /** The pawns that caused the current trigger edge. Legal only before any `wait`. */
@@ -154,6 +155,15 @@ export interface PlayerTarget {
 export interface TeleporterTarget {
   readonly [teleporterTargetBrand]: true;
   arm(): SubjectTokenCommand;
+  disarm(): SubjectTokenCommand;
+}
+
+/** The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`. */
+export interface SeamTarget {
+  readonly [seamTargetBrand]: true;
+  /** Arm the seam. Applies on the host at the start of its next tick; latched pawns stay latched. */
+  arm(): SubjectTokenCommand;
+  /** Disarm the seam. Applies on the host at the start of its next tick. */
   disarm(): SubjectTokenCommand;
 }
 
@@ -249,3 +259,11 @@ const teleporterTarget = {
 };
 Object.defineProperty(teleporterTarget, "__wire", { value: "@teleporter", enumerable: false });
 export const TELEPORTER_TARGET = Object.freeze(teleporterTarget) as unknown as TeleporterTarget;
+
+const seamCommand = tokenCommand("@seam");
+const seamTarget = {
+  arm: () => seamCommand("armSeam", {}),
+  disarm: () => seamCommand("disarmSeam", {}),
+};
+Object.defineProperty(seamTarget, "__wire", { value: "@seam", enumerable: false });
+export const SEAM_TARGET = Object.freeze(seamTarget) as unknown as SeamTarget;

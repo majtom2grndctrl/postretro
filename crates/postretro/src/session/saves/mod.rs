@@ -13,7 +13,9 @@ mod tests;
 
 pub(crate) use boot::{BootInputs, load_save_slots};
 pub(crate) use rows::publish_save_rows;
-pub(crate) use save_points::{end_run_at_frontend, save_on_frontend_entry, save_on_level_start};
+pub(crate) use save_points::{
+    SeamLevelStart, end_run_at_frontend, save_on_frontend_entry, save_on_level_start,
+};
 #[cfg(test)]
 pub(crate) use store::boot_restore_with;
 pub(crate) use store::{
@@ -52,6 +54,15 @@ pub(crate) struct SaveSlots {
     /// The checkpoint whose spawn set arrival, respawn and late joiners use
     /// in the current level; `None` is the level-start set.
     spawn_checkpoint: Option<String>,
+    /// `spawn_checkpoint` is a level seam's name, from a crossing or Continue
+    /// from one: with no spawn keyed to it, the level-start set applies
+    /// without the unknown-checkpoint warning.
+    spawn_checkpoint_seam: bool,
+    /// The seam pose Continue arrives at, with the catalog id it is for: the
+    /// install of that level takes it for seat 0's spawn. Kept here, not as a
+    /// seam crossing's arrival, so the unload of a backdrop before Continue's
+    /// level installs cannot drop it.
+    continue_seam_pose: Option<ContinueSeamPose>,
     /// On a connected client, the loadout its host last returned: what its
     /// character saves carry. `None` keeps the loadout it joined with.
     client_loadout: Option<postretro_sim::scripting::save_files::LoadoutRecord>,
@@ -109,6 +120,33 @@ impl SaveSlots {
 
     pub(crate) fn set_spawn_checkpoint(&mut self, checkpoint: Option<String>) {
         self.spawn_checkpoint = checkpoint;
+        self.spawn_checkpoint_seam = false;
+    }
+
+    /// Make level seam `seam`'s name the spawn checkpoint, marked a seam's.
+    pub(crate) fn set_seam_spawn_checkpoint(&mut self, seam: String) {
+        self.spawn_checkpoint = Some(seam);
+        self.spawn_checkpoint_seam = true;
+    }
+
+    /// Whether the spawn checkpoint is a level seam's.
+    pub(crate) fn spawn_checkpoint_is_seam(&self) -> bool {
+        self.spawn_checkpoint.is_some() && self.spawn_checkpoint_seam
+    }
+
+    /// The seam pose Continue arrives at in `catalog_id`, taken once. Any
+    /// other level's install drops it.
+    pub(crate) fn take_continue_seam_pose(
+        &mut self,
+        catalog_id: Option<&str>,
+    ) -> Option<ContinueSeamPose> {
+        self.continue_seam_pose
+            .take()
+            .filter(|pose| Some(pose.catalog_id.as_str()) == catalog_id)
+    }
+
+    pub(crate) fn set_continue_seam_pose(&mut self, pose: Option<ContinueSeamPose>) {
+        self.continue_seam_pose = pose;
     }
 
     pub(crate) fn clear_continue_arrival(&mut self) {
@@ -302,14 +340,24 @@ impl SaveSlots {
         };
         let keep_checkpoint = matches!(checkpoint, RunCheckpoint::LevelStart)
             && self.take_continue_arrival(catalog_id);
-        let checkpoint = match checkpoint {
-            RunCheckpoint::Set(name) => Some(name),
-            _ if keep_checkpoint => previous
+        let kept = || {
+            previous
                 .level
                 .as_ref()
                 .filter(|level| level.catalog_id == catalog_id)
-                .and_then(|level| level.checkpoint.clone()),
-            _ => None,
+        };
+        let (checkpoint, seam) = match checkpoint {
+            RunCheckpoint::Set(name) => (Some(name), None),
+            RunCheckpoint::Seam { name, pose } => (
+                Some(name),
+                Some(postretro_sim::scripting::save_files::SeamCheckpointRecord { pose }),
+            ),
+            // Continue's own level start keeps the checkpoint, its seam mark
+            // and pose included, so a second Continue arrives there again.
+            _ if keep_checkpoint => kept().map_or((None, None), |level| {
+                (level.checkpoint.clone(), level.seam.clone())
+            }),
+            _ => (None, None),
         };
         let run = previous.run.clone().map(|mut run| {
             run.saved_at = postretro_sim::scripting::save_files::now_unix_seconds();
@@ -319,6 +367,7 @@ impl SaveSlots {
             level: Some(postretro_sim::scripting::save_files::LevelRecord {
                 catalog_id: catalog_id.to_owned(),
                 checkpoint,
+                seam,
             }),
             run,
             slots: live.slots,
@@ -335,6 +384,20 @@ pub(crate) enum RunCheckpoint {
     LevelStart,
     /// A `checkpoint(name)` step.
     Set(String),
+    /// A seam crossing's level start: the checkpoint is the seam's name,
+    /// marked a seam's, with seat 0's landmark-relative pose if it crossed.
+    Seam {
+        name: String,
+        pose: Option<postretro_sim::scripting::save_files::SeamPoseRecord>,
+    },
+}
+
+/// Continue's seam pose for seat 0, for the level it is in.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ContinueSeamPose {
+    pub(crate) catalog_id: String,
+    pub(crate) seam: String,
+    pub(crate) pose: postretro_sim::scripting::save_files::SeamPoseRecord,
 }
 
 impl SaveSlots {
@@ -435,6 +498,7 @@ impl SaveSlots {
                 level: Some(postretro_sim::scripting::save_files::LevelRecord {
                     catalog_id: catalog_id.to_owned(),
                     checkpoint: None,
+                    seam: None,
                 }),
                 run: Some(postretro_sim::scripting::save_files::RunRecord {
                     character: claim,

@@ -732,6 +732,8 @@ pub struct MapData {
     pub teleporters: postretro_level_format::teleporters::TeleportersSection,
     /// Ghost-link records (id 56), in source entity order. Presentation only.
     pub ghost_links: postretro_level_format::ghost_links::GhostLinksSection,
+    /// Level-seam records (id 61), in source entity order, landmarks resolved.
+    pub seams: postretro_level_format::seams::SeamsSection,
     /// Mapper-authored SH probe-coarsening protection volumes: world-space AABBs
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.
@@ -752,10 +754,10 @@ pub struct MapData {
     /// planning can apply the documented last-containing-region precedence.
     /// Compiler-only: the regions shape chart dimensions but emit no PRL section.
     pub lightmap_scale_regions: Vec<MapLightmapScaleRegion>,
-    /// Compiler-only SH streaming seams. The parser retains the engine-space
+    /// Compiler-only SH streaming split regions (`stream_split_volume`). The parser retains the engine-space
     /// convex hulls for the later portal-resolution stage; they are never part
     /// of the static world brush set or a runtime map-entity section.
-    pub streaming_seam_regions: Vec<MapStreamingHintRegion>,
+    pub streaming_split_regions: Vec<MapStreamingHintRegion>,
     /// Compiler-only SH residency pins. The later cluster-resolution stage
     /// matches their engine-space AABBs against runtime cells.
     pub stream_resident_regions: Vec<MapStreamingHintRegion>,

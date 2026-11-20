@@ -173,6 +173,7 @@ impl Fixture {
             &edges,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut self.trigger_system,
                 bridge: &self.bridge,
                 bindings: &bindings,

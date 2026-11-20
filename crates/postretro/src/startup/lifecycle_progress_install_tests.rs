@@ -123,6 +123,7 @@ fn install_captures_map_placed_descriptor_npcs_and_excludes_later_spawner_output
             suppress_boot_pawn: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
+            spawn_checkpoint_seam: false,
         };
         let _ = install_world_cpu(
             handles,

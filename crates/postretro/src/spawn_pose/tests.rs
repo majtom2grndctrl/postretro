@@ -329,6 +329,7 @@ fn scout_pose() -> UnbackedSpawn {
         },
         entity_class: "scout".into(),
         single_use: false,
+        arrival: None,
     }
 }
 
@@ -399,6 +400,7 @@ fn single_use_pose_is_consumed_by_the_spawn_and_the_seat_resolves_to_a_start() {
         seat,
         spawn: UnbackedSpawn {
             single_use: true,
+            arrival: None,
             ..scout_pose()
         },
         consumed: consumed.clone(),

@@ -627,6 +627,7 @@ impl TimedAlarmHarness {
             1.0 / 60.0,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut self.host_trigger_system,
                 bridge: &self.host_trigger_bridge,
                 bindings: &self.host_bindings,

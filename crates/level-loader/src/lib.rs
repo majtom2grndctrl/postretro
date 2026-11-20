@@ -32,6 +32,8 @@ mod prl_queries;
 #[cfg(all(test, feature = "load-prl"))]
 mod prl_residency_set_tests;
 #[cfg(feature = "load-prl")]
+mod prl_seams;
+#[cfg(feature = "load-prl")]
 mod prl_spec_owners;
 #[cfg(feature = "load-prl")]
 mod prl_streaming;

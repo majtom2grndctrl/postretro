@@ -33,6 +33,7 @@ fn scout_pose(single_use: bool) -> UnbackedSpawn {
         },
         entity_class: "scout".into(),
         single_use,
+        arrival: None,
     }
 }
 

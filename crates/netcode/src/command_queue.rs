@@ -973,6 +973,24 @@ impl HostCommandQueues {
             })
     }
 
+    /// What `client_id`'s host-side pawn faces now: its latest resolved facing
+    /// yaw turned into the pawn's teleport frame (`accumulated_yaw`), and its
+    /// aim pitch. `None` before any command resolves; the host then applies
+    /// neutral input and stores no pitch. A seam crossing reads this before
+    /// unload resets the queues.
+    pub fn resolved_facing(&self, client_id: u64, accumulated_yaw: f32) -> Option<(f32, f32)> {
+        let state = self.clients.get(&client_id)?;
+        let yaw = state.latest_facing_yaw?;
+        Some((
+            crate::netcode::wire_convert::facing_in_teleport_frame(
+                yaw,
+                accumulated_yaw,
+                state.latest_teleport_yaw_stamp,
+            ),
+            state.latest_aim_pitch.unwrap_or(0.0),
+        ))
+    }
+
     /// Latest finite aim pitch accepted by authoritative command playout. Input
     /// neutralization does not reset presentation orientation during an outage.
     pub(crate) fn current_aim_pitch(&self, client_id: u64) -> Option<f32> {

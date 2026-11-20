@@ -130,10 +130,15 @@ impl App {
         }
 
         match &request {
-            LevelRequest::Load(_) | LevelRequest::HostLevel(_) => {
+            LevelRequest::Load(_) | LevelRequest::HostLevel(_) | LevelRequest::Seam { .. } => {
                 self.cancel_pending_entry("a level load");
                 self.level_requests.retain(|queued| {
-                    !matches!(queued, LevelRequest::Load(_) | LevelRequest::HostLevel(_))
+                    !matches!(
+                        queued,
+                        LevelRequest::Load(_)
+                            | LevelRequest::HostLevel(_)
+                            | LevelRequest::Seam { .. }
+                    )
                 });
             }
             LevelRequest::Unload => {
@@ -247,15 +252,22 @@ impl App {
     /// then the request takes its ordinary path. A host-named request that
     /// no longer resolves leaves the host level the client was following.
     pub(in crate::startup) fn drain_level_requests(&mut self) {
+        // A script level verb beats only the seams of the frame it ran in;
+        // one from a frame that never reached the pick must not drop the
+        // next level's activations.
+        self.script_level_request_this_frame = false;
         if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             return;
         }
 
         while let Some(request) = self.level_requests.pop_front() {
-            let (source, host_named) = match request {
-                LevelRequest::Load(source) => (Some(source), false),
-                LevelRequest::HostLevel(id) => (Some(LevelSource::Catalog(id)), true),
-                LevelRequest::Unload => (None, false),
+            let (source, host_named, seam) = match request {
+                LevelRequest::Load(source) => (Some(source), false, None),
+                LevelRequest::HostLevel(id) => (Some(LevelSource::Catalog(id)), true, None),
+                LevelRequest::Seam { catalog_id, seam } => {
+                    (Some(LevelSource::Catalog(catalog_id)), false, Some(seam))
+                }
+                LevelRequest::Unload => (None, false, None),
             };
             match source {
                 Some(source) => {
@@ -272,9 +284,9 @@ impl App {
                     load.host_named = host_named;
                     self.cancel_beside_level_load();
                     if self.level_is_installed_state() {
-                        self.unload_level();
+                        self.unload_level_crossing(seam.as_deref());
                     }
-                    self.save_on_level_start(&load);
+                    self.save_on_level_start(&load, seam.as_deref());
                     self.begin_level_load(load);
                     return;
                 }
@@ -303,14 +315,37 @@ impl App {
     /// A level start on the host or in single player: a load beginning with
     /// the frontend menu cleared, so never a backdrop. Runs after the unload's
     /// harvest and life-state clear, before the next level installs.
-    fn save_on_level_start(&mut self, load: &crate::startup::InFlightLevelLoad) {
+    fn save_on_level_start(
+        &mut self,
+        load: &crate::startup::InFlightLevelLoad,
+        seam: Option<&str>,
+    ) {
         if self.frontend_menu_is_present()
             || self.session_role() == crate::session::role_state::SessionRole::Client
         {
             return;
         }
+        // The mark and pose come from the crossing the unload just harvested.
+        let seam = seam.map(|name| crate::session::saves::SeamLevelStart {
+            name: name.to_owned(),
+            pose: self
+                .seam_crossing
+                .as_ref()
+                .and_then(|crossing| crossing.arrivals.get(&postretro_foundation::Seat(0)))
+                .map(
+                    |arrival| postretro_sim::scripting::save_files::SeamPoseRecord {
+                        offset: arrival.rest_offset.to_array(),
+                        view_yaw: arrival.view_yaw,
+                        view_pitch: arrival.view_pitch,
+                    },
+                ),
+        });
         if let Some(session) = self.session.as_mut() {
-            crate::session::saves::save_on_level_start(session, load.entry.catalog_id.as_deref());
+            crate::session::saves::save_on_level_start(
+                session,
+                load.entry.catalog_id.as_deref(),
+                seam,
+            );
             // Each guest's loadout, harvested by the unload, returns to it.
             crate::session::store_saves::send_character_loadouts(session);
         }

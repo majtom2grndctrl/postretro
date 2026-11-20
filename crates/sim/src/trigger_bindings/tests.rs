@@ -663,6 +663,7 @@ fn presentation_sequence_step_with_sentinel_target_rejects_without_residual() {
             activator: Some(trigger),
             occupancy: 1,
             fired_teleporter: None,
+            fired_seam: None,
             event_player: None,
         },
     );
@@ -904,6 +905,7 @@ fn activator_target_damages_each_edge_presser_once_and_leaves_bystander_untouche
                 activator: Some(entrant),
                 occupancy: 2,
                 fired_teleporter: None,
+                fired_seam: None,
                 event_player: None,
             },
         );

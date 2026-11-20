@@ -32,8 +32,11 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use super::scale_support::{
+    TierLevel, WaitStats, World, ai_stage, orbit, owed, percentile, runtime_for, steering_stage,
+};
 use super::*;
 use crate::sim::TimingGate;
 use crate::sim::cpu_stages::SimStage;
@@ -42,10 +45,6 @@ use postretro_stage_timing::StageSet;
 const CHASERS: usize = 8;
 const WARM_TICKS: usize = 60;
 const SAMPLED_TICKS: usize = 600;
-/// Mirrors `agent_steering`'s private `REPLAN_DEST_THRESHOLD`.
-const DRIFT_THRESHOLD: f32 = 0.5;
-const PLAYER_ORBIT_RADIUS: f32 = 2.0;
-const PLAYER_ORBIT_PERIOD_S: f32 = 4.0;
 const HIT_PERIOD_TICKS: usize = 30;
 const HIT_DAMAGE: f32 = 5.0;
 
@@ -96,55 +95,6 @@ const SCENARIOS: [Scenario; 5] = [
         counts: &[32, 64, 128],
     },
 ];
-
-#[derive(Default)]
-struct WaitStats {
-    /// Completed waits, in ticks (0 = admitted on the tick it became owed).
-    waits: Vec<u32>,
-    /// Waits still open when the run ended.
-    open: Vec<u32>,
-    admissions: u32,
-}
-
-impl WaitStats {
-    fn line(&mut self, label: &str, agents: usize) -> String {
-        self.waits.sort_unstable();
-        let pct = |p: f32| -> u32 {
-            if self.waits.is_empty() {
-                return 0;
-            }
-            let i = ((self.waits.len() - 1) as f32 * p).round() as usize;
-            self.waits[i]
-        };
-        let mean = if self.waits.is_empty() {
-            0.0
-        } else {
-            self.waits.iter().map(|&w| w as f64).sum::<f64>() / self.waits.len() as f64
-        };
-        let open_max = self.open.iter().copied().max().unwrap_or(0);
-        format!(
-            "{label:<17} agents {agents:>3} | admissions {:>5} | wait ticks mean {mean:>5.1} p50 {:>3} p95 {:>3} max {:>3} | open at end {:>3} (longest {open_max})",
-            self.admissions,
-            pct(0.5),
-            pct(0.95),
-            self.waits.last().copied().unwrap_or(0),
-            self.open.len(),
-        )
-    }
-}
-
-fn owed(agent: &AgentComponent) -> bool {
-    let Some(destination) = agent.destination else {
-        return false;
-    };
-    agent
-        .planned_destination
-        .is_none_or(|planned| distance_xz(planned, destination) > DRIFT_THRESHOLD)
-}
-
-fn percentile(sorted: &[Duration], p: f32) -> Duration {
-    sorted[((sorted.len() - 1) as f32 * p).round() as usize]
-}
 
 /// The friendly-fire stand-in: every `HIT_PERIOD_TICKS`, one wave enemy in
 /// eight (at least two) takes `HIT_DAMAGE` from another, on a fixed
@@ -247,6 +197,9 @@ fn fold_tick(chain: &mut Digest, reg: &EntityRegistry, agents: &[(EntityId, usiz
 enum Report {
     /// Nothing: the digest run.
     Silent,
+    /// Nothing, as today's 60 Hz NPC (no tiers, every NPC decides and acts
+    /// every tick): the baseline the row's per-NPC cost is read against.
+    Baseline,
     /// The row: waits, replans and the timing-off AI and steering medians.
     Row,
     /// AI sub-stage medians from a timing-on run. Its scopes would inflate the
@@ -263,13 +216,40 @@ const AI_SUB_STAGES: [SimStage; 5] = [
 ];
 
 fn run_wave(scenario: &Scenario, wave_size: usize) {
-    run_wave_with(scenario, wave_size, Report::Row);
+    let tiers = run_wave_with(scenario, wave_size, Report::Row);
     run_wave_with(scenario, wave_size, Report::SubStages);
+    let baseline = run_wave_with(scenario, wave_size, Report::Baseline);
+    let agents = (wave_size + CHASERS) as f64;
+    eprintln!(
+        "[ReplanStress] {} {wave_size}: per NPC, tiers vs 60 Hz | ai mean {:.2} vs {:.2} µs (fraction {:.2}) | steering mean {:.2} vs {:.2} µs (fraction {:.2}) | route queries/tick {:.2} vs {:.2}, mean budget {:.1} vs {:.1}",
+        scenario.label,
+        tiers.ai_mean_us / agents,
+        baseline.ai_mean_us / agents,
+        tiers.ai_mean_us / baseline.ai_mean_us,
+        tiers.steer_mean_us / agents,
+        baseline.steer_mean_us / agents,
+        tiers.steer_mean_us / baseline.steer_mean_us,
+        tiers.replans_per_tick,
+        baseline.replans_per_tick,
+        tiers.mean_budget,
+        baseline.mean_budget,
+    );
 }
 
-/// Run one wave and print per `report`. It always returns the digest chain's
-/// checkpoints, one every [`DIGEST_INTERVAL`] ticks from tick 0.
-fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u64> {
+/// What one wave run returns.
+struct WaveRun {
+    /// The digest chain's checkpoints, one every [`DIGEST_INTERVAL`] ticks
+    /// from tick 0.
+    checkpoints: Vec<u64>,
+    ai_mean_us: f64,
+    steer_mean_us: f64,
+    replans_per_tick: f64,
+    mean_budget: f64,
+}
+
+/// Run one wave and print per `report`: through the NPC tiers over one
+/// perceived cell, except the 60 Hz baseline.
+fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> WaveRun {
     let floor = OpenFloor::new();
     let world = floor.collision_world();
     let nav = floor.nav_graph();
@@ -293,7 +273,9 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
     let factions = crossfire_factions();
     let faction_sentiment = RefCell::new(FactionSentimentState::default());
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let tiered = report != Report::Baseline;
+    let mut runtime = runtime_for(tiered);
+    let mut tiers = tiered.then(TierLevel::single_cell);
     let center = target_pos();
     let player = spawn_player(&mut reg, center);
 
@@ -325,6 +307,12 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
         agents.push((chaser, 1));
     }
 
+    let stage_world = World {
+        nav: &nav,
+        collision: &world,
+        factions: &factions,
+        sentiment: &faction_sentiment,
+    };
     let mut open_wait: Vec<Option<u32>> = vec![None; agents.len()];
     let mut stats = [WaitStats::default(), WaitStats::default()];
     let mut late_wave = WaitStats::default();
@@ -340,39 +328,23 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
     let mut sub_stage_nanos: [Vec<u64>; AI_SUB_STAGES.len()] = Default::default();
 
     for tick in 0..WARM_TICKS + SAMPLED_TICKS {
-        let t = tick as f32 * STEER_DT;
-        let angle = t / PLAYER_ORBIT_PERIOD_S * std::f32::consts::TAU;
-        move_player_to(
-            &mut reg,
-            player,
-            center.x + angle.sin() * PLAYER_ORBIT_RADIUS,
-            center.z + angle.cos() * PLAYER_ORBIT_RADIUS,
-        );
+        let (x, z) = orbit(tick, center);
+        move_player_to(&mut reg, player, x, z);
         if scenario.hits != PeerHits::None && tick >= WARM_TICKS && tick % HIT_PERIOD_TICKS == 0 {
             land_peer_hits(&mut reg, &wave, tick / HIT_PERIOD_TICKS);
         }
 
         let ai_cpu = crate::ai_host::AiStageFrame::new(timing);
-        let ai_start = Instant::now();
-        run_ai_tick_with_navigation_and_impact(
+        let mut cost = ai_stage(
             &mut reg,
             &mut runtime,
-            STEER_DT,
-            AiTickInputs {
-                nav_graph: Some(&nav),
-                mover_nav: crate::nav::MoverNav::none(),
-                collision_world: Some(&world),
-                descriptors: &[],
-                descriptor_generation: 0,
-                factions: &factions,
-                faction_sentiment: &faction_sentiment,
-                clips: None,
-                schedule: Default::default(),
-                cpu: Some(&ai_cpu),
-            },
-            |_| {},
+            tiers.as_mut(),
+            &[player],
+            &stage_world,
+            Some(&ai_cpu),
         );
-        let ai_elapsed = ai_start.elapsed();
+        // The perception step and tier choice count with the AI tick.
+        let ai_elapsed = cost.perception + cost.ai;
         if tick >= WARM_TICKS && timing.is_enabled() {
             for (nanos, stage) in sub_stage_nanos.iter_mut().zip(AI_SUB_STAGES) {
                 // Absent is a tick the stage did not run: zero time.
@@ -388,15 +360,8 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
             })
             .collect();
 
-        let steer_start = Instant::now();
-        let result = agent_steering::tick(
-            &mut reg,
-            &world,
-            Some(&nav),
-            postretro_collision::EnvironmentView::level_only(STEER_GRAVITY),
-            STEER_DT,
-        );
-        let steer_elapsed = steer_start.elapsed();
+        steering_stage(&mut reg, tiers.as_ref(), &stage_world, &mut cost);
+        let (result, steer_elapsed) = (cost.steer, cost.steering);
 
         fold_tick(&mut chain, &reg, &agents);
         if (tick + 1) % DIGEST_INTERVAL == 0 {
@@ -454,8 +419,16 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
             }
         }
     }
+    let run = WaveRun {
+        checkpoints,
+        ai_mean_us: ai_times.iter().sum::<Duration>().as_secs_f64() * 1e6 / ai_times.len() as f64,
+        steer_mean_us: steer_times.iter().sum::<Duration>().as_secs_f64() * 1e6
+            / steer_times.len() as f64,
+        replans_per_tick: replans_total as f64 / SAMPLED_TICKS as f64,
+        mean_budget: budget_total as f64 / SAMPLED_TICKS as f64,
+    };
     match report {
-        Report::Silent => return checkpoints,
+        Report::Silent | Report::Baseline => return run,
         Report::SubStages => {
             let medians: Vec<String> = sub_stage_nanos
                 .iter_mut()
@@ -471,7 +444,7 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
                 scenario.label,
                 medians.join(" | ")
             );
-            return checkpoints;
+            return run;
         }
         Report::Row => {}
     }
@@ -533,6 +506,10 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
         "[ReplanStress] targets at end: distinct {}, wave on peers {on_peers}/{alive} (peak {peak_peer_targets})",
         targets.len(),
     );
+    if let Some(tiers) = tiers.as_ref() {
+        let [engaged, idle, dormant] = tiers.counts(&reg);
+        eprintln!("[ReplanStress] tiers at end: engaged {engaged} idle {idle} dormant {dormant}");
+    }
     eprintln!("[ReplanStress] {}", stats[0].line("wave", wave_size));
     eprintln!(
         "[ReplanStress] {}",
@@ -584,7 +561,7 @@ fn run_wave_with(scenario: &Scenario, wave_size: usize, report: Report) -> Vec<u
             player_hp(&reg, id),
         );
     }
-    checkpoints
+    run
 }
 
 #[test]
@@ -612,7 +589,7 @@ fn digest_lines() -> Vec<String> {
             .find(|scenario| scenario.label == label)
             .expect("pinned scenario exists");
         for size in DIGEST_SIZES {
-            let checkpoints = run_wave_with(scenario, size, Report::Silent);
+            let checkpoints = run_wave_with(scenario, size, Report::Silent).checkpoints;
             let hex: Vec<String> = checkpoints.iter().map(|c| format!("{c:016x}")).collect();
             lines.push(format!("{label}|{size}|{}", hex.join(" ")));
         }

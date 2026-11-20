@@ -1728,8 +1728,8 @@ fn shipped_brute_combo_and_leap_land_within_one_decide_interval_at_every_phase()
     let leap = |phase| leap_run_in(dev_manifest(), phase, 12.0, false, 6.0);
     // The attack's own hits: the combo's three jabs, the leap's landing. Later
     // hits belong to later cycles, which a decide's delay shifts as a whole.
-    let cases: [(&str, usize, &dyn Fn(Option<u64>) -> BruteRun); 2] =
-        [("flurry", 3, &combo), ("crouch", 1, &leap)];
+    type RunAt<'a> = &'a dyn Fn(Option<u64>) -> BruteRun;
+    let cases: [(&str, usize, RunAt); 2] = [("flurry", 3, &combo), ("crouch", 1, &leap)];
     for (tell, hits, run) in cases {
         let first = |run: &BruteRun| -> Vec<usize> {
             hits_from_tell(run, tell).into_iter().take(hits).collect()

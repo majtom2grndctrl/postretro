@@ -13,7 +13,7 @@ use postretro_entities::{
     ComponentKind, ComponentValue, EntityId, EntityRegistry, EntityTypeDescriptor, Transform,
 };
 
-use crate::agent_steering::AgentStep;
+use crate::agent_steering::{AgentStep, MAX_STEP_TICKS};
 use crate::ai_host::AiRun;
 use crate::npc_perception::{LevelCells, NpcPerception};
 
@@ -50,14 +50,18 @@ pub fn dormant_runs_on(tick: u64, identity: u64) -> bool {
 }
 
 /// Whether a dormant NPC's run on `tick` decides: every fourth of its dormant
-/// runs, offset by a phase independent of its run phase.
+/// runs. Which of the four follows the identity's phase in the whole 2 s
+/// decide cycle, so dormant decides spread across its 120 ticks as evenly as
+/// runs spread across 30; an offset hashed apart from the run phase spread
+/// them only as well as chance.
 pub fn dormant_decides_on(tick: u64, identity: u64) -> bool {
     if !dormant_runs_on(tick, identity) {
         return false;
     }
     let run = (tick + phase(identity, DORMANT_INTERVAL_TICKS)) / DORMANT_INTERVAL_TICKS;
-    (run + phase(identity.swap_bytes(), DORMANT_RUNS_PER_DECIDE))
-        .is_multiple_of(DORMANT_RUNS_PER_DECIDE)
+    let offset =
+        phase(identity, DORMANT_INTERVAL_TICKS * DORMANT_RUNS_PER_DECIDE) % DORMANT_RUNS_PER_DECIDE;
+    (run + offset).is_multiple_of(DORMANT_RUNS_PER_DECIDE)
 }
 
 /// The identity an NPC's phases hash: its map placement or spawner and spawn
@@ -130,7 +134,10 @@ impl NpcTiers {
             let ComponentValue::Brain(brain) = value else {
                 continue;
             };
-            if crate::sim::player_life::ai_is_quiescent(registry, id) {
+            // As the AI filters them: a held NPC takes no part.
+            if registry.is_inventory_owned(id)
+                || crate::sim::player_life::ai_is_quiescent(registry, id)
+            {
                 continue;
             }
             let Ok(transform) = registry.get_component::<Transform>(id) else {
@@ -161,9 +168,11 @@ impl NpcTiers {
             let always_active = brain.always_active.resolve(archetype);
             let engaged = brain.acquired_target.is_some();
             // A hit since its last run: the AI zeroes the clock at the hit and
-            // ages it only when the brain runs.
-            let damaged = brain.time_since_damage_ms == 0.0;
-            let aggro_opened = brain.aggro_armed && !entry.aggro_armed;
+            // ages it only when the brain runs. A fresh entry runs its first
+            // tick anyway, so neither stimulus counts for it: a revived NPC's
+            // clock still reads its lethal hit, never aged while it was dead.
+            let damaged = !fresh && brain.time_since_damage_ms == 0.0;
+            let aggro_opened = !fresh && brain.aggro_armed && !entry.aggro_armed;
             entry.aggro_armed = brain.aggro_armed;
             if perceived || always_active || engaged || damaged || aggro_opened {
                 entry.last_active = Some(tick);
@@ -191,7 +200,10 @@ impl NpcTiers {
                     AiRun::RunDormant {
                         decide: dormant_decides_on(tick, identity),
                     },
-                    AgentStep::Ticks(u32::try_from(tick - entry.last_step).unwrap_or(u32::MAX)),
+                    AgentStep::Ticks(
+                        u32::try_from(tick - entry.last_step)
+                            .map_or(MAX_STEP_TICKS, |ticks| ticks.min(MAX_STEP_TICKS)),
+                    ),
                 ),
                 NpcTier::Dormant => (AiRun::Skip, AgentStep::CarryOnly),
             };
@@ -203,21 +215,26 @@ impl NpcTiers {
         self.entries.retain(|_, entry| entry.seen == tick);
     }
 
-    /// After the AI stage: a dormant NPC that acquired a target on its own run
-    /// is engaged from now, and this tick's steering moves it one ordinary
-    /// tick; its timers were credited by that run, never again.
+    /// After the AI stage: an NPC that acquired a target on this tick's run (a
+    /// fresh spawn's first run, an idle or a dormant run) is engaged from now,
+    /// so this tick's replans rank it engaged. A dormant run's step becomes one
+    /// ordinary tick; its timers were credited by that run, never again. A
+    /// skipped NPC ran nothing, so it acquired nothing.
     pub fn settle_after_ai(&mut self, registry: &EntityRegistry) {
         let tick = self.tick;
         for (id, entry) in &mut self.entries {
-            if !matches!(entry.ai, AiRun::RunDormant { .. }) {
+            if entry.tier == NpcTier::Engaged || entry.ai == AiRun::Skip {
                 continue;
             }
             let engaged = registry
                 .get_component::<BrainComponent>(*id)
                 .is_ok_and(|brain| brain.acquired_target.is_some());
-            if engaged {
-                entry.tier = NpcTier::Engaged;
-                entry.last_active = Some(tick);
+            if !engaged {
+                continue;
+            }
+            entry.tier = NpcTier::Engaged;
+            entry.last_active = Some(tick);
+            if matches!(entry.ai, AiRun::RunDormant { .. }) {
                 entry.step = AgentStep::Ticks(1);
             }
         }

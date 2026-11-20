@@ -1,5 +1,6 @@
 // A synthetic id-51 level for perception and tier tests: a row of equal
 // cells along x, located by x alone, with hand-built residency sets.
+// See: context/lib/entity_model.md §7c
 
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry, Transform};

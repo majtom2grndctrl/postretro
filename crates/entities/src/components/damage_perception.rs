@@ -30,6 +30,14 @@ pub(crate) fn record_damage_perception(
     let attacker_transform =
         attacker.and_then(|attacker| registry.get_component::<Transform>(attacker).ok().copied());
     let damaged_transform = registry.get_component::<Transform>(id).ok().copied();
+    // The held target's life now. A respawn lands at tick start, before this
+    // brain's next run drops a target from the earlier life, so a hit in
+    // between finds a target that is already gone: it counts as none.
+    let held_target_life = registry
+        .get_component::<crate::components::brain::BrainComponent>(id)
+        .ok()
+        .and_then(|brain| brain.acquired_target)
+        .map(|target| crate::components::player_movement::life_counter(registry, target));
     if let Ok(ComponentValue::Brain(brain)) =
         registry.get_component_value_mut(id, ComponentKind::Brain)
     {
@@ -46,10 +54,13 @@ pub(crate) fn record_damage_perception(
         }
         // On an NPC without a target, a hit sets its attacker's awareness
         // meter to 1, draining from this hit. One holding a target changes
-        // no meter; damage with no attacker changes none.
+        // no meter; damage with no attacker changes none. A target whose
+        // pawn respawned since it was acquired is held no longer.
+        let holds_target =
+            brain.acquired_target.is_some() && held_target_life == Some(brain.acquired_target_life);
         if let Some(attacker) = attacker
             && attacker != id
-            && brain.acquired_target.is_none()
+            && !holds_target
         {
             let distance = match (attacker_transform, damaged_transform) {
                 (Some(attacker), Some(damaged)) => {

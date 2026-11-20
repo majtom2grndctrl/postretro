@@ -1,9 +1,10 @@
 // The AI under the NPC tick tiers: the sim's tier choice picks who runs, and
-// the AI credits a skipped brain's clocks once when it next runs. A pawn in
-// arena 0 of a synthetic three-arena level perceives that arena; arena 2 is
-// unseen.
-// See: context/plans/in-progress/E10--ai-tick-scheduling/index.md (Tier
-//      changes; P3, P4, P21)
+// the AI credits a skipped brain's clocks once when it next runs. A move-up
+// steps one ordinary tick; a dormant NPC decides on every fourth dormant run;
+// one that gains a target on its own run is engaged from the next tick. A
+// pawn in arena 0 of a synthetic three-arena level perceives that arena;
+// arena 2 is unseen.
+// See: context/lib/entity_model.md §7c
 
 use super::*;
 use postretro_sim::agent_steering::AgentStep;
@@ -375,6 +376,11 @@ fn move_up_adds_nothing_to_a_meter() {
     let sighted = to_dormant_check(&mut tiered, npc);
     assert_eq!(meter(&tiered, npc), 0.0);
     for _ in 0..30 {
+        tiered.tick();
+    }
+    // Move up off a check: the first idle check after it gains the time since
+    // the dormant check (P44), which would hide whether the move-up added any.
+    while idle_check(identity, tiered.ticks + 1) {
         tiered.tick();
     }
     tiered.place(npc, 8);

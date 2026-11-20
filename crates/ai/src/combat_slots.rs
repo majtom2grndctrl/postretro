@@ -19,7 +19,8 @@ use crate::nav::{NavGraph, NavScratch};
 use crate::sim::cpu_stages::SimStage;
 
 /// How many ticks a resolved combat slot is held for its incumbent before the
-/// batch solver is free to reassign it to a challenger.
+/// batch solver is free to reassign it to a challenger. Slot choice runs on
+/// decides, so each decide spends the ticks since the previous one.
 pub(super) const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
 
 pub(super) fn resolve_combat_slots(
@@ -83,7 +84,7 @@ pub(super) fn resolve_combat_slots(
             continue;
         };
         // The engaged slot verbs leave the shared ring for their own rotated
-        // one and pick afresh each tick, so they present no incumbent.
+        // one and pick afresh each decide, so they present no incumbent.
         let retained_slot = outcome
             .engaged_ring
             .is_none()
@@ -143,11 +144,13 @@ pub(super) fn resolve_combat_slots(
             Some(candidate) => {
                 outcome.combat_slot = Some(candidate.position);
                 outcome.brain.combat_slot = Some(candidate.position);
+                // The hold counts ticks, not decides: an incumbent spends
+                // every tick since its previous decide.
                 outcome.brain.combat_slot_hold_ticks = if candidate.is_incumbent {
                     outcome
                         .brain
                         .combat_slot_hold_ticks
-                        .saturating_sub(outcome.span.max(1))
+                        .saturating_sub(outcome.brain.attack_turns.decide_span.max(1))
                 } else {
                     COMBAT_SLOT_HOLD_TICKS
                 };

@@ -45,6 +45,8 @@ pub mod presentation_projection;
 mod projectile_stage;
 #[cfg(test)]
 mod remote_presence_tests;
+#[cfg(test)]
+mod scheduled_tick_tests;
 pub mod splash;
 pub mod touch;
 #[cfg(any(test, feature = "test-support"))]

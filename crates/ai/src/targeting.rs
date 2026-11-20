@@ -62,7 +62,7 @@ pub(super) struct TargetOffers {
 
 /// [`TargetOffers`] beside the pure nearest hostile the same buckets hold:
 /// the index proofs compare it with the linear reference scan. Production
-/// never computes it; the distance stride it once priced is retired.
+/// never computes it.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ScannedOffers {
@@ -294,9 +294,10 @@ fn preferred_to(candidate: EligibleCandidate, current: EligibleCandidate) -> boo
     }
 }
 
-/// Choose from the pass's pawn index on an acquisition tick. Authored candidacy and
-/// engine-floor LOS both narrow fresh eligibility, while the pure nearest stays
-/// untouched for stride pricing. The retained candidate is deliberately supplied
+/// First-sight selection from the pass's pawn index, used by tests and the
+/// `deciding_every_tick`/`noticing_on_sight` seams. Authored candidacy and
+/// engine-floor LOS both narrow fresh eligibility; the pure nearest hostile is
+/// reported unnarrowed. The retained candidate is deliberately supplied
 /// separately and never passes either fresh-acquisition gate.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
@@ -579,6 +580,8 @@ pub(super) fn notice_target(
             walk.push((distance_xz(pawn.position, from), position));
         }
     }
+    // Bounded: the walk stops once 8 candidates pass. Failing pawns are
+    // tested but player pawns are few.
     walk.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut passing = 0;
     let mut stop = None;
@@ -1078,7 +1081,7 @@ mod tests {
                 .nearest
                 .map(|candidate| candidate.target.entity),
             Some(peer),
-            "the cross-faction peer prices the hostile stride",
+            "the cross-faction peer is the nearest hostile",
         );
 
         registry
@@ -1102,7 +1105,7 @@ mod tests {
         );
         assert!(
             default_faction_offers.nearest.is_none(),
-            "a same-default-faction peer remains absent from the pure hostile stride price",
+            "a same-default-faction peer remains absent from the pure nearest hostile",
         );
     }
 
@@ -1186,7 +1189,7 @@ mod tests {
         );
         assert!(
             resistance_offers.nearest.is_none(),
-            "neutral sentiment cannot price the pure hostile stride"
+            "neutral sentiment cannot make the pure nearest hostile"
         );
         assert_eq!(
             scanned_offers(
@@ -1379,7 +1382,7 @@ mod tests {
             .unwrap()
             .set(super::super::FACTION_STATE_FIELD, 1.0);
 
-        let (nearest_for_stride, selected) = select_target_for_test(
+        let (nearest_hostile, selected) = select_target_for_test(
             &registry,
             Vec3::ZERO,
             1.0,
@@ -1393,9 +1396,9 @@ mod tests {
             "a nearer friendly cannot mask a farther hostile candidate"
         );
         assert_eq!(
-            nearest_for_stride.map(|candidate| candidate.target.entity),
+            nearest_hostile.map(|candidate| candidate.target.entity),
             Some(hostile),
-            "a friendly is not an offered candidate and cannot price the stride"
+            "a friendly is not an offered candidate and cannot be the nearest hostile"
         );
 
         registry
@@ -1438,8 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn over_tolerance_same_and_cross_faction_attackers_beat_nearer_hostile_without_pricing_stride()
-    {
+    fn over_tolerance_same_and_cross_faction_attackers_beat_nearer_hostile() {
         for attacker_faction in [0.0, 2.0] {
             let (mut registry, enemy, player, attacker) = retaliation_fixture();
             registry

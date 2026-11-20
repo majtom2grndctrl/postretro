@@ -205,8 +205,9 @@ pub enum PerceiveAll {
     NoResidencySet,
     /// No player pawn is in the registry this tick.
     NoPerceiver,
-    /// A perceiver stands in a cell with no camera set (solid or exterior),
-    /// so what it sees is unknown.
+    /// Every perceiver stands in a cell with no camera set (solid or
+    /// exterior), so what any of them sees is unknown. One such perceiver
+    /// among others that resolve is skipped.
     PerceiverOutsideCameraCells,
 }
 
@@ -308,6 +309,7 @@ impl NpcPerception {
             return Some(PerceiveAll::NoResidencySet);
         };
         let mut any = false;
+        let mut resolved = false;
         for pawn in perceivers {
             let Ok(transform) = registry.get_component::<Transform>(pawn) else {
                 continue;
@@ -315,16 +317,26 @@ impl NpcPerception {
             any = true;
             let cell = level.locate_cell(transform.position);
             let entries = residency.entries_for(cell);
+            // A pawn in a cell with no camera set (dead in an exterior void)
+            // is skipped while another perceiver resolves: it must not wake
+            // every NPC on the map for its whole respawn delay.
             if entries.is_empty() {
-                return Some(PerceiveAll::PerceiverOutsideCameraCells);
+                continue;
             }
+            resolved = true;
             for entry in within_lead(entries, self.lead) {
                 if let Some(mark) = self.perceived.get_mut(entry.cell_id as usize) {
                     *mark = self.stamp;
                 }
             }
         }
-        (!any).then_some(PerceiveAll::NoPerceiver)
+        if !any {
+            Some(PerceiveAll::NoPerceiver)
+        } else if !resolved {
+            Some(PerceiveAll::PerceiverOutsideCameraCells)
+        } else {
+            None
+        }
     }
 
     /// Armed links couple their two sides, decided against the union before

@@ -1,5 +1,5 @@
 // Live target selection against the every-pawn scan the pawn index replaced, kept as a test-only
-// reference (`targeting::reference`): the same stride-pricing nearest, selected
+// reference (`targeting::reference`): the same nearest hostile, selected
 // target, fresh LOS verdict and retaliation latch, across randomized scenes
 // and the named edge classes.
 // See: context/lib/entity_model.md §7c

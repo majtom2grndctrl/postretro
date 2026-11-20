@@ -435,6 +435,7 @@ fn engaged_outcome(
     EnemyOutcome {
         id,
         span: 1,
+        dormant: false,
         decide: true,
         position,
         target: Some(target),
@@ -444,6 +445,7 @@ fn engaged_outcome(
         prior_standoff_distance: brain.graph.standoff_distance_for_action(None),
         prior_acquired_target: Some(target.entity),
         brain,
+        motion: Some(MotionVerb::ChaseTarget),
         steering: SteeringIntent::Chase,
         leap: None,
         leap_spot_off_mesh: false,

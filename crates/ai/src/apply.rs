@@ -21,7 +21,7 @@ use crate::sim::EnemyProjectilePresentationSpawn;
 use crate::weapon_controller::AiWeaponControllers;
 use glam::Quat;
 use postretro_entities::components::agent::ArrivalLeash;
-use postretro_entities::components::brain::{BrainComponent, TravelVariant};
+use postretro_entities::components::brain::{BrainComponent, EngagedMotionMemory, TravelVariant};
 use postretro_entities::components::health::{DamageContext, DamageProducer};
 use postretro_entities::components::mesh::{SwitchResult, switch_animation_state};
 use postretro_entities::{AiCue, AiEmission, Transform};
@@ -143,8 +143,15 @@ where
     }
 
     for mut outcome in outcomes {
-        // A brain the schedule skipped since its last run slews and spends
-        // weapon resources over every tick it missed.
+        // A brain the schedule skipped since its last run spends weapon
+        // resources over every tick it missed. Facing slews over them only on
+        // a dormant run; a move-up turns one ordinary tick, as compute's
+        // heading predicted.
+        let slew_dt = if outcome.dormant {
+            tick_dt * outcome.span.max(1) as f32
+        } else {
+            tick_dt
+        };
         let tick_dt = tick_dt * outcome.span.max(1) as f32;
         // Holding suspends world work without retiring private controller state.
         if registry.is_inventory_owned(outcome.id) {
@@ -158,7 +165,11 @@ where
             outcome.weapon_aim = None;
             outcome.facing_direction = None;
             outcome.combat_slot = None;
-            if matches!(outcome.steering, SteeringIntent::Chase) || outcome.engaged_ring.is_some() {
+            // A slot verb's walk to its slot, chosen this decide or walked on
+            // between decides, goes with the target.
+            let slot_verb = outcome.engaged_ring.is_some()
+                || !matches!(outcome.brain.engaged_motion, EngagedMotionMemory::None);
+            if matches!(outcome.steering, SteeringIntent::Chase) || slot_verb {
                 outcome.steering = SteeringIntent::Clear;
             }
         }
@@ -302,7 +313,7 @@ where
         if let Some(direction) = outcome.facing_direction
             && let Ok(mut transform) = registry.get_component::<Transform>(outcome.id).cloned()
             && let Some(slewed_yaw) =
-                slewed_yaw_toward(transform.rotation, direction, FACING_TURN_RATE * tick_dt)
+                slewed_yaw_toward(transform.rotation, direction, FACING_TURN_RATE * slew_dt)
         {
             transform.rotation = Quat::from_rotation_y(slewed_yaw);
             let _ = registry.set_component(outcome.id, transform);

@@ -1,5 +1,5 @@
 // Runtime `BindingScope` for behavior-graph transition guards: the live brain
-// namespace guards bind against at spawn and read every tick.
+// namespace guards bind against at spawn and read on each decide.
 // See: context/lib/scripting.md §11 (IR substrate — pluggable scope abstraction)
 
 // The scope pairs the fixed `@brain.*` facts the engine computes each tick with
@@ -27,7 +27,7 @@ use postretro_foundation::{
 /// The engine-computed facts for one enemy's guard evaluation this tick.
 ///
 /// These are the values the AI tick already derives before evaluating a brain —
-/// target selection, the think stride, and the brain's own timers — handed to
+/// target selection, the decide schedule, and the brain's own timers — handed to
 /// [`BrainScope::refresh`] rather than re-derived inside it. Health is not here
 /// because it is read straight from the registry during refresh.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,11 +60,12 @@ pub(crate) struct BrainFacts {
     /// This is false for contextless script damage even though its generic
     /// damage-recency timer still resets.
     pub damage_source_known: bool,
-    /// `true` on the think-stride ticks where acquisition is re-evaluated.
+    /// `true` on a decide tick, where acquisition is checked; guards run only on
+    /// decide ticks, so a guard always reads `true`.
     pub acquisition_due: bool,
     /// XZ distance from the enemy's current position to its spawn-time home
-    /// anchor. Computed by the AI tick every tick, independently of target
-    /// selection and acquisition stride.
+    /// anchor. Computed by the AI tick every tick, decide or not, independently
+    /// of target selection and decide ticks.
     pub distance_from_anchor: f32,
     /// Whether the selected target's faction differs from the evaluating
     /// enemy's. `false` without a selected target, following the target-side
@@ -159,7 +160,7 @@ const SCOPE_RELATIVE_SLOTS: [ScopeRelativeSlot; 4] = [
 ];
 
 /// The live brain namespace an authored guard binds against once at spawn and
-/// reads on every tick.
+/// reads on each decide.
 ///
 /// One instance is shared by every enemy: [`BrainScope::refresh`] repopulates
 /// both snapshots for the enemy about to be evaluated (the `MovementScope`

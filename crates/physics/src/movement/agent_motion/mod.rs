@@ -364,18 +364,55 @@ pub fn settle_corpse(
 /// [`collide_and_slide`] carries it for that tick once. Its ground, velocity
 /// and release wait for that step, so a mover that leaves it between steps
 /// releases it there.
+///
+/// A body this tick's carry would leave on no walkable face of its mover (a
+/// trapdoor or drawbridge tilting past the walkable slope) is not carried,
+/// only displaced: a 60 Hz rider's own sweep finds no ground there and stops
+/// riding.
 pub fn carry_without_step(
     collision: &CombinedCollisionWorld<'_>,
     capsule: &AgentCapsule,
     position: Vec3,
     previous_ground: GroundRef,
 ) -> Vec3 {
+    let ground = if still_held_by_mover(collision, capsule, position, previous_ground) {
+        previous_ground
+    } else {
+        GroundRef::Airborne
+    };
     carry_and_displace(
         collision,
         &capsule.collision_shape().parry(),
         position,
-        previous_ground,
+        ground,
     )
+}
+
+/// Whether the mover `previous_ground` names still holds the body on a walkable
+/// face once this tick's carry moves it: the floor below its carried pose is
+/// that mover, inside the walkable slope. Any other ground, and a mover that
+/// did not move this tick, need no probe.
+fn still_held_by_mover(
+    collision: &CombinedCollisionWorld<'_>,
+    capsule: &AgentCapsule,
+    position: Vec3,
+    previous_ground: GroundRef,
+) -> bool {
+    if !matches!(previous_ground, GroundRef::Mover(_)) {
+        return true;
+    }
+    let carried = apply_mover_carry(position, previous_ground, collision);
+    if carried == position {
+        return true;
+    }
+    floor_below(
+        collision,
+        capsule.collision_shape(),
+        carried,
+        ground_stick_reach(capsule.step_params()),
+        COS_WALKABLE,
+    )
+    .is_some_and(|floor| floor.ground == previous_ground)
 }
 
 /// The tick's mover carry, then displacement out of any mover it left the body

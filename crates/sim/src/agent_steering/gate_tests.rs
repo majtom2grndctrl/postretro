@@ -206,6 +206,12 @@ impl Rig {
     /// One mover tick and one steering tick under `steps`.
     fn tick_with(&mut self, steps: AgentSteps<'_>) -> AgentTickResult {
         run_kinematic_mover_tick(&mut self.registry, &mut self.movers, DT);
+        self.steer_with(steps)
+    }
+
+    /// The steering half of [`Self::tick_with`], after a mover tick the
+    /// caller ran.
+    fn steer_with(&mut self, steps: AgentSteps<'_>) -> AgentTickResult {
         let collision = CombinedCollisionWorld::new(&self.world, &self.colliders, &self.movers);
         tick_with_mover_pins(
             &mut self.registry,
@@ -1245,6 +1251,87 @@ fn dormant_blocked_route_served_within_bound_under_drift_pressure() {
     assert!(
         served_on < 60,
         "served on its first step after the door opened"
+    );
+}
+
+// Regression: a dormant agent kept the gate generation of its last step through
+// its carry-only ticks, so when a dock owed it a replan it sorted ahead of
+// engaged agents owed no later than it.
+#[test]
+fn a_dormant_agent_owed_with_engaged_ones_never_sorts_ahead_of_them() {
+    let mut rig = Rig::new(KinematicMoverMode::Once, 0.0, false);
+    rig.command(MoverCommand::Start);
+    for _ in 0..80 {
+        rig.tick();
+    }
+    assert_eq!(rig.movers.docks().docked_waypoint(DOOR), Some(1), "open");
+    // Every agent routes east through the open doorway from far back in the
+    // west room: too far to reach it before the door shuts again.
+    let engaged: Vec<EntityId> = (0..REPLAN_BUDGET_PER_TICK)
+        .map(|i| rig.agent(Vec3::new(1.0 + 0.6 * i as f32, REST_Y, 2.0), Some(EAST)))
+        .collect();
+    let dormant = rig.agent(Vec3::new(1.0, REST_Y, 8.0), Some(EAST));
+    for _ in 0..3 {
+        rig.tick();
+    }
+    for &id in engaged.iter().chain([&dormant]) {
+        assert!(
+            !rig.agent_state(id).path.is_empty(),
+            "{id:?} routed through the open door"
+        );
+    }
+    let last_step = rig.agent_state(dormant).gate_generation;
+
+    // The door swings shut: the dormant agent only carries, the engaged ones
+    // step every tick. Its leaving the open dock owes nobody a replan.
+    let rank = |id: EntityId| -> u8 { if id == dormant { 0 } else { 2 } };
+    let carry = |id: EntityId| {
+        if id == dormant {
+            AgentStep::CarryOnly
+        } else {
+            AgentStep::Ticks(1)
+        }
+    };
+    rig.command(MoverCommand::Reverse);
+    let mut closed = false;
+    for _ in 0..120 {
+        run_kinematic_mover_tick(&mut rig.registry, &mut rig.movers, DT);
+        if rig.gate().portal_closed(&rig.graph, 0) {
+            closed = true;
+            break;
+        }
+        rig.steer_with(AgentSteps::ranked(&carry, &rank));
+    }
+    assert!(closed, "the door docked closed");
+    assert!(
+        rig.gate().generation() > last_step + 1,
+        "the door left its open dock, then docked closed"
+    );
+
+    // The closing dock owes every agent a replan, and the dormant one steps
+    // on this tick: the engaged ones, owed no later, take the budget.
+    let step = |id: EntityId| {
+        if id == dormant {
+            AgentStep::Ticks(30)
+        } else {
+            AgentStep::Ticks(1)
+        }
+    };
+    let result = rig.steer_with(AgentSteps::ranked(&step, &rank));
+    assert_eq!(result.budget, REPLAN_BUDGET_PER_TICK);
+    assert_eq!(result.replans, REPLAN_BUDGET_PER_TICK);
+    let live = rig.gate().generation();
+    for &id in &engaged {
+        assert_eq!(
+            rig.agent_state(id).gate_generation,
+            live,
+            "{id:?} admitted ahead of the dormant agent"
+        );
+    }
+    assert_ne!(
+        rig.agent_state(dormant).gate_generation,
+        live,
+        "the dormant agent waits behind them"
     );
 }
 

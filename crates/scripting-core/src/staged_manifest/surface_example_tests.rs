@@ -409,7 +409,7 @@ const sentry = {
   engagementRadius: 4,
   tacticalRange: 60,      // optional, metres, default 100: beyond it the NPC heads for its target
   awareness: { fillMs: 300, drainMs: 4000 },  // optional: a sharp-eyed sentry that stays suspicious
-  alwaysActive: false,    // optional: true keeps it simulated at full rate when unseen
+  alwaysActive: true,     // optional: true keeps it simulated at full rate when unseen (the brief's example shows false; authored true here so a dropped field cannot pass)
   activities: {
     idle: { animation: "idle", motion: "hold" },
     lookAround: { animation: "look", motion: "hold" },
@@ -433,7 +433,7 @@ local sentry = {
   engagementRadius = 4,
   tacticalRange = 60,
   awareness = { fillMs = 300, drainMs = 4000 },
-  alwaysActive = false,
+  alwaysActive = true, -- the brief's example shows false; authored true here so a dropped field cannot pass
   activities = {
     idle = { animation = "idle", motion = "hold" },
     lookAround = { animation = "look", motion = "hold" },
@@ -482,7 +482,15 @@ fn the_ai_tick_scheduling_surface_example_lowers_identically_in_both_authorings(
             drain_ms: 4000.0,
         })
     );
-    assert!(!behavior.ai.always_active);
+    // Authored `true` in both (the brief's example shows `false`) so a runtime
+    // that dropped the field would fail here instead of passing on the default.
+    assert!(behavior.ai.always_active);
+    let luau_behavior = luau.entities[0]
+        .behavior
+        .as_ref()
+        .expect("the Luau sentry has a behavior");
+    assert!(luau_behavior.ai.always_active);
+    assert_eq!(behavior.ai.always_active, luau_behavior.ai.always_active);
     assert_eq!(behavior.engagement_radius, Some(4.0));
     let guard = &behavior.envelope.transitions["idle"][0];
     assert_eq!(guard.to, "lookAround");

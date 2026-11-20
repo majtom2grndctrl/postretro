@@ -1,8 +1,8 @@
 // Decide ticks at production cadence: acquisition, guards and selectors run
-// on an NPC's 15 Hz phase (and on its first run); the ticks between act on its
-// last decide, and acquire nothing.
-// See: context/plans/in-progress/E10--ai-tick-scheduling/index.md (P4, P5)
-//      context/lib/entity_model.md §7c (decide ticks)
+// on an NPC's 15 Hz phase, on its first run and on its return to the AI set;
+// the ticks between act on its last decide, and acquire nothing.
+// `@brain.acquisitionDue` reads true on exactly the decide ticks.
+// See: context/lib/entity_model.md §7c (decide ticks)
 
 use super::*;
 use crate::candidate_scope::REFRESHES;
@@ -160,6 +160,47 @@ fn a_patroller_leaves_each_point_on_its_arrival_tick_between_decides() {
             enemy_destination(&registry, enemy),
             Some(destination),
             "tick {tick}: it left the point it reached"
+        );
+    }
+}
+
+// An NPC that leaves the AI set (held in an inventory) and comes back decides
+// on its first run back, off its phase: it recalls no selector rows chosen
+// before it left. It then decides on its phase again.
+#[test]
+fn a_brain_back_in_the_ai_set_decides_on_its_first_run() {
+    use postretro_entities::components::inventory::Inventory;
+
+    let graph = toggling_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::new();
+    let holder = spawn_player(&mut reg, Vec3::new(500.0, 0.0, 0.0));
+    let mut brain = authored_brain(&graph, "rest");
+    brain.schedule_identity = Some(identity_deciding_on(1));
+    let enemy = spawn_enemy(&mut reg, Vec3::ZERO, brain, 50.0);
+    run_ai_tick(&mut reg, &mut runtime, 0.016);
+    assert_eq!(enemy_state_name(&reg, enemy), "due", "tick 1 decides");
+
+    // Held through ticks 2 to 6, its phase's tick 5 among them.
+    let mut inventory = Inventory::default();
+    inventory.wieldables[9] = Some(enemy);
+    reg.set_component(holder, inventory).unwrap();
+    for _ in 2..=6 {
+        run_ai_tick(&mut reg, &mut runtime, 0.016);
+    }
+    assert_eq!(
+        enemy_state_name(&reg, enemy),
+        "due",
+        "a held brain runs nothing"
+    );
+    reg.set_component(holder, Inventory::default()).unwrap();
+
+    for (tick, expected) in [(7, "rest"), (8, "rest"), (9, "due")] {
+        run_ai_tick(&mut reg, &mut runtime, 0.016);
+        assert_eq!(
+            enemy_state_name(&reg, enemy),
+            expected,
+            "tick {tick}: its return decides, then its phase"
         );
     }
 }

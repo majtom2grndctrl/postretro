@@ -1547,7 +1547,9 @@ fn hit_is_judged_against_the_target_held_at_its_stage() {
             );
         }
     }
-    // Dropping: the target respawns before the stage of the drop tick.
+    // Dropping: the target dies just before a decide, whose death guard drops
+    // it. (A respawn is no such tick: its drop counts from the respawn itself,
+    // before any stage; see the next test.)
     for before_stage in [true, false] {
         let mut watch = Watch::new();
         let player = watch.player(in_view(10.0));
@@ -1555,7 +1557,10 @@ fn hit_is_judged_against_the_target_held_at_its_stage() {
         let npc = watch.npc(&default_noticing());
         watch.checks(FILL_CHECKS + 1);
         assert_eq!(watch.target(npc), Some(player));
-        watch.respawn(player);
+        for _ in 0..DECIDE_INTERVAL_TICKS - 1 {
+            watch.tick();
+        }
+        watch.kill(player);
         if before_stage {
             watch.hit(npc, Some(attacker));
             watch.tick();
@@ -1575,4 +1580,176 @@ fn hit_is_judged_against_the_target_held_at_its_stage() {
             );
         }
     }
+}
+
+// AC 12 / P54: a respawn lands at tick start, so a hit landing after it and
+// before the NPC's next run finds the target from the earlier life already
+// gone: the NPC holds no target, the attacker's meter is set to 1, and the
+// attacker is acquired on the next check that sees them.
+#[test]
+fn a_hit_between_the_respawn_and_the_npcs_run_sets_the_attackers_meter() {
+    let mut watch = Watch::new();
+    let player = watch.player(in_view(10.0));
+    let teammate = watch.player(hidden(12.0));
+    let npc = watch.npc(&default_noticing());
+    watch.checks(FILL_CHECKS + 1);
+    assert_eq!(watch.target(npc), Some(player));
+    // The respawned player stands behind cover.
+    watch.place(player, hidden(10.0));
+    watch.respawn(player);
+    watch.hit(npc, Some(teammate));
+    assert_eq!(
+        watch.target(npc),
+        Some(player),
+        "the drop itself waits for the NPC's run"
+    );
+    assert_eq!(
+        watch.value(npc, teammate),
+        1.0,
+        "a target from the earlier life is held no longer"
+    );
+    watch.place(teammate, in_view(12.0));
+    watch.check();
+    assert_eq!(watch.target(npc), Some(teammate), "acquired once seen");
+}
+
+// ---------------------------------------------------------------------------
+// The aggro gate across a gap in runs (AC 7, P41)
+// ---------------------------------------------------------------------------
+
+impl Watch {
+    /// One tick with the schedule skipping `npc`, the screen standing: it
+    /// stays in the AI set and runs nothing.
+    fn tick_skipping(&mut self, npc: EntityId) {
+        let lookup = |id: EntityId| {
+            if id == npc {
+                crate::ai_host::AiRun::Skip
+            } else {
+                crate::ai_host::AiRun::Run
+            }
+        };
+        run_ai_tick_with_navigation_and_impact(
+            &mut self.reg,
+            &mut self.runtime,
+            DT,
+            AiTickInputs {
+                nav_graph: None,
+                mover_nav: crate::nav::MoverNav::none(),
+                collision_world: Some(&self.screen),
+                descriptors: &[],
+                descriptor_generation: 0,
+                factions: &FactionRegistry::default(),
+                faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+                clips: None,
+                schedule: crate::ai_host::AiSchedule::scheduled(&lookup),
+                cpu: None,
+            },
+            |_| {},
+        );
+        self.ticks += 1;
+    }
+
+    /// After a stand-down on `npc`'s run this tick: no target, back at
+    /// `watch`, `player` a first sighting; then acquired on the first check a
+    /// full fill (60 ticks) after this one, and on no earlier one.
+    fn assert_full_fill_from_this_run(&mut self, npc: EntityId, player: EntityId) {
+        let first_check = self.ticks;
+        assert_eq!(self.target(npc), None, "the run dropped the target");
+        assert_eq!(self.state(npc), "watch", "reseated to its initial");
+        assert_eq!(self.value(npc, player), 0.0, "a first sighting");
+        loop {
+            self.check();
+            if self.ticks >= first_check + 60 {
+                break;
+            }
+            assert_eq!(self.target(npc), None, "tick {}", self.ticks);
+        }
+        assert_eq!(self.target(npc), Some(player));
+    }
+}
+
+// P41: a gate closed and reopened within one tick on a targeted NPC still
+// stands it down at its next run: the target drops, and it needs a full fill
+// to acquire again.
+#[test]
+fn aggro_gate_closed_and_reopened_within_a_tick_drops_the_target_at_the_next_run() {
+    let mut watch = Watch::new();
+    let player = watch.player(in_view(10.0));
+    let npc = watch.npc(&default_noticing());
+    watch.checks(FILL_CHECKS + 1);
+    assert_eq!(watch.target(npc), Some(player));
+    watch.aggro(npc, false);
+    watch.aggro(npc, true);
+    assert_eq!(
+        watch.target(npc),
+        Some(player),
+        "held until its next run (P63)"
+    );
+    watch.tick();
+    watch.assert_full_fill_from_this_run(npc, player);
+}
+
+// P41: the same when the close and the reopen both land while the schedule
+// skips the NPC, as it skips a dormant one between its runs.
+#[test]
+fn aggro_gate_closed_and_reopened_while_skipped_drops_the_target_at_the_next_run() {
+    let mut watch = Watch::new();
+    let player = watch.player(in_view(10.0));
+    let npc = watch.npc(&default_noticing());
+    watch.checks(FILL_CHECKS + 1);
+    assert_eq!(watch.target(npc), Some(player));
+    for _ in 0..10 {
+        watch.tick_skipping(npc);
+    }
+    watch.aggro(npc, false);
+    for _ in 0..10 {
+        watch.tick_skipping(npc);
+    }
+    watch.aggro(npc, true);
+    for _ in 0..5 {
+        watch.tick_skipping(npc);
+    }
+    assert_eq!(watch.target(npc), Some(player), "skipped, it ran nothing");
+    watch.tick();
+    watch.assert_full_fill_from_this_run(npc, player);
+}
+
+// The retaliation window is compared with one tick, never a run's span: an
+// NPC moving up after ticks it did not run still retaliates against an
+// attacker hit inside a window shorter than that span.
+#[test]
+fn a_retaliation_window_shorter_than_the_span_still_ranks_the_attacker() {
+    let mut watch = Watch {
+        runtime: AiRuntime::noticing_on_sight(),
+        ..Watch::new()
+    };
+    let mut graph = default_noticing();
+    graph.retaliation = Some(RetaliationDescriptor {
+        window_ms: 100.0,
+        damage_weight: 1.0,
+        recency_weight: 0.001,
+    });
+    let npc = watch.npc(&graph);
+    watch
+        .reg
+        .entity_state_mut(npc)
+        .unwrap()
+        .set(ARCHETYPE_TOLERANCE_STATE_FIELD, 0.0);
+    // Tick 1: it runs with no one in reach, joining the AI set.
+    watch.tick();
+    let nearer = watch.player(in_view(5.0));
+    let attacker = watch.player(Vec3::new(-10.0, 0.0, 10.0));
+    // Skipped through tick 24; hit just before its run on tick 25, a decide,
+    // which spans 24 ticks (400 ms) against a 100 ms window.
+    while watch.ticks < 24 {
+        watch.tick_skipping(npc);
+    }
+    watch.hit(npc, Some(attacker));
+    watch.tick();
+    assert_eq!(watch.ticks % DECIDE_INTERVAL_TICKS, 1, "tick 25 decides");
+    assert_eq!(
+        watch.target(npc),
+        Some(attacker),
+        "retaliation outranks the nearer {nearer:?}"
+    );
 }

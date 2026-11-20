@@ -244,11 +244,11 @@ fn contact_attackers_take_bounded_turns_under_limit_one() {
     }
 }
 
-// B29 beyond the near stride band: a holder resting after its attack has no
-// target on ticks not due to acquire, and still holds through its cooldown.
+// B29 between decides: a holder resting after its attack has no
+// target on ticks that are not decides, and still holds through its cooldown.
 // Regression: a missing target released a held unmarked turn early.
 #[test]
-fn unmarked_turn_holds_through_cooldown_between_strided_acquisitions() {
+fn unmarked_turn_holds_through_cooldown_between_decide_acquisitions() {
     const COOLDOWN_TICKS: usize = 20;
     let player = Vec3::new(14.0, 0.0, 0.0);
     let enemy_at = attacker_spot(0);

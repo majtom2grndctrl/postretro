@@ -221,6 +221,11 @@ impl Rig {
     }
 
     fn tick(&mut self) -> AgentTickResult {
+        self.tick_with(AgentSteps::EVERY_TICK)
+    }
+
+    /// One mover tick and one steering tick under `steps`.
+    fn tick_with(&mut self, steps: AgentSteps<'_>) -> AgentTickResult {
         run_kinematic_mover_tick(&mut self.registry, &mut self.movers, DT);
         let collision = CombinedCollisionWorld::new(&self.world, &self.colliders, &self.movers);
         tick_with_mover_pins(
@@ -231,7 +236,7 @@ impl Rig {
                 yields: &[],
                 gate: NavGate::new(self.movers.docks()),
             },
-            AgentSteps::EVERY_TICK,
+            steps,
             &mut Vec::new(),
             ENV,
             DT,
@@ -1075,5 +1080,86 @@ fn an_agent_on_a_lift_that_never_rests_replans_from_the_floor_under_it() {
         rig.run_until(id, 300, |rig| rig.position(id).x < 9.0),
         "and walked off toward its goal, at {:?}",
         rig.position(id)
+    );
+}
+
+// Regression: a boarding walk ran at full speed over a whole dormant step, so a
+// dormant boarder overshot its boarding point by up to a step's travel and
+// walked back and forth across it.
+#[test]
+fn a_dormant_boarder_lands_on_its_boarding_point_and_rides() {
+    let mut rig = Rig::new(LiftSpec::shuttle(6000.0));
+    let goal = Vec3::new(20.0, rest_y(TOP), 5.0);
+    // On the deck, 1.45 m short of the boarding point: a 2 m step at full
+    // speed would pass it by more than the arrival band.
+    let at = Vec3::new(11.5, rest_y(0.0), 5.0);
+    let board_point = Vec3::new(14.0 - 3.0 * RADIUS, 0.0, 5.0);
+    let id = rig.agent(at, Some(goal));
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::Mover(LIFT);
+    agent.planned_ride = Some(PlannedRide {
+        mover_id: LIFT,
+        board_waypoint: 0,
+        exit_waypoint: 1,
+        board_point,
+        exit_point: Vec3::new(15.05, TOP, 5.0),
+    });
+    agent.path = vec![at, board_point];
+    agent.mandatory_waypoints = vec![false, false];
+    agent.planned_destination = Some(goal);
+    agent.replan_cooldown_ticks = u32::MAX;
+    rig.registry.set_component(id, agent).unwrap();
+
+    let dormant = |_: EntityId| AgentStep::Ticks(30);
+    rig.tick_with(AgentSteps::scheduled(&dormant));
+    assert!(
+        distance_xz(rig.position(id), board_point) < 0.02,
+        "it landed on the boarding point, at {:?}",
+        rig.position(id)
+    );
+    assert!(rig.state(id).ride.is_none(), "still walking on");
+
+    rig.tick_with(AgentSteps::scheduled(&dormant));
+    assert!(rig.state(id).ride.is_some(), "it boarded on its next step");
+    assert!(
+        distance_xz(rig.position(id), board_point) < 0.02,
+        "standing where it landed, at {:?}",
+        rig.position(id)
+    );
+}
+
+// Regression: the ride's airborne grace counted steps against the current
+// step's span, so a rider airborne through a whole dormant step kept its ride
+// for most of the grace again once back at 60 Hz.
+#[test]
+fn a_rider_airborne_through_a_dormant_step_has_spent_the_grace() {
+    let mut rig = Rig::new(LiftSpec::shuttle(6000.0));
+    let id = rig.boarded();
+    // High over the deck: airborne through a whole 0.5 s step, which falls
+    // about g·dt² (some 5 m) in one explicit step.
+    let mut agent = rig.state(id).clone();
+    agent.ground = GroundRef::Airborne;
+    agent.velocity = Vec3::ZERO;
+    rig.registry.set_component(id, agent).unwrap();
+    let mut transform = *rig.registry.get_component::<Transform>(id).unwrap();
+    transform.position.y += 12.0;
+    rig.registry.set_component(id, transform).unwrap();
+
+    let dormant = |_: EntityId| AgentStep::Ticks(30);
+    rig.tick_with(AgentSteps::scheduled(&dormant));
+    assert!(
+        rig.state(id).ride.is_some(),
+        "the step began inside the grace"
+    );
+    assert_eq!(
+        rig.state(id).ground,
+        GroundRef::Airborne,
+        "still in the air"
+    );
+
+    rig.tick();
+    assert!(
+        rig.state(id).ride.is_none(),
+        "0.5 s in the air is past the 150 ms grace"
     );
 }

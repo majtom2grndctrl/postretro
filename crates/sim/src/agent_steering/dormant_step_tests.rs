@@ -1,14 +1,12 @@
 // A scheduled agent stepping every 30th tick (the AI tick's dormant tier, 2 Hz):
-// its mover carries it and doors push it every tick, its own step covers the
-// ticks since its last, and at 2 Hz it passes no geometry it stops at under
-// 60 Hz.
-// See: context/plans/in-progress/E10--ai-tick-scheduling/index.md (Mover carry
-//      and pushes reach a dormant NPC every tick; P29)
-//      context/lib/movement.md §6
+// its mover carries it and doors push it every tick, never past a walkable deck,
+// its own step covers the ticks since its last, and at 2 Hz it passes no
+// geometry it stops at under 60 Hz.
+// See: context/lib/movement.md §6
 
 use std::collections::HashMap;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use postretro_foundation::{GroundRef, KnockbackResponse};
 
 use super::mover_contact_tests::{
@@ -201,6 +199,111 @@ fn dormant_rider_is_carried_once_per_tick() {
         dormant_ride(None, phase);
         dormant_ride(Some(Vec3::new(15.0, rest_y(0.5), 0.0)), phase);
     }
+}
+
+// Regression: a dormant rider was carried with its deck's rotation on every
+// carry-only tick, so a trapdoor swinging past the walkable slope dragged it
+// down with the deck where a 60 Hz rider's sweep finds no ground.
+#[test]
+fn dormant_rider_on_a_tilting_deck_is_carried_only_while_the_deck_is_walkable() {
+    let world = floor_world();
+    // A 4 m deck hinged along its -X edge, its top 3 m over the floor.
+    let movers = [solid_box(
+        Vec3::new(0.0, -0.5, -2.0),
+        Vec3::new(4.0, 0.0, 2.0),
+    )];
+    let hinge = Vec3::new(-2.0, 3.0, 0.0);
+    let mut deck = MoverTrack::at(hinge);
+    let mut registry = EntityRegistry::new();
+    let id = spawn(&mut registry, Vec3::new(0.0, rest_y(3.0), 0.0), None);
+    let settle = |_: EntityId| AgentStep::Ticks(1);
+    {
+        let collision = CombinedCollisionWorld::new(&world, &movers, &deck);
+        tick_with_steps(
+            &mut registry,
+            &collision,
+            None,
+            AgentSteps::scheduled(&settle),
+            ENV,
+            DT,
+        );
+    }
+    assert_eq!(agent(&registry, id).ground, GroundRef::Mover(MOVER));
+
+    // The deck swings down at 1 rad/s; the rider takes no step of its own.
+    let carry_only = |_: EntityId| AgentStep::CarryOnly;
+    let walkable_limit = postretro_foundation::WALKABLE_SURFACE_MIN_UP_DOT.acos();
+    let turn = Quat::from_rotation_z(-DT);
+    let mut tilt = 0.0_f32;
+    let (mut carried, mut left) = (0, 0);
+    for tick_index in 0..90 {
+        tilt += DT;
+        deck.pose.transform.rotation = Quat::from_rotation_z(-tilt);
+        deck.pose.tick_rotation_delta = turn;
+        deck.pose.angular_velocity = Vec3::NEG_Z;
+        let before = position(&registry, id);
+        let collision = CombinedCollisionWorld::new(&world, &movers, &deck);
+        tick_with_steps(
+            &mut registry,
+            &collision,
+            None,
+            AgentSteps::scheduled(&carry_only),
+            ENV,
+            DT,
+        );
+        let at = position(&registry, id);
+        let on_deck = hinge + turn * (before - hinge);
+        if tilt < walkable_limit - 0.05 {
+            assert!(
+                at.distance(on_deck) < CARRY_TOLERANCE,
+                "tick {tick_index}, tilt {tilt}: carried with the deck, at {at:?}"
+            );
+            carried += 1;
+        } else if tilt > walkable_limit + 0.05 {
+            assert!(
+                at.distance(before) < CARRY_TOLERANCE,
+                "tick {tick_index}, tilt {tilt}: the deck is past walkable and \
+                 left the rider, at {at:?}"
+            );
+            left += 1;
+        }
+    }
+    assert!(
+        carried > 0 && left > 0,
+        "both sides of the walkable slope ran"
+    );
+}
+
+// The schedule's span is bounded: a step asked for more ticks than
+// `MAX_STEP_TICKS` steps that many, so the knockback decay and the sweep's
+// parts stay bounded.
+#[test]
+fn a_step_past_the_bound_steps_as_the_bound() {
+    let world = floor_world();
+    let movers: [MoverCollider; 0] = [];
+    let track = MoverTrack::at(Vec3::ZERO);
+    let walk = |ticks: u32| {
+        let mut registry = EntityRegistry::new();
+        let id = spawn(
+            &mut registry,
+            Vec3::new(0.0, rest_y(0.0), 0.0),
+            Some(Vec3::new(40.0, rest_y(0.0), 0.0)),
+        );
+        let lookup = move |_: EntityId| AgentStep::Ticks(ticks);
+        let collision = CombinedCollisionWorld::new(&world, &movers, &track);
+        tick_with_steps(
+            &mut registry,
+            &collision,
+            None,
+            AgentSteps::scheduled(&lookup),
+            ENV,
+            DT,
+        );
+        position(&registry, id)
+    };
+    let bounded = walk(MAX_STEP_TICKS);
+    assert!(bounded.x > 1.0, "the bounded step walked, to {bounded:?}");
+    assert_eq!(walk(u32::MAX), bounded);
 }
 
 #[test]

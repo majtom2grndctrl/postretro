@@ -44,8 +44,12 @@ pub struct AwarenessMeter {
     pub life: u32,
 }
 
-/// An NPC's meters, beside its attacker ledger. Serialized so a restore keeps
-/// what the NPC was noticing; old brains start with none.
+/// An NPC's meters, beside its attacker ledger. The meters serialize and
+/// restore; each meter's `life` stamp does not (it restarts at 0), so a
+/// restore keeps what the NPC was noticing only when it is a whole-world
+/// restore where the pawns' life counters restart too. Against a pawn whose
+/// life counter is above 0 the meter reads as from an earlier life and the
+/// brain drops it at its next run. Old brains start with none.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct AwarenessMeters {
     #[serde(default)]
@@ -133,8 +137,10 @@ impl AwarenessMeters {
 
     /// The NPC holds `target`: no meter changes while it does. Each run
     /// restarts every clock and sighting, so once the target is lost every
-    /// meter drains from where it stands and refills only from a second
-    /// sighting in a row: there is no instant re-acquire.
+    /// meter drains from where it stands. A meter below full refills only from
+    /// a second sighting in a row; the lost target's own meter still stands at
+    /// 1 with no sighting, so it stays full through a first sighting and is
+    /// re-selected on sight as the previous selection.
     pub fn hold_target(&mut self, target: EntityId) {
         for meter in self.slots.iter_mut().flatten() {
             meter.since_ms = 0.0;
@@ -301,15 +307,18 @@ impl<'a> AwarenessCheck<'a> {
     }
 
     /// A candidate without a meter that passed this check takes a slot at 0:
-    /// a free one, else a member that failed or was not visited (lowest value
-    /// first, the farthest among equals), else a passing member farther than
-    /// it. Nearer failing candidates never keep a passing one unmetered.
+    /// a free one, else a member this check has not visited (departed; `finish`
+    /// frees its slot anyway, so it goes before any live member), else a
+    /// visited member that failed (lowest value first, the farthest among
+    /// equals), else a passing member farther than it. Nearer failing
+    /// candidates never keep a passing one unmetered.
     pub fn admit(&mut self, candidate: EntityId, distance: f32, life: u32) -> bool {
         let slot = self
             .meters
             .slots
             .iter()
             .position(Option::is_none)
+            .or_else(|| lowest_farthest(&self.meters.slots, |slot| !self.visited[slot]))
             .or_else(|| lowest_farthest(&self.meters.slots, |slot| !self.passed[slot]))
             .or_else(|| {
                 lowest_farthest(&self.meters.slots, |slot| {
@@ -449,5 +458,47 @@ mod tests {
             meters.meter(id(21)).is_none(),
             "eight nearer passing members keep a farther newcomer out"
         );
+    }
+
+    // P32: a member the check never visits (departed) frees its slot at
+    // `finish`, so a passing newcomer takes it before evicting a failing
+    // member, even one with a lower value.
+    #[test]
+    fn admit_takes_a_departed_slot_before_evicting_a_failing_member() {
+        let mut meters = AwarenessMeters::default();
+        let sightings: Vec<_> = (0..8).map(|i| (i, 10.0 + i as f32, true)).collect();
+        check(&mut meters, &sightings, 16.0);
+        check(&mut meters, &sightings, 500.0);
+        assert_eq!(meters.len(), 8);
+        // Member 3 fails but keeps some value; member 5 departs with a higher
+        // one, so the old lowest-value fallback would have evicted member 3.
+        let slot_of = |meters: &AwarenessMeters, who: u32| {
+            meters
+                .slots
+                .iter()
+                .position(|slot| slot.is_some_and(|meter| meter.candidate == id(who)))
+                .unwrap()
+        };
+        let failing = slot_of(&meters, 3);
+        let departed = slot_of(&meters, 5);
+        meters.slots[failing].as_mut().unwrap().value = 0.4;
+        meters.slots[departed].as_mut().unwrap().value = 0.9;
+        meters.age(100.0, 100.0);
+        let mut check = AwarenessCheck::new(&mut meters, RATES);
+        for who in 0..8u32 {
+            if who == 5 {
+                continue;
+            }
+            let slot = check.member(id(who)).unwrap();
+            check.visit(slot, 10.0 + who as f32, who != 3);
+        }
+        assert!(check.admit(id(20), 30.0, 0));
+        check.finish(None);
+        assert!(meters.meter(id(5)).is_none(), "the departed slot is taken");
+        assert!(
+            meters.meter(id(3)).is_some(),
+            "the failing member keeps its slot"
+        );
+        assert_eq!(meters.value(id(20)), 0.0);
     }
 }

@@ -403,10 +403,14 @@ fn tactical_range_m(
         if warned.insert(format!(
             "{TACTICAL_RANGE_WARNING}{archetype}:{descriptor_generation}"
         )) {
+            // Name the field only when the author wrote it.
+            let range = match behavior.ai.tactical_range {
+                Some(_) => format!("tacticalRange {} m", line.requested),
+                None => format!("the default tactical range ({} m)", line.requested),
+            };
             log::warn!(
-                "[AI] `{archetype}`: tacticalRange {} m is inside its largest attack standoff \
-                 plus {} m; using {} m",
-                line.requested,
+                "[AI] `{archetype}`: {range} is inside its largest attack standoff plus {} m; \
+                 using {} m",
                 BehaviorGraphDescriptor::TACTICAL_RANGE_MARGIN_M,
                 line.metres,
             );
@@ -817,6 +821,52 @@ mod tests {
         assert_float_eq(
             programs.get(enemy).unwrap().tactical_range_m(),
             floor + 40.0,
+        );
+    }
+
+    // AC 36: an unauthored `tacticalRange` raised to its attacks' floor warns
+    // about the default it fell back to, never naming a field the author did
+    // not write.
+    #[test]
+    fn unauthored_tactical_range_raised_to_its_floor_warns_about_the_default() {
+        use postretro_sim::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
+
+        let mut descriptor = behavior_enemy_descriptor("sniper");
+        let behavior = descriptor.behavior.as_mut().unwrap();
+        behavior.ai.tactical_range = None;
+        for attack in behavior.attacks.values_mut() {
+            attack.standoff_distance = Some(120.0);
+        }
+        let line = behavior.tactical_line();
+        assert!(line.raised(), "a 120 m standoff raises the 100 m default");
+        let (mut registry, enemy) = registry_with_brain(descriptor.behavior.as_ref().unwrap());
+        registry
+            .set_component(
+                enemy,
+                postretro_entities::provenance::DescriptorProvenance {
+                    canonical_name: "sniper".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: postretro_entities::provenance::DescriptorSpawnPath::MapPlacement,
+                },
+            )
+            .unwrap();
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+        let capture = LogCapture::start();
+
+        programs.sync(&registry, std::slice::from_ref(&descriptor), 1, &mut warned);
+        assert_float_eq(programs.get(enemy).unwrap().tactical_range_m(), line.metres);
+        capture.assert_logged_once(
+            Level::Warn,
+            "`sniper`: the default tactical range (100 m) is inside its largest attack standoff",
+        );
+        assert!(
+            !capture
+                .records()
+                .iter()
+                .any(|record| record.message.contains("tacticalRange")),
+            "an unauthored field is never named"
         );
     }
 

@@ -86,6 +86,38 @@ mod tests {
         }
     }
 
+    // P15, dormant decides: a dormant NPC decides on one of its four dormant
+    // runs in each 2 s cycle, so its decide falls on one of 120 slots
+    // (its run phase plus 30 times its decide run). The busiest slot carries
+    // at most mean + 2√mean + 1 from 128 NPCs, the dormant cycle's own floor.
+    #[test]
+    fn dormant_decides_balance_statistically_for_every_identity_set() {
+        use postretro_sim::npc_tiers::{
+            DORMANT_INTERVAL_TICKS, DORMANT_RUNS_PER_DECIDE, dormant_decides_on,
+        };
+        let cycle = DORMANT_INTERVAL_TICKS * DORMANT_RUNS_PER_DECIDE;
+        for count in [128_u32, 256, 500, 1000] {
+            for (label, identities) in identity_sets(count) {
+                let mut load = vec![0_u32; cycle as usize];
+                for identity in &identities {
+                    let slots: Vec<u64> = (0..cycle)
+                        .filter(|&tick| dormant_decides_on(tick, *identity))
+                        .collect();
+                    assert_eq!(slots.len(), 1, "{label}: one dormant decide per cycle");
+                    load[slots[0] as usize] += 1;
+                }
+                let mean = identities.len() as f64 / cycle as f64;
+                let ceiling = mean + 2.0 * mean.sqrt() + 1.0;
+                let busiest = *load.iter().max().unwrap();
+                assert!(
+                    f64::from(busiest) <= ceiling,
+                    "{label}, {count} over {cycle} dormant decide slots: busiest {busiest} > \
+                     {ceiling:.1}"
+                );
+            }
+        }
+    }
+
     // Every NPC decides exactly once per interval, whatever its phase.
     #[test]
     fn each_identity_decides_once_per_interval() {

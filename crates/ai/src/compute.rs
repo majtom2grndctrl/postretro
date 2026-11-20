@@ -63,6 +63,13 @@ pub(super) fn evaluate(
         // clock by all the ticks it missed: its whole tick runs with its step
         // scaled.
         let span = snap.span;
+        // Facing turns over the whole span on a dormant run only: a move-up
+        // run credits its clocks but turns, like steering, one ordinary tick.
+        let facing_dt = if snap.dormant_decide.is_some() {
+            tick_dt * span as f32
+        } else {
+            tick_dt
+        };
         let tick_dt = tick_dt * span as f32;
         let one_tick_dt_ms = dt_ms;
         let dt_ms = dt_ms * span as f32;
@@ -91,11 +98,31 @@ pub(super) fn evaluate(
         if graph_reseated {
             brain.attack_turns.clear();
         }
+        // An aggro gate closed since this brain last ran stands it down at
+        // this run even if it has reopened since: the closed gate's drop of
+        // target, slot and turns, and its reseat to `initial`. A run under a
+        // closed gate does the same below. Either way the selector rows it
+        // recorded before the close are stale, so its first armed run
+        // decides afresh.
+        if std::mem::take(&mut brain.aggro_closed_since_run) && brain.aggro_armed {
+            brain.stand_down_closed_gate();
+            selector_memo.remove(&snap.id);
+        }
+        // A closed gate records no rows, and those from before the close go.
+        if !brain.aggro_armed {
+            selector_memo.remove(&snap.id);
+        }
+        // A brain back in the AI set recalls nothing from before it left.
+        if snap.returned {
+            selector_memo.remove(&snap.id);
+        }
         // A decide tick runs acquisition, guards, selectors and combat-slot
         // choice; the ticks between act on its choices. Each enemy decides on
         // its own phase of the 15 Hz cycle, keyed on its identity, and at once
-        // whenever its path moved without a decide (a reseat).
-        // A dormant run decides on every fourth dormant run instead.
+        // whenever it holds no selector rows for its path: a reseat, its first
+        // run, its return to the AI set, its first armed run after a closed
+        // aggro gate. A dormant run decides on every fourth dormant run
+        // instead.
         let decide = snap.dormant_decide.unwrap_or_else(|| {
             crate::decide::decides_on(
                 turns.tick,
@@ -127,9 +154,9 @@ pub(super) fn evaluate(
         // fresh scan; retained target lookup deliberately does not see it.
         let enemy_faction = entity_faction(registry, snap.id);
         // A home-distance guard is about the evaluating enemy alone, not its
-        // target or the acquisition stride. Compute it once from this tick's
-        // immutable position snapshot before either branch can suppress target
-        // work.
+        // target or whether this is a decide tick. Compute it once from this
+        // tick's immutable position snapshot before either branch can suppress
+        // target work.
         let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
         let prior_acquired_target = brain.acquired_target;
         let targeting_stage = ai_stage(cpu, SimStage::AiTargeting);
@@ -144,10 +171,8 @@ pub(super) fn evaluate(
             let retained = retained_target
                 .and_then(|entity| target_candidate(registry, entity, snap.position));
             let (target, evaluate_acquisition) = if let Some(retained) = retained {
-                // A retained target alone prices the stride from its raw
-                // distance. A due tick may still run the normal hysteresis scan
-                // below, but neither its candidate filter nor its result can
-                // alter this cost input.
+                // A retained target is re-checked for a switch only on a
+                // decide; between decides it is kept.
                 let evaluate_acquisition = decide;
                 let target = if evaluate_acquisition {
                     let (candidate_filter, candidate_scope) =
@@ -176,7 +201,9 @@ pub(super) fn evaluate(
                         &brain.recent_attackers,
                         brain.retaliation_acquired_target,
                         brain.graph.retaliation(),
-                        dt_ms,
+                        // The retaliation window is compared with one tick,
+                        // never the run's span.
+                        one_tick_dt_ms,
                         &mut candidate_perception,
                     );
                     // Switching to a different target is a new acquisition;
@@ -238,7 +265,7 @@ pub(super) fn evaluate(
                         &brain.recent_attackers,
                         brain.retaliation_acquired_target,
                         retaliation,
-                        dt_ms,
+                        one_tick_dt_ms,
                         &mut candidate_perception,
                     )
                 } else {
@@ -253,7 +280,7 @@ pub(super) fn evaluate(
                         candidate_scope,
                         &brain.recent_attackers,
                         retaliation,
-                        dt_ms,
+                        one_tick_dt_ms,
                         &mut brain.awareness,
                         rates,
                         &mut candidate_perception,
@@ -374,13 +401,12 @@ pub(super) fn evaluate(
         let target_hostile = selected_target.is_some_and(|(target, _, _)| {
             is_hostile(factions, enemy_faction, entity_faction(registry, target))
         });
-        // Reachability is the nav floor's pathfinder verdict, cached on the
-        // existing acquisition stride. It deliberately mirrors the gated route
-        // query chase consumes, from the agent's own ground, rather than
-        // claiming a stronger ground-truth answer. An absent nav graph has no
-        // route query, so it is immediately unreachable even if a restored
-        // brain retained a cached result from an earlier map or acquisition
-        // stride.
+        // Reachability is the nav floor's pathfinder verdict, cached between
+        // decides. It deliberately mirrors the gated route query chase
+        // consumes, from the agent's own ground, rather than claiming a
+        // stronger ground-truth answer. An absent nav graph has no route
+        // query, so it is immediately unreachable even if a restored brain
+        // retained a cached result from an earlier map or decide.
         let target_reachable = match (target, nav_graph) {
             (Some(_), None) => {
                 brain.target_reachable = false;
@@ -652,23 +678,39 @@ pub(super) fn evaluate(
         // The tactical line, read at decides with its margin: past the line an
         // engaged NPC routes toward its target and chooses no combat slot; it
         // chooses slots again once its target is the margin inside the line.
-        if !engaged {
-            brain.beyond_tactical_range = false;
-        } else if decide && let Some(target) = target {
-            let line = programs.get(snap.id).map_or(
-                postretro_foundation::BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M,
-                |entry| entry.tactical_range_m(),
-            );
-            let distance = crate::nav::distance_xz(snap.position, target.position);
-            if distance > line {
-                brain.beyond_tactical_range = true;
-            } else if distance
-                <= line - postretro_foundation::BehaviorGraphDescriptor::TACTICAL_RANGE_MARGIN_M
-            {
-                brain.beyond_tactical_range = false;
+        // Only a decide or a lost target moves it, so the ticks between act on
+        // the last decide's reading.
+        match target {
+            None => brain.beyond_tactical_range = false,
+            Some(_) if !decide => {}
+            Some(_) if !engaged => brain.beyond_tactical_range = false,
+            Some(target) => {
+                let line = programs.get(snap.id).map_or(
+                    postretro_foundation::BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M,
+                    |entry| entry.tactical_range_m(),
+                );
+                let distance = crate::nav::distance_xz(snap.position, target.position);
+                if distance > line {
+                    brain.beyond_tactical_range = true;
+                } else if distance
+                    <= line - postretro_foundation::BehaviorGraphDescriptor::TACTICAL_RANGE_MARGIN_M
+                {
+                    brain.beyond_tactical_range = false;
+                }
             }
         }
         let beyond_tactical_range = engaged && brain.beyond_tactical_range;
+        // Past the tactical line every engaged motion verb routes toward the
+        // target: no slot to walk to, and none stands still for want of one.
+        // Overridden before heading, so facing reads the route it takes.
+        let steering = match motion {
+            Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
+                if beyond_tactical_range =>
+            {
+                SteeringIntent::Chase
+            }
+            _ => steering,
+        };
 
         let tick_heading = heading::resolve(
             registry,
@@ -682,7 +724,7 @@ pub(super) fn evaluate(
                 retains_target,
                 aim_direction: target_perception
                     .map(|perception| perception.target_aim - perception.enemy_eye),
-                tick_dt,
+                tick_dt: facing_dt,
                 span,
             },
         );
@@ -718,16 +760,6 @@ pub(super) fn evaluate(
         // A leap arrives at its spot by the moment the clock now reads, and
         // stands once the latch it steered on has closed.
         let (steering, leap_travel) = leap::pace(&brain, &clip_source, motion, steering);
-        // Past the tactical line every engaged motion verb routes toward the
-        // target: no slot to walk to, and none stands still for want of one.
-        let steering = match resolved.map(|motion| motion.verb) {
-            Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
-                if beyond_tactical_range =>
-            {
-                SteeringIntent::Chase
-            }
-            _ => steering,
-        };
         // A repeating release strikes once per pass at its moment, under one
         // turn: a later pass ignores the cooldown its first hit started, and
         // each hit restarts it, so it runs from the release's last hit.
@@ -887,6 +919,7 @@ pub(super) fn evaluate(
         outcomes.push(EnemyOutcome {
             id: snap.id,
             span,
+            dormant: snap.dormant_decide.is_some(),
             decide,
             position: snap.position,
             target,
@@ -900,6 +933,7 @@ pub(super) fn evaluate(
             prior_standoff_distance,
             standoff_distance,
             entered,
+            motion,
             steering,
             leap: leap_travel,
             leap_spot_off_mesh,

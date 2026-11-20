@@ -44,7 +44,7 @@ pub struct DamageContext {
     /// The attacker's life counter when its shot was fired, for a shot that
     /// lands later (a projectile, its splash, a remote declaration). A shot
     /// fired before its pawn's latest respawn touches no NPC's awareness
-    /// meter or attacker ledger. `None`: the hit lands as it is fired.
+    /// meter, attacker ledger or damage bearing. `None`: the hit lands as it is fired.
     pub attacker_life: Option<u32>,
 }
 

@@ -166,6 +166,9 @@ pub(crate) struct EnemySnapshot {
     brain: BrainComponent,
     /// Ticks since this brain's last run: its clocks advance by all of them.
     span: u32,
+    /// The brain comes back to the AI set this run (it was held, quiescent,
+    /// dead or inventory-owned last tick): it decides, whatever its phase.
+    returned: bool,
     /// A dormant run's decide, which replaces the 15 Hz phase; `None` on an
     /// ordinary run.
     dormant_decide: Option<bool>,
@@ -177,6 +180,9 @@ pub(crate) struct EnemyOutcome {
     pub(crate) id: EntityId,
     /// Ticks since this brain's last run; its timers covered all of them.
     pub(crate) span: u32,
+    /// A dormant run: facing slews over the whole span. Any other run, a
+    /// move-up included, slews one tick.
+    pub(crate) dormant: bool,
     /// This tick decided: acquisition, guards, selectors and combat-slot
     /// choice ran. Off it, the enemy acts on its last decide's choices.
     pub(crate) decide: bool,
@@ -189,6 +195,8 @@ pub(crate) struct EnemyOutcome {
     pub(crate) enemy_eye_offset: Vec3,
     pub(crate) target_aim: Option<Vec3>,
     pub(crate) brain: BrainComponent,
+    /// This tick's resolved motion verb, after a flinch's stagger plants it.
+    pub(crate) motion: Option<postretro_foundation::MotionVerb>,
     steering: SteeringIntent,
     /// A `leap` travelling to its spot: its `MoveTo` is paced to the clip
     /// moment. `None` for any other steering.
@@ -284,7 +292,10 @@ pub struct AiRuntime {
     /// This tick's skipped holders. Reused storage.
     skipped: Vec<attack_turns::SkippedHolder>,
     /// Ticks between a brain's decides: [`decide::DECIDE_INTERVAL_TICKS`]
-    /// outside unit suites that pin graph semantics a tick at a time.
+    /// outside unit suites that pin graph semantics a tick at a time. A brain
+    /// also decides off its phase on a reseat, with no selector memo for its
+    /// path (its first run, a run after a closed aggro gate), and on its
+    /// return to the AI set.
     decide_interval: u64,
     /// An NPC without a target takes the best candidate on sight instead of
     /// noticing through its awareness meters: today's 60 Hz semantics, which
@@ -679,9 +690,13 @@ where
                 }
                 return None;
             }
-            presence.mark(id);
+            // Marked present only once it can run: a brain with no transform
+            // is neither snapshotted nor skipped, so it is out of the set.
             let transform = registry.get_component::<Transform>(id).ok()?;
+            presence.mark(id);
             let mut brain = brain.clone();
+            let returned =
+                attack_turns::returns_to_set(&brain.attack_turns, turns.tick, present_last_tick);
             let span = attack_turns::admit(&mut brain.attack_turns, turns.tick, present_last_tick);
             turns.remap_brain(&mut brain.attack_turns);
             Some(EnemySnapshot {
@@ -690,6 +705,7 @@ where
                 rotation: transform.rotation,
                 brain,
                 span,
+                returned,
                 dormant_decide: match run {
                     AiRun::RunDormant { decide } => Some(decide),
                     AiRun::Run | AiRun::Skip => None,

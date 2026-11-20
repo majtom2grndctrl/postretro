@@ -713,13 +713,6 @@ pub(crate) fn descriptor_mesh_component(
     )
 }
 
-/// Seed an AI brain's aggro gate from a map placement.
-///
-/// This deliberately consumes the bare `enabled_on_spawn` KVP instead of the
-/// usual `initial_*` descriptor-override namespace: it is a set-piece gate,
-/// not descriptor-owned gameplay tuning. The descriptor refresh planner does
-/// not replace `BrainComponent`, so a hot descriptor reload preserves this
-/// placement-seeded host state rather than reopening a sealed enemy.
 /// A placed NPC's `always_active` key: forced on or off, or the archetype's
 /// value when absent. `prl-build` refuses any other value; a PRL carrying one
 /// anyway logs an error and takes the archetype's value.
@@ -740,6 +733,13 @@ fn always_active_on_spawn(
     })
 }
 
+/// Seed an AI brain's aggro gate from a map placement.
+///
+/// This deliberately consumes the bare `enabled_on_spawn` KVP instead of the
+/// usual `initial_*` descriptor-override namespace: it is a set-piece gate,
+/// not descriptor-owned gameplay tuning. The descriptor refresh planner does
+/// not replace `BrainComponent`, so a hot descriptor reload preserves this
+/// placement-seeded host state rather than reopening a sealed enemy.
 fn ai_aggro_armed_on_spawn(entity: &MapEntity) -> bool {
     let Some(raw) = entity.key_values.get("enabled_on_spawn") else {
         log::warn!(

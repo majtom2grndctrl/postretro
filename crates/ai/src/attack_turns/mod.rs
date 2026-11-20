@@ -19,7 +19,7 @@ mod tests;
 pub(crate) use budget::AttackBudgets;
 pub(crate) use draws::{ATTACK_DRAW_WARNING, live_behavior, resolve_graph_draws};
 pub(crate) use facts::{AttackTurnRead, LineEntry, PreviousTickLine, TurnFactReader};
-pub(crate) use lifecycle::{admit, arbitrate_attack_turns};
+pub(crate) use lifecycle::{admit, arbitrate_attack_turns, returns_to_set};
 pub(crate) use pools::RunningPool;
 pub(crate) use refresh::RefreshView;
 

@@ -2,7 +2,7 @@
 // a minimal registry with a player pawn (PlayerMovement + Transform + Health),
 // an enemy (Brain + Transform + Agent + Mesh), and assert observable outcomes
 // — destination via `path_state`, HP deltas via the chokepoint, the selected
-// animation name, and stride gating. Every fixture is an authored behavior
+// animation name, and decide-tick gating. Every fixture is an authored behavior
 // graph.
 
 use std::borrow::Cow;
@@ -742,8 +742,8 @@ fn reachability_graph() -> BehaviorGraphDescriptor {
     })
 }
 
-/// A chase-only graph keeps the selected target retained across stride bands,
-/// letting the cache test move it between a due and non-due tick.
+/// A chase-only graph keeps the selected target retained, so the cache tests
+/// control the cached reachability verdict directly.
 fn reachability_cache_graph() -> BehaviorGraphDescriptor {
     test_behavior_graph!({
         initial: "chase".to_string(),
@@ -812,14 +812,14 @@ fn target_reachability_is_false_without_a_selected_target() {
 }
 
 #[test]
-fn target_reachability_is_false_without_a_navmesh_even_off_stride_with_a_restored_cache() {
+fn target_reachability_is_false_without_a_navmesh_even_with_a_restored_cache() {
     let graph = reachability_graph();
     let mut registry = EntityRegistry::new();
     let target = spawn_player(&mut registry, Vec3::new(17.0, 0.0, 1.0));
     let mut brain = BrainComponent::from_graph(&graph);
     brain.acquired_target = Some(target);
     brain.target_reachable = true;
-    // A 16 m retained target uses the four-tick band; this is a non-due tick.
+    // A 16 m retained target carries a restored `true` verdict into the tick.
     let enemy = spawn_enemy(&mut registry, Vec3::new(1.0, 0.0, 1.0), brain, 50.0);
     let mut runtime = AiRuntime::deciding_every_tick();
 
@@ -830,7 +830,7 @@ fn target_reachability_is_false_without_a_navmesh_even_off_stride_with_a_restore
         .expect("enemy keeps its brain");
     assert!(
         !brain.target_reachable,
-        "an absent navmesh clears a restored cached verdict before a non-due tick can reuse it"
+        "an absent navmesh clears a restored cached verdict before the tick can reuse it"
     );
     assert_eq!(brain.state_name(), Some("hold"));
 }
@@ -1363,7 +1363,7 @@ fn alert_stands_down_when_the_authored_aggro_interrupt_is_true() {
 
 #[test]
 fn attack_range_entry_is_evaluated_even_when_acquisition_gated_off() {
-    // The strided-gap-must-not-suppress-attack contract at the pure level:
+    // The acquisition-gating-must-not-suppress-attack contract at the pure level:
     // acquisition off, but the player is inside attack range — still attacks.
     assert_eq!(
         step_graph(&tuning(), TEST_ALERT_STATE, 1.0, false).0,
@@ -3935,8 +3935,8 @@ fn direct_graph_acquisition_sets_destination_and_authored_stand_down_clears_it()
     let mut reg = EntityRegistry::new();
     let mut warned = AiRuntime::deciding_every_tick();
 
-    // A short authored aggro range (8) keeps the stand-down tick in the near
-    // stride band, isolating the graph interrupt from stride gating.
+    // A short authored aggro range (8) makes the stand-down come from the graph
+    // interrupt, not from acquisition.
     let enemy = spawn_enemy(
         &mut reg,
         Vec3::ZERO,
@@ -4282,7 +4282,7 @@ fn retained_target_beyond_the_authored_range_stands_down_instead_of_switching() 
 }
 
 #[test]
-fn retained_target_beyond_the_authored_range_clears_stale_destination_off_stride() {
+fn retained_target_beyond_the_authored_range_clears_stale_destination_on_the_first_tick() {
     let mut reg = EntityRegistry::new();
     let mut warned = AiRuntime::deciding_every_tick();
 
@@ -4297,7 +4297,7 @@ fn retained_target_beyond_the_authored_range_clears_stale_destination_off_stride
     assert_eq!(
         enemy_state_name(&reg, enemy),
         TEST_IDLE_STATE,
-        "the graph interrupt should stand down immediately, not wait for target acquisition stride"
+        "the graph interrupt should stand down immediately, not wait for target acquisition"
     );
     assert_eq!(
         enemy_acquired_target(&reg, enemy),
@@ -4308,7 +4308,7 @@ fn retained_target_beyond_the_authored_range_clears_stale_destination_off_stride
         !agent_steering::path_state(&reg, enemy)
             .expect("agent present")
             .has_destination,
-        "the graph interrupt must clear stale steering destinations even off-stride"
+        "the graph interrupt must clear stale steering destinations on the first tick"
     );
 }
 
@@ -5012,13 +5012,13 @@ fn unresolved_locomotion_switch_still_persists_latch() {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance: stride gating does not suppress in-stride attacks
+// Acceptance: decide-tick gating does not suppress attacks
 // ---------------------------------------------------------------------------
 
 #[test]
-fn near_enemy_evaluates_detection_every_tick() {
-    // A near enemy (within STRIDE_NEAR_DISTANCE) uses stride 1: detection is
-    // evaluated on the very first tick after the player appears.
+fn enemy_in_detection_range_acquires_on_the_first_decide_tick() {
+    // With every tick a decide, detection is evaluated on the very first tick
+    // after the player appears.
     let mut reg = EntityRegistry::new();
     let mut warned = AiRuntime::deciding_every_tick();
 
@@ -5028,14 +5028,14 @@ fn near_enemy_evaluates_detection_every_tick() {
         brain_with(tuning(), TEST_IDLE_STATE),
         50.0,
     );
-    // 5 units: near band, inside detection.
+    // 5 units: inside detection.
     spawn_player(&mut reg, Vec3::new(5.0, 0.0, 0.0));
 
     run_ai_tick(&mut reg, &mut warned, 0.016);
     assert_eq!(
         enemy_state_name(&reg, enemy),
         TEST_ALERT_STATE,
-        "near enemy acquires on the first tick",
+        "enemy acquires on the first tick",
     );
 }
 
@@ -5074,9 +5074,9 @@ fn between_decides_detection_waits_but_attack_still_fires() {
     }
 
     // 2) Zero HP does not force a direct graph into a death state, even on a
-    // non-think tick. Seed the already-engaged remote pawn so the graph is
-    // exercising its retained-target path rather than standing down because a
-    // fresh acquisition is strided off.
+    // decide tick. Seed the already-engaged remote pawn so the graph is
+    // exercising its retained-target path rather than standing down because no
+    // target was acquired.
     {
         let mut reg = EntityRegistry::new();
         let mut warned = AiRuntime::deciding_every_tick();
@@ -5092,11 +5092,9 @@ fn between_decides_detection_waits_but_attack_still_fires() {
         );
     }
 
-    // 3) In-stride ATTACK still fires: a far-positioned enemy ALREADY in attack
-    // state with the player within attack range damages on a non-think tick
-    // (attack-range + cooldown are not strided). Here the enemy sits at origin
-    // and the player is at attack range, but we force the far stride by starting
-    // the counter such that acquisition is gated; the attack check ignores that.
+    // 3) An ATTACK still fires: an enemy ALREADY in attack state with the player
+    // within attack range damages it on the first tick (attack-range + cooldown
+    // are evaluated every tick, not only on acquisition).
     {
         let mut reg = EntityRegistry::new();
         let mut warned = AiRuntime::deciding_every_tick();

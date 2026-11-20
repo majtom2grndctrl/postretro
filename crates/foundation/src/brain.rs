@@ -46,7 +46,9 @@ pub const BRAIN_TIME_IN_ACTIVITY_MS_INPUT: &str = "@brain.timeInActivityMs";
 /// Milliseconds remaining on the selected offense action's cooldown; `0.0`
 /// with no selected action or once it has elapsed.
 pub const BRAIN_ATTACK_COOLDOWN_MS_INPUT: &str = "@brain.attackCooldownMs";
-/// `true` on the think-stride ticks where the engine re-evaluates acquisition.
+/// `true` on the NPC's decide ticks, where the engine checks acquisition: 15
+/// times a second while it is perceived, engaged, alwaysActive or recently
+/// disturbed; every 2 s while dormant.
 pub const BRAIN_ACQUISITION_DUE_INPUT: &str = "@brain.acquisitionDue";
 /// The enemy's current hit points.
 pub const BRAIN_HEALTH_INPUT: &str = "@brain.health";

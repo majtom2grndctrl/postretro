@@ -84,3 +84,29 @@ fn a_turn_ending_while_skipped_releases_on_next_run() {
         "the holder's run released its turn, and the waiter was granted"
     );
 }
+
+// A skipped brain's run spans every tick since its last run, up to one
+// dormant interval; one that left the AI set returns spanning one tick,
+// holding nothing.
+#[test]
+fn admit_spans_a_dormant_skip_and_reports_a_return() {
+    use crate::attack_turns::{admit, returns_to_set};
+    use postretro_sim::npc_tiers::DORMANT_INTERVAL_TICKS;
+
+    let mut turns = AttackTurnState::default();
+    turns.seen_tick = 10;
+    let tick = 10 + DORMANT_INTERVAL_TICKS;
+    assert!(!returns_to_set(&turns, tick, true), "skipped, so present");
+    assert_eq!(admit(&mut turns, tick, true), DORMANT_INTERVAL_TICKS as u32);
+    assert_eq!(turns.seen_tick, tick);
+
+    // Gone for a tick: it returns, its clocks crediting one tick.
+    turns.wait = Some(postretro_entities::components::brain::WaitClock {
+        since_tick: 3,
+        target: EntityId::from_raw(1),
+        target_life: 0,
+    });
+    assert!(returns_to_set(&turns, tick + 5, false));
+    assert_eq!(admit(&mut turns, tick + 5, false), 1);
+    assert_eq!(turns.wait, None, "a return holds nothing");
+}

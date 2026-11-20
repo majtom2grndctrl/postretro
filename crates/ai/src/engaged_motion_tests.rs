@@ -337,6 +337,199 @@ fn slot_verbs_keep_walking_to_their_slot_between_decides() {
     }
 }
 
+/// An enemy east of the target, deciding on AI tick 1 and every fourth after.
+fn spawn_deciding_on_first_tick(
+    reg: &mut EntityRegistry,
+    position: Vec3,
+    graph: &BehaviorGraphDescriptor,
+    state: &str,
+) -> EntityId {
+    let mut brain = authored_brain(graph, state);
+    brain.schedule_identity = Some(identity_deciding_on(1));
+    let enemy = spawn_enemy(reg, position, brain, 50.0);
+    set_enemy_yaw(reg, enemy, bearing_yaw(position, target_pos()));
+    enemy
+}
+
+// A flinch over a release or recover plants the enemy for the rest of the
+// activity. Between decides a strafer's slot memory still names its verb, but
+// its motion this tick is a hold: it stands at once, never walking on to its
+// slot until the next decide.
+#[test]
+fn a_staggered_strafer_stands_between_decides() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let graph = engaged_graph(
+        "wait",
+        vec![("wait", activity("walk", MotionVerb::Strafe, None))],
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
+    spawn_player(&mut reg, target_pos());
+    let enemy = spawn_deciding_on_first_tick(
+        &mut reg,
+        target_pos() + Vec3::new(2.0 * R, 0.0, 0.0),
+        &graph,
+        "wait",
+    );
+    ai_tick(&mut reg, &mut runtime, &world, &nav);
+    assert!(
+        reg.get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .combat_slot
+            .is_some(),
+        "the decide claimed a slot"
+    );
+    ai_tick(&mut reg, &mut runtime, &world, &nav);
+    assert!(
+        destination(&reg, enemy).is_some(),
+        "between decides it walks on"
+    );
+
+    let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
+    brain.clip_clock.stagger = Some(postretro_entities::components::brain::Stagger::default());
+    reg.set_component(enemy, brain).unwrap();
+    for tick in [3, 4] {
+        ai_tick(&mut reg, &mut runtime, &world, &nav);
+        assert!(
+            matches!(memory(&reg, enemy), EngagedMotionMemory::Strafe(_)),
+            "tick {tick}: the memory waits for the next decide"
+        );
+        assert_eq!(
+            destination(&reg, enemy),
+            None,
+            "tick {tick}: a staggered strafer stands"
+        );
+    }
+}
+
+// The incumbent hold counts ticks, not decides: at production cadence each
+// decide spends the ticks since the previous one, so an 8-tick hold lapses on
+// the second decide after the claim and the third picks afresh.
+#[test]
+fn a_chase_slot_hold_spends_the_ticks_since_the_previous_decide() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let graph = engaged_graph(
+        "chase",
+        vec![("chase", activity("walk", MotionVerb::ChaseTarget, None))],
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
+    spawn_player(&mut reg, target_pos());
+    let enemy = spawn_deciding_on_first_tick(
+        &mut reg,
+        target_pos() + Vec3::new(R, 0.0, 0.0),
+        &graph,
+        "chase",
+    );
+    let interval = crate::decide::DECIDE_INTERVAL_TICKS as u32;
+    let mut holds = Vec::new();
+    // Ticks 1, 5, 9 and 13 decide.
+    for _ in 0..3 * interval + 1 {
+        ai_tick(&mut reg, &mut runtime, &world, &nav);
+        holds.push(
+            reg.get_component::<BrainComponent>(enemy)
+                .unwrap()
+                .combat_slot_hold_ticks,
+        );
+    }
+    let fresh = COMBAT_SLOT_HOLD_TICKS;
+    let expected: Vec<u32> = [fresh, fresh - interval, fresh - 2 * interval]
+        .into_iter()
+        .flat_map(|hold| std::iter::repeat_n(hold, interval as usize))
+        .chain([fresh])
+        .collect();
+    assert_eq!(
+        holds, expected,
+        "claimed on tick 1, held through tick 9, picked afresh on tick 13"
+    );
+}
+
+/// One AI tick, `enemy` taking `run` and every other brain an ordinary run.
+fn tick_with_run(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    enemy: EntityId,
+    run: crate::ai_host::AiRun,
+) {
+    let lookup = |id: EntityId| {
+        if id == enemy {
+            run
+        } else {
+            crate::ai_host::AiRun::Run
+        }
+    };
+    run_ai_tick_with_navigation_and_impact(
+        reg,
+        runtime,
+        STEER_DT,
+        AiTickInputs {
+            nav_graph: None,
+            mover_nav: crate::nav::MoverNav::none(),
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
+            schedule: crate::ai_host::AiSchedule::scheduled(&lookup),
+            cpu: None,
+        },
+        |_| {},
+    );
+}
+
+// A move-up credits the ticks an NPC did not run to its clocks, but turns it,
+// as it steps it, one ordinary tick: its facing never jumps. A dormant run
+// turns over its whole span, as it steps.
+#[test]
+fn a_move_up_turns_one_tick_and_a_dormant_run_its_span() {
+    use crate::ai_host::AiRun;
+
+    let mut chase = activity("walk", MotionVerb::ChaseTarget, None);
+    chase.facing = Some(FacingPolicy::Target);
+    let graph = engaged_graph("only", vec![("only", chase)]);
+    let one_tick = FACING_TURN_RATE * STEER_DT;
+    let away = FACES_TARGET + std::f32::consts::PI;
+    for dormant in [false, true] {
+        let mut reg = EntityRegistry::new();
+        let mut runtime = AiRuntime::noticing_on_sight();
+        let enemy_at = Vec3::new(20.0, 0.0, 20.0);
+        spawn_player(&mut reg, enemy_at + Vec3::new(3.0, 0.0, 0.0));
+        let enemy = spawn_enemy(&mut reg, enemy_at, authored_brain(&graph, "only"), 50.0);
+        tick_with_run(&mut reg, &mut runtime, enemy, AiRun::Run);
+        assert!(
+            enemy_acquired_target(&reg, enemy).is_some(),
+            "engaged on its first run"
+        );
+        set_enemy_yaw(&mut reg, enemy, away);
+        for _ in 0..20 {
+            tick_with_run(&mut reg, &mut runtime, enemy, AiRun::Skip);
+        }
+        let run = if dormant {
+            AiRun::RunDormant { decide: false }
+        } else {
+            AiRun::Run
+        };
+        tick_with_run(&mut reg, &mut runtime, enemy, run);
+        let turned = yaw_distance(enemy_yaw(&reg, enemy), away);
+        if dormant {
+            assert!(
+                turned > 10.0 * one_tick,
+                "a dormant run turns over its 21-tick span, turned {turned}"
+            );
+        } else {
+            assert!(
+                (turned - one_tick).abs() <= TOLERANCE,
+                "a move-up turns one tick ({one_tick}), turned {turned}"
+            );
+        }
+    }
+}
+
 /// One strafer east of the target, its entry consumed and its direction set
 /// counter-clockwise, so its next slot lies at 45° (south-east, -Z) and its
 /// reverse at -45° (north-east).

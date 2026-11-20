@@ -450,9 +450,6 @@ impl BehaviorGraphDescriptor {
         }
     }
 
-    /// Combat-slot distance for the selected action. A per-attack standoff is
-    /// explicit; otherwise retain the action-relative engagement-radius
-    /// behavior so an attack override remains the positioning default.
     /// Default tactical range, metres.
     pub const DEFAULT_TACTICAL_RANGE_M: f32 = 100.0;
     /// How far inside its tactical line a target comes before the NPC chooses
@@ -491,6 +488,9 @@ impl BehaviorGraphDescriptor {
         self.ai.awareness.unwrap_or_default()
     }
 
+    /// Combat-slot distance for the selected action. A per-attack standoff is
+    /// explicit; otherwise retain the action-relative engagement-radius
+    /// behavior so an attack override remains the positioning default.
     pub fn standoff_distance_for_action(&self, action: Option<&ActionVerb>) -> f32 {
         match action {
             Some(ActionVerb::Attack { name, .. }) => self

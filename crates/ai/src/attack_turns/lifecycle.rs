@@ -18,16 +18,31 @@ use crate::brain_programs::{BrainEntityPrograms, BrainPrograms};
 use crate::weapon_controller::AiWeaponControllers;
 use crate::{EnemyOutcome, PendingAttack};
 
+/// The most ticks one run credits. The tiers never skip a brain longer than
+/// one dormant interval; the bound only keeps a broken schedule from crediting
+/// a clock without limit.
+const MAX_RUN_SPAN_TICKS: u64 = postretro_sim::npc_tiers::MOVE_DOWN_HOLD_TICKS;
+
+/// Whether a brain about to run comes back to the AI set: the previous tick
+/// neither evaluated nor skipped it (quiescence, a queued despawn, inventory
+/// ownership, death).
+pub(crate) fn returns_to_set(turns: &AttackTurnState, tick: u64, present_last_tick: bool) -> bool {
+    !(present_last_tick || turns.seen_tick.wrapping_add(1) == tick)
+}
+
 /// Admit a brain into this tick's run, and return the ticks since its last
 /// run. A brain the previous tick neither evaluated nor skipped left the set
 /// (quiescence, a queued despawn, inventory ownership, death): it returns
 /// holding nothing, requesting nothing, with no clock, and spans one tick. A
 /// brain the schedule skipped kept everything, and spans every tick since it
-/// last ran.
+/// last ran, never more than [`MAX_RUN_SPAN_TICKS`].
 pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64, present_last_tick: bool) -> u32 {
-    let stayed = present_last_tick || turns.seen_tick.wrapping_add(1) == tick;
+    let stayed = !returns_to_set(turns, tick, present_last_tick);
     let span = if stayed && turns.seen_tick < tick {
-        u32::try_from(tick - turns.seen_tick).unwrap_or(u32::MAX)
+        // A scheduler skip spans at most one dormant interval; a restored
+        // brain's `seen_tick` can lie further back, so the span is clamped.
+        let since = tick - turns.seen_tick;
+        u32::try_from(since.min(MAX_RUN_SPAN_TICKS)).unwrap_or(u32::MAX)
     } else {
         if !stayed {
             turns.clear();

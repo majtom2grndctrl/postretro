@@ -215,6 +215,8 @@ fn debounce_los(
         return true;
     }
 
+    // A span of 0 reads as one tick: a first run or restored state has no previous run.
+    let span = span.max(1);
     let Some(state) = grace.get_mut(&enemy) else {
         return false;
     };
@@ -222,12 +224,12 @@ fn debounce_los(
         grace.remove(&enemy);
         return false;
     }
-    if state.remaining_ticks < span.max(1) {
+    if state.remaining_ticks < span {
         grace.remove(&enemy);
         return false;
     }
 
-    state.remaining_ticks -= span.max(1);
+    state.remaining_ticks -= span;
     if state.remaining_ticks == 0 {
         grace.remove(&enemy);
     }

@@ -1211,7 +1211,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 );
             }
             // `-0` reads as 0.
-            Some(parsed.max(0.0))
+            Some(if parsed == 0.0 { 0.0 } else { parsed })
         }
         None => None,
     };

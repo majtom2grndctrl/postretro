@@ -1,5 +1,6 @@
 // Tier choice tests on the three-arena synthetic level: a player pawn in arena
 // 0 (cells 0..10) perceives that arena; arena 2 (cells 20..30) is unseen.
+// See: context/lib/entity_model.md §7c
 
 use super::*;
 use crate::npc_perception::test_support::{Row, centre, spawn_at, three_arenas};
@@ -311,6 +312,107 @@ fn a_dead_npc_leaves_the_tiers_and_rejoins_on_its_revive_tick() {
     h.choose();
     assert_eq!(h.tier(npc), Some(NpcTier::Idle));
     // A fresh entry: no step owed for the time dead.
+    assert_eq!(h.scheduler.tiers.agent_step(npc), AgentStep::Ticks(1));
+}
+
+// Regression: a revived NPC's damage clock still read its lethal hit (a
+// quiescent brain is never aged), so it rejoined held idle for the whole 2 s.
+#[test]
+fn a_revived_npc_unseen_goes_dormant_after_its_first_run_whatever_its_lethal_hit() {
+    let mut h = Harness::new();
+    let npc = h.npc(25, 18);
+    let alive = postretro_entities::components::health::HealthComponent {
+        max: 10.0,
+        current: 10.0,
+        hitbox: None,
+        death_handled: false,
+        pending_kill_credit: None,
+        zone_multipliers: Default::default(),
+        contributor_ledger: Default::default(),
+    };
+    h.registry.set_component(npc, alive.clone()).unwrap();
+    h.choose();
+    // The lethal hit zeroes its damage clock; dead, it leaves the tiers.
+    h.brain(npc, |brain| brain.time_since_damage_ms = 0.0);
+    let mut dead = alive.clone();
+    dead.current = 0.0;
+    h.registry.set_component(npc, dead).unwrap();
+    h.choose();
+    assert_eq!(h.tier(npc), None);
+
+    // Revived out of sight: its first tick runs, as any NPC joining does.
+    h.registry.set_component(npc, alive).unwrap();
+    h.choose();
+    assert_eq!(h.scheduler.tiers.ai_run(npc), AiRun::Run);
+    assert_eq!(h.scheduler.tiers.agent_step(npc), AgentStep::Ticks(1));
+    assert_eq!(h.tier(npc), Some(NpcTier::Dormant));
+    // That run aged the clock one tick, as the AI does.
+    h.brain(npc, |brain| brain.time_since_damage_ms = 1000.0 / 60.0);
+    for _ in 0..DORMANT_INTERVAL_TICKS {
+        h.choose();
+        assert_eq!(
+            h.tier(npc),
+            Some(NpcTier::Dormant),
+            "no hold for a hit from before it died"
+        );
+    }
+}
+
+// An NPC acquiring on any run ranks engaged for this tick's replans: a fresh
+// spawn on its first run and an idle NPC alike. Only a dormant run's step is
+// rewritten to one ordinary tick.
+#[test]
+fn any_run_that_acquires_a_target_ranks_engaged_on_that_tick() {
+    let mut h = Harness::new();
+    let seen = h.npc(5, 19);
+    h.choose();
+    assert_eq!(h.tier(seen), Some(NpcTier::Idle));
+    let spawned = h.npc(25, 20);
+    h.choose();
+    assert_eq!(h.tier(spawned), Some(NpcTier::Dormant));
+    assert_eq!(
+        h.scheduler.tiers.ai_run(spawned),
+        AiRun::Run,
+        "its first run"
+    );
+    assert_eq!(h.scheduler.tiers.replan_rank(seen), 1);
+    assert_eq!(h.scheduler.tiers.replan_rank(spawned), 0);
+
+    // The AI stage acquired on both runs.
+    let target = h.pawn;
+    h.brain(seen, |brain| brain.acquired_target = Some(target));
+    h.brain(spawned, |brain| brain.acquired_target = Some(target));
+    h.scheduler.tiers.settle_after_ai(&h.registry);
+    for npc in [seen, spawned] {
+        assert_eq!(h.tier(npc), Some(NpcTier::Engaged));
+        assert_eq!(h.scheduler.tiers.replan_rank(npc), 2);
+        assert_eq!(h.scheduler.tiers.agent_step(npc), AgentStep::Ticks(1));
+    }
+
+    // A skipped dormant NPC ran nothing this tick: it stays where it was.
+    let skipped = h.npc(26, 21);
+    h.choose();
+    h.until_dormant_run(skipped);
+    h.choose();
+    assert_eq!(h.scheduler.tiers.ai_run(skipped), AiRun::Skip);
+    h.brain(skipped, |brain| brain.acquired_target = Some(target));
+    h.scheduler.tiers.settle_after_ai(&h.registry);
+    assert_eq!(h.tier(skipped), Some(NpcTier::Dormant));
+    assert_eq!(h.scheduler.tiers.agent_step(skipped), AgentStep::CarryOnly);
+}
+
+#[test]
+fn an_inventory_owned_npc_leaves_the_tiers() {
+    let mut h = Harness::new();
+    let npc = h.npc(5, 22);
+    h.choose();
+    assert_eq!(h.tier(npc), Some(NpcTier::Idle));
+    let holder = spawn_at(&mut h.registry, centre(&h.row, 4));
+    let mut inventory = postretro_entities::components::inventory::Inventory::default();
+    inventory.wieldables[0] = Some(npc);
+    h.registry.set_component(holder, inventory).unwrap();
+    h.choose();
+    assert_eq!(h.tier(npc), None, "held, as the AI skips it");
     assert_eq!(h.scheduler.tiers.agent_step(npc), AgentStep::Ticks(1));
 }
 

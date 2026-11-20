@@ -303,6 +303,14 @@ pub struct BrainComponent {
     /// so absent values default open.
     #[serde(default = "default_aggro_armed")]
     pub aggro_armed: bool,
+    /// The aggro gate closed since this brain last ran. Set by
+    /// [`Self::set_aggro_armed`]`(false)` and cleared by the AI at the brain's
+    /// next run, which stands it down as a closed gate does (target, combat
+    /// slot and turns dropped, path reseated to `initial`) even when the gate
+    /// has reopened by then. Until that run a hit is still judged against the
+    /// target it holds. Old serialized brains carry no pending close.
+    #[serde(default)]
+    pub aggro_closed_since_run: bool,
     /// Cached nav-path verdict for the selected target. It is recomputed on
     /// acquisition-due ticks and deliberately omitted from serialized brain
     /// state so a restored brain never trusts a path query from an older map
@@ -491,6 +499,7 @@ impl BrainComponent {
             attack_turns: AttackTurnState::default(),
             attack_pool: None,
             aggro_armed: true,
+            aggro_closed_since_run: false,
             target_reachable: false,
             acquired_target: None,
             acquired_target_life: 0,
@@ -768,12 +777,30 @@ impl BrainComponent {
 
     /// Open or close the aggro gate. Closing it empties every awareness
     /// meter at the close itself, even if it reopens before the NPC next
-    /// runs: the next sighting of anyone is a first sighting.
+    /// runs: the next sighting of anyone is a first sighting. A close also
+    /// latches [`Self::aggro_closed_since_run`], so the NPC's next run stands
+    /// it down even when the gate has reopened by then.
     pub fn set_aggro_armed(&mut self, armed: bool) {
         if !armed {
             self.awareness.empty();
+            self.aggro_closed_since_run = true;
         }
         self.aggro_armed = armed;
+    }
+
+    /// The closed gate's stand-down, for a run that finds the gate reopened
+    /// since a close it has not yet run under: the target, its retaliation
+    /// mark and combat slot drop, every turn, request and wait clock ends,
+    /// and the path reseats to `initial`. Returns whether the path moved.
+    pub fn stand_down_closed_gate(&mut self) -> bool {
+        self.acquired_target = None;
+        self.acquired_target_life = 0;
+        self.retaliation_acquired_target = None;
+        self.combat_slot = None;
+        self.combat_slot_hold_ticks = 0;
+        self.beyond_tactical_range = false;
+        self.attack_turns.clear();
+        !self.is_seated_at_initial() && self.reseat_to_initial()
     }
 
     /// The respawn drop: forget what this NPC keeps about every pawn that
@@ -1469,6 +1496,49 @@ mod tests {
         brain.record_attacker_damage_in_life(other, 1.0, 5);
         brain.drop_respawned(|_| None);
         assert!(brain.recent_attacker(other).is_some());
+    }
+
+    // P41: a close latches until the NPC's next run, whatever opens the gate
+    // again before it; the stand-down that run applies drops the target, its
+    // slot and turns, and leaves the meters the close emptied.
+    #[test]
+    fn closing_the_aggro_gate_latches_its_stand_down_until_the_next_run() {
+        let target = EntityId::from_raw(7);
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.awareness.record_hit(target, 3.0, 0);
+        brain.acquired_target = Some(target);
+        brain.combat_slot = Some(Vec3::X);
+        brain.combat_slot_hold_ticks = 5;
+        brain.beyond_tactical_range = true;
+        assert!(brain.attack_turns.hold(HeldTurn {
+            attack: 0,
+            target,
+            target_life: 0,
+            pool: AttackPoolId::Default,
+            draws: ResolvedDraws::NONE,
+            until_cooldown: true,
+            granted_tick: 1,
+        }));
+        assert!(!brain.aggro_closed_since_run, "a fresh brain has no close");
+
+        brain.set_aggro_armed(false);
+        brain.set_aggro_armed(true);
+        assert!(brain.aggro_armed);
+        assert!(brain.aggro_closed_since_run, "the reopen keeps the latch");
+        assert!(brain.awareness.is_empty(), "the close emptied the meters");
+        assert_eq!(
+            brain.acquired_target,
+            Some(target),
+            "the target stands until the run"
+        );
+
+        brain.stand_down_closed_gate();
+        assert_eq!(brain.acquired_target, None);
+        assert_eq!(brain.combat_slot, None);
+        assert_eq!(brain.combat_slot_hold_ticks, 0);
+        assert!(!brain.beyond_tactical_range);
+        assert!(!brain.attack_turns.holds_any());
+        assert!(brain.is_seated_at_initial());
     }
 
     #[test]

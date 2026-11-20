@@ -1,5 +1,6 @@
 // Perception step tests on synthetic id-51 levels: a row of equal cells along
 // x, located by x alone, with hand-built residency sets.
+// See: context/lib/entity_model.md §7c
 
 use super::test_support::{Row, centre, residency, spawn_at, three_arenas};
 use super::*;
@@ -336,11 +337,11 @@ fn perceivers_absent_run_every_npc_perceived() {
 
 #[test]
 fn perceivers_outside_every_camera_cell_run_every_npc_perceived() {
-    // Cell 5 is solid: no camera set.
+    // Cells 5 and 6 are solid: no camera set.
     let row = Row {
         width: 1.0,
         residency: Some(residency(10, 32.0, |camera| {
-            if camera == 5 {
+            if camera == 5 || camera == 6 {
                 Vec::new()
             } else {
                 vec![(camera, 0.0)]
@@ -348,15 +349,45 @@ fn perceivers_outside_every_camera_cell_run_every_npc_perceived() {
         })),
     };
     let mut registry = EntityRegistry::new();
-    let inside = spawn_at(&mut registry, centre(&row, 1));
     let outside = spawn_at(&mut registry, centre(&row, 5));
+    let also_outside = spawn_at(&mut registry, centre(&row, 6));
     let mut state = perception(&row, 16.0);
-    state.step(&row, &registry, [inside, outside]);
+    state.step(&row, &registry, [outside, also_outside]);
     assert_eq!(
         state.perceives_all(),
         Some(PerceiveAll::PerceiverOutsideCameraCells)
     );
     assert!(state.cell_perceived(8));
+}
+
+// Regression: the first perceiver in a cell with no camera set ran every NPC
+// on the map perceived, so one co-op player dead in an exterior void woke
+// every arena for their whole respawn delay.
+#[test]
+fn a_perceiver_outside_every_camera_cell_is_skipped_while_another_resolves() {
+    // Arenas of ten cells each seeing only itself; cell 25 is solid.
+    let row = Row {
+        width: 2.0,
+        residency: Some(residency(30, 32.0, |camera| {
+            if camera == 25 {
+                return Vec::new();
+            }
+            let arena = camera / 10;
+            (arena * 10..arena * 10 + 10)
+                .map(|cell| (cell, 0.0))
+                .collect()
+        })),
+    };
+    let mut registry = EntityRegistry::new();
+    let in_void = spawn_at(&mut registry, centre(&row, 25));
+    let in_arena = spawn_at(&mut registry, centre(&row, 3));
+    // Either order: a skipped perceiver never cuts the union short.
+    for perceivers in [[in_void, in_arena], [in_arena, in_void]] {
+        let mut state = perception(&row, 16.0);
+        state.step(&row, &registry, perceivers);
+        assert_eq!(state.perceives_all(), None);
+        assert_eq!(perceived(&state, 0..30), (0..10).collect::<Vec<_>>());
+    }
 }
 
 #[test]

@@ -432,9 +432,7 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
     }
 }
 
-/// A fluid whose surface texture the world does not use changes
-/// only EnvironmentVolumes, and TextureNames and TextureCacheKeys gain that one
-/// texture, appended after every world entry.
+/// An authored worldspawn `ai_wake_lead` reaches id 52 and changes no other section.
 #[test]
 fn an_authored_ai_wake_lead_reaches_id_52_and_changes_no_other_section() {
     let temp = TempBuildDir::new();
@@ -460,6 +458,9 @@ fn an_authored_ai_wake_lead_reaches_id_52_and_changes_no_other_section() {
     }
 }
 
+/// A fluid whose surface texture the world does not use changes
+/// only EnvironmentVolumes, and TextureNames and TextureCacheKeys gain that one
+/// texture, appended after every world entry.
 #[test]
 fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_section() {
     let temp = TempBuildDir::new();

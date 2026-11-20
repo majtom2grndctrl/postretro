@@ -394,3 +394,63 @@ fn guarded_ignite_recipe_burn_expires() {
         assert!(demo.registry().has_status(enemy, demo.burning));
     }
 }
+
+/// The templates presented since the last call, by id, with their values.
+fn presented(demo: &Demo) -> Vec<(String, f32)> {
+    demo.registry()
+        .take_presentation_spawns()
+        .into_iter()
+        .map(|spawn| {
+            let value = match spawn.facts.get("value") {
+                Some(postretro_entities::PresentationFact::Number(value)) => *value,
+                other => panic!("a damage number carries its value: {other:?}"),
+            };
+            (spawn.template.0, value)
+        })
+        .collect()
+}
+
+// content/dev floats every enemy hit's damage: a fire or acid hit in its
+// type's color, and a status tick in its status's, never both.
+// See: content/dev/scripts/combat-presentation.ts
+#[test]
+fn dev_mod_floats_status_ticks_in_their_status_color() {
+    let bundle = postretro_script_compiler::bundle_entry(&dev_scripts().join("../start-script.ts"))
+        .expect("the dev start script bundles");
+    let manifest = run_manifest("start-script.js", &bundle);
+    let demo_for = || {
+        let demo = Demo::new(&manifest);
+        demo.policies
+            .borrow_mut()
+            .replace_presentation_templates(manifest.presentation_templates.clone());
+        demo
+    };
+
+    let mut demo = demo_for();
+    demo.shoot(demo.fire);
+    assert_eq!(presented(&demo), [("fireDamageNumber".to_string(), 1.25)]);
+    let mut burns = Vec::new();
+    for _ in 0..30 {
+        demo.tick();
+        burns.extend(presented(&demo));
+    }
+    assert_eq!(burns, [("burningDamageNumber".to_string(), 5.0)]);
+
+    let mut demo = demo_for();
+    demo.shoot(demo.acid);
+    assert_eq!(presented(&demo), [("acidDamageNumber".to_string(), 0.75)]);
+
+    for (status, template, period) in [
+        (demo.scalding, "scaldingDamageNumber", 15),
+        (demo.corroding, "corrodingDamageNumber", 60),
+    ] {
+        let mut demo = demo_for();
+        demo.apply_off_tick(demo.enemy(), status);
+        let mut ticks = Vec::new();
+        for _ in 0..=period {
+            demo.tick();
+            ticks.extend(presented(&demo).into_iter().map(|(id, _)| id));
+        }
+        assert_eq!(ticks, [template]);
+    }
+}

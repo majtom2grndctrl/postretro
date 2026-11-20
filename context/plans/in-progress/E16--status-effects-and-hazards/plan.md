@@ -137,3 +137,11 @@ Left as is, with reasons:
 - A client that disconnects without unloading keeps the old name table until its next level unload.
 - Naming nits: `settle_frame_end_impacts`, and the `AppDrain` stamp on trigger-bound damage.
 
+
+## Play-test follow-ups
+
+- Status ticks float damage numbers. The change is content only: a tick already runs impact policies, and `present` has no producer gate.
+  - content/dev's `damageNumberRows` floats `burning`, `scalding` and `corroding` ticks smaller, in their status's color, from the target's position.
+  - Fire and acid hits, which had no row, float in their type's color.
+  - `impact.status(h)` keeps a tick from also floating its type's number.
+  - Proof: `sim::status_dev_fixture_tests::dev_mod_floats_status_ticks_in_their_status_color`. Docs: scripting reference §Showing a status.

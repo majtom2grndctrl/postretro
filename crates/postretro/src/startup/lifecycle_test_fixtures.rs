@@ -232,6 +232,7 @@ pub(crate) fn test_app() -> App {
         active_slot_resync: Default::default(),
         observer_weapon_cues: Vec::new(),
         pending_teleport_sounds: Vec::new(),
+        status_presentation: Default::default(),
         client_predicted_shots: crate::weapon::ClientPredictedShots::new(),
         client_reload_edges: Default::default(),
         client_overheat_edge: Default::default(),

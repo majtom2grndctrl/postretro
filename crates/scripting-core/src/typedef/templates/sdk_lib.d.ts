@@ -872,6 +872,36 @@
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
 
+  /** Input shape for `emitter()`. Required: `lifetime`, `velocity` and `sprite`; other fields fall back to the documented emitter defaults. */
+  export type EmitterProps = {
+    /** Starts this many particles every second. Omit for the default `0`; use `burst` for a one-off puff. Must be finite and ≥ 0. */
+    rate?: number;
+    /** Starts this many particles once, then clears itself. A whole number ≥ 0. */
+    burst?: number;
+    /** Widens particle directions around `velocity`, in radians. Finite and ≥ 0. Default: `0.2`. */
+    spread?: number;
+    /** How long each particle remains alive, in seconds. Finite and > 0. */
+    lifetime: number;
+    /** Starting movement as `[x, y, z]` metres per second (`y` is up). All three numbers finite. */
+    velocity: [number, number, number];
+    /** How gravity affects particles: `-1` falls normally, `0` floats, positive values rise. Default: `0.5`. */
+    buoyancy?: number;
+    /** How quickly motion slows, in 1/seconds. Finite and ≥ 0. Default: `0.5`. */
+    drag?: number;
+    /** Finite size multipliers sampled evenly from birth to death. Default: `[1]`. */
+    size_over_lifetime?: number[];
+    /** Finite opacity multipliers sampled evenly from birth to death. Default: `[1, 1, 0.8, 0]`. */
+    opacity_over_lifetime?: number[];
+    /** RGB tint, each in `[0, 1]`. Default: white. */
+    color?: [number, number, number];
+    /** Non-empty sprite or material name for the particle image, such as `"smoke"` or `"ember"`. */
+    sprite: string;
+    /** Billboard rotation speed in radians per second. Default: `0`. */
+    spin_rate?: number;
+  };
+  /** Build a `billboard_emitter` component value from `props`, validating them and filling defaults; throws naming the offending field. Use it in a component preset or a status's `presentation.emitter`. */
+  export function emitter(props: EmitterProps): { kind: "billboard_emitter" } & BillboardEmitterComponent;
+
   /** How a repeat application by the same applier changes its instance: `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`, resets time left, and each tick deals `damage × stacks`. */
   export type StatusStacking = "refresh" | "stack";
   /** What a status draws on each afflicted entity, on every machine: an `emitter()` that follows the entity while the status is live (never on the local player's own pawn), and a one-shot `tickSound` every `tickMs`. */

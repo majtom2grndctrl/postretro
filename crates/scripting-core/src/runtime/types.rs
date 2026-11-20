@@ -360,6 +360,29 @@ pub struct ModManifestResult {
 /// `draws`, against the registered vocabularies, naming the failing key path.
 /// Fail load on a fluid `status` that is not a handle of a status `defineMod`
 /// registers, naming the fluid.
+/// Fail load on a status `presentation.emitter` that is not an `emitter()`
+/// value, naming the status.
+pub(crate) fn check_status_presentation(
+    vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+) -> Result<(), String> {
+    for (index, status) in vocabulary.statuses.iter().enumerate() {
+        let Some(emitter) = &status.presentation.emitter else {
+            continue;
+        };
+        let mut emitter = emitter.clone();
+        if let Some(object) = emitter.as_object_mut() {
+            object.remove("kind");
+        }
+        serde_json::from_value::<
+            postretro_entities::components::billboard_emitter::BillboardEmitterComponent,
+        >(emitter)
+        .map_err(|error| {
+            format!("`statuses[{index}].presentation.emitter` is not an emitter() value: {error}")
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn check_fluid_status_references(
     fluids: &postretro_foundation::data_descriptors::FluidRegistry,
     vocabulary: &postretro_foundation::defense::DefenseVocabulary,
@@ -369,7 +392,8 @@ pub(crate) fn check_fluid_status_references(
             vocabulary.check_status(&format!("fluids[\"{}\"].status", fluid.name), status)?;
         }
     }
-    Ok(())
+    // Checked here, beside the other cross-checks every mod-init path runs.
+    check_status_presentation(vocabulary)
 }
 
 pub(crate) fn check_entity_defense_references(

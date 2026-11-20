@@ -111,6 +111,7 @@ mod session;
 // renderer outcomes. It never owns GPU objects.
 mod sh_streaming;
 mod sound_events;
+mod status_presentation;
 // Resource-neutral read issuer, drain budget, and id-49 hint decode shared by
 // every streamed resource.
 mod streaming;
@@ -1142,6 +1143,9 @@ pub(crate) struct App {
     /// (forward prediction, adoption, or the host seat's own crossing) and every
     /// observed remote arrival. Played and cleared by the frame's audio step.
     pending_teleport_sounds: Vec<postretro_audio::SoundRequest>,
+    /// Status presentation on this machine: attached emitters and tick sounds
+    /// from each entity's status presence.
+    status_presentation: status_presentation::StatusPresentation,
     client_fire_resolutions: Vec<weapon::ClientFireResolution>,
     client_predicted_shots: weapon::ClientPredictedShots,
     /// Connected-client reload edges derived from replicated slots.

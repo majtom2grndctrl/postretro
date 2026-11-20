@@ -1277,6 +1277,19 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // The listener's pawn is named here, before any play this frame,
     // with the key the audio step's listener carries: own-pawn
     // treatment is decided at `play`, ahead of `audio.update`.
+    // Status tick sounds and attached emitters follow each entity's status
+    // presence on this machine; the emitters spawn at render prep below.
+    let mut status_sounds = Vec::new();
+    {
+        let registry = script_ctx.registry.borrow();
+        let own_pawn = if app.is_connected_client() {
+            registry.local_player_pawn()
+        } else {
+            registry.local_player_movement_pawn()
+        };
+        app.status_presentation
+            .update(&registry, own_pawn, frame_dt * 1000.0, &mut status_sounds);
+    }
     let (pending_mover_edges, descriptor_sounds, listener_attached) = {
         let registry = script_ctx.registry.borrow();
         let listener_attached = sound_events::listener_attached_key(&registry);
@@ -1345,6 +1358,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         }
         requests.extend(client_sounds.drain(..).map(Into::into));
         requests.extend(app.pending_teleport_sounds.drain(..).map(Into::into));
+        requests.extend(status_sounds.drain(..).map(Into::into));
         (edges, requests, listener_attached)
     };
     // A client's received link states enter link history once, here, so
@@ -2010,6 +2024,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &mut registry,
                 frame_dt,
                 frame_script_delta,
+                app.script_time as f32,
+                &mut session.particle_pool,
+                &mut session.particle_render,
+            );
+            session.emitter_bridge.update_attached(
+                app.status_presentation.attached(),
+                app.status_presentation.emitters(),
+                frame_dt,
                 app.script_time as f32,
                 &mut session.particle_pool,
                 &mut session.particle_render,

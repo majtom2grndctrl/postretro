@@ -7,6 +7,8 @@ mod lifecycle;
 mod marks;
 mod pacing;
 mod record;
+mod recording;
+mod recording_hooks;
 mod route;
 mod run;
 mod sample;
@@ -27,6 +29,7 @@ use args::{Pacing, PlaybackArgs};
 pub(crate) use marks::ChangeKind;
 use marks::{LifeWatch, Marks};
 use record::PlaybackRecord;
+use recording::Recorder;
 use run::{Clock, RouteRun};
 use stall::StallWatch;
 use window::PlaybackWindows;
@@ -60,11 +63,14 @@ impl RouteView {
     }
 }
 
-/// `--camera-route` playback for one session. Inactive unless the launch
-/// named a pose file; inactive, every hook is one `Option` check.
+/// `--camera-route` playback or `--record-camera-route` recording for one
+/// session. Inactive unless the launch named a pose file; inactive, every
+/// hook is one `Option` check.
 #[derive(Default)]
 pub(crate) struct Playback {
     active: Option<Box<ActivePlayback>>,
+    /// `--record-camera-route`: never beside `active`.
+    recording: Option<Box<Recorder>>,
     /// Armed at launch for a measurement run, until its first world frame.
     stall: Option<StallWatch>,
     /// The event loop waits until the stall deadline while armed; the flag
@@ -118,13 +124,23 @@ impl Playback {
         }
     }
 
-    fn from_args(args: &[String], launched: Instant) -> Result<Self, String> {
-        let present = args::present_choice(args)?;
-        let Some(args) = args::playback_args(args)? else {
-            return Ok(Self {
+    fn from_args(launch: &[String], launched: Instant) -> Result<Self, String> {
+        let present = args::present_choice(launch)?;
+        let Some(args) = args::playback_args(launch)? else {
+            let mut playback = Self {
                 present,
                 ..Self::default()
-            });
+            };
+            if let Some(record) = args::record_args(launch)? {
+                log::info!(
+                    "[Playback] recording a camera route to {}: the first gameplay level's world frames, stall timeout {} s",
+                    record.path.display(),
+                    record.stall_timeout.as_secs_f64(),
+                );
+                playback.arm_stall(launched, record.stall_timeout);
+                playback.recording = Some(Box::new(Recorder::new(record.path)));
+            }
+            return Ok(playback);
         };
         let file = route::load_route(&args.poses)?;
         log::info!(
@@ -174,7 +190,7 @@ impl Playback {
         self.present
     }
 
-    /// Arms the stall timeout from launch: playback here, recording later.
+    /// Arms the stall timeout from launch, for playback or recording.
     pub(crate) fn arm_stall(&mut self, launched: Instant, timeout: Duration) {
         self.stall = Some(StallWatch::arm(launched, timeout));
     }
@@ -202,6 +218,16 @@ impl Playback {
         }
         if let Some(active) = self.active.as_mut() {
             active.presented = presented;
+        }
+        // A recording's first world frame disarms the stall timeout.
+        if let Some(recording) = self.recording.as_mut()
+            && recording.note_presented(presented)
+        {
+            log::info!(
+                "[Playback] recording the camera route from this world frame to {}",
+                recording.path().display(),
+            );
+            self.stall = None;
         }
     }
 
@@ -260,5 +286,7 @@ impl ActivePlayback {
 
 #[cfg(test)]
 mod launch_tests;
+#[cfg(test)]
+mod recording_tests;
 #[cfg(test)]
 mod tests;

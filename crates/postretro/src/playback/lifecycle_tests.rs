@@ -569,9 +569,11 @@ const FRAME_LOOP: &str = include_str!("../frame_loop/mod.rs");
 const MAIN: &str = include_str!("../main.rs");
 const BOOT_STATE: &str = include_str!("../startup/lifecycle_boot_state.rs");
 const SESSION_ENTRY: &str = include_str!("../startup/session_entry.rs");
-const PLAYBACK_SOURCES: [&str; 11] = [
+const PLAYBACK_SOURCES: [&str; 13] = [
     include_str!("mod.rs"),
     include_str!("lifecycle.rs"),
+    include_str!("recording.rs"),
+    include_str!("recording_hooks.rs"),
     include_str!("args.rs"),
     include_str!("marks.rs"),
     include_str!("pacing.rs"),

@@ -1785,15 +1785,20 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         .and_then(|session| session.options_bridge.resolved())
         .map(|resolved| resolved.presented_view_feel_scale())
         .unwrap_or(1.0);
+    let eye_inputs = presented_aim.frame_eye_inputs(
+        app.camera.aspect(),
+        route_hfov.unwrap_or(crate::camera::HFOV),
+        view_feel_driver,
+        &pending_movement_edges,
+        frame_dt,
+        view_feel_scale,
+    );
+    // A camera-route recording holds this frame's view before view feel,
+    // stamped with the frame's start; its present decides whether it records.
+    #[cfg(feature = "dev-tools")]
+    app.playback_record_eye(now, &eye_inputs);
     let eye = frame_eye::assemble_frame_eye(
-        presented_aim.frame_eye_inputs(
-            app.camera.aspect(),
-            route_hfov.unwrap_or(crate::camera::HFOV),
-            view_feel_driver,
-            &pending_movement_edges,
-            frame_dt,
-            view_feel_scale,
-        ),
+        eye_inputs,
         frame_eye::ViewFeelTracking {
             state: &mut app.view_feel_state,
             followed_pawn: &mut app.view_feel_followed_pawn,

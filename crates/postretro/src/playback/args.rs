@@ -60,18 +60,20 @@ pub(crate) fn playback_args(args: &[String]) -> Result<Option<PlaybackArgs>, Str
     let poses = match flag_value(args, CAMERA_ROUTE_FLAG)? {
         Some(poses) => PathBuf::from(poses),
         None => {
-            if names_flag(args, RECORD_CAMERA_ROUTE_FLAG) {
-                log::warn!("[Playback] {RECORD_CAMERA_ROUTE_FLAG} is not built yet; ignored");
-            }
+            // A recording takes the stall timeout too.
+            let recording = names_flag(args, RECORD_CAMERA_ROUTE_FLAG);
             for flag in [
                 CAMERA_ROUTE_HOLD_FLAG,
                 CAMERA_ROUTE_REPORT_FLAG,
                 CAMERA_ROUTE_PACING_FLAG,
                 CAMERA_ROUTE_STALL_TIMEOUT_FLAG,
             ] {
-                if flag_value(args, flag).is_ok_and(|value| value.is_some()) {
-                    log::warn!("[Playback] {flag} given without {CAMERA_ROUTE_FLAG}; ignored");
+                if (recording && flag == CAMERA_ROUTE_STALL_TIMEOUT_FLAG)
+                    || !flag_value(args, flag).is_ok_and(|value| value.is_some())
+                {
+                    continue;
                 }
+                log::warn!("[Playback] {flag} given without {CAMERA_ROUTE_FLAG}; ignored");
             }
             return Ok(None);
         }
@@ -114,6 +116,27 @@ pub(crate) fn playback_args(args: &[String]) -> Result<Option<PlaybackArgs>, Str
         pacing,
         stall_timeout: stall_timeout(args)?,
         present: present_choice(args)?,
+    }))
+}
+
+/// A recording launch, as the flags name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordArgs {
+    /// Where the pose file is written, once.
+    pub(crate) path: PathBuf,
+    pub(crate) stall_timeout: Duration,
+}
+
+/// Reads `--record-camera-route <path>` and the stall timeout it arms.
+/// `Ok(None)` when no recording is named. Call it only when
+/// [`playback_args`] found no route: that refuses the two together.
+pub(crate) fn record_args(args: &[String]) -> Result<Option<RecordArgs>, String> {
+    let Some(path) = flag_value(args, RECORD_CAMERA_ROUTE_FLAG)? else {
+        return Ok(None);
+    };
+    Ok(Some(RecordArgs {
+        path: PathBuf::from(path),
+        stall_timeout: stall_timeout(args)?,
     }))
 }
 
@@ -356,6 +379,44 @@ mod tests {
                 .is_none(),
             "a client without a route is no playback"
         );
+    }
+
+    #[test]
+    fn record_args_read_the_path_and_the_stall_timeout() {
+        assert_eq!(record_args(&args(&["map.prl"])), Ok(None));
+        let launch = args(&[
+            "--record-camera-route",
+            "out/rec.txt",
+            "--camera-route-stall-timeout=30",
+            "map.prl",
+        ]);
+        assert_eq!(
+            playback_args(&launch),
+            Ok(None),
+            "a recording plays nothing"
+        );
+        assert_eq!(
+            record_args(&launch),
+            Ok(Some(RecordArgs {
+                path: PathBuf::from("out/rec.txt"),
+                stall_timeout: Duration::from_secs(30),
+            }))
+        );
+        let defaulted = record_args(&args(&["--record-camera-route=rec.txt"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(defaulted.stall_timeout, DEFAULT_STALL_TIMEOUT);
+        for list in [
+            &["--record-camera-route"][..],
+            &["--record-camera-route", "--windowed"][..],
+            &["--record-camera-route=", "map.prl"][..],
+        ] {
+            let error = record_args(&args(list)).unwrap_err();
+            assert!(
+                error.contains(RECORD_CAMERA_ROUTE_FLAG),
+                "{list:?}: {error}"
+            );
+        }
     }
 
     #[test]

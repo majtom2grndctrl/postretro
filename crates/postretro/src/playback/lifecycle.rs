@@ -21,6 +21,9 @@ use super::stall::WaitScreen;
 enum Ending {
     Complete,
     Aborted(String),
+    /// The person ended the session by window close or a quit: the record
+    /// is marked aborted, and the exit code stays the session's own.
+    Closed(String),
 }
 
 /// What a Settling frame does with its held view.
@@ -34,9 +37,14 @@ impl App {
     /// Install's camera step on the session's first gameplay level: the
     /// route's bake must be the level's (id-51 hash and walk epoch). A match
     /// arms the run; a mismatch is held for the first Settling frame, which
-    /// stops the run. A frontend backdrop is never the route's level.
+    /// stops the run. A frontend backdrop is never the route's level, nor
+    /// a recording's.
     pub(crate) fn playback_level_installed(&mut self) {
         let backdrop = self.frontend_menu_is_present();
+        if !backdrop {
+            self.recording_level_installed();
+        }
+        let path = self.installed_level_path();
         let Some(active) = self.playback.active.as_mut() else {
             return;
         };
@@ -46,16 +54,6 @@ impl App {
         let Some(world) = self.level.as_ref() else {
             return;
         };
-        let path = self
-            .level_load
-            .as_ref()
-            .map(|load| load.map_path.display().to_string())
-            .or_else(|| {
-                self.map_path
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-            })
-            .unwrap_or_default();
         let bake = postretro_camera_route::bake_identity(&path, world);
         match route::match_level(&active.file, &bake) {
             Ok(identity) => {
@@ -210,6 +208,9 @@ impl App {
     /// the last pose's route frame the record is written, once, and the
     /// session exits 0, or non-zero if the write failed.
     pub(crate) fn playback_end_frame(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(recording) = self.playback.recording.as_mut() {
+            recording.end_frame();
+        }
         self.playback_finish_frame();
         self.playback_take_exit(event_loop);
     }
@@ -297,6 +298,19 @@ impl App {
         aborted
     }
 
+    /// `exiting`: a run the person closed by window close or a quit before
+    /// it ended writes its record marked aborted, with its final partial
+    /// window before `run_end`. The exit code stays the session's.
+    pub(crate) fn playback_closed_on_exit(&mut self) {
+        let Some(active) = self.playback.active.as_mut() else {
+            return;
+        };
+        active.run.abort();
+        self.end_playback_run(Ending::Closed(
+            "window closed or quit before the route ended".to_string(),
+        ));
+    }
+
     /// Writes the record once, marked with how the run ended, and leaves
     /// the exit to the next hook holding the event loop.
     fn end_playback_run(&mut self, ending: Ending) {
@@ -317,7 +331,9 @@ impl App {
         let report = active.args.report.clone();
         match &ending {
             Ending::Complete => active.record.set_complete(),
-            Ending::Aborted(reason) => active.record.set_aborted(reason.clone()),
+            Ending::Aborted(reason) | Ending::Closed(reason) => {
+                active.record.set_aborted(reason.clone())
+            }
         }
         let rows = active.record.next_frame();
         let written = active.record.write(&report);
@@ -333,6 +349,10 @@ impl App {
                 );
                 self.exit_result = Err(anyhow::anyhow!("camera route aborted: {reason}"));
             }
+            (Ending::Closed(reason), Ok(())) => log::warn!(
+                "[Playback] camera route aborted: {reason}; {rows} frames recorded to {}",
+                report.display(),
+            ),
             (_, Err(err)) => {
                 log::error!("[Playback] {err}");
                 self.exit_result = Err(anyhow::anyhow!(err));

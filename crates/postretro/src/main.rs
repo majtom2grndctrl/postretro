@@ -2516,6 +2516,11 @@ impl ApplicationHandler for App {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Every exit route reaches here: a camera-route recording not yet
+        // written is written once, and an unfinished playback run writes its
+        // record, while the level and renderer still exist.
+        #[cfg(feature = "dev-tools")]
+        self.playback_session_exits();
         self.exit_saves_and_teardown();
     }
 }

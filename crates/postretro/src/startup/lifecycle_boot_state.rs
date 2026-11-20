@@ -284,6 +284,10 @@ impl App {
                     if self.playback_abort(playback_abort) {
                         return;
                     }
+                    // A recording of the first gameplay level is written
+                    // before that level unloads (pin P13).
+                    #[cfg(feature = "dev-tools")]
+                    self.recording_level_ends();
                     self.cancel_beside_level_load();
                     if self.level_is_installed_state() {
                         self.unload_level();
@@ -297,6 +301,8 @@ impl App {
                     if self.playback_abort(playback_abort) {
                         return;
                     }
+                    #[cfg(feature = "dev-tools")]
+                    self.recording_level_ends();
                     let played = self.played_level_present();
                     self.cancel_beside_level_load();
                     self.abandon_level_load_for_frontend();

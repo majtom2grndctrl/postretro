@@ -1,7 +1,7 @@
 # emissive-volumes — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 6e22d5262
 
 Branch: `feature/emissive-volumes`. Source re-verified at 6e22d5262 by four read-only passes (material/strength, renderer, compiler/PRL, scripting/net/clamp). The brief's `eb44499` reads are 562 commits stale; the corrections below supersede them.

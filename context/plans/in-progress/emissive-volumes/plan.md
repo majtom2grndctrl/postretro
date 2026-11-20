@@ -1,0 +1,98 @@
+# emissive-volumes — plan of record
+
+mode: resumable
+status: proposed
+read at: 6e22d5262
+
+Branch: `feature/emissive-volumes`. Source re-verified at 6e22d5262 by four read-only passes (material/strength, renderer, compiler/PRL, scripting/net/clamp). The brief's `eb44499` reads are 562 commits stale; the corrections below supersede them.
+
+## Corrections
+
+### Strength and material stage
+- Brief: the material stage normalises texture names and owns the shared material table. → `normalize_map_texture_name` (`texture_mips/resolution.rs:4`) normalises only source lookup. `BounceMaterials`, `name_to_key`, `surface_materials.rs::load` and `reflection_probes/stage_key.rs` key by the raw map name. Two aliases are two table entries today. Planning around it: the strength table is keyed by normalised name, and every per-texture strength lookup goes through it. Aliases share one value; the raw-keyed tables stay as they are.
+- Brief: strength enters only the reflection-capture key. → True of the key. But `mean_from_slots` (`surface_materials/stats.rs:104`) excludes glow texels only when `strength > 0`. Planning around it: the predicate becomes "texture has an `_e` slot", as the Decision says. The fresh and reused-sidecar stats paths (`texture_mips/world.rs:226`, `:395`) change together.
+- Brief: `<mod root>/materials.toml`. → prl-build has no `--mod` flag. The mod root is `resolve_content_root(map)` (`level-compiler/src/main.rs:130`), the map's grandparent. The file resolves there, beside `texture_root`. `level-compiler` lacks the `toml` dependency; add the workspace `toml = "1"`.
+- Fluid-only names append to TextureNames in `encode_environment_volumes_section` (`pipeline.rs:2173`) and bake with `collect_stats = false`. The strength table and the no-`_e` entry checks run after that append, as the Path says. Fluid-only textures stay out of `BounceMaterials` and out of the reflection key (P47).
+- Reflection capture today derives strength from the prefix in three places: `surface_materials.rs:183`, the hash in `stage_key.rs:164`, and `shading.rs` via the pre-multiplied texel. All three switch to the baked strength. Capture parity adds per-face volume factor (max × colour). The key gains per-volume max and colour and per-face membership. `STAGE_VERSION` 14 → 15.
+- Runtime material tables: `level_texture_materials` (`level_load/tasks.rs:63`), `derive_texture_materials` (`capture/setup.rs:507`) and `derive_material_with_warning` (`prl_loader/geometry.rs:17`) each hold a copy of the warn-once logic. Each returns `Material` only. `MaterialUniformPlan::new` (`render-cpu/src/material_plan.rs:84`) takes the strength as a separate argument from the baked table. Callers: `renderer_textures.rs:131`, `:174`; models pass 0 at `renderer_models.rs:380`.
+- `xtask` `environment_gates.rs:92` pins `MATERIAL_PREFIX_NAMES` exactly. Dropping `neon` is the brief's owner-approved change; the gate list is edited in the retirement task.
+- `neon_dim_panel` is used by `combat-demo.map` (lines 102–105). `fluids/lava_64` (with `_e`) is used by no map, so the 1.0 default changes no shipped look.
+
+### Renderer
+- Path: check the 36-byte world vertex for padding before adding a stream. → It has none. Every field and bit is used (`render-data/src/geometry.rs:12`). Planning around it: a forward-only vertex stream in slot 2, `Uint32` (volume index + 1, 0 = none). It is built at load from per-face ranges, as `spec_owner_buffer` (slot 1) is (`level-loader/src/prl_spec_owners.rs`). Slot 2 is free; mover, fluid and depth pipelines are untouched. Lift the `face_index_ranges` helper rather than copy it.
+- AC "a non-member face sharing a vertex with it". → The compiler never shares vertices between faces (`level-compiler/src/geometry.rs:122`; `face_cut.rs:198` "every face owns its vertices"). Planning around it: "sharing a vertex" is tested as a coincident vertex position on an adjacent face, which is what the row guards: the id must not bleed across the shared edge. The loader refuses a PRL whose vertex is shared between faces of differing membership. The compiler never writes one.
+- Fog repacks and uploads every frame with no change gate. → Emissive follows the light bridge's dirty-flag pattern instead, through `UploadQueue::write_buffer`; the drift test polices raw writes.
+- `neon_emissive_strength_clears_the_bloom_threshold` (`bloom.rs:852`) asserts against `Material::Neon`. It is rewritten against the baked strength of the migrated bright panel.
+
+### Compiler entities and PRL
+- Decision: smallest wins "(summed brush volume, as `reflection_volume` and the environment volumes resolve), a tie going to the later in map order." → Environment volumes use summed brush volume, and their tie goes to the **earlier** entity (`collision/src/volumes.rs:314`). `reflection_volume` uses AABB volume, with ties to the earlier (`placement.rs:37`). The Decision's explicit rule is self-consistent, and `build_pipeline.md:103` already records it: summed brush volume, tie to the later. Planning around it: build the Decision as written. **Flagged for the owner's skim:** the stated precedent does not match on the tie.
+- Fog's volume cap warns and skips (`parse.rs:1618`). → Emissive fails past 256 as the Decision says, with a new error that names the authored count. Precedent: the fog plane-cap bail.
+- Fog volumes have no `origin` field. The co-op origin is the AABB centre (`fog_volume_bridge.rs:110`). Emissive writes the union AABB centre of its brushes; an emptied volume keeps it (P55).
+- `resolve_brush_region_bounds` over several brushes merges planes into one intersection. → Call it once per brush for per-hull planes, as environment volumes do (`parse/environment_volumes.rs` `resolve_leaf`). The containment test copies `capture_point.rs` `brush_contains`, plus an inclusive tolerance (P27).
+- Colour keys: `parse_fog_tint` falls back to white silently. → `emissive_color` needs a new warn-and-white reader. It divides by 255 and reads linear, as `parse_color255` does.
+- Byte-identical precedent: `tests/environment_volumes_compile.rs:289`. A default volume also leaves `ReflectionProbes` identical, since capture shades at strength × 1 × white. The test asserts that explicitly.
+
+### Scripting, co-op and clamp
+- Path: "Fog's presentation cases share test functions with lights, emitters and spin." → Mostly false. Cases are bespoke per kind. Shared bodies exist only in `presentation_conditioned_tests.rs` `install_changes` and a few multi-kind loops. Planning around it: a parity module parameterised over {fog, emissive} with one case per cited pin. Pins with no fog case (P13 freeze, P45 colour lifecycle via `setFogParams` tint) are added and run for both kinds, as the AC row requires.
+- Fog colour: no standalone tint primitive; `tint` rides `setFogParams` and clamps to [0, ∞). → `setEmissiveColor` is a new shape that clamps to [0, 1] (P49). "Colour writes following fog's tint" in the parity row is read as replication and lifecycle behaviour, not range.
+- P7 (`rate: 0`) and P10 (NaN): the JS and Luau converters reject non-finite numbers before dispatch (`scripting-core/src/conv.rs:73`). → Those cases are proven at the Rust dispatch boundary, as fog's are. From a script, a non-finite value surfaces as a conversion error.
+- P13 "script clock paused": the freeze exists only under `dev-tools` (`frame_loop/mod.rs:145`). → Tests drive the bridge and clamp with a held `script_time` while presented-frame time advances.
+- P30: `presentation_capture.rs` `after_apply` and the bridge's `FogAnimSlot` both keep `anim_start` by animation equality. → Emissive adds a clear-aware path. A brightness write in the drain marks the animation cleared, so an identical re-install restarts. Fog's opposite test (`presentation_capture_tests.rs:367`) stays.
+- Path: "no change to `flash_clamp`; … public `ValueClamp`". → `KeyedClamp` is private, and `ValueClamp` implements `KeyClamp` only in tests. Planning around it: `flash_clamp` stays unchanged. A new emissive clamp container outside it holds one `ValueClamp` per volume index. It adds a frame-start snapshot with rollback on acquire failure and merged `dt` (modelled on `GhostLookClamp`), reset on map load and on limiter enable.
+- `fog-pulse-demo.ts` is wired to no map. → The Scripting-surface example gets its own dev map with a `data_script`, triggers whose `on_fire` names `powerCut` and `doorLocked`, and a status lamp. Co-op manual checks extend `coop-presentation-test.{map,ts,luau}`.
+- Wire: `PresentationBindingKind` gains `Emissive = 3`; `COMPONENT_KIND` 29 is the next free discriminant. `WIRE_VERSION` 41 → 42 and `SNAPSHOT_VERSION` 25 → 26, with prose entries in `handshake.rs` and `networking.md` §Version gates. The baseline budget test (`presentation_budget_tests.rs`) gains a 256-volume count.
+- The E23 draft (`drafts/E23--photosensitivity-source-floor/index.md:27`) already names `emissive_volume`, so the grep gate passes today. Several `context/lib` docs and that draft cite `plans/ready/emissive-volumes`. They are repointed to `done/` at landing.
+
+## Delegated answers
+- **Split faces (BSP fragments, atlas sub-faces).** Membership follows the authored brush side. Each final Geometry face maps through `face_brushes`, remapped through the atlas cut, to its brush. Its side is found by plane and texture match, and that side's whole-polygon centroid is tested. One authored face stays whole across BSP fragments and atlas cuts (P29) with no new `Face` field. This avoids widening `Face`, which is spelled out in ~15 fixtures.
+- **Volume table: uniform, not storage.** Forward FRAGMENT storage is 8/8 and sampled is 16/16. Uniforms are 6/12, and 257 × vec4 is ~4 KiB against a 64 KiB binding. It is a new fragment-only binding in group 4 beside the animated-block table. Entry 0 is "no volume". The pinned binding-inventory test is updated.
+- **Value ceiling: 64.** That is 16× the migrated neon strength, so far above any look. A face at the ceiling inside a ceiling volume presents 64 × 64 = 4096, and bloom's pyramid sum of six levels stays under 65504 (P50). One constant serves `materials.toml` and the volume keys.
+
+## AC-to-proof
+
+Automated rows are numbered in brief order. `prl-build` tests run as `--bin prl-build` or `tests/`.
+
+| AC | Proof | Status |
+|---|---|---|
+| A1a Default 1.0 with and without a known prefix; no-`_e` packs 0 and samples nothing; volume table read only inside the `emissive_strength > 0` branch; skinned model packs 0 | material-stage strength tests; `material_plan` uniform tests; forward shader-source test; model uniform test | achievable as stated |
+| A1b `materials.toml` 4.0 reaches world, mover and fluid-only (P47); bad values; no-`_e` entry (P51); syntax, unknown-key and non-number warnings naming file and line; absent file silent; syntax error after good build (P53); normalisation (P46); duplicate keys (P54) | `materials_toml` parser tests (log capture); `tests/` compile fixtures with a mod-root `materials.toml`; warm-cache rebuild test | achievable as stated |
+| A1c Bake and runtime agree (capture term, bounce exclusion, uniform); runtime never opens `materials.toml` | agreement test across compiler and loader for one texture; grep gate in xtask (`materials.toml` only in `level-compiler`) | achievable as stated |
+| A1d Strength edit misses only reflection capture and rewrites id 60; lightmap, SH and `.prm` warm; `emissive = 0` still excludes glow texels | warm/cold `tests/` cache test (extend `coloured_bounce_cache.rs`) | achievable as stated |
+| A1e Former `neon_` is an unknown prefix, warned once; no `neon` in prefix tables; `_h` carves as Default | material derivation tests; xtask grep gate; `surface_depth` tests | achievable as stated |
+| A2 `gen_emissive.py` one default cutoff | `tools/tests` Python test | achievable as stated |
+| A3 Glow formula at brightness 0, 0.5, 1 and a non-white colour; no-script = max × colour; brightness clamp (P10); colour channel rules (P49); `emissive_color` parse | render-cpu packing tests; primitive dispatch tests; compiler key tests | achievable as stated (P10 NaN at the Rust boundary; see Corrections) |
+| A4 Bad keys, each warning once; fix before swap (P38); valid keys silent; ceiling finite glow and bloom (P50) | compiler key tests (log capture); ceiling arithmetic test against `Rgba16Float` max and the bloom pyramid | achievable as stated |
+| A5 Membership: centroid in or out; flush plane (P27); atlas sub-faces (P29); movers and fluids excluded; overlap, tie and nesting (P57); empty-volume warning (P28); emptied volume feeds limiter 0 (P56); 256 compiles, 257 fails naming the count | `emissive_volumes` membership tests in `prl-build`; `tests/` compile fixtures | achievable as stated |
+| A6 Default volume changes only id 60 | `tests/emissive_volumes_compile.rs` byte-identical test (precedent `environment_volumes_compile.rs:289`) | achievable as stated |
+| A7 Section round-trip; every map emits it; missing = stale; glow colour = linear mean of non-black texels; loader refusals | `level-format` round-trip and refusal tests; loader stale test; glow-mean test | achievable as stated |
+| A8 Member and adjacent non-member at brightness 0 and 1; volume 255 (P36); frame-N presentation (P12) | loader vertex-stream tests; packing tests; frame-order test on bridge → pack (GPU-free) | achievable as stated (shared vertex read as coincident position; see Corrections) |
+| A9 Capture shades member at strength × max × colour; max, colour, membership or static-texture strength change misses the capture cache | capture shading test; `stage_key` tests | achievable as stated |
+| A10 Scripting-surface example runs as a `content/dev` script on a dev map; flicker range, `powerCut` hold, `doorLocked` colour, finite fade settle; TS and Luau identical wire | dev-script surface test (precedent `switch-demo` surface tests); extend `member_builder_sdk_tests.rs` byte-identical test | achievable as stated |
+| A11 Fog parity pins P6–P11, P13, P19–P26, P35, P45, P55 | parameterised parity module over {fog, emissive}; missing fog cases added | achievable as stated |
+| A12 Deliberate differences P1–P5, P30–P33, P44; grep gate on min/max | emissive primitive and bridge tests; netcode presentation tests; xtask grep gate | achievable as stated |
+| A13 Flash limiter P14–P18, P33, P34, P37, P40–P43, P48, P52, P58, P59; scripts and wire unclamped | emissive clamp container tests (render-cpu) with driven frame times | achievable as stated |
+| A14 Migration script: dry run, real run, existing `materials.toml`, collision refusal with no partial write, prefix refusals | `tools/tests/test_migrate_neon_prefix.py` | achievable as stated |
+| A15 E23 draft names `emissive_volume`; every emissive sample ends `.rgb` | xtask grep gates | achievable as stated (E23 gate already passes) |
+| A16 combat-demo and reflection-probes-test compile after migration with no volume; bright panel's peak passes the threshold, dim panel's stays under | `tests/` compile of both maps plus a section read of baked strength × `_e` peak luminance | achievable as stated |
+| Ms1 Forward-pass GPU time: 0/1/256/256+16 animating, plus a no-`_e` view, against baseline | `POSTRETRO_GPU_TIMING=1` on Mac, measured fixture | measured (report) |
+| Ms2 CPU per-frame volume update at 256/16, limiter on and off | `POSTRETRO_CPU_TIMING` or a focused bench | measured (report) |
+| Ms3 Bytes uploaded per frame: zero when static, one entry per changed volume | upload-counter test (also proves the dirty gate) | measured (report) |
+| Ms4 prl-build stage time for membership and `materials.toml` on hallway, warm and cold | bake summary stage times | measured (report) |
+| V1 combat-demo bloom A/B; pulsing panel breathes; brightness 0 shows diffuse; grey-`_e` lamp red and green | owner, in-engine | manual |
+| V2 reflection-probes-test matches its pre-change look | owner, in-engine | manual |
+| V3 Two-player co-op dim, recolour and late join | owner, two machines | manual |
+
+## Tasks
+
+| # | Task | Owner | Depends on | Status |
+|---|---|---|---|---|
+| 1 | **Strength source (riskiest premise: one baked number for bake and runtime).** Parse `materials.toml` (warnings, normalisation, duplicates, ceiling) in the material stage. Build the strength table after the fluid-only append. Emissive section id 60: v1 with the texture block (strength + linear glow mean) and `volume_count` 0, plus loader and stale refusal. Runtime material uniform takes the baked strength for world, mover and fluid. Bounce exclusion predicate becomes "has `_e`". Reflection capture and key take the baked strength. Add `content/dev/materials.toml` with `neon/*` at 4.0 so looks hold while the prefix still exists. Proves A1a–d, part of A7 and A9. | integrating executor | — | |
+| 2 | **Retire `neon` and migrate.** Remove `Material::Neon` and its prefix, depth and gate entries. Rewrite the bloom test. `gen_emissive.py` uses one cutoff. Write `tools/migrate_neon_prefix.py` with tests, run it on `content/dev`, and update docs. Proves A1e, A2, A14, A16. | worker (script + content), integrating executor (Rust retirement) | 1 | |
+| 3 | **Volume compile.** FGD entry; parse `emissive_volume` keys with fix-then-swap; per-brush hulls; membership by authored side centroid; smallest wins with later tie; warnings; 256 cap. Volume block in id 60; loader validation; capture factor and key. Proves A3 (compile half), A4–A7, A9. | integrating executor | 1 | |
+| 4 | **Runtime presentation.** `EmissiveVolumeComponent` (shared contract), populated from id 60. Slot-2 volume-id stream, group-4 uniform table, shader branch, dirty-gated pack and upload in the frame-N order. Proves A8, A3 (runtime half), Ms3. | integrating executor | 3 | |
+| 5 | **Scripting surface.** `"emissive"` kind; three primitives with write-clears-animation semantics; clear-aware bridge; TS and Luau handles (`pulse`/`fade`/`flicker`); typedefs; byte-identical twins; dev example map and script. Docs: `scripting-reference.md` and `level_design.md`. Proves A10, A12 (local half). | worker, with the contract from 4 | 4 | |
+| 6 | **Co-op.** Binding kind 3, wire payload kind 29, clear-aware capture, version bumps, the parameterised fog/emissive parity module, budget count. Proves A11, A12 (co-op half). | worker | 5 | |
+| 7 | **Flash limiter.** Emissive clamp container around `ValueClamp`. Input is brightest member strength × glow luminance, and colour is glow colour × volume colour. Rollback, reset and toggle lifecycle. Proves A13. | worker | 4 | |
+| 8 | **Gates, content and measurement.** xtask grep gates (A1c, A1e, A12, A15). Extend combat-demo with a pulsing volume and a grey-`_e` lamp; extend the co-op fixture. Ms1, Ms2 and Ms4 runs on the Mac. | integrating executor | 5, 6, 7 | |
+
+Tasks 5 and 7 may run concurrently in worktrees once 4 lands (disjoint files: sim/SDK vs render-cpu/frame loop). Task 6 follows 5 on the same primitive types. The integrating executor merges and runs `cargo check` and the focused tests.

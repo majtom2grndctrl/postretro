@@ -654,6 +654,7 @@ pub(crate) fn install_capture_world(
         &ctx.registry.borrow(),
         &mut session.light_bridge,
         &mut session.fog_volume_bridge,
+        &mut session.emissive_volume_bridge,
         &mut session.emitter_bridge,
     );
     app.script_time = 0.0;

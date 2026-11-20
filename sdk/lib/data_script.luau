@@ -220,6 +220,20 @@ export type SetFogParamsStep = {
   args: { density: number?, glow: number?, edgeSoftness: number?, falloff: number?, tint: {number}?, saturation: number?, minBrightness: number?, lightRange: number? },
 }
 
+--- Emissive sequence step shapes. `SetEmissiveAnimationStep` is declared in
+--- `postretro.d.luau` (SDK lib block) and included in `SequenceStep` below.
+export type SetEmissiveBrightnessStep = {
+  id: number,
+  primitive: "setEmissiveBrightness",
+  args: { brightness: number },
+}
+
+export type SetEmissiveColorStep = {
+  id: number,
+  primitive: "setEmissiveColor",
+  args: { color: {number} },
+}
+
 export type MoverStartStep = {
   id: number,
   primitive: "moverStart",
@@ -342,7 +356,7 @@ export type FireStep = {
 --- Ordered member, group, subject-token, system and control steps. Steps
 --- begin in array order; `fire` queues a named dispatch, while `wait` stops
 --- the current drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | SetEmissiveBrightnessStep | SetEmissiveColorStep | SetEmissiveAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A

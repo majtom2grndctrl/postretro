@@ -4,12 +4,15 @@
 
 use glam::{Quat, Vec3};
 
-use postretro_entities::EmissiveVolumeComponent;
 use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
+use postretro_entities::{ComponentKind, ComponentValue, EmissiveVolumeComponent};
 use postretro_level_format::emissive::EmissiveVolumeRecord;
 use postretro_render_cpu::emissive_volume::{
     EmissiveTableUpload, EmissiveVolumeTable, volume_factor,
 };
+
+#[path = "emissive_volume_anim.rs"]
+mod anim;
 
 /// State carried across frames. Owned by the game layer so the renderer never
 /// holds component data.
@@ -22,6 +25,8 @@ pub(crate) struct EmissiveVolumeBridge {
     factors: Vec<[f32; 3]>,
     /// The CPU volume table and what the GPU copy is missing.
     table: EmissiveVolumeTable,
+    /// Brightness animation start times, in record order.
+    clock: anim::EmissiveAnimClock,
 }
 
 impl EmissiveVolumeBridge {
@@ -30,6 +35,7 @@ impl EmissiveVolumeBridge {
             entity_ids: Vec::new(),
             factors: Vec::new(),
             table: EmissiveVolumeTable::new(),
+            clock: anim::EmissiveAnimClock::new(),
         }
     }
 
@@ -74,6 +80,18 @@ impl EmissiveVolumeBridge {
             self.entity_ids.push(id);
         }
         self.factors.resize(self.entity_ids.len(), [0.0; 3]);
+        self.clock.reset(self.entity_ids.len());
+    }
+
+    /// Start every animation the level install left running (its `levelLoad`
+    /// installs) at script time 0, so the first running frame samples each
+    /// from its first sample, as the fog and light bridges start theirs.
+    pub(crate) fn start_installed_animations(&mut self, registry: &EntityRegistry) {
+        for (index, &id) in self.entity_ids.iter().enumerate() {
+            if let Ok(volume) = registry.get_component::<EmissiveVolumeComponent>(id) {
+                self.clock.seed(index, volume, 0.0);
+            }
+        }
     }
 
     /// Drop per-level state. The table pends every entry, so the next level's
@@ -82,18 +100,26 @@ impl EmissiveVolumeBridge {
         self.entity_ids.clear();
         self.factors.clear();
         self.table.reset();
+        self.clock.reset(0);
     }
 
-    /// Pack this frame's glow factor for every volume from its component.
-    /// Runs after the script drain and before render, so a brightness or
-    /// colour written this frame presents this frame. Allocation-free.
-    pub(crate) fn update(&mut self, registry: &EntityRegistry) {
-        for (factor, &id) in self.factors.iter_mut().zip(&self.entity_ids) {
+    /// Sample every running brightness animation at `script_time_seconds`
+    /// (the freeze-aware script clock) into its component, then pack this
+    /// frame's glow factor for every volume. Runs after the script drain and
+    /// before render, so a brightness or colour written this frame presents
+    /// this frame. Allocation-free unless a new animation run starts.
+    pub(crate) fn update(&mut self, registry: &mut EntityRegistry, script_time_seconds: f64) {
+        let now_ms = script_time_seconds * 1000.0;
+        for (index, (factor, &id)) in self.factors.iter_mut().zip(&self.entity_ids).enumerate() {
             // A volume entity outlives no level; a missing component keeps
             // its last factor rather than inventing one.
-            if let Ok(volume) = registry.get_component::<EmissiveVolumeComponent>(id) {
-                *factor = volume_factor(volume.min, volume.max, volume.brightness, volume.color);
-            }
+            let Ok(ComponentValue::EmissiveVolume(volume)) =
+                registry.get_component_value_mut(id, ComponentKind::EmissiveVolume)
+            else {
+                continue;
+            };
+            self.clock.advance(index, volume, now_ms);
+            *factor = volume_factor(volume.min, volume.max, volume.brightness, volume.color);
         }
         // Seam for the photosensitivity flash limiter: it substitutes each
         // volume's presented factor in `self.factors` here, after the

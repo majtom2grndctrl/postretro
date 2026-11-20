@@ -3181,7 +3181,7 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emissive volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
 - **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
 
@@ -3192,6 +3192,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | mover member | `getMapEntities("mover")` | `start`, `stop`, `reverse`, `goToPathNode`, `setSpinRate`, `setBlockPolicy` |
 | light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
+| emissive member | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker` (brightness in `[0, 1]`) |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
@@ -3205,6 +3206,8 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
+
+Light and fog members' `pulse`, `fade` and `flicker` take absolute values: a light's brightness multiplier, a fog's density. An emissive member's take **brightness in `[0, 1]`**, a position between the volume's authored `emissive_min` and `emissive_max`; values outside clamp. The map owns that range, so no script pushes a glowing face past what the mapper set.
 
 ### getMapEntities
 
@@ -3227,6 +3230,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"ghostLink"` | `GhostLinkHandle` (`arm`, `disarm`, `setMembers`, `setColorFilter`; see [ghost-links.md](ghost-links.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
+| `"emissive"` | `EmissiveVolumeHandle` | `id`, `position`, `tags`, `component` ([`EmissiveVolumeComponent`](#emissivevolumecomponent)) |
 | `"emitter"` | `EmitterEntity` | `id`, `position`, `tags`, `component` |
 | `"spawner"` | `SpawnerEntityHandle` | `id`, `position`, `tags`, `spawnedTags` |
 | `"trap"` | `TrapEntityHandle` | `id`, `position`, `tags` |
@@ -3752,6 +3756,38 @@ Returned in `FogVolumeHandle.component` from `getMapEntities("fog")`. All fields
 
 ---
 
+## EmissiveVolumeComponent
+
+Returned in `EmissiveVolumeHandle.component` from `getMapEntities("emissive")`, one per `emissive_volume` brush entity (see [Emissive Volumes](level_design.md#emissive-volumes)). A snapshot taken when the query runs; change the live volume with the emissive reaction primitives below.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `min` | `number` | The authored `emissive_min`: the glow multiplier at brightness `0`. No primitive writes it. |
+| `max` | `number` | The authored `emissive_max`: the multiplier at brightness `1`, and with no script. At least `min`. No primitive writes it. |
+| `brightness` | `number` | The scripted position between `min` and `max`, in `[0, 1]`: `0` glows at `min`, `1` at `max`. `1` until a script writes one; while an animation runs, its current sample. |
+| `color` | `readonly [number, number, number]` | The scripted linear tint, each channel in `[0, 1]`. The authored `emissive_color` until a script writes one. |
+
+A member face glows at its texture's `_e` colour × texture strength × (`min` + `brightness` × (`max` − `min`)) × `color`.
+
+```typescript
+const signs = getMapEntities("emissive", { tag: "bar_sign" });
+const reactions = signs.map((sign) =>
+  defineReaction("levelLoad", { sequence: sign.flicker({ min: 0.3, max: 1, rate: 6 }) }),
+);
+reactions.push(defineReaction("powerCut", { primitive: "setEmissiveBrightness", tag: "bar_sign", args: { brightness: 0 } }));
+reactions.push(defineReaction("doorLocked", { primitive: "setEmissiveColor", tag: "status_lamp", args: { color: [1, 0.05, 0.02] } }));
+```
+
+```lua
+for _, sign in Postretro.getMapEntities("emissive", { tag = "bar_sign" }) do
+  table.insert(reactions, Postretro.defineReaction("levelLoad", { sequence = sign:flicker({ min = 0.3, max = 1, rate = 6 }) }))
+end
+```
+
+`pulse` loops a sine between `min` and `max` over `periodMs`; `fade` ramps from `from` to `to` over `periodMs` once and holds `to`; `flicker` loops an irregular pattern between `min` and `max`, `rate` times a second. Each returns one `setEmissiveAnimation` step.
+
+---
+
 ## Reaction primitives
 
 Reaction primitives run from named reactions built with `defineReaction` and
@@ -3817,6 +3853,48 @@ Overwrites `FogVolumeComponent.falloff` on every target. `falloff` must be finit
 Combined partial-update primitive. Any subset of the eight fields may be present. Each field is validated independently per the rules above (out-of-range `density` / `glow` / `edgeSoftness` / `tint` channel / `saturation` / `minBrightness` clamp; a non-positive or non-finite `lightRange` clamps to `0.001`; out-of-range `falloff` is dropped). Absent fields preserve the target's current component value. The component is mutated once per target with the merged result; if all supplied fields fail validation, no write occurs for any target.
 
 Use `setFogParams` when an author wants to change two or more fields atomically — adjacent single-field steps would briefly observe a partial update on the GPU.
+
+### Emissive primitives
+
+Three primitives write an emissive volume, and none writes its authored `min` or `max`. Each is tag-targeted like the fog primitives: every tagged volume receives the write, a tagged entity that is not an emissive volume is skipped with a warning while the rest are still written, and a tag matching nothing does nothing. Values are brightness in `[0, 1]` and linear colour channels in `[0, 1]`.
+
+| Write | Brightness | Running animation | Colour |
+|-------|------------|-------------------|--------|
+| `setEmissiveBrightness` | set | **cleared** | kept |
+| `setEmissiveColor` | kept | kept, timing and all | set |
+| `setEmissiveAnimation` | the curve's samples | installed, or cleared by `null` | kept |
+
+Within one reaction body, writes apply in order, so the later of a brightness write and an animation install wins.
+
+### `setEmissiveBrightness`
+
+```typescript
+{ brightness: number }
+```
+
+Holds `brightness` on every target and stops any running brightness animation, as `setSpinRate` stops a spin tween. A finite fade it interrupts never settles over the written value. A value outside `[0, 1]` clamps, with one warning per write.
+
+### `setEmissiveColor`
+
+```typescript
+{ color: readonly [number, number, number] }
+```
+
+Sets the linear tint on every target. A channel above `1` reads `1` and a negative channel reads `0`, with one warning per write. Brightness and any running animation are left alone: a flicker keeps its timing and samples in the new colour.
+
+### `setEmissiveAnimation`
+
+```typescript
+{ periodMs: number, playCount?: number, brightness: number[] } | null
+```
+
+Installs a brightness curve on every target: `brightness` holds samples in `[0, 1]`, evenly spaced over `periodMs` and blended linearly. `playCount` absent loops forever; a finite count plays that many periods, then holds the last sample as the volume's brightness. `null` clears the curve and holds the brightness it last showed.
+
+- Samples outside `[0, 1]` clamp, with one warning.
+- A `periodMs` at or below `0`, or an empty `brightness`, warns and installs nothing; the volume keeps its animation and brightness.
+- A `flicker` at `rate: 0` builds an infinite period. Like any `NaN` or infinite number a script returns, it is an error naming the field: authored numbers must be finite.
+- `playCount: 0` reads `1`, with a warning.
+- Installing the curve that is already running keeps its timing, so a repeated `levelLoad` install does not restart it. Any other install starts from the first sample, including the same curve after a `setEmissiveBrightness` cleared it, even within one reaction.
 
 ### `applyDamage`
 

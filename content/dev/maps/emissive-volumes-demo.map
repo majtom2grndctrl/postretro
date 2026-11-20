@@ -1,0 +1,225 @@
+// Game: Postretro
+// Format: Standard
+// Emissive volumes fixture. Sealed room, interior 448 x 320 x 160 units, wall
+// thickness 16. Four plates sit on the north wall, each inside its own
+// emissive_volume -- from west to east: a bright bar sign and a dim bar sign,
+// both tagged bar_sign, an exit sign tagged exit_sign, and a status lamp with
+// a grey glow map tagged status_lamp, authored green.
+// emissive-volumes-demo.ts flickers both bar signs, pulses the lamp and fades
+// the exit sign up once at load. Two floor pads fire the scripted reactions:
+// the west pad fires powerCut, which holds both bar signs dark; the east pad
+// fires doorLocked, which turns the lamp red while its pulse runs on.
+// Each pad fires once per level load. Reload to test again.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/emissive-volumes-demo.map -o content/dev/maps/emissive-volumes-demo.prl
+// Run: cargo run -p xtask -- run --features dev-tools -- content/dev/maps/emissive-volumes-demo.prl
+// NOTE: keep map comments free of braces and quotes, and never leave a blank
+// line inside an entity block -- the .map parser silently drops later entities.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"data_script" "../scripts/emissive-volumes-demo.ts"
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+// floor
+{
+( 464 -16 -16 ) ( 464 336 0 ) ( 464 336 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 -16 ) ( -16 -16 0 ) ( -16 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( 464 336 -16 ) ( -16 336 0 ) ( -16 336 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 -16 0 ) ( 464 -16 -16 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 0 ) ( 464 -16 0 ) ( -16 -16 0 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 -16 ) ( 464 336 -16 ) ( -16 336 -16 ) debug_ceiling_grey 0 0 0 1 1
+}
+// ceiling
+{
+( 464 -16 160 ) ( 464 336 176 ) ( 464 336 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 160 ) ( -16 -16 176 ) ( -16 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( 464 336 160 ) ( -16 336 176 ) ( -16 336 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 -16 176 ) ( 464 -16 160 ) debug_ceiling_grey 0 0 0 1 1
+( -16 336 176 ) ( 464 -16 176 ) ( -16 -16 176 ) debug_ceiling_grey 0 0 0 1 1
+( -16 -16 160 ) ( 464 336 160 ) ( -16 336 160 ) debug_ceiling_grey 0 0 0 1 1
+}
+// west wall
+{
+( 0 -16 0 ) ( 0 336 160 ) ( 0 336 0 ) concrete_stone_033 0 0 0 1 1
+( -16 336 0 ) ( -16 -16 160 ) ( -16 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 336 0 ) ( -16 336 160 ) ( -16 336 0 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 0 -16 160 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
+( -16 336 160 ) ( 0 -16 160 ) ( -16 -16 160 ) concrete_stone_033 0 0 0 1 1
+( -16 -16 0 ) ( 0 336 0 ) ( -16 336 0 ) concrete_stone_033 0 0 0 1 1
+}
+// east wall
+{
+( 464 -16 0 ) ( 464 336 160 ) ( 464 336 0 ) concrete_stone_033 0 0 0 1 1
+( 448 336 0 ) ( 448 -16 160 ) ( 448 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 464 336 0 ) ( 448 336 160 ) ( 448 336 0 ) concrete_stone_033 0 0 0 1 1
+( 448 -16 0 ) ( 464 -16 160 ) ( 464 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 448 336 160 ) ( 464 -16 160 ) ( 448 -16 160 ) concrete_stone_033 0 0 0 1 1
+( 448 -16 0 ) ( 464 336 0 ) ( 448 336 0 ) concrete_stone_033 0 0 0 1 1
+}
+// south wall
+{
+( 448 -16 0 ) ( 448 0 160 ) ( 448 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 0 -16 160 ) ( 0 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 448 0 0 ) ( 0 0 160 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 448 -16 160 ) ( 448 -16 0 ) concrete_stone_033 0 0 0 1 1
+( 0 0 160 ) ( 448 -16 160 ) ( 0 -16 160 ) concrete_stone_033 0 0 0 1 1
+( 0 -16 0 ) ( 448 0 0 ) ( 0 0 0 ) concrete_stone_033 0 0 0 1 1
+}
+// north wall
+{
+( 448 320 0 ) ( 448 336 160 ) ( 448 336 0 ) concrete_stone_033 0 0 0 1 1
+( 0 336 0 ) ( 0 320 160 ) ( 0 320 0 ) concrete_stone_033 0 0 0 1 1
+( 448 336 0 ) ( 0 336 160 ) ( 0 336 0 ) concrete_stone_033 0 0 0 1 1
+( 0 320 0 ) ( 448 320 160 ) ( 448 320 0 ) concrete_stone_033 0 0 0 1 1
+( 0 336 160 ) ( 448 320 160 ) ( 0 320 160 ) concrete_stone_033 0 0 0 1 1
+( 0 320 0 ) ( 448 336 0 ) ( 0 336 0 ) concrete_stone_033 0 0 0 1 1
+}
+// bright bar sign, glowing face toward the room
+{
+( 152 312 72 ) ( 152 320 120 ) ( 152 320 72 ) metal/metal_rough_046a 0 0 0 1 1
+( 24 320 72 ) ( 24 312 120 ) ( 24 312 72 ) metal/metal_rough_046a 0 0 0 1 1
+( 152 320 72 ) ( 24 320 120 ) ( 24 320 72 ) metal/metal_rough_046a 0 0 0 1 1
+( 24 312 72 ) ( 152 312 120 ) ( 152 312 72 ) neon/glow_panel 0 0 0 1 1
+( 24 320 120 ) ( 152 312 120 ) ( 24 312 120 ) metal/metal_rough_046a 0 0 0 1 1
+( 24 312 72 ) ( 152 320 72 ) ( 24 320 72 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// dim bar sign
+{
+( 272 312 72 ) ( 272 320 120 ) ( 272 320 72 ) metal/metal_rough_046a 0 0 0 1 1
+( 176 320 72 ) ( 176 312 120 ) ( 176 312 72 ) metal/metal_rough_046a 0 0 0 1 1
+( 272 320 72 ) ( 176 320 120 ) ( 176 320 72 ) metal/metal_rough_046a 0 0 0 1 1
+( 176 312 72 ) ( 272 312 120 ) ( 272 312 72 ) neon/dim_panel 0 0 0 1 1
+( 176 320 120 ) ( 272 312 120 ) ( 176 312 120 ) metal/metal_rough_046a 0 0 0 1 1
+( 176 312 72 ) ( 272 320 72 ) ( 176 320 72 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// exit sign
+{
+( 360 312 104 ) ( 360 320 128 ) ( 360 320 104 ) metal/metal_rough_046a 0 0 0 1 1
+( 296 320 104 ) ( 296 312 128 ) ( 296 312 104 ) metal/metal_rough_046a 0 0 0 1 1
+( 360 320 104 ) ( 296 320 128 ) ( 296 320 104 ) metal/metal_rough_046a 0 0 0 1 1
+( 296 312 104 ) ( 360 312 128 ) ( 360 312 104 ) neon/glow_panel 0 0 0 1 1
+( 296 320 128 ) ( 360 312 128 ) ( 296 312 128 ) metal/metal_rough_046a 0 0 0 1 1
+( 296 312 104 ) ( 360 320 104 ) ( 296 320 104 ) metal/metal_rough_046a 0 0 0 1 1
+}
+// status lamp lens
+{
+( 424 312 80 ) ( 424 320 112 ) ( 424 320 80 ) metal/metal_rough_046a 0 0 0 1 1
+( 392 320 80 ) ( 392 312 112 ) ( 392 312 80 ) metal/metal_rough_046a 0 0 0 1 1
+( 424 320 80 ) ( 392 320 112 ) ( 392 320 80 ) metal/metal_rough_046a 0 0 0 1 1
+( 392 312 80 ) ( 424 312 112 ) ( 424 312 80 ) neon/status_lamp 0 0 0 1 1
+( 392 320 112 ) ( 424 312 112 ) ( 392 312 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 392 312 80 ) ( 424 320 80 ) ( 392 320 80 ) metal/metal_rough_046a 0 0 0 1 1
+}
+}
+// entity 1
+{
+"classname" "player_spawn"
+"origin" "224 40 24"
+"angles" "0 90 0"
+}
+// entity 2 -- volume around the bright bar sign
+{
+"classname" "emissive_volume"
+"emissive_min" "0"
+"emissive_max" "1"
+"_tags" "bar_sign"
+{
+( 160 300 64 ) ( 160 314 128 ) ( 160 314 64 ) trigger 0 0 0 1 1
+( 16 314 64 ) ( 16 300 128 ) ( 16 300 64 ) trigger 0 0 0 1 1
+( 160 314 64 ) ( 16 314 128 ) ( 16 314 64 ) trigger 0 0 0 1 1
+( 16 300 64 ) ( 160 300 128 ) ( 160 300 64 ) trigger 0 0 0 1 1
+( 16 314 128 ) ( 160 300 128 ) ( 16 300 128 ) trigger 0 0 0 1 1
+( 16 300 64 ) ( 160 314 64 ) ( 16 314 64 ) trigger 0 0 0 1 1
+}
+}
+// entity 3 -- volume around the dim bar sign
+{
+"classname" "emissive_volume"
+"emissive_min" "0"
+"emissive_max" "1"
+"_tags" "bar_sign"
+{
+( 280 300 64 ) ( 280 314 128 ) ( 280 314 64 ) trigger 0 0 0 1 1
+( 168 314 64 ) ( 168 300 128 ) ( 168 300 64 ) trigger 0 0 0 1 1
+( 280 314 64 ) ( 168 314 128 ) ( 168 314 64 ) trigger 0 0 0 1 1
+( 168 300 64 ) ( 280 300 128 ) ( 280 300 64 ) trigger 0 0 0 1 1
+( 168 314 128 ) ( 280 300 128 ) ( 168 300 128 ) trigger 0 0 0 1 1
+( 168 300 64 ) ( 280 314 64 ) ( 168 314 64 ) trigger 0 0 0 1 1
+}
+}
+// entity 4 -- volume around the exit sign
+{
+"classname" "emissive_volume"
+"emissive_min" "0"
+"emissive_max" "1"
+"_tags" "exit_sign"
+{
+( 368 300 96 ) ( 368 314 136 ) ( 368 314 96 ) trigger 0 0 0 1 1
+( 288 314 96 ) ( 288 300 136 ) ( 288 300 96 ) trigger 0 0 0 1 1
+( 368 314 96 ) ( 288 314 136 ) ( 288 314 96 ) trigger 0 0 0 1 1
+( 288 300 96 ) ( 368 300 136 ) ( 368 300 96 ) trigger 0 0 0 1 1
+( 288 314 136 ) ( 368 300 136 ) ( 288 300 136 ) trigger 0 0 0 1 1
+( 288 300 96 ) ( 368 314 96 ) ( 288 314 96 ) trigger 0 0 0 1 1
+}
+}
+// entity 5 -- volume around the status lamp, authored green
+{
+"classname" "emissive_volume"
+"emissive_min" "0"
+"emissive_max" "1"
+"emissive_color" "40 255 60"
+"_tags" "status_lamp"
+{
+( 432 300 72 ) ( 432 314 120 ) ( 432 314 72 ) trigger 0 0 0 1 1
+( 384 314 72 ) ( 384 300 120 ) ( 384 300 72 ) trigger 0 0 0 1 1
+( 432 314 72 ) ( 384 314 120 ) ( 384 314 72 ) trigger 0 0 0 1 1
+( 384 300 72 ) ( 432 300 120 ) ( 432 300 72 ) trigger 0 0 0 1 1
+( 384 314 120 ) ( 432 300 120 ) ( 384 300 120 ) trigger 0 0 0 1 1
+( 384 300 72 ) ( 432 314 72 ) ( 384 314 72 ) trigger 0 0 0 1 1
+}
+}
+// entity 6 -- west pad: fires powerCut
+{
+"classname" "trigger_volume"
+"activation" "touch"
+"on_fire" "powerCut"
+"fire_mode" "once"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "power_cut_pad"
+{
+( 160 96 0 ) ( 160 192 64 ) ( 160 192 0 ) trigger 0 0 0 1 1
+( 64 192 0 ) ( 64 96 64 ) ( 64 96 0 ) trigger 0 0 0 1 1
+( 160 192 0 ) ( 64 192 64 ) ( 64 192 0 ) trigger 0 0 0 1 1
+( 64 96 0 ) ( 160 96 64 ) ( 160 96 0 ) trigger 0 0 0 1 1
+( 64 192 64 ) ( 160 96 64 ) ( 64 96 64 ) trigger 0 0 0 1 1
+( 64 96 0 ) ( 160 192 0 ) ( 64 192 0 ) trigger 0 0 0 1 1
+}
+}
+// entity 7 -- east pad: fires doorLocked
+{
+"classname" "trigger_volume"
+"activation" "touch"
+"on_fire" "doorLocked"
+"fire_mode" "once"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "door_locked_pad"
+{
+( 384 96 0 ) ( 384 192 64 ) ( 384 192 0 ) trigger 0 0 0 1 1
+( 288 192 0 ) ( 288 96 64 ) ( 288 96 0 ) trigger 0 0 0 1 1
+( 384 192 0 ) ( 288 192 64 ) ( 288 192 0 ) trigger 0 0 0 1 1
+( 288 96 0 ) ( 384 96 64 ) ( 384 96 0 ) trigger 0 0 0 1 1
+( 288 192 64 ) ( 384 96 64 ) ( 288 96 64 ) trigger 0 0 0 1 1
+( 288 96 0 ) ( 384 192 0 ) ( 288 192 0 ) trigger 0 0 0 1 1
+}
+}
+// entity 8 -- room light
+{
+"classname" "light"
+"origin" "224 160 144"
+"light" "150"
+"_color" "255 245 230"
+"_falloff_range" "300"
+}

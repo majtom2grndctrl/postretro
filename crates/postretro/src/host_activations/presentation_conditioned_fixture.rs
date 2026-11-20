@@ -358,6 +358,13 @@ fn installed_with_reactions(
         &mut session.scripting.sequence_registry,
         ctx.clone(),
     );
+    postretro_sim::scripting::reactions::registry::register_emissive_reaction_primitives(
+        &mut session.scripting.reaction_registry,
+    );
+    postretro_sim::scripting::reactions::registry::register_sequenced_emissive_primitives(
+        &mut session.scripting.sequence_registry,
+        ctx.clone(),
+    );
     crate::scripting::primitives::light::register_sequenced_light_primitives(
         &mut session.scripting.sequence_registry,
         ctx.clone(),
@@ -448,6 +455,7 @@ fn installed_with_reactions(
         &ctx.registry.borrow(),
         &mut session.light_bridge,
         &mut session.fog_volume_bridge,
+        &mut session.emissive_volume_bridge,
         &mut session.emitter_bridge,
     );
     app.script_time = 0.0;

@@ -213,6 +213,9 @@ fn registries(app: &mut crate::App, ctx: &ScriptCtx) {
     );
     register_emitter_reaction_primitives(&mut scripting.reaction_registry);
     register_fog_reaction_primitives(&mut scripting.reaction_registry);
+    postretro_sim::scripting::reactions::registry::register_emissive_reaction_primitives(
+        &mut scripting.reaction_registry,
+    );
     register_npc_state_reaction_primitives(&mut scripting.reaction_registry);
     register_grant_reactions(&mut scripting.reaction_registry);
     register_mover_reaction_primitives(
@@ -226,6 +229,10 @@ fn registries(app: &mut crate::App, ctx: &ScriptCtx) {
     );
     register_trigger_reaction_primitives(&mut scripting.reaction_registry, Default::default());
     register_sequenced_fog_primitives(&mut scripting.sequence_registry, ctx.clone());
+    postretro_sim::scripting::reactions::registry::register_sequenced_emissive_primitives(
+        &mut scripting.sequence_registry,
+        ctx.clone(),
+    );
     register_sequenced_mover_primitives(
         &mut scripting.sequence_registry,
         ctx.clone(),

@@ -46,6 +46,22 @@ pub struct EmissiveVolumeComponent {
     /// Running brightness animation; `None` holds `brightness`.
     #[serde(default)]
     pub animation: Option<EmissiveAnimation>,
+    /// Install serial: names the current animation run. It changes whenever
+    /// an install starts a run rather than continuing the running one, which
+    /// is any install over no animation or a different one. Re-installing the
+    /// running curve keeps it. So a brightness write that clears the curve,
+    /// then an identical re-install in the same drain, still reads as a new
+    /// run although the frame bridge never sees the gap (`research.md` P30).
+    ///
+    /// Every consumer that keeps an animation start time (the frame bridge,
+    /// co-op presentation capture) restarts when this changes and keeps its
+    /// start while it holds. Engine bookkeeping: never serialized, so scripts
+    /// and the wire never see it. Install a curve only through
+    /// [`Self::install_animation`]. A clear (`animation = None`, or
+    /// [`Self::hold_brightness`]) needs no bump: the next install over no
+    /// curve starts a new run.
+    #[serde(skip)]
+    pub animation_serial: u32,
 }
 
 impl EmissiveVolumeComponent {
@@ -58,7 +74,25 @@ impl EmissiveVolumeComponent {
             brightness: 1.0,
             color,
             animation: None,
+            animation_serial: 0,
         }
+    }
+
+    /// Install `animation`. The running curve, re-installed, keeps its run
+    /// (and so its start time); anything else starts a new run.
+    pub fn install_animation(&mut self, animation: EmissiveAnimation) {
+        if self.animation.as_ref() != Some(&animation) {
+            self.animation_serial = self.animation_serial.wrapping_add(1);
+        }
+        self.animation = Some(animation);
+    }
+
+    /// Hold `brightness`, ending any running animation: a brightness write
+    /// clears the curve, as `setSpinRate` does. The next install starts a
+    /// new run, even of the curve just cleared.
+    pub fn hold_brightness(&mut self, brightness: f32) {
+        self.brightness = brightness;
+        self.animation = None;
     }
 }
 
@@ -98,11 +132,54 @@ mod tests {
         assert_eq!(json["brightness"], 1.0);
         assert_eq!(json["animation"]["periodMs"], 500.0);
         assert_eq!(json["animation"]["playCount"], 2);
+        assert!(
+            json.get("animationSerial").is_none() && json.get("animation_serial").is_none(),
+            "the install serial is engine bookkeeping, never serialized"
+        );
         let back: ComponentValue = serde_json::from_value(json).unwrap();
         assert_eq!(back, ComponentValue::EmissiveVolume(component));
 
         let anim: EmissiveAnimation =
             serde_json::from_str(r#"{"periodMs": 100, "brightness": [1]}"#).unwrap();
         assert_eq!(anim.play_count, None);
+    }
+
+    fn curve(brightness: Vec<f32>) -> EmissiveAnimation {
+        EmissiveAnimation {
+            period_ms: 500.0,
+            play_count: None,
+            brightness,
+        }
+    }
+
+    // P6 and P30 at the source of the signal: re-installing the running curve
+    // keeps its run; a different curve, or the same one after a brightness
+    // write cleared it, starts a new run.
+    #[test]
+    fn the_install_serial_changes_only_when_an_install_starts_a_new_run() {
+        let mut volume = EmissiveVolumeComponent::authored(0.0, 1.0, [1.0; 3]);
+        volume.install_animation(curve(vec![0.0, 1.0]));
+        let first = volume.animation_serial;
+        volume.install_animation(curve(vec![0.0, 1.0]));
+        assert_eq!(
+            volume.animation_serial, first,
+            "identical re-install continues"
+        );
+
+        volume.install_animation(curve(vec![1.0, 0.0]));
+        let second = volume.animation_serial;
+        assert_ne!(second, first, "a different curve is a new run");
+
+        volume.hold_brightness(0.25);
+        assert_eq!((volume.brightness, volume.animation.as_ref()), (0.25, None));
+        assert_eq!(
+            volume.animation_serial, second,
+            "a hold alone starts nothing"
+        );
+        volume.install_animation(curve(vec![1.0, 0.0]));
+        assert_ne!(
+            volume.animation_serial, second,
+            "the cleared curve re-installed is a new run"
+        );
     }
 }

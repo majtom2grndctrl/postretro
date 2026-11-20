@@ -34,6 +34,11 @@ const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
         "entities/fog_volumes.luau",
     ),
     (
+        "wrapEmissiveVolumeEntity",
+        include_str!("../../../sdk/lib/entities/emissive_volumes.luau"),
+        "entities/emissive_volumes.luau",
+    ),
+    (
         "wrapMoverEntity",
         include_str!("../../../sdk/lib/entities/movers.luau"),
         "entities/movers.luau",

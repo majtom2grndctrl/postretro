@@ -11,7 +11,8 @@
 --- Capability for entities with a scalar animation channel. `Channel` is
 --- type-level documentation only; the handle's implementation knows which
 --- channel to drive. Composed by `LightEntityHandle` (brightness) and
---- `FogVolumeHandle` (density).
+--- `FogVolumeHandle` (density) and `EmissiveVolumeHandle` (brightness in
+--- [0, 1]).
 export type AnimatableScalar<Channel> = {
   pulse: (self: any, opts: { min: number, max: number, periodMs: number }) -> {SequenceStep},
   fade: (self: any, opts: { from: number, to: number, periodMs: number }) -> {SequenceStep},
@@ -39,6 +40,22 @@ export type LightEntityHandle = {
   flicker: (self: LightEntityHandle, opts: { min: number, max: number, rate: number }) -> {SetLightAnimationStep},
   colorShift: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
   sweep: (self: LightEntityHandle, opts: { values: {Vec3}, periodMs: number }) -> {SetLightAnimationStep},
+}
+
+--- Emissive member returned by `getMapEntities("emissive")`.
+--- Composes the brightness scalar capability: `pulse`, `fade` and `flicker`
+--- take brightness in [0, 1] across the volume's authored
+--- `emissive_min`..`emissive_max`, unlike lights and fog, whose methods take
+--- absolute values. Out-of-range values clamp.
+export type EmissiveVolumeHandle = {
+  id: EntityId,
+  position: Vec3,
+  tags: {string},
+  component: EmissiveVolumeComponent,
+
+  pulse: (self: EmissiveVolumeHandle, opts: { min: number, max: number, periodMs: number }) -> {SetEmissiveAnimationStep},
+  fade: (self: EmissiveVolumeHandle, opts: { from: number, to: number, periodMs: number }) -> {SetEmissiveAnimationStep},
+  flicker: (self: EmissiveVolumeHandle, opts: { min: number, max: number, rate: number }) -> {SetEmissiveAnimationStep},
 }
 
 --- Fog member returned by `getMapEntities("fog")`.
@@ -208,7 +225,7 @@ export type AttackPoolEntityHandle = {
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -225,6 +242,7 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "ghostLink", filter: MapEntityFilter?) -> {GhostLinkHandle})
   & ((kind: "light", filter: MapEntityFilter?) -> {LightEntityHandle})
   & ((kind: "fog", filter: MapEntityFilter?) -> {FogVolumeHandle})
+  & ((kind: "emissive", filter: MapEntityFilter?) -> {EmissiveVolumeHandle})
   & ((kind: "emitter", filter: MapEntityFilter?) -> {EmitterEntity})
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
   & ((kind: "trap", filter: MapEntityFilter?) -> {TrapEntityHandle})
@@ -460,6 +478,33 @@ export type SetFogAnimationStep = {
   args: FogAnimation?,
 }
 
+--- Sequence step that holds a brightness in [0, 1] on a single emissive
+--- volume, clearing any running brightness animation. Out-of-range values
+--- clamp.
+export type SetEmissiveBrightnessStep = {
+  id: EntityId,
+  primitive: "setEmissiveBrightness",
+  args: { brightness: number },
+}
+
+--- Sequence step that sets a single emissive volume's linear tint. Channels
+--- clamp to [0, 1]. Brightness and any running animation are left alone.
+export type SetEmissiveColorStep = {
+  id: EntityId,
+  primitive: "setEmissiveColor",
+  args: { color: {number} },
+}
+
+--- Sequence step that installs (or clears, when `args` is `nil`) a
+--- brightness animation on a single emissive volume. Clearing holds the
+--- last sampled brightness. `EmissiveVolumeHandle`'s `pulse`, `fade` and
+--- `flicker` emit it.
+export type SetEmissiveAnimationStep = {
+  id: EntityId,
+  primitive: "setEmissiveAnimation",
+  args: EmissiveAnimation?,
+}
+
 export type MoverStartStep = {
   id: EntityId,
   primitive: "moverStart",
@@ -599,7 +644,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | SetEmissiveBrightnessStep | SetEmissiveColorStep | SetEmissiveAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A

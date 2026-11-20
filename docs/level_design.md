@@ -323,6 +323,44 @@ Set it on the `worldspawn` entity, not on individual fog entities.
 
 ---
 
+## Emissive Volumes
+
+An `emissive_volume` brush scales and tints the glow of the faces inside it, and gives scripts a handle to pulse, fade, flicker, dim or recolour that glow. It works on faces whose texture already glows: one with an `_e` map (see [Emissive Maps](#emissive-maps)). Its brushes never render, collide or bake.
+
+### Placing an `emissive_volume`
+
+1. Draw a brush around the glowing faces: a thin slab over a sign's face is enough.
+2. Tie it to `emissive_volume` (**Entity > Tie to Entity**, or `T`). An entity may own several brushes.
+3. Set its keys. Only the brush's shape matters; its texture does not.
+
+A face belongs to a volume when the centre of the face as you drew it lies inside one of the volume's brushes. A face lying in the plane of a volume brush's side counts as inside, so a slab flush on a wall catches the wall's faces too; keep the slab clear of faces you do not mean. A face the compiler splits into pieces glows as one.
+
+- **Overlaps:** a face inside several volumes belongs to the smallest (by brush volume); two of the same size go to the later one in the map. A volume nested inside another keeps its faces whichever comes first.
+- **A volume with no glowing face warns**, naming the entity, including one a smaller volume has emptied. It still compiles, and scripts can still address it.
+- **At most 256 volumes per map.** The 257th stops the compile, naming the count.
+- **Static world faces only.** Movers and fluids glow at their texture strength alone; a volume never reaches them, nor models.
+
+### Keys
+
+| Key | Type | Default | What it does |
+|-----|------|---------|--------------|
+| `emissive_min` | float | `0` | The glow multiplier at scripted brightness `0`. |
+| `emissive_max` | float | `1` | The glow multiplier at scripted brightness `1`, and with no script. |
+| `emissive_color` | color | `255 255 255` | Tints the glow. Each channel is read as linear, `0`–`255`. |
+| `_tags` | string | `""` | Space-delimited tags. Scripts find volumes by tag. |
+
+A face's glow is its texture's `_e` colour × its texture strength × (`emissive_min` + brightness × (`emissive_max` − `emissive_min`)) × `emissive_color`. Brightness is a script's value in `0`–`1`; it is `1` until a script writes one, so an unscripted volume glows at `emissive_max` in `emissive_color`. A volume at the defaults changes nothing.
+
+Bad keys never stop the compile; each warns, naming the key. A negative value reads `0`, a value that is not a number reads its default, and a value above `64` reads `64`. Then a minimum above the maximum swaps with it. A malformed `emissive_color` reads white.
+
+### Changing glow from scripts
+
+Scripts own brightness and colour; the map owns the range. `getMapEntities("emissive", { tag })` returns each volume, whose `pulse`, `fade` and `flicker` animate brightness in `0`–`1`, unlike lights and fog, whose methods take absolute values. `setEmissiveBrightness` holds a brightness and stops any running animation; `setEmissiveColor` recolours without touching brightness or its animation. No script can push a face past `emissive_max` or tint it brighter than white. See [Emissive primitives](scripting-reference.md#emissive-primitives).
+
+Reflections capture each volume's unscripted look: its faces at `emissive_max` in `emissive_color`. A script that dims a sign does not dim its reflection.
+
+---
+
 ## Environment Volumes: Fluids, Gravity and Push
 
 Three non-solid brush entities change what a region does to the player:
@@ -919,6 +957,7 @@ A `{diffuse}_e.png` beside a texture makes it glow: the forward pass adds the ma
 
 - **Format:** RGB colour PNG, authored as ordinary sRGB colour. Black means no glow. Keep alpha opaque; it is reserved.
 - **Where:** world brushes, movers and fluids glow. Models do not; they load only their diffuse.
+- **Per placement:** an [`emissive_volume`](#emissive-volumes) scales and tints the glow of the world faces inside it, and lets scripts animate it.
 - **Effect:** self-illumination only. Glow lights nothing around it — place a light entity for that — but bright glow blooms. A glowing pixel blooms once its linear luminance (`_e` colour × strength) passes `1.0`.
 
 Example: `sign.png` → diffuse; `sign_e.png` → glow colour.

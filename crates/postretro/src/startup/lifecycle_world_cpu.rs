@@ -34,6 +34,7 @@ pub(crate) fn start_installed_presentation_animations(
     registry: &postretro_entities::EntityRegistry,
     lights: &mut crate::scripting_systems::light_bridge::LightBridge,
     fog: &mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    emissive: &mut crate::scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge,
     emitters: &mut crate::scripting_systems::emitter_bridge::EmitterBridge,
 ) {
     use postretro_entities::{ComponentKind, ComponentValue};
@@ -52,6 +53,7 @@ pub(crate) fn start_installed_presentation_animations(
             fog.seed_replicated_state(registry, id, Some(0.0));
         }
     }
+    emissive.start_installed_animations(registry);
     emitters.start_installed_animations(registry);
 }
 

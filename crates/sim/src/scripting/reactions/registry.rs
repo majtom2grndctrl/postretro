@@ -21,6 +21,11 @@ pub use crate::fx::fog_reactions::{
     register_fog_reaction_primitives, register_sequenced_fog_primitives,
 };
 
+pub use crate::fx::emissive_reactions::{
+    EMISSIVE_PRIMITIVES, register_emissive_reaction_primitives,
+    register_sequenced_emissive_primitives,
+};
+
 pub use crate::attack_pools::commands::register_sequenced_attack_pool_primitives;
 pub use crate::mover_commands::register_sequenced_mover_primitives;
 pub use crate::spawner::register_sequenced_spawner_primitives;

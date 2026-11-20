@@ -64,6 +64,9 @@ enum QueryFilter {
     FogVolume {
         tag: Option<String>,
     },
+    EmissiveVolume {
+        tag: Option<String>,
+    },
     KinematicMover {
         tag: Option<String>,
     },
@@ -97,6 +100,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         "transform" => Ok(QueryFilter::Transform { tag }),
         "emitter" => Ok(QueryFilter::Emitter { tag }),
         "fog_volume" => Ok(QueryFilter::FogVolume { tag }),
+        "emissive_volume" => Ok(QueryFilter::EmissiveVolume { tag }),
         "kinematic_mover" => Ok(QueryFilter::KinematicMover { tag }),
         "trigger_volume" => Ok(QueryFilter::TriggerVolume { tag }),
         "teleporter" => Ok(QueryFilter::Teleporter { tag }),
@@ -108,7 +112,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
         other => Err(ScriptError::InvalidArgument {
             reason: format!(
                 "worldQuery: unknown component `{other}`; supported: \
-                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"sprite_visual\""
+                 \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"emissive_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"sprite_visual\""
             ),
         }),
     }
@@ -116,7 +120,7 @@ fn parse_query_filter(component: &str, tag: Option<String>) -> Result<QueryFilte
 
 const WORLD_QUERY_DOC: &str = "Return an array of raw entity snapshots matching the filter. Raises outside a level's data script (module evaluation or `setupLevel`). \
      Returns map-placed instances only; an entity a runtime spawn carries never appears. \
-     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"sprite_visual\", tag?: string }. \
+     Filter shape: { component: \"light\" | \"transform\" | \"emitter\" | \"fog_volume\" | \"emissive_volume\" | \"kinematic_mover\" | \"trigger_volume\" | \"teleporter\" | \"ghost_link\" | \"spawner\" | \"projectile_trap\" | \"attack_pool\" | \"sprite_visual\", tag?: string }. \
      `\"sprite_visual\"` always returns `[]` (engine-managed). \
      Unknown component values raise InvalidArgument. \
      The SDK's `getMapEntities` (`map_entities.ts`) lowers to it and wraps each snapshot in its kind's member handle; the raw primitive is absent from author-facing typedefs.";
@@ -263,6 +267,62 @@ fn collect_fog_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_
     Value::Array(arr)
 }
 
+/// Collect emissive-volume member snapshots. The component carries the
+/// authored range and the scripted brightness and colour (`{ min, max,
+/// brightness, color }`); the animation and its install serial stay engine
+/// state. Position is the record origin, the co-op binding point.
+fn collect_emissive_volume_handles_json(ctx: &ScriptCtx, tag: Option<&str>) -> serde_json::Value {
+    use serde_json::{Map, Value};
+    let reg = ctx.registry.borrow();
+    let mut arr: Vec<Value> = Vec::new();
+    for (id, value) in reg.query_by_component_and_tag(ComponentKind::EmissiveVolume, tag) {
+        if !is_map_placed(&reg, id) {
+            continue;
+        }
+        let ComponentValue::EmissiveVolume(volume) = value else {
+            continue;
+        };
+        let tags = reg.get_tags(id).unwrap_or(&[]).to_vec();
+        let position = match reg.get_component::<Transform>(id) {
+            Ok(t) => {
+                let mut p = Map::with_capacity(3);
+                p.insert("x".to_string(), Value::from(t.position.x as f64));
+                p.insert("y".to_string(), Value::from(t.position.y as f64));
+                p.insert("z".to_string(), Value::from(t.position.z as f64));
+                Value::Object(p)
+            }
+            Err(_) => Value::Null,
+        };
+        let mut component = Map::with_capacity(4);
+        component.insert("min".to_string(), Value::from(volume.min as f64));
+        component.insert("max".to_string(), Value::from(volume.max as f64));
+        component.insert(
+            "brightness".to_string(),
+            Value::from(volume.brightness as f64),
+        );
+        component.insert(
+            "color".to_string(),
+            Value::Array(
+                volume
+                    .color
+                    .iter()
+                    .map(|c| Value::from(*c as f64))
+                    .collect(),
+            ),
+        );
+        let mut obj = Map::with_capacity(4);
+        obj.insert("id".to_string(), Value::from(id.to_raw()));
+        obj.insert("position".to_string(), position);
+        obj.insert(
+            "tags".to_string(),
+            Value::Array(tags.into_iter().map(Value::String).collect()),
+        );
+        obj.insert("component".to_string(), Value::Object(component));
+        arr.push(Value::Object(obj));
+    }
+    Value::Array(arr)
+}
+
 /// Collect identity-only member snapshots (`id`, `position`, `tags`) for a map
 /// kind whose runtime phase stays engine-owned: kinematic movers (deterministic
 /// phase), trigger volumes (arming and activation phase), spawners (fire-time
@@ -380,6 +440,9 @@ fn register_world_query(registry: &mut PrimitiveRegistry, ctx: ScriptCtx) {
                     ))),
                     QueryFilter::FogVolume { tag } => Ok(JsonValue(
                         collect_fog_volume_handles_json(&ctx, tag.as_deref()),
+                    )),
+                    QueryFilter::EmissiveVolume { tag } => Ok(JsonValue(
+                        collect_emissive_volume_handles_json(&ctx, tag.as_deref()),
                     )),
                     QueryFilter::KinematicMover { tag } => {
                         Ok(JsonValue(collect_identity_snapshots_json(
@@ -1762,6 +1825,100 @@ mod tests {
         );
     }
 
+    // An emissive member exposes the authored range and the scripted
+    // brightness and colour, not the animation; its verbs bake its id into
+    // `setEmissiveAnimation` steps. TS and Luau agree byte for byte.
+    #[test]
+    fn get_map_entities_wraps_emissive_volumes_in_both_runtimes() {
+        use mlua::LuaSerdeExt as _;
+        let _level = LevelDataContext::enter();
+        let (ctx, _) = test_ctx_with_light(false, None);
+        let sign = {
+            let mut reg = ctx.registry.borrow_mut();
+            let id = reg
+                .try_spawn(
+                    Transform {
+                        position: Vec3::new(1.5, 2.5, 3.5),
+                        ..Transform::default()
+                    },
+                    &["bar_sign".to_string()],
+                )
+                .unwrap();
+            // Non-integral values throughout: each runtime's JSON spells an
+            // integral float as an integer.
+            let mut volume =
+                postretro_entities::EmissiveVolumeComponent::authored(0.5, 4.5, [0.75, 0.5, 0.25]);
+            volume.brightness = 0.75;
+            volume.install_animation(postretro_entities::EmissiveAnimation {
+                period_ms: 100.0,
+                play_count: None,
+                brightness: vec![0.0, 1.0],
+            });
+            reg.set_component(id, volume).unwrap();
+            id
+        };
+        let r = registry_for(ctx);
+
+        let rt = rquickjs::Runtime::new().unwrap();
+        let jsctx = rquickjs::Context::full(&rt).unwrap();
+        let ts: serde_json::Value = jsctx.with(|qjs| {
+            install_all(&r, &qjs);
+            postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
+            let json: String = qjs
+                .eval(
+                    r#"
+                    const signs = getMapEntities("emissive", { tag: "bar_sign" });
+                    const e = signs[0];
+                    JSON.stringify({
+                      count: signs.length,
+                      id: e.id,
+                      tags: e.tags,
+                      position: e.position,
+                      component: e.component,
+                      flicker: e.flicker({ min: 0.3, max: 1, rate: 6 })[0].primitive,
+                    })
+                    "#,
+                )
+                .unwrap();
+            serde_json::from_str(&json).unwrap()
+        });
+
+        let lua = mlua::Lua::new();
+        install_all_lua(&r, &lua);
+        postretro_scripting_core::luau_prelude::evaluate_prelude(&lua, None).unwrap();
+        let value: mlua::Value = lua
+            .load(
+                r#"
+                local signs = getMapEntities("emissive", { tag = "bar_sign" })
+                local e = signs[1]
+                return {
+                  count = #signs,
+                  id = e.id,
+                  tags = e.tags,
+                  position = e.position,
+                  component = e.component,
+                  flicker = e:flicker({ min = 0.3, max = 1, rate = 6 })[1].primitive,
+                }
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let luau: serde_json::Value = lua.from_value(value).unwrap();
+
+        assert_eq!(ts, luau, "TS and Luau emissive members diverged");
+        assert_eq!(
+            ts,
+            json!({
+                "count": 1,
+                "id": sign.to_raw(),
+                "tags": ["bar_sign"],
+                "position": { "x": 1.5, "y": 2.5, "z": 3.5 },
+                "component": { "min": 0.5, "max": 4.5, "brightness": 0.75, "color": [0.75, 0.5, 0.25] },
+                "flicker": "setEmissiveAnimation",
+            })
+        );
+    }
+
     /// Ghost links as level install spawns them: map order, tags, no runtime
     /// state on the snapshot.
     fn add_ghost_link(ctx: &ScriptCtx, index: u16, x: f32, tags: &[&str]) -> EntityId {
@@ -1904,11 +2061,11 @@ mod tests {
             postretro_scripting_core::quickjs::evaluate_prelude(&qjs).unwrap();
             let got: String = qjs
                 .eval(
-                    r#"JSON.stringify(["mover", "trigger", "ghostLink", "light", "fog", "emitter", "spawner"]
+                    r#"JSON.stringify(["mover", "trigger", "ghostLink", "light", "fog", "emissive", "emitter", "spawner"]
                         .map((kind) => getMapEntities(kind, { tag: "absent" })))"#,
                 )
                 .unwrap();
-            assert_eq!(got, "[[],[],[],[],[],[],[]]");
+            assert_eq!(got, "[[],[],[],[],[],[],[],[]]");
         });
 
         let lua = mlua::Lua::new();
@@ -1918,7 +2075,7 @@ mod tests {
             .load(
                 r#"
                 local empties = 0
-                for _, kind in { "mover", "trigger", "ghostLink", "light", "fog", "emitter", "spawner" } do
+                for _, kind in { "mover", "trigger", "ghostLink", "light", "fog", "emissive", "emitter", "spawner" } do
                   local members = getMapEntities(kind, { tag = "absent" })
                   if type(members) == "table" and #members == 0 and next(members) == nil then
                     empties += 1
@@ -1929,7 +2086,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        assert_eq!(empties, 7);
+        assert_eq!(empties, 8);
     }
 
     // The SDK's `getGravity` / `setGravity` behave as `world.getGravity` /

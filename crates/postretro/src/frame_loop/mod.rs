@@ -2123,13 +2123,14 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         renderer.upload_fog_points(point_bytes);
 
         // Emissive volume bridge — after the script drain, before render, so
-        // a brightness or colour written this frame presents this frame. Only
+        // a brightness or colour written this frame presents this frame. It
+        // samples brightness animations on the freeze-aware script clock. Only
         // entries that changed are sent; a static frame sends nothing. A
         // renderer with no level keeps them pending for the next frame.
         {
-            let registry = script_ctx.registry.borrow();
+            let mut registry = script_ctx.registry.borrow_mut();
             let bridge = &mut session.emissive_volume_bridge;
-            bridge.update(&registry);
+            bridge.update(&mut registry, app.script_time);
             let upload = bridge.pending_upload();
             if !upload.runs.is_empty() && renderer.upload_emissive_volume_table(upload) {
                 bridge.mark_uploaded();

@@ -315,6 +315,7 @@ impl App {
                 &registry,
                 &mut session.light_bridge,
                 &mut session.fog_volume_bridge,
+                &mut session.emissive_volume_bridge,
                 &mut session.emitter_bridge,
             );
         }

@@ -823,6 +823,110 @@ fn a_host_reload_that_reorders_fluids_mid_swim_keeps_the_swimmers_fluid() {
     assert_eq!(played, ["sfx/water_out"]);
 }
 
+// Regression: a fluid-table reorder remapped the swim fluid but not the last
+// resolved immersion fluid, so a pawn sending no commands, which keeps its
+// last resolve, took the fluid status that moved into its old index.
+#[test]
+fn a_host_reload_that_reorders_fluids_remaps_the_immersion_fluid_statuses_read() {
+    use std::sync::Arc;
+
+    use postretro_entities::components::health::HealthComponent;
+    use postretro_entities::components::immersion::ImmersionComponent;
+    use postretro_entities::data_descriptors::HealthDescriptor;
+    use postretro_foundation::defense::{DefenseVocabulary, HandleRef};
+    use postretro_foundation::status::parse_statuses;
+    use postretro_foundation::{AuthoredHandle, FluidDescriptor, FluidRegistry};
+
+    let applying = |name: &str, status: &str| FluidDescriptor {
+        status: Some(AuthoredHandle::from_handle(&HandleRef::Status {
+            name: status.to_string(),
+        })),
+        ..fluid(name)
+    };
+    let declare = |app: &App, fluids: Vec<FluidDescriptor>| {
+        script_ctx(app).data_registry.borrow_mut().replace_fluids(
+            FluidRegistry::from_declarations("test", fluids.into_iter().map(Ok)),
+        );
+    };
+    let mut app = test_app();
+    declare(
+        &app,
+        vec![applying("water", "soaked"), applying("lava", "scalding")],
+    );
+    app.install_level_payload(level_with_fluid_volume(7, "water"), PathBuf::from("baked"))
+        .expect("fixture installs");
+    let ctx = script_ctx(&app);
+    let (scalding, soaked) = (0, 1);
+    let pawn = {
+        let mut registry = ctx.registry.borrow_mut();
+        let statuses = serde_json::json!([
+            { "kind": "status", "name": "scalding", "damage": 0, "tickMs": 500 },
+            { "kind": "status", "name": "soaked", "damage": 0, "tickMs": 500 },
+        ]);
+        registry.set_defense_vocabulary(Arc::new(DefenseVocabulary {
+            statuses: parse_statuses(Some(&statuses), |_| None).unwrap(),
+            ..Default::default()
+        }));
+        registry.set_status_applications_immediate(true);
+        let pawn = registry.spawn(postretro_entities::Transform::default());
+        registry
+            .set_component(
+                pawn,
+                HealthComponent::from_descriptor(&HealthDescriptor {
+                    max: 100.0,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        // Its last resolve put it ankle-deep in lava, declared second.
+        registry
+            .set_component(
+                pawn,
+                ImmersionComponent {
+                    immersion: 0.1,
+                    fluid: Some(1),
+                },
+            )
+            .unwrap();
+        pawn
+    };
+    let immersion_fluid = |app: &App| {
+        script_ctx(app)
+            .registry
+            .borrow()
+            .get_component::<ImmersionComponent>(pawn)
+            .expect("immersion")
+            .fluid
+    };
+
+    // The reload declares the same fluids in the other order.
+    declare(
+        &app,
+        vec![applying("lava", "scalding"), applying("water", "soaked")],
+    );
+    app.refresh_environment_fluids();
+    assert_eq!(immersion_fluid(&app), Some(0), "lava's new index");
+    {
+        let mut registry = ctx.registry.borrow_mut();
+        registry.apply_fluid_statuses();
+        assert!(registry.has_status(pawn, scalding));
+        assert!(
+            !registry.has_status(pawn, soaked),
+            "water took lava's old index"
+        );
+        registry.clear_statuses(pawn);
+    }
+
+    // A reload that drops lava leaves the pawn in no declared fluid.
+    declare(&app, vec![applying("water", "soaked")]);
+    app.refresh_environment_fluids();
+    assert_eq!(immersion_fluid(&app), None);
+    let mut registry = ctx.registry.borrow_mut();
+    registry.apply_fluid_statuses();
+    assert!(!registry.has_status(pawn, scalding));
+    assert!(!registry.has_status(pawn, soaked));
+}
+
 /// This machine's presentation of installed volume `volume`, read through the
 /// shared lookup every per-frame consumer uses.
 fn volume_presentation<T>(

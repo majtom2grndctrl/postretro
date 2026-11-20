@@ -2029,8 +2029,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 &mut session.particle_render,
             );
             session.emitter_bridge.update_attached(
-                app.status_presentation.attached(),
-                app.status_presentation.emitters(),
+                &registry,
+                &app.status_presentation,
                 frame_dt,
                 app.script_time as f32,
                 &mut session.particle_pool,

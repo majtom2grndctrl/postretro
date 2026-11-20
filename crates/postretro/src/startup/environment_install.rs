@@ -156,13 +156,15 @@ impl App {
     /// A renamed table moves fluid indices, so every swimming pawn's fluid is
     /// remapped by name first: its exit edge then names the fluid it is in.
     /// A pawn whose fluid left the table keeps its stale index; its next tick
-    /// resolves the fluid gone and leaves swim.
+    /// resolves the fluid gone and leaves swim. Each pawn's last resolved
+    /// immersion fluid is remapped the same way, so the status stage applies
+    /// the status of the fluid it is in.
     pub(crate) fn refresh_environment_fluids(&mut self) {
         let (fluids, source) = self.active_fluid_table();
         let renamed = fluids.names() != self.environment_fluids.names();
         let resourced = source != self.environment_fluid_source;
         if renamed {
-            self.remap_swimming_pawn_fluids(&fluids);
+            self.remap_pawn_fluids(&fluids);
         }
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
@@ -215,7 +217,7 @@ impl App {
     /// the new table, and a remote pawn sending no commands keeps its last
     /// resolve, so a stale index would apply another fluid's status until its
     /// next command. An immersion fluid that left the table resolves to none.
-    fn remap_swimming_pawn_fluids(&self, next: &FluidMovementTable) {
+    fn remap_pawn_fluids(&self, next: &FluidMovementTable) {
         let Some(session) = self.session.as_ref() else {
             return;
         };

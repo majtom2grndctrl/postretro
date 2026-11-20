@@ -155,7 +155,8 @@ fn enemy_components(presence: Option<u64>) -> Vec<ComponentPayload> {
         rotation: [0.0, 0.0, 0.0, 1.0],
         scale: [1.0; 3],
     })];
-    components.extend(presence.map(|bits| ComponentPayload::StatusPresence(WireStatusPresence { bits })));
+    components
+        .extend(presence.map(|bits| ComponentPayload::StatusPresence(WireStatusPresence { bits })));
     components
 }
 
@@ -220,7 +221,10 @@ fn client_record_apply_sets_and_removes_status_presence() {
     registry.set_defense_vocabulary(vocabulary(&["burning"]));
     let mut client = ClientReplication::new();
 
-    client.apply_snapshot(&mut registry, &snapshot(1, vec![baseline(7, 1, Some(0b10))]));
+    client.apply_snapshot(
+        &mut registry,
+        &snapshot(1, vec![baseline(7, 1, Some(0b10))]),
+    );
     let enemy = client
         .entity_for_network_id(NetworkId(7))
         .expect("the baseline maps the enemy");
@@ -235,7 +239,11 @@ fn client_record_apply_sets_and_removes_status_presence() {
     assert!(registry.shows_status(enemy, "burning"));
 
     client.apply_snapshot(&mut registry, &snapshot(2, vec![delta(7, 1, Some(0b11))]));
-    assert_eq!(presence_bits(&registry, enemy), Some(0b11), "a delta overwrites");
+    assert_eq!(
+        presence_bits(&registry, enemy),
+        Some(0b11),
+        "a delta overwrites"
+    );
     assert!(registry.shows_status(enemy, "burning"));
 
     client.apply_snapshot(&mut registry, &snapshot(3, vec![delta(7, 2, None)]));

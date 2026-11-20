@@ -1006,11 +1006,9 @@ impl NetEndpoint {
         }
         // A payload that fails to decode drops the installed tuning, and its
         // status names with it.
-        registry.set_presence_status_names(
-            tuning
-                .as_deref()
-                .map_or(&[][..], |payload| payload.environment.status_names.as_slice()),
-        );
+        registry.set_presence_status_names(tuning.as_deref().map_or(&[][..], |payload| {
+            payload.environment.status_names.as_slice()
+        }));
         if let Err(error) = result {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
         }

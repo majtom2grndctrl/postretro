@@ -754,7 +754,7 @@ pub struct MapData {
     /// planning can apply the documented last-containing-region precedence.
     /// Compiler-only: the regions shape chart dimensions but emit no PRL section.
     pub lightmap_scale_regions: Vec<MapLightmapScaleRegion>,
-    /// Compiler-only SH streaming seams. The parser retains the engine-space
+    /// Compiler-only SH streaming split regions (`stream_split_volume`). The parser retains the engine-space
     /// convex hulls for the later portal-resolution stage; they are never part
     /// of the static world brush set or a runtime map-entity section.
     pub streaming_split_regions: Vec<MapStreamingHintRegion>,

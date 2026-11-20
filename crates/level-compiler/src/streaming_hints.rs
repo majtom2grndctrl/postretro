@@ -3,8 +3,9 @@
 //! Source-format brush entities are translated into [`MapStreamingHintRegion`]
 //! before this module runs. This is deliberately the later, engine-space seam:
 //! portal IDs and cell IDs do not exist until the BSP and portal passes finish.
-//! Seams resolve against the runtime portals, those between occluder-tier
-//! cells; the full tree's portals never reach here.
+//! Split regions (the authored input) resolve against the runtime portals,
+//! those between occluder-tier cells, into seam portals (the resolved output,
+//! `seam_portal_ids`); the full tree's portals never reach here.
 
 use std::collections::{BTreeMap, BTreeSet};
 

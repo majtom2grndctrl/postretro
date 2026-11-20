@@ -3199,7 +3199,8 @@ impl App {
     }
 
     /// Present the frontend menu and queue the unload, then the declared
-    /// backdrop: navigation alone, which changes no membership. The
+    /// backdrop: navigation alone, which changes no membership, noted as a
+    /// level request so a seam on the same frame yields. The
     /// `returnToFrontend` verb reaches it only in single-player; a leave and
     /// `ui.quitToMenu` reach it through their own membership change.
     fn navigate_to_frontend(&mut self) {

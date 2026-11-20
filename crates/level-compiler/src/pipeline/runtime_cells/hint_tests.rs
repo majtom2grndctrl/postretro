@@ -1,4 +1,4 @@
-// Streaming-hint rows: seams resolve against the runtime portals between
+// Streaming-hint rows: split regions resolve against the runtime portals between
 // occluder-tier cells, and hint volumes never shape those cells.
 // See: context/plans/done/occluder-first-partition/index.md §Acceptance
 

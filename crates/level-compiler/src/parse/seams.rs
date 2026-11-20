@@ -31,7 +31,8 @@ pub(super) struct SeamParser {
 impl SeamParser {
     /// Read one `level_seam` entity. An authored landmark resolves at
     /// [`Self::finish`], so its destination may follow the seam in map order.
-    // Mirrors `TeleporterParser::extract`, which every region parser shares.
+    // The argument list mirrors `TeleporterParser::extract`, which the region
+    // parsers share, hence the allow.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn extract(
         &mut self,

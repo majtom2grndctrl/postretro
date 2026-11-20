@@ -636,14 +636,15 @@ export function selectCharacter(index: number): import("../data_script").SystemR
 
 /**
  * Create a new character in empty slot `index` and select it. Its name is
- * taken from `ui.textEntry`, so open the text entry with no target field
- * (`openTextEntry(onCommit)`) and fire this from its commit; a target field
- * would receive the text and empty `ui.textEntry` before this runs. Pure —
+ * `ui.textEntry` when this step fires, so open the text entry with no target
+ * field (`openTextEntry(onCommit)`) and fire this from its commit; a target
+ * field would receive the text and empty `ui.textEntry` before this runs. A
+ * later step that empties the entry keeps the name; empty it before opening
+ * the next entry instead, since a cancelled entry leaves its text. Pure —
  * returns a system reaction (a body on its own or a step in a sequence or
- * array body), no FFI. `index` is the
- * 0-based `forEach` row index of `getGameState().saves.characters`. A new
- * character starts with an empty loadout. Creating into an occupied slot is
- * refused with a warning.
+ * array body), no FFI. `index` is the 0-based `forEach` row index of
+ * `getGameState().saves.characters`. A new character starts with an empty
+ * loadout. Creating into an occupied slot is refused with a warning.
  *
  * A save verb, frontend-only: inside a played level, on a connected client,
  * and while hosting, it is refused with a warning and changes nothing.

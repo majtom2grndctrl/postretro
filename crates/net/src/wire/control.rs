@@ -81,7 +81,10 @@ pub fn decode_connect_claim(user_data: &[u8; NETCODE_USER_DATA_BYTES]) -> Option
     (claim.display_name.len() <= DISPLAY_NAME_MAX_BYTES).then_some(claim)
 }
 
-fn truncate_display_name(display_name: &str) -> String {
+/// `display_name` cut to at most [`DISPLAY_NAME_MAX_BYTES`] on a character
+/// boundary: what a claim and a roster entry carry.
+#[must_use]
+pub fn truncate_display_name(display_name: &str) -> String {
     if display_name.len() <= DISPLAY_NAME_MAX_BYTES {
         return display_name.to_owned();
     }

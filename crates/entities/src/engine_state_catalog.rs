@@ -37,6 +37,10 @@ pub enum EngineStateValueType<'a> {
 
 /// `session.waitReason`'s values: empty unless `session.connection` reads
 /// `waiting`. Append-only.
+/// The engine text-entry slot both text-entry input paths edit, and the
+/// slot `createCharacter` names its character from.
+pub const TEXT_ENTRY_SLOT: &str = "ui.textEntry";
+
 pub const SESSION_WAIT_REASON_VALUES: &[&str] = &["", "host", "modDiffers", "levelDiffers"];
 
 /// `session.endCause`'s values: empty until a session or attempt ends, and
@@ -1540,7 +1544,7 @@ const BUILTIN_ENGINE_STATE: &[EngineStateCatalogEntry<'static>] = &[
         network: ReplicationScope::None,
     },
     EngineStateCatalogEntry {
-        wire_name: "ui.textEntry",
+        wire_name: TEXT_ENTRY_SLOT,
         sdk_path: &["ui", "textEntry"],
         value_type: EngineStateValueType::String,
         default: EngineStateDefault::String(""),

@@ -118,7 +118,7 @@ impl App {
         // Outside play seat 0 carries the selected character, which the leave
         // just saved.
         if let Some(session) = self.session.as_mut() {
-            crate::session::saves::set_seat_zero_carry_from_selection(session);
+            crate::session::saves::set_seat_zero_from_selection(session);
         }
         self.forget_host_steering();
         self.finish_join_facts(end_cause);

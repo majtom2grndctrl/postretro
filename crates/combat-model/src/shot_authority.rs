@@ -22,6 +22,10 @@ pub struct AuthorizedShot {
     pub source_weapon: Option<String>,
     pub shot_id: ShotId,
     pub pawn: EntityId,
+    /// `pawn`'s life counter at FIRE: a hit declared for this shot that lands
+    /// after the pawn respawned touches no NPC's meter or attacker ledger.
+    /// Host authority data; never on the wire.
+    pub pawn_life: u32,
     pub weapon: EntityId,
     pub fire_tick: u32,
     pub damage: f32,

@@ -160,6 +160,7 @@ impl App {
                 .and_then(|seats| seats.carried_state(postretro_foundation::Seat(0)))
                 .cloned(),
             spawn_checkpoint: session.saves.spawn_checkpoint().map(str::to_owned),
+            spawn_checkpoint_seam: session.saves.spawn_checkpoint_is_seam(),
         };
         let mut first_player_placement = None;
         let products = install_world_cpu_with_models(
@@ -254,6 +255,7 @@ impl App {
         self.kinematic_mover_colliders = products.mover_colliders;
         self.trigger_bindings = products.trigger_bindings;
         self.teleporter_bindings = products.teleporter_bindings;
+        self.seam_bindings = products.seam_bindings;
         self.warn_hosted_trigger_machine_local();
         self.warn_if_local_player_cannot_swim();
         // After the boot pawn spawns, so the host reads its own descriptor's

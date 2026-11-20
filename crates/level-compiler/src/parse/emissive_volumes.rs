@@ -152,7 +152,7 @@ fn read_color(props: &HashMap<String, String>, label: &str) -> [f32; 3] {
     let Some(raw) = authored(props, COLOR_KEY) else {
         return WHITE;
     };
-    super::parse_fog_tint(raw).unwrap_or_else(|| {
+    super::fog_volumes::parse_fog_tint(raw).unwrap_or_else(|| {
         log::warn!(
             "[Compiler] {label} `{COLOR_KEY}` \"{raw}\" is not three integers 0 to 255; it reads \
              white"

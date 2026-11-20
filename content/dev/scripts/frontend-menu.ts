@@ -261,6 +261,20 @@ export const mapCatalog = defineMapCatalog([
     // Also the frontend backdrop, so its loading screen shows at every boot.
     loadingTree: loadingTreeName("combat-demo"),
   },
+  // A level seam pair: each map's `pair_door` seam targets the other's id.
+  // No screenshot, so their loads take the mod-wide plain loading screen.
+  {
+    id: "seam-pair-a",
+    path: "maps/seam-pair-a.prl",
+    name: "Seam Pair A",
+    tags: ["seam", "test"],
+  },
+  {
+    id: "seam-pair-b",
+    path: "maps/seam-pair-b.prl",
+    name: "Seam Pair B",
+    tags: ["seam", "test"],
+  },
 ]);
 
 function hasTag(entry: ModMapEntry, tag: string): boolean {
@@ -875,9 +889,10 @@ export function slotIndices(count: number): number[] {
 
 // CREATE opens the keyboard on `ui.textEntry` itself, with no field target:
 // a target would take the text out of `ui.textEntry` before the commit's
-// `createCharacter` reads it as the name. So the entry is emptied first, and
-// emptied again once the character has its name. A created character is
-// selected, so the runs screen follows.
+// `createCharacter` reads it as the name. The opener empties the entry, since
+// a cancelled entry leaves its text behind; the commit leaves it alone, and
+// the next opener empties it again. A created character is selected, so the
+// runs screen follows.
 const characterReactions: NamedReactionDescriptor[] = slotIndices(CHARACTER_SLOTS).flatMap((i) => [
   defineReaction(characterReaction("select", i), [selectCharacter(i), openMenu(RUNS_MENU_NAME)]),
   defineReaction(characterReaction("name", i), [
@@ -888,11 +903,7 @@ const characterReactions: NamedReactionDescriptor[] = slotIndices(CHARACTER_SLOT
     kb.hint.set(CHARACTER_NAME_FIELD.hint),
     openTextEntry(characterReaction("create", i)),
   ]),
-  defineReaction(characterReaction("create", i), [
-    createCharacter(i),
-    clearText(textEntry),
-    openMenu(RUNS_MENU_NAME),
-  ]),
+  defineReaction(characterReaction("create", i), [createCharacter(i), openMenu(RUNS_MENU_NAME)]),
   defineReaction(characterReaction("askDelete", i), openMenu(deleteCharacterDialogName(i))),
   defineReaction(characterReaction("delete", i), [deleteCharacter(i), closeDialog()]),
 ]);

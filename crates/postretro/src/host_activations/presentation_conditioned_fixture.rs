@@ -377,14 +377,11 @@ fn installed_with_reactions(
         &mut session.scripting.sequence_registry,
         session.scripting.scheduler.clone(),
     );
-    session
-        .scripting
-        .scheduler
-        .set_role(if client {
-            postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Client
-        } else {
-            postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Host
-        });
+    session.scripting.scheduler.set_role(if client {
+        postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Client
+    } else {
+        postretro_sim::scripting_systems::reaction_scheduler::SchedulerRole::Host
+    });
     let index = INSTALL_COUNT.with(|count| {
         let index = count.get();
         count.set(index + 1);
@@ -429,6 +426,7 @@ fn installed_with_reactions(
             suppress_boot_pawn: true,
             local_carried_loadout: None,
             spawn_checkpoint: None,
+            spawn_checkpoint_seam: false,
         },
         &mut crate::startup::StartupTimings::new(),
         |models, tables| {
@@ -489,7 +487,9 @@ fn land_client_tails(app: &mut App, clock: f64, host_level_tick: Option<f64>) {
     let scripting = &app.session.as_ref().unwrap().scripting;
     scripting.scheduler.begin_frame();
     scripting.scheduler.evaluate(&[]);
-    scripting.scheduler.advance_host_clock(host_level_tick, clock);
+    scripting
+        .scheduler
+        .advance_host_clock(host_level_tick, clock);
     scripting.scheduler.drain_landings(
         &ctx.data_registry.borrow(),
         &scripting.sequence_registry,
@@ -707,7 +707,8 @@ impl Harness {
         let ctx = script_ctx(&self.host);
         let registry = ctx.registry.borrow();
         let session = self.host.session.as_ref().unwrap();
-        let level_tick = u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
+        let level_tick =
+            u32::try_from(session.scripting.scheduler.level_tick()).unwrap_or(u32::MAX);
         netcode::host_register_descriptor_entities(
             &registry,
             &mut self.allocator,
@@ -857,6 +858,7 @@ impl Harness {
                     &ctx,
                     &TriggerFireContext {
                         fired_teleporter: None,
+                        fired_seam: None,
                         fired_trigger: Some(event.fire.trigger),
                         activator: self
                             .players

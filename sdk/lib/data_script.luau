@@ -106,7 +106,7 @@ export type GroupCommand = {
 
 --- The subject a token command addresses: this fire's activators, the volume
 --- that fired, the teleporter that fired, or the event's player.
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player"
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player"
 
 --- One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
 --- `on.player`): a primitive
@@ -272,6 +272,8 @@ export type MoverSetBlockPolicyStep = {
 
 export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args: {} }
 export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
+export type ArmSeamStep = { id: EntityId, primitive: "armSeam", args: {} }
+export type DisarmSeamStep = { id: EntityId, primitive: "disarmSeam", args: {} }
 --- Member categories a ghost link shows; an omitted category keeps its value.
 export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, projectiles: boolean?, movers: boolean? }
 --- A ghost link's colour filter: each named field ramps on its own over
@@ -356,7 +358,7 @@ export type FireStep = {
 --- Ordered member, group, subject-token, system and control steps. Steps
 --- begin in array order; `fire` queues a named dispatch, while `wait` stops
 --- the current drain and resumes the remaining tail after its delay.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | SetEmissiveBrightnessStep | SetEmissiveColorStep | SetEmissiveAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | SetEmissiveBrightnessStep | SetEmissiveColorStep | SetEmissiveAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmSeamStep | DisarmSeamStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A
@@ -422,6 +424,14 @@ export type TeleporterTarget = {
 }
 export type TeleportEventParams = { activators: ActivatorsTarget, teleporter: TeleporterTarget }
 export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport", fire: {string} }
+--- The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`.
+export type SeamTarget = {
+  arm: (self: SeamTarget) -> SubjectTokenCommand,
+  disarm: (self: SeamTarget) -> SubjectTokenCommand,
+}
+--- Dispatch values published by a level seam's `arrive` event.
+export type SeamEventParams = { activators: ActivatorsTarget, seam: SeamTarget }
+export type SeamEventDescriptor = { seam: EntityId, event: "arrive", fire: {string} }
 export type TriggerEventParams = {
   activators: ActivatorsTarget,
   trigger: TriggerTarget,
@@ -572,6 +582,8 @@ export type LevelManifest = {
   -- Level trigger events, keyed by volume: build each with a trigger member's `on`.
   triggerEvents: {VolumeTriggerEventDescriptor}?,
   teleportEvents: {TeleportEventDescriptor}?,
+  -- Level seam events, keyed by seam: build each with a seam member's `on`.
+  seamEvents: {SeamEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   -- Per-player events, built with `players():on`. A level's entries belong to
   -- that level; an entry carrying `levels` is skipped with a warning (its

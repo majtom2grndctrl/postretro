@@ -100,6 +100,9 @@ Give the spawns players should use from then on `checkpoint bridge`:
   same rule as joiners.
 - **A checkpoint name no spawn carries** falls back to the level-start spawns
   and logs a warning.
+- **A level seam's name** is a set name too: after a crossing, and Continue
+  from one, players use the spawns keyed with the seam's name. With none keyed,
+  the level-start spawns apply with no warning (see [Level Seams](#level-seams)).
 
 Place at least as many spawns in a checkpoint's set as the game's player count.
 
@@ -633,6 +636,27 @@ The Build Summary's `Mover lighting` lines also name each mover that blocks a li
 
 ---
 
+## Enemies Out of Sight
+
+Enemies no player can perceive run their AI at a lower rate, so a map can hold hundreds of them without slowing the game. An enemy counts as perceived when it stands in a cell a player's cell can see, or within the level's AI wake lead of one. Every player counts, host and clients alike, including dead or downed ones. An unperceived enemy with no target runs its whole AI tick twice a second and checks for targets every 2 s. A perceived or engaged enemy decides 15 times a second and moves every tick, so play in view is unchanged. One that wakes moves up on that tick without catching up movement, so it never jumps.
+
+Things that still reach an unseen enemy every tick: lifts carry it, doors push it, and damage, an opened aggro gate or a target wakes it.
+
+### Keys
+
+| Key | On | Effect |
+|-----|-----|--------|
+| `ai_wake_lead` | `worldspawn` | Metres past each player's cell in which enemies still count as perceived. Default 16. A value above the level's baked visibility reach is capped to it, with a warning. `0` keeps only the cells players can see. A negative or non-finite value fails the build. |
+| `always_active` | an enemy placement | `1` keeps this enemy at full rate even when no player can perceive it; `0` lets it go dormant even if its archetype sets `alwaysActive`. Leave it unset to follow the archetype. Any other value fails the build. Enemies a spawner releases always follow the archetype. |
+
+### Tips
+
+- **Give escorts, racers and scripted walkers `always_active 1`.** An unseen dormant enemy steps in half-second strides, so it can reach a trigger a fraction of a second late. One with `always_active` crosses it on time. It costs full rate for that enemy only.
+- **Monster closets need nothing special.** A closet enemy stays dormant until a player can perceive it, then wakes at once.
+- **Doors do not hide enemies.** Perception ignores doors, so a closed door never puts an enemy to sleep early.
+- **Ghost links count as sight.** Enemies seen through an armed ghost link stay perceived.
+- **An enemy in view that moves in half-second strides marks a visibility gap.** The same spot will show lighting or probe problems too, because enemies use the visibility the lighting uses. Fix the level's visibility there; there is no separate AI visibility bake.
+
 ## Teleporters
 
 A `trigger_teleport` brush sends a player who walks into it to a
@@ -641,6 +665,17 @@ relative to a pair of points with their offset, view and momentum kept
 (`seamless`), for shifts between copies of a room. Scripts turn teleporters on
 and off. Keys, room-copy layout, firing rules and scripting are in
 [docs/teleporters.md](teleporters.md).
+
+---
+
+## Level Seams
+
+A `level_seam` brush joins two maps: a player who walks into it crosses into the
+next map at the same place relative to the seam, facing and moving the same
+way, with their gear. Build the crossing in both maps with one shared seam
+`name`, and set each seam's `target` to the other map's catalog id. Keys,
+landmarks, what crosses, seam checkpoints and scripting are in
+[docs/level-seams.md](level-seams.md).
 
 ---
 
@@ -797,15 +832,15 @@ runtime entities, door behavior, or portal visibility changes. Each entity
 must own exactly one finite, positive-volume convex brush; invalid brushes or
 regions that match no portal/cell are compiler errors.
 
-### `streaming_seam_volume`
+### `stream_split_volume`
 
 Use this around a doorway or portal where early SH warm-up is useful. The brush
 must pass through positive portal area and have interior on both sides of the
 portal plane. Portals exist only where the compiler divides the level into
 cells: across doorways a door seals, through openings in large walls, past the
 free ends of walls, and on its cell-size grid. Small props and pillars never
-make portals. A seam that crosses none of these fails the build, naming the
-seam. The volume never changes cells, portals or what is visible.
+make portals. A split that crosses none of these fails the build, naming the
+volume. The volume never changes cells, portals or what is visible.
 It forces a cluster boundary across the matched portals. When
 the near-side cluster is visible, the runtime planner prefers warming the far
 side even if an opaque door currently blocks render visibility.
@@ -829,7 +864,7 @@ so pins also raise what Build Summary reports as "Lightmap pool memory".
 
 Set `_stream_priority` to an integer from `0` through `3`; blank and `0` mean
 no priority hint. Positive values take the maximum where regions overlap and
-rank only optional seam warm-up and nearby prefetch work, ahead of distance
+rank only optional split warm-up and nearby prefetch work, ahead of distance
 from the camera, including which of it yields under pressure.
 They never outrank visible or pinned demand. Use priority to retain the more
 important of several otherwise-safe optional regions, not to increase the GPU

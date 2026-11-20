@@ -25,6 +25,7 @@ use postretro_scripting_core::reaction_dispatch::{
 pub(crate) fn is_region_companion(classname: &str) -> bool {
     classname == "trigger_teleport"
         || classname == postretro_level_format::ghost_links::GHOST_LINK_CLASSNAME
+        || classname == postretro_level_format::seams::SEAM_CLASSNAME
 }
 
 /// Finish windowed CPU presentation install after reactions and attachment setup.
@@ -139,6 +140,7 @@ pub(crate) fn install_world_cpu_with_models(
         suppress_boot_pawn,
         local_carried_loadout,
         spawn_checkpoint,
+        spawn_checkpoint_seam,
     } = handles;
 
     // Install has not reset App's old clock yet. No previous-level baseline
@@ -173,6 +175,7 @@ pub(crate) fn install_world_cpu_with_models(
         &mut script_ctx.registry.borrow_mut(),
         world,
     );
+    crate::runtime_seams::spawn_loaded_seams(&mut script_ctx.registry.borrow_mut(), world);
     crate::ghost_links::spawn_loaded_ghost_links(&mut script_ctx.registry.borrow_mut(), world);
 
     // Emissive volumes — one entity per id-60 record, in record order; co-op
@@ -249,9 +252,10 @@ pub(crate) fn install_world_cpu_with_models(
         .partition(|e| e.classname == PLAYER_START_CLASSNAME);
     // Arrival, respawn and joiners choose within the active set: the
     // level-start spawns, or Continue's checkpoint's.
-    let spawn_points = crate::scripting::builtins::player_spawn::active_spawn_set(
+    let spawn_points = crate::scripting::builtins::player_spawn::spawn_set_for(
         &level_spawn_points,
         spawn_checkpoint.as_deref(),
+        spawn_checkpoint_seam,
     );
     let builtin_handled = {
         let mut registry = script_ctx.registry.borrow_mut();
@@ -296,7 +300,7 @@ pub(crate) fn install_world_cpu_with_models(
         // Every family reads 0 until the first authoritative tick writes it.
         occupancy_families.install_level(
             &level_references,
-            &trigger_volume_tags(&script_ctx.registry.borrow()),
+            &occupancy_volume_tags(&script_ctx.registry.borrow()),
             &mut script_ctx.slot_table.borrow_mut(),
         );
         if world.data_script.is_some() {
@@ -320,6 +324,7 @@ pub(crate) fn install_world_cpu_with_models(
             // composition.
             data_registry.set_level_player_events(std::mem::take(&mut manifest.player_events));
             data_registry.set_level_teleport_events(std::mem::take(&mut manifest.teleport_events));
+            data_registry.set_level_seam_events(std::mem::take(&mut manifest.seam_events));
             data_registry.populate_level_with_trigger_events(
                 manifest.reactions,
                 manifest.crossings,
@@ -720,8 +725,14 @@ pub(crate) fn install_world_cpu_with_models(
         command_diagnostics.clone(),
         spawn_context.clone(),
     );
+    let seam_bindings = postretro_sim::seam_system::SeamBindingTable::build(
+        script_ctx,
+        command_diagnostics.clone(),
+        spawn_context.clone(),
+    );
     WorldInstallProducts {
         teleporter_bindings,
+        seam_bindings,
         mover_colliders,
         spawned_mover_entities,
         trigger_bindings,
@@ -733,15 +744,20 @@ pub(crate) fn install_world_cpu_with_models(
     }
 }
 
-/// Every tag a trigger volume in the installed level carries. A `switch` is a
-/// trigger volume at the component layer.
-fn trigger_volume_tags(
+/// Every tag an occupancy volume in the installed level carries: trigger
+/// volumes (a `switch` is one at the component layer) and level seams, which
+/// count by their own inside test.
+fn occupancy_volume_tags(
     registry: &postretro_entities::EntityRegistry,
 ) -> std::collections::BTreeSet<String> {
-    registry
-        .iter_with_kind(postretro_entities::ComponentKind::TriggerVolume)
-        .filter_map(|(id, _)| registry.get_tags(id).ok())
-        .flatten()
-        .cloned()
-        .collect()
+    [
+        postretro_entities::ComponentKind::TriggerVolume,
+        postretro_entities::ComponentKind::Seam,
+    ]
+    .into_iter()
+    .flat_map(|kind| registry.iter_with_kind(kind).map(|(id, _)| id))
+    .filter_map(|id| registry.get_tags(id).ok())
+    .flatten()
+    .cloned()
+    .collect()
 }

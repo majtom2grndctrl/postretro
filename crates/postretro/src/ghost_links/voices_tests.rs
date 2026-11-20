@@ -210,6 +210,7 @@ impl Level {
             knockback_impulse: [0.0; 3],
             credit_source: "rocket".to_string(),
             owner_pawn: owner,
+            owner_life: 0,
             owner_weapon: owner,
             attackerless: false,
             spawned: false,

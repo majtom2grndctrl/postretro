@@ -36,7 +36,7 @@ fn slam_and_jab(slam: AttackParams) -> BehaviorGraphDescriptor {
 fn marked_sibling_switch_requests_behind_older_waiters() {
     let graph = slam_and_jab(contact(1.0, 100_000.0));
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[2]);
     spawn_player(&mut reg, player_spot());
     let x = spawn_at(&mut reg, 0, &graph, "slam_act");
@@ -73,7 +73,7 @@ fn marked_switch_mid_execution_holds_turn_until_clear() {
     let descriptors = [burst_weapon("enemy.slam", 3, 64.0, 16.0)];
     let graph = slam_and_jab(weapon("enemy.slam"));
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "slam_act");
 
@@ -166,7 +166,7 @@ fn request_names_fire_step_attack_not_cooldown_seed_attack() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &striker(100_000.0), "strike");
@@ -195,7 +195,7 @@ fn wait_clock_survives_gaps_and_restarts_on_target_switch() {
         vec![("attack", contact(1.0, 100_000.0))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let near = spawn_player(&mut reg, player_spot());
     let far = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 6.0));
@@ -276,7 +276,7 @@ fn unmarked_attacks_sharing_a_token_never_overlap() {
         vec![("jab", contact(1.0, 160.0)), ("slam", contact(1.0, 160.0))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "jab_act");
@@ -330,7 +330,7 @@ fn unmarked_burst_holds_turn_through_execution_and_cooldown() {
         vec![("attack", weapon("enemy.burst"))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player_spot());
     let shooter = spawn_at(&mut reg, 0, &burst, "strike");
@@ -379,7 +379,7 @@ fn granted_unmarked_attack_that_cannot_start_releases_same_tick() {
     let mut killing = striker(100_000.0);
     killing.attacks.get_mut("attack").unwrap().damage = Some(100.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let killer = spawn_at(&mut reg, 0, &killing, "strike");
     let later = spawn_at(&mut reg, 1, &striker(100_000.0), "strike");
@@ -445,7 +445,7 @@ fn marked_chain_holds_one_turn_without_regrant_gap() {
     let descriptors = [burst_weapon("enemy.slam", 3, 64.0, 16.0)];
     let graph = marked_chain(weapon("enemy.slam"));
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "engage");
 
@@ -515,7 +515,7 @@ fn target_switch_mid_burst_cancels_execution_and_releases() {
         vec![("attack", weapon("enemy.burst"))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let first = spawn_player(&mut reg, player_spot());
     let second = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.4));
     let shooter = spawn_at(&mut reg, 0, &burst, "strike");
@@ -564,7 +564,7 @@ fn draws_change_mid_burst_cancels_execution() {
         vec![("attack", weapon("enemy.burst"))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let shooter = spawn_at(&mut reg, 0, &burst, "strike");
 

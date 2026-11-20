@@ -2,6 +2,7 @@
 // selection, guard facts, transitions, steering and the attack proposal.
 // See: context/lib/entity_model.md §7c · context/lib/scripting.md §11
 
+use super::brain_scope::SelectorChoices;
 use glam::Vec3;
 use postretro_entities::{EntityId, EntityRegistry, EntityStateComponent, LiveFactionSentiment};
 
@@ -23,7 +24,7 @@ use super::graph_eval::{
 };
 use super::steering::position_goal_steering;
 use super::targeting::{
-    TargetSelection, acquisition_due, is_hostile, select_target_with_attacker_ledger,
+    TargetSelection, is_hostile, notice_target, select_target_with_attacker_ledger,
     selected_target_alive, target_candidate, target_distance, target_offers,
 };
 use super::{AttackOutcome, EnemyOutcome, EnteredActivity, PendingAttack};
@@ -52,9 +53,26 @@ pub(super) fn evaluate(
     cpu: Option<&AiStageFrame>,
     nav_scratch: &mut NavScratch,
     pawns: &super::pawn_index::PawnIndex,
+    selector_memo: &mut std::collections::HashMap<EntityId, SelectorChoices>,
+    decide_interval: u64,
+    notice_on_sight: bool,
 ) -> Vec<super::EnemyOutcome> {
     let mut outcomes: Vec<EnemyOutcome> = Vec::with_capacity(snapshots.len());
     for (slot, snap) in snapshots.into_iter().enumerate() {
+        // A brain the schedule skipped since its last run advances every
+        // clock by all the ticks it missed: its whole tick runs with its step
+        // scaled.
+        let span = snap.span;
+        // Facing turns over the whole span on a dormant run only: a move-up
+        // run credits its clocks but turns, like steering, one ordinary tick.
+        let facing_dt = if snap.dormant_decide.is_some() {
+            tick_dt * span as f32
+        } else {
+            tick_dt
+        };
+        let tick_dt = tick_dt * span as f32;
+        let one_tick_dt_ms = dt_ms;
+        let dt_ms = dt_ms * span as f32;
         let mut brain = snap.brain;
         let mut graph_reseated = programs.take_reseat(snap.id);
         if graph_reseated {
@@ -80,48 +98,86 @@ pub(super) fn evaluate(
         if graph_reseated {
             brain.attack_turns.clear();
         }
+        // An aggro gate closed since this brain last ran stands it down at
+        // this run even if it has reopened since: the closed gate's drop of
+        // target, slot and turns, and its reseat to `initial`. A run under a
+        // closed gate does the same below. Either way the selector rows it
+        // recorded before the close are stale, so its first armed run
+        // decides afresh.
+        if std::mem::take(&mut brain.aggro_closed_since_run) && brain.aggro_armed {
+            brain.stand_down_closed_gate();
+            selector_memo.remove(&snap.id);
+        }
+        // A closed gate records no rows, and those from before the close go.
+        if !brain.aggro_armed {
+            selector_memo.remove(&snap.id);
+        }
+        // A brain back in the AI set recalls nothing from before it left.
+        if snap.returned {
+            selector_memo.remove(&snap.id);
+        }
+        // A decide tick runs acquisition, guards, selectors and combat-slot
+        // choice; the ticks between act on its choices. Each enemy decides on
+        // its own phase of the 15 Hz cycle, keyed on its identity, and at once
+        // whenever it holds no selector rows for its path: a reseat, its first
+        // run, its return to the AI set, its first armed run after a closed
+        // aggro gate. A dormant run decides on every fourth dormant run
+        // instead.
+        let decide = snap.dormant_decide.unwrap_or_else(|| {
+            crate::decide::decides_on(
+                turns.tick,
+                postretro_sim::npc_tiers::schedule_identity(&brain, snap.id),
+                decide_interval,
+            )
+        }) || graph_reseated
+            || selector_memo
+                .get(&snap.id)
+                .is_none_or(|choices| !choices.is_for(brain.active_path()));
+        // The guard scope is shared across enemies: every enemy starts out
+        // evaluating, and only an armed acting pass recalls its own choices.
+        programs.scope_mut().begin_decide(brain.active_path());
         // Candidate refresh runs during selection below, before the established
         // brain damage-fact aging site. Advance the paired attacker ledger here
         // exactly once so `@candidate.timeSinceDamageFromCandidate` sees the
         // same post-tick age that `@brain.timeSinceDamageMs` later publishes.
-        brain.age_recent_attackers(dt_ms);
+        brain.age_recent_attackers_over(dt_ms, one_tick_dt_ms);
+        // Awareness meters age with the run the same way: a meter a hit set
+        // since the last run drains from the hit's tick.
+        brain.awareness.age(dt_ms, one_tick_dt_ms);
+        // The respawn drop: whatever this NPC keeps about a pawn that
+        // respawned since (its target and slot, turns, wait clock, ledger
+        // entry, meter) goes before anything reads it. A stored difference of
+        // life counters, so a skipped or dormant NPC cannot miss one.
+        brain.drop_respawned(|pawn| pawns.life_of(pawn));
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
         let enemy_faction = entity_faction(registry, snap.id);
         // A home-distance guard is about the evaluating enemy alone, not its
-        // target or the acquisition stride. Compute it once from this tick's
-        // immutable position snapshot before either branch can suppress target
-        // work.
+        // target or whether this is a decide tick. Compute it once from this
+        // tick's immutable position snapshot before either branch can suppress
+        // target work.
         let distance_from_anchor = crate::nav::distance_xz(snap.position, brain.home_anchor);
         let prior_acquired_target = brain.acquired_target;
         let targeting_stage = ai_stage(cpu, SimStage::AiTargeting);
         let (target_selection, evaluate_acquisition) = if brain.aggro_armed {
             // A target is retained across ticks only while the brain is engaged
-            // — chasing one, or acting on one. A resting brain re-ranks
-            // candidates instead of honoring a stale acquired id.
+            // — chasing one, or acting on one. A resting brain notices through
+            // its awareness meters on each check instead of honoring a stale
+            // acquired id.
             let retained_target = engages_active(&brain)
                 .then_some(brain.acquired_target)
                 .flatten();
             let retained = retained_target
                 .and_then(|entity| target_candidate(registry, entity, snap.position));
             let (target, evaluate_acquisition) = if let Some(retained) = retained {
-                // A retained target alone prices the stride from its raw
-                // distance. A due tick may still run the normal hysteresis scan
-                // below, but neither its candidate filter nor its result can
-                // alter this cost input.
-                let evaluate_acquisition = acquisition_due(&brain, Some(retained.distance));
+                // A retained target is re-checked for a switch only on a
+                // decide; between decides it is kept.
+                let evaluate_acquisition = decide;
                 let target = if evaluate_acquisition {
                     let (candidate_filter, candidate_scope) =
                         programs.candidate_filter_context(snap.id);
-                    let offers = target_offers(
-                        pawns,
-                        factions,
-                        snap.position,
-                        enemy_faction,
-                        Some(snap.id),
-                        Some(retained.target.entity),
-                    );
+                    let offers = target_offers(snap.position, Some(retained.target.entity));
                     let enemy_eye =
                         perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
                     let mut candidate_perception = |candidate| {
@@ -132,7 +188,7 @@ pub(super) fn evaluate(
                             collision_world,
                         )
                     };
-                    select_target_with_attacker_ledger(
+                    let selection = select_target_with_attacker_ledger(
                         Some(retained),
                         &offers,
                         pawns,
@@ -145,9 +201,23 @@ pub(super) fn evaluate(
                         &brain.recent_attackers,
                         brain.retaliation_acquired_target,
                         brain.graph.retaliation(),
-                        dt_ms,
+                        // The retaliation window is compared with one tick,
+                        // never the run's span.
+                        one_tick_dt_ms,
                         &mut candidate_perception,
-                    )
+                    );
+                    // Switching to a different target is a new acquisition;
+                    // re-selecting the retained one is not.
+                    if let Some(selection) = selection
+                        && selection.target.entity != retained.target.entity
+                    {
+                        brain.awareness.acquire(
+                            selection.target.entity,
+                            target_distance(selection.target, snap.position),
+                            selection.target.life,
+                        );
+                    }
+                    selection
                 } else {
                     Some(TargetSelection {
                         target: retained.target,
@@ -158,38 +228,33 @@ pub(super) fn evaluate(
                     })
                 };
                 (target, evaluate_acquisition)
+            } else if !decide {
+                // Between decides an enemy without a retained target acquires
+                // nothing and scans nothing.
+                (None, false)
             } else {
-                let offers = target_offers(
-                    pawns,
-                    factions,
-                    snap.position,
-                    enemy_faction,
-                    Some(snap.id),
-                    None,
-                );
-                let evaluate_acquisition =
-                    acquisition_due(&brain, offers.nearest.map(|candidate| candidate.distance));
+                // Without a retained target the decide's check notices
+                // through the awareness meters: a candidate is selected only
+                // once its meter is full.
+                let rates = programs
+                    .get(snap.id)
+                    .map_or_else(|| brain.graph.awareness(), |entry| entry.awareness());
                 let (candidate_filter, candidate_scope) =
                     programs.candidate_filter_context(snap.id);
-                // The raw nearest hostile offer prices the stride. A
-                // graph- and LOS-filtered selection becomes a target only on a
-                // due tick; otherwise `BrainFacts` stay untargeted rather than
-                // borrowing it. The offer set avoids a second registry walk
-                // while keeping exact candidate raycasts off non-due ticks.
-                let target = evaluate_acquisition.then(|| {
-                    let enemy_eye =
-                        perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
-                    let mut candidate_perception = |candidate| {
-                        perception::raw_target_perception(
-                            registry,
-                            enemy_eye,
-                            candidate,
-                            collision_world,
-                        )
-                    };
+                let enemy_eye = perception::enemy_eye(registry, snap.id, snap.position, nav_graph);
+                let mut candidate_perception = |candidate| {
+                    perception::raw_target_perception(
+                        registry,
+                        enemy_eye,
+                        candidate,
+                        collision_world,
+                    )
+                };
+                let retaliation = brain.graph.retaliation();
+                let target = if notice_on_sight {
                     select_target_with_attacker_ledger(
                         None,
-                        &offers,
+                        &target_offers(snap.position, None),
                         pawns,
                         registry,
                         factions,
@@ -199,12 +264,29 @@ pub(super) fn evaluate(
                         candidate_scope,
                         &brain.recent_attackers,
                         brain.retaliation_acquired_target,
-                        brain.graph.retaliation(),
-                        dt_ms,
+                        retaliation,
+                        one_tick_dt_ms,
                         &mut candidate_perception,
                     )
-                });
-                (target.flatten(), evaluate_acquisition)
+                } else {
+                    notice_target(
+                        snap.position,
+                        pawns,
+                        registry,
+                        factions,
+                        Some(snap.id),
+                        enemy_faction,
+                        candidate_filter,
+                        candidate_scope,
+                        &brain.recent_attackers,
+                        retaliation,
+                        one_tick_dt_ms,
+                        &mut brain.awareness,
+                        rates,
+                        &mut candidate_perception,
+                    )
+                };
+                (target, true)
             };
             (target, evaluate_acquisition)
         } else {
@@ -222,8 +304,12 @@ pub(super) fn evaluate(
         }
         // Damage recency advances even while an activity entry is pending or
         // aggro is closed, matching the unconditional named-cooldown clock.
-        brain.time_since_damage_ms =
-            (brain.time_since_damage_ms + dt_ms).clamp(0.0, BRAIN_NO_TARGET_DISTANCE);
+        // A hit since the last run ages one tick, never the run's whole span.
+        brain.time_since_damage_ms = postretro_entities::components::brain::age_damage_clock(
+            brain.time_since_damage_ms,
+            dt_ms,
+            one_tick_dt_ms,
+        );
         // An entry edge observes a freshly zeroed activity clock. Once it has
         // been consumed, subsequent ticks advance the active clocks before
         // evaluating their transition rows. A transition later in this pass
@@ -251,9 +337,6 @@ pub(super) fn evaluate(
             animation_done = entered;
         }
 
-        // Stride bookkeeping advances every tick so the gate is deterministic.
-        brain.think_stride_counter = brain.think_stride_counter.wrapping_add(1);
-
         drop(graph_stage);
         let perception_stage = target_selection
             .is_some()
@@ -273,6 +356,7 @@ pub(super) fn evaluate(
                     nav_graph,
                     collision_world,
                     fresh: selection.fresh_perception,
+                    span,
                 },
             )
         });
@@ -317,13 +401,12 @@ pub(super) fn evaluate(
         let target_hostile = selected_target.is_some_and(|(target, _, _)| {
             is_hostile(factions, enemy_faction, entity_faction(registry, target))
         });
-        // Reachability is the nav floor's pathfinder verdict, cached on the
-        // existing acquisition stride. It deliberately mirrors the gated route
-        // query chase consumes, from the agent's own ground, rather than
-        // claiming a stronger ground-truth answer. An absent nav graph has no
-        // route query, so it is immediately unreachable even if a restored
-        // brain retained a cached result from an earlier map or acquisition
-        // stride.
+        // Reachability is the nav floor's pathfinder verdict, cached between
+        // decides. It deliberately mirrors the gated route query chase
+        // consumes, from the agent's own ground, rather than claiming a
+        // stronger ground-truth answer. An absent nav graph has no route
+        // query, so it is immediately unreachable even if a restored brain
+        // retained a cached result from an earlier map or decide.
         let target_reachable = match (target, nav_graph) {
             (Some(_), None) => {
                 brain.target_reachable = false;
@@ -378,107 +461,144 @@ pub(super) fn evaluate(
             };
             (transitioned, None, SteeringIntent::Clear, None)
         } else {
-            // The think stride is derived from the CURRENT player distance; the
-            // gate fires when the per-enemy counter aligns with the band's
-            // divisor, and reaches the guards as `@brain.acquisitionDue` for the
-            // edges that opt into it. With no target the facts still refresh —
-            // `hasTarget` false, `targetDistance` at its sentinel — because an
-            // armed brain evaluates its whole guard set whether or not it has a
-            // pawn: that is how an interrupt reaches an enemy nobody is standing
-            // in front of.
-            // Turn facts read the previous tick's turns and line, against the
-            // target selected now.
-            let has_attack_turn = brain.attack_turns.holds_any();
-            programs.with_entry_scope(snap.id, |bound, scope| {
-                let reader = attack_turns::TurnFactReader {
-                    line: &turns.previous,
-                    budgets: &turns.budgets,
-                    refresh: turns.previous_refresh(),
-                    entity: snap.id,
-                    slot: slot as u32,
-                    pool: attack_turns::attack_pool_of(&turns.budgets, &brain),
-                    target: target.map(|target| target.entity),
-                    turns: &brain.attack_turns,
-                    graph: &brain.graph,
-                    programs: bound,
+            // On a decide tick, facts refresh and the guard set runs: with no
+            // target the facts still refresh (`hasTarget` false,
+            // `targetDistance` at its sentinel), because an armed brain
+            // evaluates its whole guard set whether or not it has a pawn. The
+            // ticks between act on the path and selector rows it chose.
+            let (transitioned, queued) = if decide {
+                programs.scope_mut().begin_decide(brain.active_path());
+                // A queued row opens on a turn granted since the previous
+                // decide.
+                brain.attack_turns.decide_span = selector_memo
+                    .get(&snap.id)
+                    .and_then(|choices| u32::try_from(turns.tick - choices.tick()).ok())
+                    .unwrap_or(1)
+                    .max(1);
+                brain.attack_turns.last_decide_tick = turns.tick;
+                // Turn facts read the previous tick's turns and line, against the
+                // target selected now.
+                let has_attack_turn = brain.attack_turns.holds_any();
+                programs.with_entry_scope(snap.id, |bound, scope| {
+                    let reader = attack_turns::TurnFactReader {
+                        line: &turns.previous,
+                        budgets: &turns.budgets,
+                        refresh: turns.previous_refresh(),
+                        entity: snap.id,
+                        slot: slot as u32,
+                        pool: attack_turns::attack_pool_of(&turns.budgets, &brain),
+                        target: target.map(|target| target.entity),
+                        turns: &brain.attack_turns,
+                        graph: &brain.graph,
+                        programs: bound,
+                    };
+                    scope.refresh_attack_turns(|attack, read| reader.read(attack, read));
+                });
+                // Selector guards may choose the current action, but their input
+                // snapshot has not yet been refreshed for this enemy. Seed a
+                // type-correct zero cooldown first, resolve that action without
+                // cloning it, then refresh the one action-relative cooldown fact
+                // the transition planner is allowed to observe.
+                let facts = BrainFacts {
+                    target: selected_target,
+                    attack_cooldown_ms: 0.0,
+                    time_since_damage_ms: brain.time_since_damage_ms,
+                    time_since_target_visible: brain.time_since_target_visible,
+                    distance_to_last_known,
+                    damage_bearing: brain.damage_bearing,
+                    damage_source_known: brain.damage_source_known,
+                    acquisition_due: evaluate_acquisition,
+                    distance_from_anchor,
+                    target_hostile,
+                    target_reachable,
+                    target_visible,
+                    attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
+                    has_attack_turn,
+                    animation_done,
+                    // The value this decide's check produced.
+                    awareness: if target.is_some() {
+                        1.0
+                    } else {
+                        brain.awareness.highest()
+                    },
                 };
-                scope.refresh_attack_turns(|attack, read| reader.read(attack, read));
-            });
-            // Selector guards may choose the current action, but their input
-            // snapshot has not yet been refreshed for this enemy. Seed a
-            // type-correct zero cooldown first, resolve that action without
-            // cloning it, then refresh the one action-relative cooldown fact
-            // the transition planner is allowed to observe.
-            let facts = BrainFacts {
-                target: selected_target,
-                attack_cooldown_ms: 0.0,
-                time_since_damage_ms: brain.time_since_damage_ms,
-                time_since_target_visible: brain.time_since_target_visible,
-                distance_to_last_known,
-                damage_bearing: brain.damage_bearing,
-                damage_source_known: brain.damage_source_known,
-                acquisition_due: evaluate_acquisition,
-                distance_from_anchor,
-                target_hostile,
-                target_reachable,
-                target_visible,
-                attacks_fired_in_activity: brain.activity_attack_count(0).unwrap_or(0),
-                has_attack_turn,
-                animation_done,
-            };
-            programs.scope_mut().refresh(registry, snap.id, facts);
-            let attack_cooldown_ms = programs
-                .with_entry_scope(snap.id, |bound, scope| {
-                    action_for_path(bound, scope, &brain).and_then(|action| match action {
-                        ActionVerb::Attack { name, .. } => {
-                            brain.attack_cooldown_remaining_ms.get(name).copied()
-                        }
+                programs.scope_mut().refresh(registry, snap.id, facts);
+                let attack_cooldown_ms = programs
+                    .with_entry_scope(snap.id, |bound, scope| {
+                        action_for_path(bound, scope, &brain).and_then(|action| match action {
+                            ActionVerb::Attack { name, .. } => {
+                                brain.attack_cooldown_remaining_ms.get(name).copied()
+                            }
+                        })
                     })
-                })
-                .flatten()
-                .unwrap_or(0.0);
-            let facts = BrainFacts {
-                attack_cooldown_ms,
-                ..facts
-            };
-            programs.scope_mut().refresh(registry, snap.id, facts);
-            prior_standoff_distance = programs
-                .with_entry_scope(snap.id, |bound, scope| {
-                    action_for_path(bound, scope, &brain)
-                        .map(|action| brain.graph.standoff_distance_for_action(Some(action)))
-                })
-                .flatten()
-                .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
-            // The pass also names the attack a standing rest's first open
-            // queued row waits on; arbitration turns it into this tick's
-            // request. A hold's release row reads its turn against the target
-            // selected now, as the turn facts do.
-            let selected = target.map(|target| target.entity);
-            let pass = programs
-                .with_entry_scope(snap.id, |bound, scope| {
-                    select_transitions(bound, scope, &mut brain, selected)
-                })
-                .unwrap_or_default();
-            let transitioned = pass.transitioned;
-            // The entered path's selectors read the clip `settle` is about to
-            // restart, not its predecessor's; a path back onto the tracked
-            // state reads the clock's own value, which a reseat's rows did not.
-            // The rows above read one value and the selectors below another,
-            // one per evaluation pass.
-            if transitioned {
-                let entered = clip_clock::entered_animation_done(&brain, &clip_source)
-                    .unwrap_or_else(|| clip_clock::animation_done(&brain.clip_clock, &clip_source));
-                if entered != facts.animation_done {
-                    programs.scope_mut().refresh(
-                        registry,
-                        snap.id,
-                        BrainFacts {
-                            animation_done: entered,
-                            ..facts
-                        },
-                    );
+                    .flatten()
+                    .unwrap_or(0.0);
+                let facts = BrainFacts {
+                    attack_cooldown_ms,
+                    ..facts
+                };
+                programs.scope_mut().refresh(registry, snap.id, facts);
+                prior_standoff_distance = programs
+                    .with_entry_scope(snap.id, |bound, scope| {
+                        action_for_path(bound, scope, &brain)
+                            .map(|action| brain.graph.standoff_distance_for_action(Some(action)))
+                    })
+                    .flatten()
+                    .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
+                // The pass also names the attack a standing rest's first open
+                // queued row waits on; arbitration turns it into this tick's
+                // request. A hold's release row reads its turn against the target
+                // selected now, as the turn facts do.
+                let selected = target.map(|target| target.entity);
+                let pass = programs
+                    .with_entry_scope(snap.id, |bound, scope| {
+                        select_transitions(bound, scope, &mut brain, selected)
+                    })
+                    .unwrap_or_default();
+                let transitioned = pass.transitioned;
+                // The entered path's selectors read the clip `settle` is about to
+                // restart, not its predecessor's; a path back onto the tracked
+                // state reads the clock's own value, which a reseat's rows did not.
+                // The rows above read one value and the selectors below another,
+                // one per evaluation pass.
+                if transitioned {
+                    let entered = clip_clock::entered_animation_done(&brain, &clip_source)
+                        .unwrap_or_else(|| {
+                            clip_clock::animation_done(&brain.clip_clock, &clip_source)
+                        });
+                    if entered != facts.animation_done {
+                        programs.scope_mut().refresh(
+                            registry,
+                            snap.id,
+                            BrainFacts {
+                                animation_done: entered,
+                                ..facts
+                            },
+                        );
+                    }
                 }
-            }
+                // Selectors record against the path the rows left.
+                programs.scope_mut().begin_decide(brain.active_path());
+                (transitioned, pass.queued)
+            } else {
+                let recalled = programs
+                    .scope_mut()
+                    .begin_recall(selector_memo.get(&snap.id).copied(), brain.active_path());
+                debug_assert!(recalled, "a decide follows any path move");
+                prior_standoff_distance = programs
+                    .with_entry_scope(snap.id, |bound, scope| {
+                        action_for_path(bound, scope, &brain)
+                            .map(|action| brain.graph.standoff_distance_for_action(Some(action)))
+                    })
+                    .flatten()
+                    .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
+                (
+                    false,
+                    selector_memo
+                        .get(&snap.id)
+                        .and_then(SelectorChoices::queued),
+                )
+            };
             let resolved = programs
                 .with_entry_scope(snap.id, |bound, scope| {
                     resolved_motion(bound, scope, &brain)
@@ -519,7 +639,7 @@ pub(super) fn evaluate(
             } else {
                 (resolved, steering)
             };
-            (transitioned, resolved, steering, pass.queued)
+            (transitioned, resolved, steering, queued)
         };
         let motion = resolved.map(|motion| motion.verb);
 
@@ -530,10 +650,14 @@ pub(super) fn evaluate(
         // clears it here.
         let resolved_position_goal = motion.is_some_and(MotionVerb::is_position_goal);
         let retains_target = target.is_some() && !resolved_position_goal && engages_active(&brain);
-        brain.acquired_target = match target {
-            Some(target) if retains_target => Some(target.entity),
-            _ => None,
+        (brain.acquired_target, brain.acquired_target_life) = match target {
+            Some(target) if retains_target => (Some(target.entity), target.life),
+            _ => (None, 0),
         };
+        // No meter changes while the NPC holds a target.
+        if let Some(target) = brain.acquired_target {
+            brain.awareness.hold_target(target);
+        }
         brain.retaliation_acquired_target = match target_selection {
             Some(selection)
                 if retains_target
@@ -551,6 +675,42 @@ pub(super) fn evaluate(
             && programs
                 .with_entry_scope(snap.id, |bound, scope| engages_path(bound, scope, &brain))
                 .unwrap_or(false);
+        // The tactical line, read at decides with its margin: past the line an
+        // engaged NPC routes toward its target and chooses no combat slot; it
+        // chooses slots again once its target is the margin inside the line.
+        // Only a decide or a lost target moves it, so the ticks between act on
+        // the last decide's reading.
+        match target {
+            None => brain.beyond_tactical_range = false,
+            Some(_) if !decide => {}
+            Some(_) if !engaged => brain.beyond_tactical_range = false,
+            Some(target) => {
+                let line = programs.get(snap.id).map_or(
+                    postretro_foundation::BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M,
+                    |entry| entry.tactical_range_m(),
+                );
+                let distance = crate::nav::distance_xz(snap.position, target.position);
+                if distance > line {
+                    brain.beyond_tactical_range = true;
+                } else if distance
+                    <= line - postretro_foundation::BehaviorGraphDescriptor::TACTICAL_RANGE_MARGIN_M
+                {
+                    brain.beyond_tactical_range = false;
+                }
+            }
+        }
+        let beyond_tactical_range = engaged && brain.beyond_tactical_range;
+        // Past the tactical line every engaged motion verb routes toward the
+        // target: no slot to walk to, and none stands still for want of one.
+        // Overridden before heading, so facing reads the route it takes.
+        let steering = match motion {
+            Some(MotionVerb::ChaseTarget | MotionVerb::Strafe | MotionVerb::Reposition)
+                if beyond_tactical_range =>
+            {
+                SteeringIntent::Chase
+            }
+            _ => steering,
+        };
 
         let tick_heading = heading::resolve(
             registry,
@@ -564,7 +724,8 @@ pub(super) fn evaluate(
                 retains_target,
                 aim_direction: target_perception
                     .map(|perception| perception.target_aim - perception.enemy_eye),
-                tick_dt,
+                tick_dt: facing_dt,
+                span,
             },
         );
         let weapon_aim = target_perception.and_then(|perception| {
@@ -735,16 +896,31 @@ pub(super) fn evaluate(
             })
             .flatten()
             .unwrap_or_else(|| brain.graph.standoff_distance_for_action(None));
-        let engaged_ring = engaged_motion::plan(
-            &mut brain,
-            resolved.filter(|_| engaged),
-            entry_depth,
-            target,
-            snap.position,
-            standoff_distance,
-        );
+        // A strafer re-aims, and a reposition picks its ring, each decide.
+        let engaged_ring = decide
+            .then(|| {
+                // Past the line the slot verbs keep no memory, so one chosen
+                // again inside starts its bounds where slot choice starts.
+                engaged_motion::plan(
+                    &mut brain,
+                    resolved.filter(|_| engaged && !beyond_tactical_range),
+                    entry_depth,
+                    target,
+                    snap.position,
+                    standoff_distance,
+                )
+            })
+            .flatten();
+        if decide && brain.aggro_armed {
+            let scope = programs.scope_mut();
+            scope.record_decide(turns.tick, queued_attack);
+            selector_memo.insert(snap.id, scope.selector_choices());
+        }
         outcomes.push(EnemyOutcome {
             id: snap.id,
+            span,
+            dormant: snap.dormant_decide.is_some(),
+            decide,
             position: snap.position,
             target,
             enemy_eye_offset,
@@ -757,6 +933,7 @@ pub(super) fn evaluate(
             prior_standoff_distance,
             standoff_distance,
             entered,
+            motion,
             steering,
             leap: leap_travel,
             leap_spot_off_mesh,

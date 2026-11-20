@@ -108,6 +108,7 @@ impl Level {
                 nav_graph: nav_graph.as_ref(),
                 fog_volume_bridge: &mut session.fog_volume_bridge,
                 emissive_volume_bridge: &mut session.emissive_volume_bridge,
+                spawn_checkpoint_seam: false,
                 trigger_volume_bridge: &mut session.trigger_volume_bridge,
                 classname_dispatch: &session.classname_dispatch,
                 script_runtime: &session.scripting.script_runtime,
@@ -261,6 +262,7 @@ impl Level {
                     &ctx,
                     &TriggerFireContext {
                         fired_teleporter: None,
+                        fired_seam: None,
                         fired_trigger: Some(event.fire.trigger),
                         activator: Some(player.pawn),
                         occupancy,

@@ -40,9 +40,11 @@ pub const COMPONENT_KIND_GHOST_LINK: u16 = 26;
 pub const COMPONENT_KIND_DEFENSE_LAYERS: u16 = 27;
 /// Reserved discriminant; attack pools are host-only and never replicate.
 pub const COMPONENT_KIND_ATTACK_POOL: u16 = 28;
+/// Reserved discriminant; level seams are host-only and never replicate.
+pub const COMPONENT_KIND_SEAM: u16 = 29;
 /// Emissive volumes: written brightness, colour and animation, bound by
 /// emissive record index (`super::WireEmissiveState`).
-pub const COMPONENT_KIND_EMISSIVE_VOLUME: u16 = 29;
+pub const COMPONENT_KIND_EMISSIVE_VOLUME: u16 = 30;
 
 /// Maximum key count in any replicated presentation animation channel.
 pub const MAX_WIRE_CURVE_KEYS: usize = 64;

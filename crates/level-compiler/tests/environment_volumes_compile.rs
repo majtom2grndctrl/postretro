@@ -433,6 +433,32 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
     }
 }
 
+/// An authored worldspawn `ai_wake_lead` reaches id 52 and changes no other section.
+#[test]
+fn an_authored_ai_wake_lead_reaches_id_52_and_changes_no_other_section() {
+    let temp = TempBuildDir::new();
+    let base = sections(&compile(&temp, "base", &two_room_map(&[])));
+    assert_eq!(environment(&base).ai_wake_lead, None);
+
+    let gravity = format!("\"initialGravity\" \"{LEVEL_GRAVITY}\"");
+    let authored = two_room_map(&[]).replacen(
+        &gravity,
+        &format!("{gravity}\n\"ai_wake_lead\" \"24.5\""),
+        1,
+    );
+    let with_lead = sections(&compile(&temp, "lead", &authored));
+    assert_eq!(environment(&with_lead).ai_wake_lead, Some(24.5));
+    assert_eq!(
+        base.keys().collect::<Vec<_>>(),
+        with_lead.keys().collect::<Vec<_>>()
+    );
+    for (id, bytes) in &base {
+        if *id != SectionId::EnvironmentVolumes as u32 {
+            assert_eq!(bytes, &with_lead[id], "section {id} changed");
+        }
+    }
+}
+
 /// A fluid whose surface texture the world does not use changes
 /// only EnvironmentVolumes, and TextureNames, TextureCacheKeys and Emissive's
 /// texture records gain that one texture, appended after every world entry.

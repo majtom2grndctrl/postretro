@@ -744,6 +744,7 @@ mod tests {
             environment_volumes: Default::default(),
             teleporters: Default::default(),
             ghost_links: Default::default(),
+            seams: Default::default(),
             environment_push_forces: Vec::new(),
             reflection_probes: None,
             fog_cell_masks: None,

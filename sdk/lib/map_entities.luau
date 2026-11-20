@@ -5,16 +5,16 @@
 -- arrays the author inspects.
 --
 -- `wrapTeleporterEntity`, `wrapGhostLinkEntity`, `wrapLightEntity`,
--- `wrapFogVolumeEntity`, `wrapEmissiveVolumeEntity`, `wrapMoverEntity`, `wrapTriggerVolumeEntity`,
--- `wrapSpawnerEntity`, `wrapTrapEntity` and `wrapAttackPoolEntity` are
--- installed as temporary globals
+-- `wrapFogVolumeEntity`, `wrapEmissiveVolumeEntity`, `wrapMoverEntity`,
+-- `wrapTriggerVolumeEntity`, `wrapSpawnerEntity`, `wrapTrapEntity`,
+-- `wrapAttackPoolEntity` and `wrapSeamEntity` are installed as temporary globals
 -- by the prelude evaluator before this module evaluates, captured below, and
 -- nil'd out after it returns so author scripts never see them.
 -- See: context/lib/scripting.md §12 (Entity addressing)
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool" | "seam"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -29,6 +29,7 @@ local wrapTriggerVolumeEntity = wrapTriggerVolumeEntity
 local wrapSpawnerEntity = wrapSpawnerEntity
 local wrapTrapEntity = wrapTrapEntity
 local wrapAttackPoolEntity = wrapAttackPoolEntity
+local wrapSeamEntity = wrapSeamEntity
 
 local function projectEmitter(snapshot: any): any
   return {
@@ -52,8 +53,9 @@ local MAP_KINDS: { [string]: { component: string, wrap: (any) -> any } } = {
   spawner = { component = "spawner", wrap = wrapSpawnerEntity },
   trap = { component = "projectile_trap", wrap = wrapTrapEntity },
   attackPool = { component = "attack_pool", wrap = wrapAttackPoolEntity },
+  seam = { component = "seam", wrap = wrapSeamEntity },
 }
-local KIND_NAMES = '"mover", "trigger", "teleporter", "ghostLink", "light", "fog", "emissive", "emitter", "spawner", "trap", "attackPool"'
+local KIND_NAMES = '"mover", "trigger", "teleporter", "ghostLink", "light", "fog", "emissive", "emitter", "spawner", "trap", "attackPool", "seam"'
 
 local MapEntitiesSdk = {}
 

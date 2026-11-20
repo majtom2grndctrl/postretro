@@ -351,12 +351,12 @@ mod tests {
         let error = cast_streaming_hint_aabb(
             DVec3::new(-f64::MAX, 0.0, 0.0),
             DVec3::new(f64::MAX, 1.0, 1.0),
-            "streaming_seam_volume",
+            "stream_split_volume",
             "at (0.000, 0.000, 0.000) m",
         )
         .expect_err("finite source bounds that overflow f32 must fail");
         assert!(
-            error.to_string().contains("streaming_seam_volume")
+            error.to_string().contains("stream_split_volume")
                 && error.to_string().contains("at (")
                 && error.to_string().contains("engine precision"),
             "cast failure must identify the hint and source location: {error}"

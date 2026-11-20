@@ -31,6 +31,7 @@ pub use components::ghost_link::GhostLinkComponent;
 pub use components::kinematic_mover::{
     BlockPolicy, KinematicMoverComponent, KinematicMoverConfig, KinematicMoverMode, MoverCommand,
 };
+pub use components::seam::SeamComponent;
 pub use components::teleporter::TeleporterComponent;
 pub use components::trigger_volume::{
     TriggerActivation, TriggerCommand, TriggerFireMode, TriggerVolumeComponent,

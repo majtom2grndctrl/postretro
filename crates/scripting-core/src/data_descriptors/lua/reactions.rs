@@ -276,6 +276,7 @@ pub fn sequence_steps_from_lua(
                     "@activators" => SequenceTarget::Activators,
                     "@trigger" => SequenceTarget::FiredTrigger,
                     "@teleporter" => SequenceTarget::FiredTeleporter,
+                    "@seam" => SequenceTarget::FiredSeam,
                     "@player" => SequenceTarget::EventPlayer,
                     "@wait" => SequenceTarget::Wait,
                     "@fire" => SequenceTarget::Fire,

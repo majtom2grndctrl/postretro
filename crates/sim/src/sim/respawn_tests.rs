@@ -261,6 +261,7 @@ impl Rig {
             DT,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -913,4 +914,51 @@ fn respawn_into_the_same_state_moves_the_life_state_entry_count_on() {
     let after = rig.movement(pawn);
     assert_eq!(rig.name(pawn), "down");
     assert_eq!(after.life_state_entry, before.wrapping_add(1));
+}
+
+/// AC 12 / P68: only a respawn moves the pawn's life counter on, a script
+/// respawn of a living player included: a down, a revive and other life-state
+/// changes never do, and neither does a respawn request the drain skips.
+/// The counter rides the respawn's rebuild of the movement component.
+#[test]
+fn life_counter_moves_on_only_on_a_respawn() {
+    let rig = Rig::new();
+    let (pawn, _) = rig.spawn(0, Vec3::new(60.0, 1.2, 0.0), true);
+    assert_eq!(rig.movement(pawn).life_counter, 0);
+    let set_state = |state: &str| {
+        crate::life_state_commands::set_life_state(
+            &rig.ctx,
+            &mut rig.ctx.registry.borrow_mut(),
+            &[pawn],
+            state,
+        );
+    };
+    // Down, then revived: life-state entries, no new life.
+    set_state("down");
+    set_state("alive");
+    set_state("down");
+    assert_eq!(rig.name(pawn), "down");
+    assert_ne!(rig.movement(pawn).life_state_entry, 0);
+    assert_eq!(rig.movement(pawn).life_counter, 0, "a down or revive");
+
+    // A respawn from down.
+    rig.enqueue(pawn, None, None);
+    rig.start(|_| None);
+    assert_eq!(rig.movement(pawn).life_counter, 1, "a respawn");
+
+    // A script respawn of a living player.
+    assert_eq!(rig.name(pawn), "alive");
+    rig.enqueue(pawn, None, None);
+    rig.start(|_| None);
+    assert_eq!(
+        rig.movement(pawn).life_counter,
+        2,
+        "a living player's respawn"
+    );
+
+    // A request the drain skips (no joinable placement) is no respawn.
+    *rig.ctx.respawn_placements.borrow_mut() = postretro_entities::RespawnPlacements::default();
+    rig.enqueue(pawn, None, None);
+    rig.start(|_| None);
+    assert_eq!(rig.movement(pawn).life_counter, 2, "a skipped request");
 }

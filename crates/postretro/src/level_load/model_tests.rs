@@ -500,6 +500,7 @@ fn predict_and_sweep_dev_map(
         suppress_boot_pawn: connected_client,
         local_carried_loadout: None,
         spawn_checkpoint: None,
+        spawn_checkpoint_seam: false,
     };
     let _ = install_world_cpu(
         handles,

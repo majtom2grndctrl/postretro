@@ -150,9 +150,15 @@ pub enum SystemReactionCommand {
         origin: FireOrigin,
     },
     /// `createCharacter(i)`: create a character in empty slot `index`
-    /// (0-based), named from `ui.textEntry`. A save verb.
+    /// (0-based), named from `ui.textEntry` as captured at dispatch (`name`).
+    /// A save verb.
     CreateCharacter {
         index: usize,
+        /// `ui.textEntry` as the body's earlier steps left it, captured at
+        /// dispatch, so a later step that empties the entry cannot unname the
+        /// character. `None` with no dispatch-time store view: text edits then
+        /// queue in body order, and the drain reads the slot.
+        name: Option<String>,
         /// Stable identity of the firing source for once-per-source diagnostics.
         /// It is runtime queue context only, never persistent or on the wire.
         dispatch_source: String,
@@ -286,6 +292,11 @@ pub enum FireSubject {
         player: Option<Seat>,
         teleporter: EntityId,
     },
+    /// A level seam's `arrive` event for one arriving pawn.
+    Seam {
+        player: Option<Seat>,
+        seam: EntityId,
+    },
     /// A `wait` landing whose subject left during the wait: what the same step
     /// routed to them before the wait presents on no machine. A sound the
     /// source plays everywhere by default (a trigger's, a teleport's) still
@@ -333,13 +344,16 @@ impl TextEditCommand {
 }
 
 /// Applies a reaction's store writes (`setState`, text edits) at dispatch, so
-/// a body's later steps see them (body order). The binary installs one holding
+/// a body's later steps see them (body order), and reads a text slot as those
+/// steps left it. The binary installs one holding
 /// the session's bound `setState` IR; each machine's existing write gates apply
 /// inside it. An implementor must not hold the queue it is installed on
 /// strongly: the queue owns the sink.
 pub trait StateWriteSink {
     fn set_state(&self, slot: &str, value: &serde_json::Value, context: &SystemCommandFireContext);
     fn edit_text(&self, slot: &str, edit: &TextEditCommand);
+    /// A String slot's current value; `None` for an absent or non-String slot.
+    fn read_text(&self, slot: &str) -> Option<String>;
 }
 
 /// One ordered queue includes both local work and routed presentation.
@@ -437,7 +451,7 @@ impl SystemCommandQueue {
     ) -> SystemCommandFireContext {
         std::mem::replace(&mut *self.fire_context.borrow_mut(), context)
     }
-    /// Install (or clear) the dispatch-time store-write sink.
+    /// Install (or clear) the dispatch-time store sink.
     pub fn set_state_sink(&self, sink: Option<Rc<dyn StateWriteSink>>) {
         *self.state_sink.borrow_mut() = sink;
     }
@@ -468,6 +482,14 @@ impl SystemCommandQueue {
             Some(sink) => sink.edit_text(&slot, &edit),
             None => self.push(edit.into_command(slot)),
         }
+    }
+
+    /// A text slot as a reaction's earlier steps left it, read at dispatch
+    /// through the installed sink. `None` with no sink, where text edits queue
+    /// in body order, or for an absent or non-String slot.
+    pub fn text_at_dispatch(&self, slot: &str) -> Option<String> {
+        let sink = self.state_sink.borrow().clone();
+        sink.and_then(|sink| sink.read_text(slot))
     }
 
     /// A handle that does not keep this queue alive.
@@ -516,7 +538,11 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
         (EveryMachine(_), Some(Activators | Audience::Trigger | Player)) => Recipients::Skip,
         (HostOnly(_), Some(Everyone)) => Recipients::Everyone,
         (
-            HostOnly(FireSubject::Trigger { player, .. } | FireSubject::Teleport { player, .. }),
+            HostOnly(
+                FireSubject::Trigger { player, .. }
+                | FireSubject::Teleport { player, .. }
+                | FireSubject::Seam { player, .. },
+            ),
             Some(Activators),
         ) => Recipients::Seats(player.iter().copied().collect()),
         (HostOnly(FireSubject::Trigger { occupants, .. }), Some(Audience::Trigger)) => {
@@ -524,13 +550,17 @@ fn resolve_recipients(origin: &FireOrigin, audience: Option<Audience>, sound: bo
         }
         (
             HostOnly(
-                FireSubject::Trigger { .. } | FireSubject::Teleport { .. } | FireSubject::None,
+                FireSubject::Trigger { .. }
+                | FireSubject::Teleport { .. }
+                | FireSubject::Seam { .. }
+                | FireSubject::None,
             ),
             Option::None,
         ) if sound => Recipients::Everyone,
-        (HostOnly(FireSubject::Teleport { player, .. }), Option::None) => {
-            player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat]))
-        }
+        (
+            HostOnly(FireSubject::Teleport { player, .. } | FireSubject::Seam { player, .. }),
+            Option::None,
+        ) => player.map_or(Recipients::Local, |seat| Recipients::Seats(vec![seat])),
         (HostOnly(FireSubject::Trigger { player, .. }), Option::None) => {
             Recipients::Seats(player.iter().copied().collect())
         }
@@ -836,6 +866,12 @@ mod audience_tests {
             })
         };
         let event = |player| FireOrigin::HostOnly(FireSubject::PlayerEvent { player });
+        let seam = |player| {
+            FireOrigin::HostOnly(FireSubject::Seam {
+                player,
+                seam: EntityId::from_raw(9),
+            })
+        };
         let none = FireOrigin::HostOnly(FireSubject::None);
         let departed =
             |sounds_everywhere| FireOrigin::HostOnly(FireSubject::Departed { sounds_everywhere });
@@ -873,6 +909,23 @@ mod audience_tests {
                 Recipients::Seats(vec![Seat(0), Seat(2)]),
             ),
             (trigger(None), Some(Player), false, Recipients::Skip),
+            // A seam arrival routes as a teleport does: to the arriving
+            // player, with an unseated pawn presenting locally.
+            (seam(Some(Seat(1))), None, true, Recipients::Everyone),
+            (
+                seam(Some(Seat(1))),
+                None,
+                false,
+                Recipients::Seats(vec![Seat(1)]),
+            ),
+            (seam(None), None, false, Recipients::Local),
+            (
+                seam(Some(Seat(1))),
+                Some(Activators),
+                false,
+                Recipients::Seats(vec![Seat(1)]),
+            ),
+            (seam(None), Some(Trigger), false, Recipients::Skip),
             (
                 event(Some(Seat(3))),
                 None,

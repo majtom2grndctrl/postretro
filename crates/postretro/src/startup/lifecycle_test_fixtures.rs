@@ -56,6 +56,7 @@ pub(crate) fn test_app() -> App {
         window_modes: crate::app::window_modes::WindowModes::new(false),
         level: None,
         nav_graph: None,
+        npc_scheduler: None,
         map_path: None,
         content_root: PathBuf::from("content/dev"),
         baked_root: None,
@@ -222,6 +223,10 @@ pub(crate) fn test_app() -> App {
         planar_render: Default::default(),
         trigger_bindings: crate::trigger_bindings::TriggerBindingTable::default(),
         teleporter_bindings: Default::default(),
+        seam_stage: Default::default(),
+        seam_bindings: Default::default(),
+        seam_crossing: None,
+        script_level_request_this_frame: false,
         ghost_links: Default::default(),
         ghost_bus: Default::default(),
         ghost_render: Default::default(),
@@ -501,6 +506,7 @@ pub(crate) fn level_world(
         environment_volumes: Default::default(),
         teleporters: Default::default(),
         ghost_links: Default::default(),
+        seams: Default::default(),
         environment_push_forces: Vec::new(),
         reflection_probes: None,
         fog_cell_masks: None,
@@ -575,6 +581,7 @@ pub(crate) fn install_descriptor_world(
             suppress_boot_pawn: suppress_host_replicated,
             local_carried_loadout: None,
             spawn_checkpoint: None,
+            spawn_checkpoint_seam: false,
         };
         install_world_cpu(
             handles,
@@ -643,6 +650,7 @@ pub(crate) fn install_capture_world(
         suppress_boot_pawn: true,
         local_carried_loadout: None,
         spawn_checkpoint: None,
+        spawn_checkpoint_seam: false,
     };
     let products = install_world_cpu(
         handles,

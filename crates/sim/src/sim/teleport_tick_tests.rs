@@ -418,6 +418,7 @@ impl Rig {
             DT,
             Some(TriggerTickContext {
                 teleporters: Some(&self.bindings),
+                seams: None,
                 system: &mut self.trigger_system,
                 bridge: &self.bridge,
                 bindings: &self.triggers,
@@ -824,6 +825,7 @@ fn teleport_liveness_and_body_kinds_bar_dead_and_non_players_but_not_later_kills
                     damage: 0.0,
                     credit_source: "test.projectile".into(),
                     owner_pawn,
+                    owner_life: 0,
                     owner_weapon,
                     attackerless: false,
                     spawned: false,

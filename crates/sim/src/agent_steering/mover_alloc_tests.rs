@@ -227,6 +227,7 @@ impl Scene {
             gate,
             collision: &collision,
             dt: DT,
+            ticks: 1,
         };
         let _ = advance(&mut self.rider, Vec3::ZERO, world);
         let rode = self.rider.ride.is_some();
@@ -295,6 +296,7 @@ fn a_plan_boarded_on_a_lift_already_moving_keeps_its_exit() {
         gate: NavGate::new(&scene.docks),
         collision: &collision,
         dt: DT,
+        ticks: 1,
     };
     let _ = advance(&mut scene.rider, Vec3::ZERO, world);
     let ride = scene.rider.ride.expect("it boarded");

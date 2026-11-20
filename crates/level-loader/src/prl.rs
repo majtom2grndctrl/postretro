@@ -66,6 +66,8 @@ use postretro_level_format::reflection_probes::ReflectionProbesSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::seams::SeamsSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, SpecOwnerVertex};
@@ -841,6 +843,9 @@ pub struct LevelWorld {
     /// Ghost-link regions (id 56), empty when absent. Presentation only.
     #[cfg(feature = "load-prl")]
     pub ghost_links: GhostLinksSection,
+    /// Level-seam regions (id 61), empty when absent.
+    #[cfg(feature = "load-prl")]
+    pub seams: SeamsSection,
     /// Empty when section absent or no `fog_volume` brushes authored.
     #[cfg(feature = "load-prl")]
     pub fog_volumes: Vec<FogVolumeRecord>,
@@ -1023,6 +1028,8 @@ impl LevelWorld {
             teleporters: TeleportersSection::default(),
             #[cfg(feature = "load-prl")]
             ghost_links: GhostLinksSection::default(),
+            #[cfg(feature = "load-prl")]
+            seams: SeamsSection::default(),
             #[cfg(feature = "load-prl")]
             fog_volumes: Vec::new(),
             #[cfg(feature = "load-prl")]
@@ -2136,6 +2143,8 @@ mod tests {
             teleporters: TeleportersSection::default(),
             #[cfg(feature = "load-prl")]
             ghost_links: GhostLinksSection::default(),
+            #[cfg(feature = "load-prl")]
+            seams: SeamsSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
@@ -2250,6 +2259,8 @@ mod tests {
             teleporters: TeleportersSection::default(),
             #[cfg(feature = "load-prl")]
             ghost_links: GhostLinksSection::default(),
+            #[cfg(feature = "load-prl")]
+            seams: SeamsSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
@@ -2318,6 +2329,8 @@ mod tests {
             teleporters: TeleportersSection::default(),
             #[cfg(feature = "load-prl")]
             ghost_links: GhostLinksSection::default(),
+            #[cfg(feature = "load-prl")]
+            seams: SeamsSection::default(),
             fog_volumes: Vec::new(),
             fog_pixel_scale: 4,
             environment_volumes: EnvironmentVolumesSection::default(),
@@ -2859,6 +2872,7 @@ mod tests {
         let plane = |normal: [f32; 3], distance: f32| EnvironmentPlane { normal, distance };
         let environment = EnvironmentVolumesSection {
             level_gravity: 4.0,
+            ai_wake_lead: None,
             volumes: vec![EnvironmentVolumeRecord {
                 source_entity: 3,
                 priority: 2,
@@ -2924,6 +2938,7 @@ mod tests {
         };
         EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: vec![
                 record(None, "water"),
                 record(Some([6.0, 0.0, 0.0]), ""),

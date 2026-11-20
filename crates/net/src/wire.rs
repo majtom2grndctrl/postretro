@@ -49,12 +49,13 @@ pub use components::{
     COMPONENT_KIND_IMMERSION, COMPONENT_KIND_INVENTORY, COMPONENT_KIND_KINEMATIC_MOVER_STATE,
     COMPONENT_KIND_LIGHT, COMPONENT_KIND_MAP_ORDINAL, COMPONENT_KIND_MESH_ANIMATION_STATE,
     COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_PROJECTILE,
-    COMPONENT_KIND_PROJECTILE_TRAP, COMPONENT_KIND_SPAWNER, COMPONENT_KIND_SPRITE_VISUAL,
-    COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM,
-    COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS,
-    RawComponentPayload, WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef,
-    WireKinematicMoverState, WireLightAnimation, WireLightState, WireMeshAnimationState,
-    WireMovementState, WirePlayerMovementState, WireSpinAnimation, WireTransform,
+    COMPONENT_KIND_PROJECTILE_TRAP, COMPONENT_KIND_SEAM, COMPONENT_KIND_SPAWNER,
+    COMPONENT_KIND_SPRITE_VISUAL, COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE,
+    COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON,
+    ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload, WireEmitterState, WireFogAnimation,
+    WireFogState, WireGroundRef, WireKinematicMoverState, WireLightAnimation, WireLightState,
+    WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireSpinAnimation,
+    WireTransform,
 };
 pub use emissive::{WireEmissiveAnimation, WireEmissiveState};
 pub use ghost::{
@@ -76,7 +77,7 @@ pub use control::{
     DivergenceReason, HoldingCause, JoinSeedValue, NETCODE_USER_DATA_BYTES, ParityDeclaration,
     PlayerClaimId, ProtocolVersion, RevealedLevel, RosterEntry, ServerControlMessage, SessionId,
     SessionRosterMessage, SpawnPoseHint, decode_connect_claim, encode_connect_claim,
-    password_proof, roster_status, session_password_key,
+    password_proof, roster_status, session_password_key, truncate_display_name,
 };
 pub(crate) use control::{ParticipationFrame, ServerControlFrame};
 
@@ -2744,14 +2745,14 @@ mod tests {
                 ComponentPayload::FogState(_) => 4,
                 ComponentPayload::TeleporterState(_) => 24,
                 ComponentPayload::GhostLinkState(_) => 26,
-                ComponentPayload::EmissiveState(_) => 29,
+                ComponentPayload::EmissiveState(_) => 30,
             };
             assert_eq!(payload.kind(), expected);
         }
         assert_eq!(COMPONENT_KIND_LIGHT, 1);
         assert_eq!(COMPONENT_KIND_BILLBOARD_EMITTER, 2);
         assert_eq!(COMPONENT_KIND_FOG_VOLUME, 4);
-        assert_eq!(COMPONENT_KIND_EMISSIVE_VOLUME, 29);
+        assert_eq!(COMPONENT_KIND_EMISSIVE_VOLUME, 30);
     }
 
     // Drift guard: the three record_kind constants are distinct and a typed record

@@ -395,6 +395,15 @@ impl postretro_entities::reactions::system_commands::StateWriteSink for SystemSt
         };
         apply_text_edit_command(&script_ctx, slot, edit);
     }
+
+    fn read_text(&self, slot: &str) -> Option<String> {
+        let script_ctx = self.script_ctx.upgrade()?;
+        let table = script_ctx.slot_table.borrow();
+        match table.get(slot)?.value.as_ref()? {
+            postretro_entities::slot_table::SlotValue::String(text) => Some(text.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// Apply one text edit through the readonly-gated store write. Readonly warns

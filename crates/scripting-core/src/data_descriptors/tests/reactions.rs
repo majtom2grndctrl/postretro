@@ -1746,19 +1746,19 @@ fn subject_token_rejections_name_the_reaction_in_both_vms() {
             r#"({ name: "bad", sequence: [{ target: "@wait", primitive: "wait", args: { durationMs: 1 } }] })"#,
             r#"return { name = "bad", sequence = { { target = "@wait", primitive = "wait", args = { durationMs = 1 } } } }"#,
             "reaction `bad` sequence step",
-            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got \"@wait\"",
+            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\", \"@seam\" or \"@player\", got \"@wait\"",
         ),
         (
             r#"({ name: "bad", sequence: [{ target: 7, primitive: "grantHealth", args: { amount: 1 } }] })"#,
             r#"return { name = "bad", sequence = { { target = 7, primitive = "grantHealth", args = { amount = 1 } } } }"#,
             "reaction `bad` sequence step",
-            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got a",
+            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\", \"@seam\" or \"@player\", got a",
         ),
         (
             r#"({ name: "bad", primitive: "applyDamage", target: "@everyone", args: { amount: 1 } })"#,
             r#"return { name = "bad", primitive = "applyDamage", target = "@everyone", args = { amount = 1 } }"#,
             "reaction `bad` primitive",
-            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got \"@everyone\"",
+            "`target` must be \"@activators\", \"@trigger\", \"@teleporter\", \"@seam\" or \"@player\", got \"@everyone\"",
         ),
         (
             r#"({ name: "bad", sequence: [{ target: "@activators", primitive: "armTrigger", args: {} }] })"#,
@@ -2028,6 +2028,58 @@ fn teleport_manifests_keep_member_events_and_reject_other_scopes_in_both_vms() {
     assert_eq!(js.teleport_events.len(), 1);
     assert_eq!(js.reactions.len(), 1);
     assert_eq!(js.teleport_events[0].teleporter, EntityId::from_raw(65536));
+}
+
+#[test]
+fn seam_manifests_keep_member_events_and_reject_other_scopes_in_both_vms() {
+    let js = eval_js(
+        r#"({
+        reactions: [
+          { name: "sealed", primitive: "disarmSeam", target: "@seam", args: {} },
+          { name: "bad", primitive: "applyDamage", target: "@seam", args: { amount: 1 } },
+          { name: "crossed", primitive: "armSeam", target: "@teleporter", args: {} },
+          { name: "swapped", primitive: "armTeleporter", target: "@seam", args: {} }
+        ],
+        seamEvents: [
+          { seam: 65536, event: "arrive", fire: ["sealed"] },
+          { tag: "airlock", event: "arrive", fire: ["sealed"] },
+          { seam: 65536, event: "teleport", fire: ["sealed"] },
+          { seam: 65536, event: "arrive", levels: ["a"], fire: ["sealed"] }
+        ]
+    })"#,
+        |ctx, value| LevelManifest::from_js_value(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        r#"return {
+        reactions = {
+          { name = "sealed", primitive = "disarmSeam", target = "@seam", args = {} },
+          { name = "bad", primitive = "applyDamage", target = "@seam", args = { amount = 1 } },
+          { name = "crossed", primitive = "armSeam", target = "@teleporter", args = {} },
+          { name = "swapped", primitive = "armTeleporter", target = "@seam", args = {} }
+        },
+        seamEvents = {
+          { seam = 65536, event = "arrive", fire = { "sealed" } },
+          { tag = "airlock", event = "arrive", fire = { "sealed" } },
+          { seam = 65536, event = "teleport", fire = { "sealed" } },
+          { seam = 65536, event = "arrive", levels = { "a" }, fire = { "sealed" } }
+        }
+    }"#,
+        |value| LevelManifest::from_lua_value(value).unwrap(),
+    );
+    assert_eq!(js, lua);
+    assert_eq!(js.seam_events.len(), 1);
+    assert_eq!(js.seam_events[0].seam, EntityId::from_raw(65536));
+    assert_eq!(js.seam_events[0].event, "arrive");
+    assert_eq!(js.seam_events[0].fire, vec!["sealed".to_string()]);
+    assert!(js.teleport_events.is_empty());
+    assert_eq!(
+        js.reactions
+            .iter()
+            .map(|reaction| reaction.name.as_str())
+            .collect::<Vec<_>>(),
+        ["sealed"],
+        "only `on.seam` carrying a seam verb survives"
+    );
 }
 
 // An attack-pool verb takes no `args` and addresses one member from a

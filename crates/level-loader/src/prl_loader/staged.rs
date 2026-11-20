@@ -31,6 +31,7 @@ use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
+use postretro_level_format::seams::SeamsSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::{ShadowmaskBlockIndex, SpecOwnerVertex};
 use postretro_level_format::teleporters::TeleportersSection;
@@ -266,6 +267,7 @@ pub struct EntitiesHandOut {
     pub trigger_volumes: Vec<TriggerVolumeRecord>,
     pub teleporters: TeleportersSection,
     pub ghost_links: GhostLinksSection,
+    pub seams: SeamsSection,
     pub environment_volumes: EnvironmentVolumesSection,
     pub environment_push_forces: Vec<f32>,
     pub reflection_probes: Option<ReflectionProbesSection>,
@@ -608,6 +610,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         trigger_volumes,
         teleporters,
         ghost_links,
+        seams,
         environment_volumes,
         environment_push_forces,
         reflection_probes,
@@ -711,6 +714,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         trigger_volumes,
         teleporters,
         ghost_links,
+        seams,
         fog_volumes,
         fog_pixel_scale,
         environment_volumes,

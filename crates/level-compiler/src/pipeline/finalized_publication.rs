@@ -41,6 +41,7 @@ use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
 use postretro_level_format::push_forces::PushForcesSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
 use postretro_level_format::sdf_atlas::SdfAtlasSection;
+use postretro_level_format::seams::SeamsSection;
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::shadowmask_atlas::ShadowmaskAtlasSection;
 use postretro_level_format::teleporters::TeleportersSection;
@@ -168,6 +169,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) teleporters: &'a TeleportersSection,
     /// GhostLinks (id 56); written only when the map has a link.
     pub(super) ghost_links: &'a GhostLinksSection,
+    /// Seams (id 61); written only when the map has a seam.
+    pub(super) seams: &'a SeamsSection,
     /// MoverProbeChannel (id 57); written only when it has an entry.
     pub(super) mover_probe_channel: Option<&'a MoverProbeChannelSection>,
     pub(super) push_forces: Option<&'a PushForcesSection>,
@@ -228,6 +231,7 @@ pub(super) fn write_finalized_prl(
         environment_volumes,
         teleporters,
         ghost_links,
+        seams,
         mover_probe_channel,
         push_forces,
         reflection_probes,
@@ -283,6 +287,7 @@ pub(super) fn write_finalized_prl(
         environment_volumes,
         teleporters,
         ghost_links,
+        seams,
         mover_probe_channel,
         push_forces,
         reflection_probes,

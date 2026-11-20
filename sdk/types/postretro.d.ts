@@ -935,6 +935,14 @@ declare module "postretro" {
     recencyWeight?: number;
   };
 
+  /** How fast an NPC without a target notices each candidate: one meter per candidate, for the nearest eight. */
+  export type AwarenessDescriptor = {
+    /** Optional milliseconds, default 1000; finite and >= 0. The meter fills over this while the NPC sees the candidate on consecutive checks and they pass its candidacy; a first sighting gains nothing. 0 acts as one check. */
+    fillMs?: number;
+    /** Optional milliseconds, default 2000; finite and >= 0. The meter drains over this while the candidate is out of sight or fails its candidacy. 0 empties it on the first check that misses them. */
+    drainMs?: number;
+  };
+
   /** Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy. */
   export type BehaviorGraphDescriptor = {
     /** Root initial activity, or a stance handle to start in its rest. It is also forced when the aggro gate closes. */
@@ -957,6 +965,12 @@ declare module "postretro" {
     moveSpeed: number;
     /** Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default. */
     engagementRadius?: number;
+    /** Optional; default false. True keeps this archetype's NPCs out of the dormant tier: they keep full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. Costs full rate for those NPCs only. A placed NPC's `always_active` map key (0 or 1) overrides it; NPCs a spawner releases take this value. A reload moves live NPCs placed without the key. */
+    alwaysActive?: boolean;
+    /** Optional metres, default 100; finite and > 0. An engaged NPC whose target is farther than this (horizontal distance) heads straight for it under `chaseTarget`, `strafe` and `reposition` instead of claiming a combat slot, and claims slots again once the target is 10 m inside. A value below the archetype's largest attack standoff plus 10 m is raised to that, with a warning at load and on each reload. */
+    tacticalRange?: number;
+    /** Optional. How fast an NPC notices each candidate: awareness fills over `fillMs` (default 1000) while it sees them and they pass its candidacy, drains over `drainMs` (default 2000) otherwise, and full awareness targets them. Each ≥ 0. Checked at the NPC's decide rate, about every 67 ms in view; shorter differences are not distinguishable. */
+    awareness?: AwarenessDescriptor;
   };
 
   /** Authored player-movement preset. `capsule`, `ground`, `air`, and `fall` are required. `dash`, `crouch`, `slide`, and `viewFeel` are opt-in features; `forgiveness` has engine defaults when omitted. Distances use metres and time uses seconds unless a key is suffixed `Ms`. */
@@ -2105,6 +2119,22 @@ declare module "postretro" {
   /** What a teleporter member's `on("teleport", …)` accepts: a sourceless or teleport-scoped reaction, or a reaction's name. */
   export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string;
 
+  /** Snapshot of a map-placed level seam: id, position and tags. */
+  export type SeamEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  /** Level seam member returned by `getMapEntities("seam")`. Arming state is host-only and never replicated; methods build closed command steps. */
+  export interface SeamHandle extends SeamEntity {
+    /** Arm the seam. Applies on the host at the start of its next tick; pawns latched in it stay latched. */
+    arm(): SequenceStep[];
+    /** Disarm the seam. Applies on the host at the start of its next tick. */
+    disarm(): SequenceStep[];
+    /** Fire `fire` once per pawn arriving by this seam, host-only, inside the first fixed tick after its spawn, and for no sibling sharing its tag. Return the entry from `setupLevel`'s `seamEvents`. */
+    on(event: "arrive", fire: SeamEventReaction[]): SeamEventDescriptor;
+  }
+  /** A seam member binding: the reactions named by `fire` run on the seam's `arrive` event. */
+  export type SeamEventDescriptor = { seam: EntityId; event: "arrive"; fire: string[] };
+  /** What a seam member's `on("arrive", …)` accepts: a sourceless or seam-scoped reaction, or a reaction's name. */
+  export type SeamEventReaction = Reaction<{}> | Reaction<SeamEventParams> | string;
+
   /** Snapshot of a map-placed ghost link: id, position and tags. */
   export type GhostLinkEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
   /** Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state, member categories and colour filter are host-authoritative and replicated; each method builds closed command steps that apply on the host at its next tick, in call order, and do nothing on a connected client. An out-of-range argument warns and drops that step when it runs; a non-finite argument (NaN or Infinity) drops the whole reaction when the level loads. */
@@ -2160,7 +2190,7 @@ declare module "postretro" {
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -2175,6 +2205,7 @@ declare module "postretro" {
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
     K extends "attackPool" ? AttackPoolEntityHandle :
+    K extends "seam" ? SeamHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -2338,6 +2369,10 @@ declare module "postretro" {
   export type ArmTeleporterStep = { id: EntityId; primitive: "armTeleporter"; args: Record<string, never> };
   /** Sequence step that disarms one teleporter (`t.disarm()`). Applies on the host at the start of its next movement tick. */
   export type DisarmTeleporterStep = { id: EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+  /** Sequence step that arms one level seam (`s.arm()`). Applies on the host at the start of its next tick. */
+  export type ArmSeamStep = { id: EntityId; primitive: "armSeam"; args: Record<string, never> };
+  /** Sequence step that disarms one level seam (`s.disarm()`). Applies on the host at the start of its next tick. */
+  export type DisarmSeamStep = { id: EntityId; primitive: "disarmSeam"; args: Record<string, never> };
   /** Member categories a ghost link shows; an omitted category keeps its value. */
   export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
   /** A ghost link's colour filter. Each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
@@ -2397,6 +2432,8 @@ declare module "postretro" {
     | MoverSetBlockPolicyStep
     | ArmTeleporterStep
     | DisarmTeleporterStep
+    | ArmSeamStep
+    | DisarmSeamStep
     | ArmGhostLinkStep
     | DisarmGhostLinkStep
     | SetGhostLinkMembersStep
@@ -2471,6 +2508,11 @@ declare module "postretro" {
   const teleporterTargetBrand: unique symbol;
   export interface TeleporterTarget { readonly [teleporterTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
   export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
+  const seamTargetBrand: unique symbol;
+  /** The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`. */
+  export interface SeamTarget { readonly [seamTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
+  /** Dispatch values published by a level seam's `arrive` event: the arriving pawn and the seam it arrived by. */
+  export type SeamEventParams = Readonly<{ activators: ActivatorsTarget; seam: SeamTarget }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
   /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
@@ -2663,6 +2705,8 @@ declare module "postretro" {
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
     teleportEvents?: TeleportEventDescriptor[];
+    /** Level seam events, keyed by seam: build each with a seam member's `on`. */
+    seamEvents?: SeamEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
     /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
     playerEvents?: PlayerEventDescriptor[];
@@ -2686,6 +2730,7 @@ declare module "postretro" {
   export function defineReaction(tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
@@ -2702,6 +2747,7 @@ declare module "postretro" {
   export function defineReaction(name: string, tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(name: string, tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(name: string, tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(name: string, tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(name: string, tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(name: string, tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
 
@@ -2723,7 +2769,7 @@ declare module "postretro" {
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
   /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
-  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
+  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player";
   /** One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
   export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */
@@ -3224,7 +3270,7 @@ declare module "postretro" {
     readonly timeInActivityMs: RuntimeGuardNode;
     /** Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number). */
     readonly attackCooldownMs: RuntimeGuardNode;
-    /** `true` on the think-stride ticks where acquisition is re-evaluated (boolean). */
+    /** `true` on the enemy's decide ticks, where acquisition is checked: 15 times a second in view or engaged, every 2 s dormant (boolean). */
     readonly acquisitionDue: RuntimeGuardNode;
     /** The enemy's current hit points (number). */
     readonly health: RuntimeGuardNode;
@@ -3266,6 +3312,8 @@ declare module "postretro" {
     readonly activityRoll: RuntimeGuardNode;
     /** Points drained from this enemy's defense layers and health since the currently-evaluated activity was entered, counting every damage producer, `applyDamage` included. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own sum, which resets to 0 when that level is entered (number). */
     readonly damageInActivity: RuntimeGuardNode;
+    /** Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number). */
+    readonly awareness: RuntimeGuardNode;
   }
 
   /** Pre-wrapped guard input leaves for the fixed `@brain.*` namespace. */
@@ -3283,9 +3331,9 @@ declare module "postretro" {
     readonly died: RuntimeGuardNode;
     /** Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number). */
     readonly sentiment: RuntimeGuardNode;
-    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number). */
+    /** Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy since its latest respawn (number). */
     readonly damageDealtToMe: RuntimeGuardNode;
-    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number). */
+    /** Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy since its latest respawn (number). */
     readonly timeSinceDamageFromCandidate: RuntimeGuardNode;
     /** Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number). */
     readonly tolerance: RuntimeGuardNode;
@@ -3681,7 +3729,7 @@ declare module "postretro/ui" {
   export function deleteRun(index: number): SystemReactionStep;
   /** Select the character in slot `index` (0-based `forEach` row of `getGameState().saves.characters`). A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function selectCharacter(index: number): SystemReactionStep;
-  /** Create a character in empty slot `index` (0-based `forEach` row), named from `ui.textEntry`, and select it. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
+  /** Create a character in empty slot `index` (0-based `forEach` row), named from `ui.textEntry` when this step fires, and select it; a later step that empties the entry keeps the name. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function createCharacter(index: number): SystemReactionStep;
   /** Delete the character in slot `index` (0-based `forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function deleteCharacter(index: number): SystemReactionStep;

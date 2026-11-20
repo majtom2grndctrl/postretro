@@ -144,6 +144,7 @@ fn perfect_link() -> LinkConfig {
 /// `BrainComponent` keeps the fixture honest.
 fn brain() -> BrainComponent {
     BrainComponent::from_graph(&BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
@@ -369,6 +370,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
 
 fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
@@ -1377,6 +1379,7 @@ fn host_armed_trap_pool_spawn_reaches_client() {
                 &script_ctx,
                 &crate::trigger_commands::TriggerFireContext {
                     fired_teleporter: None,
+                    fired_seam: None,
                     fired_trigger: Some(event.fire.trigger),
                     activator: Some(player),
                     occupancy,

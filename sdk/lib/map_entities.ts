@@ -17,6 +17,8 @@ import type {
 } from "postretro";
 import { wrapTeleporterEntity } from "./entities/teleporters";
 import type { TeleporterHandle, TeleporterEntity } from "./entities/teleporters";
+import { wrapSeamEntity } from "./entities/seams";
+import type { SeamEntity, SeamHandle } from "./entities/seams";
 import { wrapGhostLinkEntity } from "./entities/ghost_links";
 import type { GhostLinkEntity, GhostLinkHandle } from "./entities/ghost_links";
 import { wrapLightEntity } from "./entities/lights";
@@ -53,7 +55,8 @@ export type MapEntityKind =
   | "emitter"
   | "spawner"
   | "trap"
-  | "attackPool";
+  | "attackPool"
+  | "seam";
 
 /** The member handle each map kind yields. */
 export type MapEntityForKind<K extends MapEntityKind> =
@@ -68,6 +71,7 @@ export type MapEntityForKind<K extends MapEntityKind> =
   K extends "spawner" ? SpawnerEntityHandle :
   K extends "trap" ? TrapEntityHandle :
   K extends "attackPool" ? AttackPoolEntityHandle :
+  K extends "seam" ? SeamHandle :
   never;
 
 /** Narrows a member query to instances carrying `tag`. */
@@ -86,6 +90,7 @@ const MAP_KIND_COMPONENTS: Readonly<Record<MapEntityKind, string>> = Object.free
   spawner: "spawner",
   trap: "projectile_trap",
   attackPool: "attack_pool",
+  seam: "seam",
 });
 
 function projectEmitter(snapshot: EmitterEntity): EmitterEntity {
@@ -139,6 +144,8 @@ export function getMapEntities<K extends MapEntityKind>(
         return (raw as ReadonlyArray<TrapEntity>).map(wrapTrapEntity);
       case "attackPool":
         return (raw as ReadonlyArray<AttackPoolEntity>).map(wrapAttackPoolEntity);
+      case "seam":
+        return (raw as ReadonlyArray<SeamEntity>).map(wrapSeamEntity);
     }
   })();
   return members as MapEntityForKind<K>[];

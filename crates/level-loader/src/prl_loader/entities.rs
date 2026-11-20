@@ -16,6 +16,7 @@ use postretro_level_format::kinematic_geometry::{
 use postretro_level_format::map_entity::{MapEntityRecord, MapEntitySection};
 use postretro_level_format::navmesh::NavMeshSection;
 use postretro_level_format::reflection_probes::ReflectionProbesSection;
+use postretro_level_format::seams::SeamsSection;
 use postretro_level_format::teleporters::TeleportersSection;
 use postretro_level_format::trigger_volumes::{TriggerVolumeRecord, TriggerVolumesSection};
 
@@ -304,6 +305,7 @@ pub(super) struct EntityDecode {
     pub(super) trigger_volumes: Vec<TriggerVolumeRecord>,
     pub(super) teleporters: TeleportersSection,
     pub(super) ghost_links: GhostLinksSection,
+    pub(super) seams: SeamsSection,
     pub(super) environment_volumes: EnvironmentVolumesSection,
     pub(super) environment_push_forces: Vec<f32>,
     pub(super) reflection_probes: Option<ReflectionProbesSection>,
@@ -328,6 +330,7 @@ impl EntityDecode {
             trigger_volumes,
             teleporters,
             ghost_links,
+            seams,
             environment_volumes,
             environment_push_forces,
             reflection_probes,
@@ -347,6 +350,7 @@ impl EntityDecode {
             trigger_volumes,
             teleporters,
             ghost_links,
+            seams,
             environment_volumes,
             environment_push_forces,
             reflection_probes,
@@ -446,6 +450,7 @@ pub(super) fn decode_entities(
         crate::prl_teleporters::decode_teleporters(read_section(SectionId::Teleporters)?)?;
     let ghost_links =
         crate::prl_ghost_links::decode_ghost_links(read_section(SectionId::GhostLinks)?)?;
+    let seams = crate::prl_seams::decode_seams(read_section(SectionId::Seams)?)?;
     let touch_trigger_count = trigger_volumes
         .iter()
         .filter(|trigger| trigger.activation == 0)
@@ -558,6 +563,7 @@ pub(super) fn decode_entities(
         trigger_volumes,
         teleporters,
         ghost_links,
+        seams,
         environment_volumes,
         environment_push_forces,
         reflection_probes,

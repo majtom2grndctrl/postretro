@@ -227,7 +227,7 @@ fn strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass() {
         )],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let player = spawn_player(&mut reg, target_pos());
     // Out of the attack's reach, so the shot can only land once the strafe
     // has carried it in.
@@ -299,6 +299,237 @@ fn strafe_orbits_at_standoff_facing_target_and_fires_when_gates_pass() {
     assert_eq!(player_hp(&reg, player), 95.0);
 }
 
+// At production cadence the slot verbs choose a slot on decide ticks only;
+// the ticks between walk on to it, never standing down for want of a decide.
+#[test]
+fn slot_verbs_keep_walking_to_their_slot_between_decides() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    for verb in [MotionVerb::Strafe, MotionVerb::Reposition] {
+        let graph = engaged_graph("wait", vec![("wait", activity("walk", verb, None))]);
+        let mut reg = EntityRegistry::new();
+        let mut runtime = AiRuntime::noticing_on_sight();
+        let _player = spawn_player(&mut reg, target_pos());
+        let enemy = spawn_engaged(
+            &mut reg,
+            target_pos() + Vec3::new(2.0 * R, 0.0, 0.0),
+            &graph,
+            "wait",
+        );
+        let mut claimed = None;
+        for tick in 0..24 {
+            ai_tick(&mut reg, &mut runtime, &world, &nav);
+            let slot = reg
+                .get_component::<BrainComponent>(enemy)
+                .unwrap()
+                .combat_slot;
+            if claimed.is_none() {
+                claimed = slot;
+                continue;
+            }
+            assert!(
+                destination(&reg, enemy).is_some(),
+                "{verb:?}: tick {tick} stood down between decides"
+            );
+        }
+        assert!(claimed.is_some(), "{verb:?} claimed a slot");
+    }
+}
+
+/// An enemy east of the target, deciding on AI tick 1 and every fourth after.
+fn spawn_deciding_on_first_tick(
+    reg: &mut EntityRegistry,
+    position: Vec3,
+    graph: &BehaviorGraphDescriptor,
+    state: &str,
+) -> EntityId {
+    let mut brain = authored_brain(graph, state);
+    brain.schedule_identity = Some(identity_deciding_on(1));
+    let enemy = spawn_enemy(reg, position, brain, 50.0);
+    set_enemy_yaw(reg, enemy, bearing_yaw(position, target_pos()));
+    enemy
+}
+
+// A flinch over a release or recover plants the enemy for the rest of the
+// activity. Between decides a strafer's slot memory still names its verb, but
+// its motion this tick is a hold: it stands at once, never walking on to its
+// slot until the next decide.
+#[test]
+fn a_staggered_strafer_stands_between_decides() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let graph = engaged_graph(
+        "wait",
+        vec![("wait", activity("walk", MotionVerb::Strafe, None))],
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
+    spawn_player(&mut reg, target_pos());
+    let enemy = spawn_deciding_on_first_tick(
+        &mut reg,
+        target_pos() + Vec3::new(2.0 * R, 0.0, 0.0),
+        &graph,
+        "wait",
+    );
+    ai_tick(&mut reg, &mut runtime, &world, &nav);
+    assert!(
+        reg.get_component::<BrainComponent>(enemy)
+            .unwrap()
+            .combat_slot
+            .is_some(),
+        "the decide claimed a slot"
+    );
+    ai_tick(&mut reg, &mut runtime, &world, &nav);
+    assert!(
+        destination(&reg, enemy).is_some(),
+        "between decides it walks on"
+    );
+
+    let mut brain = reg.get_component::<BrainComponent>(enemy).unwrap().clone();
+    brain.clip_clock.stagger = Some(postretro_entities::components::brain::Stagger::default());
+    reg.set_component(enemy, brain).unwrap();
+    for tick in [3, 4] {
+        ai_tick(&mut reg, &mut runtime, &world, &nav);
+        assert!(
+            matches!(memory(&reg, enemy), EngagedMotionMemory::Strafe(_)),
+            "tick {tick}: the memory waits for the next decide"
+        );
+        assert_eq!(
+            destination(&reg, enemy),
+            None,
+            "tick {tick}: a staggered strafer stands"
+        );
+    }
+}
+
+// The incumbent hold counts ticks, not decides: at production cadence each
+// decide spends the ticks since the previous one, so an 8-tick hold lapses on
+// the second decide after the claim and the third picks afresh.
+#[test]
+fn a_chase_slot_hold_spends_the_ticks_since_the_previous_decide() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let graph = engaged_graph(
+        "chase",
+        vec![("chase", activity("walk", MotionVerb::ChaseTarget, None))],
+    );
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
+    spawn_player(&mut reg, target_pos());
+    let enemy = spawn_deciding_on_first_tick(
+        &mut reg,
+        target_pos() + Vec3::new(R, 0.0, 0.0),
+        &graph,
+        "chase",
+    );
+    let interval = crate::decide::DECIDE_INTERVAL_TICKS as u32;
+    let mut holds = Vec::new();
+    // Ticks 1, 5, 9 and 13 decide.
+    for _ in 0..3 * interval + 1 {
+        ai_tick(&mut reg, &mut runtime, &world, &nav);
+        holds.push(
+            reg.get_component::<BrainComponent>(enemy)
+                .unwrap()
+                .combat_slot_hold_ticks,
+        );
+    }
+    let fresh = COMBAT_SLOT_HOLD_TICKS;
+    let expected: Vec<u32> = [fresh, fresh - interval, fresh - 2 * interval]
+        .into_iter()
+        .flat_map(|hold| std::iter::repeat_n(hold, interval as usize))
+        .chain([fresh])
+        .collect();
+    assert_eq!(
+        holds, expected,
+        "claimed on tick 1, held through tick 9, picked afresh on tick 13"
+    );
+}
+
+/// One AI tick, `enemy` taking `run` and every other brain an ordinary run.
+fn tick_with_run(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    enemy: EntityId,
+    run: crate::ai_host::AiRun,
+) {
+    let lookup = |id: EntityId| {
+        if id == enemy {
+            run
+        } else {
+            crate::ai_host::AiRun::Run
+        }
+    };
+    run_ai_tick_with_navigation_and_impact(
+        reg,
+        runtime,
+        STEER_DT,
+        AiTickInputs {
+            nav_graph: None,
+            mover_nav: crate::nav::MoverNav::none(),
+            collision_world: None,
+            descriptors: &[],
+            descriptor_generation: 0,
+            factions: &FactionRegistry::default(),
+            faction_sentiment: &RefCell::new(FactionSentimentState::default()),
+            clips: None,
+            schedule: crate::ai_host::AiSchedule::scheduled(&lookup),
+            cpu: None,
+        },
+        |_| {},
+    );
+}
+
+// A move-up credits the ticks an NPC did not run to its clocks, but turns it,
+// as it steps it, one ordinary tick: its facing never jumps. A dormant run
+// turns over its whole span, as it steps.
+#[test]
+fn a_move_up_turns_one_tick_and_a_dormant_run_its_span() {
+    use crate::ai_host::AiRun;
+
+    let mut chase = activity("walk", MotionVerb::ChaseTarget, None);
+    chase.facing = Some(FacingPolicy::Target);
+    let graph = engaged_graph("only", vec![("only", chase)]);
+    let one_tick = FACING_TURN_RATE * STEER_DT;
+    let away = FACES_TARGET + std::f32::consts::PI;
+    for dormant in [false, true] {
+        let mut reg = EntityRegistry::new();
+        let mut runtime = AiRuntime::noticing_on_sight();
+        let enemy_at = Vec3::new(20.0, 0.0, 20.0);
+        spawn_player(&mut reg, enemy_at + Vec3::new(3.0, 0.0, 0.0));
+        let enemy = spawn_enemy(&mut reg, enemy_at, authored_brain(&graph, "only"), 50.0);
+        tick_with_run(&mut reg, &mut runtime, enemy, AiRun::Run);
+        assert!(
+            enemy_acquired_target(&reg, enemy).is_some(),
+            "engaged on its first run"
+        );
+        set_enemy_yaw(&mut reg, enemy, away);
+        for _ in 0..20 {
+            tick_with_run(&mut reg, &mut runtime, enemy, AiRun::Skip);
+        }
+        let run = if dormant {
+            AiRun::RunDormant { decide: false }
+        } else {
+            AiRun::Run
+        };
+        tick_with_run(&mut reg, &mut runtime, enemy, run);
+        let turned = yaw_distance(enemy_yaw(&reg, enemy), away);
+        if dormant {
+            assert!(
+                turned > 10.0 * one_tick,
+                "a dormant run turns over its 21-tick span, turned {turned}"
+            );
+        } else {
+            assert!(
+                (turned - one_tick).abs() <= TOLERANCE,
+                "a move-up turns one tick ({one_tick}), turned {turned}"
+            );
+        }
+    }
+}
+
 /// One strafer east of the target, its entry consumed and its direction set
 /// counter-clockwise, so its next slot lies at 45° (south-east, -Z) and its
 /// reverse at -45° (north-east).
@@ -331,7 +562,7 @@ fn strafe_reverses_at_blocked_occupied_or_blind_slot() {
         let world = OpenFloor::new().collision_world();
         let nav = region_nav(0, 18, 40, 40);
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &nav);
         ai_tick(&mut reg, &mut runtime, &world, &nav);
         assert_xz(
@@ -348,7 +579,7 @@ fn strafe_reverses_at_blocked_occupied_or_blind_slot() {
         let world = floor.collision_world();
         let nav = floor.nav_graph();
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &nav);
         let mut bystander = brain_with(tuning(), TEST_IDLE_STATE);
         bystander.aggro_armed = false;
@@ -367,7 +598,7 @@ fn strafe_reverses_at_blocked_occupied_or_blind_slot() {
         let world = floor_with_wall(21.5, 17.8, 19.2);
         let nav = OpenFloor::new().nav_graph();
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &nav);
         ai_tick(&mut reg, &mut runtime, &world, &nav);
         assert_xz(
@@ -386,7 +617,7 @@ fn strafe_holds_without_flipping_when_both_neighbors_unusable() {
     let world = OpenFloor::new().collision_world();
     let corridor = region_nav(0, 19, 40, 21);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy = strafer_heading_ccw(&mut reg, &mut runtime, &world, &corridor);
     set_enemy_yaw(&mut reg, enemy, 0.0);
 
@@ -431,7 +662,7 @@ fn strafe_batch_loser_reverses_once() {
         vec![("wait", activity("walk", MotionVerb::Strafe, None))],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     // East strafing counter-clockwise and south (-Z) strafing clockwise share
     // the south-east slot.
@@ -497,7 +728,7 @@ fn strafe_after_reposition_steps_from_current_bearing() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     // A 30° entry bearing rotates the reposition ring off the world axes.
     let enemy = spawn_engaged(
@@ -599,7 +830,7 @@ fn reposition_arrives_one_spacing_from_entry_position_and_slot() {
 
     // After an engaged hold that claimed a slot.
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     let enemy = spawn_engaged(
         &mut reg,
@@ -636,7 +867,7 @@ fn reposition_arrives_one_spacing_from_entry_position_and_slot() {
 
     // After an actionless `hold`, which holds no slot.
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     let enemy = spawn_engaged(
         &mut reg,
@@ -677,7 +908,7 @@ fn reposition_destinations_beside(
 ) -> Vec<Option<Vec3>> {
     let world = OpenFloor::new().collision_world();
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     for &at in bystanders {
         let mut bystander = brain_with(tuning(), TEST_IDLE_STATE);
@@ -768,7 +999,7 @@ fn reposition_entry_bearing_and_position_stay_fixed_while_target_moves() {
     let world = floor.collision_world();
     let nav = floor.nav_graph();
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let player = spawn_player(&mut reg, target_pos());
     let start = ring_point(target_pos(), EAST);
     let enemy = spawn_engaged(&mut reg, start, &reposition_graph(arc(90.0, 90.0)), "move");
@@ -848,7 +1079,7 @@ fn reposition_twins_claim_distinct_slots_deterministically() {
         let nav = floor.nav_graph();
         let graph = reposition_graph(arc(45.0, 135.0));
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         spawn_player(&mut reg, target_pos());
         let near = spawn_engaged(&mut reg, ring_point(target_pos(), EAST), &graph, "move");
         let far = spawn_engaged(
@@ -876,7 +1107,7 @@ fn reposition_above_target_measures_from_held_slot_or_ignores_arc() {
     let world = OpenFloor::new().collision_world();
     let run = |held: Option<Vec3>, nav: &NavGraph, params| {
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         // The target stands on a ledge directly above the enemy.
         spawn_player(&mut reg, target_pos() + Vec3::new(0.0, 1.5, 0.0));
         let mut brain = authored_brain(&reposition_graph(params), "move");
@@ -918,7 +1149,7 @@ fn reposition_never_picks_radial_slots() {
     let radial = ring_point(target_pos(), EAST);
     for (case, offset) in [("outward", 2.0 * R), ("inward", 0.6 * R)] {
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         spawn_player(&mut reg, target_pos());
         // No minimum travel, so only the radial rule can refuse the nearest
         // slot.
@@ -951,7 +1182,7 @@ fn restore_mid_reposition_and_strafe_records_fresh_entry() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let player = spawn_player(&mut reg, target_pos());
     let repositioner = spawn_engaged(&mut reg, ring_point(target_pos(), EAST), &graph, "move");
     let strafer = spawn_engaged(
@@ -971,7 +1202,7 @@ fn restore_mid_reposition_and_strafe_records_fresh_entry() {
     // The direction a fresh entry here picks, from a control that never ran.
     let fresh_direction = {
         let mut control = EntityRegistry::new();
-        let mut control_runtime = AiRuntime::new();
+        let mut control_runtime = AiRuntime::deciding_every_tick();
         spawn_player(&mut control, target_pos());
         let control_strafer = spawn_engaged(&mut control, position(&reg, strafer), &graph, "wait");
         ai_tick(&mut control, &mut control_runtime, &world, &nav);
@@ -1011,7 +1242,7 @@ fn restore_mid_reposition_and_strafe_records_fresh_entry() {
     assert_eq!(memory(&restored, repositioner), EngagedMotionMemory::None);
     assert_eq!(memory(&restored, strafer), EngagedMotionMemory::None);
 
-    let mut restored_runtime = AiRuntime::new();
+    let mut restored_runtime = AiRuntime::deciding_every_tick();
     let restored_at = position(&restored, repositioner);
     ai_tick(&mut restored, &mut restored_runtime, &world, &nav);
     let (restored_entry, _) = reposition_entry(&restored, repositioner);
@@ -1045,7 +1276,7 @@ fn yaw_after_one_tick_with(
     stage: impl FnOnce(&mut BrainComponent),
 ) -> f32 {
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy_at = Vec3::new(20.0, 0.0, 20.0);
     spawn_player(&mut reg, enemy_at + Vec3::new(3.0, 0.0, 0.0));
     let mut brain = authored_brain(graph, state);
@@ -1173,7 +1404,7 @@ fn clips_for_travel(
     strafe.facing = facing;
     let graph = single_activity_graph(strafe);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let enemy_at = Vec3::new(20.0, 0.0, 20.0);
     spawn_player(&mut reg, enemy_at + Vec3::new(3.0, 0.0, 0.0));
     let enemy = spawn_enemy(&mut reg, enemy_at, authored_brain(&graph, "only"), 50.0);
@@ -1317,6 +1548,9 @@ fn actionless_engaged_slot_verbs_yield_to_rest_animation_at_standstill() {
 #[path = "engaged_motion_alloc_tests.rs"]
 mod alloc;
 
+#[path = "scale_row_support.rs"]
+mod scale_support;
+
 #[path = "replan_stress_tests.rs"]
 mod replan_stress;
 
@@ -1328,3 +1562,181 @@ mod multi_arena;
 
 #[path = "pawn_index_tests.rs"]
 mod pawn_index_pass;
+
+// ---------------------------------------------------------------------------
+// Tactical range
+// ---------------------------------------------------------------------------
+
+/// The authored line for these rows: above the shoot attack's floor.
+const TACTICAL_LINE: f32 = 20.0;
+
+fn ranged_graph(activity: BehaviorActivityDescriptor) -> BehaviorGraphDescriptor {
+    let mut graph = engaged_graph("move", vec![("move", activity)]);
+    graph.ai.tactical_range = Some(TACTICAL_LINE);
+    assert_eq!(graph.tactical_line().metres, TACTICAL_LINE);
+    graph
+}
+
+/// A point `distance` metres west of the enemy at x = 32, on the floor.
+fn west_of_enemy(distance: f32) -> Vec3 {
+    Vec3::new(32.0 - distance, chaser_rest_y(), 20.0)
+}
+
+fn move_to(reg: &mut EntityRegistry, id: EntityId, position: Vec3) {
+    let mut transform = *reg.get_component::<Transform>(id).unwrap();
+    transform.position = position;
+    reg.set_component(id, transform).unwrap();
+}
+
+fn slot(reg: &EntityRegistry, enemy: EntityId) -> Option<Vec3> {
+    reg.get_component::<BrainComponent>(enemy)
+        .unwrap()
+        .combat_slot
+}
+
+/// Run one decide interval at production cadence.
+fn decide_interval(
+    reg: &mut EntityRegistry,
+    runtime: &mut AiRuntime,
+    world: &CollisionWorld,
+    nav: &NavGraph,
+) {
+    for _ in 0..crate::decide::DECIDE_INTERVAL_TICKS {
+        ai_tick(reg, runtime, world, nav);
+    }
+}
+
+// AC 35 / P28: past its tactical line an engaged NPC claims no combat slot and
+// routes toward its target under chase, strafe and reposition alike, every
+// tick, never standing for want of a slot.
+#[test]
+fn tactical_range_beyond_routes_to_the_target_under_every_engaged_verb() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    for verb in [
+        MotionVerb::ChaseTarget,
+        MotionVerb::Strafe,
+        MotionVerb::Reposition,
+    ] {
+        let mut reg = EntityRegistry::new();
+        let mut runtime = AiRuntime::noticing_on_sight();
+        let target = west_of_enemy(TACTICAL_LINE + 5.0);
+        spawn_player(&mut reg, target);
+        let enemy = spawn_engaged(
+            &mut reg,
+            west_of_enemy(0.0),
+            &ranged_graph(activity("walk", verb, None)),
+            "move",
+        );
+        for tick in 0..3 * crate::decide::DECIDE_INTERVAL_TICKS {
+            ai_tick(&mut reg, &mut runtime, &world, &nav);
+            assert_eq!(
+                slot(&reg, enemy),
+                None,
+                "{verb:?}: tick {tick} claimed a slot"
+            );
+            assert_xz(
+                destination(&reg, enemy),
+                target,
+                &format!("{verb:?}: tick {tick} routes to its target"),
+            );
+        }
+    }
+}
+
+// AC 35 / P28: a target coming the margin inside the line gets a slot at the
+// next decide; one moving within the margin band keeps whatever the NPC was
+// doing; past the line again, the slot drops at the next decide.
+#[test]
+fn tactical_range_chooses_slots_the_margin_inside_and_holds_across_the_band() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
+    let player = spawn_player(&mut reg, west_of_enemy(TACTICAL_LINE + 5.0));
+    let enemy = spawn_engaged(
+        &mut reg,
+        west_of_enemy(0.0),
+        &ranged_graph(activity("walk", MotionVerb::ChaseTarget, None)),
+        "move",
+    );
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert_eq!(slot(&reg, enemy), None);
+
+    // Inside the line but within the margin: still routing.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE - 5.0));
+    for _ in 0..3 {
+        decide_interval(&mut reg, &mut runtime, &world, &nav);
+        assert_eq!(slot(&reg, enemy), None, "inside the band it keeps routing");
+    }
+
+    // The margin inside: a slot at its next decide.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE - 11.0));
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert!(
+        slot(&reg, enemy).is_some(),
+        "the margin inside, it chooses a slot"
+    );
+
+    // Back out into the band: the held slot stays.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE - 1.0));
+    for _ in 0..3 {
+        decide_interval(&mut reg, &mut runtime, &world, &nav);
+        assert!(
+            slot(&reg, enemy).is_some(),
+            "the band never drops a held slot"
+        );
+    }
+
+    // Past the line: routing again from the next decide.
+    move_to(&mut reg, player, west_of_enemy(TACTICAL_LINE + 1.0));
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert_eq!(slot(&reg, enemy), None);
+}
+
+// AC 32 / P30: a reposition entered past the line fixes its bounds where it
+// starts choosing slots, not where it entered.
+#[test]
+fn reposition_entered_far_measures_its_arc_from_slot_start() {
+    let floor = OpenFloor::new();
+    let world = floor.collision_world();
+    let nav = floor.nav_graph();
+    let mut reg = EntityRegistry::new();
+    let mut runtime = AiRuntime::noticing_on_sight();
+    let player = spawn_player(&mut reg, west_of_enemy(TACTICAL_LINE + 5.0));
+    let enemy = spawn_engaged(
+        &mut reg,
+        west_of_enemy(0.0),
+        &ranged_graph(reposition_activity(arc(90.0, 90.0))),
+        "move",
+    );
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    assert_eq!(memory(&reg, enemy), EngagedMotionMemory::None);
+
+    // It closed in while routing; then its target comes inside.
+    let closer = Vec3::new(30.0, chaser_rest_y(), 24.0);
+    move_to(&mut reg, enemy, closer);
+    move_to(&mut reg, player, west_of_enemy(10.0));
+    decide_interval(&mut reg, &mut runtime, &world, &nav);
+    let (entry_position, _) = reposition_entry(&reg, enemy);
+    assert_xz(
+        Some(entry_position),
+        closer,
+        "bounds start where slot choice starts",
+    );
+}
+
+// AC 35: omitted, the line is 100 m; authored, it is what the author wrote.
+#[test]
+fn tactical_range_defaults_to_100_m_and_reads_the_authored_value() {
+    let mut graph = engaged_graph(
+        "move",
+        vec![("move", activity("walk", MotionVerb::ChaseTarget, None))],
+    );
+    assert_eq!(graph.tactical_line().metres, 100.0);
+    graph.ai.tactical_range = Some(60.0);
+    assert_eq!(graph.tactical_line().metres, 60.0);
+    assert!(!graph.tactical_line().raised());
+}

@@ -36,7 +36,7 @@ Read at ecd9489e.
 - `plans/done/agentic-observability`: the batch path needs no adapter and is byte-identical; the runspec is the shared vocabulary.
 - `plans/done/cpu-frame-profiling` and `sh-probe-streaming--measurement-harness`: per-tick capture and camera paths belong to this plan, not to static capture.
 - Roadmap Epic 20 non-goal: external state writes that fight sim authority.
-- `in-progress/E10--ai-tick-scheduling/research.md`: AI LOD must not read the renderer's visible set: a batch run has no renderer, and a capture run's sim must not depend on what its captures view.
+- `done/E10--ai-tick-scheduling/research.md`: AI LOD must not read the renderer's visible set: a batch run has no renderer, and a capture run's sim must not depend on what its captures view.
 
 ## Consumers and doors
 - `plans/done/E21--bone-sockets-attachments` deferred its captured evidence here.

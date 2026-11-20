@@ -293,7 +293,7 @@ impl Scene {
         let pawn = spawn_player(&mut reg, player_spot());
         Self {
             reg,
-            runtime: AiRuntime::new(),
+            runtime: AiRuntime::deciding_every_tick(),
             mesh,
             clips,
             clip_tables,
@@ -355,6 +355,7 @@ impl Scene {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&self.clips),
+                schedule: Default::default(),
                 cpu: None,
             },
             on_impact,

@@ -40,6 +40,7 @@ pub(crate) struct WorldInstallProducts {
     /// Trigger reactions partitioned from the final composed active set.
     pub(crate) trigger_bindings: TriggerBindingTable,
     pub(crate) teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
+    pub(crate) seam_bindings: postretro_sim::seam_system::SeamBindingTable,
     /// Host-only trigger-pool outcome retained by `App` for diagnostics and
     /// tests. Connected clients receive the default empty report.
     pub(crate) trigger_pool_report: TriggerPoolInstallReport,
@@ -143,4 +144,6 @@ pub(crate) struct WorldInstallHandles<'a> {
     /// The checkpoint whose arrival set the level starts from: Continue's own
     /// arrival at a saved checkpoint; `None` is the level-start set.
     pub(crate) spawn_checkpoint: Option<String>,
+    /// `spawn_checkpoint` is a level seam's: no keyed set falls back silently.
+    pub(crate) spawn_checkpoint_seam: bool,
 }

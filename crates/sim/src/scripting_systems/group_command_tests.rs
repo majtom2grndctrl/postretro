@@ -290,6 +290,7 @@ fn claim(player: u8) -> ConnectClaim {
 /// true })` that lands is observable.
 fn brain() -> BrainComponent {
     let mut brain = BrainComponent::from_graph(&postretro_foundation::BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: postretro_foundation::BehaviorGraphEnvelope {
             initial: "idle".to_string(),

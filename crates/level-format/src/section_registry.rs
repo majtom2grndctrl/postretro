@@ -275,6 +275,11 @@ pub enum SectionId {
     /// Every map emits it; a level without it is stale.
     /// See `emissive::EmissiveSection`.
     Emissive = 60,
+    /// Optional level-seam regions: name, catalog target, activation, mode,
+    /// starting state and resolved landmark pose per `level_seam`. Absent
+    /// means no seams.
+    /// See `seams::SeamsSection`.
+    Seams = 61,
 }
 
 impl SectionId {
@@ -328,6 +333,7 @@ impl SectionId {
             58 => Some(Self::LightmapPoolBound),
             59 => Some(Self::ProbeDepthTiles),
             60 => Some(Self::Emissive),
+            61 => Some(Self::Seams),
             _ => None,
         }
     }
@@ -388,6 +394,7 @@ mod tests {
             SectionId::LightmapPoolBound,
             SectionId::ProbeDepthTiles,
             SectionId::Emissive,
+            SectionId::Seams,
         ];
 
         for section_id in registered {
@@ -395,6 +402,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(61), None);
+        assert_eq!(SectionId::from_u32(62), None);
     }
 }

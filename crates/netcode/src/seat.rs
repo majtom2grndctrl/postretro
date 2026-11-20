@@ -125,6 +125,9 @@ pub struct SeatTable {
     /// spawn after walking away.
     level_spawn_placements: HashMap<EntityId, usize>,
     connect_claims: HashMap<Seat, ConnectClaim>,
+    /// Seat 0's display name: the local player's selected character, which
+    /// asserts no claim of its own.
+    local_name: String,
     /// Seats that have bound a pawn: their per-owner values and carry are
     /// live, so a rejoin keeps them over a join seed. A seat held before it
     /// ever spawned has nothing live, and its rejoin seed applies.
@@ -189,6 +192,7 @@ impl SeatTable {
             placement_assignments: HashMap::new(),
             level_spawn_placements: HashMap::new(),
             connect_claims: HashMap::new(),
+            local_name: String::new(),
             live_seats: HashSet::new(),
             hold_deadlines: HashMap::new(),
             hold_order: HashMap::new(),
@@ -590,13 +594,26 @@ impl SeatTable {
         }
     }
 
-    /// The display name a seat's claim asserted; empty for the host's seat and
-    /// a seat with no claim.
+    /// A seat's display name: seat 0's local name, else the name its claim
+    /// asserted; empty for a seat with no claim.
     #[must_use]
     pub fn display_name(&self, seat: Seat) -> &str {
+        if seat == Seat(0) {
+            return &self.local_name;
+        }
         self.connect_claims
             .get(&seat)
             .map_or("", |claim| claim.display_name.as_str())
+    }
+
+    /// Name seat 0 for the roster and the player rows: the local player's
+    /// selected character, empty with none. A change republishes the roster.
+    pub fn set_local_display_name(&mut self, name: &str) {
+        let name = postretro_net::wire::truncate_display_name(name);
+        if self.local_name != name {
+            self.local_name = name;
+            self.roster_dirty = true;
+        }
     }
 
     /// Join capacity remaining after connected and held remote seats reserve
@@ -681,6 +698,12 @@ impl SeatTable {
     /// Record the spawn an install-time pawn took.
     pub fn bind_level_spawn_placement(&mut self, pawn: EntityId, placement: usize) {
         self.level_spawn_placements.insert(pawn, placement);
+    }
+
+    /// Forget the spawn an install-time pawn took: it moved on to a pose no
+    /// placement backs (a seam arrival), so that start is free for joiners.
+    pub fn release_level_spawn_placement(&mut self, pawn: EntityId) {
+        self.level_spawn_placements.remove(&pawn);
     }
 
     /// Preserve every carryable component currently present on this pawn.

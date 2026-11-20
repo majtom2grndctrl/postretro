@@ -136,6 +136,44 @@ fn retaliation_tuning_parses_identically_in_both_runtimes() {
     assert_eq!(js.retaliation().recency_weight, 0.25);
 }
 
+// AC 5 (P31): a non-finite or negative `fillMs` or `drainMs` rejects at load
+// in both runtimes, naming the field; 0 loads.
+#[test]
+fn awareness_rejects_non_finite_or_negative_in_both_runtimes() {
+    for (field, js_value, lua_value) in [
+        ("fillMs", "-1", "-1"),
+        ("drainMs", "-0.5", "-0.5"),
+        ("fillMs", "Infinity", "math.huge"),
+        ("drainMs", "-Infinity", "-math.huge"),
+        ("fillMs", "NaN", "0/0"),
+    ] {
+        let js = js_error(&js_behavior(&format!(
+            ", awareness: {{ {field}: {js_value} }}"
+        )));
+        let lua = lua_error(&lua_behavior(&format!(
+            ", awareness = {{ {field} = {lua_value} }}"
+        )));
+        for error in [&js, &lua] {
+            assert!(
+                error.contains(&format!("awareness.{field}")) || error.contains(field),
+                "{field} = {js_value}: {error}"
+            );
+        }
+    }
+    let js = eval_js(
+        &js_behavior(", awareness: { fillMs: 0, drainMs: 0 }"),
+        |ctx, value| entity_descriptor_from_js(ctx, value).unwrap(),
+    );
+    let lua = eval_lua(
+        &lua_behavior(", awareness = { fillMs = 0, drainMs = 0 }"),
+        |value| entity_descriptor_from_lua(value).unwrap(),
+    );
+    let (js, lua) = (js.behavior.unwrap(), lua.behavior.unwrap());
+    assert_eq!(js, lua);
+    assert_eq!(js.awareness().fill_ms, 0.0);
+    assert_eq!(js.awareness().drain_ms, 0.0);
+}
+
 #[test]
 fn both_runtimes_reject_flat_states_and_interrupts() {
     for (js_extra, lua_extra) in [

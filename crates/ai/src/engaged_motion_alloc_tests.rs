@@ -19,7 +19,7 @@ fn allocs_per_tick(motion: MotionVerb) -> f64 {
     let nav = floor.nav_graph();
     let graph = engaged_graph("engage", vec![("engage", activity("walk", motion, None))]);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, target_pos());
     let mut enemies = Vec::with_capacity(WAVE);
     for index in 0..WAVE {

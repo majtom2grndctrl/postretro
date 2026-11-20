@@ -110,7 +110,7 @@ fn running_pool_arbitrates_under_its_profile() {
             (1, 0.0),
             json!({ "arena": [limit("melee", 1)] }),
         );
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         spawn_player(&mut reg, player_spot());
         let graph = jabber();
         let members: Vec<EntityId> = (0..4)
@@ -152,7 +152,7 @@ fn attack_pool_and_default_pool_arbitrate_independently() {
         (1, 0.0),
         json!({ "arena": [limit("melee", 1)] }),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let graph = marked_graph(vec![
         ("jab", held_attack(vec![token("melee")])),
@@ -226,7 +226,7 @@ fn attack_pool_and_default_pool_arbitrate_independently() {
 fn restarting_a_running_pool_reassigns_tag_holders() {
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (3, 4000.0), (1, 0.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let graph = slam_and_jab();
     let spent = spawn_at(&mut reg, 0, &graph, "jab_act");
@@ -292,7 +292,7 @@ fn two_pools_run_side_by_side_and_stop_independently() {
         (1, 0.0),
         json!({ "duel": [limit("melee", 1)] }),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let graph = jabber();
     let squad = |reg: &mut EntityRegistry, first: usize, member_tag: &str| -> Vec<EntityId> {
@@ -364,7 +364,7 @@ fn enemy_changing_pool_keeps_turn_counted_in_new_pool() {
         (1, 0.0),
         json!({ "arena": [limit("melee", 1)] }),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let graph = jabber();
     let first = spawn_at(&mut reg, 0, &graph, "jab_act");
@@ -420,7 +420,7 @@ fn enemy_changing_pool_keeps_turn_counted_in_new_pool() {
 fn refresh_lands_in_the_pool_a_turn_ends_in_and_stays_there() {
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let graph = slam_and_jab();
     let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
@@ -502,7 +502,7 @@ fn departed_holder_refresh_lands_in_default_on_stop_and_drops_on_restart() {
     for restart in [false, true] {
         let mut reg = EntityRegistry::new();
         install_budgets(&mut reg, (3, 0.0), (1, 4000.0), json!({}));
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let pawn = spawn_player(&mut reg, player_spot());
         let holder = spawn_at(&mut reg, 0, &slam_and_jab(), "slam_act");
         tag(&mut reg, holder, "guard");
@@ -545,7 +545,7 @@ fn departed_holder_refresh_lands_in_default_on_stop_and_drops_on_restart() {
 fn level_without_attack_pool_uses_default_pool() {
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (2, 0.0), (1, 0.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let graph = jabber();
     let enemies: Vec<EntityId> = (0..3)
@@ -580,7 +580,7 @@ fn level_change_stops_attack_pools_and_clears_ledger() {
         (1, 4000.0),
         json!({ "arena": [limit("melee", 1)] }),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let graph = slam_and_jab();
     let install = |reg: &mut EntityRegistry| -> (EntityId, EntityId, Vec<EntityId>) {
         let pawn = spawn_player(reg, player_spot());
@@ -628,7 +628,7 @@ fn level_change_stops_attack_pools_and_clears_ledger() {
 fn reload_changing_default_profile_reaches_pool_next_tick() {
     let mut reg = EntityRegistry::new();
     install_budgets(&mut reg, (1, 0.0), (1, 0.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let graph = jabber();
     let members: Vec<EntityId> = (0..3)
@@ -674,7 +674,7 @@ fn restore_keeps_running_pools_and_assignments() {
         (1, 4000.0),
         json!({ "arena": [limit("melee", 1)] }),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let graph = jabber();
     let member = spawn_at(&mut reg, 0, &graph, "jab_act");
@@ -736,7 +736,7 @@ fn restore_keeps_running_pools_and_assignments() {
         );
     }
 
-    let mut restored_runtime = AiRuntime::new();
+    let mut restored_runtime = AiRuntime::deciding_every_tick();
     pool_tick(&mut restored, &mut restored_runtime);
     assert_eq!(
         holders(&restored, &[member, waiter]),

@@ -166,6 +166,7 @@ impl App {
             models,
         );
         let first_spawn = self.install_level_post_load_passes(script_ctx, products);
+        let first_spawn = self.install_level_seams(first_spawn);
         self.send_install_spawn_pose_hints();
         self.install_level_camera_pose(first_spawn);
         self.install_level_fog_masks(fog_masks);
@@ -317,6 +318,7 @@ impl App {
         // precede the fog entity ids segment B creates (both bridges key dirty
         // tracking on `EntityId`).
         self.nav_graph = install_world_gravity_and_nav(world, &script_ctx);
+        self.npc_scheduler = Some(postretro_sim::npc_tiers::NpcScheduler::for_level(world));
         let session = self
             .session
             .as_mut()

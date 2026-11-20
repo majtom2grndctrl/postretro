@@ -23,21 +23,137 @@ struct BuiltBinary {
     path: PathBuf,
 }
 
+/// How stage 1 builds a binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Profile {
+    /// `--release` with default features: no dev-tools, observability or
+    /// capture surface, so no camera-route playback, recording or cap seed.
+    Release,
+    /// The SDK's authoring engine: debug, for TS auto-compile and hot reload,
+    /// with `dev-tools`, which carries the inspector and camera-route
+    /// playback, recording and the drain-cap seed.
+    DebugDevTools,
+}
+
+impl Profile {
+    /// The cargo target subdirectory the binary lands in.
+    fn target_subdir(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::DebugDevTools => "debug",
+        }
+    }
+
+    /// Non-default cargo features the binary builds with.
+    fn features(self) -> &'static [&'static str] {
+        match self {
+            Self::Release => &[],
+            Self::DebugDevTools => &["dev-tools"],
+        }
+    }
+}
+
+/// One binary stage 1 builds: its cargo package and binary, the tool flag
+/// naming the result, and how it is built.
+#[derive(Debug, Clone, Copy)]
+struct Build {
+    package: &'static str,
+    binary: &'static str,
+    flag: &'static str,
+    profile: Profile,
+}
+
+impl Build {
+    /// The `cargo` arguments that build this binary.
+    fn cargo_args(&self) -> Vec<&'static str> {
+        let mut args = vec!["build"];
+        if self.profile == Profile::Release {
+            args.push("--release");
+        }
+        args.extend(["-p", self.package, "--bin", self.binary]);
+        for feature in self.profile.features() {
+            args.extend(["--features", *feature]);
+        }
+        args
+    }
+
+    fn describe(&self) -> String {
+        match self.profile {
+            Profile::Release => format!("release {}", self.binary),
+            Profile::DebugDevTools => format!("debug dev-tools {}", self.binary),
+        }
+    }
+}
+
+const RELEASE_ENGINE: Build = Build {
+    package: "postretro",
+    binary: "postretro",
+    flag: "--release-engine",
+    profile: Profile::Release,
+};
+const AUTHORING_ENGINE: Build = Build {
+    package: "postretro",
+    binary: "postretro",
+    flag: "--engine",
+    profile: Profile::DebugDevTools,
+};
+const PRL_BUILD: Build = Build {
+    package: "postretro-level-compiler",
+    binary: "prl-build",
+    flag: "--prl-build",
+    profile: Profile::Release,
+};
+const SCRIPTS_BUILD: Build = Build {
+    package: "postretro-script-compiler",
+    binary: "scripts-build",
+    flag: "--scripts-build",
+    profile: Profile::Release,
+};
+// Kept a separate binary the tool execs rather than linked code: it pulls in
+// the scripting runtime, so linking it would drag rquickjs and mlua into a
+// tool that needs neither.
+const MINT_IDENTITY: Build = Build {
+    package: "postretro-sim",
+    binary: "mint-identity",
+    flag: "--mint-identity",
+    profile: Profile::Release,
+};
+/// The tool, which runs the assembly and carries `generate-camera-route`.
+const TOOL: Build = Build {
+    package: "postretro-tool",
+    binary: "postretro-tool",
+    flag: "--tool",
+    profile: Profile::Release,
+};
+
+/// The player payload's binaries, handed to `postretro-tool dist`. The tool
+/// that runs the assembly is built after them and ships in no payload.
+const DIST_BUILDS: [Build; 3] = [RELEASE_ENGINE, PRL_BUILD, SCRIPTS_BUILD];
+
+/// The SDK bundle's binaries, handed to `postretro-tool sdk-dist`. The bundle
+/// ships the tool itself, so it is both what runs the assembly and one of the
+/// binaries being copied; naming it keeps that from resting on the tool
+/// happening to find itself beside itself.
+const SDK_DIST_BUILDS: [Build; 6] = [
+    AUTHORING_ENGINE,
+    RELEASE_ENGINE,
+    PRL_BUILD,
+    SCRIPTS_BUILD,
+    MINT_IDENTITY,
+    TOOL,
+];
+
 pub(crate) fn dist(args: Vec<OsString>) -> Result<i32, String> {
     let context = Context::prepare("dist")?;
 
     println!("Stage 1: build release postretro, prl-build, scripts-build, and postretro-tool");
-    let engine = context.build_release("postretro", "postretro", "--release-engine")?;
-    let prl_build =
-        context.build_release("postretro-level-compiler", "prl-build", "--prl-build")?;
-    let scripts_build = context.build_release(
-        "postretro-script-compiler",
-        "scripts-build",
-        "--scripts-build",
-    )?;
-    let tool = context.tool_binary()?;
+    let binaries = DIST_BUILDS
+        .iter()
+        .map(|build| context.build(build))
+        .collect::<Result<Vec<_>, _>>()?;
+    let tool = context.build(&TOOL)?.path;
 
-    context.delegate(&tool, "dist", &[engine, prl_build, scripts_build], args)
+    context.delegate(&tool, "dist", &binaries, args)
 }
 
 pub(crate) fn sdk_dist(args: Vec<OsString>) -> Result<i32, String> {
@@ -47,41 +163,17 @@ pub(crate) fn sdk_dist(args: Vec<OsString>) -> Result<i32, String> {
         "Stage 1: build the debug dev-tools engine, the release engine, the compilers, \
          mint-identity, and postretro-tool"
     );
-    let authoring_engine = context.build_authoring_engine()?;
-    let release_engine = context.build_release("postretro", "postretro", "--release-engine")?;
-    let prl_build =
-        context.build_release("postretro-level-compiler", "prl-build", "--prl-build")?;
-    let scripts_build = context.build_release(
-        "postretro-script-compiler",
-        "scripts-build",
-        "--scripts-build",
-    )?;
-    // Kept a separate binary the tool execs rather than linked code: it pulls in
-    // the scripting runtime, so linking it would drag rquickjs and mlua into a
-    // tool that needs neither.
-    let mint_identity =
-        context.build_release("postretro-sim", "mint-identity", "--mint-identity")?;
-    let tool = context.tool_binary()?;
+    let binaries = SDK_DIST_BUILDS
+        .iter()
+        .map(|build| context.build(build))
+        .collect::<Result<Vec<_>, _>>()?;
+    let tool = binaries
+        .iter()
+        .find(|binary| binary.flag == TOOL.flag)
+        .map(|binary| binary.path.clone())
+        .expect("SDK_DIST_BUILDS names the tool");
 
-    // The bundle ships the tool itself, so it is both what runs the assembly and
-    // one of the binaries being copied. Naming it explicitly keeps that from
-    // resting on the tool happening to find itself beside itself.
-    context.delegate(
-        &tool,
-        "sdk-dist",
-        &[
-            authoring_engine,
-            release_engine,
-            prl_build,
-            scripts_build,
-            mint_identity,
-            BuiltBinary {
-                flag: "--tool",
-                path: tool.clone(),
-            },
-        ],
-        args,
-    )
+    context.delegate(&tool, "sdk-dist", &binaries, args)
 }
 
 /// The workspace, its cargo, and its target directory — established once and
@@ -126,73 +218,25 @@ impl Context {
         })
     }
 
-    fn build_release(
-        &self,
-        package: &str,
-        binary: &str,
-        flag: &'static str,
-    ) -> Result<BuiltBinary, String> {
+    /// Builds one binary from the workspace and finds it. The tool is then
+    /// named by its own path rather than run through `cargo run`, so the
+    /// child's stdio and exit code stay the tool's own.
+    fn build(&self, build: &Build) -> Result<BuiltBinary, String> {
         let mut command = Command::new(&self.cargo);
         command
             .current_dir(&self.workspace)
-            .arg("build")
-            .arg("--release")
-            .arg("-p")
-            .arg(package)
-            .arg("--bin")
-            .arg(binary);
+            .args(build.cargo_args());
+        let label = build.describe();
         run_checked(
             &mut command,
-            &format!("{} stage 1 build {binary}", self.label),
-        )?;
-        self.built(flag, "release", binary, &format!("release {binary}"))
-    }
-
-    /// The authoring engine: DEBUG (no `--release`) with `--features dev-tools`.
-    /// TS auto-compile and hot reload are gated on debug assertions, not on the
-    /// feature, so the bundle needs both bits set.
-    fn build_authoring_engine(&self) -> Result<BuiltBinary, String> {
-        let mut command = Command::new(&self.cargo);
-        command
-            .current_dir(&self.workspace)
-            .arg("build")
-            .arg("-p")
-            .arg("postretro")
-            .arg("--bin")
-            .arg("postretro")
-            .arg("--features")
-            .arg("dev-tools");
-        run_checked(
-            &mut command,
-            &format!("{} stage 1 build postretro (debug, dev-tools)", self.label),
+            &format!("{} stage 1 build {label}", self.label),
         )?;
         self.built(
-            "--engine",
-            "debug",
-            "postretro",
-            "debug dev-tools postretro",
+            build.flag,
+            build.profile.target_subdir(),
+            build.binary,
+            &label,
         )
-    }
-
-    /// The tool itself. It is named by its own path rather than run through
-    /// `cargo run` so the child's stdio and exit code stay the tool's own.
-    fn tool_binary(&self) -> Result<PathBuf, String> {
-        let mut command = Command::new(&self.cargo);
-        command
-            .current_dir(&self.workspace)
-            .arg("build")
-            .arg("--release")
-            .arg("-p")
-            .arg("postretro-tool")
-            .arg("--bin")
-            .arg("postretro-tool");
-        run_checked(
-            &mut command,
-            &format!("{} stage 1 build postretro-tool", self.label),
-        )?;
-        Ok(self
-            .built("--tool", "release", "postretro-tool", "postretro-tool")?
-            .path)
     }
 
     fn built(
@@ -471,6 +515,116 @@ mod tests {
             ),
             os_args(&["--manifest"]),
             "the tool owns the missing-value diagnostic"
+        );
+    }
+
+    /// The feature camera-route playback, recording and the drain-cap seed
+    /// build behind, read from the engine's own declaration of it.
+    fn camera_route_feature() -> String {
+        let flags = workspace_root()
+            .expect("workspace root")
+            .join("crates/postretro/src/startup/camera_route_flags.rs");
+        let source = std::fs::read_to_string(&flags).expect("the engine's camera-route flags");
+        let declaration = "pub(crate) const CAMERA_ROUTE_FEATURE: &str = \"";
+        let start = source
+            .find(declaration)
+            .expect("the engine names the feature playback builds behind")
+            + declaration.len();
+        let end = start + source[start..].find('"').expect("a closing quote");
+        source[start..end].to_string()
+    }
+
+    fn features_of(args: &[&str]) -> Vec<String> {
+        assert!(
+            !args.contains(&"--all-features") && !args.contains(&"--no-default-features"),
+            "{args:?}"
+        );
+        args.windows(2)
+            .filter(|pair| pair[0] == "--features")
+            .map(|pair| pair[1].to_string())
+            .collect()
+    }
+
+    // The player payload's engine and every binary beside it build release
+    // with default features, so a payload carries no camera-route playback,
+    // recording or drain-cap seed.
+    #[test]
+    fn player_dist_builds_every_binary_release_with_default_features() {
+        let engine: Vec<&Build> = DIST_BUILDS
+            .iter()
+            .filter(|build| build.package == "postretro")
+            .collect();
+        assert_eq!(engine.len(), 1, "the payload ships one engine");
+        assert_eq!(engine[0].flag, "--release-engine");
+        for build in DIST_BUILDS.iter().chain([&TOOL]) {
+            let args = build.cargo_args();
+            assert!(args.contains(&"--release"), "{args:?}");
+            assert!(features_of(&args).is_empty(), "{args:?}");
+            assert_eq!(build.profile.target_subdir(), "release");
+        }
+    }
+
+    // The SDK bundle's authoring engine builds debug with the feature
+    // playback, recording and the cap seed ride, and its release engine with
+    // none. The bundle ships the tool, which carries `generate-camera-route`.
+    #[test]
+    fn sdk_bundle_authoring_engine_carries_playback_and_its_release_engine_does_not() {
+        let feature = camera_route_feature();
+        let by_flag = |flag: &str| -> Vec<&'static str> {
+            let builds: Vec<&Build> = SDK_DIST_BUILDS
+                .iter()
+                .filter(|build| build.flag == flag)
+                .collect();
+            assert_eq!(builds.len(), 1, "one {flag} build");
+            builds[0].cargo_args()
+        };
+
+        let authoring = by_flag("--engine");
+        assert_eq!(
+            authoring,
+            [
+                "build",
+                "-p",
+                "postretro",
+                "--bin",
+                "postretro",
+                "--features",
+                "dev-tools"
+            ]
+        );
+        assert!(
+            features_of(&authoring).contains(&feature),
+            "the authoring engine builds with `{feature}`"
+        );
+        assert_eq!(AUTHORING_ENGINE.profile.target_subdir(), "debug");
+
+        let release = by_flag("--release-engine");
+        assert!(release.contains(&"--release"), "{release:?}");
+        assert!(release.contains(&"postretro"), "{release:?}");
+        for build in SDK_DIST_BUILDS
+            .iter()
+            .filter(|build| build.flag != "--engine")
+        {
+            assert!(
+                features_of(&build.cargo_args()).is_empty(),
+                "{} builds with default features",
+                build.flag
+            );
+        }
+
+        let tool = by_flag("--tool");
+        assert!(tool.contains(&"postretro-tool"), "{tool:?}");
+        let root = workspace_root().expect("workspace root");
+        let read = |path: &str| std::fs::read_to_string(root.join(path)).expect(path);
+        assert!(
+            read("crates/tool/src/main.rs")
+                .contains("\"generate-camera-route\" => camera_route::run(rest)"),
+            "the tool dispatches the generate verb"
+        );
+        assert!(
+            read("crates/tool/src/sdk_dist/assemble.rs")
+                .contains("(&binaries.tool, \"postretro-tool\")"),
+            "sdk-dist copies the tool into the bundle's bin/"
         );
     }
 }

@@ -12,6 +12,8 @@ mod assist_rebind_tests;
 pub(crate) mod audio_profile;
 pub(crate) mod camera_route_flags;
 #[cfg(test)]
+mod camera_route_gate_tests;
+#[cfg(test)]
 mod character_file_slice_tests;
 #[cfg(test)]
 mod closet_reveal_surface_tests;

@@ -5,7 +5,7 @@ mod drain_cap;
 #[cfg(test)]
 mod drain_cap_seed_tests;
 #[cfg(test)]
-mod drain_cap_tests;
+pub(crate) mod drain_cap_tests;
 mod hooks;
 mod io;
 mod level_data;

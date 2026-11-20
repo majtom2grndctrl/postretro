@@ -399,10 +399,10 @@ fn a_band_read_waits_at_half_the_walk_in_hand_cap_and_at_production_unset() {
 
 // --- Grep gate --------------------------------------------------------
 
-pub(super) const DEV_TOOLS: &str = r#"#[cfg(feature = "dev-tools")]"#;
-pub(super) const TEST: &str = "#[cfg(test)]";
-pub(super) const TEST_OR_DEV_TOOLS: &str = r#"#[cfg(any(test, feature = "dev-tools"))]"#;
-const TEST_WITH_DEV_TOOLS: &str = r#"#[cfg(all(test, feature = "dev-tools"))]"#;
+pub(crate) const DEV_TOOLS: &str = r#"#[cfg(feature = "dev-tools")]"#;
+pub(crate) const TEST: &str = "#[cfg(test)]";
+pub(crate) const TEST_OR_DEV_TOOLS: &str = r#"#[cfg(any(test, feature = "dev-tools"))]"#;
+pub(crate) const TEST_WITH_DEV_TOOLS: &str = r#"#[cfg(all(test, feature = "dev-tools"))]"#;
 
 /// What a scan is inside at a line break.
 #[derive(Clone, Copy, PartialEq)]
@@ -504,7 +504,7 @@ fn scan_line(line: &str, open: &mut Open) -> (i32, Option<char>) {
 /// comments, strings and char literals ignored. Formatted source keeps one
 /// gate per line. Panics naming `label` when depth goes negative or the file
 /// ends inside a gated item, rather than silently dropping production lines.
-pub(super) fn strip_gated(label: &str, source: &str, gates: &[&str]) -> String {
+pub(crate) fn strip_gated(label: &str, source: &str, gates: &[&str]) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let mut kept = Vec::new();
     let mut index = 0;
@@ -621,7 +621,7 @@ fn strip_gated_panics_when_depth_goes_negative() {
     );
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
@@ -656,9 +656,9 @@ fn rust_sources(dir: &Path) -> Vec<(PathBuf, String)> {
     .collect()
 }
 
-/// Every module `sources` declare out of line behind `#[cfg(test)]`, as the
+/// Every module `sources` declare out of line behind one of `gates`, as the
 /// file and the directory its source may live in.
-fn test_only_modules(sources: &[(PathBuf, String)]) -> Vec<PathBuf> {
+fn gated_modules(sources: &[(PathBuf, String)], gates: &[&str]) -> Vec<PathBuf> {
     let mut modules = Vec::new();
     for (path, source) in sources {
         let stem = path.file_stem().unwrap();
@@ -674,7 +674,7 @@ fn test_only_modules(sources: &[(PathBuf, String)]) -> Vec<PathBuf> {
                 .iter()
                 .find_map(|visibility| declaration.strip_prefix(visibility))
                 .unwrap_or(declaration);
-            if pair[0].trim() == TEST
+            if gates.contains(&pair[0].trim())
                 && let Some(name) = declaration
                     .strip_prefix("mod ")
                     .and_then(|rest| rest.strip_suffix(';'))
@@ -687,11 +687,12 @@ fn test_only_modules(sources: &[(PathBuf, String)]) -> Vec<PathBuf> {
 }
 
 /// Production files under `dir` that still name any of `needles` once every
-/// item behind `gates` is stripped. Test sources and test-only modules are
-/// skipped.
-fn ungated_mentions(dir: &Path, gates: &[&str], needles: &[&str]) -> Vec<String> {
+/// item behind `gates` is stripped. Test sources, test-only modules and
+/// modules declared behind one of `gates` are skipped.
+pub(crate) fn ungated_mentions(dir: &Path, gates: &[&str], needles: &[&str]) -> Vec<String> {
     let sources = rust_sources(dir);
-    let test_only = test_only_modules(&sources);
+    let module_gates: Vec<&str> = std::iter::once(TEST).chain(gates.iter().copied()).collect();
+    let test_only = gated_modules(&sources, &module_gates);
     sources
         .into_iter()
         .filter(|(path, _)| !is_test_source(path))
@@ -835,22 +836,11 @@ fn in_hand_cap_override_seam_is_test_only() {
     }
 }
 
-// No player setting names the drain cap: nothing in the options,
-// settings, persistence or save code, nor in the engine-owned UI and SDK
-// trees a player-facing menu is built from.
-#[test]
-fn no_player_setting_names_the_drain_cap() {
-    let needles = [
-        "drain_cap",
-        "draincap",
-        "drain cap",
-        "drain-cap",
-        "drain_budget",
-        "drain budget",
-        "drainbudget",
-        "drain-budget",
-        "install_decoded_bytes",
-    ];
+/// Player-facing files naming any of `needles`, lowercase: the options,
+/// settings, persistence and save code, and the engine-owned UI and SDK trees
+/// a player-facing menu is built from. Each `allowed` spelling is removed
+/// first, so a needle inside it does not count.
+pub(crate) fn player_facing_offenders(needles: &[&str], allowed: &[&str]) -> Vec<String> {
     let root = workspace_root();
     let player_facing = |path: &Path| {
         let relative = path.strip_prefix(&root).unwrap_or(path);
@@ -871,16 +861,38 @@ fn no_player_setting_names_the_drain_cap() {
             .any(|path| path.ends_with("options/persist.rs")),
         "the scan reaches the options persistence"
     );
-    let offenders: Vec<String> = scanned
+    scanned
         .iter()
         .filter_map(|path| {
             let text = std::fs::read(path).ok()?;
-            let text = String::from_utf8_lossy(&text).to_lowercase();
+            let mut text = String::from_utf8_lossy(&text).to_lowercase();
+            for spelling in allowed {
+                text = text.replace(spelling, "");
+            }
             needles
                 .iter()
                 .find(|needle| text.contains(**needle))
                 .map(|needle| format!("{}: {needle}", path.display()))
         })
-        .collect();
+        .collect()
+}
+
+// No player setting names the drain cap: nothing in the options,
+// settings, persistence or save code, nor in the engine-owned UI and SDK
+// trees a player-facing menu is built from.
+#[test]
+fn no_player_setting_names_the_drain_cap() {
+    let needles = [
+        "drain_cap",
+        "draincap",
+        "drain cap",
+        "drain-cap",
+        "drain_budget",
+        "drain budget",
+        "drainbudget",
+        "drain-budget",
+        "install_decoded_bytes",
+    ];
+    let offenders = player_facing_offenders(&needles, &[]);
     assert!(offenders.is_empty(), "{offenders:#?}");
 }

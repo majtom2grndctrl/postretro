@@ -7040,6 +7040,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             },
         ));
         // The type was frozen from the host's weapon at FIRE; the client's

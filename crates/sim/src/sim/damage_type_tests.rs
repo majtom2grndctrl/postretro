@@ -55,7 +55,8 @@ fn vocabulary(default: Option<&str>) -> Arc<DefenseVocabulary> {
     ]);
     let default = default.map(|name| serde_json::json!({ "kind": "damageType", "name": name }));
     Arc::new(
-        DefenseVocabulary::from_manifest(Some(&layers), Some(&types), default.as_ref()).unwrap(),
+        DefenseVocabulary::from_manifest(Some(&layers), Some(&types), default.as_ref(), None)
+            .unwrap(),
     )
 }
 

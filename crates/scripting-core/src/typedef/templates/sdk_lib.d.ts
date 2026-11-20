@@ -850,6 +850,33 @@
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
 
+  /** How a repeat application by the same applier changes its instance: `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`, resets time left, and each tick deals `damage × stacks`. */
+  export type StatusStacking = "refresh" | "stack";
+  /** What a status draws on each afflicted entity, on every machine: an `emitter()` that follows the entity while the status is live (never on the local player's own pawn), and a one-shot `tickSound` every `tickMs`. */
+  export type StatusPresentation = {
+    readonly emitter?: { kind: "billboard_emitter" } & BillboardEmitterComponent;
+    readonly tickSound?: string;
+  };
+  /** A status's literal parameters. `damage`: per tick per stack, in [0, 1e6]; `0` makes a marker that never enters the damage chokepoint. `type`: a registered damage type; omitted, ticks deal the mod's `defaultDamageType`. `tickMs` in [1, 60000] and `durationMs` in [`tickMs`, 600000], each rounded up to whole fixed ticks; omit `durationMs` to last until cleared. `maxStacks` in [1, 64], default 1. Any other key rejects load. */
+  export type StatusOptions = {
+    readonly damage: number;
+    readonly type?: DamageType;
+    readonly tickMs: number;
+    readonly durationMs?: number;
+    readonly stacking?: StatusStacking;
+    readonly maxStacks?: number;
+    readonly presentation?: StatusPresentation;
+  };
+  /** A registered status kind. It crosses the manifest as `{ kind, name }`. `active` reads whether the local player carries it (`player.status.<name>`): a local-only read with no `byPlayer`, which a player event rejects. */
+  export type Status = {
+    readonly kind: "status";
+    readonly name: string;
+    readonly active: ComputedRef<boolean>;
+  };
+  /** Declare a status kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ statuses: [status] })`. */
+  export function defineStatus(options: StatusOptions): Status;
+  export function defineStatus(name: string, options: StatusOptions): Status;
+
   /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
   export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };
   /** Fields a token reference carries. In an attack's `draws`: `cost`, an integer of at least 1 (default 1). In an `attackBudgets` profile: `limit` and `refreshMs`, overriding the declared budget. A field in the other place rejects load. */

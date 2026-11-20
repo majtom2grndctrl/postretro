@@ -1235,6 +1235,9 @@ fn run_staged_mod_init_luau(
 #[cfg(test)]
 #[path = "staged_manifest/defense_manifest_tests.rs"]
 mod defense_manifest_tests;
+#[cfg(test)]
+#[path = "staged_manifest/status_manifest_tests.rs"]
+mod status_manifest_tests;
 
 #[cfg(test)]
 #[path = "staged_manifest/attack_budget_manifest_tests.rs"]

@@ -1526,6 +1526,7 @@ pub(crate) mod tests {
                     matrix: Default::default(),
                 }],
                 default_damage_type: Some(0),
+                statuses: Vec::new(),
             },
         ));
         let ids = spawn_from_geometry(&mut registry, &geometry).unwrap();

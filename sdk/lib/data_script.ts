@@ -468,6 +468,9 @@ export function defineMod(
   if (config.damageTypes !== undefined) {
     manifest.damageTypes = config.damageTypes.map((entry) => declarationOf(damageTypeDeclarations, entry));
   }
+  if (config.statuses !== undefined) {
+    manifest.statuses = config.statuses.map((entry) => declarationOf(statusDeclarations, entry));
+  }
   if (config.attackTokens !== undefined) {
     manifest.attackTokens = config.attackTokens.map(attackTokenDeclarationOf);
   }
@@ -665,6 +668,7 @@ function storeRef(slot: string, kind: StateRef["kind"], perOwner: boolean): Stat
 // Declarations a `defineMod` list resolves its handles through, as stores do.
 const defenseLayerDeclarations = new WeakMap<object, object>();
 const damageTypeDeclarations = new WeakMap<object, object>();
+const statusDeclarations = new WeakMap<object, object>();
 
 function declarationOf(declarations: WeakMap<object, object>, entry: unknown): unknown {
   if (entry === null || typeof entry !== "object") return entry;
@@ -708,4 +712,20 @@ export function defineDamageType(
     Object.freeze({ kind: "damageType", name, matrix: { ...(matrix ?? {}) }, options: options ?? {} }),
   );
   return handle as unknown as import("postretro").DamageType;
+}
+
+/** Declare a status kind: damage over time, or with `damage: 0` a marker other policies read. Omit `name` only in a TypeScript direct top-level binding declaration compiled by scripts-build, which names it by its binding. Register it with `defineMod({ statuses: [status] })`, then apply it from impact policies (`impact.target.applyStatus`), reactions (`players().applyStatus`) or a fluid's `status`. `active` reads whether the local player carries it. */
+export function defineStatus(options: import("postretro").StatusOptions): import("postretro").Status;
+export function defineStatus(name: string, options: import("postretro").StatusOptions): import("postretro").Status;
+export function defineStatus(
+  nameOrOptions: string | import("postretro").StatusOptions,
+  options?: import("postretro").StatusOptions,
+): import("postretro").Status {
+  if (typeof nameOrOptions !== "string") throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
+  const name = nameOrOptions;
+  const handle = { kind: "status", name };
+  hideProperty(handle, "active", storeRef(`player.status.${name}`, "boolean", false));
+  Object.freeze(handle);
+  statusDeclarations.set(handle, Object.freeze({ ...(options ?? {}), kind: "status", name }));
+  return handle as unknown as import("postretro").Status;
 }

@@ -373,6 +373,11 @@ pub(crate) fn register_sdk_type(registry: &mut PrimitiveRegistry) {
             "The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies.",
         )
         .field(
+            "statuses?",
+            "Vec<Status>",
+            "Status kinds from `defineStatus(...)`, in registration order. Optional; at most 64. Impact policies, reactions and a fluid's `status` apply only a listed kind; two entries with one name, an entry that is not a status handle, an unknown key, a `type` that is not a registered damage type, or a parameter out of range fails load naming its key path.",
+        )
+        .field(
             "attackTokens?",
             "Vec<AttackToken>",
             "Attack tokens from `defineAttackToken(...)`, each carrying its default budget. Optional; the SDK's `defaultToken` is always registered and is never listed. An attack's `draws` name only a listed token or `defaultToken`; two entries with one name, a token named `default`, an entry that is not a token handle, or a `limit` that is not an integer of at least 1 or a `refreshMs` that is not a finite number of at least 0 fails load.",
@@ -724,6 +729,7 @@ mod tests {
             "defenseLayers",
             "damageTypes",
             "defaultDamageType",
+            "statuses",
             "attackTokens",
             "attackBudgets",
         ];

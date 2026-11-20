@@ -1736,6 +1736,8 @@ declare module "postretro" {
     damageTypes?: ReadonlyArray<DamageType>;
     /** The type every producer that names none deals; it must be listed in `damageTypes`. Optional; without it, untyped damage is ×1 on every pool and no resist applies. */
     defaultDamageType?: DamageType;
+    /** Status kinds from `defineStatus(...)`, in registration order. Optional; at most 64. Impact policies, reactions and a fluid's `status` apply only a listed kind; two entries with one name, an entry that is not a status handle, an unknown key, a `type` that is not a registered damage type, or a parameter out of range fails load naming its key path. */
+    statuses?: ReadonlyArray<Status>;
     /** Attack tokens from `defineAttackToken(...)`, each carrying its default budget. Optional; the SDK's `defaultToken` is always registered and is never listed. An attack's `draws` name only a listed token or `defaultToken`; two entries with one name, a token named `default`, an entry that is not a token handle, or a `limit` that is not an integer of at least 1 or a `refreshMs` that is not a finite number of at least 0 fails load. */
     attackTokens?: ReadonlyArray<AttackToken>;
     /** Budget profiles keyed by name, each a list of overrides made with the token's `with({ limit?, refreshMs? })` (`melee.with(...)` in TypeScript, `melee:with(...)` in Luau); a token a profile leaves out keeps its declared budget. Attack pools select a profile by name, and enemies in no running pool use `default`, which is the declared budgets unless the mod declares it. Optional. A token overridden twice by one profile, a `cost`, or an unregistered token fails load. */
@@ -2838,6 +2840,33 @@ declare module "postretro" {
   /** Declare a damage type by its matrix. Omit `name` only in a TypeScript direct top-level binding declaration whose first argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ damageTypes: [type] })`. */
   export function defineDamageType(matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
   export function defineDamageType(name: string, matrix: DamageTypeMatrix, options?: DamageTypeOptions): DamageType;
+
+  /** How a repeat application by the same applier changes its instance: `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`, resets time left, and each tick deals `damage × stacks`. */
+  export type StatusStacking = "refresh" | "stack";
+  /** What a status draws on each afflicted entity, on every machine: an `emitter()` that follows the entity while the status is live (never on the local player's own pawn), and a one-shot `tickSound` every `tickMs`. */
+  export type StatusPresentation = {
+    readonly emitter?: { kind: "billboard_emitter" } & BillboardEmitterComponent;
+    readonly tickSound?: string;
+  };
+  /** A status's literal parameters. `damage`: per tick per stack, in [0, 1e6]; `0` makes a marker that never enters the damage chokepoint. `type`: a registered damage type; omitted, ticks deal the mod's `defaultDamageType`. `tickMs` in [1, 60000] and `durationMs` in [`tickMs`, 600000], each rounded up to whole fixed ticks; omit `durationMs` to last until cleared. `maxStacks` in [1, 64], default 1. Any other key rejects load. */
+  export type StatusOptions = {
+    readonly damage: number;
+    readonly type?: DamageType;
+    readonly tickMs: number;
+    readonly durationMs?: number;
+    readonly stacking?: StatusStacking;
+    readonly maxStacks?: number;
+    readonly presentation?: StatusPresentation;
+  };
+  /** A registered status kind. It crosses the manifest as `{ kind, name }`. `active` reads whether the local player carries it (`player.status.<name>`): a local-only read with no `byPlayer`, which a player event rejects. */
+  export type Status = {
+    readonly kind: "status";
+    readonly name: string;
+    readonly active: ComputedRef<boolean>;
+  };
+  /** Declare a status kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ statuses: [status] })`. */
+  export function defineStatus(options: StatusOptions): Status;
+  export function defineStatus(name: string, options: StatusOptions): Status;
 
   /** A token's default budget on one target. `limit`: how much of it may be drawn on one target at once, an integer of at least 1 (default 3). `refreshMs`: how long a spent draw stays counted after its turn ends, a finite number of at least 0 (default 0). */
   export type AttackTokenBudget = { readonly limit?: number; readonly refreshMs?: number };

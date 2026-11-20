@@ -621,6 +621,7 @@ export type StoreDefinition = {
 local DataScriptSdk = {}
 local defenseLayerDeclarations = setmetatable({}, { __mode = "k" })
 local damageTypeDeclarations = setmetatable({}, { __mode = "k" })
+local statusDeclarations = setmetatable({}, { __mode = "k" })
 local storeDeclarations = setmetatable({}, { __mode = "k" })
 
 -- Part chunks (`data_script/*.luau`) evaluate before this module and publish
@@ -748,11 +749,12 @@ end
 --- effects until the manifest is returned and validated. `factionSentimentDecay`
 --- is an optional non-negative global return-to-baseline rate; it defaults to
 --- zero (hold), and an individual sentiment row may override it with `decay`.
-function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any?, attackTokens: any? }): T
+function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: any?, damageTypes: any?, statuses: any?, attackTokens: any? }): T
   if
     config.stores == nil
     and config.defenseLayers == nil
     and config.damageTypes == nil
+    and config.statuses == nil
     and config.attackTokens == nil
   then
     return config
@@ -776,6 +778,7 @@ function DataScriptSdk.defineMod<T>(config: T & { stores: any?, defenseLayers: a
   manifest.stores = resolve(config.stores, storeDeclarations)
   manifest.defenseLayers = resolve(config.defenseLayers, defenseLayerDeclarations)
   manifest.damageTypes = resolve(config.damageTypes, damageTypeDeclarations)
+  manifest.statuses = resolve(config.statuses, statusDeclarations)
   if config.attackTokens ~= nil then
     local resolved = {}
     for key, entry in pairs(config.attackTokens) do
@@ -1015,6 +1018,28 @@ function DataScriptSdk.defineDamageType(...: any): DamageType
   local handle = table.freeze({ kind = "damageType", name = name })
   damageTypeDeclarations[handle] =
     table.freeze({ kind = "damageType", name = name, matrix = table.clone(matrix or {}), options = options or {} })
+  return handle :: any
+end
+
+--- Declare a status kind: damage over time, or with `damage = 0` a marker
+--- other policies read. Luau passes the name explicitly. Register it with
+--- `defineMod({ statuses = { status } })`, then apply it from impact
+--- policies (`impact.target:applyStatus`), reactions
+--- (`players():applyStatus`) or a fluid's `status`. `active` reads whether
+--- the local player carries it.
+function DataScriptSdk.defineStatus(...: any): Status
+  local name, options = ...
+  if type(name) ~= "string" then
+    error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
+  end
+  local accessors = {
+    active = storeRef("player.status." .. name, "boolean", false),
+  }
+  local handle = table.freeze(setmetatable({ kind = "status", name = name }, { __index = accessors }))
+  local declaration = table.clone(options or {})
+  declaration.kind = "status"
+  declaration.name = name
+  statusDeclarations[handle] = table.freeze(declaration)
   return handle :: any
 end
 

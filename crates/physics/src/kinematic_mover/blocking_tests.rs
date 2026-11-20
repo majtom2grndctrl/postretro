@@ -2280,6 +2280,7 @@ fn crush_deals_its_crush_damage_type() {
             layers: Vec::new(),
             damage_types,
             default_damage_type: None,
+            statuses: Vec::new(),
         })
     };
     let mover_id = 43;
@@ -2758,6 +2759,7 @@ fn crush_immune_agent_takes_no_points_and_never_holds_the_crusher() {
             )]),
         }],
         default_damage_type: None,
+        statuses: Vec::new(),
     }));
     let mover_entity = registry.spawn(Transform::default());
     let mut mover = mover(mover_id);

@@ -14098,6 +14098,7 @@ fn contact_attack_deals_its_damage_type() {
                 )]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         },
     ));
     let mut warned = AiRuntime::new();

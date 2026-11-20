@@ -458,6 +458,7 @@ mod tests {
                 "defineStore",
                 "defineDefenseLayer",
                 "defineDamageType",
+                "defineStatus",
                 "defineAttackToken",
                 "defaultToken",
                 "defineAttack",

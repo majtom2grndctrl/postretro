@@ -368,7 +368,7 @@ function assertDenseImpactArray(values: readonly unknown[], context: string): vo
 }
 
 const IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id";
-export const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
+export const BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType/defineStatus without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration";
 
 function validateImpactEventId(id: string): void {
   const valid = id.length > 0

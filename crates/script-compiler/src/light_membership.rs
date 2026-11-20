@@ -720,6 +720,7 @@ const DATA_SCRIPT_FIELDS: &[&str] = &[
     "defineStore",
     "defineDefenseLayer",
     "defineDamageType",
+    "defineStatus",
     "defineAttackToken",
     "defaultToken",
     "defineAttack",

@@ -21,6 +21,7 @@ pub mod owner_tokens;
 pub mod pose;
 pub mod presentation;
 pub mod seat;
+pub mod status;
 pub mod value_types;
 pub mod weapon_activation;
 pub use weapon_activation::*;

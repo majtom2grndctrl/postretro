@@ -224,6 +224,7 @@ export type PostretroModule = {
   defineStore: typeof(defineStore),
   defineDefenseLayer: typeof(defineDefenseLayer),
   defineDamageType: typeof(defineDamageType),
+  defineStatus: typeof(defineStatus),
   --- Declare an attack token by its default budget.
   defineAttackToken: typeof(defineAttackToken),
   --- The SDK's attack token at the default budget; every mod has it.

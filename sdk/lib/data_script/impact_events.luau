@@ -309,7 +309,7 @@ function ImpactEventsSdk.when(cond: BoolRef, effects: {Effect}): GatedEffect
 end
 
 local IMPACT_EVENT_ID_DIAGNOSTIC = "impact-event `id` must be a single ASCII segment using only [A-Za-z0-9_.-], at most 64 bytes; the engine prefixes the mod id"
-local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
+local BINDING_NAME_SUGAR_DIAGNOSTIC = "defineStore/defineImpactEvent/defineDefenseLayer/defineDamageType/defineStatus without an explicit name is binding-name sugar and must be used in a direct top-level binding declaration"
 
 local function validateImpactEventId(id: string)
   local valid = #id > 0 and #id <= 64

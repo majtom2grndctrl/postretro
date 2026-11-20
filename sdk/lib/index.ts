@@ -154,6 +154,7 @@ export {
   defineStore,
   defineDefenseLayer,
   defineDamageType,
+  defineStatus,
   defineAttackToken,
   defaultToken,
   defineAttack,

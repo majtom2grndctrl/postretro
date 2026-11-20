@@ -1501,6 +1501,7 @@ export type ModManifestInput = {
   defenseLayers: {DefenseLayer}?,
   damageTypes: {DamageType}?,
   defaultDamageType: DamageType?,
+  statuses: {Status}?,
   attackTokens: {AttackToken}?,
   attackBudgets: { [string]: {AttackToken | AttackTokenRef} }?,
 }
@@ -1536,6 +1537,31 @@ declare function defineDefenseLayer(name: string, options: {}?): DefenseLayer
 --- Declare a damage type by its matrix. Luau passes the name explicitly.
 --- Register it with `defineMod({ damageTypes = { type } })`. `options` is reserved.
 declare function defineDamageType(name: string, matrix: DamageTypeMatrix, options: {}?): DamageType
+--- How a repeat application by the same applier changes its instance:
+--- `"refresh"` resets time left; `"stack"` adds one stack up to `maxStacks`.
+export type StatusStacking = "refresh" | "stack"
+--- What a status draws on each afflicted entity: an `emitter()` that follows
+--- it while the status is live, and a one-shot `tickSound` every `tickMs`.
+export type StatusPresentation = { emitter: ComponentValue?, tickSound: string? }
+--- A status's literal parameters. `damage` in [0, 1e6] per tick per stack (0
+--- is a marker); `type` a registered damage type; `tickMs` in [1, 60000];
+--- `durationMs` in [`tickMs`, 600000], omitted to last until cleared;
+--- `maxStacks` in [1, 64].
+export type StatusOptions = {
+  damage: number,
+  type: DamageType?,
+  tickMs: number,
+  durationMs: number?,
+  stacking: StatusStacking?,
+  maxStacks: number?,
+  presentation: StatusPresentation?,
+}
+--- A registered status kind. It crosses the manifest as `{ kind, name }`.
+--- `active` reads whether the local player carries it; it has no `byPlayer`.
+export type Status = { kind: "status", name: string, active: ComputedRef<boolean> }
+--- Declare a status kind. Luau passes the name explicitly. Register it with
+--- `defineMod({ statuses = { status } })`.
+declare function defineStatus(name: string, options: StatusOptions): Status
 --- A token's default budget on one target. `limit`: how much of it may be
 --- drawn on one target at once, an integer of at least 1 (default 3).
 --- `refreshMs`: how long a spent draw stays counted after its turn ends, a

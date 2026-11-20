@@ -15,7 +15,9 @@ So NPC shots reach movers only through the projectile stage, which row H2 alread
 
 **Proposed wording for H1:**
 
-> Host-player hitscan stops at a closed mover with a world contact, and the target behind takes no damage. Through the gap the target is hit. A mover and an entity at equal distance give the world contact. (NPC attacks take projectile weapons only; row H2 covers NPC shots.)
+> Hitscan stops at a closed mover with a world contact, and the target behind takes no damage. Through the gap the target is hit. A mover and an entity at equal distance give the world contact. Proven for the host player, the only hitscan shooter today; the grep gate holds any later hitscan site to the combined query.
+
+Shooter-neutral on purpose (owner, 2026-11-20): NPCs have no hitscan today and the owner prefers they don't, but may add it. Every shooter's hitscan resolves through `fire_hitscan` (`entity_model.md` §Weapon vocabulary: no actor branch), and row U2's gate covers any new hitscan site.
 
 On the owner's approval of this wording (or other wording), set `status: proposed` and report the plan for the resumable skim.
 

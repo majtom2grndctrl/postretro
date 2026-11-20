@@ -1,7 +1,7 @@
 # E16--status-effects-and-hazards — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: f045c0e1
 
 No source under `crates/`, `sdk/` or `content/` changed between the brief's `read at` (e7438238) and this plan. Every symbol the Decisions and Path cite was re-opened; each Decision premise holds.

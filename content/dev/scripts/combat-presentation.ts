@@ -3,7 +3,7 @@
 // The templates stay mod-global so any dev map using the dummy/enemy impact
 // policies can exercise the presentation substrate without map-local setup.
 
-import { runtime, type DamageType, type Impact } from "postretro";
+import { runtime, type DamageType, type Impact, type Status } from "postretro";
 import {
   Bar,
   Text,
@@ -15,22 +15,26 @@ import {
   present,
 } from "postretro/ui";
 import {
+  acid,
   ballistic,
   corrosive,
   explosive,
+  fireDamage,
   flechette,
   plasma,
   shock,
 } from "./damage-types";
 import { armor, shield } from "./defenses";
+import { burning, corroding, scalding } from "./statuses";
 
 type Rgba = [number, number, number, number];
 
-// One floating number per hit, colored by the hit's damage type.
-const damageNumberProps = (color: Rgba) => ({
+// One floating number per hit, colored by the hit's damage type; a status
+// tick floats a smaller number in its status's color.
+const damageNumberProps = (color: Rgba, fontSize = 20.0) => ({
   root: Text({
     content: "0",
-    fontSize: 20.0,
+    fontSize,
     color,
     bind: fact.number("value", { format: "{}", decimalPlaces: 0 }),
   }),
@@ -48,6 +52,13 @@ export const explosiveDamageNumber = definePresentationTemplate(damageNumberProp
 export const plasmaDamageNumber = definePresentationTemplate(damageNumberProps([0.86, 0.45, 1.0, 1.0]));
 export const corrosiveDamageNumber = definePresentationTemplate(damageNumberProps([0.55, 1.0, 0.25, 1.0]));
 export const flechetteDamageNumber = definePresentationTemplate(damageNumberProps([1.0, 0.55, 0.2, 1.0]));
+export const fireDamageNumber = definePresentationTemplate(damageNumberProps([1.0, 0.42, 0.1, 1.0]));
+export const acidDamageNumber = definePresentationTemplate(damageNumberProps([0.8, 1.0, 0.1, 1.0]));
+
+// Status ticks: no contact point, so each floats from the target's position.
+export const burningDamageNumber = definePresentationTemplate(damageNumberProps([1.0, 0.6, 0.15, 1.0], 16.0));
+export const scaldingDamageNumber = definePresentationTemplate(damageNumberProps([1.0, 0.2, 0.08, 1.0], 16.0));
+export const corrodingDamageNumber = definePresentationTemplate(damageNumberProps([0.8, 1.0, 0.1, 1.0], 16.0));
 
 export const damageNumberTemplates = [
   ballisticDamageNumber,
@@ -56,6 +67,11 @@ export const damageNumberTemplates = [
   plasmaDamageNumber,
   corrosiveDamageNumber,
   flechetteDamageNumber,
+  fireDamageNumber,
+  acidDamageNumber,
+  burningDamageNumber,
+  scaldingDamageNumber,
+  corrodingDamageNumber,
 ];
 
 const damageNumberByType: [DamageType, (typeof damageNumberTemplates)[number]][] = [
@@ -65,16 +81,36 @@ const damageNumberByType: [DamageType, (typeof damageNumberTemplates)[number]][]
   [plasma, plasmaDamageNumber],
   [corrosive, corrosiveDamageNumber],
   [flechette, flechetteDamageNumber],
+  [fireDamage, fireDamageNumber],
+  [acid, acidDamageNumber],
 ];
 
-// Impact-policy rows that float the hit's points dealt in its type's color.
-// Every dev hit is typed: an untyped hit takes the mod's default, ballistic
-// (`defaultDamageType` in start-script.ts).
-export const damageNumberRows = (impact: Impact) =>
-  damageNumberByType.map(([type, template]) => ({
-    when: impact.type(type),
-    do: [present(template, impact.amount)],
-  }));
+const damageNumberByStatus: [Status, (typeof damageNumberTemplates)[number]][] = [
+  [burning, burningDamageNumber],
+  [scalding, scaldingDamageNumber],
+  [corroding, corrodingDamageNumber],
+];
+
+// Impact-policy rows that float the hit's points dealt: a status tick in its
+// status's color, any other hit in its type's color, never both. Every dev hit
+// is typed: an untyped hit takes the mod's default, ballistic
+// (`defaultDamageType` in start-script.ts). A marker status (`wet`) never
+// dispatches an impact, so floats nothing.
+export const damageNumberRows = (impact: Impact) => {
+  const statusTick = damageNumberByStatus
+    .map(([status]) => impact.status(status))
+    .reduce((any, tick) => any.or(tick));
+  return [
+    ...damageNumberByStatus.map(([status, template]) => ({
+      when: impact.status(status),
+      do: [present(template, impact.amount)],
+    })),
+    ...damageNumberByType.map(([type, template]) => ({
+      when: impact.type(type).and(statusTick.not()),
+      do: [present(template, impact.amount)],
+    })),
+  ];
+};
 
 export const damagedEnemyBar = definePresentationTemplate({
   root: VStack(

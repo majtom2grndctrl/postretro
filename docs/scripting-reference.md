@@ -835,6 +835,16 @@ lava and trap rows in `content/dev/maps/e24-environment-test.README.md`.
 - `tickSound`: a sound played at the entity every `tickMs` while it carries
   the status, starting one `tickMs` after the status appears.
 
+A damaging tick is an impact, so your impact policies can float a damage
+number for it. `impact.status(h)` picks its template and keeps the hit's
+type row from floating a second number. A tick has no contact point, so its
+number rises from the entity's position:
+
+```ts
+when(impact.status(burning), [present(burnNumber, impact.amount)]),
+when(impact.type(fireDamage).and(impact.status(burning).not()), [present(fireNumber, impact.amount)]),
+```
+
 **In co-op,** the host runs every status; clients run none. Each entity's
 statuses reach clients by name, and each client shows them with its own
 declaration of that name, as fluids do. A client whose mod lacks a status

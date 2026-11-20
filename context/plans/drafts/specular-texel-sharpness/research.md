@@ -1,6 +1,6 @@
 # specular-texel-sharpness — research
 
-Read at e919c0e0. Supports `index.md`; it decides nothing.
+Read at e919c0e0; §Tint read at e7438238. Supports `index.md`; it decides nothing.
 
 ## Specular evaluation census
 
@@ -59,3 +59,13 @@ A 1024×1024 specular slot across 11 mips: R8 is 1,398,101 B, Rg8 2,796,202 B, R
 - **Split sharpness from the snap.** Ship sharpness alone, either capped at today's 96 or evaluated per pixel. Bundling wins on two counts:
   - without the snap, sharpness's headline use crawls;
   - both changes edit the same two shader sites, so the Mac `Off` and register-cliff measurement runs once.
+
+## Tint
+
+- **Today's combine.** Both in-scope sites add specular into the lighting sum before the albedo multiply: forward `fs_main` returns `base_color.rgb * total_light`, and mover `fs_main` returns `base_color.rgb * lighting`. Every highlight is therefore tinted by raw albedo and dimmed by dark albedo. Metals glint in their colour by accident, and dark dielectrics (green marble, lacquer) glint dark instead of white.
+- **Why hue, not raw albedo.** PBR metals pair dark diffuse with a bright coloured glint. Under a raw-albedo tint, a converter that dims a metal's diffuse dims its glint too, and `_s` intensity cannot exceed 1 to compensate. Normalizing albedo to its largest channel keeps the hue and drops the brightness, so diffuse and glint are set independently.
+- **Why no diffuse suppression.** A metallic input would zero diffuse and leave a metal's colour to its reflection. Probe reflections can be absent: the Off tier, capture shadow (withheld, never filled, by the reflection IP rules), faces bound to no probe, and movers. A suppressed metal would go black there.
+- **Why A = 0 as the legacy sentinel.** The legacy raw-albedo multiply is not any value of the mix, so it needs a marker. A per-material uniform bit would hit the constraint in §Uniform constraints: Surface Depth Off rewrites the uniform. A sentinel byte in the slot avoids the uniform entirely. `_t` is per material, so a `_t` material's texels are all at least 1, and mip filtering keeps them there.
+- **Rival: coloured `_s`** (RGB specular colour, as Doom 3 shipped it). It needs two more channels than the slot has, and the forward pass has no free sampled-texture binding for a second slot. One amount plus the albedo's hue covers metals, which is the case authors asked for.
+- **Suffix collisions.** Case-insensitive, across `content/`, at e7438238: `_t` and `_m` match none.
+- **Conversion.** Roughness r (glTF convention, α = r²) maps to a Blinn-Phong exponent n = 2/α² − 2 = 2/r⁴ − 2 (Walter et al. 2007, Beckmann ≈ GGX α). Under the earlier log encoding 2^(8·p/255), capped at 256, every r below about 0.3 collapsed to one value: the bottom 30% of a roughness slider, where polished stone, wet floors and chrome live. A reflection lobe matched to an exponent-256 highlight also spans several probe texels, so no texel could read as a mirror (`glossy-world-reflections` research). Storing smoothness and capping at 8192 leaves only r below about 0.125 at the cap, which is a mirror at probe and texel resolution. Metallic maps to tint directly.

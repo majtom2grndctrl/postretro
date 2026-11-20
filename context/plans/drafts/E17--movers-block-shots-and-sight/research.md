@@ -25,14 +25,14 @@ The cheaper rival is to keep both steps and switch them to the combined cast: th
 
 The FIRE-frozen static distance existed for the late-start case: a start admitted late after a stall fires from the pawn's live eye, so the host ray can meet the world beyond the declared point. The march starts from the same frozen origin and finds that contact itself.
 
-Entity contacts stay a release-time test. A march that also tested entities per tick would close `networking.md` §Combat authority's known gap (host ray misses a declared entity, nothing detonates). That changes entity-contact semantics and is left for a later brief.
+Owner (2026-11-20): credit the client's on-screen impact as far as the network allows. The host detonates at the nearer of its own march world contact and the client's declared distance along the host's frozen path. Entities never cut the host path short, so a direct hit the host's flight passes by still detonates at the declared distance, closing `networking.md` §Combat authority's known gap. A host world contact nearer than the declared distance wins, so no blast passes a door closed on the host. The client chooses only a distance along the host's own path; one authoritative blast reaches every peer. A dishonest short distance is anti-cheat, a non-goal.
 
 ## Corrections to the 2026-10-31 draft
 
 | Old claim | Now |
 |---|---|
 | Lands before or with `E17--enemy-mover-interaction` | That plan landed. The owner ruled on 2026-11-06 that they land in either order and accepted the gap: an enemy held at a door can see and fire through it. |
-| "Sight returns within the existing debounce" after a door opens | Holds only for a retained target. Under E10 a target survives a loss of sight while its activity engages (`compute.rs` `retains_target`). Once dropped, it is re-noticed only through its awareness meter, which needs two passing checks in a row (`AwarenessCheck::visit`). |
+| "Sight returns within the existing debounce" after a door opens | Holds only for a retained target. Under E10 a target survives a loss of sight while its activity engages (`compute.rs` `retains_target`). Once dropped, it is re-noticed only through its awareness meter: the first sighting after a miss gains nothing, and later ones refill at `fillMs` from where the closure drained it (`AwarenessCheck::visit`). |
 | Physics has no alloc probe | `postretro-physics` installs `alloc_probe` as its test global allocator. |
 | `split_for_blocking` is the only `&mut` table use after Movers | SteerAgents calls `yield_agent_as_corpse` first. The Ai stage already holds a shared borrow (`MoverNav { poses }`). |
 | Client shot vs presented pose: error under 0.1 m, one tick | `ready/E17--mover-relative-rider-presentation` smooths mover corrections, render-only. The drawn mover trails a correction until it converges (its research measures about 0.16 m under the mandated profile). Decision unchanged: presentation never feeds collision. |
@@ -60,10 +60,12 @@ Host tick as built: declarations drain twice per tick, once before Movers publis
 | P5 | Declaration arrives after the march reached a closed door | March contact on C; declaration at R > C | Releases on R at the door; the door shields its far side |
 | P6 | A client rocket strikes a door on C; the door opens before release on R | Contact pose differs from release pose | Centre is the tick-C contact point; occlusion and the entity set read tick R's table |
 | P7 | Client rocket declared on an enemy behind a door the host closed before the march reached it | March contact at the door before the entity hold expires | Blast at the door; the enemy takes no damage |
-| P8 | Entity contact released while the march has no world contact | Release with the march unresolved | The entity test reaches no farther than the march has stepped |
-| P9 | Declared world contact; the march reaches range or lifetime with no contact | March resolves empty | FIRE stands, hit refused, no host blast |
+| P8 | Declared entity contact the host's flight passes by | March reaches the declared distance with no world contact before it | Blast at the declared distance along the host path |
+| P9 | The march reaches range or lifetime before its own contact and the declared distance | March resolves empty | FIRE stands, hit refused, no host blast |
 | P10 | March contact exactly at the range or lifetime boundary, including a lifetime of 0 | Contact in the final segment | Contact wins over expiry, as for a host rocket; a zero lifetime resolves empty on the first step |
-| P11 | Client and host disagree on a door | Client declares the wall (door predicted open) while the host's door is closed at arrival; and the reverse | Host detonates at its own march contact both times |
+| P11 | Client and host disagree on a door | Client declares the wall (door predicted open) while the host's door is closed at arrival; and the reverse | Host door closed: blast at the door (host contact nearer). Host door open: blast at the client's declared distance |
+| P12 | Door closes or snaps onto a projectile | Projectile inside the door's posed hull at the start of its step | Detonates that tick at its position; far side shielded |
 | P13 | Door closes between an engaged NPC and its target | Fire gate open by grace for the window; NPC fires in it | The shot meets the door; the target takes no damage |
 | P14 | Client frame spans several ticks while a door crosses its rocket's path | Client sweeps one frame's segment against its last predicted poses; host marches per tick | Disagreement bounded by one client frame's mover travel; the host's march decides |
+| P16 | Declaration arrives after the march has passed the declared distance | March past it on tick C; declaration at R > C | Blast on R at the declared distance |
 | P15 | A door closes on tick T and the blocking pass reverses it on T | Projectiles, Ai and Weapons each query on T | All three see the pose Movers published on T; the reversal shows from T+1 |

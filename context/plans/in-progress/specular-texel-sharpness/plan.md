@@ -1,7 +1,7 @@
 # specular-texel-sharpness — plan of record
 
 mode: resumable
-status: proposed
+status: approved
 read at: 1c7fc9e3a
 
 Branch: `feature/specular-texel-sharpness`. The brief was read at e919c0e0 (tint at e7438238). Every symbol the Decisions and Path cite was re-read at 1c7fc9e3a, after `emissive-volumes` (#686), E16 status effects and E25 level seams landed. No Decision premise is false. The corrections below are stale Path claims and clarifications that keep each Decision's and AC's meaning.
@@ -22,7 +22,7 @@ Branch: `feature/specular-texel-sharpness`. The brief was read at e919c0e0 (tint
 
 ### Mover pass
 - Today the mover takes L from the Surface Depth hit (`depth.world_position`) and V from `in.world_position` (`kinematic_brush.wgsl` `fs_main`, `accumulate_dynamic_direct`). Smooth keeps that split byte for byte. Pixel takes L, V, falloff, range and cone from the snapped point, as the Decision says.
-- Mover point height on a side hit (clarification, flagged for the owner's skim). The Decision gives the mover "the Surface Depth hit". On a top hit, every fragment of a texel face has the same height. On a side hit, the hit slides down the wall, so a point at the hit's own height would vary within one side face. Planning around it:
+- Mover point height on a side hit (clarification, owner-approved 2026-11-20). Rule: one point per texel, shared by all its visible faces, which differ only by normal; the point sits on the true plane in forward and at the texel's quantized top height in the mover. A per-face point (the centre of the exposed side wall) was rejected: it splits a texel into separate pieces, needs a neighbour height load at the mover register cliff, and differs by under a texel except under a light almost touching the face. The Decision gives the mover "the Surface Depth hit". On a top hit, every fragment of a texel face has the same height. On a side hit, the hit slides down the wall, so a point at the hit's own height would vary within one side face. Planning around it:
   - The mover point is the struck texel's centre, raised by that texel's quantized top height. On every top hit this equals the hit height exactly.
   - A side face then holds one value, which differs from its top's only through the normal.
   - Forward uses the true plane, so the question does not arise there (pin P9).
@@ -85,6 +85,7 @@ Branch: `feature/specular-texel-sharpness`. The brief was read at e919c0e0 (tint
     - Lights: one static point light and one static spot. Both are non-animated and promotion-eligible (not dim, short-falloff, directional or SDF), so they own the static faces and promote onto the movers.
     - North wall: the ramp. East wall: the inlay. Floor: the carved material.
     - Movers: two parked `kinematic_mover` brushes, faced with the ramp and the inlay, inside both lights' influence beside the walls.
+    - Door beside wall: a third parked `kinematic_mover` faced with `concrete_carved_gloss`, set into a static wall of the same material, with the static point light about half a metre from the seam. It shows the plane-vs-top-height point gap between forward and mover (one to a few texels) under a close light.
     - Comparison strip for manual row 1, under the same lights: one face each of `50-free-textures/default_dirt_011` (Default, 32), `50-free-textures/wood_bark_048` (wood, 16) and `50-free-textures/concrete_pavement_036` (concrete, 4).
     - Texture scale: one texel spans 8 units on every fixture face.
     - README: build and run commands. It also gives two capture scenes that differ only in `specular_style` (pixel and smooth) and the manual walk for each manual row.
@@ -150,7 +151,7 @@ GPU rows need a Metal or other GPU adapter and run with `POSTRETRO_REQUIRE_GPU=1
 | M2. Slow camera move across a glossy face under pixel: no movement inside any texel | owner, in-engine | manual |
 | M3. `_p` ramp: tight highlights on sharp texels, broad elsewhere, identical on static face and mover | owner, in-engine (mover lit while its light is promoted) | manual |
 | M4. `_t` inlay: white on the field, hue on the inlay, identical on static face and mover | owner, in-engine | manual |
-| M5. Carved material with `_p`: top and side faces each hold one value per texel face | owner, in-engine on `concrete_carved_gloss` | manual |
+| M5. Carved material with `_p`: top and side faces each hold one value per texel face | owner, in-engine on `concrete_carved_gloss`. Observation, not a gate: compare the carved door with its static frame under the close point light. A visible glint difference goes to a follow-up brief, not this one | manual |
 | M6. Under pixel, a static shadow edge cuts the highlight on the diffuse's line | owner, in-engine | manual |
 | M7. Minification sparkle at distance: measured and reported, not a gate | executor reports; owner judges | manual |
 | M8. Mac, Surface Depth Off: smooth and pixel cost vs previous build; mover register count below the documented cliff in both styles | executor on the Mac: clock-pinned Metal System Trace vs a 1c7fc9e3a binary, register screen; owner reviews | manual |

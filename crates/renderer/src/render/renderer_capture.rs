@@ -15,6 +15,18 @@ impl Renderer {
         self.capture_gpu_timing_state
     }
 
+    /// Whether GPU pass timing runs on this renderer's device. Known once
+    /// the adapter exists, so telemetry settles its pending producer here.
+    pub fn gpu_timing_support(&self) -> GpuTimingSupport {
+        match self.capture_gpu_timing_state {
+            CaptureGpuTimingState::NotRequested => GpuTimingSupport::NotRequested,
+            CaptureGpuTimingState::Unsupported => GpuTimingSupport::Unsupported,
+            CaptureGpuTimingState::PlainBuildUnavailable | CaptureGpuTimingState::Active => {
+                GpuTimingSupport::Enabled
+            }
+        }
+    }
+
     /// Count only completed timestamp readbacks in the unfinished window.
     pub fn capture_measurement_partial_timing_frames(&self) -> u32 {
         self.full()

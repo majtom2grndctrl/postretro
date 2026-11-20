@@ -69,6 +69,15 @@ pub enum CaptureGpuTimingState {
     Active,
 }
 
+/// Whether GPU pass timing runs, as decided when the device was requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuTimingSupport {
+    NotRequested,
+    /// Requested, but the adapter lacks the timestamp features.
+    Unsupported,
+    Enabled,
+}
+
 /// One renderer-owned pass value from a completed GPU timing window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureGpuTimingPass {

@@ -10,7 +10,7 @@ Route queries also read per-tick mover state: the nav gate, a read view over the
 
 The blocker is scheduling, not spatial-data ownership. AI currently interleaves enemy-eye reads from the single-threaded entity registry with navigation queries. The first task in a parallel-pathfinding project must split that loop into two phases: snapshot all registry-derived request data on the simulation thread, then execute an ordered batch of navigation-only requests in a fork-join window.
 
-The scheduler owns request identity, deterministic result ordering, worker-local A* scratch, and the fallback when a worker cannot produce a route. Keep registry handles and mutable gameplay effects outside the batch. Do not add a batch API before its scheduler consumer defines those contracts.
+The scheduler owns request identity, deterministic result ordering, worker-local A* scratch, and the fallback when a worker cannot produce a route. Route queries take their search state from the caller; a worker brings its own. Keep registry handles and mutable gameplay effects outside the batch. Do not add a batch API before its scheduler consumer defines those contracts.
 
 ## Non-goals
 

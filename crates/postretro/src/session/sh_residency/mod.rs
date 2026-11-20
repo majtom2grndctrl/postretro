@@ -399,6 +399,9 @@ fn warn_device_limit_once(warned: &AtomicBool, first_refused: Option<u32>) {
 
 impl Drop for ShStreamingSession {
     fn drop(&mut self) {
+        // Every path that ends a session ends its telemetry window: unload,
+        // replacement within a level, a world-less clear, the run's end.
+        self.log_window.finish(self.monotonic_seconds, &self.live);
         // Stopping cancels the workers' handle on the level-scope issuer,
         // whose thread the level owner joins, and joins the decode threads
         // while this session still retains the manifest and its file.

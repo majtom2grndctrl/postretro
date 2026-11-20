@@ -317,6 +317,7 @@ fn tick_with_clip_store(
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips,
+            cpu: None,
         },
         |_| {},
     )

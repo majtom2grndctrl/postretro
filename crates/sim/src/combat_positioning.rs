@@ -14,16 +14,30 @@ use std::cmp::Ordering;
 use glam::Vec3;
 use postretro_foundation::GroundRef;
 
-use crate::collision::CollisionWorld;
-use crate::nav::{NavGraph, distance_xz};
+use crate::collision::{CapsulePlacement, CollisionWorld};
+use crate::nav::{NavGraph, NavScratch, distance_xz};
 
+mod placement_cache;
 mod rotated_ring;
 mod scoring;
+#[cfg(test)]
+mod uncached_reference;
+
+#[cfg(test)]
+pub(crate) use scoring::{PLACEMENT_WORK, PlacementWork};
+
+/// Whether a batch of `queries` shares target-side placement work.
+#[cfg(test)]
+pub(crate) fn shares_placement_work(queries: &[CombatQuery<'_>]) -> bool {
+    placement_cache::BatchPlacements::for_batch(queries).is_some()
+}
+#[cfg(test)]
+pub(crate) use uncached_reference::select_combat_positions_batch_uncached;
 
 pub use rotated_ring::{KeepAway, RING_SLOT_COUNT, SlotRing, arc_slot_mask, slot_spacing};
 #[cfg(test)]
 use scoring::tactically_direct_path_length_limit;
-use scoring::{capsule_placement, dynamic_min_spacing, score_candidate};
+use scoring::{capsule_placement, dynamic_min_spacing, score_candidate, score_candidate_with};
 
 const RING_DIRECTIONS: [Vec3; 8] = [
     Vec3::new(1.0, 0.0, 0.0),
@@ -105,6 +119,48 @@ pub fn select_combat_position(query: &CombatQuery<'_>) -> Option<CombatCandidate
 }
 
 pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatAssignment> {
+    select_combat_positions_batch_in(queries, &mut NavScratch::new())
+}
+
+/// [`select_combat_positions_batch`] routing every candidate through
+/// `scratch`.
+pub fn select_combat_positions_batch_in(
+    queries: &[CombatQuery<'_>],
+    scratch: &mut NavScratch,
+) -> Vec<CombatAssignment> {
+    // Target-side placement work is shared across the batch's enemies when
+    // they read the same world; otherwise each query does its own.
+    match placement_cache::BatchPlacements::for_batch(queries) {
+        Some(mut shared) => select_batch_with(queries, |query| {
+            combat_candidates_with(
+                query,
+                &mut |query, placement, position, generation, incumbent| {
+                    score_candidate_with(
+                        &mut shared,
+                        scratch,
+                        query,
+                        placement,
+                        position,
+                        generation,
+                        incumbent,
+                    )
+                },
+            )
+        }),
+        None => select_batch_with(queries, |query| combat_candidates_in(scratch, query)),
+    }
+}
+
+/// One candidate's score, or `None` when it cannot hold a slot:
+/// `(query, placement, position, generation_index, is_incumbent)`.
+pub(super) type ScoreFn<'s> = dyn FnMut(&CombatQuery<'_>, CapsulePlacement, Vec3, usize, bool) -> Option<CombatCandidate>
+    + 's;
+
+/// The batch's proposal loop over each query's ordered candidates.
+pub(super) fn select_batch_with(
+    queries: &[CombatQuery<'_>],
+    mut candidates_for: impl FnMut(&CombatQuery<'_>) -> Vec<CombatCandidate>,
+) -> Vec<CombatAssignment> {
     struct Pending {
         query_index: usize,
         claimant_id: u32,
@@ -129,7 +185,7 @@ pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatA
             min_spacing: capsule_placement(query.nav_graph)
                 .map(dynamic_min_spacing)
                 .unwrap_or(0.0),
-            candidates: combat_candidates(query),
+            candidates: candidates_for(query),
             next_candidate: 0,
             accepted: None,
         })
@@ -202,7 +258,25 @@ pub fn select_combat_positions_batch(queries: &[CombatQuery<'_>]) -> Vec<CombatA
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
+    combat_candidates_in(&mut NavScratch::new(), query)
+}
+
+fn combat_candidates_in(scratch: &mut NavScratch, query: &CombatQuery<'_>) -> Vec<CombatCandidate> {
+    combat_candidates_with(
+        query,
+        &mut |query, placement, position, generation, incumbent| {
+            score_candidate(scratch, query, placement, position, generation, incumbent)
+        },
+    )
+}
+
+/// A query's candidates, best first, each scored by `score`.
+pub(super) fn combat_candidates_with(
+    query: &CombatQuery<'_>,
+    score: &mut ScoreFn<'_>,
+) -> Vec<CombatCandidate> {
     if !query.agent_pos.is_finite()
         || !query.target_pos.is_finite()
         || !query.enemy_eye_offset.is_finite()
@@ -220,7 +294,7 @@ pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate>
         None => return Vec::new(),
     };
     if let Some(ring) = query.ring.as_ref() {
-        return rotated_ring::ring_candidates(query, ring, placement);
+        return rotated_ring::ring_candidates(query, ring, placement, score);
     }
 
     let mut challengers = Vec::new();
@@ -230,9 +304,7 @@ pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate>
                 .into_iter()
                 .enumerate()
         {
-            if let Some(candidate) =
-                score_candidate(query, placement, position, generation_index, false)
-            {
+            if let Some(candidate) = score(query, placement, position, generation_index, false) {
                 challengers.push(candidate);
             }
         }
@@ -241,7 +313,7 @@ pub(crate) fn combat_candidates(query: &CombatQuery<'_>) -> Vec<CombatCandidate>
 
     let incumbent = query
         .combat_slot
-        .and_then(|slot| score_candidate(query, placement, slot, usize::MAX, true));
+        .and_then(|slot| score(query, placement, slot, usize::MAX, true));
     apply_hysteresis(incumbent, challengers)
 }
 

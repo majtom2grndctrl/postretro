@@ -167,10 +167,11 @@ Players walk from one map into the next as if into the next room. A **seam** is 
 - Seam events, host-only as teleport events are. U2 adds an arrival event on the destination seam; it dispatches inside the first fixed tick after the arriving pawn spawns, as teleport events dispatch inside their tick. U3 adds **waiting** and **ready**, which drain with the post-tick events after D6's evaluation, outside any tick. Trigger events publish only `enter` and `exit`, so seams get their own event source, as teleporters did.
 - A seat's arrival is written at every harvest, from the inside test at the harvest rather than at activation: the landmark-relative arrival (D4) for a seat whose pawn is inside the seam, none for a seat outside it, with no bound pawn, at a level change that is not a seam's, or at the harvest suspend runs. The seat's first spawn in the next level consumes it, as does U4's swap-frame split for a seamless slot whether or not that slot then spawns, and that level's unload clears an unconsumed one. A respawn never reads it.
 - Co-op: a client pawn spawns at participation entry, not at install (`networking.md` §Slot lifecycle, entry rule). The entry rule's pawn spawn takes the seat's stored arrival instead of its assigned `player_spawn` when one exists; a seat with no stored arrival, or one whose arrival is blocked at spawn, takes the assigned spawn (D5). The relevel message is unchanged: the host places every pawn, so no client needs the seam. `networking.md` §Slot lifecycle (entry rule) and §Session-state ledger (the seat's arrival) are rewritten at U2 promotion.
+- A crossing is a run checkpoint at the destination seam: the save marks it a seam's and holds seat 0's landmark-relative pose, and the seam's name selects a spawn set. The mark comes from the crossing, so U3's seamless crossing saves the same record. This is a save, not carried state; I3 is unchanged.
 - A dev-mod two-map pair joined by a seam, catalogued, playable both ways.
 - Whether `loadLevel` gains an optional seam argument for scripted transitions: brief decides.
 
-**Depends on.** `coop--client-spawn-view-handoff`: a co-op client takes its spawn pose from the host's one resolver, which U2 extends with the seat's arrival. Runs concurrently with U1.
+**Depends on.** `coop--client-spawn-view-handoff`: a co-op client takes its spawn pose from the host's one resolver, which U2 extends with the seat's arrival. Runs concurrently with U1. Brief: `ready/E25--landmark-level-change/`.
 
 **Key acceptance.** AC 3–9.
 

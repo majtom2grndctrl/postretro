@@ -127,6 +127,8 @@ Level-load line C (`[Startup] …`) top-level stages are disjoint, consecutive a
 
 Marks that `StartupTimings` cannot carry log their own lines. Every set build logs `[Renderer] Geometry install timing:` with its geometry phases (buffers and SH streaming init, SDF atlas and compose family, lightmap and SDF shadow, BVH and cull, `other`); for a load it logs from the upload thread. The renderer never sees app-side timing types. Unload logs its own `[Startup] unload_level=` line: in the loading-screen order it runs before the next load resets the level timings, and beside a running level it falls inside `running_release`.
 
+Each of these lines is also a telemetry event carrying its load's generation (`development_guide.md` §6.5). Geometry install emits only once its load can no longer be cancelled.
+
 ---
 
 ## 2. Load Threads vs. Main Thread
@@ -261,6 +263,8 @@ Clear-on-unload contract:
 | Level sounds, sprite collections | Entity-type registry and mod map catalog |
 | Active per-level reactions/crossings and accumulator bindings, level-local reaction/crossing definitions, UI registrations, and presentation cells | Mod-global reaction/crossing definitions and persisted-state save path |
 | Progress tracker, frame-end death-event carryover, active wieldable, camera pose | Rust-side primitive/classname registries |
+
+**Arrival harvest** (decided, not yet built). A load carrying a level seam reads each seam occupant's landmark-relative arrival before unload's first teardown step. It must run first: later steps reset the host's command queues, despawn pawns and reset the camera, which the arrival reads. A backdrop's unload writes none. An arrival belongs to its load: suspend and a failed or cancelled load clear it (`entity_model.md` §7e).
 
 Frontend is a no-level steady state. Renderer and audio may exist, but world, collision, fog, level sounds, and per-level registries are empty. Frontend rendering uses a world-less clear and skips gameplay/HUD reads that require a level.
 

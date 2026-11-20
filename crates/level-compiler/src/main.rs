@@ -79,6 +79,7 @@ pub mod size_options;
 pub mod streaming_hints;
 pub(crate) mod surface_materials;
 pub(crate) mod surface_radiance;
+mod telemetry;
 pub mod texel_footprint;
 pub mod texel_step_detector;
 pub mod texture_mips;
@@ -612,10 +613,34 @@ fn should_run_config_screen(reporter_mode: ReporterMode, args: &Args) -> bool {
 
 fn main() -> anyhow::Result<()> {
     let started = Instant::now();
-    let mut args = parse_args()?;
-    // Install capture immediately after argument parsing so every subsequent
-    // early exit can emit the same exactly-once warning summary as a bake.
-    let log_sink = logger::install(args.verbose)?;
+    let args = parse_args()?;
+    // Telemetry starts once arguments parse: `--help` and a rejected argument
+    // exit inside parsing and write nothing. A panic unwinding out of the bake
+    // writes `run_end` from the guard, under either reporter.
+    let telemetry = telemetry::start(std::env::args().collect());
+    let bake_events = telemetry::BakeEvents::new(&args.input, &args.output);
+    let result = postretro_telemetry::run_guarded(|| {
+        bake_main(
+            started,
+            args,
+            telemetry,
+            std::sync::Arc::clone(&bake_events),
+        )
+    });
+    bake_events.end(&result);
+    result
+}
+
+fn bake_main(
+    started: Instant,
+    mut args: Args,
+    telemetry: bool,
+    bake_events: std::sync::Arc<telemetry::BakeEvents>,
+) -> anyhow::Result<()> {
+    // Install capture first in the bake body so every subsequent early exit
+    // can emit the same exactly-once warning summary as a bake.
+    let log_sink = logger::install(args.verbose, telemetry)?;
+    telemetry::log_startup_warning();
     let reporter_mode = select_reporter_mode(
         args.tui,
         TerminalStreams {
@@ -651,7 +676,8 @@ fn main() -> anyhow::Result<()> {
         ReporterMode::Plain => {
             let stage_cache = construct_stage_cache(&args);
             let reporter = std::sync::Arc::new(reporter::PlainReporter::new(started, log_sink));
-            let pipeline_reporter: std::sync::Arc<dyn reporter::Reporter> = reporter.clone();
+            let pipeline_reporter =
+                telemetry::TelemetryReporter::wrap(reporter.clone(), &bake_events);
             let result =
                 run_with_failure_cache_report(stage_cache, args.cache_max_bytes, |stage_cache| {
                     pipeline::run(&args, stage_cache, started, pipeline_reporter, governor)
@@ -668,6 +694,10 @@ fn main() -> anyhow::Result<()> {
             let prepared = match pipeline::prepare(&args) {
                 Ok(prepared) => prepared,
                 Err(error) => {
+                    // No reporter exists yet: the failed Parsing stage begins
+                    // here so the bake writes it and its failed summary, as
+                    // the plain reporter's does.
+                    bake_events.begin(pipeline::StageId::Parsing, false);
                     log_sink.print_warning_summary();
                     return Err(error);
                 }
@@ -702,6 +732,7 @@ fn main() -> anyhow::Result<()> {
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     let bake = move |reporter, governor| {
+                        let reporter = telemetry::TelemetryReporter::wrap(reporter, &bake_events);
                         run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,
@@ -719,6 +750,7 @@ fn main() -> anyhow::Result<()> {
                     let stage_cache = construct_stage_cache(&args);
                     let cache_max_bytes = args.cache_max_bytes;
                     tui::run_tui(planned, log_sink, governor, move |reporter, governor| {
+                        let reporter = telemetry::TelemetryReporter::wrap(reporter, &bake_events);
                         run_with_failure_cache_report(stage_cache, cache_max_bytes, |stage_cache| {
                             pipeline::run_prepared(
                                 &args,
@@ -1355,17 +1387,8 @@ where
     })
 }
 
-/// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn
-/// data scripts.
-///
-// TODO(scripting-tools-dedup): duplicates `TsCompilerPath::detect` in
-// `crates/scripting-core/src/watcher.rs`, reached by the engine through a
-// debug-only compatibility re-export. The level-compiler still cannot import
-// the engine-side wrapper. The matching subprocess invocation lives in
-// `run_ts_compiler` in the watcher module. Consolidate into a
-// shared `postretro-scripts-tools` crate when the level-compiler gains more
-// scripting integration. See:
-// context/plans/drafts/scripting-tools-dedup/index.md
+/// True when a source `scripts-build` compiles from is newer than the binary.
+/// Without a checkout, as in a bundle, nothing is stale.
 fn is_compiler_stale(binary_path: &Path) -> bool {
     let source_dirs = compiler_freshness_roots();
     if source_dirs.iter().all(|source_dir| !source_dir.is_dir()) {
@@ -1401,12 +1424,18 @@ fn is_compiler_stale(binary_path: &Path) -> bool {
     }
 }
 
-fn compiler_freshness_roots() -> Vec<PathBuf> {
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// The checkout this binary was built from. A bundle runs where it is absent,
+/// so every use must tolerate a missing path.
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .expect("level compiler lives two directories below the workspace")
-        .to_path_buf();
+        .to_path_buf()
+}
+
+fn compiler_freshness_roots() -> Vec<PathBuf> {
+    let workspace_root = workspace_root();
     vec![
         workspace_root.join("crates/script-compiler/src"),
         // scripts-build embeds and evaluates this SDK source during manifest
@@ -1444,46 +1473,43 @@ fn log_captured_command_output(label: &str, stdout: &[u8], stderr: &[u8], level:
     }
 }
 
-fn scripts_build_beside(exe_dir: &Path, name: &str) -> Option<PathBuf> {
-    let profile_binary = exe_dir.parent().map(|parent| parent.join(name));
-
-    // A Cargo unit-test executable lives in `target/<profile>/deps/`. Cargo
-    // builds the standalone sidecar at `target/<profile>/`, while a stale
-    // un-hashed compatibility binary can remain in `deps/`. Prefer the
-    // profile-level sidecar for that test-only layout so a child `cargo build`
-    // is also the binary we subsequently invoke.
-    if exe_dir
-        .file_name()
-        .is_some_and(|component| component == "deps")
-        && let Some(profile_binary) = profile_binary.as_ref()
-        && profile_binary.is_file()
-    {
-        return Some(profile_binary.clone());
-    }
-
-    let adjacent = exe_dir.join(name);
-    if adjacent.is_file() {
-        return Some(adjacent);
-    }
-
-    // A test target without a profile-level sidecar still falls through here,
-    // preserving the normal adjacent-then-parent discovery cascade.
-    profile_binary.filter(|binary| binary.is_file())
+/// The executable Cargo reports building for the `bin` target, read from
+/// `--message-format=json` output. Cargo names the path it wrote, so the
+/// caller never guesses the profile, target, target directory or build
+/// directory layout.
+fn built_executable(messages: &[u8], bin: &str) -> Option<PathBuf> {
+    String::from_utf8_lossy(messages)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| {
+            message["reason"] == "compiler-artifact" && message["target"]["name"] == bin
+        })
+        .filter_map(|message| message["executable"].as_str().map(PathBuf::from))
+        .next_back()
 }
 
+/// Locate the `scripts-build` sidecar for compiling and evaluating worldspawn
+/// data scripts: beside this executable, then on `PATH`. With the checkout
+/// present, Cargo rebuilds it when missing or stale, and always in tests.
+///
+// TODO(scripting-tools-dedup): the first two steps repeat
+// `TsCompilerPath::detect` in `crates/scripting-core/src/watcher.rs`, and
+// `compile_worldspawn_data_script` mirrors its `run_ts_compiler`. That module is
+// debug-only and its crate links both script VMs, so prl-build cannot reuse
+// it. Consolidate into a shared `postretro-scripts-tools` crate when the
+// level-compiler gains more scripting integration. See:
+// context/plans/drafts/scripting-tools-dedup/index.md
 fn find_scripts_build() -> Option<PathBuf> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
     let name = if cfg!(windows) {
         "scripts-build.exe"
     } else {
         "scripts-build"
     };
 
-    let path = exe_dir
-        .as_deref()
-        .and_then(|dir| scripts_build_beside(dir, name));
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|binary| binary.is_file());
 
     let path = path.or_else(|| {
         std::env::var_os("PATH").and_then(|path_var| {
@@ -1499,9 +1525,9 @@ fn find_scripts_build() -> Option<PathBuf> {
 
     // Cargo does not wire `scripts-build` into this binary test target as a
     // `CARGO_BIN_EXE_*` dependency. A previous `cargo build` can therefore
-    // leave an older sibling binary in `target/<profile>/` even though the
-    // tests exercise newly compiled `prl-build` code. Rebuild in test builds
-    // so the subprocess has the CLI contract the test target expects. Normal
+    // leave an older binary on the lookup path even though the tests exercise
+    // newly compiled `prl-build` code. Rebuild in test builds so the
+    // subprocess has the CLI contract the test target expects. Normal
     // development and release builds retain the source-mtime freshness check.
     let needs_build = cfg!(test)
         || match &path {
@@ -1509,43 +1535,48 @@ fn find_scripts_build() -> Option<PathBuf> {
             Some(p) => is_compiler_stale(p),
         };
 
-    if needs_build {
+    let workspace = workspace_root();
+    if needs_build && !workspace.join("Cargo.toml").is_file() {
+        log::warn!(
+            "[prl-build] cannot rebuild scripts-build: no checkout at {}",
+            workspace.display()
+        );
+    } else if needs_build {
         log::info!("[prl-build] scripts-build is missing or stale. Rebuilding via cargo...");
         let mut cmd = std::process::Command::new("cargo");
-        cmd.arg("build")
+        // Run from the checkout, not the caller's directory (`postretro-tool`
+        // uses the project root): Cargo finds `.cargo/config.toml`, and rustup
+        // `rust-toolchain.toml`, from the working directory, not the manifest.
+        cmd.current_dir(&workspace)
+            .arg("build")
             .arg("-p")
             .arg("postretro-script-compiler")
             .arg("--bin")
-            .arg("scripts-build");
+            .arg("scripts-build")
+            .arg("--message-format=json-render-diagnostics");
         if !cfg!(debug_assertions) {
             cmd.arg("--release");
         }
+        // stdout carries Cargo's JSON messages; rendered diagnostics go to
+        // stderr, which is the only stream worth logging.
         match cmd.output() {
             Ok(output) if output.status.success() => {
-                log_captured_command_output(
-                    "cargo build",
-                    &output.stdout,
-                    &output.stderr,
-                    log::Level::Info,
-                );
-                log::info!("[prl-build] scripts-build compiled successfully.");
-                if let Some(ref dir) = exe_dir
-                    && let Some(candidate) = scripts_build_beside(dir, name)
-                {
-                    return Some(candidate);
+                log_captured_command_output("cargo build", &[], &output.stderr, log::Level::Info);
+                if let Some(built) = built_executable(&output.stdout, "scripts-build") {
+                    log::info!("[prl-build] scripts-build compiled successfully.");
+                    return Some(built);
                 }
+                log::warn!(
+                    "[prl-build] cargo build reported no scripts-build executable; using {:?}",
+                    path
+                );
             }
             Ok(output) => {
                 log::error!(
                     "[prl-build] Failed to compile scripts-build: exit code {}",
                     output.status
                 );
-                log_captured_command_output(
-                    "cargo build",
-                    &output.stdout,
-                    &output.stderr,
-                    log::Level::Error,
-                );
+                log_captured_command_output("cargo build", &[], &output.stderr, log::Level::Error);
             }
             Err(err) => {
                 log::error!("[prl-build] Failed to spawn cargo build: {}", err);
@@ -1855,26 +1886,25 @@ mod tests {
     }
 
     #[test]
-    fn scripts_build_beside_test_binary_prefers_profile_sidecar() {
-        let root = unique_temp_dir("scripts-build-resolution");
-        let deps = root.join("debug/deps");
-        std::fs::create_dir_all(&deps).expect("create test executable directory");
-        let name = if cfg!(windows) {
-            "scripts-build.exe"
-        } else {
-            "scripts-build"
-        };
-        let stale_deps_binary = deps.join(name);
-        let current_profile_binary = root.join("debug").join(name);
-        std::fs::write(&stale_deps_binary, "stale").expect("write stale deps sidecar");
-        std::fs::write(&current_profile_binary, "current").expect("write current profile sidecar");
-
-        assert_eq!(
-            scripts_build_beside(&deps, name),
-            Some(current_profile_binary),
-            "a Cargo test binary must ignore a stale deps/scripts-build in favor of the profile sidecar"
+    fn built_executable_reads_the_path_cargo_reports() {
+        // Regression: guessing the path from the test executable's directory
+        // missed Cargo's `build/<package>/<hash>/out/` test layout, failing
+        // every data_script test.
+        let messages = concat!(
+            r#"{"reason":"compiler-artifact","target":{"name":"postretro-script-compiler","kind":["lib"]},"executable":null}"#,
+            "\n",
+            "not json\n",
+            r#"{"reason":"compiler-artifact","target":{"name":"scripts-build","kind":["bin"]},"executable":"/elsewhere/release/scripts-build"}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
         );
-        std::fs::remove_dir_all(root).expect("remove sidecar-resolution fixture");
+        assert_eq!(
+            built_executable(messages.as_bytes(), "scripts-build"),
+            Some(PathBuf::from("/elsewhere/release/scripts-build"))
+        );
+        assert_eq!(built_executable(messages.as_bytes(), "other"), None);
+        assert_eq!(built_executable(b"", "scripts-build"), None);
     }
 
     #[test]

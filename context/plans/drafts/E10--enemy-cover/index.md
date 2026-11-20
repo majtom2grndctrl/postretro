@@ -139,7 +139,7 @@ The Luau twin mirrors it with Luau call syntax (`brain.attacksFiredInActivity:ge
 - **Mechanisms.** The cover table folds into the navmesh stage key with the tracer epoch and the cover entities. The route penalty is a non-negative per-crossing cost, which keeps A*'s heuristic admissible. Perception runs before transitions, so the new eye is read from the next tick (pins P3 to P8). `arrived` refreshes are staggered by enemy so they spread across ticks.
 - **Shape.** Cover points as a navmesh table read into `NavGraph`, queried by region near the enemy. Rival: a separate PRL section, which skips the version bump but splits one query surface in two. Rival to baking: runtime candidates from region rims tested by rays each search, rejected because AI already costs 5.8 ms against a 1.0 ms target.
 - **First slice.** The bake table and its decode, proven on the fixture. It falsifies the riskiest assumption: that the eroded rim and a few bake rays find usable spots and height classes, and tell a wall from a ledge.
-- **Watch for.** `ready/perf-ai-tick-cost` touches the same batch; route penalties apply per replan, and replans are budgeted.
+- **Watch for.** `done/perf-ai-tick-cost` touches the same batch; route penalties apply per replan, and replans are budgeted.
 
 ## Open questions
 - Cover point spacing and the rim search distance — **delegated**: report them.

@@ -62,6 +62,7 @@ pub(crate) fn assemble_live_diagnostics(
     live.drawn_not_resident = counters.drawn_not_resident;
     live.last_frame_drawn_outside_baked_set = counters.last_frame_drawn_outside_baked_set;
     live.last_frame_drawn_not_resident = counters.last_frame_drawn_not_resident;
+    live.miss_buckets = counters.miss_buckets;
 
     if let Some(reads) = reads {
         live.lightmap_bytes_read = reads.section_bytes(SectionId::Lightmap as u32);
@@ -78,17 +79,64 @@ pub(crate) fn assemble_live_diagnostics(
 /// change; the cumulative miss counts behind them are.
 ///
 /// [`ShStreamingLogWindow`]: super::sh_streaming_diagnostics::ShStreamingLogWindow
-#[derive(Debug, Default)]
+///
+/// Each line is also a telemetry window; the session's end closes a final
+/// partial one, which has no line.
+#[derive(Debug)]
 pub(crate) struct LightmapStreamingLogWindow {
+    session: u64,
     window_start: Option<f64>,
+    /// The latest observed time and snapshot, which a session's end closes
+    /// its partial window at. Plain copies: observing allocates nothing.
+    last_seconds: f64,
+    last_live: LightmapStreamingLiveDiagnostics,
     baseline: LightmapStreamingLiveDiagnostics,
+}
+
+impl Default for LightmapStreamingLogWindow {
+    fn default() -> Self {
+        Self {
+            session: super::streaming_window_events::next_streaming_session(),
+            window_start: None,
+            last_seconds: 0.0,
+            last_live: LightmapStreamingLiveDiagnostics::default(),
+            baseline: LightmapStreamingLiveDiagnostics::default(),
+        }
+    }
+}
+
+impl Drop for LightmapStreamingLogWindow {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 impl LightmapStreamingLogWindow {
     pub(crate) fn observe(&mut self, now_seconds: f64, live: &LightmapStreamingLiveDiagnostics) {
+        self.last_seconds = now_seconds;
+        self.last_live = *live;
         if let Some(line) = self.line_if_due(now_seconds, live) {
             log::info!("{line}");
         }
+    }
+
+    /// The session ends (it drops with the window): a window that has
+    /// counted something since its last line closes as a partial, with no
+    /// line. An idle one emits nothing.
+    pub(crate) fn finish(&mut self) {
+        let Some(start) = self.window_start.take() else {
+            return;
+        };
+        if without_frame_gauges(&self.last_live) == without_frame_gauges(&self.baseline) {
+            return;
+        }
+        super::streaming_window_events::emit_lightmap_window(
+            self.session,
+            true,
+            self.last_seconds - start,
+            &self.baseline,
+            &self.last_live,
+        );
     }
 
     fn line_if_due(
@@ -104,6 +152,13 @@ impl LightmapStreamingLogWindow {
             return None;
         }
         let line = format_line(elapsed, &self.baseline, live);
+        super::streaming_window_events::emit_lightmap_window(
+            self.session,
+            false,
+            elapsed,
+            &self.baseline,
+            live,
+        );
         self.baseline = *live;
         self.window_start = Some(now_seconds);
         Some(line)
@@ -135,8 +190,11 @@ fn format_line(
          {failed_installs} failed installs, {failed_reads} failed reads, {repacks} repacks \
          ({mask_repacks} mask), {compactions} compactions ({mask_compactions} mask), \
          {rollbacks} compaction rollbacks ({mask_rollbacks} mask), {growths} growths \
-         ({mask_growths} mask), visible misses (may overlap) {outside} outside baked set, \
-         {not_resident} not resident \
+         ({mask_growths} mask), visible misses in block-frames (may overlap) {outside} \
+         outside baked set, {not_resident} not resident (reach {miss_reach}, in flight \
+         {miss_in_flight}, permit {miss_permit}, in-hand cap {miss_in_hand}, budget \
+         {miss_budget}, renderer drain {miss_renderer}, deferred {miss_deferred}, refused \
+         {miss_refused}, failed {miss_failed}) \
          | now: lead {lead:.1} of {max_lead:.1} m, resident {resident_blocks} of {blocks} \
          blocks {resident} (id 22 {resident_22}, id 42 {resident_42}), mandatory \
          {mandatory_blocks} blocks {mandatory} (id 22 {mandatory_22}, id 42 {mandatory_42}), \
@@ -164,6 +222,15 @@ fn format_line(
         mask_growths = delta(|d| d.growths.mask),
         outside = delta(|d| d.drawn_outside_baked_set),
         not_resident = delta(|d| d.drawn_not_resident),
+        miss_reach = delta(|d| d.miss_buckets.outside_reach),
+        miss_in_flight = delta(|d| d.miss_buckets.read_in_flight),
+        miss_permit = delta(|d| d.miss_buckets.waiting_on_permit),
+        miss_in_hand = delta(|d| d.miss_buckets.waiting_on_in_hand_cap),
+        miss_budget = delta(|d| d.miss_buckets.held_by_drain_budget),
+        miss_renderer = delta(|d| d.miss_buckets.awaiting_renderer_drain),
+        miss_deferred = delta(|d| d.miss_buckets.deferred_by_pool),
+        miss_refused = delta(|d| d.miss_buckets.refused),
+        miss_failed = delta(|d| d.miss_buckets.failed),
         lead = now.lead_metres,
         max_lead = now.max_lead_metres,
         resident_blocks = now.resident_blocks,
@@ -390,6 +457,29 @@ mod tests {
         assert_eq!(live.lightmap_bytes_read, 7);
     }
 
+    // The periodic line carries the controller's miss causes, in
+    // block-frames. Camera 6 draws block 6 while its read is in flight.
+    #[test]
+    fn log_line_reports_not_resident_misses_by_cause_in_block_frames() {
+        let capture = LogCapture::start();
+        let mut rig = Rig::corridor(None);
+        let mut live = LightmapStreamingLiveDiagnostics::default();
+        let mut window = LightmapStreamingLogWindow::default();
+        let ledger = LightmapRouteLedger::default();
+        window.observe(0.0, &live);
+        rig.portal(6, &[6]);
+        rig.controller.count_visible_misses();
+        assemble_live_diagnostics(&mut live, &rig.controller, &ledger, None, None);
+        assert_eq!(live.miss_buckets, rig.controller.counters().miss_buckets);
+        window.observe(DIAGNOSTICS_LOG_INTERVAL_SECONDS, &live);
+        capture.assert_logged_once(
+            log::Level::Info,
+            "visible misses in block-frames (may overlap) 0 outside baked set, 1 not resident \
+             (reach 0, in flight 1, permit 0, in-hand cap 0, budget 0, renderer drain 0, \
+             deferred 0, refused 0, failed 0)",
+        );
+    }
+
     #[test]
     fn log_line_fires_once_per_interval_while_activity_occurs_and_never_when_idle() {
         let capture = LogCapture::start();
@@ -431,6 +521,11 @@ mod tests {
             installs: 10,
             lightmap_bytes_read: 1024 * 1024,
             drawn_not_resident: 4,
+            miss_buckets: postretro_renderer::LightmapMissBuckets {
+                read_in_flight: 3,
+                waiting_on_in_hand_cap: 1,
+                ..Default::default()
+            },
             repacks: PerPool {
                 lightmap: 2,
                 mask: 1,
@@ -449,6 +544,11 @@ mod tests {
             shadowmask_bytes_read: 4 * 1024 * 1024,
             drawn_outside_baked_set: 1,
             drawn_not_resident: 6,
+            miss_buckets: postretro_renderer::LightmapMissBuckets {
+                read_in_flight: 4,
+                waiting_on_in_hand_cap: 2,
+                ..Default::default()
+            },
             lead_metres: 16.0,
             max_lead_metres: 32.0,
             block_count: 198,
@@ -497,7 +597,11 @@ mod tests {
             "{line}"
         );
         assert!(
-            line.contains("visible misses (may overlap) 1 outside baked set, 2 not resident"),
+            line.contains(
+                "visible misses in block-frames (may overlap) 1 outside baked set, 2 not \
+                 resident (reach 0, in flight 1, permit 0, in-hand cap 1, budget 0, renderer \
+                 drain 0, deferred 0, refused 0, failed 0)"
+            ),
             "{line}"
         );
         assert!(
@@ -556,5 +660,129 @@ mod tests {
         assert_eq!(live.band_headroom_texels.mask, 1024);
         assert_eq!(live.block_count, 7);
         assert_eq!(live.lead_metres, 16.0);
+    }
+
+    fn lightmap_windows(hub: &postretro_telemetry::Hub) -> Vec<serde_json::Value> {
+        hub.lines()
+            .iter()
+            .map(|line| postretro_telemetry::Envelope::parse_line(line).unwrap())
+            .filter(|event| event.kind == postretro_telemetry::Kind::LightmapStreamingWindow)
+            .map(|event| event.payload)
+            .collect()
+    }
+
+    fn scoped_hub() -> (
+        std::sync::Arc<postretro_telemetry::Hub>,
+        postretro_telemetry::scoped::ScopedHub,
+    ) {
+        let hub = std::sync::Arc::new(postretro_telemetry::Hub::start(
+            postretro_telemetry::HubConfig {
+                memory: true,
+                ring: Some(postretro_telemetry::RingCaps::DEFAULT),
+                ..postretro_telemetry::HubConfig::new(postretro_telemetry::Source::Engine, "t")
+            },
+        ));
+        let scope = postretro_telemetry::scoped::install(std::sync::Arc::clone(&hub));
+        (hub, scope)
+    }
+
+    // Telemetry: the window event carries the line's not-resident cause
+    // split, field for field, in block-frames.
+    #[test]
+    fn lightmap_window_event_and_line_agree_on_the_miss_causes() {
+        let (hub, _scope) = scoped_hub();
+        let capture = LogCapture::start();
+        let mut window = LightmapStreamingLogWindow::default();
+        window.observe(0.0, &LightmapStreamingLiveDiagnostics::default());
+        let live = LightmapStreamingLiveDiagnostics {
+            installs: 1,
+            drawn_not_resident: 6,
+            miss_buckets: postretro_renderer::LightmapMissBuckets {
+                read_in_flight: 2,
+                waiting_on_in_hand_cap: 3,
+                held_by_drain_budget: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        window.observe(DIAGNOSTICS_LOG_INTERVAL_SECONDS, &live);
+        capture.assert_logged_once(
+            log::Level::Info,
+            "6 not resident (reach 0, in flight 2, permit 0, in-hand cap 3, budget 1, \
+             renderer drain 0, deferred 0, refused 0, failed 0)",
+        );
+        let events = lightmap_windows(&hub);
+        assert_eq!(events.len(), 1);
+        let delta = &events[0]["delta"];
+        assert_eq!(delta["missed_not_resident"], 6);
+        assert_eq!(delta["miss_reach"], 0);
+        assert_eq!(delta["miss_in_flight"], 2);
+        assert_eq!(delta["miss_permit"], 0);
+        assert_eq!(delta["miss_in_hand_cap"], 3);
+        assert_eq!(delta["miss_budget"], 1);
+        assert_eq!(delta["miss_renderer_drain"], 0);
+        assert_eq!(delta["miss_deferred"], 0);
+        assert_eq!(delta["miss_refused"], 0);
+        assert_eq!(delta["miss_failed"], 0);
+    }
+
+    // Telemetry: a lightmap window that has counted something emits one
+    // partial when its session ends (the window drops with it), and no line.
+    #[test]
+    fn a_counted_lightmap_window_emits_one_partial_when_its_session_ends() {
+        let (hub, _scope) = scoped_hub();
+        let capture = LogCapture::start();
+        let mut window = LightmapStreamingLogWindow::default();
+        window.observe(1.0, &LightmapStreamingLiveDiagnostics::default());
+        window.observe(
+            2.5,
+            &LightmapStreamingLiveDiagnostics {
+                installs: 3,
+                drawn_not_resident: 2,
+                ..Default::default()
+            },
+        );
+        drop(window);
+        assert_eq!(lines(&capture), 0);
+        let events = lightmap_windows(&hub);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["partial"], true);
+        assert_eq!(events[0]["elapsed_s"], 1.5);
+        assert_eq!(events[0]["delta"]["installs"], 3);
+        assert_eq!(events[0]["delta"]["missed_not_resident"], 2);
+    }
+
+    #[test]
+    fn an_idle_lightmap_window_emits_nothing_when_its_session_ends() {
+        let (hub, _scope) = scoped_hub();
+        let mut window = LightmapStreamingLogWindow::default();
+        // A last-frame gauge alone is not a count.
+        window.observe(
+            1.0,
+            &LightmapStreamingLiveDiagnostics {
+                last_frame_drawn_not_resident: 4,
+                ..Default::default()
+            },
+        );
+        drop(window);
+        assert!(lightmap_windows(&hub).is_empty());
+    }
+
+    // Telemetry: with the ring and memory sink live, steady frames that close
+    // no window allocate nothing.
+    #[test]
+    fn with_telemetry_on_steady_window_frames_allocate_nothing() {
+        let (_hub, _scope) = scoped_hub();
+        let mut window = LightmapStreamingLogWindow::default();
+        let live = LightmapStreamingLiveDiagnostics {
+            installs: 1,
+            ..Default::default()
+        };
+        window.observe(0.0, &live);
+        let probe = AllocSnapshot::arm();
+        for frame in 0..64 {
+            window.observe(f64::from(frame) / 60.0, &live);
+        }
+        assert_eq!(probe.allocs_since(), 0);
     }
 }

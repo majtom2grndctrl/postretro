@@ -110,6 +110,7 @@ impl PreparedCapture {
         let [width, height] = scene.resolution;
         let mut renderer = Renderer::new_offscreen(width, height)
             .context("failed to initialize offscreen frame capture renderer")?;
+        crate::telemetry::settle_gpu_timing(renderer.gpu_timing_support());
         renderer.set_force_full_resident_sh_compose(scene.force_full_resident_sh_compose);
         if let Some(mask) = scene.light_term_mask() {
             renderer.set_light_term_mask(mask);

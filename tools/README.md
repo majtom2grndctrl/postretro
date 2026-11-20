@@ -95,6 +95,18 @@ clip_library)`. It strips clips, compacts the `.bin` and stamps the reference in
 place. It also tags a numbered or untagged rig; a tagged canonical model keeps its
 tags. `tools/tests/test_mixamo_to_gltf.py` shows the stubbing.
 
+### `telemetry_reduce.py`
+
+Summarizes one telemetry file written with `POSTRETRO_TELEMETRY=<path>` by the
+engine, `prl-build`, or both appending to the same path. It joins the file per
+run and per load: producer states and exit reason, bake stage durations, each
+load's phase table, geometry install and matching bake, cancelled generations,
+SH and lightmap miss buckets per level, and CPU stage and GPU pass p50 and max
+across timing windows. Standard library only. Run with `python3
+tools/telemetry_reduce.py <file.jsonl>`, or add `--json` for the same summary
+as JSON. Its tests run with
+`python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`.
+
 ### `texture-tool/`
 
 Rust PNG processor that writes a whole world-material bundle — diffuse, `_s`
@@ -134,6 +146,7 @@ Per-script deps:
 | `gen_sdf_shadow_fixture.py` | none (stdlib only) |
 | `gen_stress_map.py` | none (stdlib only) |
 | `inspect_fbx_ascii.py` | none (stdlib only) |
+| `telemetry_reduce.py` | none (stdlib only) |
 
 `gen_stress_map.py` imports three sibling helper modules, `stress_environment.py`
 (environment-volume shapes and particle emitters), `stress_zones.py` (zoned

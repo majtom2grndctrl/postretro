@@ -2559,6 +2559,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         }
                     });
                     let mut reach = reach_before;
+                    // The play drain cap travels the same way.
+                    let drain_cap_before = session.level_streaming.drain_cap_lever();
+                    let mut drain_cap = drain_cap_before;
                     let network_lag_before = session
                         .net_endpoint
                         .as_ref()
@@ -2594,6 +2597,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                                     render::debug_ui::LightmapStreamingTab { diagnostics }
                                 }),
                                 reach.as_mut(),
+                                &mut drain_cap,
                                 network_lag.as_mut(),
                             );
                         }
@@ -2603,6 +2607,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                         && let Some(stage) = session.level_streaming.cell_demand_mut()
                     {
                         stage.set_lead_metres(after.lead_metres);
+                    }
+                    if drain_cap != drain_cap_before {
+                        session.level_streaming.apply_drain_cap_lever(&drain_cap);
                     }
                     if let (Some(before), Some(after)) = (network_lag_before, network_lag)
                         && let Some(endpoint) = session.net_endpoint.as_mut()
@@ -2953,5 +2960,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     drop(stage_scope);
     drop(cpu_stages);
     app.cpu_timer.finish_frame(Instant::now());
+    // Taken every frame, consumer or not, so a closed window never waits
+    // to be emitted under a later level.
+    if let Some(renderer) = app.renderer.as_mut() {
+        crate::telemetry::emit_gpu_window(renderer);
+    }
     postretro_stage_timing::mark_frame();
 }

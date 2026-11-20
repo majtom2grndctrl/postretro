@@ -3,7 +3,6 @@
 // See: context/lib/build_pipeline.md §Navigation bake
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::ops::Deref;
 
 use glam::Vec3;
@@ -16,6 +15,13 @@ use crate::collision::SKIN_DISTANCE;
 use super::{NavGate, NavGraph, distance_xz};
 
 mod clearance;
+#[cfg(test)]
+mod fresh_reference;
+mod scratch;
+#[cfg(test)]
+mod scratch_tests;
+
+pub use scratch::NavScratch;
 
 /// A funnelled path: the waypoint positions plus a parallel flag per waypoint.
 ///
@@ -109,12 +115,23 @@ pub fn find_path_gated(
     start: Vec3,
     goal: Vec3,
 ) -> Option<NavPath> {
+    find_path_gated_in(&mut NavScratch::new(), graph, gate, start, goal)
+}
+
+/// [`find_path_gated`] searching in `scratch`.
+pub fn find_path_gated_in(
+    scratch: &mut NavScratch,
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    start: Vec3,
+    goal: Vec3,
+) -> Option<NavPath> {
     let start = NavStart {
         position: start,
         ground: GroundRef::World,
         height: graph.agent.height,
     };
-    find_path_from(graph, gate, start, goal)
+    find_path_from_in(scratch, graph, gate, start, goal)
 }
 
 /// Where a route starts: a position, what the body stands on there, and how
@@ -156,11 +173,61 @@ enum SearchStart {
 
 /// [`find_path_gated`] for a body whose ground matters: one standing on a mover
 /// resolves through its links, and a route may end in a ride.
+///
+/// A one-off query; a caller issuing many keeps a [`NavScratch`] and calls
+/// [`find_path_from_in`], so each search touches only the nodes it visits.
 pub fn find_path_from(
     graph: &NavGraph,
     gate: NavGate<'_>,
     from: NavStart,
     goal: Vec3,
+) -> Option<NavPath> {
+    find_path_from_in(&mut NavScratch::new(), graph, gate, from, goal)
+}
+
+/// [`find_path_from`] searching in `scratch`. The result does not depend on
+/// what `scratch` searched before.
+pub fn find_path_from_in(
+    scratch: &mut NavScratch,
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    from: NavStart,
+    goal: Vec3,
+) -> Option<NavPath> {
+    route(graph, gate, from, goal, |search_start, goal_region| {
+        astar_corridor(
+            scratch,
+            graph,
+            gate,
+            from.position,
+            goal,
+            search_start,
+            goal_region,
+        )
+    })
+}
+
+/// [`find_path_from`] over the pre-scratch search, which allocates its arrays
+/// per query: the reference reused scratch must match.
+#[cfg(test)]
+pub(crate) fn find_path_from_fresh(
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    from: NavStart,
+    goal: Vec3,
+) -> Option<NavPath> {
+    route(graph, gate, from, goal, |search_start, goal_region| {
+        fresh_reference::astar_corridor(graph, gate, from.position, goal, search_start, goal_region)
+    })
+}
+
+/// Endpoint resolution, search, then funnel; `corridor` runs the search.
+fn route(
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    from: NavStart,
+    goal: Vec3,
+    corridor: impl FnOnce(SearchStart, usize) -> Option<Vec<CorridorHop>>,
 ) -> Option<NavPath> {
     let start = from.position;
     // Finiteness guard: a NaN/inf endpoint makes every funnel area comparison
@@ -184,7 +251,7 @@ pub fn find_path_from(
         return Some(NavPath::direct(start, goal));
     }
 
-    let corridor = astar_corridor(graph, gate, start, goal, search_start, goal_region)?;
+    let corridor = corridor(search_start, goal_region)?;
     let route = walked_route(graph, &corridor, start);
     let goal = route.ride.map_or(goal, |ride| ride.board_point);
     let ride = route.ride;
@@ -519,6 +586,7 @@ impl Ord for Frontier {
 /// two distinct portals resolves to the one A* costed). `None` when
 /// disconnected.
 fn astar_corridor(
+    scratch: &mut NavScratch,
     graph: &NavGraph,
     gate: NavGate<'_>,
     start: Vec3,
@@ -526,6 +594,33 @@ fn astar_corridor(
     search_start: SearchStart,
     goal_region: usize,
 ) -> Option<Vec<CorridorHop>> {
+    let end_node = astar_search(scratch, graph, gate, start, goal, search_start, goal_region)?;
+    let link_base = graph.portals().len() * 2;
+    let portals = graph.portals();
+    let from_region = |node: usize| -> usize {
+        let p = &portals[node / 2];
+        if node.is_multiple_of(2) {
+            p.region_a as usize
+        } else {
+            p.region_b as usize
+        }
+    };
+    Some(reconstruct(scratch, link_base, &from_region, end_node))
+}
+
+/// The A* search of [`astar_corridor`]: the node that closes the route, read
+/// back through `scratch`, or `None` when disconnected. Once `scratch` has
+/// grown to the graph and its heap to the largest frontier seen, it allocates
+/// nothing.
+fn astar_search(
+    scratch: &mut NavScratch,
+    graph: &NavGraph,
+    gate: NavGate<'_>,
+    start: Vec3,
+    goal: Vec3,
+    search_start: SearchStart,
+    goal_region: usize,
+) -> Option<usize> {
     let portals = graph.portals();
     let links = graph.links();
     // Node ids: `2 * portal + dir`, then per link `board` and `exit`.
@@ -553,14 +648,6 @@ fn astar_corridor(
         } else {
             p.region_a as usize
         })
-    };
-    let from_region = |node: usize| -> usize {
-        let p = &portals[node / 2];
-        if node.is_multiple_of(2) {
-            p.region_a as usize
-        } else {
-            p.region_b as usize
-        }
     };
     // The directed node that leaves `region` through portal `portal_index`, or
     // `None` when the portal does not touch `region`.
@@ -597,13 +684,9 @@ fn astar_corridor(
     };
 
     let node_count = link_base + 2 * links.len();
-    let mut g_score = vec![f32::INFINITY; node_count];
-    // `came_from[node] = Some(previous_node)`, or `None` when reached from the
-    // virtual start (the first crossing out of `start_region`).
-    let mut came_from: Vec<Option<usize>> = vec![None; node_count];
-    // The dock a mover carries the body from before this exit node, if any.
-    let mut rode_from: Vec<Option<u32>> = vec![None; links.len()];
-    let mut open = BinaryHeap::new();
+    // Every node reads unvisited (`g` infinite, reached from nowhere) until
+    // this query writes it.
+    scratch.begin(node_count, links.len());
 
     match search_start {
         SearchStart::Region(start_region) => {
@@ -616,10 +699,10 @@ fn astar_corridor(
                     continue;
                 };
                 let g = distance_xz(start, mid(node));
-                if g < g_score[node] {
-                    g_score[node] = g;
-                    came_from[node] = None;
-                    open.push(Frontier {
+                if g < scratch.g(node) {
+                    scratch.set_g(node, g);
+                    scratch.set_came_from(node, None);
+                    scratch.open.push(Frontier {
                         node,
                         f: g + distance_xz(mid(node), goal),
                     });
@@ -631,9 +714,9 @@ fn astar_corridor(
                 }
                 let node = board_node(link);
                 let g = distance_xz(start, link_mid(link));
-                if g < g_score[node] {
-                    g_score[node] = g;
-                    open.push(Frontier {
+                if g < scratch.g(node) {
+                    scratch.set_g(node, g);
+                    scratch.open.push(Frontier {
                         node,
                         f: g + distance_xz(link_mid(link), goal),
                     });
@@ -651,10 +734,10 @@ fn astar_corridor(
                 };
                 let node = exit_node(link);
                 let g = distance_xz(start, link_mid(link)) + cost;
-                if g < g_score[node] {
-                    g_score[node] = g;
-                    rode_from[link] = ride;
-                    open.push(Frontier {
+                if g < scratch.g(node) {
+                    scratch.set_g(node, g);
+                    scratch.set_rode_from(link, ride);
+                    scratch.open.push(Frontier {
                         node,
                         f: g + distance_xz(link_mid(link), goal),
                     });
@@ -663,7 +746,7 @@ fn astar_corridor(
         }
     }
 
-    while let Some(Frontier { node, .. }) = open.pop() {
+    while let Some(Frontier { node, .. }) = scratch.open.pop() {
         let Some(region) = arrived_region(node) else {
             // Standing on a docked mover: every way off it is one step more.
             let boarded = link_of(node);
@@ -677,12 +760,13 @@ fn astar_corridor(
                     continue;
                 };
                 let next = exit_node(next_link);
-                let tentative = g_score[node] + distance_xz(mid(node), link_mid(next_link)) + cost;
-                if tentative < g_score[next] {
-                    g_score[next] = tentative;
-                    came_from[next] = Some(node);
-                    rode_from[next_link] = ride;
-                    open.push(Frontier {
+                let tentative =
+                    scratch.g(node) + distance_xz(mid(node), link_mid(next_link)) + cost;
+                if tentative < scratch.g(next) {
+                    scratch.set_g(next, tentative);
+                    scratch.set_came_from(next, Some(node));
+                    scratch.set_rode_from(next_link, ride);
+                    scratch.open.push(Frontier {
                         node: next,
                         f: tentative + distance_xz(link_mid(next_link), goal),
                     });
@@ -691,13 +775,7 @@ fn astar_corridor(
             continue;
         };
         if region == goal_region {
-            return Some(reconstruct(
-                &came_from,
-                &rode_from,
-                link_base,
-                &from_region,
-                node,
-            ));
+            return Some(node);
         }
 
         for &portal_index in graph.region_portal_indices(region) {
@@ -710,11 +788,11 @@ fn astar_corridor(
             let Some(next) = directed_leaving(portal_index, region) else {
                 continue;
             };
-            let tentative = g_score[node] + distance_xz(mid(node), mid(next));
-            if tentative < g_score[next] {
-                g_score[next] = tentative;
-                came_from[next] = Some(node);
-                open.push(Frontier {
+            let tentative = scratch.g(node) + distance_xz(mid(node), mid(next));
+            if tentative < scratch.g(next) {
+                scratch.set_g(next, tentative);
+                scratch.set_came_from(next, Some(node));
+                scratch.open.push(Frontier {
                     node: next,
                     f: tentative + distance_xz(mid(next), goal),
                 });
@@ -725,11 +803,11 @@ fn astar_corridor(
                 continue;
             }
             let next = board_node(link);
-            let tentative = g_score[node] + distance_xz(mid(node), link_mid(link));
-            if tentative < g_score[next] {
-                g_score[next] = tentative;
-                came_from[next] = Some(node);
-                open.push(Frontier {
+            let tentative = scratch.g(node) + distance_xz(mid(node), link_mid(link));
+            if tentative < scratch.g(next) {
+                scratch.set_g(next, tentative);
+                scratch.set_came_from(next, Some(node));
+                scratch.open.push(Frontier {
                     node: next,
                     f: tentative + distance_xz(link_mid(link), goal),
                 });
@@ -743,8 +821,7 @@ fn astar_corridor(
 /// Walk `came_from` back from the closing crossing to build the forward-ordered
 /// corridor.
 fn reconstruct(
-    came_from: &[Option<usize>],
-    rode_from: &[Option<u32>],
+    scratch: &NavScratch,
     link_base: usize,
     from_region: &impl Fn(usize) -> usize,
     end_node: usize,
@@ -764,11 +841,11 @@ fn reconstruct(
             } else {
                 CorridorHop::Exit {
                     link,
-                    ride_from: rode_from[link],
+                    ride_from: scratch.rode_from(link),
                 }
             }
         });
-        current = came_from[node];
+        current = scratch.came_from(node);
     }
     hops.reverse();
     hops

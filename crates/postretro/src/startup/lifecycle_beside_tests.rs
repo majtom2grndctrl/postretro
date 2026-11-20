@@ -1584,3 +1584,83 @@ fn beside_path_has_no_blocking_wait() {
         "check, then release, then commit"
     );
 }
+
+// Telemetry P4 and the beside commit: the new load's geometry install
+// carries its generation while the envelope names the running level; the
+// running level's partial windows and its unload, each naming it, follow
+// the install and precede the new load's phases. Those phases hold
+// `bundle_held`, `commit_checks` and `running_release`, and their
+// commit-frame group holds no `commit_checks`.
+#[test]
+fn telemetry_beside_commit_orders_install_then_running_release_then_phases() {
+    use postretro_telemetry::Kind;
+    let test = "telemetry_beside_commit_orders_install_then_running_release_then_phases";
+    let running = CommitCase::streamed_sh();
+    let beside = CommitCase::textured_with_model();
+    let (hub, _scope) = super::super::lifecycle_test_fixtures::telemetry_hub();
+    let Some((mut app, exit)) = running_level(test, &running) else {
+        return;
+    };
+    let running_level = postretro_telemetry::level().expect("a running level");
+    // Let the running level stream so its window has something to close.
+    for _ in 0..8 {
+        running_frame(&mut app, &exit).expect("Running");
+    }
+    let new_generation = begin_beside(&mut app, &beside, |_| {});
+    let before_commit = super::super::lifecycle_test_fixtures::lifecycle_events(&hub).len();
+    run_running_until(&mut app, &exit, "the held bundle", held, |_, _| {});
+    commit_held(&mut app, &exit);
+    settle_and_reveal(&mut app);
+    app.level_timings.log_level_line();
+    retire_all(&mut app);
+
+    let events = super::super::lifecycle_test_fixtures::lifecycle_events(&hub);
+    let commit: Vec<_> = events[before_commit..].iter().collect();
+    let kinds: Vec<Kind> = commit.iter().map(|event| event.kind).collect();
+    assert_eq!(kinds.first(), Some(&Kind::GeometryInstall), "{kinds:?}");
+    assert_eq!(commit[0].level.as_ref(), Some(&running_level));
+    assert_eq!(
+        super::super::lifecycle_test_fixtures::payload_generation(commit[0]),
+        Some(new_generation)
+    );
+    let unload = kinds
+        .iter()
+        .position(|kind| *kind == Kind::Unload)
+        .expect("the running level is released");
+    for event in &commit[1..=unload] {
+        assert_eq!(event.level.as_ref(), Some(&running_level), "{kinds:?}");
+    }
+    assert_eq!(kinds[unload + 1..], [Kind::LoadPhases], "{kinds:?}");
+    let phases = commit[unload + 1];
+    assert_eq!(
+        super::super::lifecycle_test_fixtures::payload_generation(phases),
+        Some(new_generation)
+    );
+    assert_eq!(
+        phases.level.as_ref().map(|level| level.generation),
+        Some(new_generation)
+    );
+    let names: Vec<&str> = phases.payload["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|phase| phase["name"].as_str().unwrap())
+        .collect();
+    for beside_phase in ["bundle_held", "commit_checks", "running_release"] {
+        assert!(names.contains(&beside_phase), "{names:?}");
+    }
+    let commit_frame = phases.payload["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|phase| phase["name"] == "commit_frame")
+        .expect("a commit frame");
+    assert!(
+        commit_frame["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|mark| mark["name"] != "commit_checks"),
+        "{commit_frame}"
+    );
+}

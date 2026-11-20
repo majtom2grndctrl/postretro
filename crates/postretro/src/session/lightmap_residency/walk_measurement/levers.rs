@@ -1,7 +1,13 @@
-//! A residency walk's levers: the lead, and each pool's size.
+//! A residency walk's levers: the lead, each pool's size, the play drain cap
+//! and the lightmap in-hand cap.
 //! See: context/lib/rendering_pipeline.md §4
 
+use std::num::NonZeroU64;
+
 use postretro_render_cpu::lightmap_pool::{PerPool, PoolKind};
+
+use crate::lightmap_streaming::controller::LightmapResidencyController;
+use crate::session::level_streaming::LevelStreaming;
 
 /// The runs to make, in place of the default sweep: see [`parse_pool_layers`].
 pub(super) const POOL_LAYERS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_POOL_LAYERS";
@@ -9,12 +15,26 @@ pub(super) const POOL_LAYERS_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_POOL_LAYERS";
 /// `bound` in [`POOL_LAYERS_ENV`]: each pool at its id 58 figure, no margin.
 const AT_THE_BOUND: &str = "bound";
 
+/// Every run's play drain cap in place of production: see [`parse_drain_cap`].
+pub(crate) const DRAIN_CAP_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP";
+
+/// Every run's lightmap in-hand pair byte total in place of production: see
+/// [`parse_in_hand_cap`].
+pub(crate) const IN_HAND_CAP_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_IN_HAND_CAP";
+
+const MIB: f64 = 1024.0 * 1024.0;
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Levers {
     pub(super) lead_metres: f32,
     /// A pool's first generation in layers, taken as given. `None` sizes that
     /// pool as the runtime does, from the level's id 58.
     pub(super) pool_layers: PerPool<Option<u32>>,
+    /// The play drain cap; `None` is production.
+    pub(super) drain_cap: Option<WalkDrainCap>,
+    /// The lightmap in-hand total, the band taking half; `None` is
+    /// production.
+    pub(super) in_hand_cap: Option<WalkInHandCap>,
 }
 
 /// The shipped levers: the run every lever sweep varies one lever from.
@@ -24,6 +44,8 @@ pub(super) const DEFAULT_LEVERS: Levers = Levers {
         lightmap: None,
         mask: None,
     },
+    drain_cap: None,
+    in_hand_cap: None,
 };
 
 impl Levers {
@@ -39,6 +61,114 @@ impl Levers {
             figure(PoolKind::Mask)
         )
     }
+
+    /// The run label's drain cap part: empty at production, so an unset run's
+    /// label is unchanged.
+    pub(super) fn drain_cap_label(&self) -> String {
+        self.drain_cap
+            .map_or_else(String::new, |cap| format!(" | drain cap {} MiB", cap.mib))
+    }
+
+    /// The run label's in-hand cap part: empty at production, so an unset
+    /// run's label is unchanged.
+    pub(super) fn in_hand_cap_label(&self) -> String {
+        self.in_hand_cap
+            .map_or_else(String::new, |cap| format!(" | in-hand cap {} MiB", cap.mib))
+    }
+}
+
+/// A walk's play drain cap: the MiB asked for and the whole bytes it applies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WalkDrainCap {
+    pub(crate) mib: f64,
+    pub(crate) bytes: NonZeroU64,
+}
+
+impl WalkDrainCap {
+    /// Sets `level`'s play cap override, the seam the dev-tools slider sets.
+    pub(crate) fn apply(self, level: &mut LevelStreaming) {
+        level.set_play_drain_cap_override(Some(self.bytes));
+    }
+}
+
+/// A walk's lightmap in-hand cap: the MiB asked for and the whole bytes it
+/// applies to the total; the band takes half, as in production.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WalkInHandCap {
+    pub(crate) mib: f64,
+    pub(crate) bytes: NonZeroU64,
+}
+
+impl WalkInHandCap {
+    /// Sets `controller`'s in-hand total and its band half.
+    pub(crate) fn apply(self, controller: &mut LightmapResidencyController) {
+        controller.set_in_hand_cap_override(Some(self.bytes.get()));
+    }
+}
+
+/// The play drain cap from [`DRAIN_CAP_ENV`], when set.
+pub(super) fn drain_cap_from_env() -> Result<Option<WalkDrainCap>, String> {
+    mib_from_env(DRAIN_CAP_ENV, parse_drain_cap)
+}
+
+/// The lightmap in-hand cap from [`IN_HAND_CAP_ENV`], when set.
+pub(super) fn in_hand_cap_from_env() -> Result<Option<WalkInHandCap>, String> {
+    mib_from_env(IN_HAND_CAP_ENV, parse_in_hand_cap)
+}
+
+/// `env` through `parse` when set; `None` when unset.
+fn mib_from_env<T>(env: &str, parse: fn(&str) -> Result<T, String>) -> Result<Option<T>, String> {
+    match std::env::var(env) {
+        Ok(value) => parse(&value).map(Some),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(why) => Err(format!("{env}: {why}")),
+    }
+}
+
+/// A play drain cap: see [`parse_mib`].
+pub(crate) fn parse_drain_cap(value: &str) -> Result<WalkDrainCap, String> {
+    let (mib, bytes) = parse_mib(
+        DRAIN_CAP_ENV,
+        value,
+        "a zero cap admits only each drain's first item; unset it for production",
+    )?;
+    Ok(WalkDrainCap { mib, bytes })
+}
+
+/// A lightmap in-hand total: see [`parse_mib`].
+pub(crate) fn parse_in_hand_cap(value: &str) -> Result<WalkInHandCap, String> {
+    let (mib, bytes) = parse_mib(
+        IN_HAND_CAP_ENV,
+        value,
+        "a zero cap holds only one read in hand; unset it for production",
+    )?;
+    Ok(WalkInHandCap { mib, bytes })
+}
+
+/// `env`'s value as a positive decimal count of MiB (`4`, `16`, `0.5`) and
+/// its whole bytes. Zero (refused with `zero_why`), a negative, a non-number,
+/// a value past `u64` bytes and one rounding to zero bytes are refused by
+/// name, never clamped.
+fn parse_mib(env: &str, value: &str, zero_why: &str) -> Result<(f64, NonZeroU64), String> {
+    let refuse = |why: &str| format!("{env}={value:?}: {why}");
+    let mib: f64 = value
+        .trim()
+        .parse()
+        .ok()
+        .filter(|mib: &f64| mib.is_finite())
+        .ok_or_else(|| refuse("not a number of MiB"))?;
+    if mib < 0.0 {
+        return Err(refuse("a cap is a positive number of MiB"));
+    }
+    if mib == 0.0 {
+        return Err(refuse(zero_why));
+    }
+    let bytes = (mib * MIB).round();
+    if bytes >= u64::MAX as f64 {
+        return Err(refuse("too large to represent in bytes"));
+    }
+    let bytes = NonZeroU64::new(bytes as u64).ok_or_else(|| refuse("rounds to zero bytes"))?;
+    Ok((mib, bytes))
 }
 
 /// Each run's pool sizes from a comma-separated list. A run is `LIGHTMAP/MASK`
@@ -122,5 +252,93 @@ mod tests {
             ..DEFAULT_LEVERS
         };
         assert_eq!(levers.pools_label(), "pools 30/id58");
+    }
+
+    #[test]
+    fn drain_cap_accepts_positive_mib_as_whole_bytes() {
+        for (value, bytes) in [
+            ("8", 8 << 20),
+            ("4", 4 << 20),
+            ("16", 16 << 20),
+            (" 0.5 ", 512 << 10),
+            ("2.25", (2 << 20) + (256 << 10)),
+        ] {
+            let cap = parse_drain_cap(value).unwrap();
+            assert_eq!(cap.bytes.get(), bytes, "{value}");
+        }
+        assert_eq!(parse_drain_cap("16").unwrap().mib, 16.0);
+    }
+
+    /// Every value either cap refuses, with the reason its refusal names.
+    const REFUSED: [(&str, &str); 12] = [
+        ("0", "zero cap"),
+        ("0.0", "zero cap"),
+        ("-0", "zero cap"),
+        ("-4", "positive"),
+        ("", "not a number"),
+        ("eight", "not a number"),
+        ("8MiB", "not a number"),
+        ("inf", "not a number"),
+        ("NaN", "not a number"),
+        ("1e300", "too large"),
+        ("17592186044416", "too large"),
+        ("1e-12", "rounds to zero"),
+    ];
+
+    #[test]
+    fn drain_cap_refuses_zero_negative_non_numbers_and_overflow_by_name() {
+        for (value, why) in REFUSED {
+            let refusal = parse_drain_cap(value).unwrap_err();
+            assert!(
+                refusal.contains(DRAIN_CAP_ENV) && refusal.contains(why),
+                "{value:?}: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_label_names_a_drain_cap_only_when_set() {
+        assert_eq!(DEFAULT_LEVERS.drain_cap_label(), "");
+        let levers = Levers {
+            drain_cap: Some(parse_drain_cap("16").unwrap()),
+            ..DEFAULT_LEVERS
+        };
+        assert_eq!(levers.drain_cap_label(), " | drain cap 16 MiB");
+    }
+
+    #[test]
+    fn in_hand_cap_accepts_positive_mib_as_whole_bytes() {
+        for (value, bytes) in [
+            ("16", 16 << 20),
+            ("64", 64 << 20),
+            ("128", 128 << 20),
+            (" 0.5 ", 512 << 10),
+            ("2.25", (2 << 20) + (256 << 10)),
+        ] {
+            let cap = parse_in_hand_cap(value).unwrap();
+            assert_eq!(cap.bytes.get(), bytes, "{value}");
+        }
+        assert_eq!(parse_in_hand_cap("64").unwrap().mib, 64.0);
+    }
+
+    #[test]
+    fn in_hand_cap_refuses_zero_negative_non_numbers_and_overflow_by_name() {
+        for (value, why) in REFUSED {
+            let refusal = parse_in_hand_cap(value).unwrap_err();
+            assert!(
+                refusal.contains(IN_HAND_CAP_ENV) && refusal.contains(why),
+                "{value:?}: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_label_names_an_in_hand_cap_only_when_set() {
+        assert_eq!(DEFAULT_LEVERS.in_hand_cap_label(), "");
+        let levers = Levers {
+            in_hand_cap: Some(parse_in_hand_cap("16").unwrap()),
+            ..DEFAULT_LEVERS
+        };
+        assert_eq!(levers.in_hand_cap_label(), " | in-hand cap 16 MiB");
     }
 }

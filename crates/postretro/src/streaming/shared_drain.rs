@@ -77,6 +77,13 @@ impl SharedDrain {
         share
     }
 
+    /// The latest admission's items in admission order, and how many of
+    /// them led in: the walk measurement's view of where the cut fell.
+    #[cfg(test)]
+    pub(crate) fn ordered_items(&self) -> (&[DrainItem], usize) {
+        (&self.items, self.admitted)
+    }
+
     #[cfg(test)]
     pub(crate) fn capacity(&self) -> usize {
         self.items.capacity()

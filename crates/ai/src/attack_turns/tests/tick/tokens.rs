@@ -246,6 +246,7 @@ fn tick_with_factions(
             factions,
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            cpu: None,
         },
         |_| {},
     );

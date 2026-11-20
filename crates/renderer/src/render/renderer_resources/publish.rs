@@ -156,6 +156,17 @@ impl Renderer {
         kept
     }
 
+    /// The geometry install the set `id` logged when it was built, active or
+    /// resident; `None` for no such set.
+    pub fn level_set_geometry_install(&self, id: LevelSetId) -> Option<GeometryInstallTiming> {
+        let full = self.full.as_ref()?;
+        full.level
+            .iter()
+            .chain(full.resident_levels.iter())
+            .find(|level| level.id == id)
+            .map(|level| level.geometry_install.clone())
+    }
+
     /// Drop exactly the set `id`, active or resident, and create nothing.
     /// Releasing the active set leaves no active set (frames record the
     /// empty scene) and clears the per-frame inputs that indexed it; every

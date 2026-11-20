@@ -1,0 +1,101 @@
+# Landmark level change — research
+
+Read at `ab08438`, re-read at `6c862fd` (§7) and `8489a1f` (§8). Session-verified facts behind the brief, cited by symbol. Hub: `drafts/E25--map-transitions/` (U2).
+
+## 1. Teleport arrival today
+
+- **Chokepoint.** `physics::movement::teleport::resolve` (private to the movement module) runs as the last step of `tick_with_immersion_and_armed`, the shared host / prediction / replay entry. In order: prune latches the body point left; skip when `vault_barred`; pick a winner; compute arrival and yaw delta (classic sets view yaw to the destination's; seamless is relative through `SeamlessMapping`); refuse a blocked arrival (`capsule_fits_combined`, one warning per teleporter through `warn_refused`); rotate `Dash`/`Sliding` boost; abort `Vault` to `Normal` with a `vault_ended` edge; rotate `velocity`, `knockback_velocity`, `push_velocity`; `settle_arrival_ground`; bump the teleport record and rebuild latches; emit `TeleportEvent`.
+- **Partly shared.** `settle_arrival` holds the ground settle, record bump and teleporter latch rebuild; teleports and respawn both call it. `capsule_fits_combined`, `SeamlessMapping` and `wrap_teleport_yaw` stand alone. The fit refusal (`warn_refused`), boost rotation, vault abort and velocity rotation remain inline in `resolve`.
+- **Callers own the view.** Host movement and client replay write `Transform.rotation` from facing plus the delta and cut presentation (`set_presentation_transform`, `hold_local_arrival`); the sim tick turns cached aims; `apply_local_camera_turn` turns the host camera. `movement.md` §6 overstates the chokepoint ("a presentation cut").
+- **Pitch never changes.** `SeamlessMapping` is yaw-only; destination pitch is dropped at compile time.
+- **Latches.** Per pawn, on `PlayerMovementComponent.teleport.arrival_latches`, sorted teleporter indices, wire-mirrored. Arming a disarmed teleporter clears latches against it on the host only (`apply_pending_teleporter_mutations`).
+- **Events and script surface.** `TeleporterBindingTable::execute` runs inside the authoritative tick, host and single player only, after movement and before Triggers; presentation work drains at frame end. Script: `getMapEntities("teleporter")`, `arm()` / `disarm()` / `on("teleport", fire)` under `setupLevel`'s `teleportEvents`; params are opaque `activators` and `teleporter` tokens; brush key `on_teleport`.
+- **Compile and PRL.** `trigger_teleport` and `ghost_link` each own a section (55, 56) and write an id-29 companion through `region_companion`; `teleport_destination` is a yaw-only named point both reuse.
+
+## 2. Trigger volumes
+
+- **Compile.** `resolve_trigger_volume` builds one engine-space AABB per entity, the union of its brushes (`build_pipeline.md` says "each brush"; stale). Section 44 is a fixed layout; triggers write no id-29 companion. `switch` desugars into the same record, so it has no channel for extra keys.
+- **Inside test.** `capsule_overlaps_aabb` against the pawn's upright capsule — a capsule test, not a body point. Only canonical player pawns take part.
+- **Activation.** Touch fires on an entry edge, or on the first evaluation after arming while overlapping (`touch_reactivation_pending`). Use fires on a fresh press while overlapping, first fixed tick of the frame only; remote presses come from the command. No runtime use reach. Gate: `armed && !(once && latched) && rearm elapsed`.
+- **Tick placement.** Movers → host movement → teleport dispatch → Triggers → touchables → projectiles → AI → traps. Host and single player only.
+- **Lifecycle primitives.** `loadLevel`, `restartLevel`, `returnToFrontend` ride the residual steps and drain at frame end. `loadLevel(id)` carries only `{ map }`; an extra arg is silently ignored.
+
+## 3. Level change
+
+- **`unload_level` order** (`startup/lifecycle_net.rs`): take `backdrop_installed` (gates the carry harvest); CPU timer; **net reset** (`clear_net_level_parity` → `reset_level_scoped_host_state` replaces `command_queues`); client reset; audio; renderer release; streaming clear; `level = None`; surface-lifetime clear (weapon activations cancelled, triggers, collision, teleporter bindings); nav, environment; session clears (including `occupancy_families.unload_level`); **`harvest_bound_pawns`**, skipped for a backdrop; **registry despawn**; `clear_pawn_bindings_for_level_unload`; UI; `spawn_poses.clear_for_level_unload`; **camera reset** to the origin, yaw and pitch 0.
+- **Harvest placement.** At the top of `unload_level` the registry and pawn bindings are intact. Suspend already harvests before the net reset (`suspended`). Only production caller of unload: `drain_level_requests`.
+- **Carried state.** `CarriedState` holds health, reserve, wieldables, magazines and active slot; cleared only by `release_seat`. No per-seat record is consumed once by a first spawn today.
+- **Placement.** Host pawn spawns at install stage 11 (`spawn_from_player_starts_with_carried_loadout`, first spawn in `first_player_spawn_order`). A client pawn spawns at participation entry, after the host's reveal, through `assign_joiner_placement` and `spawn_net_slot_pawn_with_carried_loadout`. Engine `respawn` drains at tick start and relocates the existing pawn through `settle_arrival`; it spawns nothing (`sim::tick_start`).
+- **Facing sources.** Host: `App.camera` yaw and pitch. Client on the host: `HostCommandQueues` keeps `latest_facing_yaw` and `latest_aim_pitch` per client (no facing accessor); the facing converts through `facing_in_teleport_frame`. The queues reset at the start of unload.
+- **Camera at install.** Host: seeded from the first player spawn's angles, then the presented pose. Client: takes the resolver's hint (`take_install_spawn_pose_hint`).
+- **Relevel.** `ServerControlMessage::Relevel(String)` carries the catalog id only; the client follows it and the host places every pawn.
+
+## 4. Naming
+
+`streaming_seam_volume` is a keyless convex brush marking a best-effort SH warm-up portal; no gameplay or visibility effect. "Seam" otherwise names code boundaries and the teleporter's `seamless` mode. The map-transition seam exists only in Epic 25 plans.
+
+## 5. Dev content
+
+`content/dev/scripts/frontend-menu.ts` `defineMapCatalog` holds entries `{ id, path, name, tags, loadingTree }`. `*.prl` is gitignored except force-committed fixtures under `content/dev/maps/test-fixtures/` (README documents regeneration).
+
+## 6. Ordering pins
+
+| Pin | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | Activator leaves before the load drains | activate on tick T → capsule leaves the seam on a later tick of the same frame → redraw boundary drains the load → harvest | The harvest's inside test decides: that pawn arrives at a player start. Arrival is never read at activation |
+| P2 | Arrival consumed, then a respawn and a later change | seam crossing → first spawn takes the arrival → death → mod respawn → `loadLevel` to a third map | The respawn and the third map place at player starts |
+| P3 | Seam activation and a script level verb on one frame | seam activates in the trigger stage on tick T → a reaction on the same frame calls `loadLevel`, `restartLevel` or `returnToFrontend`, before or after tick T → frame-end drain → boundary drain | The script request proceeds and the seam's load drops; no arrival is written; `returnToFrontend` ends in Frontend, or on its backdrop |
+| P4 | Latch clears on capsule exit | touch seam latched → body point leaves, capsule still overlaps → capsule leaves → re-enter | No fire while the capsule overlaps; re-entry fires (hub pin) |
+| P5 | Level change before a co-op client arrives | seam crossing A→B → client still loading B → host changes B→C | The client arrives in C at a player start; its B arrival is cleared at B's unload (hub pin) |
+| P6 | Suspend across a seam crossing | (a) seam activates → suspend before the drain; (b) drain unloads A → suspend while B loads; (c) host in B → suspend while a crossing client still loads B | (a) the queued load drops with the queue; (b) the load cancels; (c) the client's arrival clears. After resume every seat spawns at a player start |
+| P7 | Client leaves participation around its arrival spawn | (a) client spawns at its arrival → Holding demotes it → re-promotes; (b) client spawns at its arrival → disconnects → rejoins within the hold; (c) client disconnects while loading B → rejoins within the hold before any spawn in B | (a) and (b) re-enter at a player start, hinted before the re-promotion; (c) spawns at its arrival |
+| P8 | Client crosses soon after a teleport | client teleports on host tick T → its commands sampled before T keep resolving → it enters the seam → harvest | The harvested view yaw is its latest resolved facing in the pawn's teleport frame: it arrives facing as its host-side pawn faced |
+| P9 | Teleport into a seam | teleporter fires on tick T with its destination inside a touch seam → trigger stage on tick T | The seam fires on tick T. A teleport is not a spawn and takes no seam latch |
+| P10 | Seam targets its own map | seam in A with target A activates → A unloads, arrivals written → A loads | Each occupant spawns where it stood, facing and moving as it was, latched against the seam; no second load |
+| P11 | Two seams activate on one frame | seam S1 (target B) and seam S2 (target C) both activate on tick T, or S2 on a later tick of the frame → boundary drain | One load, to the target of the first in map order; its occupants arrive landmark-relative, the other seam's at player starts |
+| P12 | Seam load ends without committing | seam drains → A unloads, arrivals written → B fails, or a queued unload cancels it → a later load of any map | Every seat spawns at a player start with no warning |
+| P13 | Client arrival blocked after it resolved | host install resolves the client's arrival, which fits → host reveals; a mover or the host's pawn moves onto it → client promotes | The client spawns at its player start with one warning, and its resent hint names that start |
+| P14 | Respawn onto a player start inside a seam | pawn outside the seam → respawn requested → next tick start relocates it onto a start inside a touch seam → movement → trigger stage, same tick | Latched as a spawn is; no fire. Leaving and re-entering fires |
+| P15 | Later seam in map order activates first | seam S2 (second in map order, target C) activates on tick T → seam S1 (first in map order, target B) activates on a later tick of the same frame → boundary drain | One load, to B; S1's occupants arrive landmark-relative, S2's at player starts |
+| P16 | First seam in map order has an unknown target | seam S1 (first in map order, unknown target) and seam S2 (valid target) activate on one frame → boundary drain | S1 warns once and requests nothing; S2's target loads |
+| P17 | Arrival blocked, then the client leaves participation | (a) arrival blocked at resolve → client spawns at its player start; (b) arrival fits at resolve, blocked at promotion → client spawns at its player start; then, in each, the client is demoted and re-promotes, or disconnects and rejoins within the hold | Re-enters at a player start, never its arrival: the fallback spawn was its first and consumed it |
+| P18 | Latch leaves and returns while the seam is disarmed | pawn arrives latched in a disarmed touch seam → capsule leaves → capsule re-enters, seam still disarmed → seam armed | The latch cleared when the capsule left; arming fires for the pawn on the next trigger tick, as for any unlatched standing occupant |
+| P19 | Respawn into a disarmed seam armed the same tick | respawn requested → seam arm queued → next tick start applies mutations and relocates the pawn onto a start inside the seam, in either order → trigger stage | Latched whatever the seam's armed state at relocation; no fire until the capsule leaves and re-enters |
+| P20 | Seam crossing before a crossing client spawns | seam A→B (name N) → client still loading B → host crosses B→C by a seam, C holding a seam named N | The client's N arrival is cleared at B's unload; it arrives in C at a player start with no warning |
+| P21 | Seam state changes after activation, same frame | seam activates on tick T → on a later tick of the frame it is disarmed, or (several seams) its last occupant leaves → boundary drain | The load proceeds; among several, the first in map order that activated wins. The harvest still decides who arrives landmark-relative (P1) |
+| P22 | Seam checkpoint survives a failed load and a second Continue | single player crosses A→B in a run → `unload_level` harvests the arrival → `save_on_level_start` writes B with the seam's name and pose → B fails, or loads; quit → Continue → quit → Continue | Each Continue spawns at the saved pose; the level start Continue makes keeps the checkpoint |
+| P23 | Seam spawn set across a later checkpoint and level start | crossing into B (seam N, `player_spawn`s keyed `N`) → respawn → `checkpoint("bridge")` → respawn → `loadLevel` C | First respawn takes the `N` set; second the `bridge` set; C starts in its level-start set |
+| P24 | Continue over a backdrop | Continue marks its arrival and queues B → the drain unloads the backdrop (arrivals clear) → level-start save keeps the checkpoint → B installs | The player spawns at the saved pose; no unload or supersede before B's install drops a pose Continue set |
+| P25 | Crossing with no run to save | seam load drains → unload harvests → level-start save finds no active run, or a store that cannot save → B installs → respawn | The respawn takes the seam's set, as in a run; nothing writes a run |
+| P26 | Silent fallback lasts as long as the seam's set | (a) crossing by seam N, none keyed N → respawn → `checkpoint("typo")`, none keyed → respawn; (b) crossing by N with the host outside (no pose saved) → quit → Continue → install | (a) the first respawn is silent and the typo warns once; (b) Continue's install falls back to the level-start set silently |
+| P27 | Seam pose outlived by a later save | crossing into B by seam N (pose saved) → (a) `checkpoint("bridge")`, (b) `checkpoint("N")`, (c) `restartLevel` → quit → Continue | (a) the bridge set; (b) the N set at a start, not the pose; (c) the level-start set. Only the seam load's level start and the level start Continue makes carry the pose |
+| P28 | Suspend, then Continue | (a) seam activates → suspend before the drain; (b) A unloads, level-start save writes B with seam and pose → suspend while B loads; (c) host in B → suspend while a crossing client loads B; then resume → Continue | (a) Continue loads A at its own checkpoint; (b) and (c) Continue spawns at the saved pose. P6's player start holds for any other load after resume |
+| P29 | Clients at a hosted Continue | host continues a run at seam N → client A, connected, resolves at host install → host spawns at the saved pose → client B joins after the reveal | A and B start in the N set (the level-start set, silently, with none keyed); neither starts at seat 0's pose |
+| P30 | Frontend root popped over a backdrop | backdrop installs under the menu → a mod pops the frontend root → a pawn enters a touch seam → trigger stage | The seam does not fire; the gate is how the level was loaded, not whether the menu shows |
+| P31 | Seam activation under a pushed tree | host pushes its pause menu, or the frontend root → a client enters a touch seam on tick T → boundary drain → unload → level-start save → install | The seam clears no tree. Pause menu: B installs as a played level and the save records the seam. Frontend root: B installs as a backdrop, no run save, seams inert |
+| P32 | Checkpoint on the activation frame | seam activates on tick T; a reaction on the same frame runs `checkpoint("bridge")`, before or after T → frame-end drain → boundary drain → unload → level-start save | The run ends at B with the seam's checkpoint (and pose); B's spawn set is the seam's |
+
+## 7. Changes since `ab08438` (re-read at `6c862fd`)
+
+`coop--client-spawn-view-handoff` landed. Facts added at the re-read; §1–§3 are corrected in place.
+
+- **Resolver.** `SpawnPoseResolver` (`crates/postretro/src/spawn_pose.rs`) resolves at host install, admission and promotion (`resolve_for_promotion`). `UnbackedSpawn` carries a `SpawnPose`, `entity_class` and `single_use`; a single-use pose is consumed at spawn and the seat re-resolves at its next demotion. An unbacked seat holds no placement. Promotion keeps a recorded unbacked pose without re-testing it.
+- **`loadLevel` with an unknown id** enqueues with no catalog check, drops any queued load at enqueue, and warns at the drain.
+- **Section 44** carries a trigger `name`; it still has no target, mode or landmark.
+- **Occupancy refs absent.** `occupiedCount` / `occupants` and the `trigger.<tag>.*` slots appear in no file under `sdk/`, `crates/`, `docs/` or `content/`, though `E18--coop-activation-policy` is in `done/`. The trigger stage computes effective occupants (`PlayerCapabilities::effective_occupants`) but publishes no per-tag slot.
+
+## 8. Changes since `6c862fd` (re-read at `8489a1f`)
+
+`E18--coop-activation-policy` and `coop--character-and-run-saves` landed.
+
+- **Unload gate.** `unload_level` first takes `backdrop_installed`; a frontend backdrop's pawns are not harvested. `suspend_platform` harvests only when `played_level_present()`.
+- **Level-start save.** `drain_level_requests`' Load branch: `cancel_beside_level_load` → `unload_level` → `save_on_level_start` → `begin_level_load`. The save is skipped under the frontend menu and on a client, and clears the spawn checkpoint unless Continue marked the destination (`take_continue_arrival`).
+- **Run record.** `LevelRecord { catalog_id, checkpoint: Option<String> }` (`sim/src/scripting/save_files/document.rs`). Unknown top-level sections are kept raw.
+- **Spawn sets.** `active_spawn_set` (`sim/.../builtins/player_spawn.rs`) filters `host_spawn_points`; an unknown checkpoint falls back to the level-start set with a warning. Placement consumers read only the filtered list. `apply_spawn_checkpoint` → `reset_placements_for_spawn_set` clears placement assignments, the host install start and the overflow cursor; live pawns stay. `SpawnPoseResolver.resolved` is not cleared there (pre-existing; a recorded `Placement` re-assigns at promotion).
+- **CarriedState** now also holds `life_state` and `layers`; seat 0's carry comes from the selected character. `clear_pawn_bindings_for_level_unload` clears carried life state.
+- **Teleport skip.** `resolve` gates a declared pawn by `Capability::Touch`, an undeclared one by `vault_barred`; a non-finite arrival is refused silently.
+- **Occupancy.** `getGameState().occupancy.tag(t)` → `{ occupiedCount, occupants }`; `session.playerCounts.{connected, loading, inPlay, down, reconnecting}`. Published by `OccupancyFamilies::publish_tick` from `TriggerSystem::counted_volumes`, armed or not, seated pawns only, one count per volume per tag.
+- **PRL.** Teleporters and GhostLinks use a `u16` version and `u32` count. Highest enum id 59; `build_pipeline.md` reserves 60 for `Emissive`.
+- **Menus.** The `LoadLevel` and `RestartLevel` handlers call `modal_stack.clear_pushed()` before enqueueing; `enqueue_level_request` does not. Install marks a backdrop when the frontend menu is present; `save_on_level_start` skips under it. A mod's `popTree` can pop the frontend root over a backdrop; `backdrop_installed` stays set.
+- **Occupancy tag check.** The absent-tag warning collects tags from `ComponentKind::TriggerVolume` only (`lifecycle_world_cpu`, `occupancy_families`).
+- **Rename** not done: 13 files outside plans and two dev `.map` files hold `streaming_seam_volume`.

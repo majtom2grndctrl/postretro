@@ -4423,6 +4423,7 @@ dependencies = [
  "postretro-scripting-core",
  "postretro-sim",
  "postretro-stage-timing",
+ "postretro-telemetry",
  "postretro-test-log-capture",
  "postretro-ui",
  "postretro-visibility",
@@ -4454,6 +4455,7 @@ dependencies = [
  "postretro-script-compiler",
  "postretro-scripting-core",
  "postretro-sim",
+ "postretro-stage-timing",
  "postretro-test-log-capture",
  "rquickjs",
  "serde_json",
@@ -4539,6 +4541,7 @@ dependencies = [
  "postretro-physics",
  "postretro-render-cpu",
  "postretro-render-data",
+ "postretro-telemetry",
  "postretro-test-log-capture",
  "postretro-visibility",
  "proptest",
@@ -4828,6 +4831,16 @@ name = "postretro-stage-timing"
 version = "0.1.0"
 dependencies = [
  "tracy-client",
+]
+
+[[package]]
+name = "postretro-telemetry"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "postretro-test-log-capture",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

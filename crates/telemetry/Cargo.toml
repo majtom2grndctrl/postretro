@@ -1,0 +1,25 @@
+[package]
+name = "postretro-telemetry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Typed telemetry envelope, JSONL sink, live ring and log tee for Postretro"
+license.workspace = true
+
+# Engine-blind leaf: payload structs live with their producers, which hand
+# this crate serializable values. Ships in every build, release included.
+# See: context/lib/development_guide.md §6.5
+
+[features]
+# A per-thread hub that tests install so parallel tests never share the
+# process-wide one.
+test-support = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# The tee logger is a `log::Log`; `std` provides `set_boxed_logger`.
+log = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+postretro-test-log-capture.workspace = true

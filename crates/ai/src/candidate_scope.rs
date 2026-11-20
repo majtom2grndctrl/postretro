@@ -16,6 +16,15 @@ use postretro_foundation::{
 
 use super::{ARCHETYPE_TOLERANCE_STATE_FIELD, DEFAULT_RETALIATION_TOLERANCE, FACTION_STATE_FIELD};
 
+// The candidates refreshed on this thread, in order, while a proof that a due
+// selection refreshes only what it must records them (`Some`). Off by
+// default, so allocation proofs see no logging.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static REFRESHES: std::cell::RefCell<Option<Vec<EntityId>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Read handle for a fixed candidate fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CandidateInputHandle(usize);
@@ -99,14 +108,32 @@ impl CandidateScope {
         candidate: EntityId,
         distance: f32,
     ) -> CandidateFacts {
-        let health = context
-            .registry
-            .get_component::<HealthComponent>(candidate)
-            .ok();
         let candidate_faction = context
             .registry
             .get_component::<EntityStateComponent>(candidate)
             .map_or(0.0, |state| state.get(FACTION_STATE_FIELD));
+        self.refresh_with_faction(context, candidate, distance, candidate_faction)
+    }
+
+    /// [`Self::refresh`] with the candidate's faction leaf already read, as
+    /// the pass's pawn index holds it.
+    pub(crate) fn refresh_with_faction(
+        &mut self,
+        context: CandidateRefreshContext<'_>,
+        candidate: EntityId,
+        distance: f32,
+        candidate_faction: f32,
+    ) -> CandidateFacts {
+        #[cfg(test)]
+        REFRESHES.with(|refreshes| {
+            if let Some(log) = refreshes.borrow_mut().as_mut() {
+                log.push(candidate);
+            }
+        });
+        let health = context
+            .registry
+            .get_component::<HealthComponent>(candidate)
+            .ok();
         let tolerance = context
             .archetype_tolerance
             .or_else(|| {

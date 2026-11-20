@@ -9,6 +9,52 @@ use postretro_render_cpu::lightmap_pool::PerPool;
 
 use crate::lighting::lightmap::LightmapStreamCounters;
 
+/// Visible lightmap misses by cause, in drawn block-frames: a block drawn
+/// while not installed counts once per counted frame, in exactly one bucket,
+/// so the buckets sum to `drawn_not_resident`. A bucket takes SH's name
+/// ([`crate::ShMissBuckets`], counted in episodes) where the cause is the same.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LightmapMissBuckets {
+    /// The frame may not read it: untargeted, or a non-portal frame holds
+    /// reads to the camera cell's baked set.
+    pub outside_reach: u64,
+    /// Its read is in flight, or it waits for the issuer.
+    pub read_in_flight: u64,
+    /// The frame's request pass stopped before it with every permit held, or
+    /// the band's half of them.
+    pub waiting_on_permit: u64,
+    /// The frame's request pass stopped before it at the in-hand pair bytes,
+    /// or the band's half of them.
+    pub waiting_on_in_hand_cap: u64,
+    /// Ready, offered to this frame's drain, and past the shared budget's cut.
+    pub held_by_drain_budget: u64,
+    /// Ready or drained, but not offered to this frame's drain: the renderer
+    /// had not returned the previous lightmap batch.
+    pub awaiting_renderer_drain: u64,
+    /// This frame's latest drain to carry it handed it back unplaced: a pool
+    /// it must grow was retiring, or growth would pass the device limit.
+    pub deferred_by_pool: u64,
+    /// A band pair the pool refused, or whose read waits for band headroom.
+    pub refused: u64,
+    /// Its read, decode or install failed, or its drain rolled back, this
+    /// frame or (a failed pair) earlier.
+    pub failed: u64,
+}
+
+impl LightmapMissBuckets {
+    pub fn total(&self) -> u64 {
+        self.outside_reach
+            + self.read_in_flight
+            + self.waiting_on_permit
+            + self.waiting_on_in_hand_cap
+            + self.held_by_drain_budget
+            + self.awaiting_renderer_drain
+            + self.deferred_by_pool
+            + self.refused
+            + self.failed
+    }
+}
+
 /// One frame's view of lightmap block streaming. The application fills the
 /// controller, route and file-read fields; the renderer's pool fields come
 /// from [`LightmapStreamCounters`] via [`Self::record_renderer_counters`].
@@ -49,6 +95,8 @@ pub struct LightmapStreamingLiveDiagnostics {
     pub drawn_not_resident: u64,
     pub last_frame_drawn_outside_baked_set: u32,
     pub last_frame_drawn_not_resident: u32,
+    /// `drawn_not_resident` by cause, in block-frames; the buckets sum to it.
+    pub miss_buckets: LightmapMissBuckets,
     // File reads.
     /// Positional reads the issuer performed for lightmap pairs.
     pub physical_reads: u64,

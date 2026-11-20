@@ -95,6 +95,8 @@ mod dx12_fxc_test;
 #[cfg(test)]
 pub(crate) mod gpu_test_harness;
 #[cfg(test)]
+pub(crate) mod install_cost_model;
+#[cfg(test)]
 mod lightmap_residency_test;
 #[cfg(test)]
 mod render_extent_gpu_test;
@@ -234,6 +236,7 @@ use direct_sh_compose::{
 use dynamic_depth_cache::{DynamicDepthCacheGpu, DynamicDepthCachePlan};
 use fog_pass::FogPass;
 use frame_timing::FrameTiming;
+pub use geometry_install_marks::GeometryInstallTiming;
 pub use level_build::{
     LevelBuildError, LevelBuildEvent, LevelBuildPart, LevelBuildSnapshotInputs, LevelGeometryParts,
     LevelSetBuilder, LevelSetBuilderProbe, PendingLevelSet, SmokeCollectionRequest,
@@ -244,7 +247,9 @@ pub use lightmap_residency::{
     LIGHTMAP_ANIMATED_DIRECTION, LIGHTMAP_ANIMATED_IRRADIANCE, LIGHTMAP_SHADOWMASK,
     LIGHTMAP_STATIC_DIRECTION, LIGHTMAP_STATIC_IRRADIANCE, LightmapResidencyReport,
 };
-pub use lightmap_streaming::{LightmapStreamingLiveDiagnostics, StreamingReachLever};
+pub use lightmap_streaming::{
+    LightmapMissBuckets, LightmapStreamingLiveDiagnostics, StreamingReachLever,
+};
 pub use model_cache::{
     CachedModel, ModelCacheCommit, ModelCacheHandle, ModelCacheOffer, ModelContentKey,
     ModelEntryIdentity,
@@ -313,9 +318,10 @@ pub use renderer_types::{
     CameraCullDiagnostics, CameraCullPath, CaptureAdapterIdentity, CaptureGpuTimingPass,
     CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin, CapturePromotionRow,
     CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
-    DEFAULT_INDIRECT_SCALE, LevelGeometry, LevelGeometryLightmapStreaming, LevelGeometryShStorage,
-    LocatorDiagnostics, PortalOverlayState, PresentHandle, RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer,
-    SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics, SpatialDiagnostics, WorldWireframeMode,
+    DEFAULT_INDIRECT_SCALE, GpuTimingSupport, LevelGeometry, LevelGeometryLightmapStreaming,
+    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentHandle,
+    RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics,
+    SpatialDiagnostics, WorldWireframeMode,
 };
 pub(crate) use renderer_types::{GpuTexture, POST_RETRO_ANISO_CLAMP};
 pub use rigid_occluder_depth::MoverOccluderAabb;
@@ -323,10 +329,11 @@ pub use rigid_occluder_depth::MoverOccluderAabb;
 #[cfg(feature = "dev-tools")]
 pub use debug_ui::{
     AgentDiagnosticsRow, CpuTimingPanel, DebugUi, DoorOccluderDiagnosticsRow, LightmapStreamingTab,
-    NetworkLagLever, NetworkSessionRole, TriggerDiagnosticsRow, draw_diagnostics_panel,
+    NetworkLagLever, NetworkSessionRole, StreamingDrainCapLever, TriggerDiagnosticsRow,
+    draw_diagnostics_panel,
 };
-#[cfg(feature = "dev-tools")]
-pub use frame_timing::FrameTimingSnapshot;
+// Every build: telemetry emits each closed window (`take_gpu_timing_window`).
+pub use frame_timing::{FrameTimingSnapshot, PassTiming};
 #[cfg(feature = "dev-tools")]
 pub use sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 #[cfg(feature = "dev-tools")]

@@ -1,0 +1,71 @@
+# E16--status-effects-and-hazards — research
+
+Read at e7438238. Findings that inform the brief; the brief's Decisions conclude.
+
+## Routing
+- Combines roadmap E16 "DoT / environmental death policy" and "status effects / DoT" (draft session, owner, 2026-11-20). The un-stub is the foundation; statuses and fluid hazards are its first consumers.
+- `onDamage` per-attack aggregate: no consumer in `docs/`, `content/`, `sdk/`, drafts or ready plans. Its names appear only in `context/research/combat-events.md`. The dev mod rewards per hit and per kill (`content/dev/scripts/combat-lifecycle.ts`, `leveling.ts`). Owner made it demand-gated.
+
+## Damage producers today
+| Producer | Variant | Runs policy |
+|---|---|---|
+| Hitscan, pellets, projectile contact, splash, enemy melee, enemy ranged, `projectile_trap`, remote hit declarations, mover crush | InTick | yes |
+| `applyDamage` reaction (`health/reactions.rs` `dispatch`, source id `script.applyDamage`, no attacker) | AppDrain | no |
+
+- Gate: `ImpactPolicyRuntime::evaluate_pending_in_registry[_with_overlay_sink]` `continue` on non-InTick; `discard_app_drain_pending` drops the rest once per frame.
+- Consequence: `sweep_deaths` latches an AppDrain kill and freezes credit, but non-player removal and kill reporting run only through `run_end_of_frame_removal_pass` for policy-marked despawns. The corpse stays.
+- No environmental producer except crush. No fall damage. Triggers fire on Enter and re-arm after `rearm_ms`, so no continuous-volume damage. No status or DoT mechanism; `DeferredEffectKind` is `Despawn` and `SetHealth` only.
+
+## Script damage sites
+`dispatch` runs from:
+| Site | When | Role |
+|---|---|---|
+| Trigger-bound `BoundTriggerCommand::Damage` | Triggers stage, in-tick | host / SP |
+| Teleporter bindings | Movement, in-tick | host / SP |
+| `PlayerEventTable::run_tick` | after each fixed tick | host / SP |
+| `drain_frame_named_events` | frame drain | EveryMachine origins; raw-tag arm runs on clients |
+| residual follow-ups | frame drain | host |
+| `wait` tails (`drain_landings_resolving_seats`) | frame drain | host lands; client drops |
+| `run_crossing_stage` | post-tick, after HUD republish | every machine |
+| UI presses (`ui_actions.rs`) | before the tick loop | every machine |
+| `levelLoad` | install | every machine; kind form host-only |
+
+- The in-tick takers call `take_impact_dispatches()`, so a script impact queued before an in-tick hit is taken and dropped by that hit's evaluation. Evaluating only at frame end would miss Triggers, teleports, PlayerEvents, UI presses and `levelLoad`.
+- The evaluator needs only the registry and its own `ScriptCtx`; nothing tick-only. At the discard site no registry or slot-table borrow is outstanding.
+- Frame-end caveats: no role check in the evaluator (clients produce AppDrain via the raw-tag arm); `publish_health_from_registry` must run first on host/SP and never on clients; `@state` and store reads seed at evaluation time while `@impact.*` is frozen at damage time.
+- Re-entrancy: no impact effect applies damage or fires an event; the batch is taken up front. Store and life-state writes can feed next-frame crossings or next-tick player events, one hop per frame.
+- Frame order: tick loop (in-tick evaluation, then player events) → script drains → command drain → HUD republish → crossings → command drain → per-owner save → discard → removal pass → overlay roster → send. A despawn at the discard site is reaped by the removal pass the same frame; `FrameEndRemoval::is_kill` holds through `depleted`.
+- The substrate brief names no concrete hazard for evaluating script impacts; its "API footgun" is carrying the producer tag early so a later evaluator needs no reshape.
+
+## Fluids
+- Authoring: `defineFluid` in manifest `fluids`; map `fluid_volume` names the fluid; PRL id 52 records carry the fluid name; runtime resolves names to declaration indices at install (`install_environment_volumes`). Clients resolve against the host's `FluidMovementTable`, which carries name and viscosity only.
+- Membership: `resolve_environment` → `ResolvedEnvironment { fluid, immersion, tick_eye_in_fluid, .. }`. Coverage of the capsule segment; feet exactly on the surface are dry.
+- Coverage: players only (`resolve_at_tick_start`). Agents resolve gravity only, corpses fall, projectiles resolve nothing (`entity_model.md` §7 Who resolves what).
+- Persistence: `ResolvedEnvironment` is a local. `ImmersionComponent` keeps the fraction, not the fluid; `MovementState::Swim { fluid }` keeps it only while swimming. A wading pawn's fluid is lost after movement.
+- Remote pawns step only with a command this tick, so their immersion can be one tick stale. Host-only status application tolerates that.
+- E24 non-goal: "Damage specific to one fluid belongs on that fluid's own data, as a later field."
+
+## Tick order
+`simulate_started_tick_with_presentation_aim`: deferred effects → Movers → Movement (player fluid resolve) → Triggers, Touch → sentiment decay → Projectiles → AI → Traps → Steering (crush) → Weapons → Death sweep → Assist. Layer recharge runs after `begin_tick`, before `finish_tick_start`. The status stage goes after Weapons so every in-tick application on tick N precedes that tick's due ticks and the sweep sees a lethal tick.
+
+## Extension map
+- Handle kind: `HandleRef` (`crates/foundation/src/defense.rs`); SDK `defineMod` declaration maps in `sdk/lib/data_script.ts` / `.luau`; name allowlists in `luau_prelude.rs`, `luau_require.rs`, `script-compiler/src/light_membership.rs`; binding-name sugar arms in `script-compiler/src/lib.rs`; typedef templates and `typedef/common.rs`; manifest field in `sim/src/scripting/primitives/manifest.rs`. Self-contained precedent: attack budgets (`data_descriptors/attack_budgets.rs`).
+- Reads: `defense(h)` lowers to `@defense.<layer>` in every scope, cached by `DefenseReads`. Impact scope: `EntityScope::resolve_input`. Brain: `resolve_brain_input` / `BrainInputRef`, runtime `BrainScope`, load check `check_guard_layer_reads`. Bool precedents: `impact.type` (`@impact.type.<name>`), `attackTurnHeld`.
+- Effects: `grantLayer` path — SDK `sourceImpactEffect` → `bind_effect` → `BoundEffect` → `plan_effect` → consequential lane (exhaustive match) → `apply_effect`. Reaction twin in `crates/sim/src/grant/mod.rs`; strict-grant lists in `data_descriptors/{js,lua}/manifest.rs`.
+- Chokepoint call for a tick: `apply_damage_with_context` with `DamagePayload { amount, impulse: ZERO, damage_type }` and `DamageContext { source_id, attacker, weapon, zone: None, point: None, producer: InTick }`. The type rides the payload, not the context. Stale attackers are filtered by `resolve_command_recipient`.
+- `.damage` options drop the reaction on an unknown key; `defineDamageType` options reject load. Both stay reserved and empty here.
+
+## Lifecycle and replication
+- Death latch (`HealthComponent.death_handled`) clears nothing else today; recovery via `set_health_absolute` resets latch, credit and ledger.
+- Carry: `CarriedState` / `harvest_pawn_inner` ledger is exhaustive and wildcard-free, so statuses must be recorded as skipped. Save format `LoadoutRecord` and wire `CarriedLoadoutWire` are untouched.
+- Enemy overlay roster is capped, damage-driven and expiring: wrong home for persistent presence. `WireMeshAnimationState` reaches only animated meshes; `WirePlayerMovementState` only pawns. Ghost links added an entity component payload and bumped WIRE and SNAPSHOT; that is the precedent.
+- No entity-attached condition-held presentation exists. `BillboardEmitter` toggles by tag; looping `SoundRequest` with an entity anchor exists locally. Without attached presentation, replicated presence has no reader, so the brief ships both.
+- `mod_compatibility_digest` covers factions and trigger lanes only; status order must join it because the presence bitset is index-keyed.
+
+## Instance cap
+- Keyed by (status, applier). Co-op hordes: four players plus environment appliers per status, a few statuses per mod. 16 instances per entity covers every plausible combination with a fixed inline array, which keeps the stage allocation-free. Replacing the instance with the least time left drops the one contributing least.
+
+## Roadmap updates at promotion
+- E16 Combat Feedback & Economy: replace "DoT / environmental death policy" with this brief; mark `onDamage` per-attack aggregate demand-gated, pointing shot-id threading to `drafts/E10--stealth-opener`.
+- E16 Damage & Defenses: "status effects / DoT" points to this brief.
+- Fix the dual-wield line's citation of an "activation-trigger fork" that `weapon-model.md` §9 does not contain.

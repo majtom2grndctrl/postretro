@@ -3139,6 +3139,7 @@ fn sources_above_level_loader() -> Vec<(PathBuf, String)> {
 /// `crates_above_level_loader_cover_every_dependent` keeps it complete.
 const CRATES_ABOVE_LEVEL_LOADER: &[&str] = &[
     "ai",
+    "camera-route",
     "level-compiler",
     "lighting",
     "netcode",

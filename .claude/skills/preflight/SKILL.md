@@ -39,6 +39,8 @@ more cache churn.
 6. **Telemetry reducer:** `python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`
    — the stdlib-only reducer in `tools/` against its checked-in sample. No
    build; it needs only `python3`.
+   **Playback trace reducer:** `python3 -m unittest discover -s tools/tests -p test_playback_trace_reduce.py`
+   — the same, for the playback record and Metal System Trace reducer.
 
 Clippy gets its **own target dir** on purpose. It compiles the whole workspace
 under the clippy driver, which writes different fingerprints than the `rustc`

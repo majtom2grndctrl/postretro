@@ -107,6 +107,33 @@ tools/telemetry_reduce.py <file.jsonl>`, or add `--json` for the same summary
 as JSON. Its tests run with
 `python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`.
 
+### `playback_trace_reduce.py`
+
+Joins a camera-route playback record (`--camera-route-report`) with a Metal
+System Trace export of the same run. Each frame's drain and frame encoders
+carry a `pr-frame <k>` debug group, so the reducer attributes drain GPU time to
+the record row that recorded it, never by time overlap. Per frame it reports
+the interval, lightmap and SH drain GPU time, and the cold and pool-growth
+flags. Per run it reports interval p50, p95, max and frames over budget over
+route frames, hold, no-draw and change-marked rows apart, drain GPU statistics
+with warm, cold and pool-growth drains apart, and over-budget frames charged two
+ways. Every GPU figure names the GPU clock from an `ioreg` poll joined by time,
+or says it went unrecorded. Standard library only. Run with
+
+```sh
+python3 tools/playback_trace_reduce.py --record <run.playback.json> \
+    --trace-dir <dir of exported tables, .xml or .xml.xz> [--ioreg <poll log>]
+```
+
+The trace directory holds the `metal-application-intervals` and
+`metal-gpu-intervals` exports, plus the export's `--toc` output for the clock
+join. Add `--json` for the full summary, `--all-frames` to list every frame, and
+`--budget-ms` to change the 16.667 ms budget. The script's docstring defines the
+join, matched frames and the in-flight charge. Recording a run, its trace and
+the poll on a Mac: `context/plans/in-progress/camera-path-playback/mac-checkpoint.md`.
+Its tests run with
+`python3 -m unittest discover -s tools/tests -p test_playback_trace_reduce.py`.
+
 ### `texture-tool/`
 
 Rust PNG processor that writes a whole world-material bundle — diffuse, `_s`
@@ -147,6 +174,7 @@ Per-script deps:
 | `gen_stress_map.py` | none (stdlib only) |
 | `inspect_fbx_ascii.py` | none (stdlib only) |
 | `telemetry_reduce.py` | none (stdlib only) |
+| `playback_trace_reduce.py` | none (stdlib only) |
 
 `gen_stress_map.py` imports three sibling helper modules, `stress_environment.py`
 (environment-volume shapes and particle emitters), `stress_zones.py` (zoned

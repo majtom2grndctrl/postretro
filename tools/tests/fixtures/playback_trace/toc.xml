@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<trace-toc>
+    <run number="1">
+        <info>
+            <summary>
+                <start-date>2026-11-19T17:29:30.999-08:00</start-date>
+                <end-date>2026-11-19T17:29:52.565-08:00</end-date>
+                <duration>21.566046</duration>
+                <end-reason>Time limit reached</end-reason>
+                <instruments-version>16.0 (17F42)</instruments-version>
+                <template-name>Metal System Trace</template-name>
+                <recording-mode>Deferred</recording-mode>
+                <time-limit>20 seconds</time-limit>
+            </summary>
+        </info>
+    </run>
+</trace-toc>

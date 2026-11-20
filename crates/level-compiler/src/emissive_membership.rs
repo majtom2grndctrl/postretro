@@ -156,6 +156,61 @@ pub(crate) fn resolve_emissive_volume_records(
         .collect()
 }
 
+/// Fail the build when a volume holds faces and some world face has no
+/// triangle. The loader stamps each face's volume id through that face's one
+/// BVH leaf, and once any volume holds a face it recovers every face's range
+/// that way: a triangle-less face anywhere refuses the level, not only one
+/// near a volume. Run as soon as membership resolves, so the build stops
+/// before reflection capture; the pack-time check stays as a backstop.
+pub(crate) fn refuse_members_beside_a_triangle_less_face(
+    volumes: &[MapEmissiveVolume],
+    records: &[EmissiveVolumeRecord],
+    geometry: &GeometryResult,
+    face_brushes: &[Option<u32>],
+) -> anyhow::Result<()> {
+    let holding: Vec<&MapEmissiveVolume> = volumes
+        .iter()
+        .zip(records)
+        .filter(|(_, record)| !record.faces.is_empty())
+        .map(|(volume, _)| volume)
+        .collect();
+    let Some(&first) = holding.first() else {
+        return Ok(());
+    };
+    let Some(face) = geometry
+        .face_index_ranges
+        .iter()
+        .position(|range| range.index_count == 0)
+    else {
+        return Ok(());
+    };
+    let texture = geometry
+        .geometry
+        .faces
+        .get(face)
+        .and_then(|meta| {
+            geometry
+                .texture_names
+                .names
+                .get(meta.texture_index as usize)
+        })
+        .map_or("?", String::as_str);
+    let brush = match face_brushes.get(face).copied().flatten() {
+        Some(brush) => format!("brush {brush}"),
+        None => "no source brush".to_owned(),
+    };
+    let others = match holding.len() - 1 {
+        0 => String::new(),
+        more => format!(" (and {more} more emissive volume(s))"),
+    };
+    anyhow::bail!(
+        "{}{others} holds faces, but world face {face} (texture '{texture}', {brush}) has no \
+         triangle, and a level whose emissive volumes hold faces needs a triangle on every \
+         world face. Remove or rebuild that degenerate brush, or remove the emissive volumes",
+        describe(first)
+    )
+}
+
 /// The volume's label, tags and origin, so a mapper can find it.
 fn describe(volume: &MapEmissiveVolume) -> String {
     let [x, y, z] = volume.origin;

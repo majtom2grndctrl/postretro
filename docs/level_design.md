@@ -339,6 +339,7 @@ Membership is decided per final face: each piece of world surface the compiler p
 - **Overlaps:** a face inside several volumes belongs to the smallest (by brush volume); two of the same size go to the later one in the map. A volume nested inside another keeps its faces whichever comes first.
 - **A volume with no glowing face warns**, naming the entity, including one a smaller volume has emptied. It still compiles, and scripts can still address it.
 - **At most 256 volumes per map.** The 257th stops the compile, naming the count.
+- **Every world face needs a triangle once a volume holds a face.** A degenerate brush anywhere in the map, one with a face the compiler cannot draw, then stops the compile, naming a volume, the face's texture and its brush. Remove or rebuild that brush; with no volume holding faces, the map compiles as before.
 - **Static world faces only.** Movers and fluids glow at their texture strength alone; a volume never reaches them, nor models.
 
 ### Keys
@@ -984,7 +985,7 @@ emissive = 4.0
 ```
 
 - **Defaults:** a texture with an `_e` map and no entry glows at `1.0`. A texture with no `_e` map glows at `0`, whatever its entry says.
-- **Keys:** match texture names as the compiler does: case does not matter, `\` reads as `/`, and a leading `textures/` is ignored. A key reaches every face whose texture resolves to it, whether the map names that texture with its collection (`signs/bar_sign`) or by its bare name (`bar_sign`). Two keys that name the same texture warn once, and the later one wins.
+- **Keys:** name the texture as TrenchBroom shows it, `collection/name`. Case does not matter, `\` reads as `/`, and a leading `textures/` is ignored. A key reaches every face whose texture resolves to it, whether the map names that texture with its collection (`signs/bar_sign`) or by its bare name (`bar_sign`). A key spelled as the map writes the texture (`bar_sign`) also works; if both forms have an entry, the `collection/name` one wins, with a warning when they differ. Two keys that name the same texture warn once, and the later one wins.
 - **Values:** `emissive` is a number. A negative value reads `0`; a value above `64` reads `64`; each warns.
 - **Mistakes never stop the compile.** Each warns, naming the file and line: a syntax error (every texture takes its default), an unknown key (ignored), a value that is not a number (that texture takes its default), and an entry for a texture with no `_e` map (ignored).
 

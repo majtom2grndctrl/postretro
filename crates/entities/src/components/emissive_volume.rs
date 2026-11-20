@@ -68,14 +68,14 @@ pub struct EmissiveVolumeComponent {
     /// is any install over no animation or a different one. Re-installing the
     /// running curve keeps it. So a brightness write that clears the curve,
     /// then an identical re-install in the same drain, still reads as a new
-    /// run although the frame bridge never sees the gap (`research.md` P30).
+    /// run although the frame bridge never sees the gap.
     ///
     /// Every consumer that keeps an animation start time (the frame bridge,
     /// co-op presentation capture) restarts when this changes and keeps its
     /// start while it holds, save one case [`Self::install_touch`] marks: a
-    /// re-install on a finite run's last frame. Engine bookkeeping: never serialized, so scripts
-    /// and the wire never see it. Install a curve only through
-    /// [`Self::install_animation`]. A clear (`animation = None`, or
+    /// re-install on a finite run's last frame. Engine bookkeeping: never
+    /// serialized, so scripts and the wire never see it. Install a curve only
+    /// through [`Self::install_animation`]. A clear (`animation = None`, or
     /// [`Self::hold_brightness`]) needs no bump: the next install over no
     /// curve starts a new run.
     #[serde(skip)]
@@ -89,8 +89,8 @@ pub struct EmissiveVolumeComponent {
     /// falls on or before this frame's script time, re-installed in this
     /// frame's drain. The drain runs before the bridge settles the run, so
     /// the serial is unchanged; the touch tells the bridge to restart rather
-    /// than settle (`research.md` P6: "After a finite one settles, re-install
-    /// restarts it"). A touch on a run still playing keeps its start (P6).
+    /// than settle: re-installing a curve onto a finite run that has settled
+    /// restarts it. A touch on a run still playing keeps its start.
     ///
     /// It is not run identity. [`PresentationComponent::same_animation`],
     /// co-op apply and equality ignore it; co-op capture compares it only
@@ -215,7 +215,7 @@ mod tests {
         }
     }
 
-    // P6 and P30 at the source of the signal: re-installing the running curve
+    // At the source of the signal: re-installing the running curve
     // keeps its run; a different curve, or the same one after a brightness
     // write cleared it, starts a new run.
     #[test]

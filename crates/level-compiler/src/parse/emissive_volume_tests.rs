@@ -167,8 +167,12 @@ fn keys_are_fixed_before_a_max_below_min_swaps() {
     );
     capture.assert_logged_once(
         Level::Warn,
-        &format!("{LABEL} `emissive_max` 1 is below `emissive_min` 2; the two are swapped"),
+        &format!(
+            "{LABEL} `emissive_max` reads its default 1, which is below `emissive_min` 2; the \
+             two are swapped"
+        ),
     );
+    capture.assert_not_logged(Level::Warn, "`emissive_max` 1 is below");
     drop(capture);
 
     let capture = LogCapture::start();

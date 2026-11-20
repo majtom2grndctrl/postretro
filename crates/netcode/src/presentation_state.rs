@@ -87,7 +87,7 @@ pub fn presentation_override_payload(record: &PresentationOverride) -> Option<Co
         PresentationComponent::Emissive(volume) => {
             // `brightness` is the component's value at the write: the written
             // value, or the bridge's last sample for a colour write over a
-            // running curve or a `null` clear (P5, P33). The range stays local.
+            // running curve or a `null` clear. The range stays local.
             let state = WireEmissiveState {
                 brightness: volume.brightness,
                 color: volume.color,
@@ -242,7 +242,7 @@ pub(crate) fn apply_presentation_payload(
             volume.color = state.color;
             match &state.animation {
                 // The host holds this brightness with no curve: drop any local
-                // one, the joiner's own `levelLoad` flicker included (P31, P32).
+                // one, the joiner's own `levelLoad` flicker included.
                 None => volume.hold_brightness(state.brightness),
                 Some(animation) => {
                     volume.brightness = state.brightness;

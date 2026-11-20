@@ -83,7 +83,7 @@ pub(super) fn before_apply(
 /// Whether `component` re-installed an emissive curve, since `baseline`, onto
 /// a finite run that started at `start` and has finished by `now`. The frame
 /// bridge restarts such a run at the script time it sees the install instead
-/// of settling it (`research.md` P6): the drain runs before the bridge
+/// of settling it: the drain runs before the bridge
 /// settles a finite run, so on the frame its count runs out the run is still
 /// installed and an identical re-install keeps its serial. Only the install
 /// touch and the known start show the restart. With no known start, peers
@@ -142,8 +142,8 @@ pub(super) fn after_apply(
             // LightBridge currently restarts on whole-component changes; the only
             // captured light writer changes animation alone. Keep future writers aligned.
             // An emissive run also compares its install serial, so a curve a
-            // brightness write cleared and the drain re-installed restarts (P30),
-            // as does a curve re-installed onto its own finished run (P6).
+            // brightness write cleared and the drain re-installed restarts,
+            // as does a curve re-installed onto its own finished run.
             let start = baseline.anim_start;
             if component.same_animation(&baseline.component)
                 && !restarts_finished_run(&component, &baseline.component, start, now)

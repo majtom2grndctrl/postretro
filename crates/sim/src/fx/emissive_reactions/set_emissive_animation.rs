@@ -13,14 +13,13 @@ pub(crate) struct SetEmissiveAnimationArgs(pub(crate) Option<EmissiveAnimation>)
 
 /// Apply `args.0` to every target, with `setFogAnimation`'s validation:
 /// - `null` clears the curve. Brightness keeps its last sampled value, since
-///   the frame bridge writes each sample into the component (`research.md`
-///   P5).
+///   the frame bridge writes each sample into the component.
 /// - A curve installs through `install_animation`: re-installing the running
-///   curve keeps its start time (P6); any other install starts a new run.
+///   curve keeps its start time; any other install starts a new run.
 /// - A `periodMs` at or below 0 or non-finite, or an empty `brightness`
 ///   curve, warns and installs nothing; the prior animation and brightness
-///   stay (P7). `playCount` 0 reads 1, with a warning (P8). Samples clamp to
-///   `[0, 1]`, NaN reading 0, with one warning (P10).
+///   stay. `playCount` 0 reads 1, with a warning. Samples clamp to
+///   `[0, 1]`, NaN reading 0, with one warning.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
     targets: &[EntityId],

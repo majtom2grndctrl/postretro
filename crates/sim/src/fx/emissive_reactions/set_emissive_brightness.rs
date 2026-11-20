@@ -13,10 +13,9 @@ pub(crate) struct SetEmissiveBrightnessArgs {
 }
 
 /// Write the clamped brightness and clear the animation on every target, as
-/// `setSpinRate` does (`research.md` P1, P4): a running curve or fade stops
+/// `setSpinRate` does: a running curve or fade stops
 /// and never settles over the written value. Within one body, writes apply in
-/// order, so the later of a brightness write and an animation install wins
-/// (P2, P3).
+/// order, so the later of a brightness write and an animation install wins.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
     targets: &[EntityId],
@@ -33,7 +32,7 @@ pub(crate) fn dispatch(
 }
 
 /// Clamp a scripted brightness to `[0, 1]`; NaN reads 0. Warns once when the
-/// value changed (`research.md` P10).
+/// value changed.
 fn clamp_brightness(value: f32) -> f32 {
     let fixed = if value.is_nan() {
         0.0

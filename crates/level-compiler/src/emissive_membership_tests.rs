@@ -386,6 +386,68 @@ fn a_face_with_no_triangle_joins_nothing() {
     }
 }
 
+// Once any volume holds a face, the loader reaches every face through its BVH
+// leaf, so a triangle-less face anywhere, even far from every volume, fails
+// the build right after membership, naming a volume, the face, its texture
+// and brush, and the remedy. With no volume holding a face the build goes on.
+#[test]
+fn members_beside_a_triangle_less_face_fail_naming_volume_face_and_brush() {
+    let world = World::new(&room(&[
+        volume([-32, -32, -1], [32, 32, 32]),
+        volume([56, 56, -1], [88, 88, 32]),
+    ]));
+    let floor = world.faces_within("floor", [-144.0, -144.0, -16.0], [144.0, 144.0, 0.0]);
+    let emptied = floor[0] as usize;
+    let mut geometry = world.geometry.clone();
+    geometry.face_index_ranges[emptied].index_count = 0;
+    let records = resolve_emissive_volume_records(
+        &world.map.emissive_volumes,
+        &geometry,
+        &fragment_centroids(&geometry),
+        &world.has_emissive_map(),
+    );
+    assert!(records.iter().all(|record| !record.faces.is_empty()));
+    let brush = world.face_brushes[emptied].expect("a floor face has its brush");
+    let message = refuse_members_beside_a_triangle_less_face(
+        &world.map.emissive_volumes,
+        &records,
+        &geometry,
+        &world.face_brushes,
+    )
+    .expect_err("members beside a triangle-less face are refused")
+    .to_string();
+    let named_face =
+        format!("world face {emptied} (texture 'floor', brush {brush}) has no triangle");
+    for expected in [
+        "entity 1 'emissive_volume'",
+        "(and 1 more emissive volume(s)) holds faces",
+        named_face.as_str(),
+        "Remove or rebuild that degenerate brush, or remove the emissive volumes",
+    ] {
+        assert!(message.contains(expected), "{expected:?} in {message}");
+    }
+
+    // A volume in empty air holds nothing: the loader never looks.
+    let world = World::new(&room(&[volume([-100, -100, 60], [-90, -90, 70])]));
+    let floor = world.faces_within("floor", [-144.0, -144.0, -16.0], [144.0, 144.0, 0.0]);
+    let mut geometry = world.geometry.clone();
+    geometry.face_index_ranges[floor[0] as usize].index_count = 0;
+    let records = resolve_emissive_volume_records(
+        &world.map.emissive_volumes,
+        &geometry,
+        &fragment_centroids(&geometry),
+        &world.has_emissive_map(),
+    );
+    assert!(records[0].faces.is_empty());
+    refuse_members_beside_a_triangle_less_face(
+        &world.map.emissive_volumes,
+        &records,
+        &geometry,
+        &world.face_brushes,
+    )
+    .expect("no volume holds a face");
+}
+
 // Acceptance A5: of two volumes containing a face, the smaller wins, in
 // either map order; the larger, left with no glowing face, warns (P28).
 #[test]

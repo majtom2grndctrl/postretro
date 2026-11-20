@@ -142,7 +142,16 @@ impl EmissiveVolumeBridge {
         }
         // Only spawned volumes are limited; `count` stops short of
         // `records.len()` (one source per record) when the registry filled.
-        self.flash.install(&flash_sources[..count]);
+        // A caller that passes fewer sources than it spawned (a bug the assert
+        // above catches in debug) gets dark sources for the missing entries.
+        match flash_sources.get(..count) {
+            Some(sources) => self.flash.install(sources),
+            None => {
+                let mut padded = flash_sources.to_vec();
+                padded.resize(count, EmissiveFlashSource::DARK);
+                self.flash.install(&padded);
+            }
+        }
         self.clock.reset(count);
     }
 

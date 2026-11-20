@@ -3894,7 +3894,7 @@ Installs a brightness curve on every target: `brightness` holds samples in `[0, 
 - A `periodMs` at or below `0`, or an empty `brightness`, warns and installs nothing; the volume keeps its animation and brightness.
 - A `flicker` at `rate: 0` builds an infinite period. Like any `NaN` or infinite number a script returns, it is an error naming the field: authored numbers must be finite.
 - `playCount: 0` reads `1`, with a warning.
-- Installing the curve that is already running keeps its timing, so a repeated `levelLoad` install does not restart it. Any other install starts from the first sample, including the same curve after a `setEmissiveBrightness` cleared it, even within one reaction.
+- Installing the curve that is already running keeps its timing, so a repeated `levelLoad` install does not restart it. Any other install starts from the first sample, including the same curve after a `setEmissiveBrightness` or a `null` clear, even within one reaction or drain. Re-installing a finite curve on the frame it finishes restarts it from the first sample rather than letting it settle.
 
 ### `applyDamage`
 

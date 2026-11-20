@@ -51,13 +51,19 @@ pub(super) fn read_emissive_volume(
              brushes take its glow"
         );
     }
-    let mut min = read_multiplier(props, MIN_KEY, DEFAULT_MIN, &label);
-    let mut max = read_multiplier(props, MAX_KEY, DEFAULT_MAX, &label);
+    let mut min = read_multiplier(props, MIN_KEY, DEFAULT_MIN, &label).unwrap_or(DEFAULT_MIN);
+    let read_max = read_multiplier(props, MAX_KEY, DEFAULT_MAX, &label);
+    let mut max = read_max.unwrap_or(DEFAULT_MAX);
     if max < min {
-        if authored(props, MAX_KEY).is_some() {
+        if read_max.is_some() {
             log::warn!(
                 "[Compiler] {label} `{MAX_KEY}` {max} is below `{MIN_KEY}` {min}; the two are \
                  swapped"
+            );
+        } else if authored(props, MAX_KEY).is_some() {
+            log::warn!(
+                "[Compiler] {label} `{MAX_KEY}` reads its default {max}, which is below \
+                 `{MIN_KEY}` {min}; the two are swapped"
             );
         } else {
             log::warn!(
@@ -91,16 +97,21 @@ fn authored<'a>(props: &'a HashMap<String, String>, key: &str) -> Option<&'a str
         .filter(|value| !value.is_empty())
 }
 
-fn read_multiplier(props: &HashMap<String, String>, key: &str, default: f32, label: &str) -> f32 {
-    let Some(raw) = authored(props, key) else {
-        return default;
-    };
+/// The key's authored value after its fix, or `None` when it reads its
+/// default: unset, not a number, or not finite.
+fn read_multiplier(
+    props: &HashMap<String, String>,
+    key: &str,
+    default: f32,
+    label: &str,
+) -> Option<f32> {
+    let raw = authored(props, key)?;
     // f64, so a finite number past f32's range still reads as past the ceiling.
     let Ok(mut value) = raw.parse::<f64>() else {
         log::warn!(
             "[Compiler] {label} `{key}` \"{raw}\" is not a number; it reads its default {default}"
         );
-        return default;
+        return None;
     };
     // A decimal that overflows f64 is finite and past the ceiling; only the
     // `inf` keyword is non-finite.
@@ -110,28 +121,29 @@ fn read_multiplier(props: &HashMap<String, String>, key: &str, default: f32, lab
     fix_multiplier(value, key, default, label)
 }
 
-/// One key's fix, in the order the Decision gives: non-finite → default,
-/// negative → 0, past the ceiling → the ceiling.
-fn fix_multiplier(value: f64, key: &str, default: f32, label: &str) -> f32 {
+/// One key's fix, checked in this order: non-finite → its default (`None`),
+/// negative → 0, past the ceiling → the ceiling. Every key is fixed before
+/// the min/max pair swaps.
+fn fix_multiplier(value: f64, key: &str, default: f32, label: &str) -> Option<f32> {
     if !value.is_finite() {
         log::warn!(
             "[Compiler] {label} `{key}` {value} is not finite; it reads its default {default}"
         );
-        return default;
+        return None;
     }
     if value < 0.0 {
         log::warn!("[Compiler] {label} `{key}` {value} is negative; it reads 0");
-        return 0.0;
+        return Some(0.0);
     }
     if value > f64::from(EMISSIVE_VALUE_CEILING) {
         log::warn!(
             "[Compiler] {label} `{key}` {value} is past the ceiling; it reads \
              {EMISSIVE_VALUE_CEILING}"
         );
-        return EMISSIVE_VALUE_CEILING;
+        return Some(EMISSIVE_VALUE_CEILING);
     }
     // `-0` reads as 0, so both spellings write the same bits.
-    if value == 0.0 { 0.0 } else { value as f32 }
+    Some(if value == 0.0 { 0.0 } else { value as f32 })
 }
 
 /// Read as every FGD colour key is: three integers 0..=255, each ÷ 255, used

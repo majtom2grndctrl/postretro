@@ -151,7 +151,8 @@ fn first_face_without_a_triangle(geo_result: &GeometryResult) -> Option<usize> {
 /// Fail the build on id 60 face lists the loader cannot stamp: once any
 /// volume lists a face, it recovers every face's range from the BVH leaves,
 /// and a face with no triangle anywhere in Geometry refuses the level.
-/// Membership never lists such a face itself.
+/// Membership never lists such a face itself. A backstop: the build already
+/// refuses this right after membership resolves, naming volume and brush.
 fn refuse_unstampable_emissive_members(
     emissive: &EmissiveSection,
     geo_result: &GeometryResult,

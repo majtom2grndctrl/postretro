@@ -10,6 +10,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use postretro_level_format::bvh::BvhSection;
 use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -75,6 +76,40 @@ fn room_map(volumes: &[String]) -> String {
     entities.join("\n")
 }
 
+/// A sealed room of plain walls with a light and a glowing bar floating in it:
+/// map x −42..42 (84 units, 2.13 m), y −1..1, z 40..44. A
+/// `lightmap_scale_region` around the bar alone sets its texel to 1 mm (0.25 m
+/// ÷ 250), so each long side's chart, 2134 texels long, exceeds the 2048-texel
+/// pool layer and the atlas cuts it in two; every room face keeps the coarse
+/// density. `volumes` follow every other entity.
+fn cut_bar_map(volumes: &[String]) -> String {
+    let brushes = [
+        box_brush([-144, -144, -16], [144, 144, 0], WALL),
+        box_brush([-144, -144, 128], [144, 144, 144], WALL),
+        box_brush([-144, -144, 0], [-128, 144, 128], WALL),
+        box_brush([128, -144, 0], [144, 144, 128], WALL),
+        box_brush([-128, -144, 0], [128, -128, 128], WALL),
+        box_brush([-128, 128, 0], [128, 144, 128], WALL),
+        box_brush([-42, -1, 40], [42, 1, 44], PANEL),
+    ];
+    let mut entities = vec![
+        format!(
+            "{{\n\"classname\" \"worldspawn\"\n{}\n}}",
+            brushes.join("\n")
+        ),
+        "{\n\"classname\" \"player_spawn\"\n\"origin\" \"-64 64 32\"\n}".to_string(),
+        "{\n\"classname\" \"light\"\n\"origin\" \"0 0 96\"\n\"light\" \"300\"\n\
+         \"_falloff_range\" \"320\"\n\"_light_size\" \"0\"\n}"
+            .to_string(),
+        format!(
+            "{{\n\"classname\" \"lightmap_scale_region\"\n\"_lightmap_scale\" \"250\"\n{}\n}}",
+            box_brush([-43, -2, 39], [43, 2, 45], "trigger")
+        ),
+    ];
+    entities.extend(volumes.iter().cloned());
+    entities.join("\n")
+}
+
 /// A thin `emissive_volume` over the whole glowing wall side (map x = 128),
 /// so it holds the centroid of every BSP fragment of that side and of no
 /// other face, with `properties` (one `"key" "value"` per line).
@@ -86,11 +121,16 @@ fn panel_volume(properties: &str) -> String {
 }
 
 fn compile(root: &Path, name: &str, map_text: &str) -> (PathBuf, String) {
+    compile_logging(root, name, map_text, "warn")
+}
+
+/// [`compile`] with `rust_log` as the build's log filter.
+fn compile_logging(root: &Path, name: &str, map_text: &str, rust_log: &str) -> (PathBuf, String) {
     let input = root.join("maps").join(format!("{name}.map"));
     let output_path = root.join(format!("{name}.prl"));
     std::fs::write(&input, format!("{map_text}\n")).expect("write fixture map");
     let output = prl_build()
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", rust_log)
         .arg(&input)
         .arg("-o")
         .arg(&output_path)
@@ -271,4 +311,64 @@ fn a_volumes_record_and_faces_read_back_from_the_emissive_section() {
         section(&base, SectionId::ReflectionProbes),
         "the probe reflects the glowing wall at max × colour"
     );
+}
+
+// Pin P29 end to end: the atlas cuts the bar's top in two, and both halves
+// stay in the volume that holds the top's pre-cut centroid, though neither
+// half's own centre lies inside it. The volume is a small box around the top's
+// centre, so only the cut's membership remap can carry the halves.
+#[test]
+fn every_atlas_sub_face_of_a_member_face_is_in_its_volume() {
+    let dir = setup();
+    let (prl, logs) = compile_logging(
+        dir.path(),
+        "cut",
+        &cut_bar_map(&[format!(
+            "{{\n\"classname\" \"emissive_volume\"\n{}\n}}",
+            box_brush([-4, -4, 43], [4, 4, 46], "trigger")
+        )]),
+        "info",
+    );
+    assert!(
+        logs.contains("oversize lightmap face(s) into"),
+        "the atlas cut a face:\n{logs}"
+    );
+    let compiled = sections(&prl);
+
+    // Face `i`'s bounds are the `i`-th BVH leaf by index offset: the compiler
+    // gives each face one leaf, over its own contiguous index range.
+    let mut leaves = BvhSection::from_bytes(section(&compiled, SectionId::Bvh))
+        .expect("Bvh decodes")
+        .leaves;
+    leaves.sort_unstable_by_key(|leaf| leaf.index_offset);
+    // The top, map z = 44, is engine y.
+    let top_y = 44.0 * UNIT;
+    let top: Vec<u32> = faces_of(&compiled, PANEL)
+        .into_iter()
+        .filter(|&face| {
+            let leaf = &leaves[face as usize];
+            (leaf.aabb_min[1] - top_y).abs() < 1e-4 && (leaf.aabb_max[1] - top_y).abs() < 1e-4
+        })
+        .collect();
+    assert!(
+        top.len() >= 2,
+        "the bar's top is cut into sub-faces: {top:?}"
+    );
+    for &face in &top {
+        let leaf = &leaves[face as usize];
+        // Map x is engine −z.
+        let centre_x = -(leaf.aabb_min[2] + leaf.aabb_max[2]) * 0.5 / UNIT;
+        assert!(
+            centre_x.abs() > 4.0,
+            "sub-face {face}'s own centre (map x {centre_x}) lies outside the volume"
+        );
+    }
+
+    let [volume] = emissive(&compiled).volumes.try_into().expect("one volume");
+    assert_eq!(
+        volume.faces, top,
+        "every sub-face of the cut top, and no other face"
+    );
+    postretro_level_loader::load_prl(prl.to_str().expect("UTF-8 path"))
+        .expect("the cut level loads");
 }

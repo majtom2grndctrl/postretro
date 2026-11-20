@@ -1721,9 +1721,9 @@ fn run_after_parsing(
     );
 
     // Emissive membership is per BSP fragment: each pre-cut face tests its
-    // own centroid, so it is taken here, before the cut, and an atlas
-    // sub-face inherits its fragment's (P29). Membership itself waits for
-    // `_e` facts after the texture stage.
+    // own centroid, so it is taken here, before the cut, and every atlas
+    // sub-face inherits its fragment's, so the cut never splits a membership.
+    // Membership itself waits for `_e` facts after the texture stage.
     let centroids_start = Instant::now();
     let mut fragment_centroids = if map_data.emissive_volumes.is_empty() {
         Vec::new()
@@ -2239,6 +2239,12 @@ fn run_after_parsing(
             &has_emissive_map,
         ),
     };
+    crate::emissive_membership::refuse_members_beside_a_triangle_less_face(
+        &map_data.emissive_volumes,
+        &emissive_section.volumes,
+        &geo_result,
+        &face_brushes,
+    )?;
     // Listed alone, not a stage: it runs uncached on every build.
     timings.push((
         "Emissive Membership",

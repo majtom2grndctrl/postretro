@@ -13,10 +13,10 @@ pub(crate) struct SetEmissiveColorArgs {
 }
 
 /// Write the fixed colour on every target. A negative or non-finite channel
-/// reads 0 and a channel above 1 reads 1, with one warning per write
-/// (`research.md` P49), so no script pushes a face past the mapper's
+/// reads 0 and a channel above 1 reads 1, with one warning per write,
+/// so no script pushes a face past the mapper's
 /// multiplier. Brightness and any running animation are left alone, start
-/// time included (P44).
+/// time included.
 pub(crate) fn dispatch(
     registry: &mut EntityRegistry,
     targets: &[EntityId],

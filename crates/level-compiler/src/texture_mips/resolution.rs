@@ -26,10 +26,13 @@ pub(super) struct TextureBundlePaths {
     /// the specular slot's G channel. See `context/lib/resource_management.md`
     /// §4.6.
     pub height: Option<PathBuf>,
-    /// The qualified `collection/name` whose files resolved, read from the
-    /// first resolved slot's collection directory: `signs/bar` for a map name
-    /// `bar` or `oldcoll/bar` that fell back to the bare-stem alias. `None`
-    /// when no slot resolved.
+    /// The qualified `collection/name` whose files resolved: `signs/bar` for
+    /// a map name `bar` or `oldcoll/bar` that fell back to the bare-stem
+    /// alias. Read from the emissive slot's collection directory when it
+    /// resolved, else diffuse, specular, normal, height, so the strength
+    /// `materials.toml` keys to it scales the glow the bundle actually loads,
+    /// even when per-slot bare aliases cross collections (`a/bar.png` beside
+    /// `b/bar_e.png`). `None` when no slot resolved.
     pub bundle: Option<String>,
 }
 
@@ -59,8 +62,9 @@ pub(super) fn resolve_texture_bundle_paths(
     let emissive = name_to_path.get(&format!("{resolved_base}_e")).cloned();
     let height = name_to_path.get(&format!("{resolved_base}_h")).cloned();
     // Every key is `collection/stem` or a bare stem, so a resolved file's
-    // directory names the collection whichever key found it.
-    let bundle = [&diffuse, &specular, &normal, &emissive, &height]
+    // directory names the collection whichever key found it. The glow slot
+    // goes first: strength scales it.
+    let bundle = [&emissive, &diffuse, &specular, &normal, &height]
         .into_iter()
         .flatten()
         .next()

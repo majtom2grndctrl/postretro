@@ -126,7 +126,7 @@ fn seam_arrival_equals_a_seamless_teleport_between_the_same_landmarks() {
             // The teleport: the pawn's own body point through the seamless mapping.
             let world = seamless_world(source, destination);
             let collision = CombinedCollisionWorld::static_only(&world);
-            let mut teleported = moving_pawn(state.clone());
+            let mut teleported = moving_pawn(state);
             let mut events = MovementEvents::default();
             let mut input = idle_input();
             input.facing_yaw = view_yaw;
@@ -144,7 +144,7 @@ fn seam_arrival_equals_a_seamless_teleport_between_the_same_landmarks() {
                 .yaw_delta;
 
             // The seam: capture before unload, apply to a fresh spawn.
-            let crossing = moving_pawn(state.clone());
+            let crossing = moving_pawn(state);
             let arrival = LandmarkRelative::capture(&crossing, body, view_yaw, view_pitch, source);
             let empty = CollisionWorld::new();
             let mut spawned = pawn();

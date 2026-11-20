@@ -240,7 +240,7 @@ fn seam_touch_fires_on_entry_but_not_beside_the_bend() {
     move_to(&mut rig.registry, pawn, IN_HALL);
     assert_eq!(tick(&mut rig, &[pawn], &[]), (true, vec![pawn]));
     // Standing inside does not fire again.
-    assert_eq!(tick(&mut rig, &[pawn], &[]).0, false);
+    assert!(!tick(&mut rig, &[pawn], &[]).0);
 }
 
 #[test]

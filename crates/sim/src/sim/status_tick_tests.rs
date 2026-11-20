@@ -302,6 +302,83 @@ fn status_refresh_on_expiry_tick_keeps_instance_and_phase() {
     );
 }
 
+// P2, P33: a remote hit authorized after tick N's stage counts on N. On the
+// instance's expiry tick that stage has already landed the due tick and ended
+// the instance, so the late stack revives it with its serial, phase and stack
+// count, deduped with that applier's other tick-N hits, exactly as an in-tick
+// hit before the stage would have stacked it. The same hit a tick later is a
+// new application.
+#[test]
+fn post_stage_stack_on_expiry_tick_keeps_serial_phase_and_stacks() {
+    let mut world = World::new(burning("stack", 500.0, Some(1000.0)));
+    let enemy = world.enemy;
+    let a = applier(&world, "weapon.incendiary");
+    world.tick_applying(|registry| {
+        apply(registry, enemy, BURNING, a);
+    });
+    let applied = world.host_tick();
+    world.tick_applying(|registry| {
+        apply(registry, enemy, BURNING, a);
+    });
+    let original = *world.registry().statuses().sets()[0]
+        .instances()
+        .next()
+        .unwrap();
+    assert_eq!(original.stacks, 2);
+    while world.host_tick() < applied + 61 {
+        world.tick();
+    }
+    assert!(
+        !world.registry().has_status(enemy, BURNING),
+        "the stage ended it on its expiry tick"
+    );
+    // The post-tick remote-hit flush of the expiry tick.
+    let flush = |world: &World| {
+        let mut registry = world.registry();
+        registry.set_status_applications_immediate(true);
+        let first = apply(&mut registry, enemy, BURNING, a);
+        let again = apply(&mut registry, enemy, BURNING, a);
+        registry.set_status_applications_immediate(false);
+        (first, again)
+    };
+    assert_eq!(
+        flush(&world),
+        (
+            Some(StatusApplyOutcome::Refreshed),
+            Some(StatusApplyOutcome::Deduplicated)
+        )
+    );
+    let revived = *world.registry().statuses().sets()[0]
+        .instances()
+        .next()
+        .unwrap();
+    assert_eq!(revived.serial, original.serial, "the same instance");
+    assert_eq!(revived.stacks, 3, "stacked once more");
+    assert_eq!(revived.next_due, applied + 90, "the phase never moved");
+    assert_eq!(revived.expires, Some(applied + 121), "time left reset");
+    let before = world.health(enemy);
+    let landed = damage_ticks(&mut world, enemy, 60);
+    assert_eq!(landed, vec![applied + 90, applied + 120]);
+    assert_eq!(before - world.health(enemy), 24.0, "two ticks × 3 stacks");
+
+    // The tick after its expiry: a new instance at a new phase.
+    while world.registry().has_status(enemy, BURNING) {
+        world.tick();
+    }
+    world.tick();
+    assert_eq!(
+        flush(&world).0,
+        Some(StatusApplyOutcome::Created),
+        "not its expiry tick"
+    );
+    let fresh = *world.registry().statuses().sets()[0]
+        .instances()
+        .next()
+        .unwrap();
+    assert_ne!(fresh.serial, original.serial);
+    assert_eq!(fresh.stacks, 1);
+}
+
 // P18: a 17th instance replaces the least time left; among equals the
 // oldest; until-cleared ranks most; the new instance always enters.
 #[test]
@@ -404,7 +481,20 @@ fn status_lethal_tick_latches_credits_and_clears() {
         "the latch clears statuses"
     );
     drop(registry);
-    assert!(apply(&mut world.registry(), doomed, BURNING, a).is_none());
+    let mut in_tick = None;
+    world.tick_applying(|registry| in_tick = Some(apply(registry, doomed, BURNING, a)));
+    assert_eq!(in_tick, Some(None), "in a tick: refused at once");
+    assert_eq!(
+        apply(&mut world.registry(), doomed, BURNING, a),
+        Some(StatusApplyOutcome::Latched),
+        "off-tick: health is judged at the next tick start"
+    );
+    world.tick();
+    assert!(
+        !world.registry().has_status(doomed, BURNING),
+        "dropped at the tick start: still dead"
+    );
+    assert!(world.registry().statuses().pending().is_empty());
 
     // A rocket kill and a due tick on one tick: the tick deals nothing.
     let mut world = World::new(burning("refresh", 500.0, None));

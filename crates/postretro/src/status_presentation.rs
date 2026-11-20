@@ -1,6 +1,6 @@
 // Status presentation on every machine, from each entity's status presence:
 // an emitter that follows the afflicted entity (never this machine's own
-// pawn) and a one-shot tick sound every `tickMs` from when presence appears.
+// pawn) and a one-shot tick sound every status tick from when presence appears.
 // No emitter crosses the wire; each machine attaches its own.
 // See: context/lib/scripting.md §2 (Status declarations) · context/lib/audio.md §4
 
@@ -8,14 +8,19 @@ use std::sync::Arc;
 
 use glam::Vec3;
 use postretro_audio::{SoundAnchor, SoundRequest};
-use postretro_entities::components::agent::AgentComponent;
 use postretro_entities::components::billboard_emitter::BillboardEmitterComponent;
+use postretro_entities::components::health::HealthComponent;
+use postretro_entities::components::hit_volume::HitVolumeComponent;
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, Transform};
 use postretro_foundation::defense::DefenseVocabulary;
 
 /// Most tick sounds one track requests in one frame, so a long stall never
 /// floods the mixer with a backlog.
 const MAX_TICK_SOUNDS_PER_FRAME: u32 = 2;
+
+/// One fixed tick in milliseconds. Tick sounds space by the status's whole
+/// fixed ticks, the period its damage ticks on, not by raw `tickMs`.
+const FIXED_TICK_MS: f32 = crate::frame_timing::TICK_DURATION.as_secs_f32() * 1000.0;
 
 /// One status emitter attached to one afflicted entity this frame, at the
 /// entity's body centre.
@@ -64,9 +69,10 @@ impl StatusPresentation {
     /// Advance one rendered frame of `dt_ms`. Presence is read through
     /// [`EntityRegistry::shows_status`]: the host's live instances, or a
     /// connected client's replicated presence mapped by name. A track starts
-    /// when presence appears, requests its first tick sound one `tickMs` later
-    /// and every `tickMs` after, and ends when presence clears; presence
-    /// reappearing restarts the count. `local_pawn` gets no emitter.
+    /// when presence appears, requests its first tick sound one status tick
+    /// (`tickMs` rounded up to whole fixed ticks) later and every status tick
+    /// after, and ends when presence clears; presence reappearing restarts the
+    /// count. `local_pawn` gets no emitter.
     pub(crate) fn update(
         &mut self,
         registry: &EntityRegistry,
@@ -111,7 +117,7 @@ impl StatusPresentation {
                         entity,
                         status: index,
                         elapsed_ms: 0.0,
-                        next_sound_ms: status.tick_ms,
+                        next_sound_ms: tick_period_ms(status.tick_ticks),
                         live: true,
                     }),
                 }
@@ -128,7 +134,7 @@ impl StatusPresentation {
             if let Some(sound) = &status.presentation.tick_sound {
                 let mut played = 0;
                 while track.elapsed_ms >= track.next_sound_ms {
-                    track.next_sound_ms += status.tick_ms.max(1.0);
+                    track.next_sound_ms += tick_period_ms(status.tick_ticks);
                     if played < MAX_TICK_SOUNDS_PER_FRAME {
                         sounds.push(SoundRequest {
                             bus: "sfx".to_string(),
@@ -200,18 +206,39 @@ pub(crate) fn parse_emitter(
     serde_json::from_value(value)
 }
 
-/// The afflicted entity's body centre: a navigation agent's capsule centre
-/// (its transform sits at the feet), else its transform position (a pawn's
-/// capsule centre).
+/// A status's tick period: its whole fixed ticks, at least one.
+fn tick_period_ms(tick_ticks: u32) -> f32 {
+    tick_ticks.max(1) as f32 * FIXED_TICK_MS
+}
+
+/// The afflicted entity's body centre, by one rule every machine shares. A
+/// movement pawn's transform is its capsule centre. Anything else centres on
+/// its authored hitbox: the host holds it on `Health`, a connected client's
+/// display copy on `HitVolume` with the same offset, since neither `Health`
+/// nor `Agent` reaches a client. Without a hitbox it is the transform, which
+/// for an AI body is already its agent capsule's centre.
 fn body_centre(registry: &EntityRegistry, entity: EntityId) -> Vec3 {
     let position = registry
         .get_component::<Transform>(entity)
         .map(|transform| transform.position)
         .unwrap_or(Vec3::ZERO);
-    match registry.get_component::<AgentComponent>(entity) {
-        Ok(agent) => position + Vec3::Y * (agent.height * 0.5),
-        Err(_) => position,
+    if registry
+        .has_component_kind(entity, ComponentKind::PlayerMovement)
+        .unwrap_or(false)
+    {
+        return position;
     }
+    let hitbox = registry
+        .get_component::<HealthComponent>(entity)
+        .ok()
+        .and_then(|health| health.hitbox)
+        .or_else(|| {
+            registry
+                .get_component::<HitVolumeComponent>(entity)
+                .ok()
+                .map(|volume| volume.hitbox)
+        });
+    position + hitbox.map_or(Vec3::ZERO, |hitbox| hitbox.offset)
 }
 
 #[cfg(test)]

@@ -1452,15 +1452,15 @@ impl EntityRegistry {
         &mut self,
         vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
     ) {
-        // Live instances keep their kind by name; a removed kind's go.
+        // Live instances keep their kind by name; a removed kind's go. Remap
+        // even an empty table: it also drops the instances the last stage
+        // ended, whose indices name the previous vocabulary.
         let previous = std::mem::replace(&mut self.defense_vocabulary, vocabulary);
         let next = &self.defense_vocabulary;
-        if !self.statuses.is_empty() || !self.statuses.pending().is_empty() {
-            self.statuses.remap(|status| {
-                let name = &previous.statuses.get(usize::from(status))?.name;
-                next.status_index(name).map(|index| index as u16)
-            });
-        }
+        self.statuses.remap(|status| {
+            let name = &previous.statuses.get(usize::from(status))?.name;
+            next.status_index(name).map(|index| index as u16)
+        });
     }
 
     /// The committed attack-budget vocabulary.

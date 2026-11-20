@@ -106,27 +106,34 @@ impl EmitterBridge {
     }
 
     /// Emit each status emitter attached this frame at its entity's body
-    /// centre: its rate, and its burst once when it attaches. `components`
-    /// holds each status's emitter by status index. A key no longer attached
-    /// drops its state, so presence reappearing starts afresh.
+    /// centre: its rate, and its burst once when it attaches. A key no longer
+    /// attached drops its state, so presence reappearing starts afresh. The
+    /// attached list is built before the frame-end pass, so an entity despawned
+    /// since then emits nothing.
     pub(crate) fn update_attached(
         &mut self,
-        attached: &[crate::status_presentation::AttachedEmitter],
-        components: &[Option<BillboardEmitterComponent>],
+        registry: &EntityRegistry,
+        presentation: &crate::status_presentation::StatusPresentation,
         delta: f32,
         current_time: f32,
         pool: &mut ParticlePool,
         collector: &mut ParticleRenderCollector,
     ) {
+        let attached = presentation.attached();
+        let components = presentation.emitters();
         self.attached.retain(|key, _| {
-            attached
-                .iter()
-                .any(|emitter| (emitter.entity, emitter.status) == *key)
+            registry.exists(key.0)
+                && attached
+                    .iter()
+                    .any(|emitter| (emitter.entity, emitter.status) == *key)
         });
         if delta <= 0.0 {
             return;
         }
         for emitter in attached {
+            if !registry.exists(emitter.entity) {
+                continue;
+            }
             let Some(Some(component)) = components.get(usize::from(emitter.status)) else {
                 continue;
             };

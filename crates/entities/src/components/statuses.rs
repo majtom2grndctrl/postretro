@@ -88,9 +88,11 @@ impl StatusSet {
             .find(|instance| instance.status == status && instance.applier == applier)
     }
 
-    fn push(&mut self, instance: StatusInstance) {
+    /// Insert in creation (serial) order: a new instance goes last, a revived
+    /// one back to its place. A full set first drops the instance with the
+    /// least time left; among equals the oldest goes.
+    fn insert(&mut self, instance: StatusInstance) {
         if self.len == MAX_STATUS_INSTANCES {
-            // Replace the least time left; among equals the oldest goes.
             let victim = (0..self.len)
                 .min_by_key(|&index| {
                     let held = self.instances[index].expect("dense prefix");
@@ -99,7 +101,13 @@ impl StatusSet {
                 .expect("a full set has instances");
             self.remove_at(victim);
         }
-        self.instances[self.len] = Some(instance);
+        let at = self.instances[..self.len]
+            .iter()
+            .flatten()
+            .position(|held| held.serial > instance.serial)
+            .unwrap_or(self.len);
+        self.instances.copy_within(at..self.len, at + 1);
+        self.instances[at] = Some(instance);
         self.len += 1;
     }
 
@@ -143,7 +151,12 @@ pub struct PendingStatusApplication {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusApplyOutcome {
     Created,
+    /// Refreshed or stacked a live instance, or revived one the stage ended
+    /// by expiry earlier on this same tick.
     Refreshed,
+    /// Made outside a fixed tick: held for the next tick start, where it is
+    /// judged against the target as it then stands and may still be dropped.
+    Latched,
     /// This applier already applied this kind to this target this tick.
     Deduplicated,
 }
@@ -168,6 +181,13 @@ pub struct StatusTable {
     fluid_statuses: Vec<Option<FluidStatus>>,
     /// Fluid-application scratch the status stage reuses each tick.
     fluid_scratch: Vec<(EntityId, u16, u16)>,
+    /// The instances the stage of host tick `expired_tick` ended by expiry.
+    /// An immediate application later on that same tick (the post-tick
+    /// remote-hit flush, a policy after the stage) revives its instance, as
+    /// an in-tick hit before the stage would have refreshed it. Scratch the
+    /// stage refills each tick.
+    expired: Vec<(EntityId, StatusInstance)>,
+    expired_tick: u64,
     /// On a connected client, the host's status names that name the bits of
     /// each replicated [`StatusPresenceComponent`]; empty before the host's
     /// table installs and on the host.
@@ -183,6 +203,23 @@ pub struct FluidStatus {
 }
 
 const ABSENT: u32 = u32::MAX;
+
+/// The expiry tick an application on `tick` sets.
+fn expires_at(declaration: &StatusDeclaration, tick: u64) -> Option<u64> {
+    declaration
+        .duration_ticks
+        .map(|duration| tick + u64::from(duration))
+}
+
+/// Refresh or stack `instance` on `tick`: time left resets, a `"stack"`
+/// kind gains a stack up to `maxStacks`, and the tick phase never moves.
+fn refresh(instance: &mut StatusInstance, declaration: &StatusDeclaration, tick: u64) {
+    instance.last_applied = tick;
+    instance.expires = expires_at(declaration, tick);
+    if declaration.stacking == StatusStacking::Stack {
+        instance.stacks = (instance.stacks + 1).min(declaration.max_stacks.max(1));
+    }
+}
 
 impl StatusTable {
     pub fn is_empty(&self) -> bool {
@@ -248,33 +285,36 @@ impl StatusTable {
         source: u16,
         tick: u64,
     ) -> StatusApplyOutcome {
-        let expires = declaration
-            .duration_ticks
-            .map(|duration| tick + u64::from(duration));
         if let Some(index) = self.set_index(slot, entity)
             && let Some(instance) = self.sets[index].find_mut(status, applier)
         {
             if instance.last_applied == tick {
                 return StatusApplyOutcome::Deduplicated;
             }
-            instance.last_applied = tick;
-            instance.expires = expires;
-            if declaration.stacking == StatusStacking::Stack {
-                instance.stacks = (instance.stacks + 1).min(declaration.max_stacks.max(1));
-            }
+            refresh(instance, declaration, tick);
             return StatusApplyOutcome::Refreshed;
         }
-        let serial = self.next_serial;
-        self.next_serial += 1;
-        let instance = StatusInstance {
-            status,
-            applier,
-            source,
-            stacks: 1,
-            serial,
-            next_due: tick + u64::from(declaration.tick_ticks.max(1)),
-            expires,
-            last_applied: tick,
+        let (instance, outcome) = match self.take_expired(entity, status, applier, tick) {
+            Some(mut instance) => {
+                // Same serial and phase: the instance continues.
+                refresh(&mut instance, declaration, tick);
+                (instance, StatusApplyOutcome::Refreshed)
+            }
+            None => {
+                let serial = self.next_serial;
+                self.next_serial += 1;
+                let instance = StatusInstance {
+                    status,
+                    applier,
+                    source,
+                    stacks: 1,
+                    serial,
+                    next_due: tick + u64::from(declaration.tick_ticks.max(1)),
+                    expires: expires_at(declaration, tick),
+                    last_applied: tick,
+                };
+                (instance, StatusApplyOutcome::Created)
+            }
         };
         let index = match self.set_index(slot, entity) {
             Some(index) => index,
@@ -288,8 +328,26 @@ impl StatusTable {
                 index
             }
         };
-        self.sets[index].push(instance);
-        StatusApplyOutcome::Created
+        self.sets[index].insert(instance);
+        outcome
+    }
+
+    /// Take the instance of `status` by `applier` on `entity` that this
+    /// tick's stage ended by expiry, if `tick` is that stage's tick.
+    fn take_expired(
+        &mut self,
+        entity: EntityId,
+        status: u16,
+        applier: StatusApplier,
+        tick: u64,
+    ) -> Option<StatusInstance> {
+        if tick != self.expired_tick {
+            return None;
+        }
+        let at = self.expired.iter().position(|(held, instance)| {
+            *held == entity && instance.status == status && instance.applier == applier
+        })?;
+        Some(self.expired.swap_remove(at).1)
     }
 
     /// Latch an application made outside a fixed tick.
@@ -315,6 +373,8 @@ impl StatusTable {
     pub(crate) fn clear_kind(&mut self, slot: usize, entity: EntityId, status: u16) {
         self.pending
             .retain(|pending| !(pending.target == entity && pending.status == status));
+        self.expired
+            .retain(|(held, instance)| !(*held == entity && instance.status == status));
         if let Some(index) = self.set_index(slot, entity) {
             self.sets[index].retain(|instance| instance.status != status);
             self.drop_if_empty(index);
@@ -324,18 +384,24 @@ impl StatusTable {
     /// Remove every instance on `entity` and its latched applications.
     pub(crate) fn clear_entity(&mut self, slot: usize, entity: EntityId) {
         self.pending.retain(|pending| pending.target != entity);
+        self.expired.retain(|(held, _)| *held != entity);
         if let Some(index) = self.set_index(slot, entity) {
             self.remove_set(index);
         }
     }
 
-    /// Forget everything: a level unload.
+    /// A level unload: forget every live instance, every latched application
+    /// and the instances this tick's stage ended. Kept: the interned source
+    /// ids (stable indices the installed fluid statuses hold), the fluid
+    /// statuses themselves, a connected client's presence name table, the
+    /// serial counter and the reused scratch buffers' capacity.
     pub(crate) fn clear(&mut self) {
         for set in &self.sets {
             self.by_slot[set.slot] = ABSENT;
         }
         self.sets.clear();
         self.pending.clear();
+        self.expired.clear();
     }
 
     fn drop_if_empty(&mut self, index: usize) {
@@ -416,11 +482,25 @@ impl StatusTable {
     }
 
     /// End every instance whose time ran out by `tick`, after its due tick
-    /// landed.
+    /// landed, keeping the ended ones until the next stage so an application
+    /// later on this tick revives its instance. Allocation-free once the
+    /// ended-instance scratch has grown.
     pub(crate) fn expire(&mut self, tick: u64) {
+        self.expired.clear();
+        self.expired_tick = tick;
         let mut index = 0;
         while index < self.sets.len() {
-            self.sets[index].retain(|instance| instance.expires.is_none_or(|end| end > tick));
+            let set = &mut self.sets[index];
+            let mut at = 0;
+            while at < set.len {
+                let instance = set.instances[at].expect("dense prefix");
+                if instance.expires.is_some_and(|end| end <= tick) {
+                    self.expired.push((set.entity, instance));
+                    set.remove_at(at);
+                } else {
+                    at += 1;
+                }
+            }
             if self.sets[index].is_empty() {
                 self.remove_set(index);
             } else {
@@ -432,6 +512,9 @@ impl StatusTable {
     /// Keep instances and latched applications across a vocabulary commit by
     /// status name; a removed kind's go.
     pub(crate) fn remap(&mut self, map: impl Fn(u16) -> Option<u16>) {
+        // A commit never lands between a tick's stage and its post-tick
+        // flush; drop the ended instances rather than remap them.
+        self.expired.clear();
         self.pending
             .retain_mut(|pending| match map(pending.status) {
                 Some(status) => {
@@ -474,9 +557,12 @@ impl crate::registry::EntityRegistry {
     }
 
     /// Apply registered status `status` to `target`. Inside a fixed tick it
-    /// counts on this tick; outside one it latches to the next tick start.
-    /// Returns `None` when refused: a stale target, one without health or at
-    /// health ≤ 0, or an unregistered kind.
+    /// counts on this tick; outside one it latches to the next tick start
+    /// ([`StatusApplyOutcome::Latched`]). Returns `None` when refused: a stale
+    /// target, one without health, an unregistered kind, or, counting on
+    /// this tick, a target at health ≤ 0. A latched application's health is
+    /// judged when it applies, after the script damage pending at that tick
+    /// start evaluates, so a policy that recovers the target first keeps it.
     pub fn apply_status(
         &mut self,
         target: EntityId,
@@ -484,17 +570,20 @@ impl crate::registry::EntityRegistry {
         applier: StatusApplier,
         source: u16,
     ) -> Option<StatusApplyOutcome> {
-        if !self.status_target_accepts(target, status) {
-            return None;
-        }
         if !self.statuses.applications_immediate() {
+            if !self.status_target_latches(target, status) {
+                return None;
+            }
             self.statuses.latch(PendingStatusApplication {
                 target,
                 status,
                 applier,
                 source,
             });
-            return Some(StatusApplyOutcome::Created);
+            return Some(StatusApplyOutcome::Latched);
+        }
+        if !self.status_target_accepts(target, status) {
+            return None;
         }
         let tick = self.host_tick();
         let vocabulary = std::sync::Arc::clone(self.defense_vocabulary());
@@ -511,8 +600,11 @@ impl crate::registry::EntityRegistry {
     }
 
     /// Apply every latched application on the tick just started, in landing
-    /// order. One whose target has gone, died or lost its kind since is
-    /// dropped. Allocation-free once the latch buffer has grown.
+    /// order. Runs after the script damage pending at this tick start has
+    /// evaluated, so one whose target is gone, at health ≤ 0 after those
+    /// policies, or whose kind was removed is dropped here, and one whose
+    /// target a policy recovered applies. Allocation-free once the latch
+    /// buffer has grown.
     pub fn apply_latched_statuses(&mut self) {
         if self.statuses.pending().is_empty() {
             return;
@@ -540,6 +632,19 @@ impl crate::registry::EntityRegistry {
         self.statuses.restore_pending_buffer(pending);
     }
 
+    /// What an off-tick application needs at the call: a live target with
+    /// health and a registered kind. Its health may change before the tick
+    /// start that applies it.
+    fn status_target_latches(&self, target: EntityId, status: u16) -> bool {
+        self.exists(target)
+            && usize::from(status) < self.defense_vocabulary().statuses.len()
+            && self
+                .get_component::<crate::components::health::HealthComponent>(target)
+                .is_ok()
+    }
+
+    /// What an application counting on this tick needs: a live target with
+    /// health above zero and a registered kind.
     fn status_target_accepts(&self, target: EntityId, status: u16) -> bool {
         self.exists(target)
             && usize::from(status) < self.defense_vocabulary().statuses.len()
@@ -607,7 +712,8 @@ impl crate::registry::EntityRegistry {
         self.statuses.restore_due(due);
     }
 
-    /// End every instance whose time ran out on this tick.
+    /// End every instance whose time ran out on this tick. An application
+    /// counting on this same tick after it revives the ended instance.
     pub fn expire_statuses(&mut self) {
         let tick = self.host_tick();
         self.statuses.expire(tick);

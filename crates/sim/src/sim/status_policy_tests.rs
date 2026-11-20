@@ -509,6 +509,54 @@ fn script_impact_status_visible_at_ai_stage_same_tick() {
     assert!(seen, "off-tick: evaluated and applied at the tick start");
 }
 
+// P32: a UI press running `[applyDamage(lethal), applyStatus(burning)]` on an
+// enemy whose impact policy recovers it with `setHealth` leaves a `burning`
+// instance on the next tick: the application latches though health reads 0 at
+// the press, and is judged at the tick start after the damage's policy has
+// evaluated. Without a recovery the enemy stays dead and takes none.
+#[test]
+fn ui_press_recovery_then_status_applies_next_tick() {
+    let recover = vec![when(
+        json!({ "op": "le", "a": input("@impact.healthAfter"), "b": number(0.0) }),
+        vec![
+            json!({ "primitive": "setHealth", "target": "@impact.target", "args": { "value": number(50.0) } }),
+        ],
+    )];
+    for (effects, recovers) in [(recover, true), (Vec::new(), false)] {
+        let mut world = World::new(burning("refresh", 500.0, None));
+        let enemy = world.enemy;
+        let runtime = policies(&world, effects);
+        world.tick();
+        // The UI press: both steps outside a tick, the damage's policy not
+        // yet evaluated when the status applies.
+        crate::health::reactions::dispatch(
+            &mut world.registry(),
+            &[enemy],
+            &crate::health::reactions::ApplyDamageArgs {
+                amount: 2_000_000.0,
+                damage_type: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(world.health(enemy), 0.0, "lethal at the press");
+        crate::status_commands::apply_status_to(&mut world.registry(), &[enemy], "burning");
+        assert_eq!(
+            world.registry().statuses().pending().len(),
+            1,
+            "latched, not refused at the press"
+        );
+        tick(&mut world, &runtime, |_| {});
+        assert_eq!(
+            world.registry().has_status(enemy, BURNING),
+            recovers,
+            "recovered {recovers}"
+        );
+        if recovers {
+            assert_eq!(world.health(enemy), 50.0);
+        }
+    }
+}
+
 // A connected client applies no status from a reaction verb, and a subject
 // without health warns and is skipped.
 #[test]

@@ -525,7 +525,7 @@ fn slot_returns(h: &mut RelayHarness, retire: Retire) {
             .server
             .set_level_parity(Some((RELAY_LEVEL.to_string(), RELAY_FINGERPRINT))),
         Retire::LevelChange => {
-            h.endpoint.reset_level_scoped_client_state();
+            h.endpoint.reset_level_scoped_client_state(&mut h.client_registry);
             let NetEndpoint::Client { client, .. } = &mut h.endpoint else {
                 unreachable!("the relay endpoint is a client");
             };

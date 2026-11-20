@@ -16,7 +16,12 @@ use postretro_foundation::DamagePayload;
 /// was created. A due tick whose target is already at health ≤ 0 is skipped,
 /// so another hit's authored death plays alone. A marker (`damage: 0`) never
 /// enters the chokepoint. The stage's own bookkeeping allocates nothing once
-/// its scratch has grown; an entity with no instance is never visited.
+/// its scratch has grown; an entity with no instance is never visited. A
+/// damaging tick still builds its [`DamageContext`] source-id `String`: that
+/// is the chokepoint's cost, measured by the stress run rather than gated.
+/// Expiry keeps the instances it ends until the next stage, so an
+/// application counting on this tick after the stage (the post-tick
+/// remote-hit flush) revives its instance rather than starting a new one.
 pub(crate) fn run_status_stage(
     registry: &mut EntityRegistry,
     on_impact: &mut dyn FnMut(&mut EntityRegistry),

@@ -209,13 +209,22 @@ impl App {
         );
     }
 
-    /// Point every `Swim { fluid }` pawn at `next`'s index for the name its
-    /// fluid had in the current table.
+    /// Point every `Swim { fluid }` pawn and every pawn's last resolved
+    /// immersion fluid at `next`'s index for the name the fluid had in the
+    /// current table. The status stage indexes the immersion fluid against
+    /// the new table, and a remote pawn sending no commands keeps its last
+    /// resolve, so a stale index would apply another fluid's status until its
+    /// next command. An immersion fluid that left the table resolves to none.
     fn remap_swimming_pawn_fluids(&self, next: &FluidMovementTable) {
         let Some(session) = self.session.as_ref() else {
             return;
         };
         let previous = self.environment_fluids.names();
+        let remap = |fluid: u16| {
+            previous
+                .get(usize::from(fluid))
+                .and_then(|name| fluid_index(next.names(), name))
+        };
         let mut registry = session.scripting.script_ctx.registry.borrow_mut();
         registry.for_each_with_kind_mut(ComponentKind::PlayerMovement, |_, value| {
             let ComponentValue::PlayerMovement(movement) = value else {
@@ -224,12 +233,15 @@ impl App {
             let MovementState::Swim { fluid } = &mut movement.movement_state else {
                 return;
             };
-            let remapped = previous
-                .get(usize::from(*fluid))
-                .and_then(|name| fluid_index(next.names(), name));
-            if let Some(remapped) = remapped {
+            if let Some(remapped) = remap(*fluid) {
                 *fluid = remapped;
             }
+        });
+        registry.for_each_with_kind_mut(ComponentKind::Immersion, |_, value| {
+            let ComponentValue::Immersion(immersion) = value else {
+                return;
+            };
+            immersion.fluid = immersion.fluid.and_then(&remap);
         });
     }
 

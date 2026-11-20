@@ -83,6 +83,8 @@ Heat and cell have no reserve, ignore reload input, and do not carry across a le
 
 **Defense layers and damage types.** Shields and armor are one engine noun (§1): an ordered stack of layers inside the `health` block, each an author-named kind the mod registers, drained before health by every damage producer. Every hit carries its producer's mod-registered damage type, or the mod's default when it names none, and the type scales its drain per pool. The engine owns each layer's value and its host-only recharge; the descriptor authors capacity, recharge and resistance. Layers follow health's lifecycle: spawn and respawn fill them, carry restores their values only when health carries, clamped to the arrival capacity, and `setHealth` / `grantHealth` leave them alone. Hot reload matches layers by name and keeps each kept layer's value, last good parameters and the last-hit stamp: a kept layer clamps at once to a lowered literal capacity, an added literal-capacity layer arrives full, an added expression-capacity layer fills at the next tick start, where the new parameters first evaluate, and a removed layer drops. Health stays the death authority: the latch, the sweep and liveness read health only. Per-entity state named `shield` stays author data the engine never drains. Authoring contract: `scripting.md` §2, §10.5, §11.
 
+**Status effects.** Decided, not yet built (`plans/ready/E16--status-effects-and-hazards`): a status is an engine noun beside defense layers, an author-named kind that deals damage over time, or none as a marker other policies read. A live instance is keyed by status and applier, so co-op credit stays per player. Its damaging ticks run on the host in the status stage (§5) as ordinary in-tick hits: typed, through the damage chokepoint, crediting the applier and running impact policies. Statuses are transient: the death latch, respawn, level change, same-map restart and rejoin clear them, carried state never holds them, and a save records none. An entity at zero health accepts none. Hot reload keeps instances by status name and drops a removed kind's. A fluid's status reaches player pawns only, since only pawns resolve fluid (§7). Authoring contract: `scripting.md` §2.
+
 ---
 
 ## 3. Entity Lifecycle
@@ -167,6 +169,8 @@ Game logic runs at a fixed tick rate, decoupled from render framerate. Renderer 
 | 10 | Projectile launch finalization | Closes spawn grace for projectiles launched after the flight stage without moving them. They begin flight on the next fixed tick. |
 | 11 | Death sweep | Processes entities whose health reached zero after same-tick damage |
 | 12 | Assist accumulator | Host and single player. Evaluates pair values and advances held assists over settled positions and life states after same-tick damage and deaths; records completions into `TickEvents::assist_completions`, which the tick's player-event pass applies before its condition snapshot (`scripting.md` §12) |
+
+Decided, not yet built (`plans/ready/E16--status-effects-and-hazards`): a status stage runs after weapon activation and before the death sweep, so a lethal status tick latches on its own tick (§2, Status effects).
 
 Scripting bridges run later, outside the core simulation seam. Emitter, light and fog-volume bridges walk their configuration components. The emitter bridge writes particles into the presentation pool (§8); particle simulation updates that pool without spawning or rewriting registry entities.
 

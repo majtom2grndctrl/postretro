@@ -22,9 +22,9 @@ registration step. A `.map` face references them by the names above.
 `lava_64_e.png` is lava's emissive sibling: the molten cracks and bubbles at
 their diffuse colors, ramping down into the crust, black elsewhere. It shares
 the diffuse's texel grid, and the fluid shader samples both at the same moved
-UV, so the glow moves with the surface. Emissive strength is chosen by texture
-prefix (`Material::emissive_strength`), and only `neon` is nonzero, so the
-`lava` prefix bakes this map but shows no glow until it gets a strength.
+UV, so the glow moves with the surface. Its strength is the default 1.0: a
+texture with an `_e` map and no `content/dev/materials.toml` entry glows at 1.0.
+An `emissive` entry for `fluids/lava_64` there scales it.
 
 ## Regenerating
 

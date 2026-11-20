@@ -44,6 +44,9 @@ pub(crate) struct SurfaceHit {
 /// Vertex attributes at a hit, interpolated as the rasterizer would.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SurfacePoint {
+    /// The Geometry face the point's attributes come from: a fill's lit
+    /// face, a surviving piece of the same brush side.
+    pub face: u32,
     pub position: Vec3,
     /// The face's unit shading normal, facing the ray.
     pub normal: Vec3,
@@ -368,6 +371,7 @@ impl<'a> SceneTracer<'a> {
             normal = -normal;
         }
         SurfacePoint {
+            face: hit.face,
             position,
             normal,
             texture_index: geom.faces[hit.face as usize].texture_index,

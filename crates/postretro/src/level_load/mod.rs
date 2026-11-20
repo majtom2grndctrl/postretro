@@ -64,7 +64,8 @@ pub(crate) use products::{
 #[cfg(test)]
 pub(crate) use stages::start_level_load_stages;
 pub(crate) use stages::{BundleSet, LevelBundle, LevelLoadStages, LoadRetirement};
-#[cfg(test)]
+// The oracle install and the capture tool build the same texture table.
+#[cfg(any(test, feature = "capture"))]
 pub(crate) use tasks::level_texture_materials;
 
 use coordinator::PrepShared;

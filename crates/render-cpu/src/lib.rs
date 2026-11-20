@@ -4,6 +4,8 @@
 pub mod animated_lightmap;
 pub mod chunk_list;
 pub mod device_limits;
+pub mod emissive_flash;
+pub mod emissive_volume;
 pub mod flash_clamp;
 pub mod flash_limiter;
 pub mod fluid_surface;

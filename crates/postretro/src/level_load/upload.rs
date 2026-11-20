@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use postretro_level_loader::LoadProgress;
 use postretro_render_cpu::texture_prep::PreparedWorldTextures;
-use postretro_render_data::material::Material;
+use postretro_render_data::material::TextureMaterial;
 
 use super::LevelTiers;
 use super::model_cache::ModelPart;
@@ -133,7 +133,7 @@ impl UploadSlot {
     /// The world textures' part, from the task that prepared them. Moves
     /// the prepared sidecars into the build; `materials` is cloned, since
     /// the geometry part binds them too.
-    pub(super) fn textures(&self, textures: PreparedWorldTextures, materials: &[Material]) {
+    pub(super) fn textures(&self, textures: PreparedWorldTextures, materials: &[TextureMaterial]) {
         self.submit(|builder| builder.textures(textures, materials.to_vec()));
     }
 

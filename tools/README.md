@@ -19,11 +19,28 @@ tools/gen_normal.py --help` for usage.
 ### `gen_emissive.py`
 
 Generates static emissive `_e.png` siblings from diffuse textures. It retains
-bright source-color texels as sRGB content, with `neon_` textures using a lower
-default cutoff. Output PNGs are deliberately untagged (no `sRGB`, `gAMA`, or
+bright source-color texels as sRGB content. Every texture takes one default
+luminance cutoff (0.75), whatever its name's prefix; `--cutoff` lowers it to keep
+more of a sign's pattern. How strongly the result glows is the mod's
+`materials.toml`, not the generator. Its tests run with
+`python3 -m unittest discover -s tools/tests -p test_gen_emissive.py`. Output PNGs are deliberately untagged (no `sRGB`, `gAMA`, or
 `iCCP` chunk); `_e` is an sRGB-content convention and `prl-build` accepts it
 regardless of PNG color-space metadata. Run with `python3 tools/gen_emissive.py
 --help` for usage.
+
+### `migrate_neon_prefix.py`
+
+Moves a mod off the retired `neon_` texture prefix, which once gave a texture a
+glow strength of 4.0. It renames each `textures/<collection>/neon_x.png` and its
+slot siblings to `x`, rewrites `.map` face references, and writes
+`emissive = 4.0` into the mod's `materials.toml` for each renamed texture with an
+`_e` map (an existing entry for the old name is carried to the new key instead).
+Dry run by default; `--apply` performs it. It refuses, writing nothing, on a name
+collision or a new name whose prefix is a known material prefix. Its prefix list
+copies `MATERIAL_PREFIXES`; a `postretro-render-data` test keeps the two in step.
+Standard library only (Python 3.11+). Run with `python3
+tools/migrate_neon_prefix.py <mod root> [--apply]`; its tests run with
+`python3 -m unittest discover -s tools/tests -p test_migrate_neon_prefix.py`.
 
 ### `gen_fluid_textures.py`
 

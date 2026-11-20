@@ -165,7 +165,8 @@ impl super::GhostLinks {
     }
 
     /// The presented-frame seconds the latest membership update ramped by. The
-    /// per-ghost flash clamp limits against this same frame time.
+    /// per-ghost and emissive-volume flash clamps limit against this same frame
+    /// time.
     pub(crate) fn presented_elapsed(&self) -> f32 {
         self.last_elapsed
     }

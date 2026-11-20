@@ -299,6 +299,12 @@ pub(in crate::render) fn write_nine_cluster_prl() -> (tempfile::TempDir, std::pa
             1,
             TextureCacheKeysSection::default().to_bytes(),
         ),
+        // No TextureNames: an Emissive section with no texture record.
+        blob(
+            SectionId::Emissive,
+            postretro_level_format::emissive::EMISSIVE_VERSION,
+            postretro_level_format::emissive::EmissiveSection::default().to_bytes(),
+        ),
     ];
     write_prl(&mut std::fs::File::create(&path).unwrap(), &sections).unwrap();
     (temp, path)

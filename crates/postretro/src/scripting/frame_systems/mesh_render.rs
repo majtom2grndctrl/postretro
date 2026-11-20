@@ -705,6 +705,7 @@ mod tests {
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
+            emissive: Default::default(),
             bvh: postretro_render_data::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],
@@ -731,6 +732,7 @@ mod tests {
             entity_shadow_lights: vec![],
             shadowmask_atlas: None,
             vertex_spec_owners: Vec::new(),
+            vertex_emissive_volumes: Vec::new(),
             gpu_lighting_payloads: Default::default(),
             lightmap_storage: Default::default(),
             data_script: None,

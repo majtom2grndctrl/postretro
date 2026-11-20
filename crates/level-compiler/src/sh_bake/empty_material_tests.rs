@@ -141,7 +141,7 @@ fn empty_name_material_stage_preserves_legacy_empty_base_and_delta_bakes() {
             .path()
             .join(format!("empty-materials-{saturation}"));
         let mut report = StageTextureBytes::new();
-        let (keys, stats) = bake_materials_into(
+        let crate::texture_mips::MaterialBake { keys, stats, .. } = bake_materials_into(
             &geometry.texture_names.names,
             &room.dir.path().join("textures"),
             &sidecars,
@@ -172,7 +172,7 @@ fn actual_material_names_without_static_faces_preserve_empty_bakes_and_empty_fac
     let sidecars = room.dir.path().join("unused-materials");
     let build = |saturation| {
         let mut report = StageTextureBytes::new();
-        let (keys, stats) = bake_materials_into(
+        let crate::texture_mips::MaterialBake { keys, stats, .. } = bake_materials_into(
             &names,
             &room.dir.path().join("textures"),
             &sidecars,

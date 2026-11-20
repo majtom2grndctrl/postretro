@@ -110,6 +110,10 @@ function setupLevel(_ctx)
     raw("coop.atmosphere.descriptorEmitter", "setEmitterRate", "coop_descriptor_emitter", { rate = 0 }),
     raw("coop.atmosphere.prop", "setAnimationState", "coop_mesh_prop", { state = "alert" }),
     Postretro.defineReaction("coop.atmosphere.door", { sequence = doorStart }),
+    -- The north-wall sign dims and the green lamp turns red; a joiner after
+    -- the plate fired sees both.
+    raw("coop.atmosphere.signDim", "setEmissiveBrightness", "coop_sign", { brightness = 0.25 }),
+    raw("coop.atmosphere.lampColor", "setEmissiveColor", "coop_lamp", { color = { 1, 0.05, 0.02 } }),
   }
   local mark = raw("coop.weapon.mark", "applyDamage", "coop_health_weapon", { amount = 12 })
   local down = Postretro.defineReaction("coop.life.down", function(on)

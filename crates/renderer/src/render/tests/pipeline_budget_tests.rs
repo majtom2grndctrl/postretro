@@ -568,7 +568,10 @@ fn forward_bindings_add_only_the_vertex_block_table() {
             .map(|entries| stage_inventory(entries, wgpu::ShaderStages::FRAGMENT))
             .collect();
         // Pre-block-table snapshot of groups 0–5: (sampled, storage, uniform,
-        // sampler). Group 5's point-shadow cube is feature-conditional.
+        // sampler). Group 5's point-shadow cube is feature-conditional. Group
+        // 4's second uniform is the emissive volume table (binding 8): the
+        // fragment stage had uniform slots to spare and no sampled-texture or
+        // storage slot (emissive-volumes, Delegated answers).
         let group5 = if cube { [4, 0, 1, 1] } else { [3, 0, 1, 1] };
         assert_eq!(
             fragment,
@@ -577,12 +580,20 @@ fn forward_bindings_add_only_the_vertex_block_table() {
                 [4, 0, 1, 1],
                 [0, 5, 1, 0],
                 [3, 3, 1, 1],
-                [5, 0, 1, 2],
+                [5, 0, 2, 2],
                 group5,
                 [0, 0, 0, 0],
             ],
             "forward FRAGMENT bindings changed (cube = {cube})"
         );
+        let fragment_uniforms: u32 = fragment.iter().map(|group| group[2]).sum();
+        assert_eq!(fragment_uniforms, 7, "six uniforms plus the volume table");
+        assert!(fragment_uniforms <= wgpu::Limits::default().max_uniform_buffers_per_shader_stage);
+        let table = groups[4]
+            .iter()
+            .find(|entry| entry.binding == crate::lighting::lightmap::BIND_EMISSIVE_VOLUME_TABLE)
+            .expect("group 4 binds the emissive volume table");
+        assert_eq!(table.visibility, wgpu::ShaderStages::FRAGMENT);
 
         let vertex_visible: Vec<(usize, u32)> = groups
             .iter()

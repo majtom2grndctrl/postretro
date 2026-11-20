@@ -253,6 +253,8 @@ pub(in crate::render) fn build_level_set_core(
     };
 
     let world = world_geometry::install_world_buffers(device, geometry);
+    let emissive_volumes =
+        super::emissive_volumes::install_emissive_volume_buffers(device, geometry);
     let (lights, selection) = lights::install_level_lights(device, geometry);
     let level_light_count = selection.level_light_count;
     let animated_baked_descriptor_indices = selection.animated_baked_descriptor_indices;
@@ -320,6 +322,7 @@ pub(in crate::render) fn build_level_set_core(
         geometry,
         gpu_lighting_payloads,
         lightmap_family,
+        &emissive_volumes.table,
         context.generation_floor,
     );
     let sdf_shadow = lightmap_shadow::rebind_sdf_shadow(
@@ -379,6 +382,7 @@ pub(in crate::render) fn build_level_set_core(
         stored_texture_materials: geometry.texture_materials.to_vec(),
         vertex_buffer: world.vertex_buffer,
         spec_owner_buffer: world.spec_owner_buffer,
+        emissive_volumes,
         index_buffer: world.index_buffer,
         index_count: world.index_count,
         wireframe_index_buffer: world.wireframe_index_buffer,

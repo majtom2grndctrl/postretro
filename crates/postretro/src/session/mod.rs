@@ -27,12 +27,14 @@ use crate::scripting::primitives::light::{
 };
 use crate::scripting::primitives::register_all;
 use crate::scripting::reactions::registry::{
-    ReactionPrimitiveRegistry, register_emitter_reaction_primitives,
-    register_fog_reaction_primitives, register_grant_reactions, register_mover_reaction_primitives,
-    register_npc_state_reaction_primitives, register_sequenced_fog_primitives,
-    register_sequenced_mover_primitives, register_sequenced_spawner_primitives,
-    register_sequenced_trap_primitives, register_sequenced_trigger_primitives,
-    register_spawner_reaction_primitives, register_trigger_reaction_primitives,
+    ReactionPrimitiveRegistry, register_emissive_reaction_primitives,
+    register_emitter_reaction_primitives, register_fog_reaction_primitives,
+    register_grant_reactions, register_mover_reaction_primitives,
+    register_npc_state_reaction_primitives, register_sequenced_emissive_primitives,
+    register_sequenced_fog_primitives, register_sequenced_mover_primitives,
+    register_sequenced_spawner_primitives, register_sequenced_trap_primitives,
+    register_sequenced_trigger_primitives, register_spawner_reaction_primitives,
+    register_trigger_reaction_primitives,
 };
 use crate::scripting::reactions::system_commands::{
     SystemReactionRegistry, register_system_reaction_primitives,
@@ -205,6 +207,10 @@ pub(crate) struct Session {
     /// Per-level fog-volume registry side-table; packs `FogVolume` GPU bytes.
     /// See: context/lib/rendering_pipeline.md §7.5.
     pub(crate) fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    /// Per-level emissive-volume entities and the forward shader's volume
+    /// table. See: context/lib/rendering_pipeline.md §7.3.
+    pub(crate) emissive_volume_bridge:
+        scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge,
     pub(crate) trigger_volume_bridge: scripting_systems::trigger_volume_bridge::TriggerVolumeBridge,
     /// Per-level rising-overlap state for host-authoritative trigger evaluation.
     pub(crate) trigger_system: crate::trigger_system::TriggerSystem,
@@ -777,6 +783,8 @@ impl Session {
             classname_dispatch,
             light_bridge: scripting_systems::light_bridge::LightBridge::new(),
             fog_volume_bridge: scripting_systems::fog_volume_bridge::FogVolumeBridge::new(),
+            emissive_volume_bridge:
+                scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge::new(),
             trigger_volume_bridge:
                 scripting_systems::trigger_volume_bridge::TriggerVolumeBridge::new(),
             trigger_system: crate::trigger_system::TriggerSystem::with_mover_auto_close_timers(
@@ -876,6 +884,7 @@ fn build_scripting_core(
     );
     register_sequenced_light_primitives(&mut sequence_registry, script_ctx.clone());
     register_sequenced_fog_primitives(&mut sequence_registry, script_ctx.clone());
+    register_sequenced_emissive_primitives(&mut sequence_registry, script_ctx.clone());
     register_sequenced_mover_primitives(
         &mut sequence_registry,
         script_ctx.clone(),
@@ -929,6 +938,7 @@ fn build_scripting_core(
         script_ctx.owner_slot_writes_enabled.clone(),
     );
     register_fog_reaction_primitives(&mut reaction_registry);
+    register_emissive_reaction_primitives(&mut reaction_registry);
     register_light_reaction_primitives(&mut reaction_registry);
     register_mover_reaction_primitives(
         &mut reaction_registry,

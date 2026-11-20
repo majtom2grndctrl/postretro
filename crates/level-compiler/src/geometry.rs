@@ -67,7 +67,7 @@ pub fn extract_geometry(
 /// (`Face::brush_index`, indexing `MapData::brush_volumes`), index-aligned
 /// with `geometry.faces`. The table stays beside the result, out of the
 /// serialized geometry, and follows the oversize cut through
-/// [`remap_face_brushes`].
+/// [`remap_per_face`].
 pub fn extract_geometry_with_brushes(
     faces: &[Face],
     tree: &BspTree,
@@ -183,24 +183,24 @@ pub fn extract_geometry_with_brushes(
     (result, face_brushes)
 }
 
-/// The face → brush table after the oversize cut: each sub-face takes its
-/// parent's brush (`face_remap[old]` is the range of faces that replaced
-/// `old`), and a face the cut emptied, whose range is empty, leaves no entry.
-/// A post-cut slot no range reaches stays `None`.
-pub fn remap_face_brushes(
-    face_brushes: &[Option<u32>],
+/// A per-face table after the oversize cut, such as the face → brush table:
+/// each sub-face takes its parent's value (`face_remap[old]` is the range of
+/// faces that replaced `old`), and a face the cut emptied, whose range is
+/// empty, leaves no entry. A post-cut slot no range reaches stays `None`.
+pub fn remap_per_face<T: Copy>(
+    per_face: &[Option<T>],
     face_remap: &[std::ops::Range<usize>],
-) -> Vec<Option<u32>> {
+) -> Vec<Option<T>> {
     debug_assert_eq!(
-        face_brushes.len(),
+        per_face.len(),
         face_remap.len(),
         "one remap range per pre-cut face"
     );
     let total = face_remap.last().map_or(0, |range| range.end);
     let mut remapped = vec![None; total];
-    for (brush, range) in face_brushes.iter().zip(face_remap) {
+    for (value, range) in per_face.iter().zip(face_remap) {
         for slot in &mut remapped[range.clone()] {
-            *slot = *brush;
+            *slot = *value;
         }
     }
     remapped
@@ -1171,8 +1171,8 @@ mod tests {
     // Each sub-face of a cut face takes its parent's brush; a face the cut
     // emptied leaves no post-cut entry.
     #[test]
-    fn remap_face_brushes_follows_the_cut_and_drops_an_emptied_face() {
-        let remapped = remap_face_brushes(&[Some(4), Some(7), Some(9)], &[0..2, 2..2, 2..3]);
+    fn remap_per_face_follows_the_cut_and_drops_an_emptied_face() {
+        let remapped = remap_per_face(&[Some(4), Some(7), Some(9)], &[0..2, 2..2, 2..3]);
         assert_eq!(remapped, [Some(4), Some(4), Some(9)]);
     }
 

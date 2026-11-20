@@ -182,6 +182,8 @@ pub(super) fn install_level(
             &LevelGeometry {
                 vertices: &[],
                 vertex_spec_owners: &[],
+                vertex_emissive_volumes: &[],
+                emissive_volumes: &[],
                 indices: &[],
                 bvh: &bvh,
                 lights,

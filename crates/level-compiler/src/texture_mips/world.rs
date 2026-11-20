@@ -3,12 +3,28 @@
 
 use super::probe::{TextureProbe, payload_bytes, stats_bytes};
 use super::*;
-use crate::surface_materials::stats::MaterialStats;
+use crate::surface_materials::stats::{EmissiveGlow, MaterialStats};
 use postretro_level_format::prm::PrmReadError;
-use postretro_render_data::material::derive_material;
 
-/// Name → sidecar key, and per-name stats when the caller collected them.
-pub(crate) type MaterialBake = (HashMap<String, [u8; 32]>, Vec<MaterialStats>);
+/// What one material bake call hands back.
+// The helper library reads only `keys`; the binary's material stage the rest.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug)]
+pub(crate) struct MaterialBake {
+    /// Name → sidecar key.
+    pub keys: HashMap<String, [u8; 32]>,
+    /// Per-name bounce stats, in name order, when the caller collected them.
+    pub stats: Vec<MaterialStats>,
+    /// Per-name `_e` facts, in name order, always: the Emissive section
+    /// covers fluid-only names too.
+    pub glow: Vec<EmissiveGlow>,
+    /// Per-name qualified bundle that resolved, in name order, always
+    /// (`TextureBundlePaths::bundle`): the name `materials.toml` is read by,
+    /// so a bare-stem alias reads its bundle's entry. Only the binary's
+    /// material stage reads it; the helper library's test build never does.
+    #[cfg_attr(test, allow(dead_code))]
+    pub bundles: Vec<Option<String>>,
+}
 
 /// Bake every name's material bundle — per-texture mip pyramids in `.prm`
 /// sidecars under `cache_root` — in one call, into a fresh report. This is the
@@ -28,14 +44,14 @@ pub fn bake_world_texture_mips(
     cache_root: &Path,
 ) -> anyhow::Result<(HashMap<String, [u8; 32]>, StageTextureBytes)> {
     let mut byte_summary = StageTextureBytes::new();
-    let (keys, _) = bake_materials_into(
+    let bake = bake_materials_into(
         texture_names,
         texture_root,
         cache_root,
         &mut byte_summary,
         false,
     )?;
-    Ok((keys, byte_summary))
+    Ok((bake.keys, byte_summary))
 }
 
 /// Bake into one shared report; collect per-name stats only for the early material stage.
@@ -59,7 +75,8 @@ pub(crate) fn bake_materials_into(
     } else {
         0
     });
-    let mut warned_prefixes = HashSet::new();
+    let mut glow = Vec::with_capacity(texture_names.len());
+    let mut bundles = Vec::with_capacity(texture_names.len());
 
     for name in texture_names {
         let mut probe = TextureProbe::begin();
@@ -73,6 +90,7 @@ pub(crate) fn bake_materials_into(
         // Only an entirely missing qualified bundle may fall back to the
         // unique bare-stem aliases.
         let resolved = resolve_texture_bundle_paths(&name_to_path, &normalized);
+        bundles.push(resolved.bundle);
         let diff_path = resolved.diffuse;
         let spec_path = resolved.specular;
         let norm_path = resolved.normal;
@@ -143,6 +161,7 @@ pub(crate) fn bake_materials_into(
             if collect_stats {
                 stats.push(MaterialStats::default());
             }
+            glow.push(EmissiveGlow::default());
             out.insert(name.clone(), [0u8; 32]);
             continue;
         }
@@ -218,22 +237,18 @@ pub(crate) fn bake_materials_into(
                 && hdr.bundle_hash == bundle_hash
                 && cache_entry_has_valid_declared_slots(&hdr, &slots)
             {
-                let cached_stats = if collect_stats {
-                    reused_sidecar_stats(
-                        &slots,
-                        diff_bytes.is_some(),
-                        emissive_bytes.is_some(),
-                        derive_material(name, &mut warned_prefixes).emissive_strength(),
-                        &lut,
-                        &probe,
-                    )
-                    .map(Some)
-                } else {
-                    Ok(None)
-                };
+                let cached_stats = reused_sidecar_stats(
+                    &slots,
+                    diff_bytes.is_some(),
+                    emissive_bytes.is_some(),
+                    collect_stats,
+                    &lut,
+                    &probe,
+                );
                 match cached_stats {
-                    Ok(cached_stats) => {
+                    Ok((cached_stats, cached_glow)) => {
                         stats.extend(cached_stats);
+                        glow.push(cached_glow);
                         // Account the reused sidecar too: the report describes
                         // what this level costs, not what this run rebaked.
                         byte_summary.record_bundle(
@@ -392,10 +407,11 @@ pub(crate) fn bake_materials_into(
             stats.push(MaterialStats::from_slots(
                 prm.slots[0].as_ref(),
                 prm.slots[3].as_ref(),
-                derive_material(name, &mut warned_prefixes).emissive_strength(),
                 &lut,
             )?);
         }
+        // Reads the emissive slot in place; it holds no texels of its own.
+        glow.push(EmissiveGlow::from_slot(prm.slots[3].as_ref(), &lut)?);
         let encoded = prm
             .to_bytes()
             .map_err(|e| anyhow::anyhow!("encoding .prm for texture {name:?}: {e}"))?;
@@ -410,21 +426,27 @@ pub(crate) fn bake_materials_into(
         out.insert(name.clone(), filename_key);
     }
 
-    Ok((out, stats))
+    Ok(MaterialBake {
+        keys: out,
+        stats,
+        glow,
+        bundles,
+    })
 }
 
-/// Stats from a reused sidecar, or why it cannot supply them. Slot validation
-/// alone cannot catch a colour slot whose presence disagrees with its source,
-/// or colour slots that disagree with each other. NORMAL is not checked: it is
-/// dropped legitimately below the BC5 4×4 minimum.
+/// Stats (when `collect_stats`) and `_e` facts from a reused sidecar, or why
+/// it cannot supply them. Slot validation alone cannot catch a colour slot
+/// whose presence disagrees with its source, or colour slots that disagree
+/// with each other. NORMAL is not checked: it is dropped legitimately below
+/// the BC5 4×4 minimum.
 fn reused_sidecar_stats(
     slots: &[Result<PrmSlot, PrmReadError>; 4],
     diffuse_source: bool,
     emissive_source: bool,
-    emissive_strength: f32,
+    collect_stats: bool,
     lut: &[f32; 256],
     probe: &TextureProbe,
-) -> anyhow::Result<MaterialStats> {
+) -> anyhow::Result<(Option<MaterialStats>, EmissiveGlow)> {
     let diffuse = slots[0].as_ref().ok();
     let emissive = slots[3].as_ref().ok();
     anyhow::ensure!(
@@ -435,6 +457,11 @@ fn reused_sidecar_stats(
         emissive.is_some() == emissive_source,
         "cached EMISSIVE slot presence does not match its source"
     );
-    let _borrow = probe.stats_borrow(|| stats_bytes(diffuse, emissive));
-    MaterialStats::from_slots(diffuse, emissive, emissive_strength, lut)
+    let stats = collect_stats
+        .then(|| {
+            let _borrow = probe.stats_borrow(|| stats_bytes(diffuse, emissive));
+            MaterialStats::from_slots(diffuse, emissive, lut)
+        })
+        .transpose()?;
+    Ok((stats, EmissiveGlow::from_slot(emissive, lut)?))
 }

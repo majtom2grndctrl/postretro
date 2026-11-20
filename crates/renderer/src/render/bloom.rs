@@ -10,8 +10,10 @@ use super::{BloomRenderProfile, SCENE_COLOR_FORMAT};
 #[cfg(test)]
 use super::BloomResolution;
 
-/// Luminance at which HDR pixels begin contributing to bloom. Task 4's Neon
-/// reference strength must keep its authored emissive value above this value.
+/// Luminance at which HDR pixels begin contributing to bloom. combat-demo's
+/// bright emissive panel peaks above it and its dim panel just under it;
+/// `level-compiler/tests/dev_emissive_panels.rs` reads this value and checks
+/// both against their baked strength.
 pub const BLOOM_THRESHOLD: f32 = 1.0;
 
 /// Strength of the blurred bloom contribution composited back into scene color.
@@ -846,17 +848,6 @@ fn encode_fullscreen_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_render_data::material::Material;
-
-    #[test]
-    fn neon_emissive_strength_clears_the_bloom_threshold() {
-        let strength = Material::Neon.emissive_strength();
-        assert!(strength > 1.0, "neon must produce HDR emissive output");
-        assert!(
-            strength > BLOOM_THRESHOLD,
-            "neon authored at full emissive value must pass the bloom bright-pass"
-        );
-    }
 
     #[test]
     fn bloom_level_dimensions_follow_every_profile_divisor_at_odd_sizes() {

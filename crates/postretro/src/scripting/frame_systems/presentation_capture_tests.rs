@@ -23,7 +23,8 @@ use postretro_scripting_core::reaction_registry::{
 };
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
 use postretro_sim::scripting::reactions::registry::{
-    register_emitter_reaction_primitives, register_fog_reaction_primitives,
+    register_emissive_reaction_primitives, register_emitter_reaction_primitives,
+    register_fog_reaction_primitives, register_sequenced_emissive_primitives,
     register_sequenced_fog_primitives,
 };
 use serde_json::{Value, json};
@@ -48,6 +49,7 @@ impl Fixture {
         let mut seq = SequencedPrimitiveRegistry::new();
         register_reaction_control_primitives(&mut seq, scheduler.clone());
         register_sequenced_fog_primitives(&mut seq, ctx.clone());
+        register_sequenced_emissive_primitives(&mut seq, ctx.clone());
         postretro_lighting::script_primitives::register_sequenced_light_primitives(
             &mut seq,
             ctx.clone(),
@@ -55,6 +57,7 @@ impl Fixture {
         let mut reactions = ReactionPrimitiveRegistry::new();
         register_emitter_reaction_primitives(&mut reactions);
         register_fog_reaction_primitives(&mut reactions);
+        register_emissive_reaction_primitives(&mut reactions);
         postretro_lighting::script_primitives::register_light_reaction_primitives(&mut reactions);
         Self {
             ctx,
@@ -175,6 +178,18 @@ impl Fixture {
                     light_range: 1.0,
                     animation: None,
                 },
+            )
+            .unwrap();
+        id
+    }
+    fn spawn_emissive(&self) -> EntityId {
+        let mut registry = self.ctx.registry.borrow_mut();
+        let id = registry.spawn(Transform::default());
+        registry.set_tags(id, vec!["sign".into()]).unwrap();
+        registry
+            .set_component(
+                id,
+                postretro_entities::EmissiveVolumeComponent::authored(0.0, 1.0, [1.0; 3]),
             )
             .unwrap();
         id
@@ -396,6 +411,139 @@ fn scalar_identical_restore_and_double_write_keep_original_animation_start() {
         panic!("fog")
     };
     assert_eq!(c.animation.unwrap().density.unwrap(), vec![0.1, 0.9]);
+}
+
+fn every_machine() -> FireOrigin {
+    FireOrigin::EveryMachine(postretro_entities::MachineSource::HostMirrored)
+}
+
+// A stored start names its record's run. Emissive: a host-only `powerCut`
+// over a running flicker stores a hold with the cut's time as its start;
+// every machine then installs a fade (uncaptured), whose start no record
+// holds; a later host-only colour write must not hand the fade the cut's
+// start, or clients would jump its phase (and a short fade settle at once).
+#[test]
+fn emissive_capture_never_inherits_the_start_of_a_run_an_uncaptured_install_replaced() {
+    let mut fixture = Fixture::new();
+    let id = fixture.spawn_emissive();
+    let fade = json!({ "periodMs": 2000.0, "playCount": 1, "brightness": [1.0, 0.0] });
+    fixture.install(vec![
+        sequence(
+            "flicker",
+            id,
+            "setEmissiveAnimation",
+            json!({ "periodMs": 166.0, "brightness": [0.3, 1.0] }),
+        ),
+        sequence(
+            "powerCut",
+            id,
+            "setEmissiveBrightness",
+            json!({ "brightness": 0.0 }),
+        ),
+        sequence("fade", id, "setEmissiveAnimation", fade),
+        sequence(
+            "recolour",
+            id,
+            "setEmissiveColor",
+            json!({ "color": [1.0, 0.0, 0.0] }),
+        ),
+    ]);
+    fixture.frame(1.0);
+    fixture.fire("flicker", every_machine());
+    fixture.frame(2.0);
+    fixture.fire("powerCut", host());
+    assert_eq!(
+        fixture.record(id, ComponentKind::EmissiveVolume).anim_start,
+        Some(2.0)
+    );
+    fixture.frame(3.0);
+    fixture.fire("fade", every_machine());
+    fixture.frame(3.5);
+    fixture.fire("recolour", host());
+    let record = fixture.record(id, ComponentKind::EmissiveVolume);
+    assert_eq!(
+        record.anim_start, None,
+        "peers keep the start they gave the fade themselves"
+    );
+    let PresentationComponent::Emissive(c) = record.component else {
+        panic!("emissive")
+    };
+    assert_eq!(c.animation.unwrap().brightness, vec![1.0, 0.0]);
+    assert_eq!(c.color, [1.0, 0.0, 0.0]);
+}
+
+// The same rule for fog: a host-only clear stores its time as the start; an
+// every-machine install begins a run no record holds; a later host-only
+// density write names no start for it.
+#[test]
+fn fog_capture_never_inherits_the_start_of_a_run_an_uncaptured_install_replaced() {
+    let mut fixture = Fixture::new();
+    let id = fixture.spawn_fog();
+    fixture.install(vec![
+        sequence("first", id, "setFogAnimation", fog_anim(vec![0.1, 0.9])),
+        sequence("clear", id, "setFogAnimation", Value::Null),
+        sequence("second", id, "setFogAnimation", fog_anim(vec![0.9, 0.1])),
+        sequence("scalar", id, "setFogDensity", json!({"density":0.75})),
+    ]);
+    fixture.frame(1.0);
+    fixture.fire("first", every_machine());
+    fixture.frame(2.0);
+    fixture.fire("clear", host());
+    assert_eq!(
+        fixture.record(id, ComponentKind::FogVolume).anim_start,
+        Some(2.0)
+    );
+    fixture.frame(3.0);
+    fixture.fire("second", every_machine());
+    fixture.frame(3.5);
+    fixture.fire("scalar", host());
+    let record = fixture.record(id, ComponentKind::FogVolume);
+    assert_eq!(record.anim_start, None);
+    let PresentationComponent::Fog(c) = record.component else {
+        panic!("fog")
+    };
+    assert_eq!(c.animation.unwrap().density.unwrap(), vec![0.9, 0.1]);
+}
+
+// P6 on the settle frame: the drain runs before the bridge settles a finite
+// run, so a re-install landing on its last frame finds it still installed
+// with its serial. The bridge restarts it there; the capture names that
+// frame as the new start. A mid-run re-install keeps the start, and a colour
+// write on the last frame (no install) keeps it, so peers settle with the
+// host.
+#[test]
+fn emissive_reinstall_on_a_finished_runs_frame_captures_the_restart() {
+    let mut fixture = Fixture::new();
+    let id = fixture.spawn_emissive();
+    let fade = json!({ "periodMs": 1000.0, "playCount": 1, "brightness": [1.0, 0.0] });
+    fixture.install(vec![
+        sequence("fade", id, "setEmissiveAnimation", fade),
+        sequence(
+            "recolour",
+            id,
+            "setEmissiveColor",
+            json!({ "color": [1.0, 0.0, 0.0] }),
+        ),
+    ]);
+    let start = |fixture: &Fixture| fixture.record(id, ComponentKind::EmissiveVolume).anim_start;
+    fixture.frame(1.0);
+    fixture.fire("fade", host());
+    assert_eq!(start(&fixture), Some(1.0));
+    fixture.frame(1.5);
+    fixture.fire("fade", host());
+    assert_eq!(start(&fixture), Some(1.0), "mid-run: the run continues");
+    fixture.frame(2.0);
+    fixture.fire("recolour", host());
+    assert_eq!(start(&fixture), Some(1.0), "no install: the run settles");
+    fixture.fire("fade", host());
+    assert_eq!(
+        start(&fixture),
+        Some(2.0),
+        "re-installed on its end: restarts"
+    );
+    fixture.frame(2.5);
+    fixture.fire("recolour", host());
+    assert_eq!(start(&fixture), Some(2.0), "the restarted run continues");
 }
 
 #[test]
@@ -901,7 +1049,7 @@ fn emitter_rate_and_identical_tween_keep_start_and_bridge_samples_do_not_mutate_
 }
 
 #[test]
-fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() {
+fn all_twelve_replicated_primitives_apply_and_capture_through_shipping_dispatch() {
     use postretro_scripting_core::reaction_dispatch::presentation_capture::REPLICATED_PRESENTATION_PRIMITIVES;
     let rows = [
         (
@@ -945,9 +1093,24 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
             ComponentKind::BillboardEmitter,
             json!({"animation":{"duration":5.0,"rate_curve":[0.0,1.0]}}),
         ),
+        (
+            "setEmissiveBrightness",
+            ComponentKind::EmissiveVolume,
+            json!({"brightness":0.25}),
+        ),
+        (
+            "setEmissiveColor",
+            ComponentKind::EmissiveVolume,
+            json!({"color":[1.0,0.05,0.02]}),
+        ),
+        (
+            "setEmissiveAnimation",
+            ComponentKind::EmissiveVolume,
+            json!({"periodMs":166.0,"brightness":[0.3,1.0]}),
+        ),
     ];
     let expected: std::collections::BTreeSet<_> = rows.iter().map(|(name, _, _)| *name).collect();
-    assert_eq!(expected.len(), 9);
+    assert_eq!(expected.len(), 12);
     assert_eq!(
         expected,
         REPLICATED_PRESENTATION_PRIMITIVES.into_iter().collect()
@@ -959,8 +1122,10 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
     register_fog_reaction_primitives(&mut tag_registry);
     postretro_lighting::script_primitives::register_light_reaction_primitives(&mut tag_registry);
     register_emitter_reaction_primitives(&mut tag_registry);
+    register_emissive_reaction_primitives(&mut tag_registry);
     let mut sequence_registry = SequencedPrimitiveRegistry::new();
     register_sequenced_fog_primitives(&mut sequence_registry, registration_ctx.clone());
+    register_sequenced_emissive_primitives(&mut sequence_registry, registration_ctx.clone());
     postretro_lighting::script_primitives::register_sequenced_light_primitives(
         &mut sequence_registry,
         registration_ctx,
@@ -981,11 +1146,11 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
         .collect();
     assert_eq!(
         tag_names, expected_tag,
-        "closed shipping fog/emitter tag registration set"
+        "closed shipping fog/emitter/emissive tag registration set"
     );
     assert_eq!(
         sequence_names, expected_sequence,
-        "closed shipping light/fog sequence registration set"
+        "closed shipping light/fog/emissive sequence registration set"
     );
     assert_eq!(
         tag_names
@@ -1002,11 +1167,13 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
             } else {
                 fixture.reactions.contains(verb)
             };
-            // Light and fog ship both handlers; emitter has tag/group handlers.
+            // Light, fog and emissive ship both handlers; emitter has
+            // tag/group handlers.
             let expected_registered = match kind {
                 ComponentKind::Light => true,
                 ComponentKind::BillboardEmitter => !sequence_path,
                 ComponentKind::FogVolume => true,
+                ComponentKind::EmissiveVolume => true,
                 _ => unreachable!(),
             };
             assert_eq!(
@@ -1018,6 +1185,7 @@ fn all_nine_replicated_primitives_apply_and_capture_through_shipping_dispatch() 
             }
             let (id, tag) = match kind {
                 ComponentKind::FogVolume => (fixture.spawn_fog(), "mist"),
+                ComponentKind::EmissiveVolume => (fixture.spawn_emissive(), "sign"),
                 ComponentKind::BillboardEmitter => {
                     (fixture.spawn_emitter("capture", false), "capture")
                 }

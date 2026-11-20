@@ -40,9 +40,9 @@ fs4.workspace = true
 # runtime sees.
 postretro-level-loader.workspace = true
 postretro-visibility.workspace = true
-# Reflection-probe capture multiplies emissive by the runtime's per-prefix
-# `Material::emissive_strength`; reading the one table keeps bake and renderer equal.
-postretro-render-data.workspace = true
+# The mod's `materials.toml` (per-texture glow strength). Its span-carrying
+# parser names the line of every warning.
+toml.workspace = true
 # Mover probe-channel poses sit at the runtime's own arc-length fractions, so
 # a pose baked at t is where the mover stands when it hands t over. Tests also
 # check runtime cells through its containment query on a compiled level.
@@ -52,6 +52,9 @@ postretro-physics.workspace = true
 postretro-telemetry = { workspace = true, features = ["test-support"] }
 postretro-test-log-capture.workspace = true
 postretro-render-cpu = { workspace = true, features = ["test-support"] }
+# The bake-runtime agreement test packs the runtime material uniform for a
+# texture's baked strength.
+postretro-render-data.workspace = true
 # `sh_body::pre_flag`: upgrades a baseline compiler's pre-flag PRL so the
 # parity suite can compare it with this compiler's.
 postretro-level-format = { workspace = true, features = ["serde", "gltf-resolve", "test-support"] }

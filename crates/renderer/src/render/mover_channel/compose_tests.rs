@@ -1018,6 +1018,8 @@ fn the_channel_table_is_ledgered_while_installed_and_gone_after_unload() {
             &LevelGeometry {
                 vertices: &[],
                 vertex_spec_owners: &[],
+                vertex_emissive_volumes: &[],
+                emissive_volumes: &[],
                 indices: &[],
                 bvh: &bvh,
                 lights: &[],

@@ -25,6 +25,7 @@ pub use components::ammo_reserve::AmmoReserve;
 pub use components::deferred_effect::{
     DeferredEffectComponent, DeferredEffectKind, MAX_PENDING_EFFECTS_PER_ENTITY, PendingEffect,
 };
+pub use components::emissive_volume::{EmissiveAnimation, EmissiveVolumeComponent};
 pub use components::entity_state::EntityStateComponent;
 pub use components::ghost_link::GhostLinkComponent;
 pub use components::kinematic_mover::{

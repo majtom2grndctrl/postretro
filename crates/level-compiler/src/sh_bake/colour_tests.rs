@@ -47,7 +47,7 @@ impl Room {
     }
 
     fn materials(&self, saturation: f32) -> BounceMaterials {
-        let (_, stats) = bake_materials_into(
+        let bake = bake_materials_into(
             &self.pipeline.geometry.texture_names.names,
             &self.dir.path().join("textures"),
             &self.dir.path().join("materials"),
@@ -55,7 +55,7 @@ impl Room {
             true,
         )
         .unwrap();
-        BounceMaterials::new(stats, saturation).unwrap()
+        BounceMaterials::new(bake.stats, saturation).unwrap()
     }
 
     fn static_light(&self) -> &MapLight {

@@ -313,6 +313,7 @@ fn record_planar_passes(
             );
             forward.set_vertex_buffer(0, level.vertex_buffer.slice(..));
             forward.set_vertex_buffer(1, level.spec_owner_buffer.slice(..));
+            forward.set_vertex_buffer(2, level.emissive_volumes.vertex.slice(..));
             forward.set_index_buffer(level.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             let mut bound_bucket = None;
             for draw in pass.draws.draws() {

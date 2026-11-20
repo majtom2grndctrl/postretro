@@ -121,7 +121,7 @@ pub(in crate::render) struct LevelTextures {
     /// GPU textures indexed by texture index; never empty (a level with no
     /// textures holds one placeholder slot).
     pub(in crate::render) gpu_textures: Vec<GpuTexture>,
-    pub(in crate::render) stored_texture_materials: Vec<Material>,
+    pub(in crate::render) stored_texture_materials: Vec<TextureMaterial>,
     /// Samplers the materials' bind groups needed that the renderer's
     /// add-only maps lacked; merged into those maps when the set publishes.
     pub(in crate::render) samplers: SamplerMaps,
@@ -179,12 +179,14 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) loaded_textures: Vec<LoadedTexture>,
     pub(in crate::render) gpu_textures: Vec<GpuTexture>,
     /// Per-texture material properties derived from texture names.
-    pub(in crate::render) stored_texture_materials: Vec<Material>,
+    pub(in crate::render) stored_texture_materials: Vec<TextureMaterial>,
 
     // --- World geometry and cull ---
     pub(in crate::render) vertex_buffer: wgpu::Buffer,
     /// One `Uint16x4` owner entry per world vertex, written once at install.
     pub(in crate::render) spec_owner_buffer: wgpu::Buffer,
+    /// The forward pass's slot-2 volume-id stream and group-4 volume table.
+    pub(in crate::render) emissive_volumes: super::emissive_volumes::EmissiveVolumeBuffers,
     pub(in crate::render) index_buffer: wgpu::Buffer,
     pub(in crate::render) index_count: u32,
     pub(in crate::render) wireframe_index_buffer: wgpu::Buffer,
@@ -406,6 +408,8 @@ impl Renderer {
         let geometry = LevelGeometry {
             vertices: &[],
             vertex_spec_owners: &[],
+            vertex_emissive_volumes: &[],
+            emissive_volumes: &[],
             indices: &[],
             bvh: &empty_bvh,
             lights: &[],

@@ -471,9 +471,14 @@ Six tag-targeted reaction primitives operate on `FogVolumeComponent`: `setFogDen
 
 **`setFogAnimation`** installs (or, when args is `null`, clears) a `FogAnimation` curve on every target. `FogAnimation` carries four independent channels — `density`, `saturation`, `minBrightness`, and `lightRange` — that share `periodMs`, `phase`, and `playCount`. Any channel may be `null`; at install time the validator rejects an animation that has none of the four curves when `playCount` is finite, since it would have nothing to settle to. Each channel's per-sample validation: `density`, `saturation`, and `minBrightness` accept `[0, +∞)` and clamp negative or non-finite samples to `0.0`; `lightRange` accepts `(0, +∞)` and clamps non-positive or non-finite samples to `0.001` (a `light_range` of zero would collapse the shader's distance term, so the channel cannot pass through zero). An empty curve on any channel is rejected — use `null` to omit a channel. `phase` is normalized into `[0, 1)` via `rem_euclid`; non-finite phase coerces to `null`. `playCount = 0` coerces to `1` (one-shot). On completion of a finite-count animation the bridge writes back each channel's final keyframe as static `density` / `saturation` / `minBrightness` / `lightRange` on the component; channels with `null` curves leave the corresponding component field unchanged.
 
-### 10.2a Emissive Reaction Primitives (decided, not yet built)
+### 10.2a Emissive Reaction Primitives
 
-Three tag-targeted reaction primitives, `setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation`, write every matching `emissive_volume`, mirroring the fog primitives (§10.2). Brightness in [0, 1] maps onto the volume's authored min–max; colour channels are linear in [0, 1]. Out-of-range values clamp. No primitive writes min or max: the map owns the range. A brightness write clears a running animation, as `setSpinRate` does; a colour write leaves it running. Brief: `plans/ready/emissive-volumes`.
+Three tag-targeted reaction primitives, `setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation`, write every matching `emissive_volume`, mirroring the fog primitives (§10.2). Brightness in [0, 1] maps onto the volume's authored min–max; colour channels are linear in [0, 1]. Out-of-range values clamp. No primitive writes min or max: the map owns the range (`resource_management.md` §4.5).
+
+- A brightness write clears a running animation, as `setSpinRate` does, not as fog's static setters do. A colour write leaves brightness and its animation alone.
+- `setEmissiveAnimation` installs a brightness curve, or clears it with args `null`. Clearing holds the last sampled brightness: the script's value, before the flash limiter (`rendering_pipeline.md` §7.8). A finite `playCount` settles on its last sample.
+- Installing the curve already running keeps its timing. Any other install restarts from the first sample, including the same curve after a brightness write or a `null` clear in the same drain.
+- Scripts, `component` reads and the wire see scripted values; only the presented table is limited.
 
 ### 10.3 Mesh Animation
 
@@ -780,7 +785,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | mover member | `getMapEntities("mover")` | `start`, `stop`, `reverse`, `goToPathNode`, `setSpinRate`, `setBlockPolicy` |
 | light member | `getMapEntities("light")` | `pulse`, `fade`, `flicker`, `colorShift`, `sweep` |
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
-| emissive member (decided, not yet built) | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker`; values are brightness in [0, 1] |
+| emissive member | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker`; values are brightness in [0, 1] |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on("teleport", …)` |
 | seam member | `getMapEntities("seam")` | `arm`, `disarm`, `on("arrive", …)` |

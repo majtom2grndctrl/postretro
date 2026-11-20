@@ -835,12 +835,12 @@ fn material_parameters_are_prefix_driven_and_gated_on_the_loaded_slot() {
 
     let carved = postretro_render_cpu::material_plan::build_material_uniform(
         Material::Concrete.shininess(),
-        Material::Concrete.emissive_strength(),
+        1.0,
         with_map,
     );
     let flat = postretro_render_cpu::material_plan::build_material_uniform(
         Material::Concrete.shininess(),
-        Material::Concrete.emissive_strength(),
+        1.0,
         without_map,
     );
     // Identical specular and emissive words: Surface Depth changes nothing a
@@ -887,6 +887,7 @@ fn a_non_surface_map_slot_never_marches_even_when_its_g_would_read_as_max_raise(
         assert!(!is_surface_map, "{format:?} must not be a surface map");
         let plan = postretro_render_cpu::material_plan::MaterialUniformPlan::new(
             Material::Concrete,
+            0.0,
             is_surface_map,
             11,
             sd::SurfaceReliefLevels::splat(max_raise),

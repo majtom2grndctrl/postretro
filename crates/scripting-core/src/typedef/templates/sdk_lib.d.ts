@@ -28,6 +28,9 @@
     sweep(opts: { values: Vec3[]; periodMs: number }): SequenceStep[];
   }
 
+  /** Emissive member returned by `getMapEntities("emissive")`. Composes the brightness scalar capability: `pulse`, `fade` and `flicker` take brightness in [0, 1] across the volume's authored `emissive_min`..`emissive_max`, unlike lights and fog, whose methods take absolute values. Out-of-range values clamp. */
+  export interface EmissiveVolumeHandle extends EmissiveVolumeEntity, AnimatableScalar<"brightness"> {}
+
   /** Fog member returned by `getMapEntities("fog")`. Composes the density scalar capability with secondary saturation methods declared directly. */
   export interface FogVolumeHandle extends FogVolumeEntity, AnimatableScalar<"density"> {
     /** Looping sine pulse on the `saturation` channel. */
@@ -151,7 +154,7 @@
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emissive" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -161,6 +164,7 @@
     K extends "ghostLink" ? GhostLinkHandle :
     K extends "light" ? LightEntityHandle :
     K extends "fog" ? FogVolumeHandle :
+    K extends "emissive" ? EmissiveVolumeHandle :
     K extends "emitter" ? EmitterEntity :
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
@@ -291,6 +295,27 @@
     args: FogAnimation | null;
   };
 
+  /** Sequence step that holds a brightness in [0, 1] on a single emissive volume, clearing any running brightness animation. Out-of-range values clamp. */
+  export type SetEmissiveBrightnessStep = {
+    id: EntityId;
+    primitive: "setEmissiveBrightness";
+    args: { brightness: number };
+  };
+
+  /** Sequence step that sets a single emissive volume's linear tint. Channels clamp to [0, 1]. Brightness and any running animation are left alone. */
+  export type SetEmissiveColorStep = {
+    id: EntityId;
+    primitive: "setEmissiveColor";
+    args: { color: readonly [number, number, number] };
+  };
+
+  /** Sequence step that installs (or clears, when `args` is `null`) a brightness animation on a single emissive volume. Clearing holds the last sampled brightness. `EmissiveVolumeHandle`'s `pulse`, `fade` and `flicker` emit it. */
+  export type SetEmissiveAnimationStep = {
+    id: EntityId;
+    primitive: "setEmissiveAnimation";
+    args: EmissiveAnimation | null;
+  };
+
   /** Sequence step that resumes a kinematic mover. */
   export type MoverStartStep = { id: EntityId; primitive: "moverStart"; args: Record<string, never> };
   /** Sequence step that stops a kinematic mover. */
@@ -360,6 +385,9 @@
     | SetFogFalloffStep
     | SetFogParamsStep
     | SetFogAnimationStep
+    | SetEmissiveBrightnessStep
+    | SetEmissiveColorStep
+    | SetEmissiveAnimationStep
     | MoverStartStep
     | MoverStopStep
     | MoverReverseStep

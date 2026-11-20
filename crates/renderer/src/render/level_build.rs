@@ -16,7 +16,7 @@ use postretro_render_cpu::render_extent::Extent;
 use postretro_render_cpu::sh_residency::ShResidencyPlan;
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
 use postretro_render_cpu::texture_prep::{PreparedModelMaterials, PreparedWorldTextures};
-use postretro_render_data::material::Material;
+use postretro_render_data::material::TextureMaterial;
 
 use super::fluid_surface::FluidLevelLayout;
 use super::fog_pass::FogTargetLayout;
@@ -279,8 +279,9 @@ impl Renderer {
 /// reports. The vertex and index arrays are never copied out of it.
 pub struct LevelGeometryParts {
     pub world: Arc<LevelWorld>,
-    /// One material per world texture name, the textures job's too.
-    pub texture_materials: Vec<Material>,
+    /// One material per world texture name, with its baked glow strength;
+    /// the textures job's too.
+    pub texture_materials: Vec<TextureMaterial>,
     /// The level's GPU-only lightmap and shadowmask payloads, taken out of
     /// the world before it was shared (`LevelWorld::take_gpu_lighting_payloads`).
     pub gpu_lighting_payloads: GpuLightingPayloads,
@@ -538,7 +539,11 @@ impl LevelSetBuilder {
 
     /// The set's world materials: upload the prepared sidecars and build one
     /// material bind group per texture at the build's Surface Depth tier.
-    pub fn textures(&self, prepared: PreparedWorldTextures, texture_materials: Vec<Material>) {
+    pub fn textures(
+        &self,
+        prepared: PreparedWorldTextures,
+        texture_materials: Vec<TextureMaterial>,
+    ) {
         self.queue_part(Some(LevelBuildPart::Textures), move |shared, upload| {
             let (loaded, _timing) =
                 upload_prepared_textures(&upload.device, &upload.writes, &prepared);
@@ -1188,6 +1193,8 @@ pub(in crate::render) fn level_resource_summary(level: &LevelResourceSet) -> Str
     let buffers = [
         &level.vertex_buffer,
         &level.spec_owner_buffer,
+        &level.emissive_volumes.vertex,
+        &level.emissive_volumes.table,
         &level.index_buffer,
         &level.wireframe_index_buffer,
         &level.lights_buffer,

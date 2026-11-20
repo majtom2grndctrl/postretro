@@ -15,18 +15,11 @@ from PIL import Image, ImageOps
 from PIL.PngImagePlugin import PngInfo
 
 
-# Bright-texture cutoff by material prefix. Neon keeps more of its colored
-# source pattern; other prefixes conservatively retain only highlight texels.
-DEFAULT_CUTOFFS = {
-    "neon": 0.35,
-    "default": 0.75,
-}
-
-
-def get_cutoff(filename):
-    """Determine the bright-texel cutoff from the material prefix."""
-    prefix = filename.split("_")[0].lower()
-    return DEFAULT_CUTOFFS.get(prefix, DEFAULT_CUTOFFS["default"])
+# One bright-texel cutoff for every texture, whatever its name's prefix. It
+# conservatively keeps only highlight texels; how strongly they glow is the
+# mod's `materials.toml`, not the cutoff. Lower it with `--cutoff` to keep more
+# of a sign's colored pattern.
+DEFAULT_CUTOFF = 0.75
 
 
 def emissive_from_diffuse(image, cutoff):
@@ -47,7 +40,7 @@ def process_image(input_path, output_path, cutoff=None, force=False):
     try:
         with Image.open(input_path) as image:
             if cutoff is None:
-                cutoff = get_cutoff(os.path.basename(input_path))
+                cutoff = DEFAULT_CUTOFF
 
             print(f"Processing {input_path} -> {output_path} (cutoff: {cutoff})")
             emissive = emissive_from_diffuse(image, cutoff)
@@ -72,7 +65,7 @@ def main():
     parser.add_argument(
         "--cutoff",
         type=float,
-        help="Keep texels at or above this luminance cutoff (0.0 - 1.0)",
+        help=f"Keep texels at or above this luminance cutoff (0.0 - 1.0, default {DEFAULT_CUTOFF})",
     )
     parser.add_argument("--recursive", action="store_true", help="Process directories recursively")
     parser.add_argument("--force", action="store_true", help="Overwrite existing _e.png files")

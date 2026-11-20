@@ -308,11 +308,12 @@ impl GhostRenderCollector {
     }
 }
 
-/// The per-ghost clamp's limiter input for this presented frame: the ghost
-/// membership ramp's presented-frame time (`GhostLinks::presented_elapsed`, the
-/// same clock the ramp stepped by) and the player's fail-safe enable flag, read
-/// from the slot store this frame's resolve snapshot copies. The keyed clamp
-/// starts fresh on its own when the limiter turns on.
+/// Returns this frame's limiter input: the presented-frame time from the ghost
+/// membership ramp (`GhostLinks::presented_elapsed`, the clock the ramp stepped
+/// by) and the `accessibility.flashLimiter` enable flag, read from the slot store
+/// this frame's resolve snapshot copies. The ghost clamps and the emissive-volume
+/// flash clamps share this one clock and one flag; the keyed clamp starts fresh
+/// on its own when the limiter turns on.
 pub(crate) fn ghost_limiter_frame(slots: &SlotTable, elapsed_seconds: f32) -> LimiterFrameUniform {
     let enabled = flash_limiter_enabled_value(
         slots

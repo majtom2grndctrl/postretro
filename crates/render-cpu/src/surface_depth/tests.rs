@@ -143,7 +143,6 @@ fn every_material_step_cap_fits_the_packed_byte() {
         Material::Grate,
         Material::Wood,
         Material::Glass,
-        Material::Neon,
         Material::Default,
     ] {
         assert!(
@@ -406,8 +405,8 @@ fn only_on_budgets_a_self_shadow_march() {
 
 #[test]
 fn a_flat_material_is_switch_independent() {
-    // Glass and Neon are flat by intent; neither state may make them march,
-    // and both must produce the identical all-zero row.
+    // Glass is flat by intent; neither state may make it march, and both must
+    // produce the identical all-zero row.
     let flat = Material::Glass.surface_depth();
     for quality in SurfaceDepthQuality::ALL {
         assert_eq!(quality.apply(flat), SurfaceDepth::FLAT);

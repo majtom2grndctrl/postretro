@@ -91,12 +91,12 @@ player-spawn sightline, one near the west end and one by the east pillar:
 
 | Panel | X extent | Texture | `_e` peak | Peak luminance×4 | Blooms? |
 |---|---|---|---|---|---|
-| Bright | `x[192,208]` | `neon/neon_glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
-| Dim | `x[688,704]` | `neon/neon_dim_panel` | sRGB 136 | 0.985 | no — genuinely sub-threshold |
+| Bright | `x[192,208]` | `neon/glow_panel` | sRGB 255 | 4.0 | yes — 4× threshold |
+| Dim | `x[688,704]` | `neon/dim_panel` | sRGB 136 | 0.985 | no — genuinely sub-threshold |
 
 The bright pass gates on **Rec.709 luminance** of the linear color, not the peak
 channel — `luminance = dot(color, (0.2126, 0.7152, 0.0722))` in `bloom_extract.wgsl`.
-The neon texels are near-neutral, so peak-channel and luminance nearly coincide.
+The panel texels are near-neutral, so peak-channel and luminance nearly coincide.
 **sRGB 136 is the highest 8-bit `_e` byte that stays under the threshold:**
 `s2l(136)*4 = 0.985` (< 1.0), while the next byte `s2l(137)*4 = 1.0006` crosses it
 (quantization has no byte at exactly 1.0). So 136 is where the threshold sits from
@@ -115,8 +115,10 @@ regardless of cone width.
 The pair is the A/B for emissive-with-bloom vs emissive-without-bloom. There is no
 per-material bloom flag; bloom is decided purely by whether a fragment's linear
 luminance clears `BLOOM_THRESHOLD` (`1.0`, `crates/renderer/src/render/bloom.rs`).
-Both panels use `Material::Neon`'s `emissive_strength` of `4.0`, so the authored
-`_e` texel value is the only lever.
+Both panels take an `emissive` strength of `4.0` from `content/dev/materials.toml`,
+so the authored `_e` texel value is the only lever. prl-build bakes that strength
+into the level; `level-compiler/tests/dev_emissive_panels.rs` reads it back and
+checks the bright panel's peak clears the threshold and the dim panel's does not.
 
 The dim `_e` is the bright one **clamped, not scaled**: most of the source pattern
 already sits below the threshold (terms `0.42`–`0.79`) and blooms on nothing, so

@@ -151,7 +151,7 @@ fn frame_hash(pixels: &[u8]) -> u64 {
 /// fluids, the fog pixel scale and cell masks, then each model.
 fn install_oracle(renderer: &mut Renderer, map: &Path, prm_cache_root: &Path, models: &[&str]) {
     let mut world = postretro_level_loader::load_prl(map.to_str().unwrap()).expect("oracle parse");
-    let materials = level_texture_materials(&world.texture_names);
+    let materials = level_texture_materials(&world.texture_names, &world.emissive);
     renderer.install_textures(
         &world.texture_names,
         &world.texture_cache_keys,

@@ -95,7 +95,7 @@ pub(crate) fn map_geometries(map: &str) -> MapGeometries {
                 parent[range.clone()].fill(old);
             }
             (
-                crate::geometry::remap_face_brushes(&pre_cut_brushes, remap),
+                crate::geometry::remap_per_face(&pre_cut_brushes, remap),
                 Some(parent),
             )
         }

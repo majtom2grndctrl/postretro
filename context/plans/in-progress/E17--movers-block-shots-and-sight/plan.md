@@ -1,25 +1,16 @@
 # E17--movers-block-shots-and-sight — plan of record
 
 mode: resumable
-status: blocked
+status: approved
 read at: 6a2a724b
 
-## Block
+## Owner rulings
 
-One Acceptance row needs restatement (Host shots, row H1). The row names **NPC hitscan**, which no source path produces:
+- **H1 restated (owner, 2026-11-20).** The brief's row named NPC hitscan, which no source path produces: behavior attacks keep only projectile weapons (`crates/ai/src/brain_programs.rs:441`), launched from the enemy eye (`crates/ai/src/compute.rs:732`). The owner prefers NPCs stay without hitscan but may add it, so the row is shooter-neutral. Every shooter's hitscan resolves through `fire_hitscan` (`entity_model.md` §Weapon vocabulary: no actor branch), and row U2's gate holds any later hitscan site to the combined query. Approved wording:
 
-- `crates/ai/src/brain_programs.rs:441` keeps only `ResolutionMode::Projectile` weapons for behavior attacks. A hitscan weapon is refused with the `[AI] behavior attack … references weapon …` warning (test `brain_programs.rs` ~968–1004).
-- NPC fire launches a projectile from `perception.enemy_eye` along the eye-to-target-aim line (`crates/ai/src/compute.rs:732`, `weapon_controller.rs` ~290–325). It never calls `fire_hitscan` or the muzzle composer.
+  > Hitscan stops at a closed mover with a world contact, and the target behind takes no damage. Through the gap the target is hit. A mover and an entity at equal distance give the world contact. Proven for the host player, the only hitscan shooter today; the grep gate holds any later hitscan site to the combined query.
 
-So NPC shots reach movers only through the projectile stage, which row H2 already covers. Decisions are unaffected: the Decision table's "(host player, NPCs, traps)" lists who fires across the hitscan, projectile, muzzle and splash queries, not that each fires hitscan.
-
-**Proposed wording for H1:**
-
-> Hitscan stops at a closed mover with a world contact, and the target behind takes no damage. Through the gap the target is hit. A mover and an entity at equal distance give the world contact. Proven for the host player, the only hitscan shooter today; the grep gate holds any later hitscan site to the combined query.
-
-Shooter-neutral on purpose (owner, 2026-11-20): NPCs have no hitscan today and the owner prefers they don't, but may add it. Every shooter's hitscan resolves through `fire_hitscan` (`entity_model.md` §Weapon vocabulary: no actor branch), and row U2's gate covers any new hitscan site.
-
-On the owner's approval of this wording (or other wording), set `status: proposed` and report the plan for the resumable skim.
+- **Plan approved (owner, 2026-11-20).**
 
 ## Corrections
 
@@ -46,7 +37,7 @@ Test names are proposed and are fixed when the test lands.
 | Q1 | Combined queries vs closed / gap / partly open / rotated / two movers / origin inside hull | `physics` `combined_queries` tests: `combined_*_returns_posed_geometry_result` per fixture | achievable as stated |
 | Q2 | No movers: exact static result (aim-point hit clear, degenerate blocked); zero-radius sphere = ray | `combined_queries_match_static_without_movers`, `zero_radius_combined_sphere_cast_matches_combined_ray` | achievable as stated |
 | Q3 | No heap allocation per call | `combined_queries_do_not_allocate` (`alloc_probe`, physics global allocator) | achievable as stated |
-| H1 | Host-player and NPC hitscan stop at closed mover … | — | **needs restatement** (see Block) |
+| H1 | Hitscan stops at closed mover with world contact; gap hits; equal-distance tie gives world contact (restated, see Owner rulings) | `weapon` host-player hitscan mover tests through `tick_resolved_component` | achievable as stated |
 | H2 | Host-player, NPC, trap projectiles impact closed mover, incl. mover moving into flight; opening lets through | `sim` projectile-stage mover tests (player, NPC via AI tick, trap stage) | achievable as stated |
 | H3 | Muzzle across mover launches from eye; muzzle clear aims at door point (host, client prediction, host rebuild); client muzzle across host-closed door launches rebuilt FIRE and march from eye | `weapon` muzzle tests + `remote.rs` rebuild test + client fire-path test | achievable as stated |
 | H4 | Enclosed projectile detonates that tick (host, client predicted, march); enclosed blast damages approach side only (P12, P21); launched inside damages behind, detonates at zero lifetime (P30, P31) | projectile-stage enclosure tests; netcode march enclosure tests | achievable as stated |

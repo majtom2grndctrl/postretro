@@ -152,6 +152,8 @@ impl LevelLightGroups {
 pub(in crate::render) struct LevelResourceSet {
     /// This build's key.
     pub(in crate::render) id: LevelSetId,
+    /// The build's geometry install, frozen at its log line.
+    pub(in crate::render) geometry_install: super::GeometryInstallTiming,
     /// The set's shadow tier and the cache textures it uses.
     pub(in crate::render) shadow: LevelShadowTier,
     /// Extent-bound groups and targets, with the extent they were built at.

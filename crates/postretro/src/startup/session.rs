@@ -209,6 +209,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
                 "[Capture] `--capture` requires the `capture` feature; \\
                  launch via `cargo run -p xtask -- capture <scene.json>`"
             );
+            crate::telemetry::end_run_before_exit(1, "capture");
             std::process::exit(1);
         }
     }
@@ -231,6 +232,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
                 "[Headless] `--headless` requires the `observability` feature; \
                  launch via `cargo run -p xtask -- observe <runspec>`"
             );
+            crate::telemetry::end_run_before_exit(1, "headless");
             std::process::exit(1);
         }
     }
@@ -288,6 +290,9 @@ pub(crate) fn build_session() -> Result<BootSession> {
                 protocol: crate::observe_live::OBSERVE_LIVE_PROTOCOL,
                 map,
                 engine: env!("CARGO_PKG_VERSION").to_string(),
+                run: postretro_telemetry::global()
+                    .map(|hub| hub.run_id().to_string())
+                    .unwrap_or_default(),
             },
         )
     });
@@ -304,6 +309,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         baked_root,
         core_root,
         exit_result: Ok(()),
+        telemetry_commit_level: None,
         camera: Camera::new(initial_camera_pos, 0.0, 0.0),
         // The entire `Session` (options, audio, scripting core, input/UI/modal
         // group, net endpoint) is built post-first-pixel by
@@ -529,7 +535,7 @@ fn path_flag_value(args: &[String], flag: &str) -> Option<PathBuf> {
 
 /// Parse the live-channel port without ever accepting a bindable address.
 #[cfg(feature = "observe-live")]
-fn observe_live_port_arg(args: &[String]) -> Option<u16> {
+pub(crate) fn observe_live_port_arg(args: &[String]) -> Option<u16> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         let value = if arg == "--observe-live" {
@@ -591,7 +597,7 @@ fn pool_seed_arg(args: &[String]) -> PoolSeedArg {
 /// error), or `None` when the flag is absent. Kept beside the other arg helpers
 /// and OUTSIDE the `observability` feature gate so a stock binary can still detect
 /// the flag and emit the "rebuild with the feature" diagnostic.
-fn headless_arg(args: &[String]) -> Option<Option<&str>> {
+pub(crate) fn headless_arg(args: &[String]) -> Option<Option<&str>> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         if arg == "--headless" {
@@ -611,7 +617,7 @@ fn headless_arg(args: &[String]) -> Option<Option<&str>> {
 /// Detect the static offscreen frame-capture flag. Like `headless_arg`, the
 /// nested `Option` distinguishes absence from a flag with no scene argument so
 /// the capture driver can issue the user-facing diagnostic.
-fn capture_arg(args: &[String]) -> Option<Option<&str>> {
+pub(crate) fn capture_arg(args: &[String]) -> Option<Option<&str>> {
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         if arg == "--capture" {

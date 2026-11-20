@@ -221,7 +221,10 @@ decoded-byte budget it shares with lightmap blocks, always at least one, and sto
 than skipping ahead to smaller lower-priority work, so frame cost tracks bytes rather than
 cluster count. The budget's size, 8 MiB per play drain and 32 MiB per settling drain, is a tuning
 value, not a contract: a retune that keeps the one owner, the admission order and the lightmap
-in-hand totals lands without a brief (`plans/ready/streaming-drain-budget-spike`). A newly installed cluster remains unavailable to sampling until the next drain,
+in-hand totals lands without a brief. In the dev-tools Streaming tab, a slider beside lead L
+overrides the play cap live, and a production button unsets it; settling and the lightmap
+in-hand totals keep production. It is not a player setting.
+A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
 reaches the ambient floor.
@@ -386,9 +389,15 @@ logs a load warning. Lightmap streaming reports through a throttled
 `lightmap_streaming` block, and the `lightmap_residency` and `lightmap_drain` CPU-timing
 stages (§12). Layers, peak layers, live and retiring bytes, band headroom, repacks,
 compactions, compaction rollbacks and growths count per pool. Lightmap visible misses carry cause
-buckets as SH's do (decided, not yet built): each drawn-not-resident block-frame lands in exactly
-one, named as SH's where the cause is the same, and every surface names its unit, block-frames
-for lightmaps and episodes for SH (`plans/ready/streaming-drain-budget-spike`).
+buckets as SH's do: each drawn-not-resident block-frame lands in exactly one, named as SH's where
+the cause is the same, and every surface names its unit, block-frames for lightmaps and episodes
+for SH. The buckets are outside the reach, read in flight, waiting on a permit, waiting on the
+in-hand cap, held by the drain budget (ready, offered to this frame's drain, past its cut),
+awaiting the renderer's drain (ready behind a batch the renderer has not returned, or in it),
+deferred by the pool, refused (by the pool, or held back from reading for band headroom), and
+failed (a failure or rolled-back drain this frame, or a failed pair). A wait on permits or in-hand
+bytes is the latest request pass's verdict, kept until the next pass; a deferral or failure counts
+only in its frame. Admission never reads them (`lightmap_streaming/miss_causes.rs`).
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and
@@ -548,6 +557,14 @@ Ids 27, 41, and 45 use packed RGB16F delta texels in both PRL and renderer stora
 - **Delivery.** The owner list reaches the fragment through a forward-only second vertex stream (§6) as a flat value. It adds no fragment binding and leaves the world vertex format unchanged.
 - **Bake side.** `build_pipeline.md` §PRL (ShadowmaskAtlas ownership) owns admission, ranking and the format.
 
+**Texel-centre highlight (decided, not yet built).** World static and mover specular take highlight geometry from one point per texel, under the mod's default `pixel` style (`scripting.md` §2).
+- **Point.** The albedo texel centre `sample_post_retro` samples, mapped to world through the fragment's UV→world Jacobian. The highlight ramps across the same seam band as texture reads. A degenerate Jacobian falls back to the fragment position.
+- **Snapped.** Light direction, view direction, falloff, range and cone. Static specular stays on the true plane; mover specular on the Surface Depth hit.
+- **Per pixel.** Shadowmask visibility, SDF visibility, SDF selection and the mover's shadow, so specular shadows match diffuse ones.
+- **`smooth` style.** Every input per fragment, so sharp texels crawl with the camera. The style rides per-frame uniforms and never reaches billboards.
+- **Exponent.** A four-channel specular slot's per-texel sharpness, else the prefix shininess (`resource_management.md` §4.7).
+- **Cost.** The mover shader's register cliff (§7.3) gates both styles.
+
 **Promoted static lights (entity shadows).** Every occlusion fact is computed once, by the source that knows it best, and never re-derived: the bake owns static-onto-static and static-onto-probe occlusion; the runtime owns only the facts that involve a dynamic body — entity onto world, entity onto entity, and world onto entity at near-tier resolution — and a promoted slot exists to supply those three. Compiler-selected static lights (heuristic selection, no per-light KVP; dim, short-falloff, directional, SDF, and decorative wall/ceiling fixtures excluded) and runtime-eligible animated-baked lights promote into the shadow pool when a shadow-relevant receiver intersects their influence and the light is portal-reachable. Portal-reachable means the light's influence sphere touches a fog-reachable cell. A baked per-light reach set may replace that test only if it counts cells where the light reaches direct-SH receivers, not just lit texels; otherwise it drops shadows from characters where the light touches no surface. Relevance includes skinned meshes and active movers; a mover remains active while present, including when docked or camera-PVS-culled. Both receiver kinds share the existing ranker and fixed promotion budget: 8 spot slots and 2 cube slots. Promotion is budget-capped and crossfaded by a weight `w`: a mover or mesh receives the light as `(1 − w) × baked direct SH + w × runtime term × pool shadow map` — the SH atlas is the far LOD (occlusion-tested, directional light/dark space), the pool slot the near tier (true self-shadowing), and no receiver sums the light twice. Per-light baked direct SH delta tiles make the subtraction possible. Compose therefore writes two direct atlases: the promotion handoff atlas carries the `(1 − w)` arm and binds only for movers and skinned meshes; the promotion-free direct atlas carries every baked light at full weight and binds for everything else. Promotion reaches only receivers with a pool-shadow arm. Fluid and billboards (all paths) receive a promoted light only through their promotion-free baked direct term and drop its runtime record: an unshadowed runtime record would light through walls where the baked delta is near zero. Mover specular is part of the promoted runtime term, so it fades with `w`; baked direct SH remains diffuse-only. World receivers keep their direct term in the lightmap; promotion reaches them only as the shadowmask union subtraction — the reconstructed direct term attenuated by baked visibility times (1 − entity visibility), weighted by `w` and removed from the accumulated static direct term — never as an appended runtime light record. The subtrahend is bounded by what the lightmap holds for that light and is exactly zero where no entity occludes, by construction rather than by threshold. Fog excludes promoted slots. A promoted slot holds entity-occluder depth only; the static world is never rendered into it. The light's static world depth is rendered once per assignment into a promoted-depth cache (static lights never move) and sampled by entity receivers, which combine it with the slot per tap, so movers and skinned meshes keep near-tier static shadows while world receivers never compare against the world. Area lights never promote, on either path: promotion shadows from a point, which a large panel is not (decided, not yet built).
 
 **Promoted animated lights.** A script-animated baked light promotes into the same shadow pool as dynamic and static-promoted lights when a shadow-relevant receiver intersects its influence and the light is portal-reachable. It mirrors static promotion on the *additive* side: a mover or mesh receives `(1 − w) × section-45 animated delta + w × runtime shadowed term`; the runtime cone is frozen at the authored rest direction so it represents the same illumination as the baked delta and no receiver sums the light twice. Only moving receivers gain the runtime term; world surfaces remain `lm_anim`, and fluid and billboards keep the full baked delta through the promotion-free direct atlas. The fixed position and frozen cone let the world depth cache exactly as a static promoted light's. Eligibility is runtime-only: no separate compiler selection list exists, but promotion requires section-45 direct-delta affinity membership; sparse descriptor-only animated-baked rows are unpromotable. Eligible lights gate on brightness over the crossfade horizon (a forward-lookahead max of the curve), not instantaneous strobe value, so a strobe neither thrashes the pool nor holds a slot through a long dark trough. Animated candidates contend in the one `MAX_PROMOTED_SPOT`/`MAX_PROMOTED_CUBE` pool through the shared `slot_score` with dynamic and static-promoted candidates; brightness only controls membership in the candidate gate, and the ranker has no intensity term.
@@ -664,7 +681,7 @@ One `multi_draw_indexed_indirect` call per coalesced visible run (§5 Visible-sp
 
 Depth testing and back-face culling are permanent from this pass forward.
 
-**Surface Depth (texel-space parallax).** Cobblestone-style surfaces read as having real relief: the specular slot is a two-channel surface map (R specular, G **signed height around the surface plane**, mid-gray = plane, see `resource_management.md` §4.6), and the fragment marches that height field along the view ray before shading. Height is signed: texels sink below **and rise above** the real plane, by the prefix depth in each direction. The march starts where the view ray crosses the material's **peak raise** (its relief band, computed at load), not at the plane; a map that never exceeds mid-gray therefore pays nothing for raise. The march never starts behind the camera: with the eye inside the raised band, it starts at the eye, and the texel column the eye stands in is see-through, so a camera inside a raised texel never collapses the face onto that one texel. AO and the self-shadow clearance still measure from the peak. Collision never changes — the player walks on the real plane. Raising has costs carving never had, accepted by design: no depth write means raised texels cannot extend a polygon's silhouette (sliced flat at edges), cannot occlude an adjoining wall plane, and other geometry drawn at the real plane reads as sunk into them. Author guidance lives in `docs/level_design.md`.
+**Surface Depth (texel-space parallax).** Cobblestone-style surfaces read as having real relief: the specular slot is a two- or four-channel surface map (R specular, G **signed height around the surface plane**, mid-gray = plane, see `resource_management.md` §4.6), and the fragment marches that height field along the view ray before shading. Height is signed: texels sink below **and rise above** the real plane, by the prefix depth in each direction. The march starts where the view ray crosses the material's **peak raise** (its relief band, computed at load), not at the plane; a map that never exceeds mid-gray therefore pays nothing for raise. The march never starts behind the camera: with the eye inside the raised band, it starts at the eye, and the texel column the eye stands in is see-through, so a camera inside a raised texel never collapses the face onto that one texel. AO and the self-shadow clearance still measure from the peak. Collision never changes — the player walks on the real plane. Raising has costs carving never had, accepted by design: no depth write means raised texels cannot extend a polygon's silhouette (sliced flat at edges), cannot occlude an adjoining wall plane, and other geometry drawn at the real plane reads as sunk into them. Author guidance lives in `docs/level_design.md`.
 
 The field is piecewise-constant per texel, and its lattice is the same texel grid `sample_post_retro` snaps albedo to, so stone side faces land exactly on albedo texel edges. Marching a grid of boxes is an exact 2D DDA (Amanatides-Woo), not a fixed-step POM: per texel `T` the solid's top sits at that texel's signed height, and within `T` the ray either entered already inside the solid (SIDE wall hit, normal = the crossed axis negated), meets the top before leaving (TOP hit, normal = geometric), or steps on. The output is a marched UV, a signed hit height, and one of five exact face normals.
 
@@ -1062,6 +1079,10 @@ fields keep pixel, high and high's preset. The effective tier, style,
 fraction, steps, divisor and thickness log once on a
 `[Capture] Fluid reflections:` line.
 
+Specular style in capture also comes from the scene file alone (decided, not
+yet built): `specular_style` takes `pixel` or `smooth` and stands in for
+`render.specular.style`. Absent keeps pixel; an unknown value rejects the scene.
+
 The planar layer (§7.3a) runs in capture exactly when `reflection_quality` is
 `very_high` or `ultra`, as in play; there is no on switch. An optional
 `planar_reflection` block overrides that tier's preset with any of `scale`
@@ -1266,6 +1287,7 @@ render-pass encoder counts: those rows go missing from part of some traces, whic
 undercounts frames by up to a quarter and invents between-launch "regimes" that are not there.
 The engine renders no frames while its window is hidden or backgrounded,
 or while the screen is locked. Keep the window in front for the whole capture.
+The renderer's ignored install-cost tests (`install_cost_measurement.rs` beside the lightmap stream and the SH streaming GPU state) bracket each measured drain with labelled marker command buffers and write the drain order to the directory named by `POSTRETRO_INSTALL_COST_TRACE_DIR`, so a trace of them reduces per drain. Those tests wait for the GPU after every drain, so the GPU idles at a low clock and their figures are upper bounds.
 Each recording also leaves an `instruments*.ktrace` temp file of about 1 GB in
 `$TMPDIR`, and the `.trace` bundle stays wherever `--output` put it. Delete both once
 the export is parsed.
@@ -1336,7 +1358,7 @@ Radius must be finite, positive, and at most 64 metres. Unset leaves panel defau
 ## 13. Non-Goals
 
 - **Deferred rendering** — forward lighting with influence-volume early-out keeps per-fragment iteration proportional to nearby lights. Indoor portal-isolated geometry bounds the set further. Deferred adds complexity without benefit.
-- **Metallic/roughness PBR** — no energy-conserving BRDF, no metallic or roughness inputs, and no image-based specular outside fluid surfaces, whose reflection (§7.3a: the probe term and the screen-space layer over it) is the one exception. The authored material vocabulary is a fixed, closed inventory: diffuse, specular intensity, tangent-space normal, emissive, and height — the last riding in the specular slot's second channel rather than in a slot of its own (`resource_management.md` §4). Widening that inventory is a scoped decision each time, not a step toward PBR. Bake-only inputs sit outside it: the bake may be physical (`index.md` §2).
+- **Metallic/roughness PBR** — no energy-conserving BRDF, no metallic inputs, no roughness beyond a per-texel Blinn-Phong exponent, and no image-based specular outside fluid surfaces, whose reflection (§7.3a: the probe term and the screen-space layer over it) is the one exception. The authored material vocabulary is a fixed, closed inventory: diffuse, specular intensity, tangent-space normal, emissive, height, and specular sharpness (decided, not yet built) — the last two riding in the specular slot's second and third channels rather than in slots of their own (`resource_management.md` §4). Widening that inventory is a scoped decision each time, not a step toward PBR. Bake-only inputs sit outside it: the bake may be physical (`index.md` §2).
 - **Hardware ray tracing** — not in baseline wgpu, and absent at the §10 perf floor (Turing GTX 16-series has no RT cores). Shadow maps cover dynamic shadowing; SH volume covers indirect; SDF shadows sphere-trace in compute.
 - **Mesh shaders** — not baseline in wgpu. GPU-driven camera culling uses compute + `draw_indexed_indirect`; shadow world culling runs on the CPU (§7.1 step 6).
 - **Runtime level compilation** — maps compiled offline by prl-build. Engine is a consumer only.

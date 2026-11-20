@@ -215,6 +215,13 @@ impl App {
                     }
                     return LoadingStep::Fail(LevelLoadFailure::uncaptured(error));
                 }
+                // Taken and checked for errors, the load can no longer be
+                // cancelled: its geometry install is reported now.
+                let set = match &bundle.set {
+                    BundleSet::Resident(id) => Some(*id),
+                    BundleSet::PrepOnly(_) => None,
+                };
+                self.note_uncancellable_load(generation, set);
                 // The stages are done: retire them now (the bundle owns the
                 // set, so nothing is released) and drop the error capture
                 // before any commit-frame GPU work.
@@ -243,6 +250,12 @@ impl App {
             self.level_timings.record("enter_settling");
         }
         self.level_timings.close_group("commit_frame");
+        // Committed, the load is the running level every later event names;
+        // a failed commit leaves none.
+        let commit_level = self.telemetry_commit_level.take();
+        if committed.is_ok() {
+            postretro_telemetry::set_level(commit_level);
+        }
         match committed {
             Ok(report) => {
                 let uncounted = report.uncounted_creations();
@@ -258,6 +271,50 @@ impl App {
                 None
             }
         }
+    }
+
+    /// The active load can no longer be cancelled: emit its set's geometry
+    /// install under its generation and capture the level it commits as.
+    /// The loading-screen order reaches here at the bundle take, the beside
+    /// order at its commit, before the running level's release.
+    pub(in crate::startup) fn note_uncancellable_load(
+        &mut self,
+        generation: u64,
+        set: Option<crate::render::LevelSetId>,
+    ) {
+        if !postretro_telemetry::active() {
+            return;
+        }
+        let Some(map_path) = self
+            .level_loads
+            .active()
+            .map(|active| active.map_path.clone())
+        else {
+            return;
+        };
+        self.note_beside_commit(generation, &map_path, set);
+    }
+
+    /// [`Self::note_uncancellable_load`] for a load no longer in
+    /// `level_loads`: the beside commit took it before its checks.
+    pub(in crate::startup) fn note_beside_commit(
+        &mut self,
+        generation: u64,
+        map_path: &std::path::Path,
+        set: Option<crate::render::LevelSetId>,
+    ) {
+        if !postretro_telemetry::active() {
+            return;
+        }
+        let timing = set.and_then(|id| {
+            self.renderer
+                .as_ref()
+                .and_then(|renderer| renderer.level_set_geometry_install(id))
+        });
+        crate::startup::timing_events::emit_geometry_install(generation, timing);
+        self.telemetry_commit_level = Some(crate::startup::timing_events::committed_level(
+            generation, map_path,
+        ));
     }
 
     /// End the active load's tenure without reporting anything: cancel its

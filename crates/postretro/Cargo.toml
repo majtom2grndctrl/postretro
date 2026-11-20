@@ -72,6 +72,7 @@ postretro-render-cpu = { workspace = true }
 postretro-renderer = { workspace = true }
 postretro-lighting = { workspace = true, features = ["script-ffi"] }
 postretro-stage-timing.workspace = true
+postretro-telemetry.workspace = true
 postretro-visibility = { workspace = true }
 postretro-foundation = { workspace = true }
 postretro-entities = { workspace = true, features = ["script-ffi"] }
@@ -133,6 +134,7 @@ windows.workspace = true
 
 [dev-dependencies]
 postretro-test-log-capture.workspace = true
+postretro-telemetry = { workspace = true, features = ["test-support"] }
 postretro-entities = { workspace = true, features = ["script-ffi", "test-support"] }
 postretro-combat-model = { workspace = true, features = ["test-support"] }
 postretro-ui = { workspace = true, features = ["test-fixtures"] }

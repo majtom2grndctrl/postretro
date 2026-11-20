@@ -61,10 +61,12 @@ pub(crate) fn run_headless(
             // stdout carries ONLY the document; a single write after the full
             // build guarantees no partial JSON on any earlier failure.
             println!("{json}");
+            crate::telemetry::end_run_before_exit(0, "headless");
             std::process::exit(0);
         }
         Err(err) => {
             eprintln!("[Headless] {err:#}");
+            crate::telemetry::end_run_before_exit(1, &format!("headless: {err:#}"));
             std::process::exit(1);
         }
     }

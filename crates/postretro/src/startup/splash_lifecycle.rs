@@ -164,6 +164,10 @@ impl App {
         }
         self.swap_mod_splash_override_if_pending();
         log::info!("{}", self.mod_timings.summary());
+        crate::startup::timing_events::emit_phases(
+            postretro_telemetry::Kind::ModPhases,
+            &self.mod_timings,
+        );
 
         // The OS reader's wait counts from here, so a slow mod init still gets
         // its full wait. A reply already in adds no frames.
@@ -247,6 +251,10 @@ impl App {
         // `first_splash_frame` line, so this logs the full auditable boot order
         // in one place. See: boot_sequence §1.
         log::info!("{}", self.boot_timings.summary());
+        crate::startup::timing_events::emit_phases(
+            postretro_telemetry::Kind::BootPhases,
+            &self.boot_timings,
+        );
         self.request_redraw();
         false
     }
@@ -374,6 +382,10 @@ impl App {
         }
         self.boot_timings.record("first_splash_frame");
         log::info!("{}", self.boot_timings.summary());
+        crate::startup::timing_events::emit_phases(
+            postretro_telemetry::Kind::BootPhases,
+            &self.boot_timings,
+        );
         self.mod_timings = StartupTimings::new();
         true
     }

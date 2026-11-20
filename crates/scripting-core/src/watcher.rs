@@ -1,7 +1,7 @@
 //! Dev-mode hot-reload plumbing for the scripting subsystem.
 //!
 //! Compiled only in debug builds (see `cfg` gate below and the `mod`
-//! declaration in `scripting::mod`). In release builds, no watcher exists and
+//! declaration in `lib.rs`). In release builds, no watcher exists and
 //! `ScriptRuntime::drain_reload_requests` is a no-op.
 //! See: `context/lib/scripting.md`
 //!
@@ -34,7 +34,7 @@
 //! work. The watcher records changed paths only; `ScriptRuntime` decides
 //! whether those paths affect the active mod-init dependency set.
 
-// Belt-and-braces: the `mod watcher;` in `scripting::mod` is already
+// Belt-and-braces: the `mod watcher;` in `lib.rs` is already
 // `#[cfg(debug_assertions)]`, but gating the module itself ensures a release
 // build can't pull this file in via any future path. Clippy flags the pair
 // as duplicated attributes — silenced deliberately.
@@ -88,12 +88,12 @@ impl TsCompilerPath {
     /// 1. `scripts-build` next to `std::env::current_exe()`.
     /// 2. `scripts-build` on `PATH`.
     ///
-    // TODO(scripting-tools-dedup): the discovery cascade is duplicated in
-    // `crates/level-compiler/src/main.rs` (`find_scripts_build`). The
-    // level-compiler runs offline and cannot depend on this module
-    // (`#[cfg(debug_assertions)]`-gated, also pulls in wgpu via the engine
-    // crate). Consolidate into a shared `postretro-scripts-tools` crate when
-    // the level-compiler gains more scripting integration.
+    // TODO(scripting-tools-dedup): `find_scripts_build` in
+    // `crates/level-compiler/src/main.rs` repeats these two steps before its
+    // own Cargo rebuild. The level compiler cannot reuse this module: it is
+    // `#[cfg(debug_assertions)]`-gated, and this crate links both script VMs.
+    // Consolidate into a shared `postretro-scripts-tools` crate when the
+    // level-compiler gains more scripting integration.
     pub fn detect() -> Option<Self> {
         let exe_dir = std::env::current_exe()
             .ok()

@@ -47,8 +47,20 @@
 // either left out to size that pool from id 58 (`34/15,30,/15`), or `bound` for
 // both pools at id 58 with no margin. A walk also draws cells its camera cell's
 // set does not hold, which the bound leaves out, so a real walk at `bound` can
-// grow where a walk of mandatory demand alone cannot. Leave
-// `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
+// grow where a walk of mandatory demand alone cannot.
+// `POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP` (MiB, a positive decimal: `4`, `16`,
+// `0.5`) replaces the play drain cap in every walk run (not the bake-gap
+// replay in `world_poses`, which runs at production levers) through the seam
+// the dev-tools slider sets; the spawn step admits at this cap, and the walk
+// has no settling (production settling keeps its own budget). The lightmap
+// in-hand caps stay at production unless the next lever sets them. Zero,
+// negatives and non-numbers are refused by name. A capped run's label and
+// `walk-result` line (`drain_cap_mib`, null when unset) carry the cap.
+// `POSTRETRO_LIGHTMAP_WALK_IN_HAND_CAP` (MiB, the same form and refusals)
+// replaces the lightmap controller's in-hand pair byte total in every walk run
+// (not the bake-gap replay, as above); the band cap is half of it, as in
+// production. The label and `walk-result` line (`in_hand_cap_mib`, null when unset) carry it. It has no dev-tools slider.
+// Leave `POSTRETRO_LIGHTMAP_STREAMING` unset or `stream`. Camera:
 // `POSTRETRO_LIGHTMAP_WALK_HFOV` (degrees, default 100),
 // `POSTRETRO_LIGHTMAP_WALK_ASPECT` (`W:H`, default `16:9`; horizontal FOV
 // stays fixed) and `POSTRETRO_LIGHTMAP_WALK_PITCH` (degrees, up positive,
@@ -62,6 +74,16 @@
 // so the pair splits and prints the deferred-block verdict. That same-partition
 // pairing compares block counts because the cell layout matches; across
 // partitions use `world_poses`, whose unit is deferred texel area.
+//
+// Drain-budget tallies (`budget_tallies`, `drain_tally`), the spawn step's
+// apart, since it admits a level-entry burst at the play cap that
+// production settles at its own: the lightmap controller's late block-frames
+// by cause, asserted to sum to its drawn-not-resident count, beside the
+// walk-vs-controller gap lines (both asserted 0, research P9); SH's late
+// cluster-frames by cause, classified every frame at drain 0's target update,
+// beside its episode buckets; and per drain, the decoded bytes admitted per resource,
+// the largest drains, and same-class cuts (a cut admitting one resource and
+// leaving a same-class item of the other).
 //
 // Decode and pool comparisons (lightmap-compact-storage): every run reports an
 // order-independent hash of every uploaded payload (`payload_hash`), the
@@ -93,12 +115,14 @@
 // replays them in the other build, and compares deferred texel area.
 
 mod baked_set;
+mod budget_tallies;
 mod busy_stats;
 mod completed_reads;
 mod cores;
+mod drain_tally;
 mod frame_driver;
 mod install_timing;
-mod levers;
+pub(crate) mod levers;
 mod mirror;
 mod modes;
 mod paths;
@@ -136,7 +160,10 @@ use baked_set::{
 };
 use busy_stats::BusyStats;
 use frame_driver::{FrameDriver, FrameInput};
-use levers::{DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, parse_pool_layers};
+use levers::{
+    DEFAULT_LEVERS, Levers, POOL_LAYERS_ENV, drain_cap_from_env, in_hand_cap_from_env,
+    parse_pool_layers,
+};
 use mirror::{MirrorStats, WalkMirror};
 use modes::{ReadsMode, WalkModes, render_camera};
 use paths::{SplitMix64, WALK_SEED, WalkKind};
@@ -162,10 +189,12 @@ fn section_reads(counters: &PrlReadCounters) -> (u64, u64) {
 
 fn run_label(walk: &Walk, levers: Levers, modes: &WalkModes) -> String {
     format!(
-        "{} | L {} m | {} | {}",
+        "{} | L {} m | {}{}{} | {}",
         walk.kind.label(),
         levers.lead_metres,
         levers.pools_label(),
+        levers.drain_cap_label(),
+        levers.in_hand_cap_label(),
         modes.label()
     )
 }
@@ -203,12 +232,18 @@ impl<'w> Rig<'w> {
         stage.set_lead_metres(levers.lead_metres);
         let lead = stage.lead();
         session.controller.set_lead(lead);
+        if let Some(cap) = levers.in_hand_cap {
+            cap.apply(&mut session.controller);
+        }
         let mirror = PoolMirror::new(
             view.manifest,
             pool_sizing(world, levers.pool_layers),
             reads.retire_clock(),
         );
         let mut level = LevelStreaming::default();
+        if let Some(cap) = levers.drain_cap {
+            cap.apply(&mut level);
+        }
         level.install_cell_demand(stage);
         level.install_lightmap(session);
         let driver = FrameDriver::new(level, mirror, reads, cell_blocks.clone());
@@ -412,6 +447,7 @@ fn run(
                     }
                 }
             }
+            report.tallies.add(step == 0, &outcome);
             let (outside, not_resident) = (outcome.outside, outcome.not_resident);
             if step == 0 {
                 report.spawn.add(outside, not_resident, outside_missing);
@@ -484,6 +520,7 @@ fn run(
         {
             report.sh = Some(ShRunStats {
                 spawn_misses: counters.misses,
+                spawn_buckets: counters.miss_buckets,
                 counters,
                 workers: None,
             });
@@ -608,6 +645,27 @@ fn lightmap_residency_walks_from_prl() {
             })
             .collect();
     }
+    let drain_cap = drain_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
+    match drain_cap {
+        Some(cap) => println!(
+            "play drain cap: {} MiB ({} bytes) in every walk run; the spawn step admits at \
+             this cap, the walk has no settling",
+            cap.mib, cap.bytes
+        ),
+        None => println!("play drain cap: production"),
+    }
+    let in_hand_cap = in_hand_cap_from_env().unwrap_or_else(|why| panic!("{why}"));
+    match in_hand_cap {
+        Some(cap) => println!(
+            "lightmap in-hand cap: {} MiB ({} bytes) in every run, the band half of it",
+            cap.mib, cap.bytes
+        ),
+        None => println!("lightmap in-hand cap: production"),
+    }
+    for config in &mut configs {
+        config.drain_cap = drain_cap;
+        config.in_hand_cap = in_hand_cap;
+    }
     let mut records = Vec::new();
     for kind in WalkKind::ALL {
         let walk = Walk::build(&world, kind, steps);
@@ -635,6 +693,14 @@ fn lightmap_residency_walks_from_prl() {
                     sh,
                 },
                 &report,
+            );
+            // After the result line is printed and appended: a failing run
+            // keeps its evidence.
+            report.tallies.assert_sums(
+                report
+                    .counters
+                    .as_ref()
+                    .expect("the run recorded its counters"),
             );
             let own = &report.record;
             print_split("its own trip record", &trip_record::split(own, own), false);

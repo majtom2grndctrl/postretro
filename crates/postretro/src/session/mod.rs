@@ -63,6 +63,7 @@ mod sh_async_workers;
 pub(crate) mod sh_residency;
 mod sh_streaming_diagnostics;
 pub(crate) mod store_saves;
+mod streaming_window_events;
 use level_streaming::LevelStreaming;
 use sh_residency::ShStreamingSession;
 

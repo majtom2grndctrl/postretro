@@ -9,6 +9,7 @@ use postretro_level_format::lightmap_pool::{PerPool, PoolKind, mask_item_plane};
 use postretro_level_loader::{
     LightmapBlockClass, LightmapPoolReport, LightmapTarget, PreparedLightmapBlock,
 };
+use postretro_renderer::LightmapMissBuckets;
 
 use super::LightmapResidencyError;
 use super::block_map::{BlockFacts, LevelBlockMap};
@@ -23,16 +24,22 @@ use crate::streaming::target_set::TargetSet;
 
 #[path = "drain.rs"]
 mod drain;
+#[path = "miss_causes.rs"]
+mod miss_causes;
 #[path = "preload.rs"]
 mod preload;
 #[path = "reads.rs"]
 mod reads;
 
+use miss_causes::{FrameMarks, RequestPassVerdict};
 pub(crate) use preload::LightmapPreloadReads;
 use reads::PairCharge;
 #[cfg(test)]
 #[path = "decode_tests.rs"]
 mod decode_tests;
+#[cfg(test)]
+#[path = "miss_cause_tests.rs"]
+mod miss_cause_tests;
 #[cfg(test)]
 #[path = "multi_block_tests.rs"]
 mod multi_block_tests;
@@ -81,6 +88,8 @@ pub(crate) const MAX_IN_HAND_PAIR_BYTES: u64 = 4 * MAX_INSTALL_DECODED_BYTES_PER
 /// reads use, so prefetch can never keep them from submitting. The first
 /// band pair is always allowed, so one oversized band pair still streams.
 pub(crate) const MAX_BAND_PERMITS: usize = MAX_LIGHTMAP_PERMITS / 2;
+/// The production band in-hand total: half of `MAX_IN_HAND_PAIR_BYTES`, which
+/// `band_in_hand_cap()` returns outside tests.
 pub(crate) const MAX_BAND_IN_HAND_PAIR_BYTES: u64 = MAX_IN_HAND_PAIR_BYTES / 2;
 /// Failures after which a block is never requested again this generation:
 /// the first, then one retry after it leaves demand and returns (SH's
@@ -177,10 +186,11 @@ struct BlockSlot {
     refused_headroom: PerPool<u64>,
     /// The pools that refused it: only their room can bring it back.
     refused_by: PerPool<bool>,
+    /// This frame's drain and outcome verdicts, for its miss cause.
+    marks: FrameMarks,
 }
 
-/// Cumulative since controller creation, except the two `last_frame_*`
-/// gauges.
+/// Cumulative since controller creation, except the `last_frame_*` gauges.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct LightmapResidencyCounters {
     pub(crate) baked_recomputes: u64,
@@ -222,6 +232,9 @@ pub(crate) struct LightmapResidencyCounters {
     pub(crate) drawn_not_resident: u64,
     pub(crate) last_frame_drawn_outside_baked_set: u32,
     pub(crate) last_frame_drawn_not_resident: u32,
+    /// `drawn_not_resident` by cause; each block-frame lands in one bucket.
+    pub(crate) miss_buckets: LightmapMissBuckets,
+    pub(crate) last_frame_miss_buckets: LightmapMissBuckets,
 }
 
 /// Gauges of what is resident and what the current camera cell's mandatory
@@ -325,6 +338,14 @@ pub(crate) struct LightmapResidencyController {
     demand_updated: bool,
     /// Reused by outcome validation.
     outcome_scratch: Vec<u32>,
+    /// The counted frame [`FrameMarks`] belong to; advances at each count.
+    miss_epoch: u32,
+    /// Where the latest request pass stopped, for the miss causes.
+    request_verdict: RequestPassVerdict,
+    /// The walk harness's in-hand pair byte total in place of
+    /// [`MAX_IN_HAND_PAIR_BYTES`]; the band takes half. `None` is production.
+    #[cfg(test)]
+    in_hand_cap_override: Option<u64>,
 }
 
 impl std::fmt::Debug for LightmapResidencyController {
@@ -416,6 +437,7 @@ impl LightmapResidencyController {
                     refused_headroom: PerPool::default(),
                     refused_by: PerPool::default(),
                     failures: 0,
+                    marks: FrameMarks::default(),
                 };
                 map.block_count()
             ],
@@ -443,6 +465,10 @@ impl LightmapResidencyController {
             misses_due: false,
             demand_updated: false,
             outcome_scratch: Vec::new(),
+            miss_epoch: 0,
+            request_verdict: RequestPassVerdict::default(),
+            #[cfg(test)]
+            in_hand_cap_override: None,
         }
     }
 
@@ -515,6 +541,42 @@ impl LightmapResidencyController {
     #[cfg(test)]
     pub(crate) fn in_hand_bytes(&self) -> u64 {
         self.in_hand_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn band_in_hand_bytes(&self) -> u64 {
+        self.band_in_hand_bytes
+    }
+
+    /// Sets the in-hand pair byte total new requests wait at, and the band's
+    /// half of it; `None` restores production. The walk harness's lever.
+    #[cfg(test)]
+    pub(crate) fn set_in_hand_cap_override(&mut self, bytes: Option<u64>) {
+        self.in_hand_cap_override = bytes;
+        self.requests_due = true;
+    }
+
+    /// Pair bytes in hand before new requests wait.
+    #[cfg(not(test))]
+    fn in_hand_cap(&self) -> u64 {
+        MAX_IN_HAND_PAIR_BYTES
+    }
+
+    #[cfg(test)]
+    fn in_hand_cap(&self) -> u64 {
+        self.in_hand_cap_override.unwrap_or(MAX_IN_HAND_PAIR_BYTES)
+    }
+
+    /// Band pair bytes in hand before new band requests wait.
+    #[cfg(not(test))]
+    fn band_in_hand_cap(&self) -> u64 {
+        MAX_BAND_IN_HAND_PAIR_BYTES
+    }
+
+    #[cfg(test)]
+    fn band_in_hand_cap(&self) -> u64 {
+        self.in_hand_cap_override
+            .map_or(MAX_BAND_IN_HAND_PAIR_BYTES, |bytes| bytes / 2)
     }
 
     /// Capacities of every per-frame buffer, for the steady-frame proof.
@@ -671,36 +733,6 @@ impl LightmapResidencyController {
             self.retarget(block, next);
         }
         self.demand.clear_dirty();
-    }
-
-    /// Counts the latest frame's drawn blocks into the two visible-miss
-    /// buckets, once. Call after the frame's drain outcome is applied, so a
-    /// block that drain installed is resident for the frame that draws it.
-    /// The buckets overlap: outside the baked set counts every drawn block
-    /// not mandatory at lead L, resident or not; not resident counts every
-    /// drawn block not installed, whatever its class. A frame that draws no
-    /// cell, or one already counted, reports zero.
-    pub(crate) fn count_visible_misses(&mut self) {
-        let (mut outside, mut not_resident) = (0u32, 0u32);
-        if std::mem::take(&mut self.misses_due) {
-            for &block in self.demand.drawn_blocks() {
-                let slot = &self.slots[block as usize];
-                if slot
-                    .target
-                    .is_none_or(|target| target.class != LightmapBlockClass::Mandatory)
-                {
-                    outside += 1;
-                }
-                if slot.phase != BlockPhase::Installed {
-                    not_resident += 1;
-                }
-            }
-        }
-        let counters = &mut self.counters;
-        counters.drawn_outside_baked_set += u64::from(outside);
-        counters.drawn_not_resident += u64::from(not_resident);
-        counters.last_frame_drawn_outside_baked_set = outside;
-        counters.last_frame_drawn_not_resident = not_resident;
     }
 
     fn retarget(&mut self, block: u32, next: Option<BlockTarget>) {

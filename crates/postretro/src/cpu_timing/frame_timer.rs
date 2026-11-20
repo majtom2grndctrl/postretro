@@ -245,8 +245,9 @@ impl CpuFrameTimer {
         self.window.as_ref().map_or(0, StageWindow::partial_frames)
     }
 
-    /// Writes the `[CpuTiming]` line for the latest closed window. Surface
-    /// only: allocates the line text.
+    /// Writes the `[CpuTiming]` line for the latest closed window, and its
+    /// telemetry event from the same window. Surface only: allocates the line
+    /// text and, with a consumer, the event.
     pub(crate) fn log_last_window(&self) {
         if let Some(window) = self.last_window() {
             log::info!(
@@ -254,6 +255,9 @@ impl CpuFrameTimer {
                 window.frames,
                 window.fields_string()
             );
+            postretro_telemetry::emit_with(postretro_telemetry::Kind::CpuTimingWindow, || {
+                super::report::CpuWindowReport::from(window)
+            });
         }
     }
 }

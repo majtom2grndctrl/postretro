@@ -14,10 +14,9 @@ const AVG_WINDOW_SAMPLES: u32 = 120;
 /// bits wrapped between the prefill's end and start writes of a skipped pass.
 const MAX_PASS_NS: f64 = 1.0e9;
 
-/// One completed averaging window, retained for the debug UI and consumed by
-/// capture measurement.
+/// One completed averaging window, retained for the debug UI, consumed by
+/// capture measurement, and emitted by telemetry in every build.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
 pub struct FrameTimingSnapshot {
     /// Readbacks in the window. Every pass's `sampled_readbacks` is at most this.
     pub readbacks: u32,
@@ -283,6 +282,9 @@ pub struct FrameTiming {
     /// report. Kept distinct from `last_window` so diagnostics retain their
     /// most recent value while capture observes every window once.
     completed_window: Option<FrameTimingSnapshot>,
+    /// Newly completed window not yet taken by the app's telemetry, which
+    /// emits it on the frame it closes.
+    telemetry_window: Option<FrameTimingSnapshot>,
 }
 
 impl FrameTiming {
@@ -345,6 +347,7 @@ impl FrameTiming {
             frame_prefilled: false,
             last_window: None,
             completed_window: None,
+            telemetry_window: None,
         }
     }
 
@@ -372,6 +375,11 @@ impl FrameTiming {
         self.completed_window.take()
     }
 
+    /// Consume one newly completed window for telemetry, once.
+    pub fn take_telemetry_window(&mut self) -> Option<FrameTimingSnapshot> {
+        self.telemetry_window.take()
+    }
+
     /// Successful readbacks accumulated since the last completed window.
     /// Capture uses this instead of submitted frame count because a failed or
     /// delayed map does not contribute a timing sample.
@@ -391,6 +399,7 @@ impl FrameTiming {
         self.pairs_written_in_flight.store(0, Ordering::Relaxed);
         self.last_window = None;
         self.completed_window = None;
+        self.telemetry_window = None;
     }
 
     /// Render-pass timestamp writes for pair `pair_idx`. The returned
@@ -535,6 +544,7 @@ impl FrameTiming {
         }
         let snapshot = self.window.snapshot(&self.pass_labels);
         self.last_window = Some(snapshot.clone());
+        self.telemetry_window = Some(snapshot.clone());
         self.completed_window = Some(snapshot);
         log::info!("{}", self.window.log_line(&self.pass_labels));
         self.window.reset();
@@ -818,5 +828,27 @@ mod tests {
 
         let line = window.log_line(&labels);
         assert!(line.ends_with("; malformed: bad 1)"), "{line}");
+    }
+
+    // Telemetry: the closed snapshot the app emits agrees with the window's
+    // `[gpu-timing]` line on each pass mean, and a pass sampled in no
+    // readback reads absent (`n/a`, `None`), never zero.
+    #[test]
+    fn window_snapshot_and_log_line_agree_and_an_unsampled_pass_is_absent() {
+        let labels = ["forward", "sh_compose", "resolve"];
+        let mut window = TimingWindow::new(labels.len());
+        for duration in [1_250_000, 1_750_000] {
+            let ticks = simulate_frame(16, &[(0, duration), (2, 400_000)]);
+            window.record(mask(&[0, 2]), &ticks, 1.0, ONE_SECOND_TICKS);
+        }
+        let snapshot = window.snapshot(&labels);
+        let line = window.log_line(&labels);
+        assert_eq!(snapshot.readbacks, 2);
+        let forward = snapshot.passes[0].average_ms.expect("sampled");
+        assert!(line.contains(&format!("forward {forward:.2}ms")), "{line}");
+        assert!((forward - 1.5).abs() < 1e-6);
+        assert_eq!(snapshot.passes[1].average_ms, None);
+        assert_eq!(snapshot.passes[1].sampled_readbacks, 0);
+        assert!(line.contains("sh_compose n/a (0/2)"), "{line}");
     }
 }

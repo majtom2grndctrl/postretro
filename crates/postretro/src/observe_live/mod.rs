@@ -1,9 +1,11 @@
-//! Engine-free localhost transport for the live introspection channel.
+//! Engine-free localhost transport for the live introspection channel. It
+//! reads only the engine-blind telemetry hub, for `events`.
 //! See: context/lib/networking.md §Not netcode: the live introspection channel
 //!
 //! This module deliberately moves only opaque request and response bytes across
 //! its channel. Request parsing and response serialization belong to the
-//! main-thread frame-boundary service.
+//! main-thread frame-boundary service, except for `events`, which the
+//! transport answers itself from the engine-blind telemetry ring.
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -13,11 +15,13 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+mod events;
 mod ingress;
 
 pub(crate) use ingress::{LiveCpuTiming, run_observe_ingress_stage, service_observe_request};
 
-pub(crate) const OBSERVE_LIVE_PROTOCOL: u32 = 1;
+/// 2: the hello names the telemetry run, and the `events` verb exists.
+pub(crate) const OBSERVE_LIVE_PROTOCOL: u32 = 2;
 pub(crate) const OBSERVE_LIVE_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The serialized protocol has at most one legitimate in-flight request.
@@ -33,6 +37,8 @@ pub(crate) struct ServerHello {
     pub(crate) protocol: u32,
     pub(crate) map: String,
     pub(crate) engine: String,
+    /// The telemetry run `events` pages belong to.
+    pub(crate) run: String,
 }
 
 /// An opaque request delivered for main-thread servicing.
@@ -94,6 +100,14 @@ fn serve_connection(
     }
 
     while let Ok(payload) = read_request_frame(&mut stream) {
+        // Served here, never queued: the ring answers while the frame loop
+        // stalls, and the single slot stays the main thread's.
+        if events::is_events_request(&payload) {
+            if write_frame(&mut stream, &events::serve_events(&payload)).is_err() {
+                return;
+            }
+            continue;
+        }
         let (reply_tx, reply_rx) = mpsc::channel();
         if service_tx
             .try_send(ServiceRequest {
@@ -171,6 +185,7 @@ mod tests {
             protocol: OBSERVE_LIVE_PROTOCOL,
             map: String::from("spawn-map"),
             engine: String::from("test-engine"),
+            run: String::from("test-run"),
         }
     }
 
@@ -600,5 +615,128 @@ mod tests {
                 .iter()
                 .any(|record| matches!(&record.component, ComponentValue::Health(_)))
         );
+    }
+
+    /// A transport whose thread reads `hub` for `events`, with nothing
+    /// servicing the main-thread queue: the frame loop is blocked.
+    fn spawn_events_transport(
+        hub: std::sync::Arc<postretro_telemetry::Hub>,
+    ) -> (u16, mpsc::Receiver<ServiceRequest>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test listener");
+        let port = listener.local_addr().expect("read test port").port();
+        let hello_bytes = serde_json::to_vec(&hello()).expect("serialize hello");
+        let (service_tx, service_rx) = mpsc::sync_channel(OBSERVE_LIVE_REQUEST_QUEUE_CAPACITY);
+        thread::spawn(move || {
+            let _scope = postretro_telemetry::scoped::install(hub);
+            serve_listener(listener, &hello_bytes, &service_tx);
+        });
+        (port, service_rx)
+    }
+
+    fn events_hub() -> std::sync::Arc<postretro_telemetry::Hub> {
+        let hub = std::sync::Arc::new(postretro_telemetry::Hub::start(
+            postretro_telemetry::HubConfig {
+                ring: Some(postretro_telemetry::RingCaps::DEFAULT),
+                ..postretro_telemetry::HubConfig::new(postretro_telemetry::Source::Engine, "t")
+            },
+        ));
+        hub.log_record(log::Level::Info, "t", "a record");
+        hub
+    }
+
+    fn poll_events(client: &mut TcpStream, body: &str) -> serde_json::Value {
+        send_frame(client, body.as_bytes());
+        let reply = read_frame(client).expect("an events reply");
+        serde_json::from_slice(&reply).expect("a JSON reply")
+    }
+
+    // P12: `events` answers at once while the main thread services nothing,
+    // before any `dump` and after a `dump` has timed out; the `dump` times out
+    // as it does today.
+    #[test]
+    fn events_answer_while_the_main_thread_is_blocked_around_a_timed_out_dump() {
+        let hub = events_hub();
+        let (port, _service_rx) = spawn_events_transport(std::sync::Arc::clone(&hub));
+        let mut client = connect_when_ready(port);
+        let _ = read_frame(&mut client).expect("read hello");
+        client.set_read_timeout(Some(TEST_WAIT)).unwrap();
+        let started = Instant::now();
+        let reply = poll_events(&mut client, r#"{"verb":"events","since":0,"max":10}"#);
+        assert!(started.elapsed() < TEST_WAIT);
+        assert_eq!(reply["status"], "ok");
+        assert_eq!(reply["events"].as_array().unwrap().len(), 2);
+        assert_eq!(reply["run"], hub.run_id());
+        assert_eq!(reply["next"], 2);
+
+        let dump = serde_json::to_vec(&ingress::ObserveRequest::Dump {
+            spec: crate::observability::DumpSpec::default(),
+        })
+        .unwrap();
+        send_frame(&mut client, &dump);
+        client
+            .set_read_timeout(Some(OBSERVE_LIVE_REPLY_TIMEOUT + TEST_WAIT))
+            .unwrap();
+        let dump_started = Instant::now();
+        assert!(
+            read_frame(&mut client).is_err(),
+            "the dump times out and closes"
+        );
+        assert!(dump_started.elapsed() >= OBSERVE_LIVE_REPLY_TIMEOUT - Duration::from_millis(500));
+
+        let mut client = connect_when_ready(port);
+        let _ = read_frame(&mut client).expect("read hello");
+        client.set_read_timeout(Some(TEST_WAIT)).unwrap();
+        let started = Instant::now();
+        let reply = poll_events(&mut client, r#"{"verb":"events","since":2,"max":10}"#);
+        assert!(started.elapsed() < TEST_WAIT);
+        assert_eq!(reply["status"], "ok");
+        assert_eq!(reply["events"], serde_json::json!([]));
+        assert_eq!(reply["next"], 2);
+        assert_eq!(reply["head"], 2);
+    }
+
+    #[test]
+    fn a_bad_events_request_returns_an_error_frame_naming_run_and_head() {
+        let hub = events_hub();
+        let (port, _service_rx) = spawn_events_transport(std::sync::Arc::clone(&hub));
+        let mut client = connect_when_ready(port);
+        let _ = read_frame(&mut client).expect("read hello");
+        client.set_read_timeout(Some(TEST_WAIT)).unwrap();
+        let malformed = poll_events(&mut client, r#"{"verb":"events","since":"zero"}"#);
+        assert_eq!(malformed["status"], "error");
+        let beyond = poll_events(&mut client, r#"{"verb":"events","since":99,"max":1}"#);
+        assert_eq!(beyond["status"], "error");
+        assert_eq!(beyond["run"], hub.run_id());
+        assert_eq!(beyond["head"], 2);
+        let unknown = poll_events(
+            &mut client,
+            r#"{"verb":"events","since":0,"max":1,"kinds":["no_such_kind"]}"#,
+        );
+        assert_eq!(unknown["status"], "error");
+        assert_eq!(unknown["head"], 2);
+        let filtered = poll_events(
+            &mut client,
+            r#"{"verb":"events","since":0,"max":5,"kinds":["log"]}"#,
+        );
+        assert_eq!(filtered["events"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            filtered["next"], 2,
+            "the filtered-out run_start still advances"
+        );
+    }
+
+    #[test]
+    fn a_protocol_one_client_reads_the_protocol_two_hello() {
+        #[derive(Deserialize)]
+        struct HelloV1 {
+            protocol: u32,
+            map: String,
+            engine: String,
+        }
+        let bytes = serde_json::to_vec(&hello()).unwrap();
+        let v1: HelloV1 = serde_json::from_slice(&bytes).expect("unknown fields are ignored");
+        assert_eq!(v1.protocol, 2);
+        assert_eq!(v1.map, "spawn-map");
+        assert_eq!(v1.engine, "test-engine");
     }
 }

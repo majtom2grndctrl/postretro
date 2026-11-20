@@ -153,4 +153,4 @@ Left as is, with reasons:
   - The tick function's E10 schedule and E25 seam edits were ported into the split `sim/tick.rs`.
   - The e24 closure hash moved to main's v1 encoding; its value is unchanged.
   - A `type_complexity` lint main carried in `ai/src/clip_timed_shipped_tests.rs` was fixed so the gate passes.
-- Merged into main directly at the owner's request, without a pull request.
+- Lands through a pull request into main.

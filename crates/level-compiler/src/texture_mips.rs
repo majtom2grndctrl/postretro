@@ -2842,7 +2842,9 @@ mod tests {
             let linear: Vec<f32> = texels.iter().map(|&b| f32::from(b) / 255.0).collect();
             let (raw_mip1, _, _) = downsample_2x_f32(&linear, w, h, 4);
             let raw: Vec<[u8; 4]> = raw_mip1
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|t| std::array::from_fn(|c| linear_to_unorm_u8(t[c])))
                 .collect();
             if markers.smoothness {
@@ -2859,13 +2861,23 @@ mod tests {
             }
 
             let chain = build_surface_chain_impl(&texels, 4, w, h, markers);
-            let rg: Vec<u8> = texels.chunks_exact(4).flat_map(|t| [t[0], t[1]]).collect();
+            let rg: Vec<u8> = texels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|t| [t[0], t[1]])
+                .collect();
             let rg_chain = build_surface_chain_impl(&rg, 2, w, h, SurfaceMarkers::default());
             let levels = surface_mips(&chain, 4, w, h);
             let rg_levels = surface_mips(&rg_chain, 2, w, h);
             assert_eq!(levels.len(), 5);
             for (level, (rgba, rg)) in levels.iter().zip(&rg_levels).enumerate() {
-                for (texel, rg) in rgba.chunks_exact(4).zip(rg.chunks_exact(2)) {
+                for (texel, rg) in rgba
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(rg.as_chunks::<2>().0.iter())
+                {
                     assert_eq!(
                         &texel[..2],
                         rg,

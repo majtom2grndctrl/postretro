@@ -900,7 +900,7 @@ impl SlotCase {
         assert_eq!(slot.format, PrmFormat::Rgba8Unorm, "{self:?}");
         assert_eq!((slot.width, slot.height, slot.level_count), (4, 4, 3));
         let levels = mip_levels(slot);
-        for (index, texel) in levels[0].chunks_exact(4).enumerate() {
+        for (index, texel) in levels[0].as_chunks::<4>().0.iter().enumerate() {
             let (x, y) = (index as u32 % 4, index as u32 / 4);
             assert_eq!(
                 texel,
@@ -909,7 +909,7 @@ impl SlotCase {
             );
         }
         for (level, texels) in levels.iter().enumerate() {
-            for texel in texels.chunks_exact(4) {
+            for texel in texels.as_chunks::<4>().0.iter() {
                 if self.smoothness {
                     assert!(texel[2] >= 1, "{self:?}: mip {level} B {texel:?}");
                 } else {

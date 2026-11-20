@@ -264,6 +264,8 @@ Clear-on-unload contract:
 | Active per-level reactions/crossings and accumulator bindings, level-local reaction/crossing definitions, UI registrations, and presentation cells | Mod-global reaction/crossing definitions and persisted-state save path |
 | Progress tracker, frame-end death-event carryover, active wieldable, camera pose | Rust-side primitive/classname registries |
 
+**Arrival harvest** (decided, not yet built). A load carrying a level seam reads each seam occupant's landmark-relative arrival before unload's first teardown step. It must run first: later steps reset the host's command queues, despawn pawns and reset the camera, which the arrival reads. A backdrop's unload writes none. An arrival belongs to its load: suspend and a failed or cancelled load clear it (`entity_model.md` §7e).
+
 Frontend is a no-level steady state. Renderer and audio may exist, but world, collision, fog, level sounds, and per-level registries are empty. Frontend rendering uses a world-less clear and skips gameplay/HUD reads that require a level.
 
 Frontend is **not** a peerless state. A net endpoint outlives every level, so a host can sit in Frontend with clients connected, and the transport is polled from world-less frames to keep it alive (`networking.md` §Transport contract). A command-line host boots there and admits clients. A host's own navigation reaches Frontend only by ending its session (`scripting.md` §10.4). Unloading clears the host's installed level parity, which demotes those peers rather than leaving them participating against a torn-down world.

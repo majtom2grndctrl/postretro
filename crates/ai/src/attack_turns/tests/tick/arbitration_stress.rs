@@ -64,6 +64,7 @@ impl Wave {
         let target = TargetPawn {
             entity: pawn,
             position: player_spot(),
+            life: 0,
         };
         let enemies: Vec<EntityId> = (0..enemy_count)
             .map(|index| spawn_at(&mut reg, index, &graph, "attack_act"))

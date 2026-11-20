@@ -60,6 +60,11 @@ pub struct RecentAttacker {
     pub attacker: EntityId,
     pub accumulated_damage: f32,
     pub time_since_damage_ms: f32,
+    /// The attacker's life counter when it hit: a respawn clears the entry,
+    /// so `@candidate.damageDealtToMe` and `timeSinceDamageFromCandidate`
+    /// restart. Host-local, like the counter itself.
+    #[serde(skip)]
+    pub life: u32,
 }
 
 /// A brain's memory of a knockback launch. An enemy is launched while
@@ -311,6 +316,10 @@ pub struct BrainComponent {
     /// target. Cleared when aggro drops.
     #[serde(default)]
     pub acquired_target: Option<EntityId>,
+    /// [`Self::acquired_target`]'s life counter when acquired: a respawn of
+    /// the target since then runs the respawn drop. Host-local.
+    #[serde(skip)]
+    pub acquired_target_life: u32,
     /// Target whose retention was acquired by the engine-owned retaliation
     /// preference rather than ordinary pure-distance ranking. It is keyed to
     /// the retained target and cleared with every ordinary target-loss path;
@@ -484,6 +493,7 @@ impl BrainComponent {
             aggro_armed: true,
             target_reachable: false,
             acquired_target: None,
+            acquired_target_life: 0,
             retaliation_acquired_target: None,
             combat_slot: None,
             combat_slot_hold_ticks: 0,
@@ -678,6 +688,12 @@ impl BrainComponent {
     /// recency. At capacity, preserve the more recent and more damaging entries
     /// first; a final entity-id tie keeps replacement deterministic.
     pub fn record_attacker_damage(&mut self, attacker: EntityId, damage: f32) {
+        self.record_attacker_damage_in_life(attacker, damage, 0);
+    }
+
+    /// [`Self::record_attacker_damage`] from an attacker in its life `life`:
+    /// an entry from an earlier life restarts.
+    pub fn record_attacker_damage_in_life(&mut self, attacker: EntityId, damage: f32, life: u32) {
         if !damage.is_finite() || damage <= 0.0 {
             return;
         }
@@ -688,6 +704,15 @@ impl BrainComponent {
             .flatten()
             .find(|entry| entry.attacker == attacker)
         {
+            if entry.life != life {
+                *entry = RecentAttacker {
+                    attacker,
+                    accumulated_damage: damage,
+                    time_since_damage_ms: 0.0,
+                    life,
+                };
+                return;
+            }
             entry.accumulated_damage = (entry.accumulated_damage.max(0.0) + damage).min(f32::MAX);
             entry.time_since_damage_ms = 0.0;
             return;
@@ -697,6 +722,7 @@ impl BrainComponent {
             attacker,
             accumulated_damage: damage,
             time_since_damage_ms: 0.0,
+            life,
         };
         if let Some(empty) = self
             .recent_attackers
@@ -748,6 +774,53 @@ impl BrainComponent {
             self.awareness.empty();
         }
         self.aggro_armed = armed;
+    }
+
+    /// The respawn drop: forget what this NPC keeps about every pawn that
+    /// respawned since it was stamped. `life_of` gives a pawn's life counter
+    /// now, `None` for an entity that is no pawn. A target lost this way
+    /// frees its combat slot and retaliation mark; turns on the pawn end
+    /// (arbitration records their refresh and stops a burst on them); the
+    /// wait clock and request on it clear; its ledger entry and meter go, so
+    /// it is noticed again through a fresh fill. Returns whether the target
+    /// dropped.
+    pub fn drop_respawned(&mut self, life_of: impl Fn(EntityId) -> Option<u32>) -> bool {
+        let stale = |pawn: EntityId, life: u32| life_of(pawn).is_some_and(|now| now != life);
+        let target_dropped = self
+            .acquired_target
+            .is_some_and(|target| stale(target, self.acquired_target_life));
+        if target_dropped {
+            self.acquired_target = None;
+            self.acquired_target_life = 0;
+            self.retaliation_acquired_target = None;
+            self.combat_slot = None;
+            self.combat_slot_hold_ticks = 0;
+            self.beyond_tactical_range = false;
+        }
+        self.attack_turns
+            .retain_held(|turn| !stale(turn.target, turn.target_life));
+        if self
+            .attack_turns
+            .wait
+            .is_some_and(|wait| stale(wait.target, wait.target_life))
+        {
+            self.attack_turns.wait = None;
+        }
+        if self
+            .attack_turns
+            .request
+            .is_some_and(|request| stale(request.target, request.target_life))
+        {
+            self.attack_turns.request = None;
+        }
+        for entry in self.recent_attackers.iter_mut() {
+            if entry.is_some_and(|entry| stale(entry.attacker, entry.life)) {
+                *entry = None;
+            }
+        }
+        self.awareness
+            .forget_where(|meter| stale(meter.candidate, meter.life));
+        target_dropped
     }
 
     /// Lookup used by the allocation-free candidate refresh path.
@@ -1342,6 +1415,62 @@ mod tests {
 
     // The walk-cycle rate scaling on host and client reads a state as the
     // locomotion clip's variant only by this naming rule.
+    // P47: the respawn drop forgets, for every pawn whose life moved on since
+    // it was stamped, the target with its slot and retaliation mark, turns,
+    // wait clock, request, ledger entry and meter; another pawn's stay.
+    #[test]
+    fn drop_respawned_forgets_only_what_was_kept_about_an_earlier_life() {
+        let respawned = EntityId::from_raw(7);
+        let other = EntityId::from_raw(8);
+        let mut brain = BrainComponent::from_graph(&authored_graph());
+        brain.acquired_target = Some(respawned);
+        brain.retaliation_acquired_target = Some(respawned);
+        brain.combat_slot = Some(Vec3::X);
+        brain.combat_slot_hold_ticks = 5;
+        for (target, attack) in [(respawned, 0), (other, 1)] {
+            assert!(brain.attack_turns.hold(HeldTurn {
+                attack,
+                target,
+                target_life: 0,
+                pool: AttackPoolId::Default,
+                draws: ResolvedDraws::NONE,
+                until_cooldown: true,
+                granted_tick: 1,
+            }));
+        }
+        brain.attack_turns.wait = Some(WaitClock {
+            since_tick: 3,
+            target: respawned,
+            target_life: 0,
+        });
+        brain.record_attacker_damage_in_life(respawned, 4.0, 0);
+        brain.record_attacker_damage_in_life(other, 2.0, 0);
+        brain.awareness.record_hit(respawned, 3.0, 0);
+        brain.awareness.record_hit(other, 3.0, 0);
+        let life_of = |pawn: EntityId| Some(u32::from(pawn == respawned));
+
+        assert!(brain.drop_respawned(life_of), "the target dropped");
+        assert_eq!(brain.acquired_target, None);
+        assert_eq!(brain.retaliation_acquired_target, None);
+        assert_eq!(brain.combat_slot, None);
+        assert_eq!(brain.combat_slot_hold_ticks, 0);
+        let held: Vec<_> = brain.attack_turns.held().map(|turn| turn.target).collect();
+        assert_eq!(held, vec![other]);
+        assert_eq!(brain.attack_turns.wait, None);
+        assert_eq!(brain.recent_attacker(respawned), None);
+        assert!(brain.recent_attacker(other).is_some());
+        assert!(brain.awareness.meter(respawned).is_none());
+        assert!(brain.awareness.meter(other).is_some());
+        assert!(
+            !brain.drop_respawned(life_of),
+            "nothing left to drop: a stored difference, applied once"
+        );
+        // A pawn that is no pawn of the pass drops nothing.
+        brain.record_attacker_damage_in_life(other, 1.0, 5);
+        brain.drop_respawned(|_| None);
+        assert!(brain.recent_attacker(other).is_some());
+    }
+
     #[test]
     fn travel_variant_of_state_names_only_the_base_and_its_three_suffixes() {
         assert_eq!(
@@ -1651,17 +1780,20 @@ mod tests {
                 attacker: EntityId::from_raw((index + 10) as u32),
                 accumulated_damage: 10.0,
                 time_since_damage_ms: 50.0,
+                life: 0,
             });
         }
         brain.recent_attackers[0] = Some(RecentAttacker {
             attacker: EntityId::from_raw(2),
             accumulated_damage: 1.0,
             time_since_damage_ms: 100.0,
+            life: 0,
         });
         brain.recent_attackers[1] = Some(RecentAttacker {
             attacker: EntityId::from_raw(3),
             accumulated_damage: 9.0,
             time_since_damage_ms: 100.0,
+            life: 0,
         });
         let newcomer = EntityId::from_raw(99);
         brain.record_attacker_damage(newcomer, 4.0);
@@ -1690,6 +1822,7 @@ mod tests {
                 attacker: EntityId::from_raw((index + 20) as u32),
                 accumulated_damage: 1.0,
                 time_since_damage_ms: 100.0,
+                life: 0,
             });
         }
         brain.record_attacker_damage(EntityId::from_raw(99), 1.0);

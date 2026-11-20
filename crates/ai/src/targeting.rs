@@ -30,6 +30,9 @@ const EMPTY_RECENT_ATTACKERS: [Option<RecentAttacker>; RECENT_ATTACKER_LEDGER_CA
 pub(crate) struct TargetPawn {
     pub(crate) entity: EntityId,
     pub(crate) position: Vec3,
+    /// The pawn's life counter this pass: stamped on the target, turns,
+    /// wait clock and meter kept about it.
+    pub(crate) life: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -146,7 +149,11 @@ pub(super) fn target_candidate(
     is_pawn.then_some(())?;
     let position = registry.get_component::<Transform>(entity).ok()?.position;
     Some(TargetCandidate {
-        target: TargetPawn { entity, position },
+        target: TargetPawn {
+            entity,
+            position,
+            life: postretro_entities::components::player_movement::life_counter(registry, entity),
+        },
         distance: distance_xz(position, from),
     })
 }
@@ -197,6 +204,7 @@ fn indexed_candidate(pawn: &IndexedPawn, from: Vec3) -> TargetCandidate {
         target: TargetPawn {
             entity: pawn.entity,
             position: pawn.position,
+            life: pawn.life,
         },
         distance: distance_xz(pawn.position, from),
     }
@@ -732,6 +740,7 @@ pub(super) fn notice_target(
             check.admit(
                 eligible.candidate.target.entity,
                 eligible.candidate.distance,
+                eligible.candidate.target.life,
             );
         }
     };
@@ -745,7 +754,11 @@ pub(super) fn notice_target(
         admit(&mut check, &mut newcomers[..newcomer_count]);
         check.finish(previous);
     } else {
-        check.acquire(entity, chosen.candidate.distance);
+        check.acquire(
+            entity,
+            chosen.candidate.distance,
+            chosen.candidate.target.life,
+        );
     }
     // The latch marks a pick the retaliation term made over pure distance.
     let retaliation_acquired_target = chosen.retaliation.and_then(|_| {
@@ -992,6 +1005,7 @@ mod tests {
             attacker,
             accumulated_damage,
             time_since_damage_ms,
+            life: 0,
         });
         ledger
     }
@@ -1666,6 +1680,7 @@ mod tests {
             attacker: attacker_b,
             accumulated_damage: 10.0,
             time_since_damage_ms: 0.0,
+            life: 0,
         });
         let initial = select_with_retaliation_for_test(
             &registry,

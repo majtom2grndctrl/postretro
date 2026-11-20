@@ -14,8 +14,19 @@ pub(crate) fn record_damage_perception(
     registry: &mut EntityRegistry,
     id: EntityId,
     attacker: Option<EntityId>,
+    attacker_life: Option<u32>,
     amount: f32,
 ) {
+    // A shot fired before its pawn's latest respawn lands as damage, but this
+    // brain perceives no attacker in it: no ledger entry, no meter, no bearing.
+    let attacker = attacker.filter(|&attacker| {
+        attacker_life.is_none_or(|life| {
+            life == crate::components::player_movement::life_counter(registry, attacker)
+        })
+    });
+    let life = attacker.map_or(0, |attacker| {
+        crate::components::player_movement::life_counter(registry, attacker)
+    });
     let attacker_transform =
         attacker.and_then(|attacker| registry.get_component::<Transform>(attacker).ok().copied());
     let damaged_transform = registry.get_component::<Transform>(id).ok().copied();
@@ -31,7 +42,7 @@ pub(crate) fn record_damage_perception(
         // position below deliberately require spatial provenance. Contextless
         // damage still resets generic recency but creates no ledger entry.
         if let Some(attacker) = attacker {
-            brain.record_attacker_damage(attacker, amount);
+            brain.record_attacker_damage_in_life(attacker, amount, life);
         }
         // On an NPC without a target, a hit sets its attacker's awareness
         // meter to 1, draining from this hit. One holding a target changes
@@ -47,7 +58,7 @@ pub(crate) fn record_damage_perception(
                 }
                 _ => f32::INFINITY,
             };
-            brain.awareness.record_hit(attacker, distance);
+            brain.awareness.record_hit(attacker, distance, life);
         }
         // Bearing is meaningful only for this hit. A contextless hit must not
         // make an older directional stimulus look recent again.

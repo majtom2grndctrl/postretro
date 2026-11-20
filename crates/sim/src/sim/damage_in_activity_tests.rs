@@ -162,6 +162,17 @@ fn spawn_shooter(registry: &mut EntityRegistry, pellets: u32) -> EntityId {
 /// next Projectiles stage. `splash` detonates it there instead.
 fn spawn_projectile(registry: &mut EntityRegistry, damage: f32, splash: Option<SplashDescriptor>) {
     let owner_pawn = registry.spawn(Transform::default());
+    spawn_projectile_from(registry, owner_pawn, 0, damage, splash);
+}
+
+/// [`spawn_projectile`] fired by `owner_pawn` in its life `owner_life`.
+fn spawn_projectile_from(
+    registry: &mut EntityRegistry,
+    owner_pawn: EntityId,
+    owner_life: u32,
+    damage: f32,
+    splash: Option<SplashDescriptor>,
+) {
     let owner_weapon = registry.spawn(Transform::default());
     let projectile = registry.spawn(Transform {
         position: Vec3::new(0.0, 0.0, -3.0),
@@ -184,6 +195,7 @@ fn spawn_projectile(registry: &mut EntityRegistry, damage: f32, splash: Option<S
                 damage,
                 credit_source: "test.projectile".to_string(),
                 owner_pawn,
+                owner_life,
                 owner_weapon,
                 attackerless: false,
                 spawned: false,
@@ -366,4 +378,55 @@ fn a_hit_before_the_ai_pass_counts_toward_the_activity_left_and_one_after_toward
         "`b`'s first evaluation reads the post-pass hit"
     );
     assert_eq!(brain.damage_in_activity(0), Some(0.0));
+}
+
+// AC 6, 12 / P67: a rocket fired before its owner respawned lands after the
+// respawn: its damage counts, but it touches no NPC's attacker ledger or
+// awareness meter, direct or splash. One fired in the owner's current life
+// does both, on an NPC without a target.
+#[test]
+fn a_projectile_fired_before_its_owners_respawn_touches_no_meter_or_ledger() {
+    let splash = SplashDescriptor {
+        knockback: None,
+        radius: 2.0,
+        min_fraction: 1.0,
+        self_damage: true,
+    };
+    for (label, splash) in [("direct", None), ("splash", Some(splash))] {
+        for fired_in_life in [0, 1] {
+            let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+            let (target, owner, weapon) = {
+                let mut registry = registry.borrow_mut();
+                let target = spawn_target(&mut registry, idle_brain(), 0.0);
+                // The owner has respawned once since: its life is 1.
+                let owner = registry.spawn(Transform {
+                    position: Vec3::new(0.0, 0.0, 20.0),
+                    ..Transform::default()
+                });
+                let mut movement = trigger_movement();
+                movement.life_counter = 1;
+                registry.set_component(owner, movement).unwrap();
+                spawn_projectile_from(&mut registry, owner, fired_in_life, 25.0, splash.clone());
+                (target, owner, spawn_shooter(&mut registry, 1))
+            };
+            tick(&registry, weapon, false);
+            let registry = registry.borrow();
+            assert!(
+                health(&registry, target) < TARGET_HEALTH,
+                "{label}, life {fired_in_life}: the damage lands"
+            );
+            let brain = brain(&registry, target);
+            let current = fired_in_life == 1;
+            assert_eq!(
+                brain.recent_attacker(owner).is_some(),
+                current,
+                "{label}, life {fired_in_life}: the attacker ledger"
+            );
+            assert_eq!(
+                brain.awareness.value(owner) > 0.9,
+                current,
+                "{label}, life {fired_in_life}: the awareness meter"
+            );
+        }
+    }
 }

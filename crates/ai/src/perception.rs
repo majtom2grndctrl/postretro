@@ -257,7 +257,17 @@ mod tests {
             .unwrap();
         let position = Vec3::new(1.0, 2.0, 3.0);
         assert_eq!(enemy_eye(&registry, entity, position, None), position);
-        assert_eq!(target_aim(&registry, TargetPawn { entity, position }), None);
+        assert_eq!(
+            target_aim(
+                &registry,
+                TargetPawn {
+                    entity,
+                    position,
+                    life: 0,
+                }
+            ),
+            None
+        );
         assert!(crate::targeting::target_candidate(&registry, entity, Vec3::ZERO).is_none());
     }
 
@@ -370,6 +380,7 @@ mod tests {
                 target: TargetPawn {
                     entity: target,
                     position: Vec3::ZERO,
+                    life: 0,
                 },
                 nav_graph: None,
                 collision_world: Some(&CollisionWorld::new()),

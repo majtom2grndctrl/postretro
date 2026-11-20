@@ -947,6 +947,125 @@ fn ready_remote_hit_reaches_retaliation_selection_in_the_same_simulation_tick() 
     assert_eq!(brain.retaliation_acquired_target, Some(attacker));
 }
 
+// AC 12 / P67: a remote shot authorized before its pawn's respawn and declared
+// after it still deals its damage, but feeds no NPC's attacker ledger and so
+// draws no retaliation, and sets no meter.
+#[test]
+fn a_remote_shot_declared_before_death_lands_after_the_respawn_and_touches_no_ledger() {
+    let registry = Rc::new(RefCell::new(EntityRegistry::new()));
+    let (player, victim, attacker, weapon) = {
+        let mut r = registry.borrow_mut();
+        let player = ai_pawn(&mut r, Vec3::new(3.0, 0.0, 0.0));
+        let victim = ai_enemy(&mut r, Vec3::ZERO);
+        r.entity_state_mut(victim)
+            .unwrap()
+            .set("archetype_tolerance", 4.0);
+        let attacker = ai_enemy(&mut r, Vec3::new(10.0, 0.0, 0.0));
+        r.set_component(attacker, movement()).unwrap();
+        let weapon = r.spawn(Transform::default());
+        let mut component = projectile_weapon("test.crossfire.remote");
+        component.resolution = ResolutionMode::Hitscan;
+        component.projectile = None;
+        component.damage = 8.0;
+        component.range = 20.0;
+        r.set_component(weapon, component).unwrap();
+        (player, victim, attacker, weapon)
+    };
+    let mut allocator = NetworkIdAllocator::new();
+    let shot_id = ShotId::from_parts(
+        (allocator.stamp(attacker)).0,
+        11,
+        postretro_foundation::ActivationLane::Primary,
+        0,
+    );
+    let victim_network_id = allocator.stamp(victim);
+    let mut owners = MovementOwners::new();
+    owners.set(attacker, CLIENT_ID);
+    let mut host = HostSimulation::new(registry.clone(), CollisionWorld::new(), Vec::new());
+    // The row pins same-tick ordering: the victim decides on every tick.
+    host.ai = AiRuntime::deciding_every_tick();
+    host.tick(&[], |_, _| {});
+    assert_eq!(
+        registry
+            .borrow()
+            .get_component::<BrainComponent>(victim)
+            .unwrap()
+            .acquired_target,
+        Some(player)
+    );
+
+    // The shooter is on its third life when it fires.
+    {
+        let mut r = registry.borrow_mut();
+        let mut movement = r
+            .get_component::<PlayerMovementComponent>(attacker)
+            .unwrap()
+            .clone();
+        movement.life_counter = 2;
+        r.set_component(attacker, movement).unwrap();
+    }
+    let shot = authorization(&host.tick(&[remote_fire(attacker, weapon, shot_id)], |_, _| {}));
+    assert_eq!(shot.shot.pawn_life, 2, "FIRE stamps the shooter's life");
+    assert!(!shot.shot.is_projectile);
+    let mut open = opened(shot);
+    let mut pending = PendingHitDeclarations::new();
+    pending.push(
+        CLIENT_ID,
+        HitDeclaration {
+            shot_id: crate::wire_convert::shot_id_to_wire(shot_id),
+            records: vec![HitRecord {
+                normal: [0.0, 1.0, 0.0],
+                target: victim_network_id.0,
+                point: Vec3::new(0.0, 0.5, 0.0).to_array(),
+                zone: None,
+            }],
+        },
+    );
+    let mut ready =
+        host_take_ready_hit_declarations(&HostCommandQueues::new(), &mut open, &mut pending, 11);
+    assert_eq!(ready.len(), 1);
+    // The shooter respawns between FIRE and its HIT declaration.
+    {
+        let mut r = registry.borrow_mut();
+        let mut movement = r
+            .get_component::<PlayerMovementComponent>(attacker)
+            .unwrap()
+            .clone();
+        movement.life_counter += 1;
+        r.set_component(attacker, movement).unwrap();
+    }
+    let ingest_world = CollisionWorld::new();
+    host.tick(&[], |registry, _| {
+        let declaration = ready.pop().unwrap().declaration;
+        assert_eq!(
+            ingest(
+                registry,
+                &ingest_world,
+                &allocator,
+                &owners,
+                &mut open,
+                &declaration,
+            ),
+            (true, true)
+        );
+    });
+
+    let r = registry.borrow();
+    assert_eq!(
+        r.get_component::<HealthComponent>(victim).unwrap().current,
+        92.0
+    );
+    let brain = r.get_component::<BrainComponent>(victim).unwrap();
+    assert_eq!(brain.recent_attacker(attacker), None, "no ledger entry");
+    assert_eq!(brain.awareness.value(attacker), 0.0, "no meter");
+    assert_eq!(
+        brain.acquired_target,
+        Some(player),
+        "no retaliation for a shot from before the respawn"
+    );
+    assert_eq!(brain.retaliation_acquired_target, None);
+}
+
 // A player event reads the settled tick: a remote client's HIT that waited on
 // this tick's FIRE lands after the fixed-tick sim, with its own death sweep,
 // and the frame loop evaluates player events after both. The condition sees

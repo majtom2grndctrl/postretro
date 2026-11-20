@@ -243,6 +243,7 @@ fn a_due_selection_refreshes_only_hostiles_up_to_the_first_eligible_and_ledger_a
             attacker,
             accumulated_damage: 1.0,
             time_since_damage_ms: 100.0,
+            life: 0,
         });
 
         // The nearest hostile is blind: the first eligible is the second.

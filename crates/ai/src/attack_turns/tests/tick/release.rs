@@ -386,6 +386,7 @@ fn graph_reseat_mid_burst_cancels_execution_by_name() {
         let target = TargetPawn {
             entity: pawn,
             position: player_spot(),
+            life: 0,
         };
         let mut outcome = engaged_outcome(shooter, attacker_spot(0), brain, target);
         outcome.graph_reseated = true;
@@ -443,6 +444,7 @@ fn invalid_path_reseat_mid_burst_cancels_an_undrawn_execution() {
     let target = TargetPawn {
         entity: pawn,
         position: player_spot(),
+        life: 0,
     };
     let mut outcome = engaged_outcome(shooter, attacker_spot(0), brain, target);
     outcome.graph_reseated = true;

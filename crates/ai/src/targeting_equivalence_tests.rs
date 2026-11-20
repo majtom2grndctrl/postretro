@@ -365,6 +365,7 @@ fn random_scene(rng: &mut Lcg) -> Scene {
             attacker: rng.pick(&ledger_pool),
             accumulated_damage: rng.pick(&[0.0, 3.0, 5.0, 10.0, 10.0]),
             time_since_damage_ms: rng.pick(&[0.0, 100.0, 100.0, 2_000.0]),
+            life: 0,
         });
     }
     let latch = match rng.below(3) {
@@ -517,6 +518,7 @@ fn attack(scene: &mut Scene, slot: usize, attacker: EntityId, damage: f32) {
         attacker,
         accumulated_damage: damage,
         time_since_damage_ms: 100.0,
+        life: 0,
     });
 }
 

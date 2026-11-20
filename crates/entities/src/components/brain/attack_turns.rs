@@ -101,6 +101,8 @@ pub struct HeldTurn {
     /// The attack's index in the brain graph's `attacks` (name order).
     pub attack: u16,
     pub target: EntityId,
+    /// `target`'s life counter when stamped: its respawn ends this.
+    pub target_life: u32,
     /// The pool the turn counts in now: its holder's current pool.
     pub pool: AttackPoolId,
     /// The draws resolved at grant.
@@ -122,6 +124,8 @@ pub struct TurnRequest {
     /// a mark's lifetime, rather than by a ready fire step.
     pub marked: bool,
     pub target: EntityId,
+    /// `target`'s life counter when stamped: its respawn ends this.
+    pub target_life: u32,
     pub pool: AttackPoolId,
 }
 
@@ -131,6 +135,8 @@ pub struct TurnRequest {
 pub struct WaitClock {
     pub since_tick: u64,
     pub target: EntityId,
+    /// `target`'s life counter when stamped: its respawn ends this.
+    pub target_life: u32,
 }
 
 /// Every attack-turn fact one brain carries. Transient: a restored brain

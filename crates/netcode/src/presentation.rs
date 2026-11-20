@@ -734,6 +734,7 @@ mod tests {
                 knockback: None,
                 shot_id,
                 pawn: owner,
+                pawn_life: 0,
                 weapon,
                 fire_tick: 9,
                 damage: 100.0,

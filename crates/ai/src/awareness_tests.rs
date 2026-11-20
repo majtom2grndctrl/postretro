@@ -1267,3 +1267,312 @@ fn fill_ms_reload_keeps_value_and_takes_new_rate() {
         "the next check rises at the new rate",
     );
 }
+
+// ---------------------------------------------------------------------------
+// The respawn drop on meters (AC 6, 11, 12, 19, 20; P34, P41, P47, P54, P64,
+// P65, P67)
+// ---------------------------------------------------------------------------
+
+/// `noticing_graph` with no candidacy predicate: a body passes candidacy.
+fn noticing_bodies(fill_ms: f32) -> BehaviorGraphDescriptor {
+    let mut graph = noticing_graph(fill_ms, 2_000.0);
+    graph.candidate_filter = None;
+    graph
+}
+
+impl Watch {
+    fn respawn(&mut self, pawn: EntityId) {
+        respawn_in_place(&mut self.reg, pawn);
+    }
+
+    /// A hit from a shot `attacker` fired in its life `life`.
+    fn hit_from_life(&mut self, npc: EntityId, attacker: EntityId, life: u32) {
+        let mut context = DamageContext::new("test.rocket", DamageProducer::InTick);
+        context.attacker = Some(attacker);
+        context.attacker_life = Some(life);
+        assert!(apply_damage_with_context(
+            &mut self.reg,
+            npc,
+            &DamagePayload {
+                amount: 1.0,
+                impulse: Vec3::ZERO,
+                damage_type: None,
+            },
+            context,
+        ));
+    }
+
+    /// Checks from the next one until `npc` targets `pawn`, at most `limit`.
+    fn checks_until_targets(&mut self, npc: EntityId, pawn: EntityId, limit: usize) -> usize {
+        (1..=limit)
+            .find(|_| {
+                self.check();
+                self.target(npc) == Some(pawn)
+            })
+            .unwrap_or_else(|| panic!("not acquired in {limit} checks"))
+    }
+}
+
+// AC 11 / P47: an NPC fighting a player who respawns in view drops them on
+// the respawn tick and acquires them again on the first check at least
+// `fillMs` after the first check following the respawn, and on no earlier
+// one.
+#[test]
+fn respawn_drop_needs_a_full_fill_for_the_respawned_player() {
+    let mut watch = Watch::new();
+    let player = watch.player(in_view(10.0));
+    let npc = watch.npc(&default_noticing());
+    watch.checks(FILL_CHECKS + 1);
+    assert_eq!(watch.target(npc), Some(player));
+    watch.checks(5);
+    watch.tick();
+    watch.respawn(player);
+    watch.tick();
+    assert_eq!(watch.target(npc), None, "dropped on the respawn tick");
+    assert!(!watch.metered(npc, player), "its meter forgotten");
+    watch.check();
+    assert_eq!(watch.value(npc, player), 0.0, "a first sighting");
+    assert_eq!(
+        watch.checks_until_targets(npc, player, 40),
+        FILL_CHECKS,
+        "a full fill after the first check following the respawn"
+    );
+}
+
+// AC 11 / P41, P34: a player respawning in view of an NPC that saw their body
+// on its previous check, and one respawning 0.1 s after death with their
+// meter at 0.9, are each noticed only after a full fill from the first check
+// following the respawn.
+#[test]
+fn respawn_after_the_body_was_sighted_needs_a_full_fill() {
+    // 0.9 at the death: thirteen checks of a fill that reads 0.9 there.
+    let fill = 13.0 * CHECK_MS / 0.9;
+    let full = (fill / CHECK_MS).ceil() as usize;
+    for (label, body_checks, dead_ticks) in [("body seen", 3, 0), ("0.1 s after death", 0, 6)] {
+        let mut watch = Watch::new();
+        let player = watch.player(in_view(10.0));
+        let npc = watch.npc(&noticing_bodies(fill));
+        watch.checks(14);
+        assert_near(watch.value(npc, player), 0.9, "0.9 at the death");
+        watch.kill(player);
+        watch.checks(body_checks);
+        assert!(
+            watch.metered(npc, player),
+            "{label}: the body is still metered"
+        );
+        for _ in 0..dead_ticks {
+            watch.tick();
+        }
+        watch.respawn(player);
+        let mut health = watch
+            .reg
+            .get_component::<HealthComponent>(player)
+            .unwrap()
+            .clone();
+        health.current = health.max;
+        health.death_handled = false;
+        watch.reg.set_component(player, health).unwrap();
+        watch.check();
+        assert_eq!(watch.target(npc), None, "{label}");
+        assert_eq!(watch.value(npc, player), 0.0, "{label}: restarts at zero");
+        assert_eq!(
+            watch.checks_until_targets(npc, player, 40),
+            full,
+            "{label}: a full fill"
+        );
+    }
+}
+
+// AC 11 / P54: after the respawn drop, a teammate in view needs a full fill,
+// whether or not they hit the NPC during the fight; one who hits it after the
+// respawn is acquired on its next check that sees them.
+#[test]
+fn teammates_need_a_full_fill_after_the_respawn_drop_unless_they_hit_after_it() {
+    for hit_after in [false, true] {
+        let mut watch = Watch::new();
+        let player = watch.player(in_view(10.0));
+        let fought_alongside = watch.player(hidden(12.0));
+        let npc = watch.npc(&default_noticing());
+        watch.checks(FILL_CHECKS + 1);
+        assert_eq!(watch.target(npc), Some(player));
+        watch.place(fought_alongside, Vec3::new(12.0, 0.0, -20.0));
+        watch.tick();
+        watch.hit(npc, Some(fought_alongside));
+        assert!(!watch.metered(npc, fought_alongside), "a hit mid-fight");
+        watch.checks(3);
+        // The respawned player stands behind cover.
+        watch.place(player, hidden(10.0));
+        watch.respawn(player);
+        watch.check();
+        assert_eq!(watch.target(npc), None, "the drop");
+        if hit_after {
+            watch.tick();
+            watch.hit(npc, Some(fought_alongside));
+            watch.check();
+            assert_eq!(
+                watch.target(npc),
+                Some(fought_alongside),
+                "a hit after the respawn is acquired on the next check that sees them"
+            );
+        } else {
+            assert_eq!(watch.value(npc, fought_alongside), 0.0, "a first sighting");
+            assert_eq!(
+                watch.checks_until_targets(npc, fought_alongside, 40),
+                FILL_CHECKS,
+                "a full fill"
+            );
+        }
+    }
+}
+
+// AC 20 / P65: an NPC that switched from teammate A to player P by ranking
+// cleared A's meter, so after P respawns A needs a full fill.
+#[test]
+fn a_switch_is_an_acquisition_so_the_teammate_needs_a_full_fill_after_the_respawn() {
+    let mut watch = Watch::new();
+    let a = watch.player(in_view(20.0));
+    let p = watch.player(hidden(30.0));
+    let npc = watch.npc(&default_noticing());
+    watch.checks(FILL_CHECKS + 1);
+    assert_eq!(watch.target(npc), Some(a));
+    watch.place(p, Vec3::new(4.0, 0.0, -4.0));
+    watch.check();
+    assert_eq!(watch.target(npc), Some(p), "switched by ranking");
+    assert!(!watch.metered(npc, a));
+    watch.checks(4);
+    watch.place(p, hidden(30.0));
+    watch.respawn(p);
+    watch.check();
+    assert_eq!(watch.target(npc), None, "the respawn drop");
+    assert_eq!(watch.value(npc, a), 0.0, "A from zero");
+    assert_eq!(
+        watch.checks_until_targets(npc, a, 40),
+        FILL_CHECKS,
+        "a full fill"
+    );
+}
+
+// AC 6, 12 / P67: a shot fired before its pawn's respawn and landing after it
+// (a late rocket, a remote shot declared before death) touches no meter and
+// no attacker ledger; one fired in the new life sets the meter to 1 on an NPC
+// without a target. Damage recency still resets.
+#[test]
+fn a_shot_from_before_the_respawn_touches_no_meter_or_ledger() {
+    let mut watch = Watch::new();
+    let player = watch.player(hidden(10.0));
+    let npc = watch.npc(&default_noticing());
+    watch.checks(2);
+    watch.respawn(player);
+    watch.hit_from_life(npc, player, 0);
+    let brain = watch.brain(npc);
+    assert!(brain.awareness.is_empty(), "no meter");
+    assert_eq!(brain.recent_attacker(player), None, "no ledger entry");
+    assert_eq!(brain.time_since_damage_ms, 0.0, "the hit still lands");
+    assert!(!brain.damage_source_known, "a source from an earlier life");
+
+    watch.hit_from_life(npc, player, 1);
+    assert_eq!(watch.value(npc, player), 1.0, "a shot from the new life");
+    assert!(watch.brain(npc).recent_attacker(player).is_some());
+    watch.check_with(false);
+    assert_eq!(watch.target(npc), Some(player), "acquired once seen");
+}
+
+// AC 12 / P47: a respawn clears the player's attacker-ledger entry on every
+// NPC, engaged or without a target, so `candidate.damageDealtToMe` restarts
+// and no NPC retaliates for damage from before the respawn.
+#[test]
+fn a_respawn_clears_its_ledger_entry_on_every_npc() {
+    let mut watch = Watch::new();
+    let other = watch.player(in_view(10.0));
+    let player = watch.player(hidden(20.0));
+    let engaged = watch.npc(&default_noticing());
+    let idle = watch.npc_at(&resting_graph(), Vec3::new(0.0, 0.0, -1.0));
+    watch.checks(FILL_CHECKS + 1);
+    assert_eq!(watch.target(engaged), Some(other));
+    watch.hit(engaged, Some(player));
+    watch.hit(idle, Some(player));
+    assert!(watch.brain(engaged).recent_attacker(player).is_some());
+    assert_eq!(watch.target(idle), None, "a resting NPC keeps no target");
+    assert_eq!(watch.value(idle, player), 1.0);
+    watch.respawn(player);
+    watch.tick();
+    for npc in [engaged, idle] {
+        assert_eq!(
+            watch.brain(npc).recent_attacker(player),
+            None,
+            "the entry from the earlier life is cleared"
+        );
+        assert!(!watch.metered(npc, player));
+    }
+    // A hit in the new life starts a fresh entry.
+    watch.hit(engaged, Some(player));
+    let entry = watch.brain(engaged).recent_attacker(player).unwrap();
+    assert_eq!(entry.accumulated_damage, 1.0, "damage dealt restarts");
+}
+
+// AC 19 / P64: a hit is judged against the target the NPC holds at the hit's
+// stage: before the AI stage, the one it held entering the tick; after, the
+// one the stage left. On the tick it gains a target a hit before the stage
+// sets a meter and one after does not; on the tick it drops one, the reverse.
+#[test]
+fn hit_is_judged_against_the_target_held_at_its_stage() {
+    // Gaining: the player's meter fills on the next check.
+    for before_stage in [true, false] {
+        let mut watch = Watch::new();
+        let player = watch.player(in_view(10.0));
+        let attacker = watch.player(hidden(30.0));
+        let npc = watch.npc(&default_noticing());
+        watch.checks(FILL_CHECKS);
+        assert_eq!(watch.target(npc), None);
+        // The tick whose check acquires: ticks up to it, then the hit before
+        // or after its AI stage.
+        for _ in 0..DECIDE_INTERVAL_TICKS - 1 {
+            watch.tick();
+        }
+        if before_stage {
+            watch.hit(npc, Some(attacker));
+            assert_eq!(
+                watch.value(npc, attacker),
+                1.0,
+                "no target entering the tick: the meter is set"
+            );
+            watch.tick();
+        } else {
+            watch.tick();
+            assert_eq!(watch.target(npc), Some(player), "the stage acquired");
+            watch.hit(npc, Some(attacker));
+            assert!(
+                !watch.metered(npc, attacker),
+                "the target the stage left: no meter"
+            );
+        }
+    }
+    // Dropping: the target respawns before the stage of the drop tick.
+    for before_stage in [true, false] {
+        let mut watch = Watch::new();
+        let player = watch.player(in_view(10.0));
+        let attacker = watch.player(hidden(30.0));
+        let npc = watch.npc(&default_noticing());
+        watch.checks(FILL_CHECKS + 1);
+        assert_eq!(watch.target(npc), Some(player));
+        watch.respawn(player);
+        if before_stage {
+            watch.hit(npc, Some(attacker));
+            watch.tick();
+            assert_eq!(watch.target(npc), None, "the stage dropped it");
+            assert!(
+                !watch.metered(npc, attacker),
+                "a target entering the tick: no meter"
+            );
+        } else {
+            watch.tick();
+            assert_eq!(watch.target(npc), None);
+            watch.hit(npc, Some(attacker));
+            assert_eq!(
+                watch.value(npc, attacker),
+                1.0,
+                "no target after the stage: the meter is set"
+            );
+        }
+    }
+}

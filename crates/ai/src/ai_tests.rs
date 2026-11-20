@@ -510,6 +510,7 @@ fn target_perception_preserves_player_eye_and_aims_brain_peers_from_their_geomet
             TargetPawn {
                 entity: player,
                 position: player_position,
+                life: 0,
             },
             player_position + Vec3::Y * 0.5,
             "player capsule eye",
@@ -518,6 +519,7 @@ fn target_perception_preserves_player_eye_and_aims_brain_peers_from_their_geomet
             TargetPawn {
                 entity: hitbox_peer,
                 position: hitbox_position,
+                life: 0,
             },
             hitbox_position + hitbox.offset + Vec3::Y * hitbox.half_extents.y,
             "brain peer authored hitbox",
@@ -526,6 +528,7 @@ fn target_perception_preserves_player_eye_and_aims_brain_peers_from_their_geomet
             TargetPawn {
                 entity: agent_peer,
                 position: agent_position,
+                life: 0,
             },
             agent_position + Vec3::Y * (perception::EYE_FACTOR * 1.8),
             "brain peer nav-agent geometry",
@@ -2534,6 +2537,7 @@ fn projectile_peer_hit_reaches_retaliation_selection_in_the_same_simulation_tick
                 damage: DAMAGE,
                 credit_source: "test.crossfire.projectile".to_string(),
                 owner_pawn: attacker,
+                owner_life: 0,
                 owner_weapon: attacker,
                 attackerless: false,
                 spawned: false,
@@ -2871,6 +2875,7 @@ impl FactionSentimentHarness {
                     damage: 10.0,
                     credit_source: "test.faction-sentiment.projectile".to_string(),
                     owner_pawn: attacker,
+                    owner_life: 0,
                     owner_weapon,
                     attackerless: false,
                     spawned: false,
@@ -3258,6 +3263,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
                     zone: None,
                     producer: DamageProducer::InTick,
                     point: None,
+                    attacker_life: None,
                 },
             );
             on_impact(registry);
@@ -14191,4 +14197,23 @@ fn horizontal_shove_keeps_ground_clip() {
             "tick {tick}: knockback never sets the stride latch"
         );
     }
+}
+
+/// A respawn in place, as the respawn drain leaves it for the AI: the pawn's
+/// life counter moves on (`sim::respawn::drain` bumps it; its own tests pin
+/// that), so every NPC runs the respawn drop at its next run.
+fn respawn_in_place(reg: &mut EntityRegistry, pawn: EntityId) {
+    let mut movement = reg
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    movement.life_counter = movement.life_counter.wrapping_add(1);
+    reg.set_component(pawn, movement).unwrap();
+}
+
+/// An NPC brain already engaged on `target` in its life `life`.
+fn engaged_on(mut brain: BrainComponent, target: EntityId, life: u32) -> BrainComponent {
+    brain.acquired_target = Some(target);
+    brain.acquired_target_life = life;
+    brain
 }

@@ -2148,7 +2148,9 @@ pub use reload::{
     clear_feedback_for_weapon as clear_reload_feedback_for_weapon,
     clear_owner_feedback_for_weapons as clear_owner_reload_feedback_for_weapons,
 };
-pub use weapon_stage::apply_authorized_weapon_impact_damage;
+pub use weapon_stage::{
+    apply_authorized_shot_impact_damage, apply_authorized_weapon_impact_damage,
+};
 
 pub use host_movement::drop_vault_if_barred;
 #[cfg(any(test, feature = "test-support"))]

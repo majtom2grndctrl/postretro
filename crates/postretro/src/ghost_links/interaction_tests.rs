@@ -104,6 +104,7 @@ fn shot_through(
                     knockback_impulse: [0.0; 3],
                     credit_source: "probe".into(),
                     owner_pawn: shooter,
+                    owner_life: 0,
                     owner_weapon: shooter,
                     attackerless: false,
                     spawned: false,

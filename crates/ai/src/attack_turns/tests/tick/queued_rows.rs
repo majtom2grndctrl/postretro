@@ -754,6 +754,7 @@ fn a_marks_request_outranks_a_rests_which_outranks_a_pending_unmarked_attack() {
             },
             runtime.programs.get(enemy),
             pawn,
+            0,
             AttackPoolId::Default,
         )
         .map(|(request, _)| {

@@ -165,7 +165,7 @@ mod tests {
         let player = registry.spawn(Transform::default());
         let npc = registry.spawn(Transform::default());
         let mut brain = BrainComponent::from_graph(&graph);
-        brain.awareness.record_hit(player, 5.0);
+        brain.awareness.record_hit(player, 5.0, 0);
         registry.set_component(npc, brain).unwrap();
         let mut reactions = ReactionPrimitiveRegistry::new();
         register_npc_state_reaction_primitives(&mut reactions);

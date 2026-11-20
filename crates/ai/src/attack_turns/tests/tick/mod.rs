@@ -11,6 +11,7 @@ mod queued_rows;
 mod refresh;
 mod release;
 mod reload;
+mod respawn_drop;
 pub(crate) mod shipped_content;
 mod skip;
 mod tokens;

@@ -117,6 +117,11 @@ pub(super) fn evaluate(
         // Awareness meters age with the run the same way: a meter a hit set
         // since the last run drains from the hit's tick.
         brain.awareness.age(dt_ms, one_tick_dt_ms);
+        // The respawn drop: whatever this NPC keeps about a pawn that
+        // respawned since (its target and slot, turns, wait clock, ledger
+        // entry, meter) goes before anything reads it. A stored difference of
+        // life counters, so a skipped or dormant NPC cannot miss one.
+        brain.drop_respawned(|pawn| pawns.life_of(pawn));
         // Read the evaluating enemy's mutable faction once for the whole
         // compute pass. Candidate comparison consumes this scalar only on a
         // fresh scan; retained target lookup deliberately does not see it.
@@ -182,6 +187,7 @@ pub(super) fn evaluate(
                         brain.awareness.acquire(
                             selection.target.entity,
                             target_distance(selection.target, snap.position),
+                            selection.target.life,
                         );
                     }
                     selection
@@ -618,9 +624,9 @@ pub(super) fn evaluate(
         // clears it here.
         let resolved_position_goal = motion.is_some_and(MotionVerb::is_position_goal);
         let retains_target = target.is_some() && !resolved_position_goal && engages_active(&brain);
-        brain.acquired_target = match target {
-            Some(target) if retains_target => Some(target.entity),
-            _ => None,
+        (brain.acquired_target, brain.acquired_target_life) = match target {
+            Some(target) if retains_target => (Some(target.entity), target.life),
+            _ => (None, 0),
         };
         // No meter changes while the NPC holds a target.
         if let Some(target) = brain.acquired_target {

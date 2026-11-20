@@ -41,6 +41,11 @@ pub struct DamageContext {
     /// the producer has one. Splash, script, crush and AI contact attacks leave
     /// it `None`. Evaluator-only data, like `producer`.
     pub point: Option<Vec3>,
+    /// The attacker's life counter when its shot was fired, for a shot that
+    /// lands later (a projectile, its splash, a remote declaration). A shot
+    /// fired before its pawn's latest respawn touches no NPC's awareness
+    /// meter or attacker ledger. `None`: the hit lands as it is fired.
+    pub attacker_life: Option<u32>,
 }
 
 impl DamageContext {
@@ -52,6 +57,7 @@ impl DamageContext {
             zone: None,
             producer,
             point: None,
+            attacker_life: None,
         }
     }
 }
@@ -244,6 +250,7 @@ pub fn apply_damage_with_context(
             registry,
             id,
             context.attacker,
+            context.attacker_life,
             drain.points_dealt,
         );
     }
@@ -588,6 +595,7 @@ mod tests {
                 zone: None,
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
             },
         );
 
@@ -689,6 +697,7 @@ mod tests {
                 zone: Some("torso".to_string()),
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
             },
         );
         apply_damage_with_context(
@@ -706,6 +715,7 @@ mod tests {
                 zone: Some("head".to_string()),
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
             },
         );
 
@@ -748,6 +758,7 @@ mod tests {
                 zone: None,
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
             },
         );
 

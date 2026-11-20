@@ -38,6 +38,10 @@ pub struct AwarenessMeter {
     /// The candidate's XZ distance when last visited or hit. Among equal
     /// values, eviction takes the farthest.
     pub distance: f32,
+    /// The candidate's life counter when metered: its respawn forgets the
+    /// meter, so it is noticed again through a fresh fill. Host-local.
+    #[serde(skip)]
+    pub life: u32,
 }
 
 /// An NPC's meters, beside its attacker ledger. Serialized so a restore keeps
@@ -95,13 +99,21 @@ impl AwarenessMeters {
 
     /// Drop `candidate`'s meter, if it holds one.
     pub fn forget(&mut self, candidate: EntityId) {
+        self.forget_where(|meter| meter.candidate == candidate);
+    }
+
+    /// Drop every meter `forget` names; a dropped candidate is no longer the
+    /// last selection.
+    pub fn forget_where(&mut self, forget: impl Fn(&AwarenessMeter) -> bool) {
         for slot in self.slots.iter_mut() {
-            if slot.is_some_and(|meter| meter.candidate == candidate) {
+            if let Some(meter) = *slot
+                && forget(&meter)
+            {
+                if self.selected == Some(meter.candidate) {
+                    self.selected = None;
+                }
                 *slot = None;
             }
-        }
-        if self.selected == Some(candidate) {
-            self.selected = None;
         }
     }
 
@@ -133,7 +145,7 @@ impl AwarenessMeters {
     }
 
     /// A new acquisition: `target`'s meter at 1, every other cleared.
-    pub fn acquire(&mut self, target: EntityId, distance: f32) {
+    pub fn acquire(&mut self, target: EntityId, distance: f32, life: u32) {
         self.slots = Default::default();
         self.slots[0] = Some(AwarenessMeter {
             candidate: target,
@@ -142,6 +154,7 @@ impl AwarenessMeters {
             since_ms: 0.0,
             hit_since_run: false,
             distance,
+            life,
         });
         self.selected = Some(target);
     }
@@ -149,7 +162,7 @@ impl AwarenessMeters {
     /// A hit on an NPC without a target: its attacker's meter at 1, draining
     /// from this hit. An attacker without a meter takes a slot, evicting the
     /// lowest-valued member, the farthest among equals.
-    pub fn record_hit(&mut self, attacker: EntityId, distance: f32) {
+    pub fn record_hit(&mut self, attacker: EntityId, distance: f32, life: u32) {
         let meter = AwarenessMeter {
             candidate: attacker,
             value: 1.0,
@@ -157,6 +170,7 @@ impl AwarenessMeters {
             since_ms: 0.0,
             hit_since_run: true,
             distance,
+            life,
         };
         if let Some(slot) = self
             .slots
@@ -290,7 +304,7 @@ impl<'a> AwarenessCheck<'a> {
     /// a free one, else a member that failed or was not visited (lowest value
     /// first, the farthest among equals), else a passing member farther than
     /// it. Nearer failing candidates never keep a passing one unmetered.
-    pub fn admit(&mut self, candidate: EntityId, distance: f32) -> bool {
+    pub fn admit(&mut self, candidate: EntityId, distance: f32, life: u32) -> bool {
         let slot = self
             .meters
             .slots
@@ -312,6 +326,7 @@ impl<'a> AwarenessCheck<'a> {
             since_ms: 0.0,
             hit_since_run: false,
             distance,
+            life,
         });
         self.visited[slot] = true;
         self.passed[slot] = true;
@@ -319,8 +334,8 @@ impl<'a> AwarenessCheck<'a> {
     }
 
     /// A new acquisition on this check: see [`AwarenessMeters::acquire`].
-    pub fn acquire(self, target: EntityId, distance: f32) {
-        self.meters.acquire(target, distance);
+    pub fn acquire(self, target: EntityId, distance: f32, life: u32) {
+        self.meters.acquire(target, distance, life);
     }
 
     /// End the check with `selected` as its selection. A member the check
@@ -363,7 +378,7 @@ mod tests {
             }
         }
         for (candidate, distance) in newcomers {
-            check.admit(id(candidate), distance);
+            check.admit(id(candidate), distance, 0);
         }
         check.finish(None);
     }
@@ -397,7 +412,7 @@ mod tests {
         let sightings: Vec<_> = (0..8).map(|i| (i, 1.0 + i as f32, true)).collect();
         check(&mut meters, &sightings, 16.0);
         assert_eq!(meters.len(), 8);
-        meters.record_hit(id(9), 30.0);
+        meters.record_hit(id(9), 30.0, 0);
         assert_eq!(meters.value(id(9)), 1.0);
         assert!(
             meters.meter(id(7)).is_none(),

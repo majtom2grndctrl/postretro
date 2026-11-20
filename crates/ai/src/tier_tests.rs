@@ -543,3 +543,35 @@ fn move_down_credits_meters_once_by_the_time_since_the_last_idle_check() {
         meter(&tiered, npc)
     );
 }
+
+// P47: the respawn drop is a stored difference, so a dormant NPC that sighted
+// a player on its last check forgets that sighting at its next run after the
+// respawn: its next dormant check is a first sighting again, where without
+// the respawn it would acquire.
+#[test]
+fn a_dormant_npc_runs_the_respawn_drop_at_its_next_run() {
+    let graph = super::awareness::noticing_graph(1_000.0, 2_000.0);
+    let mut tiered = Tiered::with_player();
+    tiered.screened = true;
+    let npc = tiered.npc(25, 5, &graph);
+    for _ in 0..3 * DORMANT_INTERVAL_TICKS {
+        tiered.tick();
+    }
+    tiered.screened = false;
+    to_dormant_check(&mut tiered, npc);
+    assert!(tiered.brain(npc).awareness.meter(tiered.pawn).is_some());
+    for _ in 0..10 {
+        tiered.tick();
+    }
+    assert_eq!(tiered.tier(npc), Some(NpcTier::Dormant));
+    let pawn = tiered.pawn;
+    respawn_in_place(&mut tiered.reg, pawn);
+    to_dormant_check(&mut tiered, npc);
+    assert_eq!(
+        tiered.brain(npc).acquired_target,
+        None,
+        "a first sighting again"
+    );
+    assert_eq!(meter(&tiered, npc), 0.0);
+    assert_eq!(tiered.tier(npc), Some(NpcTier::Dormant));
+}

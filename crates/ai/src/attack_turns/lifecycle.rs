@@ -90,6 +90,7 @@ pub(crate) fn arbitrate_attack_turns(
 
     for (slot, outcome) in outcomes.iter_mut().enumerate() {
         let target = outcome.target.map(|target| target.entity);
+        let target_life = outcome.target.map_or(0, |target| target.life);
         let pool = attack_pool_of(budgets, &outcome.brain);
         // Closing aggro takes the enemy out of the AI set.
         if !outcome.brain.aggro_armed {
@@ -194,6 +195,7 @@ pub(crate) fn arbitrate_attack_turns(
                 },
                 programs_entry,
                 target,
+                target_life,
                 pool,
             )
         });
@@ -202,11 +204,13 @@ pub(crate) fn arbitrate_attack_turns(
         // and a move between a rest's request and its hold's mark all keep
         // the enemy's place in line on one target.
         match (request, turns.wait) {
-            (Some((request, _)), Some(wait)) if wait.target == request.target => {}
+            (Some((request, _)), Some(wait))
+                if wait.target == request.target && wait.target_life == request.target_life => {}
             (Some((request, _)), _) => {
                 turns.wait = Some(WaitClock {
                     since_tick: *tick,
                     target: request.target,
+                    target_life: request.target_life,
                 });
             }
             // A gap in requesting keeps the clock.
@@ -272,6 +276,7 @@ pub(crate) fn arbitrate_attack_turns(
         let held = turns.hold(HeldTurn {
             attack: request.attack,
             target: request.target,
+            target_life: request.target_life,
             pool: request.pool,
             draws: request.draws,
             until_cooldown: !request.marked,
@@ -325,6 +330,7 @@ pub(crate) fn next_request(
     sources: RequestSources<'_>,
     programs: Option<&BrainEntityPrograms>,
     target: EntityId,
+    target_life: u32,
     pool: AttackPoolId,
 ) -> Option<(TurnRequest, bool)> {
     let (attack, marked) = match (sources.mark, sources.queued) {
@@ -354,6 +360,7 @@ pub(crate) fn next_request(
             draws,
             marked,
             target,
+            target_life,
             pool,
         },
         !shares_token,

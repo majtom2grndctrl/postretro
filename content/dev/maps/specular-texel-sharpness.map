@@ -1,0 +1,273 @@
+// Game: Postretro
+// Format: Standard
+// specular-texel-sharpness dev map. One sealed room, interior x 0 to 768,
+// y 0 to 512, z 0 to 256, walls 32 thick. Fixture faces carry test/ textures
+// at scale 8, so one texel spans 8 units. North wall metal_smoothness_ramp,
+// east wall metal_tint_inlay, floor and south wall concrete_carved_gloss.
+// Three parked kinematic_mover brushes: ramp_mover by the north wall,
+// inlay_mover by the east wall, carved_door set flush into the south wall.
+// One static point light half a metre from the door seam, one static spot
+// aimed north-east over both fixture movers. A shelf on the north wall casts
+// a horizontal spot shadow edge across the ramp. West wall comparison strip:
+// default_dirt_011, wood_bark_048, concrete_pavement_036 at scale 1.
+// See specular-texel-sharpness.README.md. Fixture PNGs come from
+// tools/gen_specular_texel_fixtures.py.
+// NOTE: keep map comments free of braces and quotes, and never leave a blank
+// line inside an entity block.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+// brush floor
+{
+( 800 -32 -32 ) ( 800 544 0 ) ( 800 544 -32 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 544 -32 ) ( -32 -32 0 ) ( -32 -32 -32 ) test/concrete_carved_gloss 0 0 0 8 8
+( 800 544 -32 ) ( -32 544 0 ) ( -32 544 -32 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 -32 -32 ) ( 800 -32 0 ) ( 800 -32 -32 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 544 0 ) ( 800 -32 0 ) ( -32 -32 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 -32 -32 ) ( 800 544 -32 ) ( -32 544 -32 ) test/concrete_carved_gloss 0 0 0 8 8
+}
+// brush ceiling
+{
+( 800 -32 256 ) ( 800 544 288 ) ( 800 544 256 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 256 ) ( -32 -32 288 ) ( -32 -32 256 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 800 544 256 ) ( -32 544 288 ) ( -32 544 256 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 256 ) ( 800 -32 288 ) ( 800 -32 256 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 544 288 ) ( 800 -32 288 ) ( -32 -32 288 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 -32 256 ) ( 800 544 256 ) ( -32 544 256 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush north_wall
+{
+( 800 512 0 ) ( 800 544 256 ) ( 800 544 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( -32 544 0 ) ( -32 512 256 ) ( -32 512 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( 800 544 0 ) ( -32 544 256 ) ( -32 544 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( -32 512 0 ) ( 800 512 256 ) ( 800 512 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( -32 544 256 ) ( 800 512 256 ) ( -32 512 256 ) test/metal_smoothness_ramp 0 0 0 8 8
+( -32 512 0 ) ( 800 544 0 ) ( -32 544 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+}
+// brush east_wall
+{
+( 800 0 0 ) ( 800 512 256 ) ( 800 512 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 768 512 0 ) ( 768 0 256 ) ( 768 0 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 800 512 0 ) ( 768 512 256 ) ( 768 512 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 768 0 0 ) ( 800 0 256 ) ( 800 0 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 768 512 256 ) ( 800 0 256 ) ( 768 0 256 ) test/metal_tint_inlay 0 0 0 8 8
+( 768 0 0 ) ( 800 512 0 ) ( 768 512 0 ) test/metal_tint_inlay 0 0 0 8 8
+}
+// brush west_wall
+{
+( 0 0 0 ) ( 0 512 256 ) ( 0 512 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 512 0 ) ( -32 0 256 ) ( -32 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 0 512 0 ) ( -32 512 256 ) ( -32 512 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 0 0 ) ( 0 0 256 ) ( 0 0 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 512 256 ) ( 0 0 256 ) ( -32 0 256 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( -32 0 0 ) ( 0 512 0 ) ( -32 512 0 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush south_wall_west
+{
+( 272 -32 0 ) ( 272 0 256 ) ( 272 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 0 0 ) ( -32 -32 256 ) ( -32 -32 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 0 0 ) ( -32 0 256 ) ( -32 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 -32 0 ) ( 272 -32 256 ) ( 272 -32 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 0 256 ) ( 272 -32 256 ) ( -32 -32 256 ) test/concrete_carved_gloss 0 0 0 8 8
+( -32 -32 0 ) ( 272 0 0 ) ( -32 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+}
+// brush south_wall_east
+{
+( 800 -32 0 ) ( 800 0 256 ) ( 800 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 400 0 0 ) ( 400 -32 256 ) ( 400 -32 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 800 0 0 ) ( 400 0 256 ) ( 400 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 400 -32 0 ) ( 800 -32 256 ) ( 800 -32 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 400 0 256 ) ( 800 -32 256 ) ( 400 -32 256 ) test/concrete_carved_gloss 0 0 0 8 8
+( 400 -32 0 ) ( 800 0 0 ) ( 400 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+}
+// brush south_wall_lintel
+{
+( 400 -32 144 ) ( 400 0 256 ) ( 400 0 144 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 0 144 ) ( 272 -32 256 ) ( 272 -32 144 ) test/concrete_carved_gloss 0 0 0 8 8
+( 400 0 144 ) ( 272 0 256 ) ( 272 0 144 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -32 144 ) ( 400 -32 256 ) ( 400 -32 144 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 0 256 ) ( 400 -32 256 ) ( 272 -32 256 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -32 144 ) ( 400 0 144 ) ( 272 0 144 ) test/concrete_carved_gloss 0 0 0 8 8
+}
+// brush door_recess_back
+{
+( 400 -32 0 ) ( 400 -16 144 ) ( 400 -16 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -16 0 ) ( 272 -32 144 ) ( 272 -32 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 400 -16 0 ) ( 272 -16 144 ) ( 272 -16 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -32 0 ) ( 400 -32 144 ) ( 400 -32 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -16 144 ) ( 400 -32 144 ) ( 272 -32 144 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -32 0 ) ( 400 -16 0 ) ( 272 -16 0 ) test/concrete_carved_gloss 0 0 0 8 8
+}
+// brush shelf
+{
+( 448 416 180 ) ( 448 512 188 ) ( 448 512 180 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 192 512 180 ) ( 192 416 188 ) ( 192 416 180 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 448 512 180 ) ( 192 512 188 ) ( 192 512 180 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 192 416 180 ) ( 448 416 188 ) ( 448 416 180 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 192 512 188 ) ( 448 416 188 ) ( 192 416 188 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+( 192 416 180 ) ( 448 512 180 ) ( 192 512 180 ) 50-free-textures/concrete_stone_021 0 0 0 1 1
+}
+// brush strip_default_dirt
+{
+( 8 32 32 ) ( 8 160 160 ) ( 8 160 32 ) 50-free-textures/default_dirt_011 0 0 0 1 1
+( 0 160 32 ) ( 0 32 160 ) ( 0 32 32 ) 50-free-textures/default_dirt_011 0 0 0 1 1
+( 8 160 32 ) ( 0 160 160 ) ( 0 160 32 ) 50-free-textures/default_dirt_011 0 0 0 1 1
+( 0 32 32 ) ( 8 32 160 ) ( 8 32 32 ) 50-free-textures/default_dirt_011 0 0 0 1 1
+( 0 160 160 ) ( 8 32 160 ) ( 0 32 160 ) 50-free-textures/default_dirt_011 0 0 0 1 1
+( 0 32 32 ) ( 8 160 32 ) ( 0 160 32 ) 50-free-textures/default_dirt_011 0 0 0 1 1
+}
+// brush strip_wood_bark
+{
+( 8 160 32 ) ( 8 288 160 ) ( 8 288 32 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 0 288 32 ) ( 0 160 160 ) ( 0 160 32 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 8 288 32 ) ( 0 288 160 ) ( 0 288 32 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 0 160 32 ) ( 8 160 160 ) ( 8 160 32 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 0 288 160 ) ( 8 160 160 ) ( 0 160 160 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+( 0 160 32 ) ( 8 288 32 ) ( 0 288 32 ) 50-free-textures/wood_bark_048 0 0 0 1 1
+}
+// brush strip_concrete_pavement
+{
+( 8 288 32 ) ( 8 416 160 ) ( 8 416 32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 416 32 ) ( 0 288 160 ) ( 0 288 32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 8 416 32 ) ( 0 416 160 ) ( 0 416 32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 288 32 ) ( 8 288 160 ) ( 8 288 32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 416 160 ) ( 8 288 160 ) ( 0 288 160 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 288 32 ) ( 8 416 32 ) ( 0 416 32 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+}
+// entity 1 -- player start, south-west, facing the movers
+{
+"classname" "player_spawn"
+"origin" "128 128 40"
+"angles" "0 35 0"
+}
+// entity 2 -- static point light, 20 units in front of the door seam at x 272
+{
+"classname" "light"
+"origin" "272 20 72"
+"light" "300"
+"_color" "255 255 255"
+"_falloff_range" "896"
+"_light_size" "0"
+"_shadow_type" "static_light_map"
+"delay" "0"
+"style" "0"
+"_tags" "dev specular_texel point_light"
+}
+// entity 3 -- static spot light, aimed north-east over both fixture movers
+{
+"classname" "light_spot"
+"origin" "384 160 216"
+"light" "500"
+"_color" "255 255 255"
+"_falloff_range" "768"
+"_light_size" "0"
+"_cone" "40"
+"_cone2" "55"
+"angles" "-25 63 0"
+"_shadow_type" "static_light_map"
+"delay" "0"
+"style" "0"
+"_tags" "dev specular_texel spot_light"
+}
+// entity 4 -- parked mover faced with the ramp, 64 in front of the north wall
+{
+"classname" "kinematic_mover"
+"name" "ramp_mover"
+"path" "ramp_mover_rest"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"_tags" "dev specular_texel ramp_mover"
+// brush ramp_mover_block
+{
+( 640 416 0 ) ( 640 448 128 ) ( 640 448 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( 512 448 0 ) ( 512 416 128 ) ( 512 416 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( 640 448 0 ) ( 512 448 128 ) ( 512 448 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( 512 416 0 ) ( 640 416 128 ) ( 640 416 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+( 512 448 128 ) ( 640 416 128 ) ( 512 416 128 ) test/metal_smoothness_ramp 0 0 0 8 8
+( 512 416 0 ) ( 640 448 0 ) ( 512 448 0 ) test/metal_smoothness_ramp 0 0 0 8 8
+}
+}
+// entity 5 -- ramp_mover rest pose, its brush centre
+{
+"classname" "kinematic_waypoint"
+"name" "ramp_mover_rest"
+"next" "ramp_mover_away"
+"origin" "576 432 64"
+}
+// entity 6 -- ramp_mover second waypoint, 8 units away; never reached
+{
+"classname" "kinematic_waypoint"
+"name" "ramp_mover_away"
+"origin" "576 424 64"
+}
+// entity 7 -- parked mover faced with the inlay, 64 in front of the east wall
+{
+"classname" "kinematic_mover"
+"name" "inlay_mover"
+"path" "inlay_mover_rest"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"_tags" "dev specular_texel inlay_mover"
+// brush inlay_mover_block
+{
+( 704 256 0 ) ( 704 384 128 ) ( 704 384 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 672 384 0 ) ( 672 256 128 ) ( 672 256 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 704 384 0 ) ( 672 384 128 ) ( 672 384 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 672 256 0 ) ( 704 256 128 ) ( 704 256 0 ) test/metal_tint_inlay 0 0 0 8 8
+( 672 384 128 ) ( 704 256 128 ) ( 672 256 128 ) test/metal_tint_inlay 0 0 0 8 8
+( 672 256 0 ) ( 704 384 0 ) ( 672 384 0 ) test/metal_tint_inlay 0 0 0 8 8
+}
+}
+// entity 8 -- inlay_mover rest pose, its brush centre
+{
+"classname" "kinematic_waypoint"
+"name" "inlay_mover_rest"
+"next" "inlay_mover_away"
+"origin" "688 320 64"
+}
+// entity 9 -- inlay_mover second waypoint, 8 units away; never reached
+{
+"classname" "kinematic_waypoint"
+"name" "inlay_mover_away"
+"origin" "680 320 64"
+}
+// entity 10 -- parked door faced with the carved gloss, flush with the south wall
+{
+"classname" "kinematic_mover"
+"name" "carved_door"
+"path" "carved_door_rest"
+"speed" "1"
+"wait_ms" "0"
+"move_mode" "once"
+"start_on_spawn" "0"
+"_tags" "dev specular_texel carved_door"
+// brush carved_door_slab
+{
+( 400 -16 0 ) ( 400 0 144 ) ( 400 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 0 0 ) ( 272 -16 144 ) ( 272 -16 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 400 0 0 ) ( 272 0 144 ) ( 272 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -16 0 ) ( 400 -16 144 ) ( 400 -16 0 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 0 144 ) ( 400 -16 144 ) ( 272 -16 144 ) test/concrete_carved_gloss 0 0 0 8 8
+( 272 -16 0 ) ( 400 0 0 ) ( 272 0 0 ) test/concrete_carved_gloss 0 0 0 8 8
+}
+}
+// entity 11 -- carved_door rest pose, its brush centre
+{
+"classname" "kinematic_waypoint"
+"name" "carved_door_rest"
+"next" "carved_door_away"
+"origin" "336 -8 72"
+}
+// entity 12 -- carved_door second waypoint, 8 units away; never reached
+{
+"classname" "kinematic_waypoint"
+"name" "carved_door_away"
+"origin" "336 0 72"
+}

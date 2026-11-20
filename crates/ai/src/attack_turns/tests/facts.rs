@@ -10,6 +10,7 @@ fn holding(target: EntityId, cost: u32) -> AttackTurnState {
     assert!(turns.hold(HeldTurn {
         attack: 0,
         target,
+        target_life: 0,
         pool: AttackPoolId::Default,
         draws: draws(&[(MELEE, cost)]),
         until_cooldown: true,
@@ -25,9 +26,14 @@ fn waiting(target: EntityId, cost: u32, since_tick: u64) -> AttackTurnState {
         draws: draws(&[(MELEE, cost)]),
         marked: false,
         target,
+        target_life: 0,
         pool: AttackPoolId::Default,
     });
-    turns.wait = Some(WaitClock { since_tick, target });
+    turns.wait = Some(WaitClock {
+        since_tick,
+        target,
+        target_life: 0,
+    });
     turns
 }
 

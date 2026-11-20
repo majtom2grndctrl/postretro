@@ -1,15 +1,17 @@
-// Per-tick navigation-agent steering: refresh paths under a replan budget,
-// steer along the current path with lookahead, separate from crowding neighbors,
-// and move each agent through the world, movers included, via the agent
-// controller.
+// Navigation-agent steering, one step per scheduled agent per tick: refresh
+// paths under a replan budget, steer along the current path with lookahead,
+// separate from crowding neighbors, and move each agent through the world,
+// movers included, via the agent controller.
 //
 // This is the primary production caller for the route query
 // (`nav::find_path_from_in`) and the agent component; Ai reachability and
-// `combat_positioning` query routes too. It owns the replan policy (per-tick
-// budget, admitted gate-owed first, then target drift, then staleness), the
-// waypoint-following loop and the O(n²) separation pass. Siblings take the
-// ticks path steering does not: `pin_escape` walks a pinned agent clear of a
-// mover, `mover_link` boards, rides and exits lifts, and `corpse` moves the
+// `combat_positioning` query routes too. It owns the replan policy (a budget
+// that scales with demand, admitted gate-owed first, then target drift, then
+// staleness), the waypoint-following loop and the O(n²) separation pass. The
+// AI tick schedule says how each agent steps (`AgentStep`): a step spanning
+// one or more ticks, or carry only, through `carry_without_step`. Siblings take
+// the ticks path steering does not: `pin_escape` walks a pinned agent clear of
+// a mover, `mover_link` boards, rides and exits lifts, and `corpse` moves the
 // dead. The capsule sweep, carry and displacement live in
 // `movement::agent_motion`.
 //
@@ -24,7 +26,8 @@ use crate::kinematic_mover::AgentMoverPair;
 #[cfg(any(test, feature = "test-support"))]
 use crate::movement::MovementCollisionSource;
 use crate::movement::agent_motion::{
-    AgentCapsule, carried_by_mover, collide_and_slide, escape_slide,
+    AgentCapsule, carried_by_mover, carry_without_step, collide_and_slide,
+    collide_and_slide_in_parts, escape_slide,
 };
 use crate::nav::{NavGate, NavGraph, NavScratch, NavStart, distance_xz, find_path_from_in};
 use postretro_collision::EnvironmentView;
@@ -36,10 +39,23 @@ mod mover_link;
 mod pin_escape;
 
 mod tick_diagnostics {
-    /// Maximum number of agents that may recompute a path in a single tick.
-    /// Bounds the per-frame pathfinding cost regardless of how many agents
-    /// simultaneously want a fresh route.
+    /// The fewest agents that may recompute a path in a single tick: the
+    /// budget whenever at most `REPLAN_BUDGET_PER_TICK × REPLAN_FAIR_WAIT_TICKS`
+    /// agents are owed a replan. Above that, [`replan_budget`] scales with
+    /// demand.
     pub const REPLAN_BUDGET_PER_TICK: u32 = 4;
+
+    /// The wait the scaled budget aims to give every owed agent: 6 ticks,
+    /// about 100 ms.
+    pub const REPLAN_FAIR_WAIT_TICKS: u32 = 6;
+
+    /// This tick's replan budget for `owed` agents owed a replan in any tier:
+    /// `max(4, ⌈owed / 6⌉)`, so route-query cost grows with the crowd and no
+    /// owed agent waits much past the fair wait.
+    pub fn replan_budget(owed: usize) -> u32 {
+        let owed = u32::try_from(owed).unwrap_or(u32::MAX);
+        REPLAN_BUDGET_PER_TICK.max(owed.div_ceil(REPLAN_FAIR_WAIT_TICKS))
+    }
 
     /// Ticks an agent must wait between path recomputations for the same
     /// destination, including retries after a failed plan.
@@ -50,15 +66,85 @@ mod tick_diagnostics {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct AgentTickResult {
         pub replans: u32,
+        /// This tick's replan budget, from the agents owed a replan.
+        pub budget: u32,
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub use tick_diagnostics::{AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS};
-#[cfg(not(any(test, feature = "test-support")))]
-pub(crate) use tick_diagnostics::{
-    AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS,
+pub use tick_diagnostics::{
+    AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_FAIR_WAIT_TICKS, REPLAN_STALENESS_TICKS,
+    replan_budget,
 };
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) use tick_diagnostics::{AgentTickResult, REPLAN_STALENESS_TICKS, replan_budget};
+
+/// What one agent's steering does this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentStep {
+    /// Its own step, spanning this many fixed ticks (at least 1): steering,
+    /// separation, replans and the capsule sweep run once with `dt` scaled by
+    /// the span. A step of 1 is the ordinary tick.
+    Ticks(u32),
+    /// No step of its own this tick: its mover carries it and doors push it,
+    /// and nothing else moves (`carry_without_step`).
+    CarryOnly,
+}
+
+/// The longest step a schedule may ask of steering, in ticks: one dormant
+/// decide interval (2 s). A dormant agent's steps span one dormant interval at
+/// most, so the bound only contains a schedule's error: the knockback decay's
+/// power and the sweep's part count never see more.
+pub const MAX_STEP_TICKS: u32 = crate::npc_tiers::MOVE_DOWN_HOLD_TICKS as u32;
+
+/// Which agents step this tick and over how many ticks: the AI tick schedule's
+/// answer for each agent. Every agent not scheduled steps every tick.
+#[derive(Clone, Copy)]
+pub struct AgentSteps<'a> {
+    schedule: Option<&'a dyn Fn(EntityId) -> AgentStep>,
+    rank: Option<&'a dyn Fn(EntityId) -> u8>,
+}
+
+impl<'a> AgentSteps<'a> {
+    /// Every agent steps every tick.
+    pub const EVERY_TICK: AgentSteps<'static> = AgentSteps {
+        schedule: None,
+        rank: None,
+    };
+
+    pub fn scheduled(schedule: &'a dyn Fn(EntityId) -> AgentStep) -> Self {
+        Self {
+            schedule: Some(schedule),
+            rank: None,
+        }
+    }
+
+    /// [`Self::scheduled`] with each agent's NPC tier rank (higher first),
+    /// the replan budget's key after a leap's pacing within each replan tier.
+    pub fn ranked(
+        schedule: &'a dyn Fn(EntityId) -> AgentStep,
+        rank: &'a dyn Fn(EntityId) -> u8,
+    ) -> Self {
+        Self {
+            schedule: Some(schedule),
+            rank: Some(rank),
+        }
+    }
+
+    fn rank(&self, id: EntityId) -> u8 {
+        self.rank.map_or(0, |rank| rank(id))
+    }
+
+    fn step(&self, id: EntityId) -> AgentStep {
+        match self
+            .schedule
+            .map_or(AgentStep::Ticks(1), |schedule| schedule(id))
+        {
+            AgentStep::Ticks(ticks) => AgentStep::Ticks(ticks.clamp(1, MAX_STEP_TICKS)),
+            AgentStep::CarryOnly => AgentStep::CarryOnly,
+        }
+    }
+}
 
 /// Arrival radius as a multiple of the agent capsule radius. The cursor advances
 /// to the next waypoint once the agent is within `ARRIVAL_RADIUS_FACTOR * radius`
@@ -398,7 +484,7 @@ pub fn clear_destination(registry: &mut EntityRegistry, agent: EntityId) {
 
 /// Set the multiplier the active behavior activity puts on an agent's base
 /// `move_speed` for path steering. The AI pass writes it from its
-/// post-transition path every tick, so steering, which runs after AI, moves
+/// post-transition path on each run, so steering, which runs after AI, moves
 /// under an activity's `speed` from the tick it is entered through the tick
 /// before it is left. Writes only on change; a silent no-op for an entity with
 /// no agent component or a non-finite or non-positive multiplier.
@@ -466,8 +552,11 @@ struct AgentSnapshot {
 /// gravity plus installed volumes; each agent resolves its own gravity from it at
 /// its tick-start position. `dt` is the fixed tick delta.
 ///
-/// Returns the count of agents that recomputed a path this tick — bounded by
-/// [`REPLAN_BUDGET_PER_TICK`].
+/// Returns the count of agents that recomputed a path this tick, bounded by
+/// that tick's [`replan_budget`], and the budget itself.
+///
+/// `tick` steps every agent every tick ([`AgentSteps::EVERY_TICK`]);
+/// [`tick_with_steps`] takes an AI tick schedule.
 #[cfg(any(test, feature = "test-support"))]
 pub fn tick(
     registry: &mut EntityRegistry,
@@ -482,6 +571,30 @@ pub fn tick(
         &collision,
         nav_graph,
         MoverPins::NONE,
+        AgentSteps::EVERY_TICK,
+        &mut Vec::new(),
+        environment,
+        dt,
+    )
+}
+
+/// [`tick`] under an AI tick schedule: each agent steps as `steps` says.
+#[cfg(any(test, feature = "test-support"))]
+pub fn tick_with_steps(
+    registry: &mut EntityRegistry,
+    collision: &impl MovementCollisionSource,
+    nav_graph: Option<&NavGraph>,
+    steps: AgentSteps<'_>,
+    environment: EnvironmentView<'_>,
+    dt: f32,
+) -> AgentTickResult {
+    let collision = collision.combined_collision();
+    tick_impl(
+        registry,
+        &collision,
+        nav_graph,
+        MoverPins::NONE,
+        steps,
         &mut Vec::new(),
         environment,
         dt,
@@ -496,11 +609,13 @@ mod fixed_tick {
     /// [`tick`] for the fixed tick: it also hears which living agents movers
     /// yield to, and fills `corpse_yields` with the pairs the mover should now
     /// pass through. Empty in a tick with no pins, and allocates nothing then.
+    #[allow(clippy::too_many_arguments)]
     pub fn tick_with_mover_pins(
         registry: &mut EntityRegistry,
         collision: &CombinedCollisionWorld<'_>,
         nav_graph: Option<&NavGraph>,
         pins: MoverPins<'_>,
+        steps: AgentSteps<'_>,
         corpse_yields: &mut Vec<AgentMoverPair>,
         environment: EnvironmentView<'_>,
         dt: f32,
@@ -510,6 +625,7 @@ mod fixed_tick {
             collision,
             nav_graph,
             pins,
+            steps,
             corpse_yields,
             environment,
             dt,
@@ -538,11 +654,13 @@ pub use fixed_tick::{MoverPins, tick_with_mover_pins};
 #[cfg(not(any(test, feature = "test-support")))]
 pub(crate) use fixed_tick::{MoverPins, tick_with_mover_pins};
 
+#[allow(clippy::too_many_arguments)]
 fn tick_impl(
     registry: &mut EntityRegistry,
     collision: &CombinedCollisionWorld<'_>,
     nav_graph: Option<&NavGraph>,
     pins: MoverPins<'_>,
+    steps: AgentSteps<'_>,
     corpse_yields: &mut Vec<AgentMoverPair>,
     environment: EnvironmentView<'_>,
     dt: f32,
@@ -588,8 +706,8 @@ fn tick_impl(
     // after the snapshot) with the cooldown decremented exactly as the apply loop
     // will, so the two passes agree on each agent's verdict. Agents the ride code
     // will move this tick are left out, so every slot goes to an agent that
-    // replans. Total admissions stay ≤ REPLAN_BUDGET_PER_TICK.
-    let admission = admit_replans(registry, &snapshot, nav_graph, gate, collision, dt);
+    // replans. Total admissions stay within this tick's `replan_budget`.
+    let admission = admit_replans(registry, &snapshot, nav_graph, gate, collision, steps, dt);
 
     let mut replans = 0u32;
     // One route-search scratch for the pass's replans: it grows to the graph on
@@ -603,15 +721,61 @@ fn tick_impl(
         let Ok(component) = registry.get_component::<AgentComponent>(current.id) else {
             continue;
         };
+        let position = registry
+            .get_component::<Transform>(current.id)
+            .map(|t| t.position)
+            .unwrap_or(current.position);
+        let ticks = match steps.step(current.id) {
+            AgentStep::Ticks(ticks) => ticks,
+            AgentStep::CarryOnly => {
+                let capsule = AgentCapsule {
+                    radius: component.radius,
+                    half_height: component.half_height(),
+                    step_height: component.step_height,
+                };
+                let carried = carry_without_step(collision, &capsule, position, component.ground);
+                // A gate change this agent's route ahead never touched is
+                // settled between its steps too, as on a step: an agent not
+                // owed takes the live generation every tick, so once owed it
+                // never sorts ahead of agents owed before it (`admit_replans`).
+                let settled = (component.gate_generation != gate.generation()
+                    && !gate_change_owes_replan(component, position, nav_graph, gate))
+                .then(|| {
+                    let mut agent = component.clone();
+                    agent.gate_generation = gate.generation();
+                    agent
+                });
+                // The writes below fail only for a despawned agent, which has
+                // nothing left to carry or settle.
+                if let Some(agent) = settled {
+                    let _ = registry.set_component(current.id, agent);
+                }
+                if carried != position
+                    && let Ok(transform) = registry.get_component::<Transform>(current.id)
+                {
+                    let mut t = *transform;
+                    t.position = carried;
+                    let _ = registry.set_component(current.id, t);
+                }
+                continue;
+            }
+        };
+        // The span this step covers: one tick, or a scheduled agent's whole
+        // interval since its last step.
+        let tick_dt = dt;
+        let dt = tick_dt * ticks as f32;
         let mut agent = component.clone();
         // Horizontal steering is reconstructed each tick; preserve external
         // velocity separately, and update the carried vertical total for drag.
+        // A step over several ticks moves at the ticks' mean knockback and
+        // ends at the last tick's.
         agent.velocity -= agent.knockback_velocity;
-        crate::movement::knockback::decay(
+        let knockback_travel = crate::movement::knockback::decay_steps(
             &mut agent.knockback_velocity,
             &agent.knockback,
             agent.ground.is_grounded(),
-            dt,
+            tick_dt,
+            ticks,
         );
         agent.velocity += agent.knockback_velocity;
         let knocked = agent.knockback_velocity != Vec3::ZERO;
@@ -620,17 +784,13 @@ fn tick_impl(
         } else {
             1.0
         };
-        let position = registry
-            .get_component::<Transform>(current.id)
-            .map(|t| t.position)
-            .unwrap_or(current.position);
 
         // Tick down the staleness cooldown regardless of what happens below.
-        agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(1);
-        // A drifted agent the budget passed over waits one tick longer, which
-        // moves it up the drift tier; anything else owes no drift wait.
+        agent.replan_cooldown_ticks = agent.replan_cooldown_ticks.saturating_sub(ticks);
+        // A drifted agent the budget passed over waits longer, which moves it
+        // up the drift tier; anything else owes no drift wait.
         agent.drift_wait_ticks = if admission.drift_waiting[index] {
-            agent.drift_wait_ticks.saturating_add(1)
+            agent.drift_wait_ticks.saturating_add(ticks)
         } else {
             0
         };
@@ -656,6 +816,7 @@ fn tick_impl(
             collision,
             corpse_yields,
             dt,
+            ticks,
         ) {
             settle_if_diverted(&mut agent);
             move_without_path(
@@ -665,6 +826,7 @@ fn tick_impl(
                 agent,
                 position,
                 walk,
+                knockback_travel,
                 Some(mover_id),
                 environment,
                 dt,
@@ -676,6 +838,7 @@ fn tick_impl(
             gate,
             collision,
             dt,
+            ticks,
         };
         let ride_walk = match mover_link::advance(&mut agent, position, world) {
             mover_link::RideStep::Free => None,
@@ -691,6 +854,7 @@ fn tick_impl(
                 agent,
                 position,
                 walk,
+                knockback_travel,
                 None,
                 environment,
                 dt,
@@ -710,16 +874,17 @@ fn tick_impl(
                 half_height: agent.half_height(),
                 step_height: agent.step_height,
             };
-            let result = collide_and_slide(
+            let result = collide_and_slide_in_parts(
                 collision,
                 &capsule,
                 position,
                 agent.ground,
-                agent.knockback_velocity,
+                knockback_travel,
                 agent.velocity.y,
                 &mut agent.knockback_velocity,
                 environment,
                 dt,
+                sweep_parts(knockback_travel, agent.radius, dt, ticks),
             );
             agent.velocity = result.velocity;
             agent.ground = result.ground;
@@ -809,7 +974,7 @@ fn tick_impl(
         // tick keeps its existing `path` and `planned_destination` untouched, so
         // it follows its last route — stale-but-moving — instead of freezing. It
         // stays eligible: `planned_destination` is unchanged, so the drift test
-        // (or the cooldown) still fires next tick until a slot frees up.
+        // (or the cooldown) still fires on its next step until a slot frees up.
         //
         // The one exception is a lift that has left the dock a walk across it
         // was planned at: path steering would carry the agent over the rim
@@ -861,7 +1026,7 @@ fn tick_impl(
             && has_stuck_recovery_intent(&agent, goal_speed, steer_velocity);
         if has_recovery_intent {
             if agent.unstick_window_remaining == 0 && agent.stuck_ticks >= STUCK_TICKS_THRESHOLD {
-                // Fire recovery: clear the plan latch so the next tick's
+                // Fire recovery: clear the plan latch so the next step's
                 // admission pass treats this agent as drift-driven (a forced,
                 // budgeted replan from the wedged position), and open the
                 // bounded tangent-bias window. A replan that FAILS during the
@@ -896,7 +1061,7 @@ fn tick_impl(
         // is provably nonzero.
         if recovery_active_this_tick {
             desired += recovery_tangent_bias(steer_velocity, shove_speed(&agent));
-            agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(1);
+            agent.unstick_window_remaining = agent.unstick_window_remaining.saturating_sub(ticks);
         }
 
         // Separation: sum pushes from every other agent whose capsule overlaps
@@ -912,7 +1077,7 @@ fn tick_impl(
         // combined (goal + separation) vector never drives faster than it.
         // Knockback joins after the clamp, so an activity's `speed` never
         // scales a shove.
-        desired = clamp_xz_speed(desired, agent.steered_speed()) + agent.knockback_velocity;
+        desired = clamp_xz_speed(desired, agent.steered_speed()) + knockback_travel;
 
         // Move through the world.
         let capsule = AgentCapsule {
@@ -920,7 +1085,7 @@ fn tick_impl(
             half_height: agent.half_height(),
             step_height: agent.step_height,
         };
-        let result = collide_and_slide(
+        let result = collide_and_slide_in_parts(
             collision,
             &capsule,
             position,
@@ -930,6 +1095,7 @@ fn tick_impl(
             &mut agent.knockback_velocity,
             environment,
             dt,
+            sweep_parts(desired, agent.radius, dt, ticks),
         );
 
         agent.velocity = result.velocity;
@@ -964,6 +1130,7 @@ fn tick_impl(
                 goal_speed * dt,
                 has_recovery_intent,
                 easing_onto_mandatory,
+                ticks,
             );
         }
 
@@ -978,7 +1145,22 @@ fn tick_impl(
 
     corpse::tick_corpses(registry, collision, environment, dt);
 
-    AgentTickResult { replans }
+    AgentTickResult {
+        replans,
+        budget: admission.budget,
+    }
+}
+
+/// How many parts a step spanning `ticks` sweeps in: enough that no part
+/// travels further horizontally than the capsule's radius, so stairs and
+/// crests meet one step-up or snap per part, and never more than one a tick.
+/// A body at rest, or an ordinary tick, sweeps once.
+fn sweep_parts(velocity: Vec3, radius: f32, dt: f32, ticks: u32) -> u32 {
+    if ticks <= 1 || radius <= 0.0 {
+        return 1;
+    }
+    let travel = xz_length(velocity) * dt;
+    ((travel / radius).ceil() as u32).clamp(1, ticks)
 }
 
 /// Move an agent that follows no path this tick: stepping clear of `escaping`, or
@@ -991,6 +1173,7 @@ fn move_without_path(
     mut agent: AgentComponent,
     position: Vec3,
     walk: Vec3,
+    knockback_travel: Vec3,
     escaping: Option<u32>,
     environment: EnvironmentView<'_>,
     dt: f32,
@@ -1003,7 +1186,7 @@ fn move_without_path(
         half_height: agent.half_height(),
         step_height: agent.step_height,
     };
-    let desired = walk + agent.knockback_velocity;
+    let desired = walk + knockback_travel;
     let vertical = agent.velocity.y;
     let result = match escaping {
         Some(mover_id) => escape_slide(
@@ -1043,9 +1226,12 @@ fn move_without_path(
     let _ = registry.set_component(id, agent);
 }
 
-/// Decide which agents replan this tick under the per-tick budget. Returns the
-/// admitted ids, at most [`REPLAN_BUDGET_PER_TICK`], and the drift-driven agents
-/// it passed over. Admission runs tier by tier:
+/// Decide which agents replan this tick under the per-tick budget,
+/// [`replan_budget`] of the agents owed a replan in any tier. Returns the
+/// admitted ids, at most that budget, and the drift-driven agents it passed
+/// over. Within each tier a leap's spot goes first, then the higher NPC tier
+/// (the steps' rank); the gate tier keys them after its generation. Admission
+/// runs tier by tier:
 ///
 /// 1. GATE-owed: a dock change closed a crossing still ahead on the agent's
 ///    route, or the agent is latched `blocked` and a gate or link has opened
@@ -1087,23 +1273,29 @@ fn admit_replans(
     nav_graph: Option<&NavGraph>,
     gate: NavGate<'_>,
     collision: &CombinedCollisionWorld<'_>,
+    steps: AgentSteps<'_>,
     dt: f32,
 ) -> ReplanAdmission {
     // Classify each snapshot agent once into a tier, or none. The cooldown is
     // decremented exactly as the apply loop will, so both passes see the same
     // verdict.
-    let mut gate_driven: Vec<(u64, EntityId)> = Vec::new();
-    let mut drift_driven: Vec<(bool, u32, usize, EntityId)> = Vec::new();
-    let mut staleness_only: Vec<EntityId> = Vec::new();
-    let world = mover_link::RideWorld {
-        gate,
-        collision,
-        dt,
-    };
+    let mut gate_driven: Vec<(u64, bool, u8, EntityId)> = Vec::new();
+    let mut drift_driven: Vec<(bool, u8, u32, usize, EntityId)> = Vec::new();
+    let mut staleness_only: Vec<(bool, u8, EntityId)> = Vec::new();
 
     for (index, current) in snapshot.iter().enumerate() {
         let Ok(agent) = registry.get_component::<AgentComponent>(current.id) else {
             continue;
+        };
+        // An agent that takes no step this tick replans nothing.
+        let AgentStep::Ticks(ticks) = steps.step(current.id) else {
+            continue;
+        };
+        let world = mover_link::RideWorld {
+            gate,
+            collision,
+            dt: dt * ticks as f32,
+            ticks,
         };
         let Some(destination) = agent.destination else {
             continue;
@@ -1122,51 +1314,68 @@ fn admit_replans(
             current.position,
             destination,
         );
-        // The apply loop decrements before the `== 0` test, so a cooldown of 1
-        // (or 0) this tick reaches 0 after the decrement and counts as stale.
-        let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(1) == 0;
+        // The apply loop decrements by the step's ticks before the `== 0`
+        // test, so a cooldown of at most `ticks` reaches 0 after the decrement
+        // and counts as stale.
+        let cooldown_elapsed = agent.replan_cooldown_ticks.saturating_sub(ticks) == 0;
 
+        let rank = steps.rank(current.id);
         if gate_change_owes_replan(agent, current.position, nav_graph, gate) {
-            gate_driven.push((agent.gate_generation, current.id));
+            gate_driven.push((agent.gate_generation, agent.paced, rank, current.id));
         } else if drifted {
-            drift_driven.push((agent.paced, agent.drift_wait_ticks, index, current.id));
+            drift_driven.push((agent.paced, rank, agent.drift_wait_ticks, index, current.id));
         } else if cooldown_elapsed {
-            staleness_only.push(current.id);
+            staleness_only.push((agent.paced, rank, current.id));
         }
     }
 
-    let budget = REPLAN_BUDGET_PER_TICK as usize;
-    // Longest owed first, slot order within a generation (the sort is stable).
-    gate_driven.sort_by_key(|(generation, _)| *generation);
+    let budget = replan_budget(gate_driven.len() + drift_driven.len() + staleness_only.len());
+    let slots = budget as usize;
+    // Longest owed first; within a generation a leap's spot, then the higher
+    // NPC tier; slot order within those (the sort is stable). The tier keys
+    // come after the generation, so the ⌈N / budget⌉ bound stands.
+    gate_driven.sort_by_key(|&(generation, paced, rank, _)| {
+        (generation, std::cmp::Reverse((paced, rank)))
+    });
     let mut admitted: Vec<EntityId> = gate_driven
         .into_iter()
-        .take(budget)
-        .map(|(_, id)| id)
+        .take(slots)
+        .map(|(_, _, _, id)| id)
         .collect();
-    // A leap's spot first, then longest waiting, slot order within a wait
-    // (the sort is stable).
-    drift_driven.sort_by_key(|&(paced, wait, _, _)| std::cmp::Reverse((paced, wait)));
-    let remaining = budget - admitted.len();
+    // A leap's spot first, then the higher NPC tier, then longest waiting,
+    // slot order within a wait (the sort is stable).
+    drift_driven.sort_by_key(|&(paced, rank, wait, _, _)| std::cmp::Reverse((paced, rank, wait)));
+    let remaining = slots - admitted.len();
     let mut drift_waiting = vec![false; snapshot.len()];
-    for (rank, &(_, _, index, id)) in drift_driven.iter().enumerate() {
-        if rank < remaining {
+    for (place, &(_, _, _, index, id)) in drift_driven.iter().enumerate() {
+        if place < remaining {
             admitted.push(id);
         } else {
             drift_waiting[index] = true;
         }
     }
-    let remaining = budget - admitted.len();
-    admitted.extend(staleness_only.into_iter().take(remaining));
+    let remaining = slots - admitted.len();
+    // A leap's spot, then the higher NPC tier, slot order within.
+    staleness_only.sort_by_key(|&(paced, rank, _)| std::cmp::Reverse((paced, rank)));
+    admitted.extend(
+        staleness_only
+            .into_iter()
+            .take(remaining)
+            .map(|(_, _, id)| id),
+    );
     ReplanAdmission {
         admitted,
         drift_waiting,
+        budget,
     }
 }
 
 /// One tick's replan admission.
 struct ReplanAdmission {
-    /// The agents that replan this tick, at most [`REPLAN_BUDGET_PER_TICK`].
+    /// The agents that replan this tick, at most `budget`.
     admitted: Vec<EntityId>,
+    /// This tick's budget: [`replan_budget`] of the agents owed a replan.
+    budget: u32,
     /// Per snapshot index: drift-driven but passed over this tick, so its
     /// `drift_wait_ticks` grows.
     drift_waiting: Vec<bool>,
@@ -1443,12 +1652,13 @@ fn held_short_by_leash(agent: &AgentComponent, position: Vec3, arrival_radius: f
         && leash_holds(agent, position, target, arrival_radius)
 }
 
-/// A paced agent's speed: the path it has left over the whole ticks left
-/// before its deadline ([`AgentComponent::arrive_in_s`]), so its last tick
-/// lands on the destination, never above the steered speed. Recomputed every
-/// tick from where the agent stands, so a tick it lost to a wall or a turn is
-/// made up after. At or past the deadline it has one tick left. `None`
-/// without a deadline.
+/// A paced agent's speed: the path it has left over the whole steps left
+/// before its deadline ([`AgentComponent::arrive_in_s`]), `dt` being one
+/// step (one tick for an engaged agent), so its last step lands on the
+/// destination, never above the steered speed. Recomputed every step from
+/// where the agent stands, so a step it lost to a wall or a turn is made up
+/// after. At or past the deadline it has one step left. `None` without a
+/// deadline.
 fn paced_speed(agent: &AgentComponent, position: Vec3, dt: f32) -> Option<f32> {
     let seconds = agent.arrive_in_s?;
     if dt <= 0.0 {
@@ -1655,6 +1865,7 @@ fn easing_onto_mandatory_waypoint(
     mandatory && !is_final && distance_xz(position, agent.path[cursor]) < arrival_radius
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_stuck_ticks(
     agent: &mut AgentComponent,
     start_position: Vec3,
@@ -1663,6 +1874,9 @@ fn update_stuck_ticks(
     expected_goal_progress: f32,
     has_recovery_intent: bool,
     easing_onto_mandatory: bool,
+    // Ticks this step spans: a wedge counts every one, so recovery fires on
+    // the first step at or past the threshold.
+    ticks: u32,
 ) {
     if !has_recovery_intent {
         agent.stuck_ticks = 0;
@@ -1689,7 +1903,7 @@ fn update_stuck_ticks(
         expected_goal_progress * STUCK_PROGRESS_INTENT_FRACTION
     };
     if progress < floor {
-        agent.stuck_ticks = agent.stuck_ticks.saturating_add(1);
+        agent.stuck_ticks = agent.stuck_ticks.saturating_add(ticks);
     } else {
         agent.stuck_ticks = 0;
     }
@@ -1791,6 +2005,8 @@ fn separation_preserving_goal_progress(steer_velocity: Vec3, separation: Vec3) -
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod dormant_step_tests;
 #[cfg(test)]
 mod environment_tests;
 #[cfg(test)]

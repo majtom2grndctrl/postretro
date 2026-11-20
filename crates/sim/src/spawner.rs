@@ -18,7 +18,7 @@ use postretro_entities::components::map_ordinal::MapOrdinal;
 use postretro_entities::components::spawner::SpawnerComponent;
 use postretro_entities::provenance::DescriptorSpawnPath;
 use postretro_entities::{ComponentKind, EntityId, EntityRegistry, ScriptCtx, Transform};
-use postretro_foundation::{BehaviorDrawSalt, NavAgentParams, behavior_draw_seed};
+use postretro_foundation::{BehaviorDrawSalt, NavAgentParams};
 use postretro_scripting_core::data_descriptors::EntityTypeDescriptor;
 use postretro_scripting_core::reaction_registry::ReactionPrimitiveRegistry;
 use postretro_scripting_core::sequence::SequencedPrimitiveRegistry;
@@ -405,10 +405,10 @@ fn spawn_resolved_spawners(
             if let Ok(mut brain) = registry.get_component::<BrainComponent>(enemy).cloned() {
                 let count = context.next_spawn_count(spawner_id);
                 if let Some(spawner) = spawner_ordinal {
-                    brain.seed_behavior_draws(behavior_draw_seed(
+                    brain.seed_identity(
                         draw_descriptor,
                         BehaviorDrawSalt::Spawned { spawner, count },
-                    ));
+                    );
                 }
                 let windup_ms = SPAWN_ATTACK_WINDUP_MS;
                 for attack_name in brain.graph.attacks.keys() {
@@ -821,7 +821,7 @@ mod tests {
             );
         }
 
-        let mut warned = postretro_ai::AiRuntime::new();
+        let mut warned = postretro_ai::AiRuntime::noticing_on_sight();
         let dt_secs = 0.05;
         let windup_ticks = (seed / (dt_secs * 1000.0)).ceil() as usize;
         for tick in 1..windup_ticks {

@@ -11,19 +11,46 @@ use postretro_entities::components::brain::{
 use postretro_foundation::BehaviorGraphDescriptor;
 
 use super::arbitration::WaitKey;
-use super::{AttackTurnRuntime, attack_index, attack_name, attack_pool_of, path_mark};
+use super::{
+    AttackTurnRuntime, SkippedHolder, attack_index, attack_name, attack_pool_of, path_mark,
+};
 use crate::brain_programs::{BrainEntityPrograms, BrainPrograms};
 use crate::weapon_controller::AiWeaponControllers;
 use crate::{EnemyOutcome, PendingAttack};
 
-/// Admit a brain into this tick's AI set. A brain the previous tick did not
-/// evaluate left the set (quiescence, a queued despawn, inventory ownership,
-/// death): it returns holding nothing, requesting nothing, with no clock.
-pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
-    if turns.seen_tick.wrapping_add(1) != tick {
-        turns.clear();
-    }
+/// The most ticks one run credits. The tiers never skip a brain longer than
+/// one dormant interval; the bound only keeps a broken schedule from crediting
+/// a clock without limit.
+const MAX_RUN_SPAN_TICKS: u64 = postretro_sim::npc_tiers::MOVE_DOWN_HOLD_TICKS;
+
+/// Whether a brain about to run comes back to the AI set: the previous tick
+/// neither evaluated nor skipped it (quiescence, a queued despawn, inventory
+/// ownership, death).
+pub(crate) fn returns_to_set(turns: &AttackTurnState, tick: u64, present_last_tick: bool) -> bool {
+    !(present_last_tick || turns.seen_tick.wrapping_add(1) == tick)
+}
+
+/// Admit a brain into this tick's run, and return the ticks since its last
+/// run. A brain the previous tick neither evaluated nor skipped left the set
+/// (quiescence, a queued despawn, inventory ownership, death): it returns
+/// holding nothing, requesting nothing, with no clock, and spans one tick. A
+/// brain the schedule skipped kept everything, and spans every tick since it
+/// last ran, never more than [`MAX_RUN_SPAN_TICKS`].
+pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64, present_last_tick: bool) -> u32 {
+    let stayed = !returns_to_set(turns, tick, present_last_tick);
+    let span = if stayed && turns.seen_tick < tick {
+        // A scheduler skip spans at most one dormant interval; a restored
+        // brain's `seen_tick` can lie further back, so the span is clamped.
+        let since = tick - turns.seen_tick;
+        u32::try_from(since.min(MAX_RUN_SPAN_TICKS)).unwrap_or(u32::MAX)
+    } else {
+        if !stayed {
+            turns.clear();
+        }
+        1
+    };
     turns.seen_tick = tick;
+    span
 }
 
 /// The tick's turn pass. Every release and request of the tick is known
@@ -53,8 +80,13 @@ pub(crate) fn admit(turns: &mut AttackTurnState, tick: u64) {
 /// is not known to be undrawn and its enemy holds no turn for it. The last
 /// rule covers what no ended turn reports: a burst a held enemy kept, on its
 /// drop with its turns cleared.
+///
+/// A holder the schedule skipped this tick (`skipped`) stays: its turns hold
+/// and count against their pools, none ends or starts a refresh, and it
+/// requests nothing until it runs again.
 pub(crate) fn arbitrate_attack_turns(
     outcomes: &mut [EnemyOutcome],
+    skipped: &[SkippedHolder],
     programs: &BrainPrograms,
     runtime: &mut AttackTurnRuntime,
     weapons: &mut AiWeaponControllers,
@@ -73,6 +105,7 @@ pub(crate) fn arbitrate_attack_turns(
 
     for (slot, outcome) in outcomes.iter_mut().enumerate() {
         let target = outcome.target.map(|target| target.entity);
+        let target_life = outcome.target.map_or(0, |target| target.life);
         let pool = attack_pool_of(budgets, &outcome.brain);
         // Closing aggro takes the enemy out of the AI set.
         if !outcome.brain.aggro_armed {
@@ -86,6 +119,11 @@ pub(crate) fn arbitrate_attack_turns(
             .executing_attack(outcome.id)
             .map(|name| attack_index(&outcome.brain.graph, name));
         let graph_reseated = outcome.graph_reseated;
+        // Between decides, a queued (marked) grant made since the brain's last
+        // decide waits for the next one, where a queued row opens on it or the
+        // hold's mark keeps it. At one decide a tick this never holds.
+        let awaiting_decide =
+            (!outcome.decide).then_some(outcome.brain.attack_turns.last_decide_tick);
         // One turn covers a repeating release's passes: once it has struck, a
         // turn it lost (a target switch, a tick with no target) is not
         // requested again, so the passes left whiff on the hard gate below
@@ -128,6 +166,8 @@ pub(crate) fn arbitrate_attack_turns(
             // and the row opens on it.
             draws_unchanged
                 && ((target.is_some() && mark == Some(turn.attack))
+                    || awaiting_decide
+                        .is_some_and(|since| !turn.until_cooldown && turn.granted_tick >= since)
                     || executing_attack == Some(turn.attack)
                     || (turn.until_cooldown && cooling_down(graph, cooldowns, turn.attack)))
         });
@@ -170,6 +210,7 @@ pub(crate) fn arbitrate_attack_turns(
                 },
                 programs_entry,
                 target,
+                target_life,
                 pool,
             )
         });
@@ -178,11 +219,13 @@ pub(crate) fn arbitrate_attack_turns(
         // and a move between a rest's request and its hold's mark all keep
         // the enemy's place in line on one target.
         match (request, turns.wait) {
-            (Some((request, _)), Some(wait)) if wait.target == request.target => {}
+            (Some((request, _)), Some(wait))
+                if wait.target == request.target && wait.target_life == request.target_life => {}
             (Some((request, _)), _) => {
                 turns.wait = Some(WaitClock {
                     since_tick: *tick,
                     target: request.target,
+                    target_life: request.target_life,
                 });
             }
             // A gap in requesting keeps the clock.
@@ -204,6 +247,15 @@ pub(crate) fn arbitrate_attack_turns(
                 grantable,
                 slot,
             );
+        }
+    }
+
+    for holder in skipped {
+        roster.ended_for(holder.id, &holder.turns, |turn| {
+            debug_assert!(false, "a skipped holder ended turn {}", turn.attack);
+        });
+        for turn in holder.turns.held() {
+            arbiter.hold((holder.pool, turn.target), turn.draws);
         }
     }
 
@@ -239,6 +291,7 @@ pub(crate) fn arbitrate_attack_turns(
         let held = turns.hold(HeldTurn {
             attack: request.attack,
             target: request.target,
+            target_life: request.target_life,
             pool: request.pool,
             draws: request.draws,
             until_cooldown: !request.marked,
@@ -254,7 +307,8 @@ pub(crate) fn arbitrate_attack_turns(
     roster.rebuild(
         outcomes
             .iter()
-            .map(|outcome| (outcome.id, &outcome.brain.attack_turns)),
+            .map(|outcome| (outcome.id, &outcome.brain.attack_turns))
+            .chain(skipped.iter().map(|holder| (holder.id, &holder.turns))),
     );
 
     for outcome in outcomes.iter_mut() {
@@ -291,6 +345,7 @@ pub(crate) fn next_request(
     sources: RequestSources<'_>,
     programs: Option<&BrainEntityPrograms>,
     target: EntityId,
+    target_life: u32,
     pool: AttackPoolId,
 ) -> Option<(TurnRequest, bool)> {
     let (attack, marked) = match (sources.mark, sources.queued) {
@@ -320,6 +375,7 @@ pub(crate) fn next_request(
             draws,
             marked,
             target,
+            target_life,
             pool,
         },
         !shares_token,

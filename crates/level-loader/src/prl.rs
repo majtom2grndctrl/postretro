@@ -2833,6 +2833,7 @@ mod tests {
         let plane = |normal: [f32; 3], distance: f32| EnvironmentPlane { normal, distance };
         let environment = EnvironmentVolumesSection {
             level_gravity: 4.0,
+            ai_wake_lead: None,
             volumes: vec![EnvironmentVolumeRecord {
                 source_entity: 3,
                 priority: 2,
@@ -2898,6 +2899,7 @@ mod tests {
         };
         EnvironmentVolumesSection {
             level_gravity: -9.81,
+            ai_wake_lead: None,
             volumes: vec![
                 record(None, "water"),
                 record(Some([6.0, 0.0, 0.0]), ""),

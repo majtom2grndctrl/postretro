@@ -44,6 +44,8 @@ pub mod impact_policy;
 pub mod life_state_commands;
 pub mod mover_commands;
 pub mod nav;
+pub mod npc_perception;
+pub mod npc_tiers;
 pub mod particle_pool;
 pub mod placement_occupancy;
 pub mod player_events;

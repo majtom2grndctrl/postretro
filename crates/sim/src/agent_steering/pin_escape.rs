@@ -112,6 +112,7 @@ pub(super) fn escape_velocity(
     collision: &CombinedCollisionWorld<'_>,
     corpse_yields: &mut Vec<AgentMoverPair>,
     dt: f32,
+    ticks: u32,
 ) -> Option<(u32, Vec3)> {
     let escape = agent.pin_escape.as_mut()?;
     let off_the_deck = !matches!(agent.ground, GroundRef::Airborne)
@@ -136,7 +137,8 @@ pub(super) fn escape_velocity(
         agent.pin_escape = None;
         return None;
     }
-    escape.ticks_left -= 1;
+    // Counted in elapsed ticks: a step spanning several spends them all.
+    escape.ticks_left = escape.ticks_left.saturating_sub(ticks.max(1));
     // The base speed, not the activity's: a walk out of a mover's course is
     // engine safety, so a strolling activity never slows it into a crush.
     let speed = if dt > 0.0 {

@@ -1138,6 +1138,7 @@ impl Fixture {
             (0.0, 0.0),
             &mut self.progress,
             postretro_ai::tick_runner!(&mut self.ai),
+            None,
             &[],
             &mut self.movers,
             &commands,

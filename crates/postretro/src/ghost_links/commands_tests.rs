@@ -240,6 +240,7 @@ impl Host {
                     knockback_impulse: [0.0; 3],
                     credit_source: "launcher".to_string(),
                     owner_pawn: owner,
+                    owner_life: 0,
                     owner_weapon: owner,
                     attackerless: false,
                     spawned: false,

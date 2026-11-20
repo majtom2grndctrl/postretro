@@ -1,11 +1,13 @@
 // Live target selection against the every-pawn scan the pawn index replaced, kept as a test-only
-// reference (`targeting::reference`): the same stride-pricing nearest, selected
+// reference (`targeting::reference`): the same nearest hostile, selected
 // target, fresh LOS verdict and retaliation latch, across randomized scenes
 // and the named edge classes.
 // See: context/lib/entity_model.md §7c
 
 use super::*;
-use crate::targeting::{self, TargetCandidate, TargetOffers, TargetPawn, TargetSelection};
+use crate::targeting::{
+    self, ScannedOffers, TargetCandidate, TargetOffers, TargetPawn, TargetSelection,
+};
 use postretro_entities::components::brain::{RECENT_ATTACKER_LEDGER_CAPACITY, RecentAttacker};
 use postretro_entities::components::inventory::Inventory;
 use postretro_foundation::{CANDIDATE_DISTANCE_INPUT, CANDIDATE_HEALTH_INPUT};
@@ -90,25 +92,18 @@ struct Scene {
 }
 
 /// What a selection produces, formatted so NaN positions compare by value
-/// and every field is checked: the stride's nearest, its price, and the
-/// selection with its fresh LOS and latch.
-fn outcome(
-    nearest: Option<TargetCandidate>,
-    stride_distance: Option<f32>,
-    selection: Option<TargetSelection>,
-) -> String {
-    format!(
-        "nearest {nearest:?} stride {:?} selection {selection:?}",
-        stride_distance.map(f32::to_bits)
-    )
+/// and every field is checked: the pure nearest hostile the buckets hold, and
+/// the selection with its fresh LOS and latch.
+fn outcome(nearest: Option<TargetCandidate>, selection: Option<TargetSelection>) -> String {
+    format!("nearest {nearest:?} selection {selection:?}")
 }
 
 /// The compute pass's targeting flow for one enemy, with offers and
 /// selection supplied: retained lookup, offers excluding the retained target,
-/// the stride price, then due-tick selection.
+/// then a decide's selection.
 fn drive(
     scene: &Scene,
-    offers: impl FnOnce(&LiveFactionSentiment<'_>, Vec3, f32, Option<EntityId>) -> TargetOffers,
+    offers: impl FnOnce(&LiveFactionSentiment<'_>, Vec3, f32, Option<EntityId>) -> ScannedOffers,
     select: impl FnOnce(
         Option<TargetCandidate>,
         &TargetOffers,
@@ -133,9 +128,6 @@ fn drive(
         enemy_faction,
         retained.map(|r| r.target.entity),
     );
-    let stride_distance = retained
-        .map(|retained| retained.distance)
-        .or(offers.nearest.map(|nearest| nearest.distance));
     let mut perception = |target: TargetPawn| {
         Some(perception::RawTargetPerception {
             target: target.entity,
@@ -145,7 +137,7 @@ fn drive(
         })
     };
     let selection = select(retained, &offers, &live, enemy_faction, &mut perception);
-    outcome(offers.nearest, stride_distance, selection)
+    outcome(offers.nearest, selection)
 }
 
 fn reference_outcome(scene: &Scene) -> String {
@@ -190,7 +182,7 @@ fn live_outcome(scene: &Scene) -> String {
     drive(
         scene,
         |live, from, faction, exclude| {
-            targeting::target_offers(&index, live, from, faction, Some(scene.enemy), exclude)
+            targeting::scanned_offers(&index, live, from, faction, Some(scene.enemy), exclude)
         },
         |retained, offers, live, faction, perception| {
             targeting::select_target_with_attacker_ledger(
@@ -373,6 +365,7 @@ fn random_scene(rng: &mut Lcg) -> Scene {
             attacker: rng.pick(&ledger_pool),
             accumulated_damage: rng.pick(&[0.0, 3.0, 5.0, 10.0, 10.0]),
             time_since_damage_ms: rng.pick(&[0.0, 100.0, 100.0, 2_000.0]),
+            life: 0,
         });
     }
     let latch = match rng.below(3) {
@@ -525,6 +518,7 @@ fn attack(scene: &mut Scene, slot: usize, attacker: EntityId, damage: f32) {
         attacker,
         accumulated_damage: damage,
         time_since_damage_ms: 100.0,
+        life: 0,
     });
 }
 

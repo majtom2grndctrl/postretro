@@ -1750,6 +1750,7 @@ mod tests {
             .set_tags(enemy, vec!["closet_enemies".into()])
             .expect("tag closet enemy");
         let graph = BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

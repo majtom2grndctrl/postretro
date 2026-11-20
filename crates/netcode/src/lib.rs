@@ -2289,17 +2289,18 @@ fn ingest_hit_declaration(
                 ),
                 damage_type: None,
             });
-            crate::sim::apply_authorized_weapon_impact_damage(
+            crate::sim::apply_authorized_shot_impact_damage(
                 context.registry,
                 open.shot.weapon,
                 Some(open.shot.pawn),
+                Some(open.shot.pawn_life),
                 &direct_push,
                 open.shot.credit_source.clone(),
                 0.0,
             );
         }
         let point = impact.point;
-        let hit_accepted = crate::sim::splash::emit_splash_damage(
+        let hit_accepted = crate::sim::splash::emit_shot_splash_damage(
             context.registry,
             context.hit_zone_store,
             context.collision_world,
@@ -2314,6 +2315,7 @@ fn ingest_hit_declaration(
             open.shot.damage,
             open.shot.weapon,
             open.shot.pawn,
+            Some(open.shot.pawn_life),
             true,
             open.shot.credit_source.clone(),
             open.shot.damage_type,
@@ -2586,10 +2588,11 @@ fn apply_valid_hit_record(
             damage_type: shot.damage_type,
         }),
     };
-    crate::sim::apply_authorized_weapon_impact_damage(
+    crate::sim::apply_authorized_shot_impact_damage(
         registry,
         shot.weapon,
         Some(shot.pawn),
+        Some(shot.pawn_life),
         &impact,
         shot.credit_source.clone(),
         shot.damage,
@@ -4136,6 +4139,7 @@ mod tests {
             knockback: None,
             shot_id,
             pawn,
+            pawn_life: 0,
             weapon,
             fire_tick,
             damage,
@@ -4984,6 +4988,7 @@ mod tests {
                     knockback: stats.knockback,
                     shot_id: self.shot_id,
                     pawn: self.pawn,
+                    pawn_life: 0,
                     weapon: self.weapon,
                     fire_tick: 99,
                     damage: stats.damage,

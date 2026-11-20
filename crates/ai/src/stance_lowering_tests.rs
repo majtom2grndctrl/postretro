@@ -386,7 +386,7 @@ fn the_scripting_surface_example_runs_as_dev_content() {
         "stance_surface_brute",
         Vec3::ZERO,
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let (mut paths, mut hurt) = (Vec::new(), 0);
     for _ in 0..(10.0 / DT) as usize {
         let hp = player_hp(&reg, player);
@@ -403,6 +403,7 @@ fn the_scripting_surface_example_runs_as_dev_content() {
                 factions: &FactionRegistry::default(),
                 faction_sentiment: &RefCell::new(FactionSentimentState::default()),
                 clips: Some(&clips),
+                schedule: Default::default(),
                 cpu: None,
             },
             |_| {},

@@ -19,7 +19,8 @@ use crate::nav::{NavGraph, NavScratch};
 use crate::sim::cpu_stages::SimStage;
 
 /// How many ticks a resolved combat slot is held for its incumbent before the
-/// batch solver is free to reassign it to a challenger.
+/// batch solver is free to reassign it to a challenger. Slot choice runs on
+/// decides, so each decide spends the ticks since the previous one.
 pub(super) const COMBAT_SLOT_HOLD_TICKS: u32 = 8;
 
 pub(super) fn resolve_combat_slots(
@@ -33,8 +34,13 @@ pub(super) fn resolve_combat_slots(
 ) {
     for outcome in outcomes.iter_mut() {
         outcome.combat_slot = None;
-        if !outcome.engaged {
+        if !claims_slots(outcome) {
             clear_combat_slot(outcome);
+        } else if !outcome.decide {
+            // Slot choice runs on decide ticks; between them an engaged enemy
+            // keeps the slot it holds, and a slot verb walks on to it.
+            outcome.combat_slot = outcome.brain.combat_slot;
+            engaged_motion::walk_on(outcome);
         }
     }
 
@@ -48,7 +54,10 @@ pub(super) fn resolve_combat_slots(
         return;
     };
 
-    if !outcomes.iter().any(|outcome| outcome.engaged) {
+    if !outcomes
+        .iter()
+        .any(|outcome| claims_slots(outcome) && outcome.decide)
+    {
         return;
     }
 
@@ -65,7 +74,7 @@ pub(super) fn resolve_combat_slots(
 
     let mut queries = Vec::new();
     for outcome in outcomes.iter() {
-        if !outcome.engaged {
+        if !claims_slots(outcome) || !outcome.decide {
             continue;
         }
         let Some(target) = outcome.target else {
@@ -75,7 +84,7 @@ pub(super) fn resolve_combat_slots(
             continue;
         };
         // The engaged slot verbs leave the shared ring for their own rotated
-        // one and pick afresh each tick, so they present no incumbent.
+        // one and pick afresh each decide, so they present no incumbent.
         let retained_slot = outcome
             .engaged_ring
             .is_none()
@@ -119,8 +128,11 @@ pub(super) fn resolve_combat_slots(
     let _apply_stage = ai_stage(cpu, SimStage::AiApply);
 
     for outcome in outcomes.iter_mut() {
-        if !outcome.engaged {
+        if !claims_slots(outcome) {
             clear_combat_slot(outcome);
+            continue;
+        }
+        if !outcome.decide {
             continue;
         }
 
@@ -132,8 +144,13 @@ pub(super) fn resolve_combat_slots(
             Some(candidate) => {
                 outcome.combat_slot = Some(candidate.position);
                 outcome.brain.combat_slot = Some(candidate.position);
+                // The hold counts ticks, not decides: an incumbent spends
+                // every tick since its previous decide.
                 outcome.brain.combat_slot_hold_ticks = if candidate.is_incumbent {
-                    outcome.brain.combat_slot_hold_ticks.saturating_sub(1)
+                    outcome
+                        .brain
+                        .combat_slot_hold_ticks
+                        .saturating_sub(outcome.brain.attack_turns.decide_span.max(1))
                 } else {
                     COMBAT_SLOT_HOLD_TICKS
                 };
@@ -141,6 +158,12 @@ pub(super) fn resolve_combat_slots(
             None => clear_combat_slot(outcome),
         }
     }
+}
+
+/// An engaged enemy inside its tactical line takes part in slot choice; one
+/// past it routes toward its target instead.
+fn claims_slots(outcome: &EnemyOutcome) -> bool {
+    outcome.engaged && !outcome.brain.beyond_tactical_range
 }
 
 fn clear_combat_slot(outcome: &mut EnemyOutcome) {

@@ -163,6 +163,8 @@ Release, this container (4 cores), 600 sampled ticks; measured, not gated. One p
 | Idle scan, 64 in view, 1 / 8 hostile candidates: AI per NPC per check, LOS per check | 7.25 µs, 1.00 / 9.33 µs, 8.00 (with a target: 30.3 µs, 0 / 35.4 µs, 1) | — |
 | Packed stress row, AI per NPC fraction of 60 Hz (all engaged, one cell) | 0.40–0.66; steering 0.94–1.17; at 64 / 128 chasers route queries 5.33 / 9.41 per tick, budget 5.4 / 9.4 (chase) | 1 |
 
+Re-run after review round 1 (same container, release): the multi-arena row moved within run-to-run noise (engaged wave 0.18–0.26 of 60 Hz, dormant 0.18–0.36, far chasers 0.31–0.35; in-arena replan wait mean 4.1–4.2, max 9–10); the wake tick fell to 19.9 ms (perception 0.08 + AI 14.1 + steering 5.7), 120% of the step; one perception worst of 3.0 ms at 1,000 NPCs (p50 108 µs) looks like a container stall and is reported, not explained.
+
 Readings against the Scale rows:
 - AC 53: tiers cut AI to about a sixth (engaged) and a fifth (dormant) of the 60 Hz NPC; at 1,000 placed the median tick (AI + steering ≈ 9.4 ms) fits the 16.67 ms step where the 60 Hz baseline (≈ 30 ms) does not, but the worst AI tick (21.9 ms) does not fit. Planned as an addendum per the row, not a failed landing.
 - AC 55: the wake tick misses the step (24.1 ms, 145%) and the ticks after stay near 22 ms while 233 newly engaged NPCs replan under a budget scaled to 68. Owner decision: an addendum (cap the per-tick budget, or stagger move-up decides) or accept.

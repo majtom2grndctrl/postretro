@@ -88,7 +88,8 @@ USAGE:
   postretro-tool prl-sections <level.prl>
   postretro-tool generate-camera-route <level.prl> --kind far-point|random|smoothed
                 [--seed <u64>] [--steps <n>] [--pitch <degrees>] [--hfov <degrees>]
-                [--walk far-point|random] [--speed <m/s>] [--turn-cap <deg/s>] -o <out-file>
+                [--walk far-point|random] [--speed <m/s>] [--turn-cap <deg/s>]
+                -o|--out <out-file>
 
 COMMANDS:
   dist                 Assemble a runnable player distribution payload
@@ -108,8 +109,12 @@ COMMANDS:
                        Write a level's seeded camera route as a pose file:
                        the residency walk's exact frames (far-point tour or
                        random walk), or a smoothed flight through the walk's
-                       cells (default 8 m/s, 270 deg/s turn cap); needs no
-                       project, GPU or engine
+                       cells; needs no project, GPU or engine. Defaults:
+                       --steps 2000, --pitch 0, --hfov 100, --speed 8,
+                       --turn-cap 270, --seed 0x5eedb10c. --seed takes
+                       decimal or hex (0x...); --pitch -89 to 89; --hfov 60
+                       to 130. --walk, --speed and --turn-cap apply only to
+                       --kind smoothed.
 
 HELPER BINARIES:
   The tool compiles nothing. Each helper defaults to a conventional path beside

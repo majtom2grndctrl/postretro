@@ -23,7 +23,9 @@ pub(crate) const CAMERA_ROUTE_VALUE_FLAGS: [&str; 7] = [
     PRESENT_MODE_FLAG,
 ];
 
-/// The feature playback and recording build behind.
+/// The feature playback and recording build behind. It must name the
+/// feature the `cfg(feature = "dev-tools")` gates on playback test: change
+/// both together, or the warning names a feature that enables nothing.
 pub(crate) const CAMERA_ROUTE_FEATURE: &str = "dev-tools";
 
 /// In a build without playback's feature, warns once for each of the
@@ -124,6 +126,13 @@ mod tests {
         warn_camera_route_flags_without_feature(&launch, false);
         capture.assert_logged_once(log::Level::Warn, PRESENT_WARNING);
         capture.assert_not_logged(log::Level::Warn, PLAY_WARNING);
+    }
+
+    #[test]
+    fn camera_route_feature_names_the_gate_playback_builds_behind() {
+        let main = include_str!("../main.rs");
+        let gate = format!("#[cfg(feature = \"{CAMERA_ROUTE_FEATURE}\")]\nmod playback;");
+        assert!(main.contains(&gate), "main.rs gates playback on {CAMERA_ROUTE_FEATURE}");
     }
 
     #[test]

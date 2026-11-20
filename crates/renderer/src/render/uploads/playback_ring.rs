@@ -4,7 +4,7 @@
 // See: context/lib/rendering_pipeline.md §12
 
 use super::MarkSite;
-use super::playback_timing::{PlaybackGpuSample, PlaybackGpuSpan, RING_FRAMES};
+use super::playback_timing::{PlaybackGpuSample, PlaybackGpuSpan, QUERIES_PER_FRAME, RING_FRAMES};
 
 /// Longest span decoded as a sample: a longer one has a garbage endpoint, as
 /// a counter narrower than 64 bits wrapping mid-frame leaves.
@@ -14,9 +14,14 @@ const MAX_SPAN_NS: f64 = 1.0e9;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Span {
     LightmapDrain = 0,
+    /// First SH upload copy's first command to the last one's last; includes
+    /// gaps between the separate submits and mover depth-tile flushes made at
+    /// the SH drain.
     ShUploads = 1,
     /// The first command of the frame's earliest marked encoder to the last
-    /// command of its frame encoder.
+    /// command of its frame encoder. On a drain frame the earliest is the
+    /// lightmap drain, so the span includes CPU-side idle time and unmarked
+    /// command buffers submitted before the Frame Encoder.
     WholeFrame = 2,
 }
 
@@ -153,7 +158,7 @@ fn max_span_ticks(ns_per_tick: f32) -> u64 {
     }
 }
 
-fn decode_span(ticks: &[u64; 6], span: Span, ran: bool, ns_per_tick: f32) -> PlaybackGpuSpan {
+fn decode_span(ticks: &[u64; QUERIES_PER_FRAME as usize], span: Span, ran: bool, ns_per_tick: f32) -> PlaybackGpuSpan {
     if !ran {
         return PlaybackGpuSpan::Absent;
     }
@@ -167,7 +172,7 @@ fn decode_span(ticks: &[u64; 6], span: Span, ran: bool, ns_per_tick: f32) -> Pla
 
 pub(super) fn decode_group(
     frame: u64,
-    ticks: &[u64; 6],
+    ticks: &[u64; QUERIES_PER_FRAME as usize],
     ran: [bool; 2],
     ns_per_tick: f32,
 ) -> PlaybackGpuSample {

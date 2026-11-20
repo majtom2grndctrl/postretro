@@ -1768,8 +1768,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // pawn's preset must not leak onto the selected camera.
     // A camera route draws its pose at its own FOV with no view feel, so the
     // render eye is the pose's eye.
-    let route_hfov = route_hfov(app);
-    let view_feel_driver = match route_hfov {
+    let playing_route_hfov = route_hfov(app);
+    let view_feel_driver = match playing_route_hfov {
         Some(_) => None,
         None => frame_eye::view_feel_driver(
             &script_ctx.registry.borrow(),
@@ -1787,7 +1787,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         .unwrap_or(1.0);
     let eye_inputs = presented_aim.frame_eye_inputs(
         app.camera.aspect(),
-        route_hfov.unwrap_or(crate::camera::HFOV),
+        playing_route_hfov.unwrap_or(crate::camera::HFOV),
         view_feel_driver,
         &pending_movement_edges,
         frame_dt,

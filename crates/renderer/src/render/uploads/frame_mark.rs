@@ -61,6 +61,7 @@ mod tests {
 
     /// Marking brackets an encoder in a debug group; it never renames one,
     /// so per-encoder trace reducers group as they always have.
+    // Reads source text, so a reflow of those descriptors would trip it.
     #[test]
     fn marked_encoders_keep_their_labels() {
         for (source, label) in [

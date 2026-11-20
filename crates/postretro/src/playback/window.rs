@@ -106,10 +106,13 @@ pub(crate) struct WindowFigures {
     /// The `render_sh_drain` CPU stage's max, as above.
     pub(crate) sh_drain_cpu_max_ms: Option<f64>,
     /// Lightmap blocks drawn while not installed, summed over the measured
-    /// rows; `null` when the level's lightmap does not stream.
-    pub(crate) late_lightmap_block_frames: Option<u64>,
-    /// SH clusters drawn while not Sampleable, summed likewise.
-    pub(crate) late_sh_cluster_frames: Option<u64>,
+    /// rows; named as the record row's column. `null` when the level's
+    /// lightmap does not stream, or when the window has no measured rows.
+    pub(crate) lightmap_late_block_frames: Option<u64>,
+    /// SH clusters drawn while not Sampleable, summed likewise; `null` when
+    /// the level's SH does not stream, or when the window has no measured
+    /// rows.
+    pub(crate) sh_late_cluster_frames: Option<u64>,
 }
 
 impl WindowFigures {
@@ -127,8 +130,8 @@ impl WindowFigures {
             frames_over_33ms: None,
             lightmap_drain_cpu_max_ms: None,
             sh_drain_cpu_max_ms: None,
-            late_lightmap_block_frames: None,
-            late_sh_cluster_frames: None,
+            lightmap_late_block_frames: None,
+            sh_late_cluster_frames: None,
         };
         for row in rows {
             if row.phase != RowKind::Route {
@@ -155,11 +158,11 @@ impl WindowFigures {
             max_stage(&mut figures.sh_drain_cpu_max_ms, cpu, SH_DRAIN_STAGE);
             let drain = &row.fill.drain;
             sum_late(
-                &mut figures.late_lightmap_block_frames,
+                &mut figures.lightmap_late_block_frames,
                 drain.lightmap_late_block_frames,
             );
             sum_late(
-                &mut figures.late_sh_cluster_frames,
+                &mut figures.sh_late_cluster_frames,
                 drain.sh_late_cluster_frames,
             );
         }
@@ -199,7 +202,7 @@ fn log_window(event: &PlaybackWindowEvent) {
     let ms = |value: Option<f64>| value.map_or_else(|| "null".to_string(), |ms| format!("{ms:.3}"));
     let count = |value: Option<u64>| value.map_or_else(|| "null".to_string(), |n| n.to_string());
     log::info!(
-        "[Playback] window {}{} frames {}..={}: rows={} route={} measured={} p99={} ms over_33ms={} lightmap_drain_cpu_max={} ms sh_drain_cpu_max={} ms late_lightmap={} late_sh={} pacing={} cap={} {} B",
+        "[Playback] window {}{} frames {}..={}: rows={} route={} measured={} p99={} ms over_33ms={} lightmap_drain_cpu_max={} ms sh_drain_cpu_max={} ms lightmap_late_block_frames={} sh_late_cluster_frames={} pacing={} cap={} {} B",
         event.window_index,
         if event.partial { " (partial)" } else { "" },
         event.first_frame,
@@ -211,8 +214,8 @@ fn log_window(event: &PlaybackWindowEvent) {
         count(figures.frames_over_33ms.map(u64::from)),
         ms(figures.lightmap_drain_cpu_max_ms),
         ms(figures.sh_drain_cpu_max_ms),
-        count(figures.late_lightmap_block_frames),
-        count(figures.late_sh_cluster_frames),
+        count(figures.lightmap_late_block_frames),
+        count(figures.sh_late_cluster_frames),
         event.pacing,
         event.cap.source,
         event.cap.decoded_bytes_per_drain,

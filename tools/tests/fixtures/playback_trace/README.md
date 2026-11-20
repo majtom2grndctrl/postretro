@@ -2,6 +2,6 @@
 
 A slice of one real camera-route playback run with an attached Metal System Trace, for `test_playback_trace_reduce.py`.
 
-- **Source:** the camera-path-playback Mac checkpoint, branch `mac/camera-path-checkpoint` at 159f47d64 (`context/plans/in-progress/camera-path-playback/mac-results/`). The run used campaign-test, a 40-step far-point route (1,746 poses), a 900-frame hold, vsync and the Task 4 build, so the record has no drain, cold or growth columns.
-- **Rows kept:** record rows and the matching `metal-application-intervals` and `metal-gpu-intervals` rows for three frame ranges around frames 1136–1139 (SH upload frames) and 1248 (a lightmap drain), plus hold rows before the trace attached. There are also 8 `ioreg` polls and the export's TOC summary.
+- **Source:** the first Mac run of camera-route playback. Its full tables live on branch `mac/camera-path-checkpoint` at 159f47d64, not on this branch. The run used campaign-test, a 40-step far-point route (1,746 poses), a 900-frame hold and vsync. Its record is from before the drain, cold and growth columns existed, so it has none of them.
+- **Rows kept:** record rows and the matching `metal-application-intervals` and `metal-gpu-intervals` rows for three frame ranges: hold frames around the trace's attach, the SH upload frames 1136–1139, and the lightmap drain at 1248. The test module's docstring lists the exact trace and record ranges and is the authority for them. There are also 8 `ioreg` polls and the export's TOC summary.
 - **Regenerating:** cut the same table slices from a newer full-record run, then re-derive the hand-checked numbers in `SampleTests`.

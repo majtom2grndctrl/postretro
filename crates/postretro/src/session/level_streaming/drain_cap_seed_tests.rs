@@ -33,8 +33,9 @@ fn play_drain_cap_seed_sets_the_cap_in_decoded_mib_and_names_its_source() {
     for (value, bytes) in [
         ("4", 4 * MIB),
         (" 16 ", 16 * MIB),
-        ("0.5", MIB / 2),
-        ("2.25", 2 * MIB + MIB / 4),
+        ("1", MIB),
+        ("2.5", 2 * MIB + MIB / 2),
+        ("32", 32 * MIB),
     ] {
         let level = seeded(Ok(value.to_string()));
         assert_eq!(
@@ -81,6 +82,41 @@ fn malformed_play_drain_cap_seeds_each_warn_once_and_keep_production() {
         capture.assert_logged_once(Level::Warn, why);
         capture.assert_logged_once(Level::Warn, "keep the production cap of 8 MiB");
     }
+}
+
+// A seed the slider cannot hold would be rewritten on the Streaming tab's
+// first draw (egui clamps and snaps an existing value and reports it as
+// changed), flipping the cap's source to the slider. It is refused instead.
+#[test]
+fn play_drain_cap_seeds_outside_the_slider_are_refused_and_keep_production() {
+    let capture = LogCapture::start();
+    for value in ["0.5", "0.999", "32.5", "64", "2.25", "4.1"] {
+        capture.clear();
+        let level = seeded(Ok(value.to_string()));
+        assert_eq!(level.play_drain_cap_override(), None, "{value}");
+        assert_eq!(level.play_drain_cap_in_force(), PRODUCTION, "{value}");
+        capture.assert_logged_once(
+            Level::Warn,
+            &format!("POSTRETRO_PLAY_DRAIN_CAP_MIB={value:?}: outside the slider's range of 1 to 32 MiB in steps of 0.5 MiB"),
+        );
+        capture.assert_logged_once(Level::Warn, "keep the production cap of 8 MiB");
+    }
+}
+
+// The seed's accepted set is the slider's own span and step.
+#[cfg(feature = "dev-tools")]
+#[test]
+fn the_seed_range_is_the_slider_range() {
+    use super::drain_cap::{SEED_MAX_BYTES, SEED_MIN_BYTES, SEED_STEP_BYTES};
+
+    let lever = LevelStreaming::default().drain_cap_lever();
+    let range = lever.slider_range_mib();
+    assert_eq!(*range.start() * MIB as f64, SEED_MIN_BYTES as f64);
+    assert_eq!(*range.end() * MIB as f64, SEED_MAX_BYTES as f64);
+    assert_eq!(
+        crate::render::debug_ui::StreamingDrainCapLever::SLIDER_STEP_MIB * MIB as f64,
+        SEED_STEP_BYTES as f64
+    );
 }
 
 #[test]

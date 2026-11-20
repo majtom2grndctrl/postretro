@@ -20,10 +20,12 @@ use super::stall::WaitScreen;
 /// How a run ends.
 enum Ending {
     Complete,
+    /// The record is marked aborted with the reason, and the session exits
+    /// non-zero naming it.
     Aborted(String),
-    /// The person ended the session by window close or a quit: the record
-    /// is marked aborted, and the exit code stays the session's own.
-    Closed(String),
+    /// The session is already exiting on this error: the record is marked
+    /// aborted with its message, and the session's own error stays the exit.
+    Failed(String),
 }
 
 /// What a Settling frame does with its held view.
@@ -38,41 +40,34 @@ impl App {
     /// route's bake must be the level's (id-51 hash and walk epoch). A match
     /// arms the run; a mismatch is held for the first Settling frame, which
     /// stops the run. A frontend backdrop is never the route's level, nor
-    /// a recording's.
+    /// a recording's. A connected client's level is its host's world, which
+    /// a route cannot measure: the run aborts instead of arming.
     pub(crate) fn playback_level_installed(&mut self) {
         let backdrop = self.frontend_menu_is_present();
         if !backdrop {
             self.recording_level_installed();
         }
         let path = self.installed_level_path();
+        let connected_client = self.is_connected_client();
         let Some(active) = self.playback.active.as_mut() else {
             return;
         };
         if backdrop || active.run.phase() != Phase::AwaitingInstall {
             return;
         }
+        if connected_client {
+            active.run.abort();
+            self.end_playback_run(Ending::Aborted(format!(
+                "level {path} installed as a connected client: a route measures a local level"
+            )));
+            return;
+        }
         let Some(world) = self.level.as_ref() else {
             return;
         };
         let bake = postretro_camera_route::bake_identity(&path, world);
-        match route::match_level(&active.file, &bake) {
-            Ok(identity) => {
-                if identity == Identity::Unproven {
-                    log::warn!(
-                        "[Playback] level {path} has no id-51 hash; camera route {} accepted unproven",
-                        active.args.poses.display(),
-                    );
-                }
-                active.record.set_level(bake, identity);
-                active.run.arm();
-                self.playback_arm_timing();
-            }
-            Err(reason) => {
-                active.refusal = Some(format!(
-                    "camera route {} does not match level {path}: {reason}",
-                    active.args.poses.display(),
-                ));
-            }
+        if active.level_installed(&path, bake) {
+            self.playback_arm_timing();
         }
     }
 
@@ -129,7 +124,6 @@ impl App {
     /// will take.
     pub(crate) fn playback_begin_world_frame(&mut self, now: Instant) {
         let life_key = self.playback_life_key();
-        let session = self.session.as_ref();
         let Some(active) = self.playback.active.as_mut() else {
             return;
         };
@@ -156,8 +150,10 @@ impl App {
                         .cloned()
                 })
             });
+            // The record names it on the next row written: this frame's, or
+            // a later one's when this frame writes none.
             log::info!(
-                "[Playback] frame {}: local pawn life state {:?} -> {:?} ({})",
+                "[Playback] row {}: local pawn life state {:?} -> {:?} ({})",
                 active.record.next_frame(),
                 previous.map(|key| key.life_state),
                 life_key.map(|key| key.life_state),
@@ -170,7 +166,6 @@ impl App {
                 active.file.header.projection.hfov_degrees,
                 self.camera.aspect(),
             );
-            active.record.set_cap(super::sample::cap_report(session));
         }
         let frame = active.record.next_frame();
         let needs_context = !active.record.has_context();
@@ -233,11 +228,13 @@ impl App {
                 marks,
                 fill.unwrap_or_default(),
             );
-            active.windows.after_row(
-                active.record.rows(),
-                active.args.pacing.key(),
-                super::sample::cap_report(session),
-            );
+            // From the first row on, hold rows included, so a run aborted
+            // during the hold still names a seeded cap.
+            let cap = super::sample::cap_report(session);
+            active.record.set_cap(cap);
+            active
+                .windows
+                .after_row(active.record.rows(), active.args.pacing.key(), cap);
             // The run's first world frame disarms the stall timeout.
             if plan.kind != RowKind::NoDraw {
                 self.playback.stall = None;
@@ -271,16 +268,19 @@ impl App {
         })
     }
 
-    /// Why a frontend join to `addr` would end a playing run.
+    /// Why a frontend join to `addr` would end the run: any run not yet
+    /// ended, one still awaiting its level included. A run launched with no
+    /// map waits on the frontend, and a join there would install the host's
+    /// level as the route's, whose eye a connected client adjusts.
     pub(crate) fn playback_join_abort_reason(&self, addr: SocketAddr) -> Option<String> {
         let active = self.playback.active.as_ref()?;
         active
             .run
-            .is_playing()
+            .is_live()
             .then(|| format!("join to host {addr} requested"))
     }
 
-    /// Aborts a playing run for `reason`: the record is written marked
+    /// Aborts a run not yet ended for `reason`: the record is written marked
     /// aborted with the rows so far, and the session exits non-zero. Returns
     /// whether a run aborted; the caller then leaves the request undone.
     pub(crate) fn playback_abort(&mut self, reason: Option<String>) -> bool {
@@ -298,17 +298,22 @@ impl App {
         aborted
     }
 
-    /// `exiting`: a run the person closed by window close or a quit before
-    /// it ended writes its record marked aborted, with its final partial
-    /// window before `run_end`. The exit code stays the session's.
+    /// `exiting`: a run that had not ended writes its record marked aborted,
+    /// with its final partial window before `run_end`. A session already
+    /// exiting on an error records that error as the reason and keeps it as
+    /// the exit. Otherwise the person closed the window or quit mid-route:
+    /// the run is aborted like any other and the session exits non-zero, so
+    /// an agent reading only the exit code never takes it for a result.
     pub(crate) fn playback_closed_on_exit(&mut self) {
         let Some(active) = self.playback.active.as_mut() else {
             return;
         };
         active.run.abort();
-        self.end_playback_run(Ending::Closed(
-            "window closed or quit before the route ended".to_string(),
-        ));
+        let ending = match &self.exit_result {
+            Err(err) => Ending::Failed(format!("{err:#}")),
+            Ok(()) => Ending::Aborted("window closed or quit before the route ended".to_string()),
+        };
+        self.end_playback_run(ending);
     }
 
     /// Writes the record once, marked with how the run ended, and leaves
@@ -331,7 +336,7 @@ impl App {
         let report = active.args.report.clone();
         match &ending {
             Ending::Complete => active.record.set_complete(),
-            Ending::Aborted(reason) | Ending::Closed(reason) => {
+            Ending::Aborted(reason) | Ending::Failed(reason) => {
                 active.record.set_aborted(reason.clone())
             }
         }
@@ -349,7 +354,7 @@ impl App {
                 );
                 self.exit_result = Err(anyhow::anyhow!("camera route aborted: {reason}"));
             }
-            (Ending::Closed(reason), Ok(())) => log::warn!(
+            (Ending::Failed(reason), Ok(())) => log::error!(
                 "[Playback] camera route aborted: {reason}; {rows} frames recorded to {}",
                 report.display(),
             ),
@@ -425,6 +430,37 @@ impl App {
             BootState::Frontend => WaitScreen::FrontendMenu,
             BootState::Running if self.frontend_menu_is_present() => WaitScreen::FrontendMenu,
             BootState::Running => WaitScreen::Level,
+        }
+    }
+}
+
+impl super::ActivePlayback {
+    /// A gameplay level installed with `bake` while the run awaits its
+    /// level. A match arms the run and drops any refusal an earlier level
+    /// left, so a Settling frame never stops a matching level naming another;
+    /// a mismatch holds its refusal for the next Settling frame. Returns
+    /// whether the run armed.
+    fn level_installed(&mut self, path: &str, bake: String) -> bool {
+        match route::match_level(&self.file, &bake) {
+            Ok(identity) => {
+                if identity == Identity::Unproven {
+                    log::warn!(
+                        "[Playback] level {path} has no id-51 hash; camera route {} accepted unproven",
+                        self.args.poses.display(),
+                    );
+                }
+                self.refusal = None;
+                self.record.set_level(bake, identity);
+                self.run.arm();
+                true
+            }
+            Err(reason) => {
+                self.refusal = Some(format!(
+                    "camera route {} does not match level {path}: {reason}",
+                    self.args.poses.display(),
+                ));
+                false
+            }
         }
     }
 }

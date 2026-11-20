@@ -101,8 +101,8 @@ Summarizes one telemetry file written with `POSTRETRO_TELEMETRY=<path>` by the
 engine, `prl-build`, or both appending to the same path. It joins the file per
 run and per load: producer states and exit reason, bake stage durations, each
 load's phase table, geometry install and matching bake, cancelled generations,
-SH and lightmap miss buckets per level, and CPU stage and GPU pass p50 and max
-across timing windows. Standard library only. Run with `python3
+SH and lightmap miss buckets per level, CPU stage and GPU pass p50 and max
+across timing windows, and camera-route playback window figures. Standard library only. Run with `python3
 tools/telemetry_reduce.py <file.jsonl>`, or add `--json` for the same summary
 as JSON. Its tests run with
 `python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`.
@@ -117,20 +117,26 @@ the interval, lightmap and SH drain GPU time, and the cold and pool-growth
 flags. Per run it reports interval p50, p95, max and frames over budget over
 route frames, hold, no-draw and change-marked rows apart, drain GPU statistics
 with warm, cold and pool-growth drains apart, and over-budget frames charged two
-ways. Every GPU figure names the GPU clock from an `ioreg` poll joined by time,
-or says it went unrecorded. Standard library only. Run with
+ways. A row's interval is the time the previous frame took, so an over-budget
+row is charged that frame's drain, alone and with earlier drains still on the
+GPU; a drain the trace holds only in part reads `missing`, never a number.
+Every GPU figure names the GPU clock from an `ioreg` poll joined by time, or
+says it went unrecorded. Standard library only. Run with
 
 ```sh
 python3 tools/playback_trace_reduce.py --record <run.playback.json> \
-    --trace-dir <dir of exported tables, .xml or .xml.xz> [--ioreg <poll log>]
+    --trace-dir <dir of exported tables, .xml or .xml.xz> \
+    [--toc <toc.xml>] [--ioreg <poll log>]
 ```
 
-The trace directory holds the `metal-application-intervals` and
-`metal-gpu-intervals` exports, plus the export's `--toc` output for the clock
-join. Add `--json` for the full summary, `--all-frames` to list every frame, and
-`--budget-ms` to change the 16.667 ms budget. The script's docstring defines the
-join, matched frames and the in-flight charge. Recording a run, its trace and
-the poll on a Mac: `context/plans/in-progress/camera-path-playback/mac-checkpoint.md`.
+The trace directory must hold two table exports, `metal-application-intervals`
+and `metal-gpu-intervals`. The clock join also needs the export's table of
+contents (`xctrace export --toc`): put it in the trace directory, or name it
+with `--toc`. Add `--json` for the full summary, `--all-frames` to list every
+frame, and `--budget-ms` to change the 16.667 ms budget. A malformed record or
+an unreadable table exits 2. The script's docstring defines the join, matched
+frames and the over-budget charge. Recording a run, its trace and the poll on a
+Mac: `docs/camera-routes.md` §"GPU time on a Mac".
 Its tests run with
 `python3 -m unittest discover -s tools/tests -p test_playback_trace_reduce.py`.
 

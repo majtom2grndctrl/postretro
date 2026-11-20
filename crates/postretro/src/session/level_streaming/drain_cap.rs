@@ -20,6 +20,18 @@ pub(crate) const PLAY_DRAIN_CAP_SEED_ENV: &str = "POSTRETRO_PLAY_DRAIN_CAP_MIB";
 #[cfg(any(test, feature = "dev-tools"))]
 const MIB: f64 = 1024.0 * 1024.0;
 
+/// The slider's span and step, in bytes: an eighth of production to four
+/// times it, in half-MiB steps from the low end. egui redraws a value outside
+/// the span or off the step grid as an edit, so a seed there would rewrite the
+/// cap and flip its source to the slider on the first draw of the Streaming
+/// tab. A dev-tools test pins these to the debug UI lever's own.
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) const SEED_MIN_BYTES: u64 = MAX_INSTALL_DECODED_BYTES_PER_DRAIN / 8;
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) const SEED_MAX_BYTES: u64 = MAX_INSTALL_DECODED_BYTES_PER_DRAIN * 4;
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) const SEED_STEP_BYTES: u64 = 1024 * 1024 / 2;
+
 /// Who set the play cap a drain admits against.
 #[cfg(any(test, feature = "dev-tools"))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -108,6 +120,8 @@ impl LevelStreaming {
 
     /// Replaces the play cap for every later play drain; `None` restores
     /// production. Settling and the lightmap in-hand caps never read it.
+    /// `None` still stamps `Slider`, but reads as production whatever source
+    /// is stamped: `play_drain_cap_in_force` masks it.
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn set_play_drain_cap_override(&mut self, cap: Option<NonZeroU64>) {
         self.play_drain_cap_override = cap;
@@ -122,8 +136,9 @@ impl LevelStreaming {
         self.apply_play_drain_cap_seed(std::env::var(PLAY_DRAIN_CAP_SEED_ENV));
     }
 
-    /// Unset or empty leaves production; a malformed value warns once and
-    /// leaves production. Never fails the launch.
+    /// Unset or empty leaves production; a malformed value, or one outside the
+    /// slider's range or step grid, warns once and leaves production. Never
+    /// fails the launch.
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn apply_play_drain_cap_seed(&mut self, value: Result<String, std::env::VarError>) {
         let value = match value {
@@ -143,6 +158,10 @@ impl LevelStreaming {
             "a zero cap admits only each drain's first item; unset it for production",
         ) {
             Ok((mib, bytes)) => {
+                if let Err(why) = check_slider_reach(&value, bytes.get()) {
+                    warn_malformed_seed(&why);
+                    return;
+                }
                 self.play_drain_cap_override = Some(bytes);
                 self.play_drain_cap_source = PlayDrainCapSource::Seed;
                 log::info!(
@@ -161,6 +180,23 @@ fn warn_malformed_seed(why: &str) {
         "[Streaming] ignoring malformed {PLAY_DRAIN_CAP_SEED_ENV} ({why}); play drains keep the production cap of {} MiB",
         MAX_INSTALL_DECODED_BYTES_PER_DRAIN as f64 / MIB,
     );
+}
+
+/// Refuses a seed the slider could not hold, naming the variable, the value
+/// and the allowed range.
+#[cfg(any(test, feature = "dev-tools"))]
+fn check_slider_reach(value: &str, bytes: u64) -> Result<(), String> {
+    let on_grid = (SEED_MIN_BYTES..=SEED_MAX_BYTES).contains(&bytes)
+        && (bytes - SEED_MIN_BYTES).is_multiple_of(SEED_STEP_BYTES);
+    if on_grid {
+        return Ok(());
+    }
+    Err(format!(
+        "{PLAY_DRAIN_CAP_SEED_ENV}={value:?}: outside the slider's range of {} to {} MiB in steps of {} MiB",
+        SEED_MIN_BYTES as f64 / MIB,
+        SEED_MAX_BYTES as f64 / MIB,
+        SEED_STEP_BYTES as f64 / MIB,
+    ))
 }
 
 /// `env`'s value as a positive decimal count of MiB (`4`, `16`, `0.5`) and

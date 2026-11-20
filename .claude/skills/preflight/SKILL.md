@@ -36,11 +36,13 @@ more cache churn.
 5. **Crate graph:** `cargo run -p xtask -- crate-graph --check` — fails if the
    committed `context/lib/crate-graph.md` snapshot is stale after an internal
    dependency change.
-6. **Telemetry reducer:** `python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`
-   — the stdlib-only reducer in `tools/` against its checked-in sample. No
-   build; it needs only `python3`.
-   **Playback trace reducer:** `python3 -m unittest discover -s tools/tests -p test_playback_trace_reduce.py`
-   — the same, for the playback record and Metal System Trace reducer.
+6. **Reducer unittests:** two stdlib-only reducers in `tools/`, each against
+   its checked-in sample. No build; they need only `python3`. Run both, even
+   when the first fails, and report each on its own line so a failure names
+   its reducer:
+   - **Telemetry reducer:** `python3 -m unittest discover -s tools/tests -p test_telemetry_reduce.py`
+   - **Playback trace reducer:** `python3 -m unittest discover -s tools/tests -p test_playback_trace_reduce.py`
+     — the playback record and Metal System Trace reducer.
 
 Clippy gets its **own target dir** on purpose. It compiles the whole workspace
 under the clippy driver, which writes different fingerprints than the `rustc`
@@ -71,6 +73,7 @@ Preflight results:
   ✓ cargo check --release
   ✓ crate-graph --check
   ✓ telemetry reducer unittest
+  ✓ playback trace reducer unittest
 ```
 
 ## Auto-fix policy

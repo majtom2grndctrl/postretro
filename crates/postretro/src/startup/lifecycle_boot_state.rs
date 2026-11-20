@@ -77,6 +77,13 @@ impl App {
         event_loop: &ActiveEventLoop,
         frame_dt: f32,
     ) -> bool {
+        // A camera route that already ended stops every later frame before
+        // its drain: a stray redraw after the record was written must not
+        // unload the level or write saves under the run's exit.
+        #[cfg(feature = "dev-tools")]
+        if self.playback_take_exit(event_loop) {
+            return false;
+        }
         // Settling counts as installed: a request drained here unloads the
         // held level before its settle check can reveal it. A Loading drain
         // runs before the Loading step, so a request already queued cancels
@@ -257,9 +264,10 @@ impl App {
         }
 
         while let Some(request) = self.level_requests.pop_front() {
-            // A request that resolves ends a playing camera route instead
-            // (pins P3, P4): the record keeps every row so far, the level
-            // stays, and the session exits.
+            // A request that resolves ends a playing camera route instead,
+            // in Settling, the hold or the route: the record keeps every row
+            // so far, marked aborted, the level stays, and the session exits
+            // non-zero.
             #[cfg(feature = "dev-tools")]
             let playback_abort = self.playback_request_abort_reason(&request);
             let (source, host_named) = match request {
@@ -285,7 +293,7 @@ impl App {
                         return;
                     }
                     // A recording of the first gameplay level is written
-                    // before that level unloads (pin P13).
+                    // before that level unloads, and nothing after it records.
                     #[cfg(feature = "dev-tools")]
                     self.recording_level_ends();
                     self.cancel_beside_level_load();

@@ -24,7 +24,8 @@ pub(crate) use row::{RowCpu, RowDrain, RowFill, RowGpu};
 pub(crate) const SCHEMA: &str = "postretro.camera_route_playback.v1";
 
 /// Rows reserved past the planned ones, so no-draw rows still fill without
-/// allocating.
+/// allocating. A run that outgrows the reservation still records: the push
+/// that grows it gap-marks the next row (`push_row`).
 const ROW_SLACK: usize = 256;
 
 /// Wall-clock route rows are planned at this frame rate over the route's
@@ -39,8 +40,15 @@ const LIFE_STATE_SLACK: usize = 32;
 pub(crate) struct PlaybackRecord {
     header: RecordHeader,
     rows: Vec<Row>,
-    /// Local pawn life-state changes, each on the row of the frame that saw it.
+    /// Local pawn life-state changes, each on the first row written from the
+    /// frame that saw it on.
     life_states: Vec<LifeStateEntry>,
+    /// The previous push grew `rows`: the next row's interval spans the copy.
+    #[serde(skip)]
+    gap_next: bool,
+    /// `life_states[unstamped_life..]` wait for the next row to name.
+    #[serde(skip)]
+    unstamped_life: usize,
 }
 
 /// One recorded frame. Plain data, so filling one allocates nothing.
@@ -54,12 +62,15 @@ pub(crate) struct Row {
     pub(crate) pose: usize,
     /// Wall-clock route and no-draw rows: seconds since route frame 0 began.
     pub(crate) route_time_s: Option<f64>,
-    /// Microseconds since the previous world frame began; `null` for the
-    /// first, which has none.
+    /// Microseconds from the previous world frame's start to this frame's
+    /// start, so it measures the previous frame's work, while the CPU split,
+    /// drain counts and GPU fields are this frame's own; `null` for the
+    /// first, which has no previous frame.
     pub(crate) interval_us: Option<u64>,
     /// Every mid-run change from the first row it touched on.
     pub(crate) changes: ChangeSet,
-    /// The interval spans a hidden window or a frame that presented nothing.
+    /// The interval spans a hidden window, a frame that presented nothing,
+    /// or the record's own row store growing past its reservation.
     pub(crate) gap: bool,
     #[serde(flatten)]
     pub(crate) fill: RowFill,
@@ -77,6 +88,8 @@ impl PlaybackRecord {
                 args.hold as usize + planned_route_rows(args, file) + ROW_SLACK,
             ),
             life_states: Vec::with_capacity(LIFE_STATE_SLACK),
+            gap_next: false,
+            unstamped_life: 0,
         }
     }
 
@@ -94,7 +107,9 @@ impl PlaybackRecord {
         self.header.outcome = Some("complete");
     }
 
-    /// Logs a life-state change on the row the current frame takes.
+    /// Logs a life-state change the current frame saw. The next row written
+    /// names it: this frame's own, or, when this frame writes none, the
+    /// first later one, so the entry never names a row the record lacks.
     pub(crate) fn push_life_state(
         &mut self,
         now: Option<LifeKey>,
@@ -102,7 +117,7 @@ impl PlaybackRecord {
         previous: Option<LifeKey>,
     ) {
         self.life_states.push(LifeStateEntry {
-            frame: self.next_frame(),
+            frame: None,
             pawn: now.map(|key| key.pawn),
             life_state: now.map(|key| key.life_state),
             life_state_name: name,
@@ -150,7 +165,9 @@ impl PlaybackRecord {
         });
     }
 
-    /// The play drain cap in force at route frame 0.
+    /// The play drain cap in force as a row is written: the header keeps the
+    /// latest, so a run aborted during the hold still names a seeded cap. A
+    /// slider move mid-run also marks every later row `drain_cap`.
     pub(crate) fn set_cap(&mut self, cap: CapReport) {
         self.header.cap = cap;
     }
@@ -171,14 +188,26 @@ impl PlaybackRecord {
         (changes, gap): (ChangeSet, bool),
         fill: RowFill,
     ) {
+        let frame = self.next_frame();
+        for entry in &mut self.life_states[self.unstamped_life..] {
+            entry.frame = Some(frame);
+        }
+        self.unstamped_life = self.life_states.len();
+        // A push past the reservation reallocates and copies every row so
+        // far, inside this frame's end. The next row's interval runs from
+        // this frame's start, so it spans the copy: it is gap-marked like a
+        // hidden-window stretch, and the per-run figures leave it out rather
+        // than read the copy as a stutter.
+        let grows = self.rows.len() == self.rows.capacity();
+        let spans_growth = std::mem::replace(&mut self.gap_next, grows);
         self.rows.push(Row {
-            frame: self.next_frame(),
+            frame,
             phase: plan.kind,
             pose: plan.pose,
             route_time_s: plan.route_time_s,
             interval_us,
             changes,
-            gap,
+            gap: gap || spans_growth,
             fill,
             gpu: None,
         });

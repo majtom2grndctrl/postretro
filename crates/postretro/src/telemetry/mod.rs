@@ -88,9 +88,10 @@ pub(crate) fn engine_producers(
     ]
 }
 
-/// Playback's `playback_window` events: enabled when the launch names a
-/// route in a windowed run of a build with playback's feature; disabled,
-/// naming the flag, without one; unsupported where playback cannot run.
+/// Playback's `playback_window` events. A build without playback's feature
+/// reads unsupported, whatever the launch names. In a build with it: enabled
+/// when the launch names a route in a windowed run; disabled, naming the
+/// flag, when it names none; unsupported in a headless or capture run.
 fn playback_producer(mode: RunMode, route_named: bool, feature: bool) -> ProducerEntry {
     let unsupported = |reason: &str| {
         ProducerEntry::unsupported(producers::PLAYBACK, reason).with_variable(CAMERA_ROUTE_FLAG)
@@ -233,6 +234,11 @@ pub(crate) fn emit_gpu_window(renderer: &mut postretro_renderer::Renderer) {
     }
 }
 
+/// Why GPU timing is unsupported: its gate needs both features, so lacking
+/// either one is enough. The playback record's header names the same reason.
+pub(crate) const GPU_TIMING_UNSUPPORTED_REASON: &str =
+    "the adapter lacks TIMESTAMP_QUERY or TIMESTAMP_QUERY_INSIDE_ENCODERS";
+
 /// Settle GPU timing once the renderer has its adapter: enabled, or
 /// unsupported with the adapter's reason. Settles only a pending producer,
 /// so a launch without the variable stays disabled.
@@ -252,7 +258,7 @@ pub(crate) fn settle_gpu_timing(support: postretro_renderer::GpuTimingSupport) {
             }
             postretro_renderer::GpuTimingSupport::Unsupported => ProducerEntry::unsupported(
                 producers::GPU_TIMING,
-                "the adapter lacks TIMESTAMP_QUERY and TIMESTAMP_QUERY_INSIDE_ENCODERS",
+                GPU_TIMING_UNSUPPORTED_REASON,
             )
             .with_variable(GPU_TIMING_ENV),
         };

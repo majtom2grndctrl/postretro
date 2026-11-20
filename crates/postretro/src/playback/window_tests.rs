@@ -131,8 +131,8 @@ fn reduced(rows: &[Row]) -> WindowFigures {
             .then(|| intervals.iter().filter(|ms| **ms > 33.0).count() as u32),
         lightmap_drain_cpu_max_ms: stage_max("lightmap_drain"),
         sh_drain_cpu_max_ms: stage_max("render_sh_drain"),
-        late_lightmap_block_frames: late(|drain| drain.lightmap_late_block_frames),
-        late_sh_cluster_frames: late(|drain| drain.sh_late_cluster_frames),
+        lightmap_late_block_frames: late(|drain| drain.lightmap_late_block_frames),
+        sh_late_cluster_frames: late(|drain| drain.sh_late_cluster_frames),
     }
 }
 
@@ -164,10 +164,13 @@ fn playback_window_reads_null_for_absent_figures_never_zero() {
     assert_eq!(figures, reduced(&rows));
     assert_eq!(figures.lightmap_drain_cpu_max_ms, None);
     assert_eq!(figures.sh_drain_cpu_max_ms, None);
-    assert_eq!(figures.late_sh_cluster_frames, None, "SH does not stream");
+    assert_eq!(figures.sh_late_cluster_frames, None, "SH does not stream");
     let json = serde_json::to_value(figures).unwrap();
     assert!(json["lightmap_drain_cpu_max_ms"].is_null());
     assert!(json["sh_drain_cpu_max_ms"].is_null());
+    // The late counts take the record row's column names.
+    assert!(json["lightmap_late_block_frames"].is_u64());
+    assert!(json["sh_late_cluster_frames"].is_null());
 
     // A hold-only window measures nothing.
     let hold: Vec<Row> = (0..12)
@@ -177,7 +180,7 @@ fn playback_window_reads_null_for_absent_figures_never_zero() {
     assert_eq!((figures.rows, figures.measured_rows), (12, 0));
     assert_eq!(figures.frame_time_p99_ms, None);
     assert_eq!(figures.frames_over_33ms, None);
-    assert_eq!(figures.late_lightmap_block_frames, None);
+    assert_eq!(figures.lightmap_late_block_frames, None);
 }
 
 #[test]
@@ -287,7 +290,7 @@ fn assert_window_matches_record(window: &serde_json::Value, record: &serde_json:
 
 #[test]
 fn a_completed_run_writes_its_final_partial_window_before_run_end() {
-    // AC 31, 32 (P18): with CPU timing off the drain maxima read null; the
+    // With CPU timing off the drain maxima read null; the
     // window names the seeded cap and the pacing.
     let (hub, _scope) = scoped_hub();
     let mut run = playing(2, 130, &[]);

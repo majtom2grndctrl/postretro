@@ -1,16 +1,16 @@
 // Recording's App hooks: the gameplay level's bake at install, each Running
-// frame's pre-view-feel view, and the one write when the first gameplay
-// level ends or the session exits.
+// frame's pre-view-feel view and the followed pawn's continuity, and the one
+// write when the first gameplay level ends or the session exits.
 // See: context/lib/rendering_pipeline.md §12 · context/lib/boot_sequence.md §1 (Settling), §4, §5
 
 use std::time::Instant;
 
-use postretro_camera_route::Projection;
+use postretro_camera_route::{DEFAULT_HFOV_DEGREES, Projection};
 
 use crate::App;
 use crate::frame_eye::FrameEyeInputs;
 
-use super::recording::{self, RecordState, Sample};
+use super::recording::{self, Continuity, RecordState, Sample};
 
 impl App {
     /// The installed level's path as loaded: the in-flight load's, else the
@@ -28,7 +28,9 @@ impl App {
     }
 
     /// Install's camera step on a gameplay level (never a frontend backdrop):
-    /// while nothing has recorded, its bake identity names the recording.
+    /// while nothing has recorded, its bake identity names the recording. A
+    /// level with no path gives a bake playback refuses, so the write fails
+    /// loudly instead of leaving an unplayable file.
     pub(crate) fn recording_level_installed(&mut self) {
         let waiting = self
             .playback
@@ -49,16 +51,24 @@ impl App {
 
     /// A Running frame's eye, before view feel: the presented eye, render
     /// yaw and pitch `assemble_frame_eye` takes, stamped with the instant
-    /// the frame's redraw began, at its base FOV and the window's aspect. A
-    /// frontend backdrop's frames offer nothing; the frame's present decides
-    /// whether the view records.
+    /// the frame's redraw began, at its base FOV and the window's aspect,
+    /// with the followed pawn's continuity. A frontend backdrop's frames
+    /// offer nothing; the frame's present decides whether the view records.
     pub(crate) fn playback_record_eye(&mut self, now: Instant, inputs: &FrameEyeInputs<'_>) {
         if self.playback.recording.is_none() {
             return;
         }
         let gameplay = !self.backdrop_installed && !self.frontend_menu_is_present();
+        let continuity = self.recording_continuity();
         let Some(recording) = self.playback.recording.as_mut() else {
             return;
+        };
+        // The default FOV writes the generator's exact default, so a
+        // recording and a generated route at it carry the same projection.
+        let hfov_degrees = if inputs.base_hfov == crate::camera::HFOV {
+            DEFAULT_HFOV_DEGREES
+        } else {
+            inputs.base_hfov.to_degrees()
         };
         recording.offer(gameplay.then_some((
             Sample {
@@ -66,18 +76,38 @@ impl App {
                 eye: inputs.presented_eye,
                 yaw: inputs.render_yaw,
                 pitch: inputs.pitch,
+                continuity,
             },
             Projection {
-                hfov_degrees: inputs.base_hfov.to_degrees(),
+                hfov_degrees,
                 aspect: inputs.aspect,
             },
         )));
     }
 
-    /// A level request or join drained and is about to act (pin P13): a
-    /// recording of the first gameplay level is written now, and nothing
-    /// after it records. Before any world frame it changes nothing: the next
-    /// gameplay level is then the first.
+    /// The followed local pawn's teleport generation and life state, when
+    /// one exists.
+    fn recording_continuity(&self) -> Option<Continuity> {
+        let session = self.session.as_ref()?;
+        let registry = session.scripting.script_ctx.registry.borrow();
+        let pawn = crate::followed_player_pawn(&registry)?;
+        let movement = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(pawn)
+            .ok()?;
+        Some(Continuity {
+            pawn: pawn.to_raw(),
+            teleport_generation: movement.teleport.generation,
+            life_state: movement.life_state,
+            life_state_entry: movement.life_state_entry,
+        })
+    }
+
+    /// The first gameplay level is about to end: a level request drained
+    /// and is about to act, or a frontend join is about to leave for the
+    /// host's level. A recording of that level is written now with the frames
+    /// before it, and nothing after it records, the next level included.
+    /// Before any world frame it changes nothing: the next gameplay level is
+    /// then the first.
     pub(crate) fn recording_level_ends(&mut self) {
         let recording_level = self
             .playback
@@ -89,9 +119,11 @@ impl App {
         }
     }
 
-    /// `exiting`, on every exit route (pin P14): writes a recording not yet
-    /// written, or warns once that none had a world frame; then writes an
-    /// unfinished playback run's record, marked aborted.
+    /// `exiting`, which every exit route reaches (window close, the quit
+    /// chord, a menu or script quit): writes a recording not yet written,
+    /// the same file whichever route it was, or warns once that none had a
+    /// world frame; then writes an unfinished playback run's record, marked
+    /// aborted.
     pub(crate) fn playback_session_exits(&mut self) {
         if let Some(recording) = self.playback.recording.as_ref() {
             match recording.state() {
@@ -111,7 +143,8 @@ impl App {
         self.playback_closed_on_exit();
     }
 
-    /// Writes the recording, once.
+    /// Writes the recording, once. A failed write logs an error and fails
+    /// the exit, keeping any earlier exit error.
     fn finish_recording(&mut self, why: &str) {
         let Some(recording) = self.playback.recording.as_mut() else {
             return;
@@ -130,7 +163,9 @@ impl App {
             ),
             Err(err) => {
                 log::error!("[Playback] {err}");
-                self.exit_result = Err(anyhow::anyhow!(err));
+                if self.exit_result.is_ok() {
+                    self.exit_result = Err(anyhow::anyhow!(err));
+                }
             }
         }
     }

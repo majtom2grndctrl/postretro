@@ -277,3 +277,121 @@ fn pose_file_parser_refuses_malformed_records() {
         (7, ParseReason::BadInteger { field: "step", .. })
     ));
 }
+
+fn minimal() -> String {
+    format!("{HEAD}pose 1 2 3 0 0\n")
+}
+
+#[test]
+fn pose_file_parser_accepts_the_windows_editor_habits() {
+    let expected = parse_pose_file(&minimal()).expect("parses");
+
+    let crlf = minimal().replace('\n', "\r\n");
+    assert_eq!(parse_pose_file(&crlf).expect("CRLF"), expected);
+
+    let bom = format!("\u{feff}{}", minimal());
+    assert_eq!(parse_pose_file(&bom).expect("BOM"), expected);
+
+    let blank_tail = format!("{}\n\n  \n", minimal());
+    assert_eq!(parse_pose_file(&blank_tail).expect("blank tail"), expected);
+
+    let trailing_spaces = minimal().replace('\n', " \n").replace("pose 1", "pose  1");
+    // A doubled interior space stays refused; only trailing ones are free.
+    assert!(parse_pose_file(&trailing_spaces).is_err());
+    let trailing_spaces = minimal().replace('\n', "  \t\n");
+    assert_eq!(parse_pose_file(&trailing_spaces).expect("spaces"), expected);
+
+    let everything = format!("\u{feff}{}", minimal().replace('\n', " \r\n")) + "\r\n\r\n";
+    assert_eq!(parse_pose_file(&everything).expect("all together"), expected);
+}
+
+#[test]
+fn pose_file_parser_keeps_refusing_blank_lines_mid_file_under_crlf() {
+    let text = format!("{HEAD}\npose 1 2 3 0 0\n").replace('\n', "\r\n");
+    assert_eq!(error(&text), (7, ParseReason::BlankLine));
+}
+
+#[test]
+fn pose_file_parser_reports_an_empty_file_for_whitespace_only_text() {
+    for text in ["\n", "\n\n\n", "  \n \t\n", "\r\n", "\u{feff}", "\u{feff}\r\n"] {
+        assert_eq!(error(text), (1, ParseReason::Empty), "{text:?}");
+    }
+}
+
+#[test]
+fn pose_file_parser_names_an_unsupported_version() {
+    for version in ["2", "0", "10"] {
+        let text = format!("postretro-camera-route {version}\npose 0 0 0 0 0\n");
+        assert_eq!(
+            error(&text),
+            (
+                1,
+                ParseReason::UnsupportedVersion {
+                    version: version.into()
+                }
+            )
+        );
+    }
+    let message = parse_pose_file("postretro-camera-route 2\n")
+        .expect_err("refused")
+        .to_string();
+    assert!(message.contains("unsupported version 2"), "{message}");
+    for foreign in [
+        "postretro-camera-route",
+        "postretro-camera-route x",
+        "postretro-camera-route 1.5",
+    ] {
+        assert!(
+            matches!(error(foreign), (1, ParseReason::NotAPoseFile { .. })),
+            "{foreign}"
+        );
+    }
+}
+
+#[test]
+fn pose_file_parser_refuses_any_cadence_but_the_contract_rate() {
+    for cadence in ["30", "120", "61", "0"] {
+        let text =
+            HEAD.replace("cadence_hz 60", &format!("cadence_hz {cadence}")) + "pose 0 0 0 0 0\n";
+        match error(&text) {
+            (6, ParseReason::Malformed { line: "cadence_hz", why }) => {
+                if cadence != "0" {
+                    assert!(why.contains("60"), "{why}");
+                }
+            }
+            other => panic!("{cadence}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn pose_file_parser_accepts_only_the_canonical_bake_tokens() {
+    let with = |from: &str, to: &str| HEAD.replace(from, to) + "pose 0 0 0 0 0\n";
+    for (from, to) in [
+        ("id51=none", "id51=4b7255ff5bdf714c"),
+        ("walk_epoch=4", "walk_epoch=0"),
+        ("walk_epoch=4", "walk_epoch=4294967295"),
+    ] {
+        parse_pose_file(&with(from, to)).unwrap_or_else(|e| panic!("{to}: {e}"));
+    }
+    for (from, to) in [
+        ("id51=none", "id51=4B7255FF5BDF714C"),
+        ("id51=none", "id51=4b7255ff5bdf714"),
+        ("id51=none", "id51=4b7255ff5bdf714c0"),
+        ("id51=none", "id51=None"),
+        ("id51=none", "id51=g000000000000000"),
+        ("walk_epoch=4", "walk_epoch=04"),
+        ("walk_epoch=4", "walk_epoch=+4"),
+        ("walk_epoch=4", "walk_epoch=00"),
+    ] {
+        let (at, reason) = error(&with(from, to));
+        assert_eq!(at, 5, "{to}");
+        assert!(
+            matches!(
+                reason,
+                ParseReason::Malformed { line: "bake", .. } | ParseReason::BadInteger { .. }
+            ),
+            "{to}: {reason}"
+        );
+    }
+}

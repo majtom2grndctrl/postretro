@@ -1,6 +1,6 @@
 // Playback's launch surface: the record header names the drain cap in force
 // at route frame 0 and the launch present mode, `--present-mode` reaches the
-// renderer without a route, and a cap-slider move marks rows (pin P10).
+// renderer without a route, and a cap-slider move marks every later row.
 // See: context/lib/rendering_pipeline.md §12 · context/lib/development_guide.md §6.4
 
 use std::time::Instant;
@@ -29,6 +29,23 @@ fn playback_record_header_names_the_seeded_cap_at_route_frame_0() {
         frame(&mut run.app, now, true, true);
     }
     let header = &record(&run)["header"];
+    assert_eq!(header["cap"]["source"], "seed");
+    assert_eq!(header["cap"]["decoded_bytes_per_drain"], 4 * 1024 * 1024);
+}
+
+#[test]
+fn playback_record_header_names_the_seeded_cap_when_the_hold_aborts() {
+    // The cap is recorded from the first row, hold rows included.
+    let mut run = playing(5, 3, &[]);
+    let level = &mut run.app.session.as_mut().unwrap().level_streaming;
+    level.apply_play_drain_cap_seed(Ok("4".to_string()));
+    frame(&mut run.app, Instant::now(), true, true);
+    assert!(
+        run.app
+            .playback_abort(Some("level unload requested".to_string()))
+    );
+    let header = &record(&run)["header"];
+    assert_eq!(header["outcome"], "aborted");
     assert_eq!(header["cap"]["source"], "seed");
     assert_eq!(header["cap"]["decoded_bytes_per_drain"], 4 * 1024 * 1024);
 }
@@ -96,7 +113,7 @@ fn renderer_builds_its_surface_with_the_launch_present_mode() {
 
 #[test]
 fn a_cap_slider_move_marks_rows_where_the_frame_loop_applies_it() {
-    // P10: the slider's write-back is where its change lands.
+    // The slider's write-back is where its change lands.
     let frame_loop = include_str!("../frame_loop/mod.rs");
     let apply = frame_loop
         .find("session.level_streaming.apply_drain_cap_lever(&drain_cap);")

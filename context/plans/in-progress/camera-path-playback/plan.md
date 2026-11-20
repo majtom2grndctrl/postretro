@@ -45,6 +45,7 @@ Source re-read at 2f1a5d7f4 against every symbol Decisions and Path cite. The wa
   - Tool verb: `postretro-tool generate-camera-route <prl> --kind far-point|random|smoothed --seed --steps --pitch --hfov [--speed --turn-cap] -o <file>`.
 - **Smoothed defaults** — 8 m/s (the walk's `RUN_SPEED`, a run pace) and a 270°/s turn cap. Reported with the first smoothed run.
 - **Over-budget charge** — the reducer reports both readings: a frame's own drain only, and its own plus drains still in flight. The run's findings say which holds.
+- **Display sleep after the first world frame** — owner ruling (2026-11-19, review round 1): keep AC 73 as written; the stall timeout disarms on the first world frame, and a later lock or sleeping display pauses the run with no deadline. Prevent it in the workflow, not the engine: `docs/camera-routes.md` §Keep the display awake (`caffeinate -di` on macOS, PowerToys Awake or screen timeout Never on Windows) and the Mac runbook's step 5. An engine-held keep-awake assertion (a keep-awake crate, dev-tools only) is deferred until the workflow proves unreliable.
 
 ## Contracts
 

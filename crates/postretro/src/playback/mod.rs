@@ -64,8 +64,8 @@ impl RouteView {
 }
 
 /// `--camera-route` playback or `--record-camera-route` recording for one
-/// session. Inactive unless the launch named a pose file; inactive, every
-/// hook is one `Option` check.
+/// session. Inactive unless the launch named a pose file; inactive, a hook
+/// does no allocation or work beyond a few `Option` checks.
 #[derive(Default)]
 pub(crate) struct Playback {
     active: Option<Box<ActivePlayback>>,
@@ -126,12 +126,19 @@ impl Playback {
 
     fn from_args(launch: &[String], launched: Instant) -> Result<Self, String> {
         let present = args::present_choice(launch)?;
+        // Output paths are checked now, before any window, so a run never
+        // plays to the end to find it cannot write.
+        let cwd = || {
+            std::env::current_dir()
+                .map_err(|err| format!("reading the working directory: {err}"))
+        };
         let Some(args) = args::playback_args(launch)? else {
             let mut playback = Self {
                 present,
                 ..Self::default()
             };
             if let Some(record) = args::record_args(launch)? {
+                args::check_record_path(&record.path, &cwd()?)?;
                 log::info!(
                     "[Playback] recording a camera route to {}: the first gameplay level's world frames, stall timeout {} s",
                     record.path.display(),
@@ -142,6 +149,7 @@ impl Playback {
             }
             return Ok(playback);
         };
+        args::check_report_path(&args.report, &args.poses, &cwd()?)?;
         let file = route::load_route(&args.poses)?;
         log::info!(
             "[Playback] camera route {}: {} poses at {}°, hold {} frames, {} pacing, stall timeout {} s, record {}",

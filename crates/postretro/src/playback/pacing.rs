@@ -18,7 +18,8 @@ pub(crate) struct ClockPick {
 }
 
 /// The route position at `elapsed_seconds` since route frame 0, at
-/// `cadence_hz` poses a second (pin P16). `cut[i]` marks pose `i` reached by
+/// `cadence_hz` poses a second: pose k at k / cadence seconds, the last pose
+/// once the clock reaches its time. `cut[i]` marks pose `i` reached by
 /// a teleport: interpolation never crosses it, so the earlier pose draws
 /// until the clock reaches the cut pose.
 pub(crate) fn pick(elapsed_seconds: f64, cadence_hz: f64, cut: &[bool]) -> ClockPick {

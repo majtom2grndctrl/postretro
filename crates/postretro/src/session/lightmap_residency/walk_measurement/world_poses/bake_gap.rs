@@ -3,8 +3,9 @@
 //! texel area.
 //! See: context/lib/rendering_pipeline.md §2, §4
 
-// The before build materialises each walk's frames from its own cells and
-// eye stream, as `run` does, and writes every frame's eye, yaw and pitch.
+// The before build materialises each walk's frames from its own cells with
+// the shared exact route (`ExactRoute::of_walk`), as `run` does, and writes
+// every frame's eye, yaw and pitch.
 // The after build replays those frames: the camera cell is wherever the eye
 // locates in its own partition. Blocks are per cell, so the deferred block
 // count stops comparing once cells change; their texel area does (§2).

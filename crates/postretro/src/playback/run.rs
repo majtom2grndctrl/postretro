@@ -86,10 +86,10 @@ const NO_ROW: FrameOutcome = FrameOutcome {
     complete: false,
 };
 
-/// Hold frames 1..=N draw pose 0 (pin P1), then the route under its clock.
-/// Only a frame that presented the world advances; one that streamed
-/// without presenting writes a no-draw row and draws the same pose again
-/// (pin P9).
+/// Hold frames 1..=N draw pose 0 and are not route frames, then the route
+/// runs under its clock. Only a frame that presented the world advances; one
+/// that streamed without presenting writes a no-draw row and draws the same
+/// pose again.
 #[derive(Debug, Clone)]
 pub(crate) struct RouteRun {
     hold: u32,
@@ -151,14 +151,21 @@ impl RouteRun {
         (self.phase == Phase::Settling).then_some(0)
     }
 
-    /// Ends a playing run; false when it was not playing.
+    /// Not yet ended: playing, or still awaiting its level. A join ends
+    /// such a run in any of these phases.
+    pub(crate) fn is_live(&self) -> bool {
+        !matches!(self.phase, Phase::Complete | Phase::Aborted)
+    }
+
+    /// Ends a run not yet ended, one awaiting its level included; false when
+    /// it had already ended, so a complete run stays complete.
     pub(crate) fn abort(&mut self) -> bool {
-        let playing = self.is_playing();
-        if playing {
+        let live = self.is_live();
+        if live {
             self.phase = Phase::Aborted;
             self.current = None;
         }
-        playing
+        live
     }
 
     /// The plan for a world frame beginning at `now`. The first one after
@@ -315,7 +322,7 @@ mod tests {
 
     #[test]
     fn route_run_holds_pose_zero_then_draws_each_pose_once_as_a_route_frame() {
-        // P1: hold N, then route frame k draws pose k.
+        // Hold N, then route frame k draws pose k.
         let (hold, poses) = (3, 4);
         let mut run = armed(hold, poses);
         let frames = drive(&mut run, presented(7));
@@ -378,7 +385,7 @@ mod tests {
 
     #[test]
     fn route_run_no_draw_frames_write_a_row_and_advance_nothing() {
-        // P9: a frame that streamed from pose k and got no surface writes a
+        // A frame that streamed from pose k and got no surface writes a
         // no-draw row; the next world frame draws pose k again. A frame that
         // ran no streaming step writes nothing.
         let mut run = armed(1, 2);
@@ -434,10 +441,13 @@ mod tests {
     }
 
     #[test]
-    fn route_run_aborts_only_while_playing() {
+    fn route_run_aborts_until_it_ends() {
         let mut idle = RouteRun::new(0, 2, Clock::FrameLocked);
-        assert!(!idle.abort(), "nothing to abort before install");
-        assert_eq!(idle.phase(), Phase::AwaitingInstall);
+        assert!(idle.is_live() && !idle.is_playing());
+        assert!(idle.abort(), "a run awaiting its level aborts too");
+        assert_eq!(idle.phase(), Phase::Aborted);
+        assert!(!idle.is_live());
+        assert!(!idle.abort(), "an aborted run stays aborted");
 
         for presented_frames in [0, 1, 2] {
             let mut run = armed(1, 3);
@@ -451,12 +461,16 @@ mod tests {
         let mut done = armed(0, 1);
         drive(&mut done, presented(1));
         assert_eq!(done.phase(), Phase::Complete);
-        assert!(!done.abort(), "a complete run stays complete (pin P2)");
+        assert!(!done.is_live());
+        assert!(
+            !done.abort(),
+            "a complete run stays complete: a request on its last frame aborts nothing"
+        );
     }
 
     #[test]
     fn route_run_wall_clock_draws_the_pose_at_elapsed_time_and_skips_between() {
-        // P16: route frame 0 at elapsed 0 draws pose 0; a slowed run still
+        // Route frame 0 at elapsed 0 draws pose 0; a slowed run still
         // reaches pose k at k/60 s; the first frame past the last pose's
         // time draws it and ends the route.
         let mut run = armed_with(0, 10, wall_clock(10));

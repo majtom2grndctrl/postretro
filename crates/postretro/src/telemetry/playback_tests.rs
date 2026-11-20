@@ -1,6 +1,7 @@
 //! `run_start` names playback's producer: enabled with a route in a windowed
 //! run of a dev-tools build, disabled naming `--camera-route` without one,
-//! and unsupported with a reason where playback cannot run (pin P18).
+//! and unsupported with a reason where playback cannot run, a build
+//! without the feature first.
 //! See: context/lib/development_guide.md §6.5
 
 use std::sync::Arc;

@@ -44,7 +44,7 @@ impl WalkKind {
 /// The dry run's `SIM_SEED`.
 pub const WALK_SEED: u64 = 0x5EED_B10C;
 /// The dry run's `STALL_TELEPORT_STEPS`.
-pub const STALL_TELEPORT_STEPS: usize = 1_000;
+pub(crate) const STALL_TELEPORT_STEPS: usize = 1_000;
 
 /// Deterministic SplitMix64, as the dry run uses.
 pub struct SplitMix64(pub u64);
@@ -70,7 +70,7 @@ impl SplitMix64 {
 
 /// Portal adjacency between camera cells, by index into `camera_cells`.
 /// `portals` are (front, back) cell pairs.
-pub fn camera_adjacency(
+pub(crate) fn camera_adjacency(
     cell_count: usize,
     portals: impl Iterator<Item = (usize, usize)>,
     camera_cells: &[u32],
@@ -95,7 +95,7 @@ pub fn camera_adjacency(
 }
 
 /// A walk of `steps` camera-cell indices and its teleport count.
-pub fn walk_path(
+pub(crate) fn walk_path(
     kind: WalkKind,
     adjacency: &[Vec<u32>],
     steps: usize,

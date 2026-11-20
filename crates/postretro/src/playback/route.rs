@@ -5,7 +5,7 @@ use std::path::Path;
 
 use postretro_camera_route::{PoseFile, bake_token, parse_pose_file};
 
-use crate::camera::{MAX_FOV_DEG, MIN_FOV_DEG};
+use crate::camera::{MAX_FOV_DEG, MIN_FOV_DEG, PITCH_LIMIT};
 
 /// Whether a route's bake was shown to be the level's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,26 +25,48 @@ impl Identity {
     }
 }
 
-/// Reads and checks a pose file: readable, well formed, at least one pose,
-/// a bake line carrying `id51` and `walk_epoch`, and a horizontal FOV inside
-/// the engine's band, never clamped. The error names the file and reason.
+/// Reads and checks a pose file: readable, well formed (the parser requires
+/// a bake line carrying `id51` and `walk_epoch`), at least one pose, a
+/// horizontal FOV inside the engine's band and every pitch within the
+/// camera's ±89°. Neither is ever clamped: the camera would clamp them
+/// silently and the run would not draw its file. The error names the file
+/// and reason.
 pub(crate) fn load_route(path: &Path) -> Result<PoseFile, String> {
     let named = |reason: String| format!("camera route {}: {reason}", path.display());
     let text = std::fs::read_to_string(path).map_err(|err| named(format!("unreadable: {err}")))?;
     let file = parse_pose_file(&text).map_err(|err| named(format!("malformed at {err}")))?;
-    if file.header.id51().is_none() || file.header.walk_epoch().is_none() {
-        return Err(named(format!(
-            "malformed `bake` line: needs id51 and walk_epoch, found {:?}",
-            file.header.bake
-        )));
-    }
     let hfov = file.header.projection.hfov_degrees;
     if !(MIN_FOV_DEG..=MAX_FOV_DEG).contains(&hfov) {
         return Err(named(format!(
             "horizontal FOV {hfov}° lies outside the engine's {MIN_FOV_DEG}°..={MAX_FOV_DEG}°"
         )));
     }
+    // A NaN pitch lies in no range, so this refuses it too.
+    if let Some((index, pose)) = file
+        .poses
+        .iter()
+        .enumerate()
+        .find(|(_, pose)| !(-PITCH_LIMIT..=PITCH_LIMIT).contains(&pose.pitch))
+    {
+        return Err(named(format!(
+            "line {}: pitch {} rad ({}°) lies outside the camera's ±{}°",
+            pose_line(&text, index),
+            pose.pitch,
+            pose.pitch.to_degrees(),
+            PITCH_LIMIT.to_degrees().round(),
+        )));
+    }
     Ok(file)
+}
+
+/// The 1-based line of the file's `index`-th `pose` line. The parser takes
+/// pose lines in order, so the n-th pose came from the n-th such line.
+fn pose_line(text: &str, index: usize) -> usize {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.split_once(' ').map_or(*line, |(keyword, _)| keyword) == "pose")
+        .nth(index)
+        .map_or(0, |(number, _)| number + 1)
 }
 
 /// Matches a route's bake to the loaded level's (`bake_identity`'s string)
@@ -166,6 +188,37 @@ pub(super) mod tests {
         for hfov in [MIN_FOV_DEG, MAX_FOV_DEG] {
             let path = write(&dir, "edge.txt", &format_pose_file(&pose_file(hfov, 1)));
             assert!(load_route(&path).is_ok(), "{hfov}° is inside the band");
+        }
+    }
+
+    #[test]
+    fn load_route_refuses_a_pitch_past_the_camera_limit_naming_its_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = pose_file(100.0, 3);
+        file.poses[0].pitch = PITCH_LIMIT;
+        file.poses[2].pitch = -PITCH_LIMIT;
+        let edge = write(&dir, "edge.txt", &format_pose_file(&file));
+        assert_eq!(
+            load_route(&edge).unwrap(),
+            file,
+            "±89° is inside the limit, never clamped"
+        );
+
+        for pitch in [PITCH_LIMIT + 1.0e-4, -1.6, f32::MAX] {
+            file.poses[1].pitch = pitch;
+            let text = format_pose_file(&file);
+            let line = text
+                .lines()
+                .position(|line| line.starts_with("pose "))
+                .unwrap()
+                + 2;
+            let path = write(&dir, "steep.txt", &text);
+            let error = refusal(&path);
+            assert!(
+                error.contains(&format!("line {line}:")) && error.contains("pitch"),
+                "{pitch}: {error}"
+            );
+            assert!(error.contains(&format!("{pitch} rad")), "{error}");
         }
     }
 

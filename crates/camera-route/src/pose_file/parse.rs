@@ -4,15 +4,28 @@
 use glam::Vec3;
 
 use super::{
-    GeneratedKind, HEADER_LINES, POSE_FILE_MAGIC, ParseReason, PoseFile, PoseFileError, Projection,
-    RouteHeader, RouteOrigin,
+    GeneratedKind, HEADER_LINES, POSE_FILE_MAGIC, POSE_FILE_MAGIC_PREFIX, ParseReason, PoseFile,
+    PoseFileError, Projection, RouteHeader, RouteOrigin,
 };
+use crate::CADENCE_HZ;
 use crate::exact::RoutePose;
 
 /// Parses a pose file strictly: every header line once and in order, at
-/// least one pose, finite floats, nothing else.
+/// least one pose, finite floats, nothing else. Four Windows-editor habits
+/// are tolerated because they carry no meaning: a leading UTF-8 BOM, CRLF
+/// line endings, trailing whitespace on a line and blank lines at the end of
+/// the file. A blank line anywhere else is refused.
 pub fn parse_pose_file(text: &str) -> Result<PoseFile, PoseFileError> {
-    let mut lines = text.lines().enumerate().map(|(i, line)| (i + 1, line));
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut all: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .map(|(i, line)| (i + 1, line.trim_end()))
+        .collect();
+    while all.last().is_some_and(|(_, line)| line.is_empty()) {
+        all.pop();
+    }
+    let mut lines = all.into_iter();
     let Some((_, magic)) = lines.next() else {
         return Err(PoseFileError {
             line: 1,
@@ -20,10 +33,18 @@ pub fn parse_pose_file(text: &str) -> Result<PoseFile, PoseFileError> {
         });
     };
     if magic != POSE_FILE_MAGIC {
+        let version = magic
+            .strip_prefix(POSE_FILE_MAGIC_PREFIX)
+            .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
         return Err(PoseFileError {
             line: 1,
-            reason: ParseReason::NotAPoseFile {
-                found: magic.to_string(),
+            reason: match version {
+                Some(version) => ParseReason::UnsupportedVersion {
+                    version: version.to_string(),
+                },
+                None => ParseReason::NotAPoseFile {
+                    found: magic.to_string(),
+                },
             },
         });
     }
@@ -37,7 +58,7 @@ pub fn parse_pose_file(text: &str) -> Result<PoseFile, PoseFileError> {
             line: number,
             reason,
         };
-        if line.trim().is_empty() {
+        if line.is_empty() {
             return Err(at(ParseReason::BlankLine));
         }
         let (keyword, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -85,6 +106,9 @@ pub fn parse_pose_file(text: &str) -> Result<PoseFile, PoseFileError> {
     })
 }
 
+/// The hex digits `bake_identity` keeps of the id-51 hash.
+const ID51_HEX_LEN: usize = 16;
+
 fn is_keyword(keyword: &str) -> bool {
     HEADER_LINES.contains(&keyword) || keyword == "spawn" || keyword == "pose"
 }
@@ -110,8 +134,14 @@ impl HeaderParts {
             "bake" => self.bake = parse_bake(rest)?,
             "cadence_hz" => {
                 self.cadence_hz = parse_int::<u32>(rest, "cadence_hz")?;
-                if self.cadence_hz == 0 {
-                    return Err(malformed("cadence_hz", "the cadence must be positive"));
+                if self.cadence_hz != CADENCE_HZ {
+                    return Err(malformed(
+                        "cadence_hz",
+                        format!(
+                            "the cadence is fixed at {CADENCE_HZ} Hz, found {}",
+                            self.cadence_hz
+                        ),
+                    ));
                 }
             }
             _ => unreachable!("only header keywords reach `take`"),
@@ -221,8 +251,10 @@ fn parse_projection(rest: &str) -> Result<Projection, ParseReason> {
     Ok(projection)
 }
 
-/// `id51=<hex|none> walk_epoch=<u32> size=<u64> mtime=<u64> prl=<path>`, the
-/// path running to the end of the line.
+/// `id51=<16 lowercase hex|none> walk_epoch=<u32> size=<u64> mtime=<u64>
+/// prl=<path>`, the path running to the end of the line. `id51` and
+/// `walk_epoch` must be in the form `bake_identity` writes, because the
+/// engine compares them as raw strings.
 fn parse_bake(rest: &str) -> Result<String, ParseReason> {
     let mut parts = rest.splitn(5, ' ');
     let mut value = |key: &'static str| {
@@ -234,13 +266,24 @@ fn parse_bake(rest: &str) -> Result<String, ParseReason> {
             .ok_or_else(|| malformed("bake", format!("expected {key}=…, found {token:?}")))
     };
     let id51 = value("id51")?;
-    if id51 != "none" && !id51.bytes().all(|b| b.is_ascii_hexdigit()) {
+    let canonical_hash = id51.len() == ID51_HEX_LEN
+        && id51
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if id51 != "none" && !canonical_hash {
         return Err(malformed(
             "bake",
-            format!("id51 is a hex hash or none, not {id51:?}"),
+            format!("id51 is {ID51_HEX_LEN} lowercase hex digits or `none`, not {id51:?}"),
         ));
     }
-    parse_int::<u32>(value("walk_epoch")?, "walk_epoch")?;
+    let epoch = value("walk_epoch")?;
+    parse_int::<u32>(epoch, "walk_epoch")?;
+    if !epoch.bytes().all(|b| b.is_ascii_digit()) || (epoch.len() > 1 && epoch.starts_with('0')) {
+        return Err(malformed(
+            "bake",
+            format!("walk_epoch is plain decimal with no sign or leading zeros, not {epoch:?}"),
+        ));
+    }
     parse_int::<u64>(value("size")?, "size")?;
     parse_int::<u64>(value("mtime")?, "mtime")?;
     value("prl")?;

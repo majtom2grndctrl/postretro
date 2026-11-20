@@ -6,6 +6,23 @@
 // positions are eye points in world metres. Header lines appear once, in
 // order: origin, params, projection, bake, cadence_hz, then an optional
 // spawn, then one or more poses.
+//
+// Pose fields by origin:
+// - `walk <step> <cell>` on a pose: in an exact file (far-point, random) it is
+//   the walk's own step and cell. In a smoothed file it is the walk step and
+//   the cell the eye locates in, which can differ from the walk's cell on a
+//   detour.
+// - `cut` marks a pose reached by a jump that interpolation never crosses.
+//   Exact routes never mark cuts. A smoothed file marks `cut` where the
+//   walk teleports and also on a locate miss: where no proven line reaches
+//   the walk's next cell, or a pose's eye locates outside the walk's current
+//   and next cell.
+// - The `params` line records the generator's options in the user's units
+//   (`pitch` and `hfov` in degrees, `speed` in m/s, `turn_cap` in degrees per
+//   second). The pose lines hold engine radians.
+// - `bake` carries `id51` as 16 lowercase hex digits or `none`, and
+//   `walk_epoch` as plain decimal: exactly the form `bake_identity` writes,
+//   since the engine compares the tokens as raw strings.
 
 use std::fmt::Write as _;
 
@@ -21,6 +38,9 @@ mod parse;
 pub use parse::parse_pose_file;
 
 pub const POSE_FILE_MAGIC: &str = "postretro-camera-route 1";
+/// The magic line up to the version, to tell an unsupported version from a
+/// foreign file.
+const POSE_FILE_MAGIC_PREFIX: &str = "postretro-camera-route ";
 
 /// The header lines every file carries, in order.
 const HEADER_LINES: [&str; 5] = ["origin", "params", "projection", "bake", "cadence_hz"];
@@ -74,8 +94,9 @@ pub struct Projection {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouteHeader {
     pub origin: RouteOrigin,
-    /// How the poses were made, in written order. Keys and values are single
-    /// tokens without `=` in the key.
+    /// How the generator was invoked, in written order, in the user's units:
+    /// `pitch` and `hfov` in degrees, unlike the pose lines (radians). Keys
+    /// and values are single tokens without `=` in the key.
     pub params: Vec<(String, String)>,
     pub projection: Projection,
     /// `bake_identity`'s string.
@@ -121,6 +142,8 @@ pub struct PoseFileError {
 pub enum ParseReason {
     #[error("the file is empty")]
     Empty,
+    #[error("unsupported version {version}: this build reads `{POSE_FILE_MAGIC}`")]
+    UnsupportedVersion { version: String },
     #[error("not a camera-route pose file: expected `{POSE_FILE_MAGIC}`, found {found:?}")]
     NotAPoseFile { found: String },
     #[error("expected the `{expected}` line, found `{found}`")]

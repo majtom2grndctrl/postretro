@@ -25,12 +25,15 @@ pub(super) struct RecordHeader {
     pub(super) level: Option<LevelReport>,
     pub(super) pacing: &'static str,
     pub(super) hold_frames: u32,
-    /// The present mode chosen at launch, `vsync` or `no-vsync`; `machine`
+    /// The present mode requested at launch, `vsync` or `no-vsync`. The
+    /// surface may fall back to another mode the adapter supports; `machine`
     /// names the one the first row observed.
     pub(super) present_mode: &'static str,
-    /// The play drain cap in force at route frame 0; production until then.
+    /// The play drain cap in force at the latest written row, hold rows
+    /// included; production before the first row.
     pub(super) cap: CapReport,
-    /// How Settling ended: `settled` or `timed_out`.
+    /// How Settling ended: `settled` or `timed_out`; `null` when the run
+    /// ended before Settling did.
     pub(super) settle: Option<&'static str>,
     /// `complete` or `aborted`; `null` only in a record never written.
     pub(super) outcome: Option<&'static str>,
@@ -217,9 +220,7 @@ impl TimingState {
             },
             GpuTimingSupport::Unsupported => Self {
                 state: "unsupported",
-                reason: Some(
-                    "the adapter lacks TIMESTAMP_QUERY or TIMESTAMP_QUERY_INSIDE_ENCODERS",
-                ),
+                reason: Some(crate::telemetry::GPU_TIMING_UNSUPPORTED_REASON),
             },
         }
     }
@@ -243,15 +244,18 @@ pub(super) struct GpuTimingReport {
     pub(super) readbacks_outstanding: u64,
     /// Marked frames that found every slot group busy and went untimed.
     pub(super) untimed_frames: u64,
-    /// Samples whose frame wrote no row.
+    /// Samples whose frame wrote no row, or wrote a no-draw row, which has
+    /// no frame encoder to time.
     pub(super) unmatched_samples: u64,
 }
 
 /// One life-state change the local pawn went through.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct LifeStateEntry {
-    /// The row of the frame that saw it.
-    pub(super) frame: u64,
+    /// The first row written from the frame that saw it on: that frame's
+    /// own, or the next one when that frame wrote none; `null` when the run
+    /// ended before another row.
+    pub(super) frame: Option<u64>,
     /// The pawn now followed; `null` when none is.
     pub(super) pawn: Option<u32>,
     pub(super) life_state: Option<u8>,

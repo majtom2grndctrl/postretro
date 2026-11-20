@@ -91,7 +91,7 @@ fn exit_error(app: &App) -> String {
 
 #[test]
 fn playback_writes_hold_no_draw_and_route_rows_then_completes() {
-    // P1, P9: hold rows, a no-draw row for a frame that streamed without a
+    // Hold rows, a no-draw row for a frame that streamed without a
     // surface, nothing for one that did not stream, then each pose once.
     let mut run = playing(1, 2, &[]);
     let now = Instant::now();
@@ -126,7 +126,7 @@ fn playback_writes_hold_no_draw_and_route_rows_then_completes() {
 
 #[test]
 fn playback_level_request_during_the_route_aborts_and_keeps_its_rows() {
-    // P3: rows through frame k stay, the request is left undone, and the
+    // Rows through frame k stay, the request is left undone, and the
     // session exits non-zero.
     let mut run = playing(0, 3, &[]);
     let now = Instant::now();
@@ -150,7 +150,7 @@ fn playback_level_request_during_the_route_aborts_and_keeps_its_rows() {
 
 #[test]
 fn playback_level_request_during_settling_or_the_hold_aborts() {
-    // P4: a reload during Settling writes no rows; a change during the hold
+    // A reload during Settling writes no rows; a change during the hold
     // keeps the hold rows written so far.
     let level = PathBuf::from("maps/route.prl");
     let mut settling = playing(3, 2, &[]);
@@ -189,7 +189,7 @@ fn playback_level_request_during_settling_or_the_hold_aborts() {
 
 #[test]
 fn playback_level_request_on_the_last_pose_frame_leaves_the_run_complete() {
-    // P2: the frame finishes and the record is written before the next
+    // The frame finishes and the record is written before the next
     // redraw drains the request.
     let mut run = playing(0, 2, &[]);
     let now = Instant::now();
@@ -209,7 +209,7 @@ fn playback_level_request_on_the_last_pose_frame_leaves_the_run_complete() {
 }
 
 #[test]
-fn playback_join_from_the_frontend_aborts_only_a_playing_run() {
+fn playback_join_from_the_frontend_aborts_any_run_not_yet_ended() {
     let addr: std::net::SocketAddr = "127.0.0.1:27015".parse().unwrap();
     let mut idle = test_app();
     assert_eq!(idle.playback_join_abort_reason(addr), None);
@@ -222,11 +222,149 @@ fn playback_join_from_the_frontend_aborts_only_a_playing_run() {
         record(&run)["header"]["abort_reason"],
         "join to host 127.0.0.1:27015 requested"
     );
+
+    // A complete run is gone: a later join leaves it complete.
+    let mut done = playing(0, 1, &[]);
+    frame(&mut done.app, Instant::now(), true, true);
+    assert_eq!(done.app.playback_join_abort_reason(addr), None);
+    assert_eq!(record(&done)["header"]["outcome"], "complete");
+}
+
+#[test]
+fn playback_join_while_awaiting_the_level_aborts_the_run() {
+    // A launch with a route and no map waits on the frontend: a join there
+    // would install the host's level as the route's.
+    let addr: std::net::SocketAddr = "127.0.0.1:27015".parse().unwrap();
+    let mut run = playing(0, 2, &[]);
+    run.app.playback.active.as_mut().unwrap().run = RouteRun::new(0, 2, Clock::FrameLocked);
+    assert!(!run.app.playback.captures_gameplay());
+    let reason = run.app.playback_join_abort_reason(addr);
+    assert!(reason.is_some(), "not yet ended is enough");
+    assert!(run.app.playback_abort(reason), "the join is left undone");
+    assert!(run.app.playback.exit_pending && run.app.playback.active.is_none());
+    assert!(exit_error(&run.app).contains("join to host 127.0.0.1:27015 requested"));
+    let record = record(&run);
+    assert_eq!(record["header"]["outcome"], "aborted");
+    assert_eq!(
+        record["header"]["abort_reason"],
+        "join to host 127.0.0.1:27015 requested"
+    );
+    assert!(phases(&record).is_empty());
+}
+
+#[test]
+fn playback_level_installed_as_a_connected_client_aborts_instead_of_arming() {
+    let mut run = playing(0, 2, &[]);
+    run.app.playback.active.as_mut().unwrap().run = RouteRun::new(0, 2, Clock::FrameLocked);
+    run.app.session.as_mut().unwrap().net_endpoint = Some(
+        crate::netcode::NetEndpoint::from_role(
+            &crate::netcode::NetRole::Connect {
+                addr: std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 1)),
+            },
+            None,
+        )
+        .expect("client endpoint constructs")
+        .expect("connect role yields an endpoint"),
+    );
+    run.app.map_path = Some(PathBuf::from("maps/host.prl"));
+    run.app.playback_level_installed();
+    assert!(
+        run.app.playback.active.is_none() && run.app.playback.exit_pending,
+        "never armed on a host's level"
+    );
+    assert!(exit_error(&run.app).contains("connected client"));
+    let record = record(&run);
+    assert_eq!(record["header"]["outcome"], "aborted");
+    assert!(
+        record["header"]["abort_reason"]
+            .as_str()
+            .unwrap()
+            .contains("connected client")
+    );
+}
+
+#[test]
+fn playback_matching_level_drops_an_earlier_levels_refusal() {
+    // Level A mismatches and holds a refusal; level B then matches and
+    // arms. B's first Settling frame holds the route, never A's refusal.
+    let mut run = playing(0, 2, &[]);
+    let active = run.app.playback.active.as_mut().unwrap();
+    active.run = RouteRun::new(0, 2, Clock::FrameLocked);
+    let rebaked = "id51=0000000000000000 walk_epoch=4 size=1 mtime=1 prl=maps/a.prl";
+    assert!(!active.level_installed("maps/a.prl", rebaked.to_string()));
+    assert!(
+        active
+            .refusal
+            .as_deref()
+            .is_some_and(|refusal| refusal.contains("maps/a.prl"))
+    );
+    let matching = "id51=4b7255ff5bdf714c walk_epoch=4 size=1 mtime=1 prl=maps/b.prl";
+    assert!(active.level_installed("maps/b.prl", matching.to_string()));
+    assert!(active.refusal.is_none());
+    assert_eq!(active.run.phase(), crate::playback::run::Phase::Settling);
+
+    let fallback = run.app.presented_pose().held_view(run.app.camera.aspect());
+    let SettlingView::Hold(view) = run.app.playback_settling_view_for(fallback) else {
+        panic!("level B matched: Settling holds the first pose");
+    };
+    assert_eq!(view.camera.eye_position, run.file.poses[0].eye);
+    assert!(run.app.playback.active.is_some());
+}
+
+#[test]
+fn playback_closed_mid_route_writes_its_record_aborted_and_exits_non_zero() {
+    let mut run = playing(1, 5, &[]);
+    let now = Instant::now();
+    for _ in 0..3 {
+        frame(&mut run.app, now, true, true);
+    }
+    run.app.playback_closed_on_exit();
+    assert!(run.app.playback.active.is_none());
+    assert!(
+        exit_error(&run.app).contains("window closed or quit before the route ended"),
+        "an agent keys on the exit code"
+    );
+    let record = record(&run);
+    assert_eq!(record["header"]["outcome"], "aborted");
+    assert_eq!(
+        record["header"]["abort_reason"],
+        "window closed or quit before the route ended"
+    );
+    assert_eq!(phases(&record).len(), 3);
+}
+
+#[test]
+fn playback_error_exit_mid_route_records_that_error_as_the_reason() {
+    let mut run = playing(0, 5, &[]);
+    frame(&mut run.app, Instant::now(), true, true);
+    run.app.exit_result = Err(anyhow::anyhow!("surface lost: device removed"));
+    run.app.playback_closed_on_exit();
+    let record = record(&run);
+    assert_eq!(record["header"]["outcome"], "aborted");
+    assert_eq!(
+        record["header"]["abort_reason"],
+        "surface lost: device removed",
+        "the cause, never a window close"
+    );
+    assert_eq!(
+        exit_error(&run.app),
+        "surface lost: device removed",
+        "the session's own error stays the exit"
+    );
+}
+
+#[test]
+fn playback_completed_run_exits_zero_through_the_exit_hook() {
+    let mut run = playing(0, 1, &[]);
+    frame(&mut run.app, Instant::now(), true, true);
+    run.app.playback_closed_on_exit();
+    assert!(run.app.exit_result.is_ok());
+    assert_eq!(record(&run)["header"]["outcome"], "complete");
 }
 
 #[test]
 fn playback_changes_mark_every_row_from_the_first_they_touch() {
-    // P10: a change before the first row marks nothing; one mid-route marks
+    // A change before the first row marks nothing; one mid-route marks
     // every later row; a hidden-window gap marks only the row spanning it.
     let mut run = playing(1, 4, &[]);
     let now = Instant::now();
@@ -271,7 +409,7 @@ fn playback_changes_mark_every_row_from_the_first_they_touch() {
 
 #[test]
 fn playback_stall_timeout_names_a_stalled_window_and_writes_no_rows() {
-    // P17: nothing presented by the deadline.
+    // Nothing presented by the deadline.
     let mut run = playing(0, 2, &["--camera-route-stall-timeout", "3"]);
     run.app.boot_state = BootState::Splash;
     run.app
@@ -339,7 +477,7 @@ fn playback_records_how_settling_ended() {
 
 #[test]
 fn playback_logs_a_pawn_life_state_change_on_its_frame_and_continues() {
-    // P11: the frame that sees the change logs it; the route goes on.
+    // The frame that sees the change logs it; the route goes on.
     let mut run = playing(0, 3, &[]);
     let ctx = run
         .app
@@ -385,7 +523,7 @@ fn playback_logs_a_pawn_life_state_change_on_its_frame_and_continues() {
 
 #[test]
 fn playback_settling_view_is_the_first_pose_with_or_without_a_pawn() {
-    // P5: the held view ignores the presented (spawn) pose either way.
+    // The held view ignores the presented (spawn) pose either way.
     let mut run = playing(0, 2, &[]);
     let route = run
         .app
@@ -473,7 +611,7 @@ fn playback_route_frame_aim_ignores_the_pawn_aim_and_mover_carry() {
 
 #[test]
 fn playback_suspends_gameplay_input_from_settling_through_the_route() {
-    // P12: a movement key held from Settling on reaches the sim as neutral
+    // A movement key held from Settling on reaches the sim as neutral
     // input on every frame; the sim still ticks.
     let mut run = playing(1, 2, &[]);
     let mut keyboard = crate::input::InputSystem::new(crate::input::default_bindings());
@@ -673,9 +811,14 @@ fn level_requests_and_joins_reach_the_abort_hook_before_they_act() {
     assert!(load_abort < unload && unload < begin && none_abort < frontend);
 
     let drive = at(BOOT_STATE, "fn drive_boot_state_for_redraw(", 0);
+    let ended = at(BOOT_STATE, "self.playback_take_exit(event_loop)", drive);
     let drained = at(BOOT_STATE, "self.drain_level_requests();", drive);
     let exit = at(BOOT_STATE, "self.playback_take_exit(event_loop)", drained);
     let resume = at(BOOT_STATE, "self.resume_pending_entry();", drained);
+    assert!(
+        ended < drained,
+        "a redraw after the run ended stops before any drain, unload or save"
+    );
     assert!(
         exit < resume,
         "an aborted run's frame stops after the drain"

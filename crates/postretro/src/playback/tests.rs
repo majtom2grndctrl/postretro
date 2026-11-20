@@ -140,7 +140,7 @@ fn route_frame_eye_is_the_pose_at_the_file_fov_with_no_view_feel() {
 
 #[test]
 fn settling_held_view_is_the_route_frame_camera() {
-    // P5: the held view Settling streams from is the reveal frame's camera.
+    // The held view Settling streams from is the reveal frame's camera.
     let view = RouteView {
         eye: Vec3::new(-3.0, 2.0, 8.0),
         yaw: -0.7,
@@ -241,7 +241,7 @@ fn route_view_follows_the_world_frame_plan() {
 
 #[test]
 fn wall_clock_route_view_interpolates_between_poses_at_the_file_fov() {
-    // P16: a frame at t draws the pose interpolated at 60t.
+    // A frame at t draws the pose interpolated at 60t.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cp.txt");
     let file = pose_file(100.0, 4);

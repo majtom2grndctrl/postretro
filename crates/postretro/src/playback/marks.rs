@@ -5,7 +5,9 @@
 
 use serde::ser::SerializeSeq;
 
-/// A mid-run change that makes later rows unlike earlier ones (pin P10).
+/// A mid-run change that makes later rows unlike earlier ones: it marks every
+/// row from the first it touches to the run's end, and marked rows leave the
+/// per-run figures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChangeKind {
     /// The vsync diagnostic chord switched the present mode.
@@ -14,7 +16,7 @@ pub(crate) enum ChangeKind {
     Extents,
     /// The window mode changed, or a pending change was kept or reverted.
     WindowMode,
-    /// The drain-cap slider moved (Task 7's dev-tools slider marks it).
+    /// The dev-tools drain-cap slider moved.
     DrainCap,
     /// A script hot reload committed.
     ScriptReload,
@@ -80,8 +82,9 @@ impl serde::Serialize for ChangeSet {
 
 /// Mid-run change and gap marks. A change persists: every row from the
 /// first one it touches to the run's end carries it. A gap marks only the
-/// rows whose interval spans it: the first row after the window was hidden
-/// or a frame presented nothing, and every row written while hidden.
+/// rows whose interval spans it: every row written while the window is
+/// hidden, the first row after it is shown again, and the first row after a
+/// frame that presented nothing.
 #[derive(Debug, Default)]
 pub(crate) struct Marks {
     changes: ChangeSet,
@@ -94,10 +97,11 @@ impl Marks {
         self.changes.insert(kind);
     }
 
-    /// The window was hidden (`true`) or shown again.
+    /// The window was hidden (`true`) or shown again. Showing it leaves the
+    /// hidden stretch in the next row's interval, so that row is marked too.
     pub(crate) fn note_occluded(&mut self, occluded: bool) {
+        self.gap_pending |= occluded || self.occluded;
         self.occluded = occluded;
-        self.gap_pending |= occluded;
     }
 
     /// The marks the next row carries: every change so far, and whether its
@@ -116,7 +120,8 @@ impl Marks {
 }
 
 /// The local pawn's life-state identity one frame saw: a change in any part
-/// is a death, respawn, teleport or table change the record logs (pin P11).
+/// is a death, respawn, teleport or table change the record logs on the
+/// frame that sees it, and the route goes on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LifeKey {
     pub(crate) pawn: u32,
@@ -179,7 +184,11 @@ mod tests {
         assert!(marks.take_row_marks().1);
         assert!(marks.take_row_marks().1);
         marks.note_occluded(false);
-        assert!(!marks.take_row_marks().1, "nothing pending once shown");
+        assert!(
+            marks.take_row_marks().1,
+            "the first row after spans the hidden stretch"
+        );
+        assert!(!marks.take_row_marks().1, "nothing pending after it");
         // A frame that presented nothing: the next row spans its gap.
         let _ = marks.take_row_marks();
         marks.after_frame(false);

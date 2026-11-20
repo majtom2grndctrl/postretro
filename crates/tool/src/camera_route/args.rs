@@ -20,7 +20,8 @@ use crate::flag::match_flag;
 /// outside it.
 const MIN_HFOV_DEGREES: f32 = 60.0;
 const MAX_HFOV_DEGREES: f32 = 130.0;
-/// The walk's own pitch bound (`POSTRETRO_LIGHTMAP_WALK_PITCH`), degrees.
+/// The engine camera's pitch bound, degrees, inclusive: `PITCH_LIMIT` in
+/// `crates/postretro/src/camera.rs`, which the recorder can write exactly.
 const MAX_PITCH_DEGREES: f32 = 89.0;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -218,9 +219,9 @@ fn parse_degrees(value: &str, flag: &str) -> Result<f32, String> {
 
 fn parse_pitch(value: &str) -> Result<f32, String> {
     let degrees = parse_degrees(value, "--pitch")?;
-    if degrees.abs() >= MAX_PITCH_DEGREES {
+    if degrees.abs() > MAX_PITCH_DEGREES {
         return Err(usage(&format!(
-            "--pitch must lie in (-{MAX_PITCH_DEGREES}, {MAX_PITCH_DEGREES}) degrees, got {value}"
+            "--pitch must lie in -{MAX_PITCH_DEGREES} to {MAX_PITCH_DEGREES} degrees, got {value}"
         )));
     }
     Ok(degrees)
@@ -245,11 +246,22 @@ fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), String>
     Ok(())
 }
 
+/// Every option with its range and default. A raw literal, like the tool's
+/// `HELP`, so the indentation survives.
+const OPTIONS: &str = r"  --kind far-point|random|smoothed  the route to generate (required)
+  -o, --out <out-file>              the pose file to write (required)
+  --seed <u64>                      the path's seed, decimal or hex (0x...); default 0x5eedb10c
+  --steps <n>                       walk steps, at least 1; default 2000
+  --pitch <degrees>                 fixed camera pitch, -89 to 89; default 0
+  --hfov <degrees>                  horizontal FOV, 60 to 130; default 100
+  --walk far-point|random           the walk a smoothed route follows; default far-point
+  --speed <m/s>                     flight speed, above 0; default 8
+  --turn-cap <deg/s>                yaw turn limit, above 0; default 270
+  --walk, --speed and --turn-cap apply only to --kind smoothed.";
+
 pub(super) fn usage(message: &str) -> String {
     format!(
-        "{message}\n\nUsage: postretro-tool generate-camera-route <level.prl> \\
-         --kind far-point|random|smoothed [--seed <u64>] [--steps <n>] [--pitch <degrees>] \\
-         [--hfov <degrees>] [--walk far-point|random] [--speed <m/s>] [--turn-cap <deg/s>] \\
-         -o <out-file>"
+        "{message}\n\nUsage: postretro-tool generate-camera-route <level.prl> \
+         --kind far-point|random|smoothed -o <out-file> [options]\n\nOptions:\n{OPTIONS}"
     )
 }

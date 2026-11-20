@@ -15,18 +15,20 @@ The join
   labelled "Streamed Lightmap Drain", "Streamed SH Upload Copies" or
   "Frame Encoder" has a child encoder row on the same command buffer whose
   label carries `pr-frame <k>`. A mark on the command buffer row's own label
-  counts the same way. xctrace's own "Frame N" is never k.
+  names no encoder, so it joins no GPU row: it counts toward the frame's
+  coverage and its Frame Encoder anchor, never toward its drains. xctrace's own
+  "Frame N" is never k.
 * `metal-gpu-intervals` rows (any channel: SDMA0, GFX, ...) join to that
   marked encoder by encoder id.
 * Attribution is by mark only, never by time overlap: a drain recorded on
   frame k is frame k's, however late the GPU runs it, including after frame
-  k + 1's work begins (pin P6).
+  k + 1's work begins.
 * A frame's GPU time per resource is the union of all its matched GPU
   intervals across channels and encoders, so nested and coalesced rows count
   once (§12). The drain total is the union of the lightmap and SH intervals.
 
-Matched frames (pin P7)
------------------------
+Matched frames
+--------------
 Frame k's encoding is covered when k is the record's first row, or the
 trace holds frame k - 1's "Frame Encoder" mark, or row k - 1 is a no-draw row
 (which encodes no frame encoder) whose own encoding is covered. A frame's
@@ -39,7 +41,7 @@ trace marks some later frame, so it did not end before the frame's drains.
 Unmatched frames leave every per-run figure and are counted and named; an
 unmatched frame never counts as zero drain GPU time. Hold frames before the
 trace attached are not an error. A record with no matched frame at all is an
-error (exit 2).
+error (exit 2), and so is a malformed record.
 
 Within a matched frame, a resource's drain GPU time reads `missing`, not
 zero, when one of its marked encoders has no GPU row (the trace ended before
@@ -47,51 +49,68 @@ the GPU ran it) or when the record says the frame admitted items for that
 resource but the trace holds no encoder for it. Such frames leave the drain
 statistics and are counted.
 
-Per-run figures (pins P8, P10)
-------------------------------
+Per-run figures
+---------------
 Interval p50, p95, max (nearest rank) and frames over budget cover matched
 route rows only, and leave out rows carrying a change mark or a gap. Hold,
 no-draw and marked rows are reported apart with their own counts. Drain GPU
 statistics cover matched, unmarked route frames; warm, cold and pool-growth
-drains are counted and summarized apart. A minimal record (the Task 4 slice)
-has no drain flags or marks: flags read `unknown`, never false, and the
-output says the marks were not recorded.
+drains are counted and summarized apart. A record from before the drain, cold
+and growth columns existed has no drain flags or marks: flags read `unknown`,
+never false, and the output says the marks were not recorded.
 
 Over-budget charge (both readings)
 ----------------------------------
+A row's `interval_us` runs from the previous world frame's start to its own
+frame's start, so row k's interval is the time frame k - 1 took. Frame k's own
+drains are encoded after frame k starts, so they cannot have stretched it.
 For a measured route frame k whose interval exceeds the budget:
 
-* own: the drain GPU time of the drains marked k.
+* own: the drain GPU time of the drains marked k - 1, the frame whose start
+  opens the interval, whatever its phase. It reads `missing` when frame
+  k - 1's drain is missing, or frame k - 1 has no record row or is unmatched.
+  A frame with no drain reads 0.
 * own + in flight: own, plus the whole drain GPU time of every earlier frame
-  j < k whose drain GPU intervals (lightmap or SH) end after the start of
-  frame k's interval window. That window, in trace time, is
-  [B(k) - interval_k, B(k)], where B(k) is the start of frame k's earliest
-  marked encoding row and interval_k the record's interval (time since the
-  previous world frame began). The window start therefore stands for the
-  previous frame's beginning; a drain still on the GPU after it was in
-  flight while the over-budget interval ran.
+  j < k - 1 whose drain GPU intervals (lightmap or SH) end after the window
+  start: drains still on the GPU when frame k - 1 began.
+
+The window stands for [start of frame k - 1, start of frame k]. The trace
+holds no frame-start event, so the window is anchored on frame k's "Frame
+Encoder" mark F(k): [F(k) - interval_k, F(k)]. F(k) lags frame k's start by
+the CPU work before the frame encoder (ticks, the streaming step, drain
+encoding), so the window sits late by that lag, the same at both ends while
+the lag is steady.
+
+The in-flight reading never adds a partial number. It reads `missing`, and
+names the frames, when a frame that may be in flight is unmatched or has no
+record row, or its drain is missing: an encoder with no GPU row (its end is
+unknown, so it may be in flight), or admitted items with no encoder. It also
+reads `missing` when the window opens before the first marked encoding of the
+covered stretch that ends at frame k - 1, since a frame before that stretch
+may hold drains the trace never saw. A drain encoded before the stretch and
+still running after the window start is the one case it cannot see.
 
 GPU clock
 ---------
 Every GPU figure names the clock it ran at. With `--ioreg <log>` (a poll
 loop printing a timestamp line, then `"Core Clock(MHz)"=<n>` and friends, as
-`mac-checkpoint.md` gives), polls join the trace by wall time: the export's
-table of contents (`--toc`, or a `<trace-toc>` file in the trace dir) gives
-the trace's start date, so trace time t maps to start + t. The clock is the
-median, min and max of every non-zero `Core Clock(MHz)` reading in polls
-inside the matched route frames' trace span (integer-second poll stamps,
-from BSD `date`, widen the span by one second at its start). A zero or
-missing reading is unrecorded. With no table of contents the time bases
-cannot be aligned: the reducer says so and reports the clock over the whole
-poll log, labelled as such. Without `--ioreg` the clock reads unrecorded:
-the engine records none in-process (`gpu_clock: unrecorded`). An unrecorded
-clock never reads as pinned.
+`docs/camera-routes.md` §"GPU time on a Mac" gives), polls join the trace by
+wall time: the export's table of contents (`--toc`, or a `<trace-toc>` file in
+the trace dir) gives the trace's start date, so trace time t maps to start +
+t. The clock is the median, min and max of every non-zero `Core Clock(MHz)`
+reading in polls inside the matched route frames' trace span. A poll log with
+whole-second stamps (e.g. `date +%s`) widens the span by one second at its
+start. A zero or missing reading is unrecorded. With no table of contents the
+time bases cannot be aligned: the reducer says so and reports the clock over
+the whole poll log, labelled as such. Without `--ioreg` the clock reads
+unrecorded: the engine records none in-process (`gpu_clock: unrecorded`). An
+unrecorded clock never reads as pinned.
 
 Standard library only. Usage:
 
-    python3 tools/playback_trace_reduce.py --record <playback.json> \\
-        --trace-dir <dir of exported tables, .xml or .xml.xz> \\
-        [--toc <toc.xml>] [--ioreg <ioreg log>] [--budget-ms 16.667] \\
+    python3 tools/playback_trace_reduce.py --record <playback.json> \
+        --trace-dir <dir of exported tables, .xml or .xml.xz> \
+        [--toc <toc.xml>] [--ioreg <ioreg log>] [--budget-ms 16.667] \
         [--all-frames] [--json]
 """
 
@@ -152,6 +171,8 @@ def open_table(path):
 def sniff(path):
     """The schema a table export holds, `toc` for a table of contents, or None."""
     with open_table(path) as handle:
+        # The schema element sits in the export's first lines; 16 KB clears a
+        # long header without inflating a whole multi-GB table.
         head = handle.read(16384).decode("utf-8", errors="replace")
     if "<trace-toc" in head:
         return "toc"
@@ -288,12 +309,17 @@ def read_gpu(handle, encoders):
     return out
 
 
+def names_encoder(mark):
+    """False for a mark on a command buffer row: its id names no encoder."""
+    return mark["encoder"] not in (None, ALL_ONES)
+
+
 def read_trace(app_path, gpu_path):
     with open_table(app_path) as handle:
         marks = read_marks(handle)
     # Encoder ids join GPU rows; the all-ones id names a command buffer, never
     # an encoder, so a mark on a command buffer row joins nothing.
-    encoders = {m["encoder"] for m in marks if m["encoder"] not in (None, ALL_ONES)}
+    encoders = {m["encoder"] for m in marks if names_encoder(m)}
     with open_table(gpu_path) as handle:
         gpu = read_gpu(handle, encoders)
     return marks, gpu
@@ -340,15 +366,14 @@ def nearest_rank(values, pct):
 
 
 def stats(values):
-    """p50, p95, max (nearest rank) and total of a list of numbers."""
+    """p50, p95 and max (nearest rank) of a list of numbers."""
     if not values:
-        return {"n": 0, "p50": None, "p95": None, "max": None, "total": None}
+        return {"n": 0, "p50": None, "p95": None, "max": None}
     return {
         "n": len(values),
         "p50": nearest_rank(values, 50),
         "p95": nearest_rank(values, 95),
         "max": max(values),
-        "total": sum(values),
     }
 
 
@@ -364,6 +389,67 @@ def ranges(frames):
         out.append(str(frames[i]) if i == j else f"{frames[i]}-{frames[j]}")
         i = j + 1
     return ", ".join(out)
+
+
+# ---------------------------------------------------------------- the record
+
+
+def is_int(value):
+    # bool is an int subclass; it is never a frame index or a count.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate_record(record):
+    """(header, rows) of a record whose rows carry what the join reads.
+
+    Raises ReduceError naming the row index and field, so a malformed record
+    exits 2 rather than failing midway through the join.
+    """
+    if not isinstance(record, dict):
+        raise ReduceError("the record's top level is not a JSON object")
+    header = record.get("header")
+    if header is not None and not isinstance(header, dict):
+        raise ReduceError("the record's `header` is not an object")
+    rows = record.get("rows")
+    if rows is None:
+        rows = []
+    if not isinstance(rows, list):
+        raise ReduceError("the record's `rows` is not a list")
+    seen = set()
+    for index, row in enumerate(rows):
+        where = f"record row {index}"
+        if not isinstance(row, dict):
+            raise ReduceError(f"{where} is not an object")
+        frame = row.get("frame")
+        if not is_int(frame) or frame < 0:
+            raise ReduceError(f"{where}: `frame` is not a non-negative integer ({frame!r})")
+        if frame in seen:
+            raise ReduceError(f"{where}: `frame` {frame} repeats an earlier row's")
+        seen.add(frame)
+        where = f"{where} (frame {frame})"
+        interval = row.get("interval_us")
+        if interval is not None and not is_number(interval):
+            raise ReduceError(f"{where}: `interval_us` is not a number ({interval!r})")
+        if row.get("phase") is not None and not isinstance(row["phase"], str):
+            raise ReduceError(f"{where}: `phase` is not a string")
+        changes = row.get("changes")
+        if changes is not None and not (isinstance(changes, list)
+                                        and all(isinstance(c, str) for c in changes)):
+            raise ReduceError(f"{where}: `changes` is not a list of strings")
+        drain = row.get("drain")
+        if drain is not None:
+            if not isinstance(drain, dict):
+                raise ReduceError(f"{where}: `drain` is not an object")
+            for resource in DRAINS:
+                items = drain.get(f"{resource}_admitted_items")
+                if items is not None and not is_int(items):
+                    raise ReduceError(f"{where}: `drain.{resource}_admitted_items` "
+                                      "is not an integer")
+    return header or {}, rows
 
 
 # ---------------------------------------------------------------- the join
@@ -390,12 +476,19 @@ def admitted(drain, resource):
     return drain.get(f"{resource}_admitted_items")
 
 
+def drain_encoders(marks, resource=None):
+    """A frame's marked drain encoders, of one resource or both. A mark on a
+    command buffer row names no encoder, so it is never one of them."""
+    kinds = DRAINS if resource is None else (resource,)
+    return [m for m in marks if m["kind"] in kinds and names_encoder(m)]
+
+
 def frame_drains(frame, marks_of, gpu, drain):
     """Per-resource drain state for a matched frame."""
     out = {}
     intervals_all = []
     for resource in DRAINS:
-        encs = [m for m in marks_of.get(frame, ()) if m["kind"] == resource]
+        encs = drain_encoders(marks_of.get(frame, ()), resource)
         items = admitted(drain, resource)
         if not encs:
             if items:
@@ -421,7 +514,9 @@ def frame_drains(frame, marks_of, gpu, drain):
         intervals_all += intervals
     states = [out[r]["state"] for r in DRAINS]
     if "missing" in states:
-        total = {"state": "missing", "gpu_us": None}
+        reason = "; ".join(f"{r}: {out[r]['reason']}" for r in DRAINS
+                           if out[r]["state"] == "missing")
+        total = {"state": "missing", "gpu_us": None, "reason": reason}
     elif "measured" in states:
         total = {"state": "measured", "gpu_us": union_ns(intervals_all) / 1000.0}
     else:
@@ -430,22 +525,33 @@ def frame_drains(frame, marks_of, gpu, drain):
     return out
 
 
-def drain_end_ns(marks_of, gpu):
-    """Per frame: the latest end of its drain encoders' GPU rows, and their busy µs."""
+def drain_gpu_by_frame(marks_of, gpu):
+    """Per trace frame with a marked drain encoder: the latest end of its GPU
+    rows (None when it has none), their busy µs, and how many of its encoders
+    have no GPU row, so their end is unknown."""
     out = {}
     for frame, marks in marks_of.items():
+        encs = drain_encoders(marks)
+        if not encs:
+            continue
         intervals = []
-        for m in marks:
-            if m["kind"] in DRAINS:
-                intervals += [(s, e) for s, e, _ in gpu.get(m["encoder"], ())]
-        if intervals:
-            out[frame] = (max(e for _, e in intervals), union_ns(intervals) / 1000.0)
+        no_row = 0
+        for m in encs:
+            rows = gpu.get(m["encoder"])
+            if rows:
+                intervals += [(s, e) for s, e, _ in rows]
+            else:
+                no_row += 1
+        out[frame] = {
+            "end": max(e for _, e in intervals) if intervals else None,
+            "busy_us": union_ns(intervals) / 1000.0,
+            "no_gpu_row": no_row,
+        }
     return out
 
 
 def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
-    header = record.get("header") or {}
-    rows = record.get("rows") or []
+    header, rows = validate_record(record)
     if not rows:
         raise ReduceError("the record holds no rows")
     marks_of = {}
@@ -453,7 +559,14 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
         marks_of.setdefault(m["frame"], []).append(m)
     record_frames = {row["frame"] for row in rows}
     first_frame = min(record_frames)
-    fe_frames = {f for f, ms in marks_of.items() if any(m["kind"] == FRAME for m in ms)}
+    # A mark on a frame encoder's command buffer row counts here: it places
+    # the frame encoder in the trace even though it joins no GPU row.
+    fe_start = {}
+    for f, ms in marks_of.items():
+        starts = [m["start"] for m in ms if m["kind"] == FRAME]
+        if starts:
+            fe_start[f] = min(starts)
+    fe_frames = set(fe_start)
 
     phase_of = {row["frame"]: row.get("phase") for row in rows}
     last_marked = max(marks_of) if marks_of else None
@@ -470,9 +583,12 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
             return last_marked is not None and last_marked > frame
         return frame in fe_frames
 
-    begin = {f: min(m["start"] for m in ms) for f, ms in marks_of.items()}
-    drain_ends = drain_end_ns(marks_of, gpu)
-    budget_us = budget_ms * 1000.0
+    def is_covered(frame):
+        # A trace frame with no record row is covered when the trace holds
+        # its predecessor's frame encoder.
+        if frame in covered:
+            return covered[frame]
+        return frame - 1 in fe_frames
 
     frames = []
     for row in rows:
@@ -496,7 +612,7 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
         }
         if entry["matched"]:
             entry["drains"] = frame_drains(frame, marks_of, gpu, drain)
-            entry["begin_ns"] = begin.get(frame)
+            entry["frame_encoder_ns"] = fe_start.get(frame)
         else:
             entry["drains"] = None
         frames.append(entry)
@@ -521,7 +637,6 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
     def interval_block(group):
         values = intervals_of(group)
         block = stats(values)
-        block.pop("total")
         block["rows"] = len(group)
         block["over_budget"] = sum(1 for v in values if v > budget_ms) if values else None
         return block
@@ -551,7 +666,8 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
     apart["marked"]["gaps"] = sum(1 for f in marked_rows if f["gap"])
 
     drain_block = drain_summary(route_measured)
-    charge = over_budget_charge(route_measured, budget_us, drain_ends)
+    charge = over_budget_charge(frames, route_measured, budget_ms * 1000.0, marks_of,
+                                fe_start, drain_gpu_by_frame(marks_of, gpu), is_covered)
 
     unmatched_route = [f["frame"] for f in route if not f["matched"]]
     unmatched_hold = [f["frame"] for f in frames if f["phase"] == "hold" and not f["matched"]]
@@ -567,7 +683,8 @@ def reduce_run(record, marks, gpu, budget_ms=DEFAULT_BUDGET_MS, clock=None):
             "outcome": header.get("outcome"),
             "hold_frames": header.get("hold_frames"),
             "adapter": (header.get("machine") or {}).get("adapter") or header.get("adapter"),
-            "gpu_clock": header.get("gpu_clock", "unrecorded"),
+            # null when the record names no clock (it predates the field).
+            "gpu_clock": header.get("gpu_clock"),
             "rows": len(rows),
             "phases": {p: sum(1 for f in frames if f["phase"] == p)
                        for p in ("hold", "route", "no_draw")},
@@ -619,7 +736,9 @@ def drain_summary(route_measured):
         drained = [f for f in route_measured if f["drains"][resource]["state"] != "none"]
         known = [f for f in drained if f["drains"][resource]["state"] == "measured"]
         out["missing"][resource] = len(drained) - len(known)
-        block = stats([f["drains"][resource]["gpu_us"] / 1000.0 for f in known])
+        values = [f["drains"][resource]["gpu_us"] / 1000.0 for f in known]
+        block = stats(values)
+        block["total"] = sum(values) if values else None
         block["encoders"] = sum(f["drains"][resource].get("encoders", 0) for f in known) \
             if resource != "total" else None
         out["resources"][resource] = block
@@ -635,37 +754,106 @@ def drain_summary(route_measured):
     return out
 
 
-def over_budget_charge(route_measured, budget_us, drain_ends):
+def stretch_starts(frames, marks_of, is_covered):
+    """Per frame, the first frame of the covered stretch that ends at it, or
+    None when it is not covered. Every frame in a stretch has all its drains
+    in the trace."""
+    known = set(marks_of) | {f["frame"] for f in frames}
+    out = {}
+    start = None
+    for frame in range(min(known), max(known) + 1):
+        if is_covered(frame):
+            start = frame if start is None else start
+        else:
+            start = None
+        out[frame] = start
+    return out
+
+
+def own_drain(by_frame, k):
+    """Row k's own charge, frame k - 1's drain: (state, ms, reason)."""
+    previous = by_frame.get(k - 1)
+    if previous is None:
+        return "missing", None, f"frame {k - 1} has no record row"
+    if not previous["matched"]:
+        return "missing", None, f"frame {k - 1} is not matched in the trace"
+    total = previous["drains"]["total"]
+    if total["state"] == "missing":
+        return "missing", None, f"frame {k - 1}'s drain is missing ({total['reason']})"
+    if total["state"] == "none":
+        return "none", 0.0, None
+    return "measured", total["gpu_us"] / 1000.0, None
+
+
+def over_budget_charge(frames, route_measured, budget_us, marks_of, fe_start, drain_gpu,
+                       is_covered):
+    by_frame = {f["frame"]: f for f in frames}
+    stretch = stretch_starts(frames, marks_of, is_covered)
+    # A matched frame whose drain reads missing holds a drain whose GPU end
+    # is unknown: an encoder with no GPU row, or admitted items with none.
+    end_unknown = {f["frame"] for f in frames
+                   if f["matched"] and f["drains"]["total"]["state"] == "missing"}
+    end_unknown |= {j for j, d in drain_gpu.items() if d["no_gpu_row"]}
+    candidates = sorted(set(drain_gpu) | end_unknown)
     frames_out = []
     for f in route_measured:
         interval = f["interval_us"]
         if interval is None or interval <= budget_us:
             continue
-        own = f["drains"]["total"]
-        own_ms = None if own["state"] == "missing" else (own["gpu_us"] or 0.0) / 1000.0
-        window_start = None if f["begin_ns"] is None else f["begin_ns"] - interval * 1000
-        in_flight = []
-        if window_start is not None:
-            for j, (end, busy_us) in drain_ends.items():
-                if j < f["frame"] and end > window_start:
-                    in_flight.append((j, busy_us / 1000.0))
-        in_flight.sort()
+        k = f["frame"]
+        own_state, own_ms, own_reason = own_drain(by_frame, k)
+        # A matched route frame always holds its own frame encoder mark.
+        window_start = fe_start[k] - interval * 1000
+        in_flight, partial = [], []
+        for j in candidates:
+            if j >= k - 1:
+                break
+            if j not in end_unknown and drain_gpu[j]["end"] <= window_start:
+                continue
+            entry = by_frame.get(j)
+            if j in end_unknown or entry is None or not entry["matched"]:
+                partial.append(j)
+            else:
+                in_flight.append((j, drain_gpu[j]["busy_us"] / 1000.0))
+        first = stretch.get(k - 1)
+        seen_from = None if first is None else min(
+            (m["start"] for g in range(first, k + 1) for m in marks_of.get(g, ())), default=None)
+        if partial:
+            in_flight_reason = (f"frame(s) {ranges(partial)} may be in flight with a drain "
+                                "the trace holds only in part")
+        elif seen_from is None or window_start < seen_from:
+            in_flight_reason = "the window opens before the trace holds every earlier drain"
+        else:
+            in_flight_reason = None
+        in_flight_ms = None if in_flight_reason else sum(ms for _, ms in in_flight)
         frames_out.append({
-            "frame": f["frame"],
+            "frame": k,
             "interval_ms": interval / 1000.0,
+            "own_frame": k - 1,
+            "own_state": own_state,
             "own_ms": own_ms,
+            "own_reason": own_reason,
+            "window_start_ns": window_start,
             "in_flight_frames": [j for j, _ in in_flight],
-            "own_plus_in_flight_ms": None if own_ms is None
-            else own_ms + sum(ms for _, ms in in_flight),
+            "in_flight_partial_frames": partial,
+            "in_flight_reason": in_flight_reason,
+            "own_plus_in_flight_ms": None if own_ms is None or in_flight_ms is None
+            else own_ms + in_flight_ms,
         })
-    with_own = sum(1 for f in frames_out if f["own_ms"])
-    with_any = sum(1 for f in frames_out if f["own_ms"] or f["in_flight_frames"])
+
+    def any_in_flight(f):
+        return bool(f["in_flight_frames"] or f["in_flight_partial_frames"])
+
     return {
         "over_budget": len(frames_out),
-        "with_own_drain": with_own,
-        "with_own_or_in_flight_drain": with_any,
-        "with_no_drain": len(frames_out) - with_any,
+        "with_own_drain": sum(1 for f in frames_out if f["own_ms"]),
+        "with_own_or_in_flight_drain": sum(1 for f in frames_out
+                                           if f["own_ms"] or any_in_flight(f)),
+        # Known to have none: own reads 0 and the in-flight reading is whole.
+        "with_no_drain": sum(1 for f in frames_out if f["own_state"] == "none"
+                             and f["in_flight_reason"] is None and not any_in_flight(f)),
         "own_missing": sum(1 for f in frames_out if f["own_ms"] is None),
+        "in_flight_missing": sum(1 for f in frames_out if f["in_flight_reason"] is not None),
         "frames": frames_out,
     }
 
@@ -694,10 +882,11 @@ def parse_ioreg(text):
     return polls
 
 
-def clock_unrecorded(header, reason=None):
-    source = header.get("gpu_clock", "unrecorded") if header else "unrecorded"
-    why = reason or ("no --ioreg poll given; the record names the clock "
-                     f"`{source}`" if source == "unrecorded" else f"record names `{source}`")
+def clock_unrecorded(header):
+    source = (header or {}).get("gpu_clock")
+    named = ("the record names no clock" if source is None
+             else f"the record names the clock `{source}`")
+    why = f"no --ioreg poll given; {named}"
     return {"state": "unrecorded", "reason": why, "text": f"GPU clock: unrecorded ({why})"}
 
 
@@ -887,21 +1076,40 @@ def render_text(s, all_frames=False):
     c = s["over_budget_charge"]
     out.append(f"Over-budget charge ({c['over_budget']} measured route frames over {budget:.3f} ms)")
     out.append(f"  {clock}")
+    out.append("  own: the drain of frame k - 1, whose start opens row k's interval; "
+               "in flight: earlier drains still on the GPU when frame k - 1 began")
     out.append(f"  own drain: {c['with_own_drain']}; own or in-flight drain: "
                f"{c['with_own_or_in_flight_drain']}; no drain: {c['with_no_drain']}"
-               + (f"; own drain missing: {c['own_missing']}" if c["own_missing"] else ""))
+               + (f"; own drain missing: {c['own_missing']}" if c["own_missing"] else "")
+               + (f"; in-flight reading missing: {c['in_flight_missing']}"
+                  if c["in_flight_missing"] else ""))
+
+    def missing_ms(value):
+        return "missing" if value is None else ms(value)
+
+    def in_flight_cell(f):
+        whole = ",".join(str(j) for j in f["in_flight_frames"])
+        if f["in_flight_partial_frames"]:
+            partial = ",".join(str(j) for j in f["in_flight_partial_frames"])
+            return (whole + "; " if whole else "") + f"partial {partial}"
+        if f["in_flight_reason"] is not None:
+            return "missing (window opens before the trace's covered stretch)"
+        return whole or "-"
+
     listed = [f for f in c["frames"]
-              if all_frames or f["own_ms"] or f["own_ms"] is None or f["in_flight_frames"]]
+              if all_frames or f["own_ms"] or f["own_ms"] is None or f["in_flight_frames"]
+              or f["in_flight_reason"] is not None]
     if listed:
         if not all_frames and len(listed) < len(c["frames"]):
-            out.append("  frames with a drain charged (--all-frames lists every one):")
-        rows = [[f["frame"], ms(f["interval_ms"]), ms(f["own_ms"]),
-                 ms(f["own_plus_in_flight_ms"]),
-                 ",".join(str(j) for j in f["in_flight_frames"]) or "-"]
+            out.append("  frames with a drain charged or missing (--all-frames lists every one):")
+        rows = [[f["frame"], ms(f["interval_ms"]), missing_ms(f["own_ms"]),
+                 missing_ms(f["own_plus_in_flight_ms"]), in_flight_cell(f)]
                 for f in listed]
-        out += table(["frame", "interval", "own", "own+in flight", "in-flight frames"], rows, "    ")
+        out += table(["frame", "interval", "own (k - 1)", "own+in flight", "in-flight frames"],
+                     rows, "    ")
     out.append("")
-    charged = {f["frame"] for f in c["frames"] if f["in_flight_frames"]}
+    charged = {f["frame"] for f in c["frames"]
+               if f["in_flight_frames"] or f["in_flight_partial_frames"]}
     shown = [f for f in s["frames"] if f["matched"] and (
         all_frames or f["drains"]["total"]["state"] != "none" or f["frame"] in charged)]
     title = ("every matched frame" if all_frames
@@ -939,7 +1147,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         summary = reduce_paths(args.record, args.trace_dir, args.ioreg, args.toc, args.budget_ms)
-    except (OSError, ValueError, ET.ParseError, lzma.LZMAError) as err:
+    # A truncated .xz raises EOFError; a corrupt one, LZMAError.
+    except (OSError, ValueError, EOFError, ET.ParseError, lzma.LZMAError) as err:
         print(f"playback_trace_reduce: error: {err}", file=sys.stderr)
         return 2
     except ReduceError as err:

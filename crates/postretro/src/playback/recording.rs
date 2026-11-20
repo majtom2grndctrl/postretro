@@ -1,6 +1,7 @@
 // `--record-camera-route`: holds each presented world frame's pre-view-feel
 // eye, yaw and pitch in memory, then writes one pose file resampled to the
-// generator's 60 Hz cadence. Pure: no App, window or GPU; time is passed in.
+// generator's 60 Hz cadence, cut where the followed pawn jumped. Pure: no
+// App, window or GPU; time and the pawn's continuity are passed in.
 // See: context/lib/rendering_pipeline.md §12
 
 use std::path::{Path, PathBuf};
@@ -9,6 +10,7 @@ use std::time::Instant;
 use glam::Vec3;
 use postretro_camera_route::{
     CADENCE_HZ, PoseFile, Projection, RouteHeader, RouteOrigin, RoutePose, format_pose_file,
+    parse_pose_file,
 };
 
 use super::pacing;
@@ -25,6 +27,21 @@ pub(crate) struct Sample {
     pub(crate) eye: Vec3,
     pub(crate) yaw: f32,
     pub(crate) pitch: f32,
+    /// The followed pawn's continuity this frame; `None` with no pawn.
+    pub(crate) continuity: Option<Continuity>,
+}
+
+/// What a followed pawn's view stays continuous across. A teleport, a
+/// respawn or a life-state change moves it, and so does gaining or losing
+/// the pawn: the view between two frames that differ here is a jump, never
+/// motion, so resampling holds the earlier view and cuts at the later one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Continuity {
+    pub(crate) pawn: u32,
+    pub(crate) teleport_generation: u8,
+    pub(crate) life_state: u8,
+    /// Entries into a life state, a respawn into the same state included.
+    pub(crate) life_state_entry: u32,
 }
 
 /// Where a recording stands.
@@ -123,7 +140,8 @@ impl Recorder {
     }
 
     /// Ends the recording. Returns its file when any world frame recorded;
-    /// `None` when it had already ended or never recorded a frame.
+    /// `None` when it had already ended or never recorded a frame. A file
+    /// with no level's bake carries an empty one, which [`write`] refuses.
     pub(crate) fn finish(&mut self) -> Option<PoseFile> {
         let state = std::mem::replace(&mut self.state, RecordState::Ended);
         self.pending = None;
@@ -157,9 +175,17 @@ pub(crate) fn recorded_file(samples: &[Sample], projection: Projection, bake: St
     }
 }
 
-/// Writes `file` to `path`: the recording's one write.
+/// Writes `file` to `path`: the recording's one write. A file playback would
+/// refuse, such as one with an empty bake or level path, is not written.
 pub(crate) fn write(path: &Path, file: &PoseFile) -> Result<(), String> {
-    std::fs::write(path, format_pose_file(file))
+    let text = format_pose_file(file);
+    if let Err(err) = parse_pose_file(&text) {
+        return Err(format!(
+            "the camera route recorded for {} would not parse ({err}); no file written",
+            path.display()
+        ));
+    }
+    std::fs::write(path, text)
         .map_err(|err| format!("writing the camera route {}: {err}", path.display()))
 }
 
@@ -180,6 +206,10 @@ fn source_hz(samples: &[Sample]) -> String {
 /// and pitch linear between the two samples bracketing it, yaw the short way
 /// round. Interpolation is by time, never by frame, so a slow frame bridges
 /// the camera's own motion and the source rate drops out.
+///
+/// Two samples whose continuity differs bracket a jump: poses between them
+/// hold the earlier sample, and the first pose at or past the later one is
+/// marked `cut`, so playback never interpolates across it either.
 pub(crate) fn resample(samples: &[Sample], cadence_hz: f64) -> Vec<RoutePose> {
     let Some(first) = samples.first() else {
         return Vec::new();
@@ -194,27 +224,35 @@ pub(crate) fn resample(samples: &[Sample], cadence_hz: f64) -> Vec<RoutePose> {
     let mut from = 0;
     for k in 0..count {
         let t = k as f64 / cadence_hz;
+        let mut jumped = false;
         while from + 1 < samples.len() && seconds(&samples[from + 1]) <= t {
+            jumped |= jumps(&samples[from], &samples[from + 1]);
             from += 1;
         }
         let a = &samples[from];
         let (eye, yaw, pitch) = match samples.get(from + 1) {
-            Some(b) => {
+            Some(b) if !jumps(a, b) => {
                 let (ta, tb) = (seconds(a), seconds(b));
                 let blend = ((t - ta) / (tb - ta)) as f32;
                 pacing::interpolate(&route_pose(a), &route_pose(b), blend)
             }
-            None => (a.eye, a.yaw, a.pitch),
+            _ => (a.eye, a.yaw, a.pitch),
         };
         poses.push(RoutePose {
             eye,
             yaw,
             pitch,
             walk: None,
-            cut: false,
+            // Pose 0 has nothing before it to cut from.
+            cut: jumped && k > 0,
         });
     }
     poses
+}
+
+/// Whether the view jumped between consecutive samples `a` and `b`.
+fn jumps(a: &Sample, b: &Sample) -> bool {
+    a.continuity != b.continuity
 }
 
 fn route_pose(sample: &Sample) -> RoutePose {

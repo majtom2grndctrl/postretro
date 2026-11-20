@@ -1,7 +1,8 @@
 // Camera-route recording: the pre-view-feel view each presented world frame
-// holds, resampling to 60 Hz by time, a frame-locked replay bit-equal to the
-// resampled file, the first gameplay level's scope, and the one write on
-// every exit route. The frame loop needs an event loop, so App-level tests
+// holds, resampling to 60 Hz by time and never across a pawn's jump, a
+// frame-locked replay bit-equal to the resampled file, the first gameplay
+// level's scope, and the one write on every exit route, refused when
+// playback could not read it. The frame loop needs an event loop, so App-level tests
 // drive the hooks in its order and source-order tests pin the call sites.
 // See: context/lib/rendering_pipeline.md §12 · context/lib/boot_sequence.md §1, §4, §5
 
@@ -9,8 +10,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
-use postretro_camera_route::{PoseFile, RouteOrigin, RoutePose, parse_pose_file};
-use postretro_foundation::{BobParams, MovementStateKind, TiltParams, ViewFeelParams};
+use postretro_camera_route::{
+    DEFAULT_HFOV_DEGREES, PoseFile, RouteOrigin, RoutePose, parse_pose_file,
+};
+use postretro_entities::{EntityId, Transform};
+use postretro_foundation::{
+    BobParams, MovementStateKind, PlayerMovementComponent, TiltParams, ViewFeelParams,
+};
 use postretro_test_log_capture::LogCapture;
 use tempfile::TempDir;
 
@@ -49,6 +55,7 @@ fn samples(start: Instant, times: impl IntoIterator<Item = f64>) -> Vec<Sample> 
                 eye,
                 yaw,
                 pitch,
+                continuity: None,
             }
         })
         .collect()
@@ -181,6 +188,62 @@ fn world_frame(app: &mut App, start: Instant, t: f64, presented: bool) {
     end_frame(app);
 }
 
+/// A presented Running frame whose eye is `offset` from `motion`'s: the
+/// camera somewhere a jump put it.
+fn world_frame_moved(app: &mut App, start: Instant, t: f64, offset: Vec3) {
+    let inputs = eye_inputs(t, None);
+    let inputs = FrameEyeInputs {
+        presented_eye: inputs.presented_eye + offset,
+        ..inputs
+    };
+    app.playback_record_eye(start + Duration::from_secs_f64(t), &inputs);
+    app.playback.note_presented(true);
+    end_frame(app);
+}
+
+/// Spawns the local pawn the camera follows.
+fn follow_pawn(app: &App) -> EntityId {
+    let registry = &app.session.as_ref().unwrap().scripting.script_ctx.registry;
+    let pawn = registry.borrow_mut().spawn(Transform::default());
+    registry
+        .borrow_mut()
+        .set_component(
+            pawn,
+            PlayerMovementComponent::from_descriptor(&crate::tests::minimal_player_descriptor()),
+        )
+        .unwrap();
+    pawn
+}
+
+/// Changes the pawn's movement state between frames, as a tick would.
+fn move_pawn(app: &App, pawn: EntityId, change: impl FnOnce(&mut PlayerMovementComponent)) {
+    let mut registry = app
+        .session
+        .as_ref()
+        .unwrap()
+        .scripting
+        .script_ctx
+        .registry
+        .borrow_mut();
+    let mut movement = registry
+        .get_component::<PlayerMovementComponent>(pawn)
+        .unwrap()
+        .clone();
+    change(&mut movement);
+    registry.set_component(pawn, movement).unwrap();
+}
+
+fn teleport(movement: &mut PlayerMovementComponent) {
+    movement.teleport.generation = movement.teleport.generation.wrapping_add(1);
+}
+
+fn respawn(movement: &mut PlayerMovementComponent) {
+    movement.life_state_entry = movement.life_state_entry.wrapping_add(1);
+}
+
+/// Where a jump puts the camera in these tests: far from `motion`.
+const AWAY: Vec3 = Vec3::new(50.0, 0.0, 0.0);
+
 fn end_frame(app: &mut App) {
     if let Some(recording) = app.playback.recording.as_mut() {
         recording.end_frame();
@@ -262,7 +325,11 @@ fn recording_holds_the_pre_feel_view_while_view_feel_moves_the_camera() {
     }
     run.app.playback_session_exits();
     let file = written(&run.path);
-    assert!((file.header.projection.hfov_degrees - 100.0).abs() < 1.0e-4);
+    assert_eq!(
+        file.header.projection.hfov_degrees.to_bits(),
+        DEFAULT_HFOV_DEGREES.to_bits(),
+        "the default FOV writes the generator's exact default"
+    );
     assert_eq!(file.header.projection.aspect, ASPECT);
     assert_eq!(file.poses[0].eye, motion(0.0).0);
 }
@@ -318,8 +385,9 @@ fn exit_ok(app: &App) -> bool {
 
 #[test]
 fn recording_records_nothing_for_a_frontend_backdrop_then_starts_at_the_started_map() {
-    // P15: backdrop frames record nothing; Start loads the map, whose first
-    // world frame starts the file.
+    // A recording launched into a mod with a frontend backdrop: backdrop
+    // frames record nothing; Start loads the map, whose first world frame
+    // starts the file.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rec.txt");
     let mut app = test_app();
@@ -345,8 +413,9 @@ fn recording_records_nothing_for_a_frontend_backdrop_then_starts_at_the_started_
 
 #[test]
 fn recording_level_end_writes_the_first_levels_frames_and_nothing_after() {
-    // P13: a level change, an unload, a reload and a restart (a reload of the
-    // installed source) each write the frames before the request drained.
+    // A level change, an unload, a reload and a restart (a reload of the
+    // installed source) each write the frames before the request drained;
+    // nothing after it records, the next level included.
     for (name, request) in [
         (
             "change",
@@ -401,8 +470,9 @@ fn recording_with_no_world_frame_writes_no_file_and_warns_once() {
 
 #[test]
 fn recording_is_written_once_with_the_same_bytes_whichever_exit_route_ended_it() {
-    // P14 / AC 48: window close, the quit chord, a menu quit and a script
-    // quit all reach `exiting`, whose hook writes the file once.
+    // AC 48: window close, the quit chord, a menu quit and a script quit all
+    // reach `exiting`, whose hook writes the file once, the same whichever
+    // route ended the session.
     let start = Instant::now();
     let mut files = Vec::new();
     for route in ["window close", "quit chord", "menu quit", "script quit"] {
@@ -426,13 +496,20 @@ fn recording_is_written_once_with_the_same_bytes_whichever_exit_route_ended_it()
 #[test]
 fn recorded_route_replays_frame_locked_bit_equal_with_no_roll_at_its_fov() {
     // AC 44, 45: played frame-locked, route frame k draws pose k of the
-    // resampled file bit-equal, with no roll or FOV offset.
+    // resampled file bit-equal, with no roll or FOV offset. A teleport
+    // mid-recording cuts a pose, which round-trips and replays the same.
     let mut run = recording();
+    let pawn = follow_pawn(&run.app);
     let start = Instant::now();
     for frame in 0..12 {
-        world_frame(&mut run.app, start, f64::from(frame) / 40.0, true);
+        if frame == 7 {
+            move_pawn(&run.app, pawn, teleport);
+        }
+        let offset = if frame >= 7 { AWAY } else { Vec3::ZERO };
+        world_frame_moved(&mut run.app, start, f64::from(frame) / 40.0, offset);
     }
     let expected = resample(run.app.playback.recording.as_ref().unwrap().samples(), 60.0);
+    assert_eq!(expected.iter().filter(|pose| pose.cut).count(), 1);
     run.app.playback_session_exits();
     let file = written(&run.path);
     assert_eq!(file.poses, expected, "the write round-trips bit-equal");
@@ -505,7 +582,119 @@ fn recorded_route_replays_frame_locked_bit_equal_with_no_roll_at_its_fov() {
 }
 
 #[test]
-fn playback_closed_by_the_person_writes_its_record_aborted_and_keeps_the_exit_code() {
+fn recording_never_blends_across_a_teleport_or_respawn_and_cuts_at_the_arrival() {
+    // A teleport at 0.125 s moves the camera to AWAY; a respawn at 0.225 s
+    // puts it back. Frames at 40 Hz, poses at 60 Hz: a pose between a jump's
+    // two frames holds the frame before it, and the first pose past each
+    // jump is cut. No pose lies between the two places.
+    let mut run = recording();
+    let pawn = follow_pawn(&run.app);
+    let start = Instant::now();
+    for frame in 0..16 {
+        match frame {
+            5 => move_pawn(&run.app, pawn, teleport),
+            9 => move_pawn(&run.app, pawn, respawn),
+            _ => {}
+        }
+        let offset = if (5..9).contains(&frame) {
+            AWAY
+        } else {
+            Vec3::ZERO
+        };
+        world_frame_moved(&mut run.app, start, f64::from(frame) / 40.0, offset);
+    }
+    let recorded = run
+        .app
+        .playback
+        .recording
+        .as_ref()
+        .unwrap()
+        .samples()
+        .to_vec();
+    run.app.playback_session_exits();
+    let file = written(&run.path);
+    assert_eq!(file.poses.len(), 23);
+
+    // Frames 4 (0.1 s) and 5 (0.125 s) bracket the teleport, 8 (0.2 s) and
+    // 9 (0.225 s) the respawn.
+    let cuts: Vec<usize> = (0..file.poses.len())
+        .filter(|&k| file.poses[k].cut)
+        .collect();
+    assert_eq!(cuts, [8, 14], "the first pose past each jump");
+    for (k, frame) in [(7, 4), (13, 8)] {
+        let (pose, sample) = (&file.poses[k], &recorded[frame]);
+        assert_eq!(
+            (pose.eye, pose.yaw.to_bits(), pose.pitch.to_bits()),
+            (sample.eye, sample.yaw.to_bits(), sample.pitch.to_bits()),
+            "pose {k} holds frame {frame}"
+        );
+    }
+    for (k, pose) in file.poses.iter().enumerate() {
+        let place = if (8..14).contains(&k) {
+            AWAY
+        } else {
+            Vec3::ZERO
+        };
+        let (eye, _, _) = motion(k as f64 / 60.0);
+        assert!(
+            pose.eye.distance(eye + place) <= SPEED / 40.0 + 1.0e-4,
+            "pose {k} is at one place or the other: {pose:?}"
+        );
+    }
+}
+
+#[test]
+fn a_recording_playback_would_refuse_writes_no_file_and_fails_the_exit() {
+    // No gameplay level's bake named the recording, or the level had no
+    // path: the file would not parse, so none is written.
+    let capture = LogCapture::start();
+    for case in ["no level", "no level path"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rec.txt");
+        let mut app = test_app();
+        app.playback = Playback::from_args(&launch(&path), Instant::now()).unwrap();
+        if case == "no level path" {
+            app.level = Some(level_world("route", 1));
+            app.map_path = None;
+            app.playback_level_installed();
+        }
+        world_frame(&mut app, Instant::now(), 0.0, true);
+        assert_eq!(state(&app), RecordState::Recording, "{case}");
+        app.playback_session_exits();
+        assert!(!path.exists(), "{case}: no file playback would refuse");
+        assert!(app.exit_result.is_err(), "{case}: the exit fails");
+    }
+    capture.assert_logged(log::Level::Error, "would not parse");
+}
+
+#[test]
+fn a_failed_recording_write_fails_the_exit_and_keeps_an_earlier_error() {
+    for earlier in [None, Some("an earlier failure")] {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let path = out.join("rec.txt");
+        let mut app = test_app();
+        app.playback = Playback::from_args(&launch(&path), Instant::now()).unwrap();
+        install(&mut app, FIRST_LEVEL);
+        world_frame(&mut app, Instant::now(), 0.0, true);
+        // The directory goes away before the write.
+        std::fs::remove_dir(&out).unwrap();
+        if let Some(earlier) = earlier {
+            app.exit_result = Err(anyhow::anyhow!(earlier));
+        }
+        app.playback_session_exits();
+        assert!(!path.exists());
+        let error = app.exit_result.as_ref().unwrap_err().to_string();
+        match earlier {
+            Some(earlier) => assert_eq!(error, earlier),
+            None => assert!(error.contains("writing the camera route"), "{error}"),
+        }
+    }
+}
+
+#[test]
+fn playback_closed_by_the_person_writes_its_record_aborted_and_exits_non_zero() {
     let mut run = crate::playback::lifecycle::tests::playing(1, 5, &[]);
     let now = Instant::now();
     for _ in 0..3 {
@@ -513,7 +702,8 @@ fn playback_closed_by_the_person_writes_its_record_aborted_and_keeps_the_exit_co
     }
     run.app.playback_session_exits();
     assert!(run.app.playback.active.is_none());
-    assert!(run.app.exit_result.is_ok(), "a user close is not an error");
+    let exit = run.app.exit_result.as_ref().expect_err("a close before the route ends is an aborted run");
+    assert!(exit.to_string().contains("window closed or quit before the route ended"));
     let record = crate::playback::lifecycle::tests::record(&run);
     assert_eq!(record["header"]["outcome"], "aborted");
     assert!(
@@ -567,6 +757,7 @@ const FRAME_LOOP: &str = include_str!("../frame_loop/mod.rs");
 const MAIN: &str = include_str!("../main.rs");
 const BOOT_STATE: &str = include_str!("../startup/lifecycle_boot_state.rs");
 const SETTLING: &str = include_str!("../startup/settling.rs");
+const SESSION_ENTRY: &str = include_str!("../startup/session_entry.rs");
 
 fn at(haystack: &str, needle: &str, from: usize) -> usize {
     from + haystack[from..]
@@ -618,6 +809,17 @@ fn level_requests_end_a_recording_before_the_level_unloads() {
     );
     let none_unload = at(BOOT_STATE, "self.unload_level();", frontend);
     assert!(load_end < load_unload && none_end < frontend && frontend < none_unload);
+}
+
+#[test]
+fn a_frontend_join_ends_a_recording_after_the_playback_abort_check() {
+    // A join leaves for the host's level: a recording of the first gameplay
+    // level is written before it, unless a playing route refuses the join.
+    let join = at(SESSION_ENTRY, "pub(crate) fn join_from_frontend_with(", 0);
+    let abort = at(SESSION_ENTRY, "self.playback_join_abort_reason(addr)", join);
+    let end = at(SESSION_ENTRY, "self.recording_level_ends();", abort);
+    let connect = at(SESSION_ENTRY, "self.enter_net_role(", join);
+    assert!(abort < end && end < connect);
 }
 
 #[test]

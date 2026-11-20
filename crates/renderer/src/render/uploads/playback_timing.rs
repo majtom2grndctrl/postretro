@@ -16,8 +16,9 @@ use crate::render::gpu_create::GpuCreate;
 pub(crate) const RING_FRAMES: usize = 8;
 
 /// Three spans per frame, a begin and an end slot each.
-const QUERIES_PER_FRAME: u32 = 6;
-const QUERY_SIZE: wgpu::BufferAddress = 8;
+pub(super) const QUERIES_PER_FRAME: u32 = 6;
+/// One timestamp is a little-endian `u64`.
+const QUERY_SIZE: wgpu::BufferAddress = size_of::<u64>() as wgpu::BufferAddress;
 const GROUP_BYTES: wgpu::BufferAddress = QUERIES_PER_FRAME as wgpu::BufferAddress * QUERY_SIZE;
 /// Each group resolves to its own aligned offset of one resolve buffer.
 const RESOLVE_STRIDE: wgpu::BufferAddress = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT;
@@ -42,11 +43,18 @@ pub enum PlaybackGpuSpan {
 pub struct PlaybackGpuSample {
     /// The frame mark's index.
     pub frame: u64,
+    /// Begins at the frame's first marked encoder, which on a drain frame is
+    /// the lightmap drain submitted in the streaming step. It includes
+    /// CPU-side idle time and unmarked command buffers submitted between that
+    /// encoder and the Frame Encoder.
     pub whole_frame: PlaybackGpuSpan,
     /// The "Streamed Lightmap Drain" encoder.
     pub lightmap_drain: PlaybackGpuSpan,
     /// The "Streamed SH Upload Copies" encoders: the first one's first
-    /// command to the last one's last.
+    /// command to the last one's last. A span, not a busy-time union: it
+    /// includes the gaps between the separate submits, so it reads longer than
+    /// the Mac reducer's union. The copies include mover depth-tile flushes
+    /// made at the SH drain.
     pub sh_upload: PlaybackGpuSpan,
 }
 
@@ -186,13 +194,13 @@ impl PlaybackTiming {
             }
             match self.maps[group].load(Ordering::Acquire) {
                 MAP_READY => {
-                    let mut ticks = [0u64; 6];
+                    let mut ticks = [0u64; QUERIES_PER_FRAME as usize];
                     {
                         let view = self.readbacks[group]
                             .slice(..)
                             .get_mapped_range()
                             .expect("a ready map's range is mapped; fails only after device loss");
-                        for (tick, chunk) in ticks.iter_mut().zip(view.as_chunks::<8>().0) {
+                        for (tick, chunk) in ticks.iter_mut().zip(view.as_chunks::<{ size_of::<u64>() }>().0) {
                             *tick = u64::from_le_bytes(*chunk);
                         }
                     }

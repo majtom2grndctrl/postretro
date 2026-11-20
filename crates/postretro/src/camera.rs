@@ -18,7 +18,8 @@ pub const NEAR: f32 = 0.1;
 pub const FAR: f32 = 4096.0;
 
 /// Maximum pitch angle in radians (+/- 89 degrees from horizontal).
-const PITCH_LIMIT: f32 = 89.0 * std::f32::consts::PI / 180.0;
+/// Camera-route playback refuses a pose past it rather than let this clamp it.
+pub(crate) const PITCH_LIMIT: f32 = 89.0 * std::f32::consts::PI / 180.0;
 
 /// Base movement speed in meters per second (1 unit = 1 meter).
 /// Quake's 320 units/sec was in inches, which is ~8 m/s; using 7 m/s here.

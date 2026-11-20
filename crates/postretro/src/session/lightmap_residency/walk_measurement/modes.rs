@@ -18,7 +18,9 @@ const RECORD_OUT_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_OUT";
 const RECORD_IN_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_TRIP_RECORD_IN";
 const PLANAR_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_PLANAR";
 
-/// Default camera: `camera.rs` HFOV at 16:9, the generated routes' default.
+/// Default camera: the same default `postretro-camera-route` stamps into
+/// generated pose files. The label form of `postretro_camera_route::DEFAULT_ASPECT`
+/// (an f32 ratio, 16.0 / 9.0); the two must match.
 const DEFAULT_ASPECT: (f32, f32) = (16.0, 9.0);
 
 /// Horizontal FOV is fixed; vertical follows the aspect, as the player

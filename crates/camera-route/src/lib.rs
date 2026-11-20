@@ -27,9 +27,7 @@ pub use exact::{
     EYE_STREAM_SALT, ExactRoute, RouteError, RoutePose, exact_route, exact_route_seeded,
     pose_fingerprint,
 };
-pub use path::{
-    STALL_TELEPORT_STEPS, SplitMix64, WALK_SEED, WalkKind, camera_adjacency, walk_path,
-};
+pub use path::{SplitMix64, WALK_SEED, WalkKind};
 pub use pose_file::{
     GeneratedKind, POSE_FILE_MAGIC, ParseReason, PoseFile, PoseFileError, Projection, RouteHeader,
     RouteOrigin, format_pose_file, parse_pose_file,

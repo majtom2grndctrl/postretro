@@ -95,6 +95,8 @@ pub(crate) struct RowDrain {
     /// Either drain's staging pool created a buffer.
     pub(crate) cold: bool,
     pub(crate) cold_lightmap: bool,
+    /// The SH drain's staging pool created a buffer, the mover depth-tile
+    /// flushes made at the SH drain included.
     pub(crate) cold_sh: bool,
     /// A lightmap drain grew the lightmap or the mask pool.
     pub(crate) pool_grew: bool,
@@ -169,7 +171,11 @@ pub(crate) struct RowGpu {
     /// before the first marked encoder and the debug UI after the frame
     /// encoder fall outside it.
     pub(crate) frame_us: Option<f64>,
+    /// The lightmap drain's span: its first command to its last, idle gaps
+    /// between its submissions included.
     pub(crate) lightmap_drain_us: Option<f64>,
+    /// The SH upload copies' span, likewise, the mover depth-tile flushes
+    /// made at the SH drain included.
     pub(crate) sh_upload_us: Option<f64>,
     /// Spans that decoded malformed.
     #[serde(skip)]

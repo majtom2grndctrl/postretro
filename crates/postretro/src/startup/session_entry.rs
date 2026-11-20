@@ -665,10 +665,16 @@ impl App {
             log::warn!("[Net] join refused: select a character first");
             return false;
         }
-        // A join ends a playing camera route instead (pin P4).
+        // A join during a playing camera route aborts the run instead, as a
+        // level request does, and the join is left undone. A join ends a
+        // recording's first gameplay level: it is written before the host's
+        // level replaces it.
         #[cfg(feature = "dev-tools")]
-        if self.playback_abort(self.playback_join_abort_reason(addr)) {
-            return false;
+        {
+            if self.playback_abort(self.playback_join_abort_reason(addr)) {
+                return false;
+            }
+            self.recording_level_ends();
         }
         self.cancel_backdrop_load_for_join();
         self.save_progress_for_join();

@@ -497,3 +497,71 @@ fn playback_record_plans_wall_clock_rows_over_the_route_duration() {
     // 600 poses at 60 Hz is 10 s: 2,400 rows at 240 Hz, plus the hold.
     assert!(record.rows.capacity() >= 10 + 2_400 + ROW_SLACK);
 }
+
+#[test]
+fn playback_record_gap_marks_the_row_after_its_row_store_grows() {
+    // A push past the reservation copies every row inside that frame's end;
+    // the next row's interval spans the copy, so it is gap-marked, never
+    // read as a stutter. The growing push's own row is not.
+    let mut record = PlaybackRecord::new(&args(0), &pose_file(100.0, 1));
+    record.rows = Vec::with_capacity(2);
+    let mut expected = Vec::new();
+    let mut previous_grew = false;
+    for pose in 0..9 {
+        let grows = record.rows.len() == record.rows.capacity();
+        expected.push(previous_grew);
+        previous_grew = grows;
+        record.push_row(
+            plan(RowKind::Route, pose),
+            Some(16_000),
+            UNMARKED,
+            no_fill(),
+        );
+    }
+    let gaps: Vec<bool> = record.rows().iter().map(|row| row.gap).collect();
+    assert_eq!(gaps, expected, "only each row after a growing push");
+    assert!(!gaps[2], "the growing push's own row precedes the copy");
+    assert!(gaps[3], "row 2's push outgrew the two reserved rows");
+    // A growing push whose own row the marks already gap still marks the
+    // next row.
+    let mut record = PlaybackRecord::new(&args(0), &pose_file(100.0, 1));
+    record.rows = Vec::with_capacity(1);
+    record.push_row(plan(RowKind::Route, 0), None, UNMARKED, no_fill());
+    record.push_row(
+        plan(RowKind::Route, 1),
+        Some(1),
+        (ChangeSet::EMPTY, true),
+        no_fill(),
+    );
+    record.push_row(plan(RowKind::Route, 2), Some(1), UNMARKED, no_fill());
+    let gaps: Vec<bool> = record.rows().iter().map(|row| row.gap).collect();
+    assert_eq!(gaps, [false, true, true]);
+}
+
+#[test]
+fn playback_record_life_state_entries_name_the_row_actually_written() {
+    let key = LifeKey {
+        pawn: 3,
+        teleport_generation: 0,
+        life_state: 1,
+        life_state_entry: 2,
+        table_revision: 1,
+    };
+    let mut record = PlaybackRecord::new(&args(0), &pose_file(100.0, 3));
+    record.push_row(plan(RowKind::Route, 0), None, UNMARKED, no_fill());
+    // Seen on a frame that wrote no row: the next row written names it.
+    record.push_life_state(Some(key), None, None);
+    record.push_row(plan(RowKind::Route, 1), Some(9), UNMARKED, no_fill());
+    // Seen as the run ended: no row follows, so it names none.
+    record.push_life_state(None, None, Some(key));
+    let json = serde_json::to_value(&record).unwrap();
+    let life = json["life_states"].as_array().unwrap();
+    assert_eq!(life.len(), 2);
+    assert_eq!(life[0]["frame"], 1);
+    assert!(
+        life[1]["frame"].is_null(),
+        "never a row the record lacks: {}",
+        life[1]
+    );
+    assert_eq!(json["rows"].as_array().unwrap().len(), 2);
+}

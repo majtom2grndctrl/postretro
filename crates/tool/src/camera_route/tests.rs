@@ -427,3 +427,132 @@ fn generate_camera_route_refuses_a_level_without_camera_cells_or_portals_naming_
         );
     }
 }
+
+#[test]
+fn generate_camera_route_pitch_bound_is_inclusive_like_the_engine_camera() {
+    let pitch = |value: &str| {
+        parse_args(os(&[
+            "l.prl", "--kind", "random", "--pitch", value, "-o", "o",
+        ]))
+        .map(|args| args.pitch_degrees)
+    };
+    assert_eq!(pitch("89"), Ok(89.0));
+    assert_eq!(pitch("-89"), Ok(-89.0));
+    for value in ["89.001", "-89.5", "90", "NaN"] {
+        let error = pitch(value).expect_err("refused");
+        assert!(error.contains("--pitch"), "{value}: {error}");
+    }
+}
+
+#[test]
+fn generate_camera_route_usage_states_ranges_defaults_and_the_smoothed_only_flags() {
+    let usage = parse_args(os(&["--bogus"])).expect_err("refused");
+    for needed in [
+        "0x",
+        "-89 to 89",
+        "60 to 130",
+        "default 2000",
+        "default 0",
+        "default 100",
+        "default 8",
+        "default 270",
+        "--out",
+        "apply only to --kind smoothed",
+    ] {
+        assert!(usage.contains(needed), "usage lacks {needed:?}: {usage}");
+    }
+}
+
+#[test]
+fn generate_camera_route_names_the_right_cause_for_each_route_error() {
+    let world = two_cell_world(false);
+    let named = |extra: &[&str]| {
+        let mut args = vec!["maps/x.prl", "-o", "o"];
+        args.extend_from_slice(extra);
+        generate(&world, &parse_args(os(&args)).expect("args")).expect_err("refused")
+    };
+    // A level problem keeps the level hint; the smoothed-only limits do not.
+    let level = named(&["--kind", "far-point"]);
+    assert!(level.contains("camera cells with a portal"), "{level}");
+
+    let args = GenerateArgs {
+        smoothing: Some(Smoothing {
+            speed: 0.0,
+            turn_cap_degrees: 270.0,
+        }),
+        ..parse_args(os(&["maps/x.prl", "--kind", "smoothed", "-o", "o"])).expect("args")
+    };
+    let error = generate(&two_cell_world(false), &args).expect_err("refused");
+    assert!(error.contains("speed"), "{error}");
+    assert!(!error.contains("camera cells with a portal"), "{error}");
+}
+
+/// Two camera cells with a portal between them, whose locator answers each
+/// cell's own box with the other cell: no eye can stand in any cell.
+fn unlocatable_world() -> LevelWorld {
+    use postretro_level_loader::PortalData;
+    let cell = |x: f32, refs_at: u32| CellData {
+        bounds_min: Vec3::new(x, 0.0, 0.0),
+        bounds_max: Vec3::new(x + 4.0, 4.0, 4.0),
+        face_start: 0,
+        face_count: 0,
+        portal_ref_start: refs_at,
+        portal_ref_count: 1,
+        is_solid: false,
+        is_exterior: false,
+        is_drawable: true,
+    };
+    let node = CellLocatorNodeData {
+        plane_normal: Vec3::X,
+        plane_distance: 4.0,
+        front: CellLocatorChild::Cell(0),
+        back: CellLocatorChild::Cell(1),
+    };
+    let portal = PortalData {
+        polygon: vec![
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(4.0, 4.0, 0.0),
+            Vec3::new(4.0, 4.0, 4.0),
+        ],
+        front_cell: 0,
+        back_cell: 1,
+    };
+    LevelWorld::new_visibility_only(
+        vec![cell(0.0, 0), cell(4.0, 1)],
+        vec![0, 0],
+        CellLocatorChild::Node(0),
+        vec![node],
+        vec![portal],
+        true,
+    )
+    .expect("valid world")
+}
+
+#[test]
+fn generate_camera_route_refuses_a_smoothed_route_with_no_poses_naming_level_and_parameters() {
+    let args = parse_args(os(&[
+        "maps/unlocatable.prl",
+        "--kind",
+        "smoothed",
+        "--steps",
+        "30",
+        "--speed",
+        "6",
+        "--turn-cap",
+        "90",
+        "-o",
+        "o",
+    ]))
+    .expect("args");
+    let error = generate(&unlocatable_world(), &args).expect_err("refused");
+    for needed in [
+        "maps/unlocatable.prl",
+        "no poses",
+        "30 steps",
+        "speed 6",
+        "turn cap 90",
+        "0x5eedb10c",
+    ] {
+        assert!(error.contains(needed), "{error} lacks {needed:?}");
+    }
+}

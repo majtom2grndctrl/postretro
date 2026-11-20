@@ -20,6 +20,16 @@ pub(crate) const DEFAULT_HOLD_FRAMES: u32 = 600;
 /// 72 s to load in a `dev` build, and levels grow, so the margin is wide.
 pub(crate) const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// The longest `--camera-route-hold`: about 28 minutes at 60 Hz. The record
+/// reserves a row per hold frame at launch, so the flag alone would otherwise
+/// size that reservation, and a huge one aborts the process.
+pub(crate) const MAX_HOLD_FRAMES: u32 = 100_000;
+
+/// The longest `--camera-route-stall-timeout`: a day. The deadline is the
+/// launch instant plus the timeout, and an `Instant` that far out overflows
+/// and panics on some platforms.
+pub(crate) const MAX_STALL_TIMEOUT: Duration = Duration::from_secs(86_400);
+
 /// How route frames map to poses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pacing {
@@ -69,7 +79,7 @@ pub(crate) fn playback_args(args: &[String]) -> Result<Option<PlaybackArgs>, Str
                 CAMERA_ROUTE_STALL_TIMEOUT_FLAG,
             ] {
                 if (recording && flag == CAMERA_ROUTE_STALL_TIMEOUT_FLAG)
-                    || !flag_value(args, flag).is_ok_and(|value| value.is_some())
+                    || !names_flag(args, flag)
                 {
                     continue;
                 }
@@ -91,9 +101,15 @@ pub(crate) fn playback_args(args: &[String]) -> Result<Option<PlaybackArgs>, Str
         ));
     }
     let hold = match flag_value(args, CAMERA_ROUTE_HOLD_FLAG)? {
-        Some(value) => value.parse::<u32>().map_err(|_| {
-            format!("{CAMERA_ROUTE_HOLD_FLAG} {value:?} is not a whole number of frames")
-        })?,
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|hold| *hold <= MAX_HOLD_FRAMES)
+            .ok_or_else(|| {
+                format!(
+                    "{CAMERA_ROUTE_HOLD_FLAG} {value:?} is not a whole number of frames from 0 to {MAX_HOLD_FRAMES}"
+                )
+            })?,
         None => DEFAULT_HOLD_FRAMES,
     };
     let report = match flag_value(args, CAMERA_ROUTE_REPORT_FLAG)? {
@@ -153,7 +169,8 @@ pub(crate) fn present_choice(args: &[String]) -> Result<PresentChoice, String> {
     }
 }
 
-/// `--camera-route-stall-timeout <seconds>`: a positive, finite number.
+/// `--camera-route-stall-timeout <seconds>`: a positive number up to
+/// [`MAX_STALL_TIMEOUT`].
 pub(crate) fn stall_timeout(args: &[String]) -> Result<Duration, String> {
     let Some(value) = flag_value(args, CAMERA_ROUTE_STALL_TIMEOUT_FLAG)? else {
         return Ok(DEFAULT_STALL_TIMEOUT);
@@ -161,13 +178,67 @@ pub(crate) fn stall_timeout(args: &[String]) -> Result<Duration, String> {
     value
         .parse::<f64>()
         .ok()
-        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+        .filter(|seconds| *seconds > 0.0 && *seconds <= MAX_STALL_TIMEOUT.as_secs_f64())
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
         .ok_or_else(|| {
             format!(
-                "{CAMERA_ROUTE_STALL_TIMEOUT_FLAG} {value:?} is not a positive number of seconds"
+                "{CAMERA_ROUTE_STALL_TIMEOUT_FLAG} {value:?} is not a positive number of seconds up to {}",
+                MAX_STALL_TIMEOUT.as_secs()
             )
         })
+}
+
+/// Where a playback run writes, checked at launch before any window: the
+/// record's folder exists, and the record is not the route file itself,
+/// which its one write would overwrite. Metadata only: nothing is created.
+/// Relative paths resolve against `cwd`, as the write will.
+pub(crate) fn check_report_path(report: &Path, poses: &Path, cwd: &Path) -> Result<(), String> {
+    check_output_folder(CAMERA_ROUTE_REPORT_FLAG, report, cwd)?;
+    if resolved(report, cwd) == resolved(poses, cwd) {
+        return Err(format!(
+            "{CAMERA_ROUTE_REPORT_FLAG} {} is the route file {}: the record would overwrite the route it plays",
+            report.display(),
+            poses.display(),
+        ));
+    }
+    Ok(())
+}
+
+/// Where a recording writes, checked at launch like the record's path.
+pub(crate) fn check_record_path(path: &Path, cwd: &Path) -> Result<(), String> {
+    check_output_folder(RECORD_CAMERA_ROUTE_FLAG, path, cwd)
+}
+
+/// `path` names a file whose folder exists; the engine creates no folder.
+fn check_output_folder(flag: &str, path: &Path, cwd: &Path) -> Result<(), String> {
+    let absolute = cwd.join(path);
+    if absolute.is_dir() {
+        return Err(format!(
+            "{flag} {} is a folder: name the file to write",
+            path.display()
+        ));
+    }
+    match absolute.parent() {
+        Some(folder) if folder.is_dir() => Ok(()),
+        Some(folder) => Err(format!(
+            "{flag} {}: its folder {} does not exist, and the engine creates none",
+            path.display(),
+            folder.display(),
+        )),
+        None => Err(format!("{flag} {} names no file", path.display())),
+    }
+}
+
+/// `path` made absolute against `cwd`, its folder canonicalized: two
+/// spellings of one file compare equal, whether or not the file exists.
+fn resolved(path: &Path, cwd: &Path) -> PathBuf {
+    let absolute = cwd.join(path);
+    match (absolute.parent(), absolute.file_name()) {
+        (Some(folder), Some(name)) => folder
+            .canonicalize()
+            .map_or_else(|_| absolute.clone(), |folder| folder.join(name)),
+        _ => absolute,
+    }
 }
 
 /// `flag` appears as its own argument or in `--flag=value` form.
@@ -188,9 +259,11 @@ fn default_report_path(poses: &Path) -> PathBuf {
     PathBuf::from(format!("{stem}.playback.json"))
 }
 
-/// The first occurrence of `flag`: `Ok(None)` when absent, an error when it
-/// carries no value.
+/// The value of `flag`: `Ok(None)` when absent, an error when it carries no
+/// value or is given twice, since silently taking either would read as a
+/// result of the other.
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>, String> {
+    let mut found = None;
     let mut iter = args.iter().skip(1).peekable();
     while let Some(arg) = iter.next() {
         let value = if arg == flag {
@@ -204,11 +277,12 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'a str>, Str
         } else {
             continue;
         };
-        return value
-            .map(Some)
-            .ok_or_else(|| format!("{flag} needs a value"));
+        if found.is_some() {
+            return Err(format!("{flag} is given twice: name it once"));
+        }
+        found = Some(value.ok_or_else(|| format!("{flag} needs a value"))?);
     }
-    Ok(None)
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -359,6 +433,176 @@ mod tests {
                 "{bad}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn playback_args_bound_the_hold_and_the_stall_timeout_naming_the_flag() {
+        let route = |extra: &[&str]| {
+            let mut list = vec!["--camera-route", "r.txt"];
+            list.extend_from_slice(extra);
+            playback_args(&args(&list))
+        };
+        let max_hold = MAX_HOLD_FRAMES.to_string();
+        assert_eq!(
+            route(&["--camera-route-hold", &max_hold])
+                .unwrap()
+                .unwrap()
+                .hold,
+            MAX_HOLD_FRAMES
+        );
+        for bad in [(MAX_HOLD_FRAMES + 1).to_string(), u32::MAX.to_string()] {
+            let error = route(&["--camera-route-hold", &bad]).unwrap_err();
+            assert!(
+                error.contains(CAMERA_ROUTE_HOLD_FLAG) && error.contains(&max_hold),
+                "{bad}: {error}"
+            );
+        }
+        assert_eq!(
+            route(&["--camera-route-stall-timeout", "86400"])
+                .unwrap()
+                .unwrap()
+                .stall_timeout,
+            MAX_STALL_TIMEOUT
+        );
+        for bad in ["86400.5", "1e19", "NaN"] {
+            let error = route(&["--camera-route-stall-timeout", bad]).unwrap_err();
+            assert!(
+                error.contains(CAMERA_ROUTE_STALL_TIMEOUT_FLAG) && error.contains("86400"),
+                "{bad}: {error}"
+            );
+        }
+        let error = record_args(&args(&[
+            "--record-camera-route",
+            "rec.txt",
+            "--camera-route-stall-timeout=1e19",
+        ]))
+        .unwrap_err();
+        assert!(error.contains(CAMERA_ROUTE_STALL_TIMEOUT_FLAG), "{error}");
+    }
+
+    #[test]
+    fn camera_route_flags_given_twice_are_refused_naming_the_flag() {
+        for (list, flag) in [
+            (
+                &["--camera-route", "a.txt", "--camera-route=b.txt"][..],
+                CAMERA_ROUTE_FLAG,
+            ),
+            (
+                &[
+                    "--camera-route",
+                    "r.txt",
+                    "--camera-route-hold",
+                    "5",
+                    "--camera-route-hold=6",
+                ][..],
+                CAMERA_ROUTE_HOLD_FLAG,
+            ),
+            (
+                &[
+                    "--camera-route",
+                    "r.txt",
+                    "--camera-route-report",
+                    "a.json",
+                    "--camera-route-report",
+                    "a.json",
+                ][..],
+                CAMERA_ROUTE_REPORT_FLAG,
+            ),
+            (
+                &[
+                    "--camera-route",
+                    "r.txt",
+                    "--camera-route-pacing=wall-clock",
+                    "--camera-route-pacing=frame-locked",
+                ][..],
+                CAMERA_ROUTE_PACING_FLAG,
+            ),
+            (
+                &[
+                    "--camera-route",
+                    "r.txt",
+                    "--camera-route-stall-timeout=3",
+                    "--camera-route-stall-timeout=4",
+                ][..],
+                CAMERA_ROUTE_STALL_TIMEOUT_FLAG,
+            ),
+            (
+                &[
+                    "--camera-route",
+                    "r.txt",
+                    "--present-mode=vsync",
+                    "--present-mode",
+                    "no-vsync",
+                ][..],
+                PRESENT_MODE_FLAG,
+            ),
+        ] {
+            let error = playback_args(&args(list)).unwrap_err();
+            assert!(
+                error.contains(flag) && error.contains("twice"),
+                "{list:?}: {error}"
+            );
+        }
+        let error = record_args(&args(&[
+            "--record-camera-route=a.txt",
+            "--record-camera-route",
+            "b.txt",
+        ]))
+        .unwrap_err();
+        assert!(
+            error.contains(RECORD_CAMERA_ROUTE_FLAG) && error.contains("twice"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn output_paths_need_an_existing_folder_and_never_name_the_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        std::fs::create_dir(cwd.join("routes")).unwrap();
+        let route = Path::new("routes/cp.txt");
+        std::fs::write(cwd.join(route), "").unwrap();
+
+        assert_eq!(
+            check_report_path(Path::new("cp.playback.json"), route, cwd),
+            Ok(()),
+            "a bare name writes into the working directory"
+        );
+        assert_eq!(
+            check_report_path(&cwd.join("routes/run.json"), route, cwd),
+            Ok(())
+        );
+        let missing = check_report_path(Path::new("out/run.json"), route, cwd).unwrap_err();
+        assert!(
+            missing.contains(CAMERA_ROUTE_REPORT_FLAG) && missing.contains("does not exist"),
+            "{missing}"
+        );
+        let folder = check_report_path(Path::new("routes"), route, cwd).unwrap_err();
+        assert!(folder.contains("is a folder"), "{folder}");
+        for same in [
+            PathBuf::from("routes/cp.txt"),
+            PathBuf::from("routes/../routes/cp.txt"),
+            cwd.join("routes").join("cp.txt"),
+        ] {
+            let error = check_report_path(&same, route, cwd).unwrap_err();
+            assert!(
+                error.contains(CAMERA_ROUTE_REPORT_FLAG) && error.contains("overwrite"),
+                "{}: {error}",
+                same.display()
+            );
+        }
+        assert!(
+            !cwd.join("cp.playback.json").exists() && !cwd.join("out").exists(),
+            "the checks create nothing"
+        );
+
+        assert_eq!(check_record_path(Path::new("routes/rec.txt"), cwd), Ok(()));
+        let error = check_record_path(Path::new("missing/rec.txt"), cwd).unwrap_err();
+        assert!(
+            error.contains(RECORD_CAMERA_ROUTE_FLAG) && error.contains("does not exist"),
+            "{error}"
+        );
+        assert!(!cwd.join("missing").exists());
     }
 
     #[test]

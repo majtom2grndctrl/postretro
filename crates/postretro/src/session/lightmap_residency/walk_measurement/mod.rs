@@ -11,7 +11,9 @@
 // Time model: the camera dwells in each walk cell for the frames it takes to
 // reach the next cell's centre at `RUN_SPEED` m/s at 60 Hz, turning 90° per
 // frame at a fixed pitch. Paths and eyes are seeded, so frame i is the same
-// pose in every run, mode and build over one cell layout.
+// pose in every run, mode and build over one cell layout. Route generation
+// (walks, the eye stream, exact routes) lives in the `postretro-camera-route`
+// crate, not in the old `paths.rs` / `walk.rs` here.
 //
 // Read modes (`POSTRETRO_LIGHTMAP_WALK_READS`):
 // - `realtime` (default): one drain per frame; a frame with reads in flight
@@ -309,6 +311,9 @@ fn run(
     };
     // The walk's frames, drawn before the clock starts: the spawn eye first,
     // then one eye per dwell frame, in the order the run consumes them.
+    // Drawing eyes outside the timed region keeps `eye_point` cost out of the
+    // measured frame time. The pre-move harness drew eyes inside each frame,
+    // so timing against that baseline is not exactly like-for-like.
     let route = ExactRoute::of_walk(world, walk, modes.pitch).expect("the walk has camera cells");
     let mut poses = route.poses.iter();
     let started = Instant::now();

@@ -1,6 +1,6 @@
 // The stall timeout a measurement run arms at launch: a run whose window
 // presents nothing, or presents but reaches no world frame, fails fast
-// instead of waiting forever (pin P17). Pure: the clock is passed in.
+// instead of waiting forever. Pure: the clock is passed in.
 // See: context/lib/rendering_pipeline.md §12 · context/lib/boot_sequence.md §1 (Window visibility)
 
 use std::time::{Duration, Instant};

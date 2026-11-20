@@ -6,7 +6,7 @@ Routes are a measurement tool. Player builds made with `dist` do not include the
 
 Every command below runs from an SDK bundle root. On Windows, use `bin\postretro-tool.exe`.
 
-The commands below keep routes in a `routes` folder. Make it first with `mkdir routes`. Neither the tool nor the engine creates a missing folder: the tool stops with an error, and a recording made into a missing folder is lost when the engine tries to save it.
+The commands below keep routes in a `routes` folder. Make it first with `mkdir routes`. Neither the tool nor the engine creates a missing folder. Each stops with an error naming it before doing anything else, so a recording or a report never fails to save at the end of a run.
 
 ## Making a route
 
@@ -66,28 +66,46 @@ The engine loads the level, waits until what the first pose sees is ready, holds
 |---|---|---|
 | `--camera-route <file>` | — | The route to play |
 | `--camera-route-pacing frame-locked\|wall-clock` | `frame-locked` | `frame-locked` draws pose N on frame N, so every run makes the same demand at any frame rate. `wall-clock` keeps the route's own speed and skips poses when frames are slow, as a player would see it. |
-| `--camera-route-hold <frames>` | 600 | Frames to hold the first pose before flying, for example to attach a profiler |
+| `--camera-route-hold <frames>` | 600 | Frames to hold the first pose before flying, for example to attach a profiler; at most 100000 |
 | `--camera-route-report <file>` | `<route name>.playback.json` in the bundle root | Where the report goes. `postretro-tool run` starts the engine in the bundle root, so a relative path is relative to it. |
-| `--camera-route-stall-timeout <seconds>` | 300 | Give up if nothing reaches the screen in time |
+| `--camera-route-stall-timeout <seconds>` | 300 | Give up if nothing reaches the screen in time; at most 86400 (a day) |
 | `--present-mode vsync\|no-vsync` | `vsync` | `vsync` shows the stutter a player sees. `no-vsync` shows how long each frame takes to make. |
 
 The engine refuses to start, and names the file and the reason, when:
 - the route is empty, malformed or unreadable
-- its field of view is outside 60–130°
+- its field of view is outside 60–130°, or a pose's pitch is past ±89° (the error names the pose's line)
 - it was made for a different bake of the level
+- the report's folder doesn't exist, or the report would overwrite the route itself
 - the launch also has `--connect` or `--record-camera-route`
+- an option is given twice, or a value is outside its range
+
+`--record-camera-route` refuses to start the same way when its file's folder doesn't exist.
 
 Rebuilding a level that changes its rooms invalidates the routes made for it. Generate them again.
 
 Only the bundle's authoring engine, the `postretro` at the bundle root that `postretro-tool run` starts, plays and records routes. The release engine in `bin/` is a player build: it logs a warning for `--camera-route` and `--record-camera-route` and runs as if they were not there.
 
-A run that can't finish exits with an error and still writes its report, marked aborted with the reason. That happens when the level changes, unloads or reloads mid-run, or when the window never shows a frame. A locked screen or a sleeping display does that, so keep the window in front for the whole run. Closing the window before the route ends also writes the report marked aborted.
+A run that can't finish exits with an error and still writes its report, marked aborted with the reason. That happens when the level changes, unloads or reloads mid-run, when you join a game from the menu before or during the run, or when the window never shows a frame. Closing the window or quitting before the route ends also writes the report marked aborted, and the engine exits with an error. If the engine stops on an error of its own mid-run, the report names that error.
+
+### Keep the display awake
+
+A locked screen or a sleeping display stops the window from drawing. Before the first frame, the run gives up when the stall timeout runs out. After it, the run waits until the window shows again, with no deadline, so an unattended run can sit there with no report. Keep the window in front, and keep the display awake for the whole run:
+
+- **macOS:** start the run under `caffeinate`, which holds the display and the machine awake until the command exits:
+
+  ```bash
+  caffeinate -di bin/postretro-tool run maps/<name>.prl --camera-route routes/far-point.txt
+  ```
+
+- **Windows:** turn on PowerToys Awake with "Keep screen on", or set **Settings → System → Power → Screen and sleep** to *Never* for the run.
+
+Neither stops a lock you make yourself.
 
 The first time the bundle's engine starts, it shows the accessibility panel before any level loads. A route or a recording waits behind it until the stall timeout runs out and then fails, naming the panel. Start the engine once and close the panel before you hand routes to an agent. It stays closed after that.
 
 ### Changing the streaming budget for a run
 
-`POSTRETRO_PLAY_DRAIN_CAP_MIB` sets how many MiB of streamed lighting the engine may install per frame during play. The default is 8. It sets the starting value of the Play drain cap slider in the Diagnostics panel's Streaming tab:
+`POSTRETRO_PLAY_DRAIN_CAP_MIB` sets how many MiB of streamed lighting the engine may install per frame during play. The default is 8. Use a value from 1 to 32 in steps of 0.5 (1, 1.5, 2, and so on up to 32), the slider's own range. It sets the starting value of the Play drain cap slider in the Diagnostics panel's Streaming tab:
 
 ```bash
 POSTRETRO_PLAY_DRAIN_CAP_MIB=4 bin/postretro-tool run maps/<name>.prl --camera-route routes/far-point.txt
@@ -95,7 +113,7 @@ POSTRETRO_PLAY_DRAIN_CAP_MIB=4 bin/postretro-tool run maps/<name>.prl --camera-r
 
 On Windows PowerShell, set the variable first with `$env:POSTRETRO_PLAY_DRAIN_CAP_MIB = "4"`, then run the command without the prefix. It stays set for the rest of that PowerShell window; clear it with `Remove-Item Env:POSTRETRO_PLAY_DRAIN_CAP_MIB`. The same goes for the other variables on this page.
 
-A value the engine can't read logs a warning and keeps the default. The loading hold uses its own, larger budget (32 MiB) either way.
+A value the engine can't read, or one outside that range or between its steps, logs a warning and keeps the default. The loading hold uses its own, larger budget (32 MiB) either way.
 
 ## The report
 
@@ -115,7 +133,7 @@ Some rows are marked, and they stay in the report:
 - **Hold rows** are the frames before the route starts flying.
 - **No-draw rows** streamed but did not reach the screen.
 - **Change marks** start on the frame where you toggled vsync, resized the window, changed window mode, moved the drain cap slider or hot-reloaded scripts. The mark stays on every row after it.
-- **Gap marks** sit on the rows whose frame time spans a stretch when the window was hidden.
+- **Gap marks** sit on the rows whose frame time spans a stretch when the window was hidden, a frame that didn't reach the screen, or the engine making room for more report rows.
 
 Leave marked rows out of frame-time figures.
 

@@ -59,6 +59,10 @@ impl ChangeSet {
     pub(crate) fn contains(self, kind: ChangeKind) -> bool {
         self.0 & kind.bit() != 0
     }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl serde::Serialize for ChangeSet {

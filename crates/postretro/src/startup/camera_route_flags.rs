@@ -8,32 +8,61 @@ pub(crate) const CAMERA_ROUTE_REPORT_FLAG: &str = "--camera-route-report";
 pub(crate) const CAMERA_ROUTE_PACING_FLAG: &str = "--camera-route-pacing";
 pub(crate) const CAMERA_ROUTE_STALL_TIMEOUT_FLAG: &str = "--camera-route-stall-timeout";
 pub(crate) const RECORD_CAMERA_ROUTE_FLAG: &str = "--record-camera-route";
+/// `vsync` or `no-vsync`: the swapchain's present mode from the first frame,
+/// for any session of a build with playback's feature, a route or not.
+pub(crate) const PRESENT_MODE_FLAG: &str = "--present-mode";
 
 /// Every camera-route flag that takes a value.
-pub(crate) const CAMERA_ROUTE_VALUE_FLAGS: [&str; 6] = [
+pub(crate) const CAMERA_ROUTE_VALUE_FLAGS: [&str; 7] = [
     CAMERA_ROUTE_FLAG,
     CAMERA_ROUTE_HOLD_FLAG,
     CAMERA_ROUTE_REPORT_FLAG,
     CAMERA_ROUTE_PACING_FLAG,
     CAMERA_ROUTE_STALL_TIMEOUT_FLAG,
     RECORD_CAMERA_ROUTE_FLAG,
+    PRESENT_MODE_FLAG,
 ];
 
 /// The feature playback and recording build behind.
 pub(crate) const CAMERA_ROUTE_FEATURE: &str = "dev-tools";
 
 /// In a build without playback's feature, warns once for each of the
-/// playback and recording flags the launch names; the run then behaves as if
-/// it were unset. A build with the feature warns nothing.
+/// playback, recording and present-mode flags the launch names; the run then
+/// behaves as if it were unset. A build with the feature warns nothing.
 pub(crate) fn warn_camera_route_flags_without_feature(args: &[String], feature_enabled: bool) {
     if feature_enabled {
         return;
     }
-    for flag in [CAMERA_ROUTE_FLAG, RECORD_CAMERA_ROUTE_FLAG] {
+    for flag in [
+        CAMERA_ROUTE_FLAG,
+        RECORD_CAMERA_ROUTE_FLAG,
+        PRESENT_MODE_FLAG,
+    ] {
         if names_flag(args, flag) {
             log::warn!(
                 "[Playback] {flag} needs the `{CAMERA_ROUTE_FEATURE}` feature, which this build lacks; ignored"
             );
+        }
+    }
+}
+
+/// Whether the launch names a camera route to play, as telemetry's
+/// `run_start` reports playback's producer.
+pub(crate) fn names_camera_route(args: &[String]) -> bool {
+    names_flag(args, CAMERA_ROUTE_FLAG)
+}
+
+impl crate::App {
+    /// The present mode the renderer builds its surface with: the launch's
+    /// `--present-mode` in a build with playback's feature, else vsync.
+    pub(crate) fn launch_present_choice(&self) -> postretro_renderer::PresentChoice {
+        #[cfg(feature = "dev-tools")]
+        {
+            self.playback.present_choice()
+        }
+        #[cfg(not(feature = "dev-tools"))]
+        {
+            postretro_renderer::PresentChoice::Vsync
         }
     }
 }
@@ -64,6 +93,8 @@ mod tests {
     const PLAY_WARNING: &str =
         "[Playback] --camera-route needs the `dev-tools` feature, which this build lacks; ignored";
     const RECORD_WARNING: &str = "[Playback] --record-camera-route needs the `dev-tools` feature, which this build lacks; ignored";
+    const PRESENT_WARNING: &str =
+        "[Playback] --present-mode needs the `dev-tools` feature, which this build lacks; ignored";
 
     #[test]
     fn camera_route_flags_warn_once_each_without_the_feature() {
@@ -81,6 +112,26 @@ mod tests {
         );
         capture.assert_logged_once(log::Level::Warn, PLAY_WARNING);
         capture.assert_logged_once(log::Level::Warn, RECORD_WARNING);
+        capture.assert_not_logged(log::Level::Warn, PRESENT_WARNING);
+    }
+
+    #[test]
+    fn present_mode_flag_warns_once_without_the_feature_and_nothing_with_it() {
+        let capture = LogCapture::start();
+        let launch = args(&["--present-mode", "no-vsync", "map.prl"]);
+        warn_camera_route_flags_without_feature(&launch, true);
+        capture.assert_not_logged(log::Level::Warn, PRESENT_WARNING);
+        warn_camera_route_flags_without_feature(&launch, false);
+        capture.assert_logged_once(log::Level::Warn, PRESENT_WARNING);
+        capture.assert_not_logged(log::Level::Warn, PLAY_WARNING);
+    }
+
+    #[test]
+    fn names_camera_route_reads_either_form_and_not_its_options() {
+        assert!(names_camera_route(&args(&["--camera-route", "cp.txt"])));
+        assert!(names_camera_route(&args(&["--camera-route=cp.txt"])));
+        assert!(!names_camera_route(&args(&["--camera-route-hold", "5"])));
+        assert!(!names_camera_route(&args(&["map.prl"])));
     }
 
     #[test]
@@ -105,6 +156,8 @@ mod tests {
             "rec.txt",
             "--camera-route-stall-timeout",
             "30",
+            "--present-mode",
+            "no-vsync",
             "maps/x.prl",
         ]);
         assert_eq!(

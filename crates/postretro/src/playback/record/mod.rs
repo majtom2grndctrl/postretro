@@ -15,9 +15,11 @@ use super::args::{Pacing, PlaybackArgs};
 use super::marks::{ChangeSet, LifeKey};
 use super::route::Identity;
 use super::run::{FramePlan, RowKind};
-pub(crate) use header::{AdapterReport, DisplayModeReport, RunContext, WindowModeReport};
+pub(crate) use header::{
+    AdapterReport, CapReport, DisplayModeReport, RunContext, WindowModeReport,
+};
 use header::{LevelReport, LifeStateEntry, ProjectionReport, RecordHeader, TimingState};
-pub(crate) use row::{RowDrain, RowFill, RowGpu};
+pub(crate) use row::{RowCpu, RowDrain, RowFill, RowGpu};
 
 pub(crate) const SCHEMA: &str = "postretro.camera_route_playback.v1";
 
@@ -148,6 +150,11 @@ impl PlaybackRecord {
         });
     }
 
+    /// The play drain cap in force at route frame 0.
+    pub(crate) fn set_cap(&mut self, cap: CapReport) {
+        self.header.cap = cap;
+    }
+
     pub(crate) fn has_rendered(&self) -> bool {
         self.header.rendered_projection.is_some()
     }
@@ -212,7 +219,6 @@ impl PlaybackRecord {
         report.untimed_frames = untimed;
     }
 
-    #[cfg(test)]
     pub(crate) fn rows(&self) -> &[Row] {
         &self.rows
     }

@@ -51,7 +51,21 @@ impl RowCpu {
         Self(values)
     }
 
+    /// A split holding only `values`, by label.
     #[cfg(test)]
+    pub(crate) fn with_values(values: &[(&str, u64)]) -> Self {
+        let mut out = [None; CPU_COLUMNS];
+        for (label, value) in values {
+            let index = cpu_labels()
+                .position(|column| column == *label)
+                .unwrap_or_else(|| panic!("no CPU column `{label}`"));
+            out[index] = Some(*value);
+        }
+        Self(out)
+    }
+
+    /// One column by its label; `None` when the stage did not run or no
+    /// column has that label.
     pub(crate) fn value(&self, label: &str) -> Option<u64> {
         cpu_labels()
             .position(|column| column == label)

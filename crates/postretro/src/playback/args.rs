@@ -4,9 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use postretro_renderer::PresentChoice;
+
 use crate::startup::camera_route_flags::{
     CAMERA_ROUTE_FLAG, CAMERA_ROUTE_HOLD_FLAG, CAMERA_ROUTE_PACING_FLAG, CAMERA_ROUTE_REPORT_FLAG,
-    CAMERA_ROUTE_STALL_TIMEOUT_FLAG, RECORD_CAMERA_ROUTE_FLAG,
+    CAMERA_ROUTE_STALL_TIMEOUT_FLAG, PRESENT_MODE_FLAG, RECORD_CAMERA_ROUTE_FLAG,
 };
 
 /// Hold frames when `--camera-route-hold` is absent: about 10 s at 60 Hz,
@@ -45,6 +47,8 @@ pub(crate) struct PlaybackArgs {
     pub(crate) report: PathBuf,
     pub(crate) pacing: Pacing,
     pub(crate) stall_timeout: Duration,
+    /// The launch present mode the run draws under from its first frame.
+    pub(crate) present: PresentChoice,
 }
 
 /// Reads `--camera-route <poses>` and its options, each also in
@@ -109,7 +113,21 @@ pub(crate) fn playback_args(args: &[String]) -> Result<Option<PlaybackArgs>, Str
         report,
         pacing,
         stall_timeout: stall_timeout(args)?,
+        present: present_choice(args)?,
     }))
+}
+
+/// `--present-mode vsync|no-vsync`, vsync when absent. It applies to any
+/// session, a route or not, so recording and ordinary measurement runs can
+/// take it too.
+pub(crate) fn present_choice(args: &[String]) -> Result<PresentChoice, String> {
+    match flag_value(args, PRESENT_MODE_FLAG)? {
+        None | Some("vsync") => Ok(PresentChoice::Vsync),
+        Some("no-vsync") => Ok(PresentChoice::NoVsync),
+        Some(other) => Err(format!(
+            "{PRESENT_MODE_FLAG} {other:?} is not vsync or no-vsync"
+        )),
+    }
 }
 
 /// `--camera-route-stall-timeout <seconds>`: a positive, finite number.
@@ -204,8 +222,46 @@ mod tests {
                 report: PathBuf::from("cp.playback.json"),
                 pacing: Pacing::FrameLocked,
                 stall_timeout: DEFAULT_STALL_TIMEOUT,
+                present: PresentChoice::Vsync,
             }
         );
+    }
+
+    #[test]
+    fn present_choice_defaults_to_vsync_and_reads_either_form() {
+        assert_eq!(
+            present_choice(&args(&["map.prl"])),
+            Ok(PresentChoice::Vsync)
+        );
+        assert_eq!(
+            present_choice(&args(&["--present-mode", "no-vsync", "map.prl"])),
+            Ok(PresentChoice::NoVsync)
+        );
+        assert_eq!(
+            present_choice(&args(&["--present-mode=vsync"])),
+            Ok(PresentChoice::Vsync)
+        );
+        let parsed = playback_args(&args(&[
+            "--camera-route",
+            "r.txt",
+            "--present-mode=no-vsync",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.present, PresentChoice::NoVsync);
+    }
+
+    #[test]
+    fn present_choice_refuses_a_missing_or_unknown_mode_naming_the_flag() {
+        for list in [
+            &["--present-mode"][..],
+            &["--present-mode", "--windowed"][..],
+            &["--present-mode", "fast"][..],
+            &["--present-mode=off"][..],
+        ] {
+            let error = present_choice(&args(list)).unwrap_err();
+            assert!(error.contains(PRESENT_MODE_FLAG), "{list:?}: {error}");
+        }
     }
 
     #[test]

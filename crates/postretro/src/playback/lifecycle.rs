@@ -131,6 +131,7 @@ impl App {
     /// will take.
     pub(crate) fn playback_begin_world_frame(&mut self, now: Instant) {
         let life_key = self.playback_life_key();
+        let session = self.session.as_ref();
         let Some(active) = self.playback.active.as_mut() else {
             return;
         };
@@ -171,6 +172,7 @@ impl App {
                 active.file.header.projection.hfov_degrees,
                 self.camera.aspect(),
             );
+            active.record.set_cap(super::sample::cap_report(session));
         }
         let frame = active.record.next_frame();
         let needs_context = !active.record.has_context();
@@ -214,6 +216,7 @@ impl App {
 
     pub(crate) fn playback_finish_frame(&mut self) {
         let fill = self.playback_row_fill();
+        let session = self.session.as_ref();
         let Some(active) = self.playback.active.as_mut() else {
             return;
         };
@@ -228,6 +231,11 @@ impl App {
                 active.frame_interval_us,
                 marks,
                 fill.unwrap_or_default(),
+            );
+            active.windows.after_row(
+                active.record.rows(),
+                active.args.pacing.key(),
+                super::sample::cap_report(session),
             );
             // The run's first world frame disarms the stall timeout.
             if plan.kind != RowKind::NoDraw {
@@ -299,6 +307,13 @@ impl App {
             renderer.set_frame_mark(None);
         }
         self.playback_finish_gpu(&mut active);
+        // The final partial window, before the record's write and so before
+        // `run_end`: no window follows the run's end.
+        active.windows.finish(
+            active.record.rows(),
+            active.args.pacing.key(),
+            super::sample::cap_report(self.session.as_ref()),
+        );
         let report = active.args.report.clone();
         match &ending {
             Ending::Complete => active.record.set_complete(),
@@ -403,4 +418,4 @@ fn describe_source(source: &LevelSource) -> String {
 
 #[cfg(test)]
 #[path = "lifecycle_tests.rs"]
-mod tests;
+pub(crate) mod tests;

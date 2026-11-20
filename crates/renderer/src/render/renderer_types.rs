@@ -78,6 +78,42 @@ pub enum GpuTimingSupport {
     Enabled,
 }
 
+/// The swapchain's present mode, chosen at launch and switched only by the
+/// vsync diagnostic chord.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PresentChoice {
+    /// `AutoVsync`: frame intervals show the stutter a player sees.
+    #[default]
+    Vsync,
+    /// `AutoNoVsync`: frame intervals show cost.
+    NoVsync,
+}
+
+impl PresentChoice {
+    pub fn from_vsync(vsync: bool) -> Self {
+        if vsync { Self::Vsync } else { Self::NoVsync }
+    }
+
+    pub fn vsync(self) -> bool {
+        self == Self::Vsync
+    }
+
+    /// The launch flag's spelling: `vsync` or `no-vsync`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Vsync => "vsync",
+            Self::NoVsync => "no-vsync",
+        }
+    }
+
+    pub(crate) fn wgpu_present_mode(self) -> wgpu::PresentMode {
+        match self {
+            Self::Vsync => wgpu::PresentMode::AutoVsync,
+            Self::NoVsync => wgpu::PresentMode::AutoNoVsync,
+        }
+    }
+}
+
 /// One renderer-owned pass value from a completed GPU timing window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureGpuTimingPass {
@@ -348,5 +384,27 @@ impl Renderer {
         self.full
             .as_mut()
             .expect("renderer full-init must complete before full-ready paths run")
+    }
+}
+
+#[cfg(test)]
+mod present_choice_tests {
+    use super::PresentChoice;
+
+    #[test]
+    fn present_choice_maps_vsync_to_auto_vsync_and_no_vsync_to_auto_no_vsync() {
+        assert_eq!(PresentChoice::default(), PresentChoice::Vsync);
+        assert_eq!(
+            PresentChoice::Vsync.wgpu_present_mode(),
+            wgpu::PresentMode::AutoVsync
+        );
+        assert_eq!(
+            PresentChoice::NoVsync.wgpu_present_mode(),
+            wgpu::PresentMode::AutoNoVsync
+        );
+        for choice in [PresentChoice::Vsync, PresentChoice::NoVsync] {
+            assert_eq!(PresentChoice::from_vsync(choice.vsync()), choice);
+        }
+        assert_eq!(PresentChoice::NoVsync.key(), "no-vsync");
     }
 }

@@ -22,8 +22,6 @@ pub(crate) const DRAIN_CAP_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_DRAIN_CAP";
 /// [`parse_in_hand_cap`].
 pub(crate) const IN_HAND_CAP_ENV: &str = "POSTRETRO_LIGHTMAP_WALK_IN_HAND_CAP";
 
-const MIB: f64 = 1024.0 * 1024.0;
-
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Levers {
     pub(super) lead_metres: f32,
@@ -145,30 +143,10 @@ pub(crate) fn parse_in_hand_cap(value: &str) -> Result<WalkInHandCap, String> {
     Ok(WalkInHandCap { mib, bytes })
 }
 
-/// `env`'s value as a positive decimal count of MiB (`4`, `16`, `0.5`) and
-/// its whole bytes. Zero (refused with `zero_why`), a negative, a non-number,
-/// a value past `u64` bytes and one rounding to zero bytes are refused by
-/// name, never clamped.
+/// `env`'s value through the slider seed's parser: see
+/// [`parse_cap_mib`](crate::session::level_streaming::parse_cap_mib).
 fn parse_mib(env: &str, value: &str, zero_why: &str) -> Result<(f64, NonZeroU64), String> {
-    let refuse = |why: &str| format!("{env}={value:?}: {why}");
-    let mib: f64 = value
-        .trim()
-        .parse()
-        .ok()
-        .filter(|mib: &f64| mib.is_finite())
-        .ok_or_else(|| refuse("not a number of MiB"))?;
-    if mib < 0.0 {
-        return Err(refuse("a cap is a positive number of MiB"));
-    }
-    if mib == 0.0 {
-        return Err(refuse(zero_why));
-    }
-    let bytes = (mib * MIB).round();
-    if bytes >= u64::MAX as f64 {
-        return Err(refuse("too large to represent in bytes"));
-    }
-    let bytes = NonZeroU64::new(bytes as u64).ok_or_else(|| refuse("rounds to zero bytes"))?;
-    Ok((mib, bytes))
+    crate::session::level_streaming::parse_cap_mib(env, value, zero_why)
 }
 
 /// Each run's pool sizes from a comma-separated list. A run is `LIGHTMAP/MASK`

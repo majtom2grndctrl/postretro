@@ -3,6 +3,8 @@
 
 mod drain_cap;
 #[cfg(test)]
+mod drain_cap_seed_tests;
+#[cfg(test)]
 mod drain_cap_tests;
 mod hooks;
 mod io;
@@ -20,6 +22,10 @@ use postretro_level_loader::{LightmapStreamManifest, ShDrainBatch};
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{VisibilityPath, VisibleCells};
 
+#[cfg(test)]
+pub(crate) use drain_cap::{PLAY_DRAIN_CAP_SEED_ENV, parse_cap_mib};
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) use drain_cap::{PlayDrainCap, PlayDrainCapSource};
 pub(crate) use hooks::{PreparedLevelStreaming, prepare_level_streaming};
 pub(crate) use io::{LevelReadIssuer, StreamingRetirement, spawn_decode_pool};
 pub(crate) use level_data::{StreamingLevelData, StreamingLevelParts, decode_streaming_level_data};
@@ -110,6 +116,9 @@ pub(crate) struct LevelStreaming {
     /// lever, until set back.
     #[cfg(any(test, feature = "dev-tools"))]
     play_drain_cap_override: Option<std::num::NonZeroU64>,
+    /// Who set the override: the launch seed or a lever.
+    #[cfg(any(test, feature = "dev-tools"))]
+    play_drain_cap_source: PlayDrainCapSource,
 }
 
 impl LevelStreaming {

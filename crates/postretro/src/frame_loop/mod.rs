@@ -2638,6 +2638,8 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                     }
                     if drain_cap != drain_cap_before {
                         session.level_streaming.apply_drain_cap_lever(&drain_cap);
+                        app.playback
+                            .note_change(crate::playback::ChangeKind::DrainCap);
                     }
                     if let (Some(before), Some(after)) = (network_lag_before, network_lag)
                         && let Some(endpoint) = session.net_endpoint.as_mut()

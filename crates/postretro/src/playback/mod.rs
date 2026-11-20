@@ -11,12 +11,13 @@ mod route;
 mod run;
 mod sample;
 mod stall;
+mod window;
 
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
 use postretro_camera_route::PoseFile;
-use postretro_renderer::PlaybackDrainCounters;
+use postretro_renderer::{PlaybackDrainCounters, PresentChoice};
 
 use crate::app::world_less_frame::HeldLevelView;
 use crate::camera::RenderCamera;
@@ -28,6 +29,7 @@ use marks::{LifeWatch, Marks};
 use record::PlaybackRecord;
 use run::{Clock, RouteRun};
 use stall::StallWatch;
+use window::PlaybackWindows;
 
 /// The pose a playing route draws this frame, at the route's projection.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +72,9 @@ pub(crate) struct Playback {
     waiting_on_stall: bool,
     /// The run ended: every hook holding the event loop exits it.
     exit_pending: bool,
+    /// `--present-mode`: the renderer's present mode from its first frame,
+    /// for any session, a route or not.
+    present: PresentChoice,
 }
 
 struct ActivePlayback {
@@ -78,6 +83,8 @@ struct ActivePlayback {
     hfov: f32,
     run: RouteRun,
     record: PlaybackRecord,
+    /// The telemetry windows the record's rows close.
+    windows: PlaybackWindows,
     marks: Marks,
     life: LifeWatch,
     /// Why the installed level refused the route, until a Settling frame
@@ -112,8 +119,12 @@ impl Playback {
     }
 
     fn from_args(args: &[String], launched: Instant) -> Result<Self, String> {
+        let present = args::present_choice(args)?;
         let Some(args) = args::playback_args(args)? else {
-            return Ok(Self::default());
+            return Ok(Self {
+                present,
+                ..Self::default()
+            });
         };
         let file = route::load_route(&args.poses)?;
         log::info!(
@@ -133,12 +144,16 @@ impl Playback {
                 cut: file.poses.iter().map(|pose| pose.cut).collect(),
             },
         };
-        let mut playback = Self::default();
+        let mut playback = Self {
+            present,
+            ..Self::default()
+        };
         playback.arm_stall(launched, args.stall_timeout);
         playback.active = Some(Box::new(ActivePlayback {
             hfov: file.header.projection.hfov_degrees.to_radians(),
             run: RouteRun::new(args.hold, file.poses.len(), clock),
             record: PlaybackRecord::new(&args, &file),
+            windows: PlaybackWindows::default(),
             marks: Marks::default(),
             life: LifeWatch::default(),
             args,
@@ -152,6 +167,11 @@ impl Playback {
             drain_before: PlaybackDrainCounters::default(),
         }));
         Ok(playback)
+    }
+
+    /// The launch present mode the renderer builds its surface with.
+    pub(crate) fn present_choice(&self) -> PresentChoice {
+        self.present
     }
 
     /// Arms the stall timeout from launch: playback here, recording later.
@@ -238,5 +258,7 @@ impl ActivePlayback {
     }
 }
 
+#[cfg(test)]
+mod launch_tests;
 #[cfg(test)]
 mod tests;

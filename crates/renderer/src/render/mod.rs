@@ -325,7 +325,7 @@ pub use renderer_types::{
     CaptureGpuTimingState, CaptureGpuTimingWindow, CapturePromotionPin, CapturePromotionRow,
     CellOverlayState, ClearColor, DEFAULT_AMBIENT_FLOOR, DEFAULT_DYNAMIC_DIRECT_SCALE,
     DEFAULT_INDIRECT_SCALE, GpuTimingSupport, LevelGeometry, LevelGeometryLightmapStreaming,
-    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentHandle,
+    LevelGeometryShStorage, LocatorDiagnostics, PortalOverlayState, PresentChoice, PresentHandle,
     RUNTIME_DYNAMIC_LIGHT_RESERVE, Renderer, SPLASH_CLEAR_COLOR, SpatialCellSetDiagnostics,
     SpatialDiagnostics, WorldWireframeMode,
 };

@@ -2148,7 +2148,7 @@ impl ApplicationHandler for App {
             self.window_modes.apply_boot(&window, event_loop, options);
         }
 
-        let mut renderer = match Renderer::new(&window) {
+        let mut renderer = match Renderer::new(&window, self.launch_present_choice()) {
             Ok(r) => r,
             Err(err) => {
                 self.exit_result = Err(err);

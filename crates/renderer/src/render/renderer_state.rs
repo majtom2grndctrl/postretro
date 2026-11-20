@@ -234,11 +234,8 @@ impl Renderer {
             .as_mut()
             .expect("toggle_vsync is a full-ready diagnostic path");
         full.vsync_enabled = !full.vsync_enabled;
-        surface_config.present_mode = if full.vsync_enabled {
-            wgpu::PresentMode::AutoVsync
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
+        surface_config.present_mode =
+            PresentChoice::from_vsync(full.vsync_enabled).wgpu_present_mode();
         surface
             .as_ref()
             .expect("toggle_vsync requires a windowed renderer")

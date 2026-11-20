@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use super::super::args::PlaybackArgs;
 use super::SCHEMA;
+use crate::session::level_streaming::PlayDrainCap;
 use crate::streaming::drain_budget::MAX_INSTALL_DECODED_BYTES_PER_DRAIN;
 
 #[derive(Debug, Clone, Serialize)]
@@ -24,7 +25,10 @@ pub(super) struct RecordHeader {
     pub(super) level: Option<LevelReport>,
     pub(super) pacing: &'static str,
     pub(super) hold_frames: u32,
-    /// The play drain cap every route frame admits against.
+    /// The present mode chosen at launch, `vsync` or `no-vsync`; `machine`
+    /// names the one the first row observed.
+    pub(super) present_mode: &'static str,
+    /// The play drain cap in force at route frame 0; production until then.
     pub(super) cap: CapReport,
     /// How Settling ended: `settled` or `timed_out`.
     pub(super) settle: Option<&'static str>,
@@ -111,12 +115,28 @@ pub(super) struct LevelReport {
     pub(super) identity: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
-pub(super) struct CapReport {
-    /// `production` until a launch seed sets it.
-    source: &'static str,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) struct CapReport {
+    /// `production`, `seed` (`POSTRETRO_PLAY_DRAIN_CAP_MIB`) or `slider`.
+    pub(crate) source: &'static str,
     /// In the drain budget's own unit.
-    decoded_bytes_per_drain: u64,
+    pub(crate) decoded_bytes_per_drain: u64,
+}
+
+impl CapReport {
+    pub(crate) const PRODUCTION: Self = Self {
+        source: "production",
+        decoded_bytes_per_drain: MAX_INSTALL_DECODED_BYTES_PER_DRAIN,
+    };
+}
+
+impl From<PlayDrainCap> for CapReport {
+    fn from(cap: PlayDrainCap) -> Self {
+        Self {
+            source: cap.source.key(),
+            decoded_bytes_per_drain: cap.decoded_bytes_per_drain,
+        }
+    }
 }
 
 /// The run's machine state: §12's adapter, extents, divisor, effective
@@ -267,10 +287,8 @@ impl RecordHeader {
             level: None,
             pacing: args.pacing.key(),
             hold_frames: args.hold,
-            cap: CapReport {
-                source: "production",
-                decoded_bytes_per_drain: MAX_INSTALL_DECODED_BYTES_PER_DRAIN,
-            },
+            present_mode: args.present.key(),
+            cap: CapReport::PRODUCTION,
             settle: None,
             outcome: None,
             abort_reason: None,

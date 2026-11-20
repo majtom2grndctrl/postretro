@@ -26,6 +26,7 @@ fn args(hold: u32) -> PlaybackArgs {
         report: PathBuf::from("cp.playback.json"),
         pacing: Pacing::FrameLocked,
         stall_timeout: crate::playback::args::DEFAULT_STALL_TIMEOUT,
+        present: postretro_renderer::PresentChoice::Vsync,
     }
 }
 
@@ -148,6 +149,7 @@ fn playback_record_header_names_every_field_null_until_known() {
         "level",
         "pacing",
         "hold_frames",
+        "present_mode",
         "cap",
         "settle",
         "outcome",
@@ -165,6 +167,7 @@ fn playback_record_header_names_every_field_null_until_known() {
     }
     assert!(header["gpu_timing"]["rows_missing"].is_null());
     assert_eq!(header["gpu_clock"], "unrecorded");
+    assert_eq!(header["present_mode"], "vsync");
     assert_eq!(header["cap"]["source"], "production");
     assert_eq!(
         header["cap"]["decoded_bytes_per_drain"],

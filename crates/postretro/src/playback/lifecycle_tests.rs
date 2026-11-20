@@ -20,17 +20,17 @@ use crate::playback::{ChangeKind, Playback};
 use crate::session::level_streaming::DrainAdmission;
 use crate::startup::lifecycle::tests::test_app;
 
-struct Run {
-    app: App,
+pub(crate) struct Run {
+    pub(crate) app: App,
     file: PoseFile,
-    report: PathBuf,
+    pub(crate) report: PathBuf,
     launched: Instant,
     _dir: TempDir,
 }
 
 /// A test App playing a route of `poses` poses with `hold` hold frames,
 /// armed (Settling) as install leaves it.
-fn playing(hold: u32, poses: usize, extra: &[&str]) -> Run {
+pub(crate) fn playing(hold: u32, poses: usize, extra: &[&str]) -> Run {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cp.txt");
     let report = dir.path().join("run.playback.json");
@@ -63,7 +63,7 @@ fn playing(hold: u32, poses: usize, extra: &[&str]) -> Run {
 }
 
 /// One Running frame through the hooks in the frame loop's order.
-fn frame(app: &mut App, now: Instant, presented: bool, streamed: bool) {
+pub(crate) fn frame(app: &mut App, now: Instant, presented: bool, streamed: bool) {
     app.playback_begin_world_frame(now);
     if streamed {
         app.playback.note_streamed(DrainAdmission::default());
@@ -72,7 +72,7 @@ fn frame(app: &mut App, now: Instant, presented: bool, streamed: bool) {
     app.playback_finish_frame();
 }
 
-fn record(run: &Run) -> serde_json::Value {
+pub(crate) fn record(run: &Run) -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(&run.report).expect("record written")).unwrap()
 }
 

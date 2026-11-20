@@ -34,18 +34,27 @@ struct Lever {
     set: fn(&mut LevelStreaming, u64),
 }
 
-/// The walk override through its env parser, and with dev-tools the
-/// Streaming tab's slider through its lever.
+/// The walk override through its env parser, the slider's launch seed
+/// through its own, and with dev-tools the Streaming tab's slider through
+/// its lever.
 fn levers() -> Vec<Lever> {
     #[cfg_attr(not(feature = "dev-tools"), allow(unused_mut))]
-    let mut levers = vec![Lever {
-        name: "walk override",
-        set: |level, bytes| {
-            let cap = parse_drain_cap(&(bytes as f64 / MIB as f64).to_string()).unwrap();
-            assert_eq!(cap.bytes.get(), bytes);
-            cap.apply(level);
+    let mut levers = vec![
+        Lever {
+            name: "walk override",
+            set: |level, bytes| {
+                let cap = parse_drain_cap(&(bytes as f64 / MIB as f64).to_string()).unwrap();
+                assert_eq!(cap.bytes.get(), bytes);
+                cap.apply(level);
+            },
         },
-    }];
+        Lever {
+            name: "launch seed",
+            set: |level, bytes| {
+                level.apply_play_drain_cap_seed(Ok((bytes as f64 / MIB as f64).to_string()));
+            },
+        },
+    ];
     #[cfg(feature = "dev-tools")]
     levers.push(Lever {
         name: "dev-tools slider",
@@ -390,9 +399,9 @@ fn a_band_read_waits_at_half_the_walk_in_hand_cap_and_at_production_unset() {
 
 // --- Grep gate --------------------------------------------------------
 
-const DEV_TOOLS: &str = r#"#[cfg(feature = "dev-tools")]"#;
-const TEST: &str = "#[cfg(test)]";
-const TEST_OR_DEV_TOOLS: &str = r#"#[cfg(any(test, feature = "dev-tools"))]"#;
+pub(super) const DEV_TOOLS: &str = r#"#[cfg(feature = "dev-tools")]"#;
+pub(super) const TEST: &str = "#[cfg(test)]";
+pub(super) const TEST_OR_DEV_TOOLS: &str = r#"#[cfg(any(test, feature = "dev-tools"))]"#;
 const TEST_WITH_DEV_TOOLS: &str = r#"#[cfg(all(test, feature = "dev-tools"))]"#;
 
 /// What a scan is inside at a line break.
@@ -495,7 +504,7 @@ fn scan_line(line: &str, open: &mut Open) -> (i32, Option<char>) {
 /// comments, strings and char literals ignored. Formatted source keeps one
 /// gate per line. Panics naming `label` when depth goes negative or the file
 /// ends inside a gated item, rather than silently dropping production lines.
-fn strip_gated(label: &str, source: &str, gates: &[&str]) -> String {
+pub(super) fn strip_gated(label: &str, source: &str, gates: &[&str]) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let mut kept = Vec::new();
     let mut index = 0;

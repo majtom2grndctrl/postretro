@@ -327,7 +327,7 @@ mod boot_tests {
         let body = &main[start..main[start..].find("fn suspended(").unwrap() + start];
         let create = body.find("create_window(window_attributes())").unwrap();
         let apply = body.find("self.window_modes.apply_boot(").unwrap();
-        let renderer = body.find("Renderer::new(&window)").unwrap();
+        let renderer = body.find("Renderer::new(&window,").unwrap();
         let finish = body.find("self.window_modes.finish_boot(").unwrap();
         let redraw = body.find("ws.window.request_redraw();").unwrap();
         // A deferred exclusive mode lands only once the renderer owns a surface.

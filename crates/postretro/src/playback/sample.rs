@@ -9,8 +9,16 @@ use crate::App;
 use crate::options::WindowMode;
 
 use super::record::{
-    AdapterReport, DisplayModeReport, RowDrain, RowFill, RunContext, WindowModeReport,
+    AdapterReport, CapReport, DisplayModeReport, RowDrain, RowFill, RunContext, WindowModeReport,
 };
+
+/// The play drain cap in force: the session's, or production before one
+/// exists.
+pub(super) fn cap_report(session: Option<&crate::session::Session>) -> CapReport {
+    session.map_or(CapReport::PRODUCTION, |session| {
+        session.level_streaming.play_drain_cap_in_force().into()
+    })
+}
 
 /// How long a run's end waits for GPU readbacks still in flight: a few
 /// frames' worth, once, never per frame.

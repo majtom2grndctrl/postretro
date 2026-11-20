@@ -1,6 +1,6 @@
 # streaming-drain-time-budget
 
-Brief · compact · reads: `context/lib/rendering_pipeline.md` §4 (Cluster SH residency, Lightmap cell-block residency), §12 (CPU Stage Timing, GPU Pass Timing, Machine-state confounders) · `context/lib/testing_guide.md` §Resource bounds · read at 1eebe8b79 · evidence: `research.md`, `plans/done/streaming-drain-budget-spike/findings.md`
+Brief · compact · reads: `context/lib/rendering_pipeline.md` §4 (Cluster SH residency, Lightmap cell-block residency), §12 (CPU Stage Timing, GPU Pass Timing, Machine-state confounders) · `context/lib/testing_guide.md` §Resource bounds · read at 1eebe8b79 · evidence: `research.md`, `findings.md`, `plans/done/streaming-drain-budget-spike/findings.md`
 
 ## Problem
 The `streaming-drain-budget-spike` findings showed that the shared per-drain install budget charges the wrong unit. The budget caps decoded bytes, but a byte does not cost the same for both resources. A warm lightmap pair costs about 15 µs plus 0.2 ms/MiB of frame-thread CPU. An SH chunk costs about 65–70 µs plus 1.0–1.2 ms/MiB, compose included. The 8 MiB cap is therefore too small for lightmaps: their late block-frames on the showcase's far-point walk fall from 180 to 145 at 16 MiB, which still costs only about 3.5 ms. It is too large for SH: the showcase and campaign-test both admit SH drains of 7.9 MiB, about 8–11 ms on one frame. In the slider read, the owner saw pop-in clearly at 4 MiB and some stutter they could not tie to any cap. When this is done, each drain admits work up to an estimated install time instead of a byte count. Lightmap bursts drain faster than today, and no drain's estimated cost passes the budget except a lone first item.
@@ -45,5 +45,5 @@ The `streaming-drain-budget-spike` findings showed that the shared per-drain ins
 - Re-run `lightmap_install_cost_model` and `sh_install_cost_model` (release, `--ignored`) to confirm the constants before freezing them.
 
 ## Open questions
-- The play budget's value, and whether it holds at 4 ms if that raises late SH above 44 cluster-frames on the far-point walk or rises until SH meets it. A budget sweep on the walk harness measures late SH and lightmap, and per-drain estimated cost, at each value (`findings.md`, in progress) — owner — **blocks build**
+- The play budget's value, and whether it holds at 4 ms if that raises late SH above 44 cluster-frames on the far-point walk or rises until SH meets it. A budget sweep on the walk harness measures late SH and lightmap, and per-drain estimated cost, at each value. Measured in `findings.md`: no budget from 3 to 8 ms changes late SH or lightmap on either bake, and the worst drain is floored near 5 ms by lone SH clusters; recommendation 4 ms. The sweep also recommends re-basing the far-point row on the byte cap of the same bake — owner — **blocks build**
 - The settling budget's value — **delegated**: the executor picks it against the settle-hold row and reports it in the plan of record.

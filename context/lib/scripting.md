@@ -199,7 +199,7 @@ A run is active from Continue or `newRun` until the frontend is entered by any p
 
 | Save point | Run | Character and world |
 |---|---|---|
-| Level start, after the outgoing level's gear is read, before install | at the destination level; through a level seam, at that seam's checkpoint (decided, not yet built; `entity_model.md` §7e) | yes |
+| Level start, after the outgoing level's gear is read, before install | at the destination level; through a level seam, at that seam's checkpoint, which selects its spawn set even with no run to save (`entity_model.md` §7e) | yes |
 | `checkpoint(name)` | at that checkpoint | yes |
 | Frontend entry from a played level, a join, clean exit | no | yes |
 
@@ -285,7 +285,7 @@ The runtime installs the generated tree before SDK prelude evaluation, captures 
 - `session.players` is a display list: one row per seat, dense and in seat order up to the session's player capacity, each `present`, `name`, `status` and `isLocal`. Every machine holds the same rows; clients fill them from the roster (`networking.md` §Session-state ledger). An empty name reads `Player N`, N being the seat plus 1.
 - Counts and rows hold no players from unload until the next install writes them, and on a machine with no session level. A frontend backdrop is not a session level. The one exception is a host at the frontend: its rows list every seat for a lobby, and its counts stay 0.
 
-**Occupancy.** `occupancy.tag(tag)` reads `occupiedCount` (player-occupied trigger volumes carrying the tag, armed or not; level seams join once built) and `occupants` (distinct counted players inside any of them), host-computed and shared.
+**Occupancy.** `occupancy.tag(tag)` reads `occupiedCount` (player-occupied trigger volumes and level seams carrying the tag, armed or not; a seam counts by its own inside test) and `occupants` (distinct counted players inside any of them), host-computed and shared.
 - A family exists for each tag the scripts reference, collected from what they evaluate to, never from source text. Mod-scope references are replaced at each mod commit; a level's `setupLevel` references live that level.
 - A family reads 0 where no trigger volume or seam carries its tag; a level reference to such a tag warns once at install.
 - Every machine derives the set from the scripts it runs, so a peer running different scripts gets a different replicated schema and drops every replicated slot (`networking.md` §What gates).
@@ -747,7 +747,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | **crossing** | `onStateCrossing(ref, cond, [r])` | `CrossingParams` | `rising: Bool` |
 | **trigger event** | `t.on("enter" \| "exit", [r])` on a trigger member; `defineTriggerEvent({ tag, … })` in the mod manifest; both return through a `triggerEvents` manifest key | `TriggerEventParams` | `activators`, `trigger` opaque command-target tokens; `occupancy: Number` |
 | **teleport event** | `t.on("teleport", [r])` on a teleporter member, returned through a `teleportEvents` manifest key; brush `on_teleport` | `TeleportEventParams` | `activators`, `teleporter` opaque command-target tokens; no `occupancy` |
-| **seam event** (decided, not yet built) | `s.on("arrive", [r])` on a seam member, returned through a `seamEvents` manifest key; brush `on_arrive` | `SeamEventParams` | `activators`, `seam` opaque command-target tokens; no `occupancy` |
+| **seam event** | `s.on("arrive", [r])` on a seam member, returned through a `seamEvents` manifest key; brush `on_arrive` | `SeamEventParams` | `activators`, `seam` opaque command-target tokens; no `occupancy` |
 | **named gameplay event** | weapon, reload, impact, enemy, movement and mover event addresses | `EmitterParams` | `emitter` opaque sound-anchor token |
 | **player event** | `players().on(becomes \| ceases(cond), [r], options?)`; discrete `assistReceived()` / `assistGiven()`; returned through a `playerEvents` manifest key | `PlayerEventParams` | `player` opaque command-target and owner token |
 | **tick** *(accumulators only)* | number slot schema `accumulate` tracer | `TickParams` | `dt: Number` |
@@ -781,7 +781,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | emissive member (decided, not yet built) | `getMapEntities("emissive")` | `pulse`, `fade`, `flicker`; values are brightness in [0, 1] |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on("teleport", …)` |
-| seam member (decided, not yet built) | `getMapEntities("seam")` | `arm`, `disarm`, `on("arrive", …)` |
+| seam member | `getMapEntities("seam")` | `arm`, `disarm`, `on("arrive", …)` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire`; snapshot adds `spawnedTags` |
 | trap member | `getMapEntities("trap")` | `fire`, `start({ intervalMs?, phaseMs? })`, `stop` |
@@ -792,7 +792,7 @@ Per-entity state fields are the composition seam between adopters: an impact pol
 | activators token | `on.activators` | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | trigger token | `on.trigger` | `arm`, `disarm` |
 | teleporter token | `on.teleporter` | `arm`, `disarm` |
-| seam token (decided, not yet built) | `on.seam` | `arm`, `disarm` |
+| seam token | `on.seam` | `arm`, `disarm` |
 | player token | `on.player` | `damage`, `grantHealth`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 
 - **Members.** `getMapEntities(kind, { tag? })` returns the map-placed instances of one kind, in authored map order, as an array the author inspects in JS. No match returns an empty array; an unknown kind (`npc`, `transform`) fails to compile in TS and raises in Luau.

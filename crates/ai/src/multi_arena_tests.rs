@@ -3,7 +3,7 @@
 // through the real NPC tiers and against today's 60 Hz NPC. It proves nothing
 // and only prints.
 // See: context/lib/testing_guide.md §Resource bounds · context/lib/rendering_pipeline.md §12
-//      context/plans/in-progress/E10--ai-tick-scheduling/index.md (Scale; P14)
+//      context/plans/done/E10--ai-tick-scheduling/index.md (Scale; P14)
 //
 // Run release, single-threaded, nothing heavy beside it:
 //   cargo test --release -p postretro-ai --lib multi_arena_row -- --ignored --nocapture --test-threads=1

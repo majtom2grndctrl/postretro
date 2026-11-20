@@ -1,6 +1,6 @@
 // A holder the AI tick schedule skips stays in the AI set: its turns keep
 // their capacity, end only on its next run, and a queued grant opens there.
-// See: context/plans/in-progress/E10--ai-tick-scheduling/index.md (P1, P2)
+// See: context/plans/done/E10--ai-tick-scheduling/index.md (P1, P2)
 //      context/lib/entity_model.md §7c (Attack budget)
 
 use super::*;

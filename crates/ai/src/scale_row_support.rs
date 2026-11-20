@@ -5,7 +5,7 @@
 // (perception, tier choice, AI under the schedule, settle, steering under the
 // tiers' steps) or as today's 60 Hz NPC (every NPC decides and acts every
 // tick). They prove nothing and only print.
-// See: context/plans/in-progress/E10--ai-tick-scheduling/index.md (Scale)
+// See: context/plans/done/E10--ai-tick-scheduling/index.md (Scale)
 //      context/lib/testing_guide.md §Resource bounds
 
 use std::cell::RefCell;

@@ -92,6 +92,11 @@ const DATA_SCRIPT_LUAU_SRC: &str = include_str!("../../../sdk/lib/data_script.lu
 /// `__postretroDataScriptParts.playerEvents` at load.
 const DATA_SCRIPT_PART_SOURCES: &[(&str, &str, &str)] = &[
     (
+        "impactEvents",
+        include_str!("../../../sdk/lib/data_script/impact_events.luau"),
+        "data_script/impact_events.luau",
+    ),
+    (
         "attackBudget",
         include_str!("../../../sdk/lib/data_script/attack_budget.luau"),
         "data_script/attack_budget.luau",

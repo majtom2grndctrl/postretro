@@ -5,7 +5,11 @@ status: active
 read at: e743823
 
 ## Corrections
-- (none yet) Source changed since the brief's `8489a1f` only in streaming, capture and debug-UI code; no symbol the Decisions or Path cite moved. Decision reads reused.
+- Source changed since the brief's `8489a1f` only in streaming, capture and debug-UI code; no symbol the Decisions or Path cite moved. Decision reads reused.
+- Path "Respawn seeds seam latches beside its `settle_arrival` call" → respawn's `settle_arrival` runs inside `sim::finish_tick_start`, which has no seam state; the App frame loop latches each `RespawnTurn` pawn right after `finish_tick_start`, before the trigger stage (same tick, same ordering).
+- Path "`UnbackedSpawn` carries no velocity, movement state or latch" → `UnbackedSpawn` gains `arrival: Option<SeamSpawnArrival>`; the resolver holds per-seat seam offers (`set_seam_offers`), tests the fit at resolve and again at promotion (`SpawnPlacements::with_arrival_world`), and participation entry applies the motion, latch and `arrive` queue.
+- Brief "movement-state payload" → a `Swim` payload names the source level's fluid table, so it arrives as `Normal` (the next tick's immersion re-enters swim); crouch and slide carry their live (shrunk) capsule with the state.
+- Seat 0 is the host's or single player's seat (`Seat(0)`), as `CarriedState` already assumes; the seam checkpoint pose reads seat 0's harvested arrival.
 
 ## Delegated answers
 - None: the brief has no open questions.
@@ -85,15 +89,16 @@ Test homes: compile rows in `level-compiler` (bin `prl-build` and `tests/`), wir
 
 | # | Task | Owner | Depends on | Status |
 |---|---|---|---|---|
-| 1 | Rename `streaming_seam_volume` → `stream_split_volume` (own commit) | integrating executor | — | |
-| 2 | Behavior-preserving splits of `trigger_system.rs` and `parse.rs` (own commits) | integrating executor | 1 | |
-| 3 | Factor teleport arrival apply out of `resolve`; seam arrival mapping (riskiest premise: the chokepoint splits cleanly) | integrating executor | — | |
-| 4 | Compile + PRL id 61 + loader + FGD + compiler tests + dev fixture pair | worker A (worktree) | 2 | |
-| 5 | Script surface: component, `getMapEntities("seam")`, handles TS/Luau, arm/disarm, `seamEvents`, `@seam`, binding table | worker B (worktree) | — | |
-| 6 | Runtime install, inside test, activation, latch, occupancy, `arrive` dispatch | integrating executor | 3, 4, 5 | |
-| 7 | Frame-end pick, seam `LevelRequest`, harvest at unload, arrival clears | integrating executor | 6 | |
-| 8 | Arrival spawn (host / SP), respawn latch, blocked fallback, Settling view, `arrive` | integrating executor | 7 | |
-| 9 | Co-op client arrival through the resolver and participation entry | integrating executor | 8 | |
-| 10 | Seam checkpoint: run record, level-start save, Continue, spawn-set fallback | integrating executor | 8 | |
-| 11 | Docs, dev-mod seam pair, scripting example; drop "not yet built" markers at landing | integrating executor | 6–10 | |
-| 12 | Preflight, review panel, fixes | integrating executor | 11 | |
+| 1 | Rename `streaming_seam_volume` → `stream_split_volume` (own commit) | integrating executor | — | done (rename commit, xtask `seam_gates`) |
+| 2 | Behavior-preserving splits of `trigger_system.rs` and `parse.rs` (own commits) | integrating executor | 1 | done |
+| 3 | Factor teleport arrival apply out of `resolve`; seam arrival mapping (riskiest premise: the chokepoint splits cleanly) | integrating executor | — | done (`rotate_arrival_motion`, `movement/seam_arrival.rs`) |
+| 4 | Compile + PRL id 61 + loader + FGD + compiler tests + dev fixture pair | worker A (worktree) | 2 | done (worker A) |
+| 5 | Script surface: component, `getMapEntities("seam")`, handles TS/Luau, arm/disarm, `seamEvents`, `@seam`, binding table | worker B (worktree) | — | done (worker B) |
+| 6 | Runtime install, inside test, activation, latch, occupancy, `arrive` dispatch | integrating executor | 3, 4, 5 | done (`seam_stage.rs`, `runtime_seams.rs`) |
+| 7 | Frame-end pick, seam `LevelRequest`, harvest at unload, arrival clears | integrating executor | 6 | done (`seam_level_change.rs`) |
+| 8 | Arrival spawn (host / SP), respawn latch, blocked fallback, Settling view, `arrive` | integrating executor | 7 | done (`install_level_seams`) |
+| 9 | Co-op client arrival through the resolver and participation entry | integrating executor | 8 | done (resolver offers, participation entry) |
+| 10 | Seam checkpoint: run record, level-start save, Continue, spawn-set fallback | integrating executor | 8 | done (`LevelRecord.seam`, `RunCheckpoint::Seam`, `seam_spawn_set`) |
+| 11 | Lifecycle, co-op and save AC tests in the app crate | worker C (main checkout) | 6–10 | |
+| 12 | Docs, dev-pair data script, scripting example | integrating executor | 6–10 | |
+| 13 | Preflight, review panel, fixes | integrating executor | 11, 12 | |

@@ -253,6 +253,42 @@ fn seam_crossing_saves_its_pose_and_continue_arrives_there_twice() {
     }
 }
 
+// Regression: a crouched crossing saved its shrunk centre, and Continue's
+// standing capsule there sat in the floor and fell back to a start.
+#[test]
+fn seam_crouched_crossing_saves_a_standing_pose_continue_can_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = run_in_source(dir.path());
+    let host = local_pawn(&app);
+    {
+        let ctx = script_ctx(&app);
+        let mut registry = ctx.registry.borrow_mut();
+        let mut crouched = registry
+            .get_component::<postretro_foundation::PlayerMovementComponent>(host)
+            .unwrap()
+            .clone();
+        let lost = crouched.capsule.half_height * 0.5;
+        crouched.capsule.half_height -= lost;
+        crouched.movement_state = postretro_foundation::MovementState::Crouching {
+            eye_current: crouched.capsule.eye_height,
+        };
+        registry.set_component(host, crouched).unwrap();
+        drop(registry);
+        // Feet planted where a standing pawn at `INSIDE` stands.
+        cross(&mut app, INSIDE - Vec3::Y * lost);
+    }
+    assert_eq!(
+        run_level(dir.path()),
+        seam_level(Some(saved_pose())),
+        "the saved pose stands the crossing up on its feet"
+    );
+    install(&mut app, DESTINATION, destination_world(&spawn_points(2)));
+    quit(&mut app);
+    continue_run(&mut app);
+    drain_and_install(&mut app, destination_world(&spawn_points(2)));
+    assert_host_at_saved_pose(&mut app, "Continue after a crouched crossing");
+}
+
 // Ckpt 2: Continue from a seam checkpoint whose pose is blocked, or into a
 // level without that seam, places the player at a start with one warning.
 #[test]

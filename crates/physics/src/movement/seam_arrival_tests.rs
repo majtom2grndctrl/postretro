@@ -338,3 +338,44 @@ fn seam_rest_offset_stands_a_crouched_crossing_on_its_feet() {
     let standing = LandmarkRelative::capture(&pawn(), body, 0.0, 0.0, landmark);
     assert_eq!(standing.rest_offset, standing.offset);
 }
+
+// Regression: a forced-crouch swimmer keeps a crouch-sized capsule in `Swim`,
+// so "crouched" reads the capsule, not the state.
+#[test]
+fn seam_crossing_with_a_shrunk_capsule_in_swim_arrives_crouched() {
+    let landmark = Landmark {
+        origin: Vec3::ZERO,
+        yaw: 0.0,
+    };
+    let mut swimmer = pawn();
+    let standing_half_height = swimmer.standing_half_height;
+    swimmer.capsule.half_height = standing_half_height * 0.5;
+    swimmer.movement_state = MovementState::Swim { fluid: 3 };
+    let body = Vec3::new(0.0, 2.0, 0.0);
+    let arrival = LandmarkRelative::capture(&swimmer, body, 0.0, 0.0, landmark);
+    assert_eq!(
+        arrival.crouched_capsule.as_ref().map(|c| c.half_height),
+        Some(standing_half_height * 0.5)
+    );
+    assert!(
+        (arrival.rest_offset.y - (body.y + standing_half_height * 0.5)).abs() < 1.0e-5,
+        "{:?}",
+        arrival.rest_offset
+    );
+    let world = CollisionWorld::new();
+    let mut spawned = pawn();
+    apply_seam_arrival(
+        &mut spawned,
+        &CombinedCollisionWorld::static_only(&world),
+        &arrival,
+        landmark,
+        |_| true,
+    )
+    .unwrap();
+    assert_eq!(spawned.capsule.half_height, standing_half_height * 0.5);
+    assert!(
+        matches!(spawned.movement_state, MovementState::Crouching { .. }),
+        "a shrunk capsule lands in the state that retries the stand-up: {:?}",
+        spawned.movement_state
+    );
+}

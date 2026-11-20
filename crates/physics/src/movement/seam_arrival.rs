@@ -47,8 +47,9 @@ pub struct LandmarkRelative {
     /// The state payload, its boost in the landmark's frame and its clock kept,
     /// so a dash or slide resumes rather than restarts.
     pub movement_state: MovementState,
-    /// The live capsule while crouched or sliding, whose shrunk size the state
-    /// assumes; `None` arrives at the spawned pawn's own size.
+    /// The live capsule when it is not standing size (crouch, slide, forced
+    /// posture), which the state assumes; `None` arrives at the spawned
+    /// pawn's own size.
     pub crouched_capsule: Option<CapsuleParams>,
     /// `offset` for a standing capsule with the same feet: what a seam
     /// checkpoint saves, since Continue arrives standing at rest.
@@ -72,18 +73,17 @@ impl LandmarkRelative {
         {
             *boost = frame.vector(*boost);
         }
-        let crouched_capsule = matches!(
-            movement_state,
-            MovementState::Crouching { .. } | MovementState::Sliding { .. }
-        )
-        .then(|| component.capsule.clone());
+        // Any live capsule not standing size (crouch, slide, forced posture
+        // under swim, a dash out of a crouch) arrives at that size.
+        let crouched_capsule =
+            (!component.capsule_is_standing()).then(|| component.capsule.clone());
         let offset = frame.point(body);
-        // A shrunk capsule keeps its feet planted: standing up raises the
-        // centre by the half-height it lost.
+        // A resized capsule keeps its feet planted: standing up moves the
+        // centre by the half-height it differs by, either way.
         let rest_offset = offset
             + Vec3::Y
                 * crouched_capsule.as_ref().map_or(0.0, |capsule| {
-                    (component.standing_half_height - capsule.half_height).max(0.0)
+                    component.standing_half_height - capsule.half_height
                 });
         Self {
             offset,
@@ -172,8 +172,10 @@ pub fn apply_seam_arrival(
     component.push_velocity = arrival.push_velocity;
     component.movement_state = match &arrival.movement_state {
         // A fluid index names the source level's fluid table; the next tick's
-        // immersion re-enters swim where the arrival is wet.
-        MovementState::Swim { .. } => MovementState::Normal,
+        // immersion re-enters swim where the arrival is wet. `Normal` never
+        // resizes, so a capsule that is not standing size lands in the state
+        // that retries the stand-up.
+        MovementState::Swim { .. } | MovementState::Normal => component.capsule_posture_state(),
         state => *state,
     };
     let edge = rotate_arrival_motion(component, Quat::from_rotation_y(landmark.yaw));

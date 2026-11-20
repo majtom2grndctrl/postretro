@@ -9,8 +9,9 @@ use crate::seam_crossing::harvest_crossing;
 use crate::startup::{LevelRequest, LevelSource};
 
 impl App {
-    /// A script level verb (`loadLevel`, `restartLevel`, `returnToFrontend`)
-    /// ran this frame: it beats every seam activated this frame.
+    /// A level request ran this frame: a script verb (`loadLevel`,
+    /// `restartLevel`) or any return to the frontend. It beats every seam
+    /// activated this frame.
     pub(crate) fn note_script_level_request(&mut self) {
         self.script_level_request_this_frame = true;
     }

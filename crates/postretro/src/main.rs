@@ -1124,8 +1124,8 @@ pub(crate) struct App {
     /// spawns. Cleared by the next unload, suspend, and a failed, cancelled
     /// or superseded load.
     seam_crossing: Option<crate::seam_crossing::SeamCrossing>,
-    /// A script level verb ran this frame; the frame-end seam pick drops
-    /// every seam activation.
+    /// A script level verb or a frontend return ran this frame; the frame-end
+    /// seam pick drops every seam activation.
     script_level_request_this_frame: bool,
     /// The level's ghost links: link-state history and this frame's ghosts,
     /// built at level install and dropped at unload. Render collection reads it.

@@ -643,17 +643,34 @@ fn save_character_with_shells(view: &mut ClientView, shells: u32) {
     crate::session::progress_save::save_world_and_character(session).unwrap();
 }
 
-/// The `shells` the saved character carries.
-fn saved_shells(app: &App) -> Option<u32> {
+/// The character saved in slot `index`, read from its file.
+fn saved_character(
+    app: &App,
+    index: usize,
+) -> Option<postretro_sim::scripting::save_files::SeatRecord> {
+    use postretro_sim::scripting::save_files::{SaveDir, read_document};
     let session = app.session.as_ref().unwrap();
-    let dir = postretro_sim::scripting::save_files::SaveDir::new(
-        session.data_dir.as_deref().unwrap(),
-        MOD_ID,
-    );
-    postretro_sim::scripting::save_files::read_document(&dir.character_path(0))
+    let dir = SaveDir::new(session.data_dir.as_deref().unwrap(), MOD_ID);
+    read_document(&dir.character_path(index))
         .unwrap()
         .and_then(|document| document.seats.first().cloned())
-        .and_then(|record| record.loadout.reserve.get("shells").copied())
+}
+
+/// The `shells` the saved character carries.
+fn saved_shells(app: &App) -> Option<u32> {
+    saved_character(app, 0).and_then(|record| record.loadout.reserve.get("shells").copied())
+}
+
+/// Seat 0's name, as the player rows and the roster show it.
+fn seat_zero_name(app: &App) -> String {
+    app.session
+        .as_ref()
+        .unwrap()
+        .seat_table
+        .as_ref()
+        .unwrap()
+        .display_name(Seat(0))
+        .to_owned()
 }
 
 fn seat_zero_shells(app: &App) -> Option<u32> {
@@ -690,17 +707,7 @@ fn join_then_leave_restores_seat_zero_carry_from_selected_character() {
     assert_eq!(saved_shells(&view.app), Some(5));
     // The leave rebuilt the seat ledger; seat 0 is named for the character
     // again.
-    assert_eq!(
-        view.app
-            .session
-            .as_ref()
-            .unwrap()
-            .seat_table
-            .as_ref()
-            .unwrap()
-            .display_name(Seat(0)),
-        "Vex"
-    );
+    assert_eq!(seat_zero_name(&view.app), "Vex");
 }
 
 /// A client with saves, joined and participating in the relay host's level.
@@ -2926,6 +2933,60 @@ fn hosting_from_the_dev_frontend_lands_in_the_lobby_and_its_cancel_ends_the_sess
     );
 }
 
+// Play-test regression: characters created from the dev frontend saved
+// unnamed. Drives the shipped dev menu end to end: CREATE opens the
+// keyboard, the player types, the commit fires the create body, and the
+// frame-end drain saves the character under the typed name. An earlier
+// CREATE the player cancelled leaves its text behind; the opener clears it.
+#[test]
+fn the_dev_menu_creates_a_character_named_as_typed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut view = entering_engine(spawn_points(3));
+    let _ = install_dev_frontend(&mut view.app);
+    with_saves(&mut view, dir.path());
+    // The fixture mod declares no `saves` block, so its one implicit
+    // character fills slot 0; the dev mod's block gives slot 1 to create in.
+    crate::session::saves::boot_restore_with(
+        view.app.session.as_mut().unwrap(),
+        Some(postretro_scripting_core::runtime::SavesManifest {
+            character_slots: 4,
+            run_slots: 3,
+        }),
+    );
+
+    press(&mut view.app, "frontend.characters.name.1");
+    press_keys(&mut view.app, "stale");
+    view.app.cancel_text_entry();
+    press(&mut view.app, "frontend.characters.name.1");
+    type_on_keys(&mut view.app, "kai");
+    view.app.dispatch_system_commands();
+
+    let saves = &view.app.session.as_ref().unwrap().saves;
+    assert_eq!(saves.selection().character, 1);
+    assert_eq!(saves.selected_character_name(), "kai");
+    assert_eq!(
+        saved_character(&view.app, 1)
+            .expect("the character file is written")
+            .name,
+        "kai"
+    );
+    assert_eq!(
+        slot(&view.app, "saves.characters.1.name"),
+        Some(SlotValue::String("kai".into())),
+        "the character list shows the name"
+    );
+    assert_eq!(
+        seat_zero_name(&view.app),
+        "kai",
+        "the player list shows the name"
+    );
+    assert_eq!(
+        view.app.session.as_ref().unwrap().modal_stack.active_name(),
+        Some("frontend.runs"),
+        "the runs screen follows"
+    );
+}
+
 // The title's answer to a refused password opens the Join menu with the
 // password keyboard over it; committing lands back on Join.
 #[test]
@@ -3016,6 +3077,12 @@ fn a_menu_text_field_commits_into_its_own_slot() {
 
 /// Type `text` on the dev keyboard's on-screen keys, then commit.
 fn type_on_keys(app: &mut App, text: &str) {
+    press_keys(app, text);
+    app.commit_text_entry();
+}
+
+/// Type `text` on the dev keyboard's on-screen keys.
+fn press_keys(app: &mut App, text: &str) {
     for ch in text.chars() {
         let key = match ch {
             '.' => "kbAppend_dot".to_string(),
@@ -3024,7 +3091,6 @@ fn type_on_keys(app: &mut App, text: &str) {
         };
         press(app, &key);
     }
-    app.commit_text_entry();
 }
 
 // Both sides in-app, every field typed on the dev keyboard: the host's

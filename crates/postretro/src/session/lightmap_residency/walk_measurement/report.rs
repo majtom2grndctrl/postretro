@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use postretro_render_cpu::lightmap_pool::{PerPool, PoolKind};
 
+use super::budget_tallies::BudgetTallies;
 use super::busy_stats::BusyStats;
 use super::mirror::MirrorStats;
 use super::pool_mirror::{PoolRun, PoolStats};
@@ -120,6 +121,8 @@ pub(super) struct RunReport {
     pub(super) sh: Option<ShRunStats>,
     /// Lightmap pairs' decode-pool queue wait and decode time.
     pub(super) lightmap_decode: LightmapDecodeStats,
+    /// Late items by cause and drain admissions, the spawn step apart.
+    pub(super) tallies: BudgetTallies,
 }
 
 /// Drawn blocks still non-resident after the frame's last drain, by cause

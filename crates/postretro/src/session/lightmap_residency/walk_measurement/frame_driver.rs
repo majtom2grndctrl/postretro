@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use postretro_level_format::cell_residency_set::CellResidencySetSection;
+use postretro_renderer::{LightmapMissBuckets, ShMissBuckets};
 use postretro_stage_timing::StageFrame;
 use postretro_visibility::{TimingGate, VisibilityPath, VisibleCells};
 
 use super::super::LightmapStreamingSession;
 use super::completed_reads::CompletionGate;
+use super::drain_tally::DrainSample;
 use super::modes::ReadsMode;
 use super::pool_mirror::{PoolMirror, RetireClock};
 use super::sh_walk::{ShCompletionGate, accept_all};
@@ -65,7 +67,8 @@ pub(super) struct FrameInput<'a> {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FrameOutcome {
     /// The controller's gauges: drawn outside the baked set, and drawn not
-    /// installed (on a non-portal frame, of the drawn blocks it holds).
+    /// installed. The walk tally never exceeds it and it never exceeds the walk
+    /// tally (research P9).
     pub(super) outside: u32,
     pub(super) not_resident: u32,
     /// Drawn blocks, every one the frame's cells draw on any path, still not
@@ -92,6 +95,14 @@ pub(super) struct FrameOutcome {
     pub(super) finish_nanos: u64,
     /// The `lightmap_residency` CPU stage, every drain included.
     pub(super) residency_nanos: u64,
+    /// The controller's drawn-not-resident block-frames this frame, by
+    /// cause; they sum to `not_resident`.
+    pub(super) lightmap_misses: LightmapMissBuckets,
+    /// While SH streams: drawn clusters not Sampleable at the frame's first
+    /// target update (drain 0's, where an episode is filed), by cause.
+    pub(super) sh_miss_frames: Option<ShMissBuckets>,
+    /// Each of the frame's `drains` admissions, in drain order.
+    pub(super) drain_samples: [DrainSample; COMPLETED_READS_DRAINS as usize],
 }
 
 /// The level-scope streaming owner, the lightmap session inside it, and the
@@ -221,6 +232,13 @@ impl FrameDriver {
                 )
                 .expect("prepare streaming drains");
             out.prepare_nanos += elapsed_nanos(part);
+            out.drain_samples[drain as usize] = DrainSample::of(self.level.shared_drain());
+            if drain == 0 {
+                out.sh_miss_frames = self
+                    .sh
+                    .as_ref()
+                    .map(|sh| sh.controller().latest_update_miss_frames());
+            }
             if let Some(sh) = &mut self.sh {
                 accept_all(sh, &sh_batch).expect("apply the SH stand-in's outcome");
             }
@@ -251,6 +269,7 @@ impl FrameDriver {
         let counters = session.controller.counters();
         out.outside = counters.last_frame_drawn_outside_baked_set;
         out.not_resident = counters.last_frame_drawn_not_resident;
+        out.lightmap_misses = counters.last_frame_miss_buckets;
         out.residency_nanos = cpu.value(StreamingStage::LightmapResidency).unwrap_or(0);
         out.grew = self.mirror.stats.growths() > growths;
         let mirror = &self.mirror;

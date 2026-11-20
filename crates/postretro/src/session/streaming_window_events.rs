@@ -209,6 +209,19 @@ counters!(LightmapCounters, LightmapStreamingLiveDiagnostics, {
     mask_growths: |d: &LightmapStreamingLiveDiagnostics| d.growths.mask,
     missed_outside_baked_set: |d: &LightmapStreamingLiveDiagnostics| d.drawn_outside_baked_set,
     missed_not_resident: |d: &LightmapStreamingLiveDiagnostics| d.drawn_not_resident,
+    // `missed_not_resident` split by cause, in block-frames; the line's
+    // `(reach …, failed …)` group. Names follow SH's where the cause is the same.
+    miss_reach: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.outside_reach,
+    miss_in_flight: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.read_in_flight,
+    miss_permit: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.waiting_on_permit,
+    miss_in_hand_cap: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.waiting_on_in_hand_cap,
+    miss_budget: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.held_by_drain_budget,
+    miss_renderer_drain: |d: &LightmapStreamingLiveDiagnostics| {
+        d.miss_buckets.awaiting_renderer_drain
+    },
+    miss_deferred: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.deferred_by_pool,
+    miss_refused: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.refused,
+    miss_failed: |d: &LightmapStreamingLiveDiagnostics| d.miss_buckets.failed,
 });
 
 /// The lightmap line's `now:` gauges at the window's close.

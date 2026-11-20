@@ -23,12 +23,14 @@ use super::frame_timing::{FrameTimingSnapshot, PassTiming};
 use super::sh_diagnostics::{MarkerMode, ShDiagnosticsState};
 
 mod cpu_timing_block;
+mod drain_cap_lever;
 mod network_tab;
 mod pending_textures;
 mod planar_reflection;
 mod streaming_tab;
 
 pub use cpu_timing_block::CpuTimingPanel;
+pub use drain_cap_lever::StreamingDrainCapLever;
 pub use network_tab::{NetworkLagLever, NetworkSessionRole};
 pub use pending_textures::PendingTextures;
 pub use streaming_tab::LightmapStreamingTab;
@@ -295,8 +297,8 @@ impl DebugUi {
 /// `pass_labels` vec slipping past construction.
 ///
 /// `sh_streaming` and `lightmap_streaming` feed the Streaming tab; `None`
-/// means the level does not stream that resource. The tab edits the lightmap
-/// levers in place for the caller to apply.
+/// means the level does not stream that resource. The tab edits the lead and
+/// the play drain cap levers in place for the caller to apply.
 ///
 /// `network_lag` feeds the Network tab; `None` means no networked session. The
 /// tab edits the lever in place for the caller to apply.
@@ -318,6 +320,7 @@ pub fn draw_diagnostics_panel(
     sh_streaming: Option<&ShStreamingLiveDiagnostics>,
     lightmap_streaming: Option<LightmapStreamingTab<'_>>,
     streaming_reach: Option<&mut crate::render::StreamingReachLever>,
+    drain_cap: &mut StreamingDrainCapLever,
     network_lag: Option<&mut NetworkLagLever>,
 ) {
     // Seed slider state from live renderer values on first draw so toggling
@@ -388,6 +391,7 @@ pub fn draw_diagnostics_panel(
                 sh_streaming,
                 lightmap_streaming,
                 streaming_reach,
+                drain_cap,
             ),
             DiagnosticsTab::Network => network_tab::draw_network_tab(ui, renderer, network_lag),
         }

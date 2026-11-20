@@ -48,7 +48,13 @@ SH_MISS_BUCKETS = (
     "misses", "miss_reach", "miss_pressure", "miss_in_flight", "miss_budget",
     "miss_compose", "miss_failed", "miss_device_limit", "miss_map_cap",
 )
-LIGHTMAP_MISS_BUCKETS = ("missed_outside_baked_set", "missed_not_resident")
+# Block-frames. The `miss_*` causes split `missed_not_resident`; SH's miss
+# buckets count episodes, so the two never sum together.
+LIGHTMAP_MISS_BUCKETS = (
+    "missed_outside_baked_set", "missed_not_resident", "miss_reach", "miss_in_flight",
+    "miss_permit", "miss_in_hand_cap", "miss_budget", "miss_renderer_drain", "miss_deferred",
+    "miss_refused", "miss_failed",
+)
 
 NO_LEVEL = "no level"
 KILLED = "killed"

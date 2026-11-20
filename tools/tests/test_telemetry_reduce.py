@@ -218,6 +218,15 @@ class SampleSummaryTests(unittest.TestCase):
             "windows": 2, "partial_windows": 1,
             "missed_outside_baked_set": 3,
             "missed_not_resident": 7 + 2,
+            "miss_reach": 0,
+            "miss_in_flight": 4 + 2,
+            "miss_permit": 0,
+            "miss_in_hand_cap": 1,
+            "miss_budget": 2,
+            "miss_renderer_drain": 0,
+            "miss_deferred": 0,
+            "miss_refused": 0,
+            "miss_failed": 0,
         })
         self.assertEqual(self.loads[(ENGINE_RUN, 3)]["windows"]["lightmap"]["windows"], 0)
 

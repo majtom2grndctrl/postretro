@@ -14,7 +14,7 @@ pub(crate) mod nav_diagnostics;
 pub mod debug_ui {
     pub use postretro_renderer::{
         CpuTimingPanel, DebugUi, LightmapStreamingTab, NetworkLagLever, NetworkSessionRole,
-        draw_diagnostics_panel,
+        StreamingDrainCapLever, draw_diagnostics_panel,
     };
 }
 

@@ -32,7 +32,7 @@ use crate::streaming::shared_drain::SharedDrain;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod walk_measurement;
+pub(crate) mod walk_measurement;
 
 /// The loaded level's streamed-lightmap inputs. Present only when the level's
 /// `LightmapStorage` is `Streaming`, which the loader selects only with a
@@ -523,6 +523,11 @@ impl LightmapStreamingSession {
     #[cfg(test)]
     pub(crate) fn controller(&self) -> &LightmapResidencyController {
         &self.controller
+    }
+
+    #[cfg(test)]
+    pub(crate) fn controller_mut(&mut self) -> &mut LightmapResidencyController {
+        &mut self.controller
     }
 
     /// Drops everything but the source, which the retiring issuer's route may

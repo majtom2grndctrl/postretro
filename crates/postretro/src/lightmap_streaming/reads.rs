@@ -4,6 +4,7 @@
 use postretro_level_format::lightmap_pool::PoolKind::{self, Lightmap, Mask};
 use postretro_level_loader::{LightmapBlockClass, PreparedLightmapBlock};
 
+use super::miss_causes::RequestWait;
 use super::*;
 use crate::lightmap_streaming::route::{LightmapCompletion, LightmapReadResult};
 use crate::streaming::request::{ReadIdentity, ReadRequest, StreamResource};
@@ -35,6 +36,9 @@ impl LightmapResidencyController {
     /// every pair already heading for it; the renderer's refusal stays
     /// authoritative. The mask pool running out stops only the pairs with
     /// planes: a pair that stores none asks nothing of it.
+    ///
+    /// Where the pass stops is its verdict on the blocks it left, kept for
+    /// the frame's miss causes until the next pass.
     pub(crate) fn take_requests(
         &mut self,
         submit: &mut dyn FnMut(ReadRequest) -> Result<(), &'static str>,
@@ -46,16 +50,19 @@ impl LightmapResidencyController {
             self.rebuild_request_order();
         }
         self.requests_due = false;
+        self.request_verdict = RequestPassVerdict::default();
         let mut mask_pool_full = false;
         for index in 0..self.request_order.len() {
-            if self.permits_in_use >= MAX_LIGHTMAP_PERMITS {
-                break;
-            }
             let block = self.request_order[index];
             let slot = self.slots[block as usize];
             let Some(target) = slot.target else {
                 continue;
             };
+            if self.permits_in_use >= MAX_LIGHTMAP_PERMITS {
+                self.request_verdict
+                    .stop(RequestWait::Permit, target.rank(block));
+                break;
+            }
             if slot.phase != BlockPhase::Absent
                 || (self.camera_set_only && !self.demand.in_camera_set(&self.map, block))
             {
@@ -63,18 +70,25 @@ impl LightmapResidencyController {
             }
             let facts = *self.map.facts(block);
             if self.permits_in_use > 0
-                && self.in_hand_bytes + facts.pair_bytes() > MAX_IN_HAND_PAIR_BYTES
+                && self.in_hand_bytes + facts.pair_bytes() > self.in_hand_cap()
             {
+                self.request_verdict
+                    .stop(RequestWait::InHandCap, target.rank(block));
                 break;
             }
             let band = target.class == LightmapBlockClass::Band;
             if band {
-                if !self.band_share_fits(&facts) || !self.band_room_fits(Lightmap, &facts) {
+                let wait = self.band_share_wait(&facts).or_else(|| {
+                    (!self.band_room_fits(Lightmap, &facts)).then_some(RequestWait::PoolRoom)
+                });
+                if let Some(wait) = wait {
+                    self.request_verdict.stop(wait, target.rank(block));
                     break;
                 }
                 if facts.texels.mask != 0 {
                     mask_pool_full = mask_pool_full || !self.band_room_fits(Mask, &facts);
                     if mask_pool_full {
+                        self.request_verdict.skip_for_mask_room(target.rank(block));
                         continue;
                     }
                 }
@@ -104,14 +118,15 @@ impl LightmapResidencyController {
         Ok(())
     }
 
-    /// Whether one more band pair fits the band's share of the permits and
-    /// in-hand bytes.
-    fn band_share_fits(&self, facts: &BlockFacts) -> bool {
+    /// What keeps one more band pair from the band's share of the permits
+    /// and in-hand bytes; `None` when it fits.
+    fn band_share_wait(&self, facts: &BlockFacts) -> Option<RequestWait> {
         if self.band_permits >= MAX_BAND_PERMITS {
-            return false;
+            return Some(RequestWait::Permit);
         }
-        self.band_permits == 0
-            || self.band_in_hand_bytes + facts.pair_bytes() <= MAX_BAND_IN_HAND_PAIR_BYTES
+        let fits = self.band_permits == 0
+            || self.band_in_hand_bytes + facts.pair_bytes() <= self.band_in_hand_cap();
+        (!fits).then_some(RequestWait::InHandCap)
     }
 
     /// Whether one more band pair fits `kind`'s band headroom less every pair
@@ -169,6 +184,8 @@ impl LightmapResidencyController {
     /// permit and charges released, to be read again through the next
     /// issuer. Ready, drained, and installed pairs are untouched.
     pub(crate) fn cancel_in_flight(&mut self) {
+        // The latest pass's stop describes reads that no longer exist.
+        self.request_verdict = RequestPassVerdict::default();
         for block in 0..self.slots.len() as u32 {
             if self.slots[block as usize].phase == BlockPhase::InFlight {
                 self.release_in_hand(block);
@@ -287,6 +304,7 @@ impl LightmapResidencyController {
         stage: &str,
         error: &dyn std::fmt::Display,
     ) {
+        self.mark_frame(block, FrameMarks::FAILED);
         let slot = &mut self.slots[block as usize];
         slot.failures = slot.failures.saturating_add(1);
         if slot.failures == 1 {

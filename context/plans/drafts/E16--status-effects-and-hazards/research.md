@@ -3,7 +3,7 @@
 Read at e7438238. Findings that inform the brief; the brief's Decisions conclude.
 
 ## Routing
-- Combines roadmap E16 "DoT / environmental death policy" and "status effects / DoT" (draft session, owner, 2026-11-20). The un-stub is the foundation; statuses and fluid hazards are its first consumers.
+- Combines roadmap E16 "DoT / environmental death policy" and "status effects / DoT" (draft session, owner, 2026-11-20). The two parts are independent: status ticks and fluid applications are in-tick producers and never use the script-damage evaluation. The combination is for scope, not dependency, so script-damage evaluation lands first as its own slice; it fixes a live defect and needs no wire change.
 - `onDamage` per-attack aggregate: no consumer in `docs/`, `content/`, `sdk/`, drafts or ready plans. Its names appear only in `context/research/combat-events.md`. The dev mod rewards per hit and per kill (`content/dev/scripts/combat-lifecycle.ts`, `leveling.ts`). Owner made it demand-gated.
 
 ## Damage producers today
@@ -60,7 +60,7 @@ Read at e7438238. Findings that inform the brief; the brief's Decisions conclude
 - Carry: `CarriedState` / `harvest_pawn_inner` ledger is exhaustive and wildcard-free, so statuses must be recorded as skipped. Save format `LoadoutRecord` and wire `CarriedLoadoutWire` are untouched.
 - Enemy overlay roster is capped, damage-driven and expiring: wrong home for persistent presence. `WireMeshAnimationState` reaches only animated meshes; `WirePlayerMovementState` only pawns. Ghost links added an entity component payload and bumped WIRE and SNAPSHOT; that is the precedent.
 - No entity-attached condition-held presentation exists. `BillboardEmitter` toggles by tag; looping `SoundRequest` with an entity anchor exists locally. Without attached presentation, replicated presence has no reader, so the brief ships both.
-- `mod_compatibility_digest` covers factions and trigger lanes only; status order must join it because the presence bitset is index-keyed.
+- `mod_compatibility_digest` covers factions and trigger lanes only, which clients simulate against. A client uses status presence for presentation only, so it follows the fluid pattern instead: the host sends a name table and the client maps by name (`networking.md`: hash only what cannot be replicated). Digest gating would hold a client below participation over a cosmetic difference and demote every client on a host hot reload that adds a status.
 
 ## Instance cap
 - Keyed by (status, applier). Co-op hordes: four players plus environment appliers per status, a few statuses per mod. 16 instances per entity covers every plausible combination with a fixed inline array, which keeps the stage allocation-free. Replacing the instance with the least time left drops the one contributing least.

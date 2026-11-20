@@ -832,7 +832,8 @@ fn level_requests_and_joins_reach_the_abort_hook_before_they_act() {
         drain,
     );
     let load_abort = at(BOOT_STATE, "self.playback_abort(playback_abort)", reason);
-    let unload = at(BOOT_STATE, "self.unload_level();", load_abort);
+    // A load unloads through the seam-aware crossing; Frontend unloads plainly.
+    let unload = at(BOOT_STATE, "self.unload_level_crossing(", load_abort);
     let begin = at(BOOT_STATE, "self.begin_level_load(load);", load_abort);
     let none_abort = at(BOOT_STATE, "self.playback_abort(playback_abort)", begin);
     let frontend = at(

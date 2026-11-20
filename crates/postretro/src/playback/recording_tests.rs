@@ -847,7 +847,8 @@ fn frame_loop_records_the_eye_inputs_before_view_feel_and_after_the_aim() {
 fn level_requests_end_a_recording_before_the_level_unloads() {
     let drain = at(BOOT_STATE, "pub(crate) fn drain_level_requests(", 0);
     let load_end = at(BOOT_STATE, "self.recording_level_ends();", drain);
-    let load_unload = at(BOOT_STATE, "self.unload_level();", load_end);
+    // A load unloads through the seam-aware crossing; Frontend unloads plainly.
+    let load_unload = at(BOOT_STATE, "self.unload_level_crossing(", load_end);
     let begin = at(BOOT_STATE, "self.begin_level_load(load);", load_unload);
     let none_end = at(BOOT_STATE, "self.recording_level_ends();", begin);
     let frontend = at(

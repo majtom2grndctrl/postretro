@@ -34,11 +34,13 @@ The owner asked for the client to get credit for the impact it saw on screen, as
 - **Direct hits.** A blast with no impact target loses the weapon's direct push, which the modder reference promises composes with splash (a splash rocket deals no direct health damage). A credited enemy hit takes the declared enemy as its target, including an enemy flush against a wall the host also has; a host contact at the point decides only for a world record.
 - **Records.** The first valid record counts, as presentation reads today. An empty declaration means the client saw no impact.
 
-Entities never cut the host path short, so a direct hit the host's flight passes by still detonates, closing `networking.md` §Combat authority's known gap. The client selects only which on-path point counts, so one authoritative blast reaches every peer. A dishonest point is anti-cheat, a non-goal.
+Entities never cut the host path short, so a direct hit the host's flight passes by still detonates, which closes the gap where a declared entity the host's flight misses sets off nothing. That is a deliberate reversal of §Combat authority's "the client never selects a splash center", not a gap fix alone. The client selects only which on-path point counts, so one authoritative blast reaches every peer. A dishonest point is anti-cheat, a non-goal.
 
 The tolerance's floor is not prediction error alone. The host rebuilds a non-late launch converging on the target's live position while the client converged on its rendered one, so the paths diverge by up to the muzzle's offset from the eye (P25).
 
 Observer flight today: the end-point hook holds a display rocket still at its contact for about one round trip, until peers acknowledge, then flashes; the flight starts a tick ahead of the march. Client splash rockets instead step with the march and vanish at its deciding point without a flash (owner).
+
+Rival: split into two briefs, movers blocking shots and sight (host march contact as the centre, the old rule kept) and the credit rule with observer flight. Rejected: the march's release rules (P2, P5, P16, P19, P20, P23, P27, P33) are built around the credit rule, so a split builds the release logic and rewrites the netcode splash tests twice.
 
 ## Corrections to the 2026-10-31 draft
 

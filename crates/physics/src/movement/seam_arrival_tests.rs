@@ -310,3 +310,31 @@ fn seam_arrival_latches_armed_teleporters_and_settles_at_rest() {
     assert_eq!(spawned.movement_state, MovementState::Normal);
     assert_eq!(spawned.ground, GroundRef::Airborne);
 }
+
+// Regression: Continue from a seam crossed crouched placed the standing
+// capsule at the crouched centre, inside the floor, and fell back to a start.
+#[test]
+fn seam_rest_offset_stands_a_crouched_crossing_on_its_feet() {
+    let landmark = Landmark {
+        origin: Vec3::ZERO,
+        yaw: 0.0,
+    };
+    let mut crouched = pawn();
+    let standing_half_height = crouched.standing_half_height;
+    crouched.capsule.half_height = standing_half_height * 0.5;
+    crouched.movement_state = MovementState::Crouching { eye_current: 0.5 };
+    let body = Vec3::new(
+        1.0,
+        crouched.capsule.half_height + crouched.capsule.radius,
+        0.0,
+    );
+    let arrival = LandmarkRelative::capture(&crouched, body, 0.0, 0.0, landmark);
+    assert_eq!(arrival.offset, body);
+    assert!(
+        (arrival.rest_offset.y - (standing_half_height + crouched.capsule.radius)).abs() < 1.0e-5,
+        "the rest pose keeps the feet and stands up: {:?}",
+        arrival.rest_offset
+    );
+    let standing = LandmarkRelative::capture(&pawn(), body, 0.0, 0.0, landmark);
+    assert_eq!(standing.rest_offset, standing.offset);
+}

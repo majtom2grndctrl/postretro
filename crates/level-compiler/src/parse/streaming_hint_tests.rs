@@ -88,11 +88,11 @@ fn regions_are_canonical_and_peeled_from_static_geometry() {
     )))
     .expect("streaming hint fixture must parse");
 
-    assert_eq!(map.streaming_seam_regions.len(), 1);
+    assert_eq!(map.streaming_split_regions.len(), 1);
     assert_eq!(map.stream_resident_regions.len(), 1);
     assert_eq!(map.stream_priority_regions.len(), 1);
     for region in map
-        .streaming_seam_regions
+        .streaming_split_regions
         .iter()
         .chain(&map.stream_resident_regions)
         .chain(std::iter::once(&map.stream_priority_regions[0].region))

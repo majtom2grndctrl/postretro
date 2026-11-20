@@ -953,9 +953,8 @@ where
     if let Some(seams) = seam_context {
         // Arrivals spawned since the last tick fire `arrive` inside this one,
         // host-only, as teleport events fire inside theirs.
-        let arrivals = seams.stage.take_arrivals();
         if let Some(ctx) = seam_script_ctx.as_ref() {
-            for (index, pawn) in arrivals {
+            for (index, pawn) in seams.stage.take_arrivals() {
                 let player = players
                     .iter()
                     .find(|player| player.pawn == pawn)

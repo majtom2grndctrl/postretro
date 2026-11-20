@@ -46,8 +46,8 @@ pub(crate) struct SeamSpawnArrival {
 }
 
 impl SeamSpawnArrival {
-    /// `seat`'s arrival from `crossing` through the installed level's seam of
-    /// the crossing's name, or `None` when that level has no such seam.
+    /// The arrival of `motion` through the installed level's seam named
+    /// `seam`, or `None` when that level has no such seam.
     pub(crate) fn resolve(stage: &SeamStage, seam: &str, motion: LandmarkRelative) -> Option<Self> {
         let seam_index = stage.index_by_name(seam)?;
         let landmark = stage.landmark(seam_index)?;
@@ -86,6 +86,8 @@ impl SeamSpawnArrival {
             .clone()
             .unwrap_or_else(|| spawn_capsule.clone());
         if !body.is_finite()
+            || !self.view_yaw().is_finite()
+            || !self.motion.view_pitch.is_finite()
             || !postretro_physics::collision::capsule_fits_combined(collision, body, &capsule)
         {
             return false;

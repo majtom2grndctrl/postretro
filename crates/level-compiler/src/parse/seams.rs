@@ -15,6 +15,7 @@ use std::collections::HashMap;
 /// The classname a level start places players at.
 const PLAYER_SPAWN_CLASSNAME: &str = "player_spawn";
 
+/// A seam read from its entity, its landmark not yet resolved.
 struct Pending {
     record: SeamRecord,
     /// The authored `teleport_destination` name; `None` keeps the bounds
@@ -30,6 +31,7 @@ pub(super) struct SeamParser {
 impl SeamParser {
     /// Read one `level_seam` entity. An authored landmark resolves at
     /// [`Self::finish`], so its destination may follow the seam in map order.
+    // Mirrors `TeleporterParser::extract`, which every region parser shares.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn extract(
         &mut self,

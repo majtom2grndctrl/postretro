@@ -70,7 +70,7 @@ fn hinted_fixtures_build_load_and_every_seam_matches_a_runtime_portal() {
     for name in HINTED_FIXTURES {
         let path = fixture_path(name);
         let cells = Cells::of_map_data(parse(&path));
-        let seams = &cells.map_data.streaming_seam_regions;
+        let seams = &cells.map_data.streaming_split_regions;
         assert!(!seams.is_empty(), "{name} places a seam");
         let (cell_section, portal_section, _) = cells.sections();
 
@@ -122,7 +122,7 @@ fn hinted_fixtures_cells_and_portals_match_the_maps_without_hints() {
         let path = fixture_path(name);
         let with = parse(&path);
         assert!(
-            !with.streaming_seam_regions.is_empty()
+            !with.streaming_split_regions.is_empty()
                 && !with.stream_resident_regions.is_empty()
                 && !with.stream_priority_regions.is_empty(),
             "{name} places every hint class"
@@ -133,7 +133,7 @@ fn hinted_fixtures_cells_and_portals_match_the_maps_without_hints() {
         std::fs::write(&stripped_path, without_hint_entities(&text)).expect("write stripped map");
         let without = parse(&stripped_path);
         assert!(
-            without.streaming_seam_regions.is_empty()
+            without.streaming_split_regions.is_empty()
                 && without.stream_resident_regions.is_empty()
                 && without.stream_priority_regions.is_empty(),
             "{name}: the stripped map places no hint"

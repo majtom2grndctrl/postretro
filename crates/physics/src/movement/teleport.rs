@@ -140,8 +140,8 @@ pub fn rotate_arrival_motion(
     edge
 }
 
-/// Finish a validated relocation at its exact body point. Teleporters and
-/// respawn share this ground classification, cut identity and arrival latches.
+/// Finish a validated relocation at its exact body point. Teleporters,
+/// respawn and seam arrivals share this ground classification, cut identity and arrival latches.
 /// The caller owns position, facing, movement resets and any presentation event;
 /// this function neither moves the capsule nor rotates its velocity channels.
 /// `NO_TELEPORTER` records a silent cut rather than a teleporter arrival cue.

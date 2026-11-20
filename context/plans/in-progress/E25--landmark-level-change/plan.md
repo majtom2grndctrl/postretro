@@ -10,6 +10,9 @@ read at: e743823
 - Path "`UnbackedSpawn` carries no velocity, movement state or latch" → `UnbackedSpawn` gains `arrival: Option<SeamSpawnArrival>`; the resolver holds per-seat seam offers (`set_seam_offers`), tests the fit at resolve and again at promotion (`SpawnPlacements::with_arrival_world`), and participation entry applies the motion, latch and `arrive` queue.
 - Brief "movement-state payload" → a `Swim` payload names the source level's fluid table, so it arrives as `Normal` (the next tick's immersion re-enters swim); crouch and slide carry their live (shrunk) capsule with the state.
 - Seat 0 is the host's or single player's seat (`Seat(0)`), as `CarriedState` already assumes; the seam checkpoint pose reads seat 0's harvested arrival.
+- Brief §Wire format "brushes (`u32` count, each a `u32` plane count then planes as four `f32`)" → each brush also carries its AABB min and max (six `f32`) before the plane count: id 61 uses the id-52 brush encoding, as the same paragraph's "mirrors `TeleportersSection` (id 55)" and `build_pipeline.md` require. Clarification; same meaning.
+- Seam checkpoint pose → saves `LandmarkRelative::rest_offset`: a crouched or sliding crossing's centre raised to standing height with the feet kept, since Continue arrives standing at rest (review finding).
+- Rename scope → the classname and the compiler's `streaming_split_regions`; runtime SH streaming identifiers (`SeamWarm`, "seam portal" strings) keep their names, out of this brief's scope.
 
 ## Delegated answers
 - None: the brief has no open questions.
@@ -99,6 +102,12 @@ Test homes: compile rows in `level-compiler` (bin `prl-build` and `tests/`), wir
 | 8 | Arrival spawn (host / SP), respawn latch, blocked fallback, Settling view, `arrive` | integrating executor | 7 | done (`install_level_seams`) |
 | 9 | Co-op client arrival through the resolver and participation entry | integrating executor | 8 | done (resolver offers, participation entry) |
 | 10 | Seam checkpoint: run record, level-start save, Continue, spawn-set fallback | integrating executor | 8 | done (`LevelRecord.seam`, `RunCheckpoint::Seam`, `seam_spawn_set`) |
-| 11 | Lifecycle, co-op and save AC tests in the app crate | worker C (main checkout) | 6–10 | |
-| 12 | Docs, dev-pair data script, scripting example | integrating executor | 6–10 | |
+| 11 | Lifecycle, co-op and save AC tests in the app crate | worker C (main checkout) | 6–10 | done (40 tests; fixed: an arriving host kept its player start) |
+| 12 | Docs, dev-pair data script, scripting example | integrating executor | 6–10 | done (`docs/level-seams.md`, `seam-pair.{ts,luau}`) |
 | 13 | Preflight, review panel, fixes | integrating executor | 11, 12 | |
+
+## Review loop
+
+Round 1: 9 reviewers (2 correctness tracers, 1 seam-pass tracer, 2 contract verifiers, 1 adversarial tester on Opus; 3 hygiene/drift on Sonnet), 3 slices plus a seam pass. No 🔴 in code.
+- Fixed: a same-frame quit to menu (any `navigate_to_frontend`) lost to a seam (3 lenses); the script-request note now also clears at the redraw boundary; Continue from a crouched crossing fell back to a start (`rest_offset`); arrival fit also rejects a non-finite view; suspend clears the resolver's seam offers; an empty seam stage returns before any per-tick work; arrivals are taken only with a script context; comment drift (`settle_arrival`, `subject_token_carries`, trigger install, pick doc, `activated`, resolve doc, P29 pin, dev script headers, occupancy warning, V4a message); `scripting-reference` §Addressing gains seams.
+- Left: the resolver's class probe through `assign_joiner_placement` can advance the overflow cursor and spend the once-per-level overflow warning when every start is taken (logs only); Luau `seamEvents` aborts a sparse table where QuickJS skips the entry, as `teleportEvents` does; typedef doc comments listing subject tokens omit `@seam` (the types include it); `context/lib` "not yet built" markers drop at landing, per the brief's Path.

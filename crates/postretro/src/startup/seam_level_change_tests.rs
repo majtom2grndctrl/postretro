@@ -484,6 +484,44 @@ fn seam_activation_loses_to_a_script_level_verb_on_the_same_frame() {
     }
 }
 
+// Regression: a quit to the menu on the same frame as a seam activation lost
+// to the seam, whose target then installed as the frontend backdrop.
+#[test]
+fn seam_activation_loses_to_a_same_frame_quit_to_menu() {
+    let mut app = in_source(vec![source_door()]);
+    let host = local_pawn(&app);
+    place(&app, host, INSIDE, 0.0, Vec3::ZERO);
+    app.quit_to_menu();
+    trigger_tick(&mut app);
+    app.pick_seam_level_request();
+    let requests = seam_requests(&app);
+    assert!(
+        !requests
+            .iter()
+            .any(|request| matches!(request, LevelRequest::Seam { .. })),
+        "the seam's request drops: {requests:?}"
+    );
+}
+
+// A script level verb beats only its own frame's seams: one that never
+// reached a pick is cleared at the next redraw boundary.
+#[test]
+fn seam_script_request_note_clears_at_the_next_boundary() {
+    let mut app = in_source(vec![source_door()]);
+    let host = local_pawn(&app);
+    app.note_script_level_request();
+    app.drain_level_requests();
+    place(&app, host, INSIDE, 0.0, Vec3::ZERO);
+    trigger_tick(&mut app);
+    app.pick_seam_level_request();
+    assert!(
+        seam_requests(&app)
+            .iter()
+            .any(|request| matches!(request, LevelRequest::Seam { .. })),
+        "the stale note no longer drops this frame's seam"
+    );
+}
+
 /// The source level with seams `first` (target `first_target`) and `second`
 /// (target `THIRD`) side by side, the host in neither.
 fn two_seams(first_target: &str) -> App {

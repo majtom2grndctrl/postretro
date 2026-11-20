@@ -40,8 +40,8 @@ pub struct SeamStage {
     reactivation: Vec<bool>,
     /// `(pawn, seam)` latches: set at spawn, cleared when the capsule leaves.
     latches: BTreeSet<(EntityId, u16)>,
-    /// Seams activated since the frame-end pick last took them, in
-    /// activation order, each once.
+    /// Seams activated since the frame-end pick last took them, each once.
+    /// The pick orders them by index, so the first in map order wins.
     activated: Vec<u16>,
     /// Arrivals spawned since the last stage run, each firing `arrive` once.
     arrivals: Vec<(u16, EntityId)>,
@@ -204,6 +204,10 @@ impl SeamStage {
         capabilities: &TriggerStageCapabilities,
         use_pressed: &HashMap<PlayerId, bool>,
     ) -> Vec<(EntityId, Vec<EntityId>)> {
+        // Most levels have no seam: the stage costs nothing there.
+        if self.records.is_empty() {
+            return Vec::new();
+        }
         let capsules: BTreeMap<PlayerId, (EntityId, SeamCapsule)> =
             canonical_player_capsules(registry, players, &mut self.warned_duplicate_players)
                 .into_iter()

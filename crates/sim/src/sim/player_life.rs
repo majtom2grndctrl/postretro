@@ -66,7 +66,7 @@ pub struct TriggerStageCapabilities {
 pub struct TriggerStagePawns {
     pub captured: Vec<EntityId>,
     pub counted: Vec<EntityId>,
-    /// Each trigger volume with a counted pawn inside after the trigger stage
+    /// Each trigger volume or level seam with a counted pawn inside after the trigger stage
     /// settles, in volume order, with those pawns. Empty on a tick with no
     /// trigger stage.
     pub occupied_volumes: Vec<(EntityId, Vec<EntityId>)>,

@@ -2052,6 +2052,9 @@ impl App {
         // dispatch. A cancelled load reports nothing, so a suspended boot
         // load resumes and installs instead of exiting.
         self.cancel_level_load_for_suspend();
+        // A crossing client's arrival offer clears with the suspend (pin P6),
+        // not only at the next install.
+        self.spawn_poses.set_seam_offers(Default::default());
         // Hand off the upload thread before the renderer drops: a job still
         // running on the old device finishes into dropped receivers, and the
         // redraw poll joins the thread once it has.
@@ -3200,6 +3203,9 @@ impl App {
     /// `returnToFrontend` verb reaches it only in single-player; a leave and
     /// `ui.quitToMenu` reach it through their own membership change.
     fn navigate_to_frontend(&mut self) {
+        // Every frontend return (a verb, quit to menu, a session ending)
+        // beats a seam activated on the same frame.
+        self.note_script_level_request();
         self.cancel_pending_entry("navigation");
         self.present_frontend_menu();
         let requests = self

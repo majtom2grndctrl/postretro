@@ -1,4 +1,5 @@
--- Level seam pair (seam-pair-a): the brief's scripting surface. TypeScript twin: seam-pair.ts.
+-- Level seam pair script (map seam-pair-a): the worked level_seam scripting
+-- example from docs/level-seams.md. TypeScript twin: seam-pair.ts.
 -- The seam a player arrives by disarms; stepping on the airlock button arms it again.
 local Postretro = require("postretro")
 

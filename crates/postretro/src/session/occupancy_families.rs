@@ -83,7 +83,7 @@ impl OccupancyFamilies {
         refs.warn_unformable("setupLevel");
         for tag in refs.keys.difference(volume_tags) {
             log::warn!(
-                "[Scripting] setupLevel references occupancy tag `{tag}`, but no trigger volume in this level carries it; it reads 0"
+                "[Scripting] setupLevel references occupancy tag `{tag}`, but no trigger volume or level seam in this level carries it; it reads 0"
             );
         }
         self.level_keys = refs.keys.clone();

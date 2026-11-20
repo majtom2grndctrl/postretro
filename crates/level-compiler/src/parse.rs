@@ -985,7 +985,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     // Compiler-only authored SH streaming metadata. These brushes are peeled
     // before static BSP inputs; later tasks resolve the retained canonical hulls
     // against generated portals and runtime cells.
-    let mut streaming_seam_regions: Vec<MapStreamingHintRegion> = Vec::new();
+    let mut streaming_split_regions: Vec<MapStreamingHintRegion> = Vec::new();
     let mut stream_resident_regions: Vec<MapStreamingHintRegion> = Vec::new();
     let mut stream_priority_regions: Vec<MapStreamingPriorityRegion> = Vec::new();
     let mut trigger_volumes = Vec::new();
@@ -1432,7 +1432,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 let props = collect_entity_properties(&geo_map, entity_id);
                 match classname.as_str() {
                     "stream_split_volume" => {
-                        streaming_seam_regions.push(resolve_streaming_hint_region(
+                        streaming_split_regions.push(resolve_streaming_hint_region(
                             &geo_map, &brush_ids, scale, &classname, origin,
                         )?)
                     }
@@ -1864,7 +1864,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         uniform_grid_optout,
         fog_volumes,
         lightmap_scale_regions,
-        streaming_seam_regions,
+        streaming_split_regions,
         stream_resident_regions,
         stream_priority_regions,
         fog_pixel_scale,

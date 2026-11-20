@@ -252,6 +252,10 @@ impl App {
     /// then the request takes its ordinary path. A host-named request that
     /// no longer resolves leaves the host level the client was following.
     pub(in crate::startup) fn drain_level_requests(&mut self) {
+        // A script level verb beats only the seams of the frame it ran in;
+        // one from a frame that never reached the pick must not drop the
+        // next level's activations.
+        self.script_level_request_this_frame = false;
         if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             return;
         }
@@ -330,7 +334,7 @@ impl App {
                 .and_then(|crossing| crossing.arrivals.get(&postretro_foundation::Seat(0)))
                 .map(
                     |arrival| postretro_sim::scripting::save_files::SeamPoseRecord {
-                        offset: arrival.offset.to_array(),
+                        offset: arrival.rest_offset.to_array(),
                         view_yaw: arrival.view_yaw,
                         view_pitch: arrival.view_pitch,
                     },

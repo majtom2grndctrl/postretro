@@ -50,6 +50,9 @@ pub struct LandmarkRelative {
     /// The live capsule while crouched or sliding, whose shrunk size the state
     /// assumes; `None` arrives at the spawned pawn's own size.
     pub crouched_capsule: Option<CapsuleParams>,
+    /// `offset` for a standing capsule with the same feet: what a seam
+    /// checkpoint saves, since Continue arrives standing at rest.
+    pub rest_offset: Vec3,
 }
 
 impl LandmarkRelative {
@@ -74,8 +77,17 @@ impl LandmarkRelative {
             MovementState::Crouching { .. } | MovementState::Sliding { .. }
         )
         .then(|| component.capsule.clone());
+        let offset = frame.point(body);
+        // A shrunk capsule keeps its feet planted: standing up raises the
+        // centre by the half-height it lost.
+        let rest_offset = offset
+            + Vec3::Y
+                * crouched_capsule.as_ref().map_or(0.0, |capsule| {
+                    (component.standing_half_height - capsule.half_height).max(0.0)
+                });
         Self {
-            offset: frame.point(body),
+            offset,
+            rest_offset,
             view_yaw: wrap_teleport_yaw(view_yaw + frame.yaw_delta()),
             view_pitch,
             velocity: frame.vector(component.velocity),
@@ -90,6 +102,7 @@ impl LandmarkRelative {
     pub fn at_rest(offset: Vec3, view_yaw: f32, view_pitch: f32) -> Self {
         Self {
             offset,
+            rest_offset: offset,
             view_yaw,
             view_pitch,
             velocity: Vec3::ZERO,

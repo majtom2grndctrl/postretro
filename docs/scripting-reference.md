@@ -3182,9 +3182,9 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, level seams, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
-- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
+- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction, `on.activators` and `on.seam` inside a seam `arrive` reaction.
 
 Every command is a method on its target. In TypeScript call it as `target.verb(…)`; in Luau, `target:verb(…)`. Each target carries only the verbs its kind supports — calling a verb a target lacks is a type error in TypeScript and an error in Luau.
 
@@ -3195,6 +3195,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
+| seam member | `getMapEntities("seam")` | `arm`, `disarm`, `on` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
@@ -3202,10 +3203,11 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
 | player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| `on.activators` | trigger-, teleport- or seam-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
+| `on.seam` | seam `arrive` reaction param | `arm`, `disarm` |
 
 ### getMapEntities
 

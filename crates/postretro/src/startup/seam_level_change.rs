@@ -19,16 +19,17 @@ impl App {
     /// request from this frame's activations. A script level request this
     /// frame drops them all. Otherwise the first activated seam in map order
     /// whose target the catalog knows requests a classic level change carrying
-    /// its name; an unknown target warns once and requests nothing. The pick
-    /// rides activation order nowhere: the trigger stage walks seams by index,
-    /// and a later seam's in-tick request would otherwise replace an earlier
-    /// one's.
+    /// its name; an unknown target warns once and requests nothing. Picking
+    /// here, not in the tick, keeps a later seam's request from replacing an
+    /// earlier one's: the request queue keeps only the last load.
     pub(crate) fn pick_seam_level_request(&mut self) {
         let script_request = std::mem::take(&mut self.script_level_request_this_frame);
         let mut activated = self.seam_stage.take_activations();
         if activated.is_empty() || script_request || self.seam_stage.is_inert() {
             return;
         }
+        // The host places every pawn and names every level; a client never
+        // evaluates seams.
         if self.session_role() == crate::session::role_state::SessionRole::Client {
             return;
         }
@@ -191,7 +192,7 @@ impl App {
                     first_spawn = Some((pose.body, Vec3::new(pose.view_pitch, pose.view_yaw, 0.0)));
                     self.seam_stage.queue_arrival(index, pawn);
                     // An arrival holds no player start: the one this pawn
-                    // spawned on is free for joiners (pin P29).
+                    // spawned on is free for joiners.
                     if let Some(seats) = session.seat_table.as_mut() {
                         seats.release_placement(local_seat);
                         seats.release_level_spawn_placement(pawn);

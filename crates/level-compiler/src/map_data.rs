@@ -757,7 +757,7 @@ pub struct MapData {
     /// Compiler-only SH streaming seams. The parser retains the engine-space
     /// convex hulls for the later portal-resolution stage; they are never part
     /// of the static world brush set or a runtime map-entity section.
-    pub streaming_seam_regions: Vec<MapStreamingHintRegion>,
+    pub streaming_split_regions: Vec<MapStreamingHintRegion>,
     /// Compiler-only SH residency pins. The later cluster-resolution stage
     /// matches their engine-space AABBs against runtime cells.
     pub stream_resident_regions: Vec<MapStreamingHintRegion>,

@@ -1,4 +1,5 @@
-// Level seam pair (seam-pair-b): the brief's scripting surface. Luau twin: seam-pair.luau.
+// Level seam pair script (map seam-pair-b): the worked level_seam scripting
+// example from docs/level-seams.md. Luau twin: seam-pair.luau.
 // The seam a player arrives by disarms; stepping on the airlock button arms it again.
 import { defineReaction, getMapEntities } from "postretro";
 import type { SeamEventParams } from "postretro";

@@ -1676,8 +1676,9 @@ fn runtime_sequence_step_shape_is_valid(step: &JsonValue) -> bool {
 }
 
 /// Whether `target` is a subject token that carries `primitive`: the fired
-/// volume (`@trigger`) only arms and disarms, and the activators and the
-/// event player (`@player`) never do.
+/// volume (`@trigger`), teleporter (`@teleporter`) and seam (`@seam`) each
+/// carry only their own arm and disarm, and the activators and the event
+/// player (`@player`) carry no arming verb.
 /// Mirrors the runtime parser's `validate_subject_token_primitive`.
 fn subject_token_carries(target: &str, primitive: &str) -> bool {
     if matches!(primitive, "fireTrap" | "startTrap" | "stopTrap") {

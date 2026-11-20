@@ -63,7 +63,7 @@ impl LandmarkRelative {
         landmark: Landmark,
     ) -> Self {
         let frame = landmark.into_frame();
-        let mut movement_state = component.movement_state.clone();
+        let mut movement_state = component.movement_state;
         if let MovementState::Dash { boost, .. } | MovementState::Sliding { boost, .. } =
             &mut movement_state
         {
@@ -161,7 +161,7 @@ pub fn apply_seam_arrival(
         // A fluid index names the source level's fluid table; the next tick's
         // immersion re-enters swim where the arrival is wet.
         MovementState::Swim { .. } => MovementState::Normal,
-        state => state.clone(),
+        state => *state,
     };
     let edge = rotate_arrival_motion(component, Quat::from_rotation_y(landmark.yaw));
     // A spawn starts a fresh teleport frame: the view is set absolutely, so

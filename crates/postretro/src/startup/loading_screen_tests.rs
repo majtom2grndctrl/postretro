@@ -576,9 +576,16 @@ fn dev_mod_declares_per_map_screenshot_trees_plain_pool_and_images() {
         .expect("the plain pool tree is registered");
     assert_eq!(plain.background, None, "the plain tree draws no imagery");
 
-    // Every catalog map names its own tree, which draws that map's screenshot.
+    // Every catalog map names its own tree, which draws that map's screenshot,
+    // except the level seam pair: its capture scenes need a GPU machine, so
+    // its loads take the plain pool until they are shot.
+    const NO_SCREENSHOT_YET: [&str; 2] = ["seam-pair-a", "seam-pair-b"];
     assert!(!manifest.maps.is_empty());
     for map in &manifest.maps {
+        if NO_SCREENSHOT_YET.contains(&map.id.as_str()) {
+            assert!(map.loading_tree.is_empty(), "{}", map.id);
+            continue;
+        }
         let expected = format!("dev.loading.{}", map.id);
         assert_eq!(map.loading_tree, vec![expected.clone()], "{}", map.id);
         let tree = trees
@@ -817,7 +824,7 @@ fn every_loading_screen_end_path_goes_through_the_releasing_end() {
         (
             "lifecycle_net.rs",
             include_str!("lifecycle_net.rs"),
-            "unload_level",
+            "unload_level_crossing",
         ),
         (
             "lifecycle_boot_state.rs",

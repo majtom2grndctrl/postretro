@@ -57,8 +57,8 @@ pub(crate) fn resolve_streaming_hints(
 
     let mut seam_portal_ids = BTreeSet::new();
     for region in streaming_seam_regions {
-        let bounds = checked_region_bounds(region, "streaming_seam_volume")?;
-        let planes = checked_region_planes(region, "streaming_seam_volume")?;
+        let bounds = checked_region_bounds(region, "stream_split_volume")?;
+        let planes = checked_region_planes(region, "stream_split_volume")?;
         let mut matched = false;
         for (portal_index, portal) in generated_portals.iter().enumerate() {
             let Some(portal_bounds) = valid_portal_bounds(portal) else {
@@ -72,7 +72,7 @@ pub(crate) fn resolve_streaming_hints(
         }
         anyhow::ensure!(
             matched,
-            "streaming_seam_volume {} matches no runtime portal with positive-area through-hull overlap",
+            "stream_split_volume {} matches no runtime portal with positive-area through-hull overlap",
             hint_location(region),
         );
     }
@@ -485,7 +485,7 @@ mod tests {
         )
         .expect_err("one-sided hull must not produce a seam");
         assert!(
-            error.to_string().contains("streaming_seam_volume")
+            error.to_string().contains("stream_split_volume")
                 && error.to_string().contains("matches no runtime portal"),
             "error must name the authored hint: {error}",
         );

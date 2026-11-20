@@ -1371,7 +1371,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         // through to runtime classname dispatch as inert, invisible content.
         if matches!(
             classname.as_str(),
-            "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+            "stream_split_volume" | "stream_resident_volume" | "stream_priority_region"
         ) && !has_brushes
         {
             let location = match origin {
@@ -1412,7 +1412,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         if has_brushes {
             if matches!(
                 classname.as_str(),
-                "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+                "stream_split_volume" | "stream_resident_volume" | "stream_priority_region"
             ) {
                 if brush_ids.len() != 1 {
                     let location = match origin {
@@ -1430,7 +1430,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
 
                 let props = collect_entity_properties(&geo_map, entity_id);
                 match classname.as_str() {
-                    "streaming_seam_volume" => {
+                    "stream_split_volume" => {
                         streaming_seam_regions.push(resolve_streaming_hint_region(
                             &geo_map, &brush_ids, scale, &classname, origin,
                         )?)

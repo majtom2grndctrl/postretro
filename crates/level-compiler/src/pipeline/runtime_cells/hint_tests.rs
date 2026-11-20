@@ -17,7 +17,7 @@ const HINTED_FIXTURES: [&str; 2] = [
 
 /// Brush classes peeled before the BSP that shape SH streaming only.
 const HINT_CLASSES: [&str; 3] = [
-    "streaming_seam_volume",
+    "stream_split_volume",
     "stream_resident_volume",
     "stream_priority_region",
 ];
@@ -179,14 +179,14 @@ fn seam_across_an_exempt_wall_fails_the_build_by_name() {
         .solid([250.0, 320.0, 0.0], [290.0, 328.0, 128.0])
         .solid([350.0, 320.0, 0.0], [390.0, 328.0, 128.0])
         .brush_entity(
-            "streaming_seam_volume",
+            "stream_split_volume",
             &[],
             &[([292.0, 316.0, 8.0], [348.0, 332.0, 120.0])],
         );
     let error = try_compile(&map).expect_err("a seam matching no runtime portal fails the build");
     let message = format!("{error:#}");
     assert!(
-        message.contains("streaming_seam_volume at (")
+        message.contains("stream_split_volume at (")
             && message.contains("matches no runtime portal"),
         "the error names the seam and where it stands: {message}"
     );

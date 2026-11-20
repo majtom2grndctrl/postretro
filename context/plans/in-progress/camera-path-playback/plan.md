@@ -141,7 +141,7 @@ The thin slice is Tasks 1–4. It ends at the riskiest premise, that a Metal Sys
 | 6 | Record: full header, CPU rows, per-resource drain counts, cold and growth flags, both drawn-not-resident counts, GPU query ring, preallocated rows, one write | integrating executor + renderer worker | 5 | |
 | 7 | Cap seed and dev-tools drain-cap slider (spike lever); `--present-mode` | worker, sequential | 4 | |
 | 8 | Telemetry: playback window kind, producer state, final partial | worker, sequential | 6 | |
-| 9 | Smoothed generator kind and verb parameters; AC 3 | worker, sequential | 2 | |
+| 9 | Smoothed generator kind and verb parameters; AC 3 | worker, worktree | 2 | done (10bc3bdf2): `camera-route/src/smoothed/` — legs end at portal centroids nudged inward, each segment proven against the cell-locator plane tree to touch only {current, next}; seeded Dijkstra detours otherwise; walk teleports cut. Tool `--kind smoothed --walk --speed --turn-cap` (defaults 8 m/s, 270°/s). camera-route 21 passed + 1 ignored; tool `camera_route` 8 passed; clippy clean. campaign-test on-demand: far-point 132,126 poses, random 96,907, 0 locate cuts, max 0.13334 m and 4.5° per pose, every straight pair at full stride (far-point 80.4% of poses at full stride, random 66.3%: U-turns turn in place). |
 | 10 | Recording: pre-feel recorder, resampling, first-level scope, exit flush | integrating executor | 5 | |
 | 11 | MST reducer in `tools/` with unittest from the Task 4 export; preflight line | worker, sequential | 4 (owner export), 6 | |
 | 12 | Grep gate, gating test, `docs/` page, one `sdk-dist` bundle check | integrating executor | all | |

@@ -21,7 +21,8 @@ pub const NO_VOLUME_FACTOR: [f32; 3] = [1.0; 3];
 /// judge the scalar and the colour separately (`emissive_flash.rs`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VolumeGlow {
-    /// `min + brightness × (max − min)`.
+    /// `min × (1 − brightness) + max × brightness`: the authored range at
+    /// the scripted brightness, exactly `max` at brightness 1.
     pub multiplier: f32,
     /// Linear tint, each channel in `[0, 1]`.
     pub color: [f32; 3],
@@ -31,14 +32,19 @@ impl VolumeGlow {
     /// The glow a script's values present.
     ///
     /// Scripts own `brightness` and `color`, so both clamp here to `[0, 1]`:
-    /// a script never pushes a surface past the mapper's `max`. A NaN
-    /// brightness reads 0, as fog's `glow` does; a non-finite colour channel
-    /// reads 0.
+    /// a script never pushes a surface past the mapper's `max`. Each reads a
+    /// bad value as its primitive fixes it: a NaN brightness reads 0 and an
+    /// infinite one clamps (`setEmissiveBrightness`); a non-finite colour
+    /// channel reads 0 (`setEmissiveColor`).
+    ///
+    /// The multiplier blends the endpoints rather than adding a scaled span,
+    /// so brightness 1 presents exactly `max`: the bake's reference state is
+    /// `max × colour`, and the no-script glow matches it bit for bit.
     pub fn scripted(min: f32, max: f32, brightness: f32, color: [f32; 3]) -> Self {
-        let brightness = unit(brightness);
+        let brightness = unit_brightness(brightness);
         Self {
-            multiplier: min + brightness * (max - min),
-            color: color.map(unit),
+            multiplier: min * (1.0 - brightness) + max * brightness,
+            color: color.map(unit_channel),
         }
     }
 
@@ -48,18 +54,29 @@ impl VolumeGlow {
     }
 }
 
-/// One volume's glow factor: `(min + brightness × (max − min)) × color`,
-/// clamped as [`VolumeGlow::scripted`] clamps.
+/// One volume's glow factor: `(min × (1 − brightness) + max × brightness) ×
+/// color`, clamped as [`VolumeGlow::scripted`] clamps.
 pub fn volume_factor(min: f32, max: f32, brightness: f32, color: [f32; 3]) -> [f32; 3] {
     VolumeGlow::scripted(min, max, brightness, color).factor()
 }
 
-/// `value` clamped to `[0, 1]`; NaN reads 0, +inf 1.
-fn unit(value: f32) -> f32 {
+/// A brightness clamped to `[0, 1]`, as `setEmissiveBrightness` and the
+/// animation sample clamp fix it: NaN reads 0, ±inf clamps to 1 or 0.
+fn unit_brightness(value: f32) -> f32 {
     if value.is_nan() {
         0.0
     } else {
         value.clamp(0.0, 1.0)
+    }
+}
+
+/// A colour channel clamped to `[0, 1]`, as `setEmissiveColor` fixes it: any
+/// non-finite channel reads 0.
+fn unit_channel(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
     }
 }
 
@@ -143,10 +160,21 @@ impl EmissiveVolumeTable {
     /// volume cap are ignored; the compiler never writes such a volume.
     pub fn pack(&mut self, factors: &[[f32; 3]]) {
         for (volume, &factor) in factors.iter().take(MAX_EMISSIVE_VOLUMES).enumerate() {
-            let entry = volume + 1;
-            if self.write_entry(entry, factor) {
-                self.dirty[entry] = true;
-            }
+            self.pack_volume(volume, factor);
+        }
+    }
+
+    /// Write volume `volume`'s factor to entry `volume + 1`, marking it
+    /// pending only when its bytes change. A volume past the cap is ignored.
+    /// For a volume [`pack`](Self::pack) does not reach, such as one the
+    /// caller packs once and never animates.
+    pub fn pack_volume(&mut self, volume: usize, factor: [f32; 3]) {
+        if volume >= MAX_EMISSIVE_VOLUMES {
+            return;
+        }
+        let entry = volume + 1;
+        if self.write_entry(entry, factor) {
+            self.dirty[entry] = true;
         }
     }
 
@@ -243,8 +271,9 @@ mod tests {
         close(volume_factor(2.0, 6.0, 1.0, color), [6.0, 3.0, 1.5]);
     }
 
-    // P10 and P49: brightness and colour clamp to [0, 1]; NaN and other
-    // non-finite channels read 0, +inf brightness reads 1.
+    // P10 and P49: brightness and colour clamp to [0, 1] as their primitives
+    // fix them: NaN brightness reads 0 and +inf clamps to 1; any non-finite
+    // colour channel reads 0.
     #[test]
     fn volume_factor_clamps_script_brightness_and_colour() {
         let white = [1.0; 3];
@@ -256,7 +285,31 @@ mod tests {
             volume_factor(0.0, 1.0, 1.0, [100.0, -1.0, f32::NAN]),
             [1.0, 0.0, 0.0],
         );
-        close(volume_factor(0.0, 1.0, 1.0, [f32::INFINITY; 3]), [1.0; 3]);
+        close(volume_factor(0.0, 1.0, 1.0, [f32::INFINITY; 3]), [0.0; 3]);
+        close(
+            volume_factor(0.0, 1.0, 1.0, [f32::NEG_INFINITY, 0.5, 1.0]),
+            [0.0, 0.5, 1.0],
+        );
+    }
+
+    // The bake's reference state is max × colour: brightness 1 presents
+    // exactly `max` and brightness 0 exactly `min`, with no rounding from a
+    // scaled span, wherever the range sits.
+    #[test]
+    fn the_range_endpoints_present_exactly() {
+        for (min, max) in [(0.1, 0.7), (0.3, 64.0), (2.5, 2.5), (0.0, 1.0), (7.0, 13.1)] {
+            assert_eq!(
+                VolumeGlow::scripted(min, max, 1.0, [1.0; 3]).multiplier,
+                max
+            );
+            assert_eq!(
+                VolumeGlow::scripted(min, max, 0.0, [1.0; 3]).multiplier,
+                min
+            );
+        }
+        let color = [0.9, 0.06, 0.04];
+        let expected = color.map(|channel| channel * 13.1);
+        assert_eq!(volume_factor(7.0, 13.1, 1.0, color), expected);
     }
 
     // No script means brightness 1: max × the authored colour. Entry 0 is
@@ -314,6 +367,27 @@ mod tests {
         table.pack(&factors);
         assert_eq!(spans(&mut table), [(1, 3), (5, 6)]);
         assert_eq!(table.pending().byte_count(), 3 * EMISSIVE_TABLE_ENTRY_BYTES);
+    }
+
+    // A volume packed on its own lands in its entry, pends only on a change,
+    // and a later `pack` of fewer volumes leaves it alone; past the cap is
+    // ignored.
+    #[test]
+    fn pack_volume_writes_one_entry_that_a_shorter_pack_leaves_alone() {
+        let mut table = EmissiveVolumeTable::new();
+        table.pack_volume(4, [2.0, 1.0, 0.5]);
+        assert_eq!(spans(&mut table), [(5, 6)]);
+        table.mark_uploaded();
+        table.pack_volume(4, [2.0, 1.0, 0.5]);
+        assert!(table.pending().runs.is_empty());
+
+        table.pack(&[[0.5; 3]; 2]);
+        assert_eq!(spans(&mut table), [(1, 3)]);
+        close(table.entry(5), [2.0, 1.0, 0.5]);
+
+        table.mark_uploaded();
+        table.pack_volume(MAX_EMISSIVE_VOLUMES, [9.0; 3]);
+        assert!(table.pending().runs.is_empty());
     }
 
     // A level change re-sends the whole table once, whatever matched before.

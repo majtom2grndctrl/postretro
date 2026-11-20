@@ -75,13 +75,13 @@ fn room_map(volumes: &[String]) -> String {
     entities.join("\n")
 }
 
-/// An `emissive_volume` around the glowing wall side's centre (map
-/// (128, 0, 64)), clear of every other side's, with `properties` (one
-/// `"key" "value"` per line).
+/// A thin `emissive_volume` over the whole glowing wall side (map x = 128),
+/// so it holds the centroid of every BSP fragment of that side and of no
+/// other face, with `properties` (one `"key" "value"` per line).
 fn panel_volume(properties: &str) -> String {
     format!(
         "{{\n\"classname\" \"emissive_volume\"\n{properties}{}\n}}",
-        box_brush([100, -48, 24], [136, 48, 104], "trigger")
+        box_brush([127, -136, -8], [136, 136, 136], "trigger")
     )
 }
 
@@ -256,8 +256,8 @@ fn a_volumes_record_and_faces_read_back_from_the_emissive_section() {
     assert_eq!(volume.color[2], 0.0);
     assert_eq!(volume.tags, ["bar_sign", "lobby"]);
     assert_eq!(volume.faces, faces_of(&compiled, PANEL));
-    // The union AABB's centre, map (118, 0, 64): engine (−y, z, −x).
-    let origin = [0.0, 64.0 * UNIT, -118.0 * UNIT];
+    // The union AABB's centre, map (131.5, 0, 64): engine (−y, z, −x).
+    let origin = [0.0, 64.0 * UNIT, -131.5 * UNIT];
     for (actual, expected) in volume.origin.iter().zip(origin) {
         assert!((actual - expected).abs() < 1e-5, "{:?}", volume.origin);
     }

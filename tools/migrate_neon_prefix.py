@@ -69,6 +69,10 @@ KNOWN_MATERIAL_PREFIXES = ("metal", "concrete", "grate", "glass", "wood")
 # stem): specular, normal, emissive, height, sharpness.
 SLOT_SUFFIXES = ("_s", "_n", "_e", "_h", "_p")
 
+# prl-build's `BUNDLE_SUFFIXES` (texture_mips/resolution.rs): the siblings whose
+# presence makes a stem a bundle base, including the bare diffuse.
+BUNDLE_SUFFIXES = ("", "_s", "_n", "_e", "_h")
+
 # A `.map` face line: three plane points, then the texture name.
 FACE_LINE = re.compile(
     r"^(?P<head>\s*\([^()]*\)\s*\([^()]*\)\s*\([^()]*\)\s*)"
@@ -155,27 +159,43 @@ def scan_textures(textures_root):
         stems = {path.stem.lower() for path in pngs}
         stems_by_collection[directory.name] = stems
         neon = [path for path in pngs if path.stem.lower().startswith(OLD_PREFIX)]
+        neon_stems = {path.stem.lower() for path in neon}
 
-        def slot_suffix(lowered):
-            """The suffix that makes `lowered` a sibling of another `neon_` file."""
+        def bundle_base(lowered):
+            """The bundle base `lowered` belongs to, as prl-build groups bundles.
+
+            prl-build treats a stem as a bundle base when it or any known
+            sibling (`BUNDLE_SUFFIXES`) exists, so a sibling-only bundle
+            (`neon_x_e` with no `neon_x`) is one bundle. `_p` is a slot only
+            where its base already has a bundle file.
+            """
             for suffix in SLOT_SUFFIXES:
                 base = lowered[: -len(suffix)]
-                if lowered.endswith(suffix) and base.startswith(OLD_PREFIX) and base in stems:
-                    return suffix
-            return ""
+                if not lowered.endswith(suffix) or not base.startswith(OLD_PREFIX):
+                    continue
+                if suffix == "_p" and not any(base + s in neon_stems for s in BUNDLE_SUFFIXES):
+                    continue
+                return base
+            return lowered
 
         bases = {}
         for path in neon:
-            if not slot_suffix(path.stem.lower()):
-                bases[path.stem.lower()] = Texture(directory.name, path.stem)
-        for path in neon:
             lowered = path.stem.lower()
-            suffix = slot_suffix(lowered)
-            texture = bases[lowered[: len(lowered) - len(suffix)]]
+            base = bundle_base(lowered)
+            if base != lowered and base in neon_stems and bundle_base(base) != base:
+                raise Refusal(
+                    f"{path}: its base `{base}` is itself a sibling of `{bundle_base(base)}`; "
+                    f"rename these files by hand"
+                )
+            texture = bases.get(base)
+            if texture is None:
+                texture = bases[base] = Texture(directory.name, path.stem[: len(base)])
             new_name = path.name[len(OLD_PREFIX):]
             texture.files.append((path, path.with_name(new_name)))
-            if suffix == "_e":
+            if lowered == base + "_e":
                 texture.has_emissive = True
+        # A sibling-only bundle's base is a texture name too (alias counts).
+        stems.update(bases)
         textures.extend(bases[key] for key in sorted(bases))
     return textures, stems_by_collection
 
@@ -208,6 +228,15 @@ def check_textures(textures, stems_by_collection):
             if key in targets:
                 problems.append(f"{old} and {targets[key]} both rename to {new.name}")
             targets[key] = old
+        renamed = {new.stem.lower() for _, new in texture.files}
+        existing = stems_by_collection[texture.collection]
+        for suffix in ("",) + SLOT_SUFFIXES:
+            orphan = stem.lower() + suffix
+            if orphan in existing and orphan not in renamed:
+                problems.append(
+                    f"{texture.collection}/{orphan}.png already exists in the target bundle "
+                    f"{texture.new_key}; the rename would adopt it"
+                )
     return problems
 
 
@@ -235,6 +264,7 @@ def plan_maps(maps_root, textures, stems_by_collection):
                 old.stem,
                 new.stem,
             )
+        qualified[texture.old_key] = (texture.collection, texture.old_stem, texture.new_stem)
     stem_count = {}
     for stems in stems_by_collection.values():
         for stem in stems:
@@ -394,14 +424,19 @@ def plan_materials_toml(toml_path, textures, qualified_alias_stems):
             )
         new_text = "\n".join(lines)
     if added:
+        block = ""
         if new_text and not new_text.endswith("\n"):
-            new_text += "\n"
+            block += "\n"
         if new_text:
-            new_text += "\n"
-        new_text += "# Kept from the retired `neon_` prefix's 4.0 by tools/migrate_neon_prefix.py.\n"
-        new_text += "\n".join(
+            block += "\n"
+        block += "# Kept from the retired `neon_` prefix's 4.0 by tools/migrate_neon_prefix.py.\n"
+        block += "\n".join(
             f"[{quote_key(texture.new_key)}]\nemissive = {EMISSIVE_STRENGTH}\n" for texture in added
         )
+        # Append in the file's own newline convention.
+        if "\r\n" in new_text:
+            block = block.replace("\n", "\r\n")
+        new_text += block
     if new_text == (text or ""):
         new_text = None
     return new_text, carried, added, no_entry, problems

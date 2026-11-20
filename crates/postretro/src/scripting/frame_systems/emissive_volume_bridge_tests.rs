@@ -244,6 +244,55 @@ fn the_last_volume_a_map_may_carry_packs_its_own_entry() {
     close(entry_zero, NO_VOLUME_FACTOR);
 }
 
+// A full entity registry drops the volume that found it full and every later
+// one, with one warning naming them. Each dropped volume packs its authored
+// no-script glow (max × colour, the bake's state), not the no-volume
+// identity, and holds it while the spawned ones animate and limit.
+#[test]
+fn volumes_a_full_registry_drops_hold_their_authored_glow() {
+    let records = vec![
+        record(0.5, 4.0, [1.0, 0.5, 0.25], vec![0], "kept"),
+        record(0.0, 2.0, [0.0, 1.0, 0.5], vec![1], "dropped"),
+        record(1.0, 3.0, [0.5, 0.5, 1.0], vec![2], "dropped"),
+    ];
+    let mut registry = EntityRegistry::new();
+    registry.set_test_capacity_limit(1);
+    let mut bridge = EmissiveVolumeBridge::new();
+    let captured = crate::scripting::reactions::log_capture::capture(|| {
+        bridge.populate_from_level(&mut registry, &records, &white_sources(&records));
+    });
+    let warnings: Vec<_> = captured
+        .iter()
+        .filter(|(level, _)| *level == log::Level::Warn)
+        .map(|(_, message)| message.as_str())
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("1..3"), "{}", warnings[0]);
+    assert_eq!(bridge.entity_for_map_index(1), None);
+
+    let kept = bridge.entity_for_map_index(0).unwrap();
+    write(&mut registry, kept, |volume| volume.brightness = 0.0);
+    bridge.update(&mut registry, 0.0, Some(&limited(DT)));
+    close(packed(&mut bridge, 1), [0.0, 2.0, 1.0]);
+    close(packed(&mut bridge, 2), [1.5, 1.5, 3.0]);
+    bridge.mark_uploaded();
+
+    for frame in 1..4 {
+        bridge.update(
+            &mut registry,
+            f64::from(frame) * f64::from(DT),
+            Some(&limited(DT)),
+        );
+        assert!(
+            spans(&mut bridge).iter().all(|&(_, end)| end <= 2),
+            "only the spawned volume's entry may change"
+        );
+        bridge.mark_uploaded();
+    }
+    close(packed(&mut bridge, 1), [0.0, 2.0, 1.0]);
+    close(packed(&mut bridge, 2), [1.5, 1.5, 3.0]);
+}
+
 // Teardown clears everything; the next map starts fresh at brightness 1 and
 // its authored colour, and re-sends the whole table.
 #[test]
@@ -479,6 +528,82 @@ fn an_identical_reinstall_keeps_its_start_until_a_finite_run_settles() {
     approx(brightness_of(&registry, id), 0.0); // restarted at 2.0
     bridge.update(&mut registry, 2.25, None);
     approx(brightness_of(&registry, id), 0.25);
+}
+
+// P6 on the settle frame: the drain runs before the bridge, so a re-install
+// landing on the first frame a finite run has finished still finds it
+// installed, with its serial. It restarts there rather than settling, and
+// the new run plays out and settles in its turn.
+#[test]
+fn a_reinstall_on_a_finite_runs_last_frame_restarts_it() {
+    let once = curve(1000.0, Some(1), vec![0.0, 1.0]);
+    let (mut registry, mut bridge, id) = animating(once.clone());
+    bridge.update(&mut registry, 0.5, None);
+    approx(brightness_of(&registry, id), 0.5);
+    write(&mut registry, id, |volume| {
+        volume.install_animation(once.clone())
+    });
+    bridge.update(&mut registry, 1.0, None); // the run's end: restarts at 1.0
+    let restarted = registry
+        .get_component::<EmissiveVolumeComponent>(id)
+        .unwrap();
+    assert_eq!(restarted.animation.as_ref(), Some(&once));
+    approx(restarted.brightness, 0.0);
+    bridge.update(&mut registry, 1.25, None);
+    approx(brightness_of(&registry, id), 0.25);
+    bridge.update(&mut registry, 2.0, None);
+    let settled = registry
+        .get_component::<EmissiveVolumeComponent>(id)
+        .unwrap();
+    assert_eq!(
+        (settled.brightness, settled.animation.as_ref()),
+        (1.0, None)
+    );
+}
+
+// P6 mid-run: a re-install while the run still plays keeps its start, and the
+// bridge takes that install as seen, so the run settles on its own end rather
+// than restarting there.
+#[test]
+fn a_reinstall_mid_run_keeps_its_start_and_settles_on_time() {
+    let once = curve(1000.0, Some(1), vec![0.0, 1.0]);
+    let (mut registry, mut bridge, id) = animating(once.clone());
+    bridge.update(&mut registry, 0.5, None);
+    write(&mut registry, id, |volume| {
+        volume.install_animation(once.clone())
+    });
+    bridge.update(&mut registry, 0.9, None);
+    approx(brightness_of(&registry, id), 0.9);
+    bridge.update(&mut registry, 1.0, None);
+    let settled = registry
+        .get_component::<EmissiveVolumeComponent>(id)
+        .unwrap();
+    assert_eq!(
+        (settled.brightness, settled.animation.as_ref()),
+        (1.0, None)
+    );
+}
+
+// Co-op apply writes a replicated curve through `install_animation`, which
+// touches the component. A record applied on the frame the local run ends,
+// with no host start, continues the local clock: it settles, never restarts.
+#[test]
+fn a_replicated_apply_on_a_runs_last_frame_settles_it() {
+    let once = curve(1000.0, Some(1), vec![0.0, 1.0]);
+    let (mut registry, mut bridge, id) = animating(once.clone());
+    bridge.update(&mut registry, 0.5, None);
+    write(&mut registry, id, |volume| {
+        volume.install_animation(once.clone())
+    });
+    assert!(bridge.seed_replicated_state(&registry, id, None));
+    bridge.update(&mut registry, 1.0, None);
+    let settled = registry
+        .get_component::<EmissiveVolumeComponent>(id)
+        .unwrap();
+    assert_eq!(
+        (settled.brightness, settled.animation.as_ref()),
+        (1.0, None)
+    );
 }
 
 // P30: a brightness write and an identical re-install between two bridge

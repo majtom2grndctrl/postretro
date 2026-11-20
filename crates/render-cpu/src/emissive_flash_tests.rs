@@ -109,6 +109,37 @@ impl Harness {
     }
 }
 
+/// A clamp value: strength and colour.
+type ClampValue = (f32, [f32; 3]);
+
+/// One volume's clamp stepped directly, as the container steps it, so a test
+/// sees the clamp's output and the presented multiplier and colour the packed
+/// factor is built from.
+struct Direct {
+    source: EmissiveFlashSource,
+    clamp: Option<ValueClamp>,
+}
+
+impl Direct {
+    fn new(source: EmissiveFlashSource) -> Self {
+        Self {
+            source,
+            clamp: None,
+        }
+    }
+
+    /// One limited frame at [`DT`]; the first starts the clamp fresh, as a
+    /// freshly installed container does.
+    fn step(&mut self, glow: VolumeGlow) -> (ClampValue, ClampValue, VolumeGlow) {
+        let input = self.source.input(glow);
+        let clamp = self
+            .clamp
+            .get_or_insert_with(|| ValueClamp::fresh(input.0, input.1));
+        let output = clamp.limit(input.0, input.1, &on(DT));
+        (input, output, self.source.presented(glow, input, output))
+    }
+}
+
 /// Count transitions of `series` (one value per frame at `dt`) in any one
 /// second, from the last extremum: a swing of `threshold` with its darker
 /// state under `dark_limit` counts, and a reversal ends an excursion only
@@ -388,36 +419,145 @@ fn a_step_past_white_rises_at_the_rate_cap_then_presents_its_full_value() {
     assert!(frames[reached..].iter().all(|&f| f == 20.0), "{frames:?}");
 }
 
+/// P59's red `_e` sign: strength 4, saturated-red mean glow, peak ≈ 0.949.
+const RED_SIGN: Volume = Volume {
+    strength: 4.0,
+    glow: [0.9, 0.06, 0.04],
+    min: 0.0,
+    max: 1.0,
+};
+
 // Pin P59: a red `_e` sign under a white volume, strobing 0 ↔ 1 past the
-// budget: the clamp's colour is the red glow, so the red-flash rule
-// desaturates the held onset at unchanged luminance.
+// budget: the clamp's colour is the red glow, so the red-flash rule holds the
+// onset. The sign's weak green and blue cannot rise past the white volume's
+// brightest channel, so the held sign presents less red than scripted (though
+// more than the held level) and dims below the clamp's strength instead of
+// keeping its luminance.
 #[test]
 fn a_red_sign_under_a_white_volume_meets_the_red_flash_rule() {
-    let sign = Volume {
-        strength: 4.0,
-        glow: [0.9, 0.06, 0.04],
-        min: 0.0,
-        max: 1.0,
-    };
+    let sign = RED_SIGN;
     assert!(redness(sign.glow) >= RED_SATURATED);
     let mut harness = Harness::new(sign);
-    let mut desaturated = 0;
+    let mut direct = Direct::new(sign.source());
+    let (mut held, mut less_red, mut dimmed) = (0, 0, 0);
     let mut red = Vec::new();
     let mut raw_red = Vec::new();
     for n in 0..120 {
         let b = square(n, 6.0, 0.0, 1.0);
         let factor = harness.step(b, WHITE);
+        let (input, output, presented) = direct.step(sign.glow_at(b, WHITE));
+        assert_eq!(factor, packed(presented));
         let surface = sign.surface(factor);
         let shown = sign.shown(factor);
         red.push(shown * redness(surface));
         raw_red.push(sign.shown(sign.glow_at(b, WHITE).factor()) * redness(sign.glow));
-        if shown > 0.05 && redness(surface) < RED_SATURATED {
-            desaturated += 1;
+        if output.1 == input.1 {
+            continue;
+        }
+        // A held red onset.
+        held += 1;
+        let presented_red = redness(surface);
+        assert!(
+            presented_red <= redness(sign.glow) + 1e-6,
+            "frame {n}: redness {presented_red} above the scripted sign's"
+        );
+        assert!(
+            presented_red >= redness(output.1) - 1e-4,
+            "frame {n}: redness {presented_red} below the held {}",
+            redness(output.1)
+        );
+        assert!(
+            luminance(surface) <= output.0 + 1e-6,
+            "frame {n}: luminance {} above the clamp's strength {}",
+            luminance(surface),
+            output.0
+        );
+        if presented_red < redness(sign.glow) - 0.01 {
+            less_red += 1;
+        }
+        if luminance(surface) < output.0 - 0.01 {
+            dimmed += 1;
         }
     }
-    assert!(desaturated > 0, "a held red onset presents desaturated");
+    assert!(held > 0, "the strobe holds a red onset");
+    assert!(
+        less_red > 0,
+        "a held red onset presents less red than scripted"
+    );
+    assert!(dimmed > 0, "a held red onset on a red glow dims");
     assert!(worst_red_transitions(&raw_red) > 6);
     assert!(worst_red_transitions(&red) <= 6, "{red:?}");
+}
+
+// Regression: a held red onset on a red-glow volume boosted the presented
+// green and blue far past the scripted colour (only the value ceiling stopped
+// them), so a white member texture of the same volume showed about twice what
+// the clamp let through and stepped past the rate cap.
+//
+// Invariant: no member face shows more than it would under a white volume at
+// the presented multiplier: every packed channel is at most multiplier ×
+// the scripted colour's brightest channel.
+#[test]
+fn a_held_red_never_shows_another_member_brighter_than_a_white_volume_would() {
+    // Strength 0.9 white `_e`: peak 0.9, under the sign's ≈ 0.949, so the
+    // sign judges the volume and the white member only rides its factor.
+    let white = Volume {
+        strength: 0.9,
+        glow: WHITE,
+        min: 0.0,
+        max: 1.0,
+    };
+    let texture = |volume: Volume| EmissiveTexture {
+        strength: volume.strength,
+        glow_color: volume.glow,
+    };
+    let source =
+        EmissiveFlashSource::brightest(&[texture(RED_SIGN), texture(white)], [Some(0), Some(1)]);
+    assert_eq!(source, RED_SIGN.source());
+
+    // White, and a grey whose brightest channel caps below 1.
+    for color in [WHITE, [0.5; 3]] {
+        let mut clamp = EmissiveFlashClamp::default();
+        clamp.install(&[source]);
+        let mut direct = Direct::new(source);
+        let mut held = 0;
+        let mut previous: Option<f32> = None;
+        for n in 0..120 {
+            let glow = RED_SIGN.glow_at(square(n, 6.0, 0.0, 1.0), color);
+            let mut out = [[f32::NAN; 3]];
+            clamp.present(Some(&on(DT)), &[glow], &mut out);
+            clamp.finish_presentation(true);
+            let factor = out[0];
+            let (input, output, presented) = direct.step(glow);
+            assert_eq!(factor, packed(presented), "frame {n}");
+            if output.1 != input.1 {
+                held += 1;
+            }
+
+            let brightest = color.into_iter().fold(0.0, f32::max);
+            for channel in factor {
+                assert!(
+                    channel <= presented.multiplier * brightest,
+                    "{color:?} frame {n}: {factor:?} past {} × {brightest}",
+                    presented.multiplier
+                );
+            }
+            // What the white member shows, in the judged clamp's units.
+            let shown = white.shown(factor);
+            assert!(
+                shown <= white.strength * presented.multiplier * brightest + 1e-6,
+                "{color:?} frame {n}: the white member shows {shown} under {factor:?}"
+            );
+            if let Some(previous) = previous {
+                assert!(
+                    (shown - previous).abs() <= INTENSITY_RATE_PER_SECOND * DT + 1e-5,
+                    "{color:?} frame {n}: the white member steps {previous} → {shown}"
+                );
+            }
+            previous = Some(shown);
+        }
+        assert!(held > 0, "{color:?}: the strobe holds a red onset");
+    }
 }
 
 /// The P42 strobe: `setEmissiveColor` alternating red and green six times
@@ -474,7 +614,9 @@ fn a_white_blue_colour_strobe_at_high_strength_passes() {
 
 // Pin P52: once the P42 strobe has spent the window, a red onset is held:
 // it presents the written red desaturated toward its own luminance, with
-// luminance unchanged. A write away from red presents that frame.
+// luminance unchanged, since the lamp's white glow is neutral and no channel
+// reaches the cap at the written red's brightest channel. A write away from
+// red presents that frame.
 #[test]
 fn a_held_red_presents_desaturated_and_a_write_away_from_red_presents_at_once() {
     let lamp = Volume::white(1.0, 1.0);

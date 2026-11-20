@@ -137,6 +137,41 @@ fn refuse_what_the_loader_refuses(
         .map_err(|error| anyhow::anyhow!("ProbeDepthTiles does not fit id 34: {error}"))
 }
 
+/// The first Geometry face with no triangle. The runtime recovers each face's
+/// index range from its one BVH leaf, and such a face has none, so a level
+/// whose loader stamps a per-face stream (id 42's owners, id 60's volume ids)
+/// would be refused.
+fn first_face_without_a_triangle(geo_result: &GeometryResult) -> Option<usize> {
+    geo_result
+        .face_index_ranges
+        .iter()
+        .position(|range| range.index_count == 0)
+}
+
+/// Fail the build on id 60 face lists the loader cannot stamp: once any
+/// volume lists a face, it recovers every face's range from the BVH leaves,
+/// and a face with no triangle anywhere in Geometry refuses the level.
+/// Membership never lists such a face itself.
+fn refuse_unstampable_emissive_members(
+    emissive: &EmissiveSection,
+    geo_result: &GeometryResult,
+) -> anyhow::Result<()> {
+    if emissive
+        .volumes
+        .iter()
+        .all(|volume| volume.faces.is_empty())
+    {
+        return Ok(());
+    }
+    if let Some(face) = first_face_without_a_triangle(geo_result) {
+        anyhow::bail!(
+            "Emissive volume membership needs a triangle on every Geometry face, but face {face} \
+             has none"
+        );
+    }
+    Ok(())
+}
+
 /// Build the legacy PRL descriptor plan in its established on-disk order.
 pub(super) fn build_finalized_section_plan<'a>(
     inputs: FinalizedSectionPlanInputs<'a>,
@@ -320,11 +355,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         // The runtime finds each face's vertices through its one BVH leaf, and
         // a face with no triangle has none, so every owned level must have a
         // triangle on every face.
-        if let Some(face) = geo_result
-            .face_index_ranges
-            .iter()
-            .position(|range| range.index_count == 0)
-        {
+        if let Some(face) = first_face_without_a_triangle(geo_result) {
             anyhow::bail!(
                 "ShadowmaskAtlas owners need a triangle on every Geometry face, but face {face} has none"
             );
@@ -488,6 +519,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         emissive.textures.len(),
         geo_result.texture_names.names.len()
     );
+    refuse_unstampable_emissive_members(emissive, geo_result)?;
     sections.push(PlannedSection::new(
         SectionId::Emissive as u32,
         postretro_level_format::emissive::EMISSIVE_VERSION,

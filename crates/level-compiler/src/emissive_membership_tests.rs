@@ -1,5 +1,6 @@
-//! Emissive volume membership over a real partition: centroid in and out,
-//! flush planes, atlas sub-faces, overlaps, ties, nesting and emptied volumes.
+//! Emissive volume membership over a real partition: fragment centroid in and
+//! out, flush planes, a side split across volumes, atlas sub-faces, faces
+//! with no triangle, overlaps, ties, nesting and emptied volumes.
 
 use std::collections::HashSet;
 
@@ -10,7 +11,7 @@ use postretro_level_format::geometry::GeometrySection;
 use postretro_test_log_capture::LogCapture;
 
 use super::*;
-use crate::geometry::{FaceIndexRange, extract_geometry_with_brushes, remap_face_brushes};
+use crate::geometry::{FaceIndexRange, extract_geometry_with_brushes, remap_per_face};
 use crate::map_data::MapData;
 use crate::map_format::MapFormat;
 use crate::pipeline::runtime_cells::{OccluderPartition, RuntimeCells, ShippedCells};
@@ -104,12 +105,12 @@ impl World {
             .collect()
     }
 
+    /// Records over the uncut world, each face at its own fragment's centroid.
     fn records(&self) -> Vec<EmissiveVolumeRecord> {
         resolve_emissive_volume_records(
             &self.map.emissive_volumes,
             &self.geometry,
-            &self.face_brushes,
-            &self.map.brush_volumes,
+            &fragment_centroids(&self.geometry),
             &self.has_emissive_map(),
         )
     }
@@ -168,8 +169,8 @@ fn panel_two(world: &World) -> Vec<u32> {
     faces
 }
 
-// Acceptance A5: a face whose authored side's centroid is inside a hull
-// joins; one just outside does not.
+// Acceptance A5: a face whose fragment's centroid is inside a hull joins;
+// one just outside does not.
 #[test]
 fn a_face_joins_when_its_centroid_is_inside_and_not_just_outside() {
     let world = World::new(&room(&[volume([-32, -32, 1], [32, 32, 32])]));
@@ -193,23 +194,77 @@ fn a_face_in_the_plane_of_a_volume_side_joins() {
     let world = World::new(&room(&[volume([-32, -32, 8], [32, 32, 32])]));
     assert_eq!(world.records()[0].faces, panel_one_top(&world));
 
-    // A volume flush on the floor holds the floor, whose authored side's
-    // centre is the room's centre.
-    let world = World::new(&room(&[volume([-32, -32, 0], [32, 32, 4])]));
+    // A volume whose bottom is flush on the floor holds every floor fragment;
+    // raised one map unit, none.
+    let world = World::new(&room(&[volume([-128, -128, 0], [128, 128, 4])]));
     let faces = &world.records()[0].faces;
     let floor = world.faces_within("floor", [-128.0, -128.0, 0.0], [128.0, 128.0, 0.0]);
     assert!(!floor.is_empty());
     assert!(floor.iter().all(|face| faces.contains(face)), "{faces:?}");
+    let world = World::new(&room(&[volume([-128, -128, 1], [128, 128, 4])]));
+    let faces = &world.records()[0].faces;
+    let floor = world.faces_within("floor", [-128.0, -128.0, 0.0], [128.0, 128.0, 0.0]);
+    assert!(!floor.iter().any(|face| faces.contains(face)), "{faces:?}");
+}
+
+/// Two sealed rooms split by a wall at map x −8..8, sharing one glowing
+/// floor brush whose top side the BSP splits into a fragment set per room.
+/// `extra` entities follow worldspawn.
+fn divided_room(extra: &[String]) -> String {
+    let brushes = [
+        box_brush([-144, -144, -16], [144, 144, 0], GLOW),
+        box_brush([-144, -144, 128], [144, 144, 144], "wall"),
+        box_brush([-144, -144, 0], [-128, 144, 128], "wall"),
+        box_brush([128, -144, 0], [144, 144, 128], "wall"),
+        box_brush([-128, -144, 0], [128, -128, 128], "wall"),
+        box_brush([-128, 128, 0], [128, 144, 128], "wall"),
+        box_brush([-8, -128, 0], [8, 128, 128], "wall"),
+    ];
+    let mut entities = vec![format!(
+        "{{\n\"classname\" \"worldspawn\"\n{}\n}}",
+        brushes.join("\n")
+    )];
+    entities.extend(extra.iter().cloned());
+    entities.join("\n")
+}
+
+// Owner ruling (membership per final face): one glowing brush side spanning
+// two volumes splits between them by BSP fragment, silently.
+#[test]
+fn one_brush_side_spanning_two_volumes_splits_by_fragment() {
+    let world = World::new(&divided_room(&[
+        volume([-128, -128, 0], [-8, 128, 32]),
+        volume([8, -128, 0], [128, 128, 32]),
+    ]));
+    let floor = world.faces_within(GLOW, [-128.0, -128.0, 0.0], [128.0, 128.0, 0.0]);
+    let west = world.faces_within(GLOW, [-128.0, -128.0, 0.0], [-8.0, 128.0, 0.0]);
+    let east = world.faces_within(GLOW, [8.0, -128.0, 0.0], [128.0, 128.0, 0.0]);
+    assert!(!west.is_empty() && !east.is_empty(), "{west:?} {east:?}");
+    assert_eq!(
+        west.len() + east.len(),
+        floor.len(),
+        "every floor fragment lies in one room: {floor:?}"
+    );
+    let brushes: HashSet<Option<u32>> = floor
+        .iter()
+        .map(|&face| world.face_brushes[face as usize])
+        .collect();
+    assert_eq!(brushes.len(), 1, "one authored brush side: {brushes:?}");
+
+    let capture = LogCapture::start();
+    let records = world.records();
+    assert_eq!(records[0].faces, west);
+    assert_eq!(records[1].faces, east);
+    capture.assert_nothing_above(Level::Info);
 }
 
 /// `geometry` with face `target` cut into one sub-face per triangle, each
-/// owning its vertices, and `face_brushes` remapped through the cut as the
-/// atlas stage remaps it.
+/// owning its vertices, and the cut's `face_remap`, as the atlas stage
+/// returns it.
 fn cut_into_triangles(
     geometry: &GeometryResult,
-    face_brushes: &[Option<u32>],
     target: usize,
-) -> (GeometryResult, Vec<Option<u32>>) {
+) -> (GeometryResult, Vec<std::ops::Range<usize>>) {
     let mut cut = GeometryResult {
         geometry: GeometrySection {
             vertices: Vec::new(),
@@ -253,23 +308,25 @@ fn cut_into_triangles(
         }
         remap.push(start..cut.geometry.faces.len());
     }
-    let brushes = remap_face_brushes(face_brushes, &remap);
-    (cut, brushes)
+    (cut, remap)
 }
 
-// Pin P29: every sub-face the atlas cuts from a member face carries its
-// membership, though a sub-face's own centroid lies outside the volume.
+// Pin P29: every sub-face the atlas cuts from a member fragment carries its
+// membership through the cut's remap, though a sub-face's own centroid lies
+// outside the volume.
 #[test]
-fn atlas_sub_faces_share_their_authored_face_membership() {
+fn atlas_sub_faces_share_their_fragment_membership() {
     // A 4-unit box around the panel top's centre.
     let world = World::new(&room(&[volume([-2, -2, 4], [2, 2, 12])]));
-    let top = panel_one_top(&world)[0] as usize;
-    let (cut, brushes) = cut_into_triangles(&world.geometry, &world.face_brushes, top);
+    let top = panel_one_top(&world);
+    assert_eq!(top.len(), 1, "the panel top is one fragment: {top:?}");
+    let before_cut = fragment_centroids(&world.geometry);
+    let (cut, remap) = cut_into_triangles(&world.geometry, top[0] as usize);
     let pieces = faces_within(&cut, GLOW, [-16.0, -16.0, 8.0], [16.0, 16.0, 8.0]);
     assert!(pieces.len() >= 2, "the top is cut in two: {pieces:?}");
     let hull = &world.map.emissive_volumes[0].hulls[0];
     for &piece in &pieces {
-        let own = face_centroid(piece as usize, &cut);
+        let own = face_centroid(piece as usize, &cut).unwrap();
         assert!(
             hull.planes.iter().any(|&(n, d)| n.dot(own) - d > 0.01),
             "sub-face {piece}'s own centroid lies outside the volume"
@@ -279,14 +336,54 @@ fn atlas_sub_faces_share_their_authored_face_membership() {
     let records = resolve_emissive_volume_records(
         &world.map.emissive_volumes,
         &cut,
-        &brushes,
-        &world.map.brush_volumes,
+        &remap_per_face(&before_cut, &remap),
         &world.has_emissive_map(),
     );
     assert_eq!(
         records[0].faces, pieces,
         "every piece joins, and nothing else"
     );
+    // Each piece at its own centroid would join nothing: the remap is what
+    // keeps the fragment whole.
+    let own = resolve_emissive_volume_records(
+        &world.map.emissive_volumes,
+        &cut,
+        &fragment_centroids(&cut),
+        &world.has_emissive_map(),
+    );
+    assert!(own[0].faces.is_empty(), "{:?}", own[0].faces);
+}
+
+// A face with no triangle joins no volume, though the volume holds the
+// origin a centroid of no triangles would fall back to.
+#[test]
+fn a_face_with_no_triangle_joins_nothing() {
+    let world = World::new(&room(&[volume([-32, -32, -1], [32, 32, 32])]));
+    let panel = panel_one(&world);
+    let emptied = panel_one_top(&world)[0];
+    let points = fragment_centroids(&world.geometry);
+    let mut geometry = world.geometry.clone();
+    geometry.face_index_ranges[emptied as usize].index_count = 0;
+    assert_eq!(fragment_centroids(&geometry)[emptied as usize], None);
+    // Whether its point was taken before the triangles went (a sub-face
+    // emptied after the cut) or after, the face stays out.
+    for points in [points, fragment_centroids(&geometry)] {
+        let records = resolve_emissive_volume_records(
+            &world.map.emissive_volumes,
+            &geometry,
+            &points,
+            &world.has_emissive_map(),
+        );
+        let faces = &records[0].faces;
+        assert!(!faces.contains(&emptied), "{faces:?}");
+        assert!(
+            panel
+                .iter()
+                .filter(|&&face| face != emptied)
+                .all(|face| faces.contains(face)),
+            "the rest of the panel still joins: {faces:?}"
+        );
+    }
 }
 
 // Acceptance A5: of two volumes containing a face, the smaller wins, in
@@ -370,16 +467,14 @@ fn a_nested_volume_keeps_its_faces_in_either_order_silently() {
 // naming it by entity, tags and origin.
 #[test]
 fn a_volume_with_no_glowing_face_warns_naming_it() {
+    // In the air above the floor: it holds no face at all.
     let world = World::new(&room(&[format!(
         "{{\n\"classname\" \"emissive_volume\"\n\"_tags\" \"lobby sign\"\n{}\n}}",
-        box_brush([-120, -120, 0], [-100, -100, 4], "trigger")
+        box_brush([-120, -120, 1], [-100, -100, 3], "trigger")
     )]));
     let capture = LogCapture::start();
     let records = world.records();
-    assert!(
-        records[0].faces.is_empty(),
-        "the floor's side centres on the room"
-    );
+    assert!(records[0].faces.is_empty(), "{:?}", records[0].faces);
     capture.assert_logged_once(
         Level::Warn,
         "entity 1 'emissive_volume' (tags: lobby sign) at (2.794, 0.051, 2.794) m holds no face \

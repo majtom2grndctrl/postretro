@@ -25,7 +25,7 @@ use serde_json::Value;
 
 use super::teleporters_surface_tests::{canonical, compile, workspace};
 use crate::coop_fixture_tests::initialize_dev_mod;
-use crate::scripting_systems::fog_volume_bridge::sample_linear_curve;
+use crate::scripting_systems::curve_sample::sample_linear_curve;
 use crate::startup::StartupTimings;
 use crate::startup::lifecycle::tests::{script_ctx, test_app};
 use crate::startup::lifecycle::{

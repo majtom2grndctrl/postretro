@@ -3888,7 +3888,7 @@ Sets the linear tint on every target. A channel above `1` reads `1` and a negati
 { periodMs: number, playCount?: number, brightness: number[] } | null
 ```
 
-Installs a brightness curve on every target: `brightness` holds samples in `[0, 1]`, evenly spaced over `periodMs` and blended linearly. `playCount` absent loops forever; a finite count plays that many periods, then holds the last sample as the volume's brightness. `null` clears the curve and holds the brightness it last showed.
+Installs a brightness curve on every target: `brightness` holds samples in `[0, 1]`, evenly spaced over `periodMs` and blended linearly. `playCount` absent loops forever; a finite count plays that many periods, then holds the last sample as the volume's brightness. `null` clears the curve and holds the brightness it last sampled (before the flash limiter).
 
 - Samples outside `[0, 1]` clamp, with one warning.
 - A `periodMs` at or below `0`, or an empty `brightness`, warns and installs nothing; the volume keeps its animation and brightness.

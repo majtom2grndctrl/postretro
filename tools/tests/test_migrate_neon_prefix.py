@@ -229,6 +229,39 @@ class MigrationTest(unittest.TestCase):
         self.mod.toml("[broken\n")
         self.assert_refused("does not parse")
 
+    def test_a_sibling_only_bundle_renames_together_and_gets_an_entry(self):
+        self.mod.texture("neon", "neon_x_e", "neon_x_n")
+        self.mod.map("a.map", "neon/neon_x")
+        code, out, err = self.mod.run("--apply")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("has no texture file", out)
+        names = sorted(p.name for p in (self.mod.root / "textures" / "neon").iterdir())
+        self.assertEqual(names, ["x_e.png", "x_n.png"])
+        self.assertEqual(self.mod.read("maps/a.map"), map_text("neon/x"))
+        self.assertEqual(
+            tomllib.loads(self.mod.read("materials.toml")), {"neon/x": {"emissive": 4.0}}
+        )
+
+    def test_a_sibling_of_a_sibling_refuses_cleanly(self):
+        self.mod.texture("neon", "neon_x", "neon_x_p", "neon_x_p_e")
+        self.assert_refused("neon_x_p_e.png")
+
+    def test_an_orphan_sibling_at_the_target_refuses(self):
+        self.mod.texture("neon", "neon_x", "neon_x_e", "x_n")
+        self.assert_refused("x_n.png already exists in the target bundle neon/x")
+
+    def test_a_crlf_materials_toml_gets_crlf_appended(self):
+        self.mod.texture("neon", "neon_sign", "neon_sign_e")
+        (self.mod.root / "materials.toml").write_bytes(b'["metal/vent"]\r\nemissive = 2.5\r\n')
+        code, _, err = self.mod.run("--apply")
+        self.assertEqual(code, 0, err)
+        data = (self.mod.root / "materials.toml").read_bytes()
+        self.assertNotIn(b"\n", data.replace(b"\r\n", b""))
+        self.assertEqual(
+            tomllib.loads(data.decode()),
+            {"metal/vent": {"emissive": 2.5}, "neon/sign": {"emissive": 4.0}},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

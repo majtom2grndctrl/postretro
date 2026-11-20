@@ -42,8 +42,23 @@ impl MaterialsToml {
     /// warns, naming it.
     pub(crate) fn load(content_root: &Path) -> Self {
         let path = content_root.join(MATERIALS_TOML);
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self::parse(path, &text),
+        match std::fs::read(&path).map(String::from_utf8) {
+            Ok(Ok(text)) => Self::parse(path, &text),
+            Ok(Err(error)) => {
+                // Name the line holding the first byte that is not UTF-8.
+                let bad = error.utf8_error().valid_up_to();
+                let line = error.as_bytes()[..bad]
+                    .iter()
+                    .filter(|&&byte| byte == b'\n')
+                    .count()
+                    + 1;
+                log::warn!(
+                    "[prl-build] {}:{line}: cannot read: not valid UTF-8 (byte {bad}); every \
+                     texture takes its default emissive strength",
+                    path.display()
+                );
+                Self::empty(path)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::empty(path),
             Err(error) => {
                 log::warn!(
@@ -136,10 +151,33 @@ impl MaterialsToml {
     /// non-finite reads the default, past the ceiling reads the ceiling.
     fn read_emissive(&self, line: usize, texture: &str, value: &DeValue<'_>) -> Option<f32> {
         let at = || format!("{}:{line}", self.path.display());
-        let number = match value {
-            DeValue::Integer(integer) => i64::from_str_radix(integer.as_str(), integer.radix())
-                .map_or(f64::NAN, |v| v as f64),
-            DeValue::Float(float) => float.as_str().parse::<f64>().unwrap_or(f64::NAN),
+        // `shown` is what the warnings print: the number, or the literal when
+        // it is too large to hold.
+        let (number, shown) = match value {
+            DeValue::Integer(integer) => {
+                let text = integer.as_str().replace('_', "");
+                match i128::from_str_radix(&text, integer.radix()) {
+                    Ok(v) => (v as f64, v.to_string()),
+                    // Out of range: reads by its sign, as past the ceiling or
+                    // below zero.
+                    Err(_) if text.starts_with('-') => (-f64::MAX, text),
+                    Err(_) => (f64::MAX, text),
+                }
+            }
+            DeValue::Float(float) => {
+                let text = float.as_str().replace('_', "");
+                let number = text.parse::<f64>().unwrap_or(f64::NAN);
+                let keyword = text
+                    .trim_start_matches(['+', '-'])
+                    .eq_ignore_ascii_case("inf");
+                if number.is_infinite() && !keyword {
+                    // A decimal literal that overflows f64 is a finite number
+                    // past the ceiling, not TOML's `inf`.
+                    (number.signum() * f64::MAX, text)
+                } else {
+                    (number, number.to_string())
+                }
+            }
             other => {
                 log::warn!(
                     "[prl-build] {}: [\"{texture}\"] emissive must be a number, found {}; the \
@@ -152,7 +190,7 @@ impl MaterialsToml {
         };
         if !number.is_finite() {
             log::warn!(
-                "[prl-build] {}: [\"{texture}\"] emissive {number} is not finite; the texture \
+                "[prl-build] {}: [\"{texture}\"] emissive {shown} is not finite; the texture \
                  takes its default",
                 at()
             );
@@ -160,14 +198,14 @@ impl MaterialsToml {
         }
         if number < 0.0 {
             log::warn!(
-                "[prl-build] {}: [\"{texture}\"] emissive {number} is negative; reading 0",
+                "[prl-build] {}: [\"{texture}\"] emissive {shown} is negative; reading 0",
                 at()
             );
             return Some(0.0);
         }
         if number > f64::from(EMISSIVE_VALUE_CEILING) {
             log::warn!(
-                "[prl-build] {}: [\"{texture}\"] emissive {number} is above the ceiling \
+                "[prl-build] {}: [\"{texture}\"] emissive {shown} is above the ceiling \
                  {EMISSIVE_VALUE_CEILING}; reading {EMISSIVE_VALUE_CEILING}",
                 at()
             );

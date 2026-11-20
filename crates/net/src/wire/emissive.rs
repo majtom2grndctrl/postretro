@@ -42,7 +42,9 @@ impl WireEmissiveAnimation {
     }
 
     /// The bounds the install primitive enforces: a positive period, a count of
-    /// at least one, 1 to [`MAX_WIRE_CURVE_KEYS`] samples, each in `[0, 1]`.
+    /// at least one, a non-empty curve with each sample in `[0, 1]`. The
+    /// [`MAX_WIRE_CURVE_KEYS`] cap is the wire's own, not the primitive's: a
+    /// longer curve installs locally but cannot encode.
     fn has_valid_bounds(&self) -> bool {
         self.period_ms > 0.0
             && self.play_count != Some(0)

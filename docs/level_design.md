@@ -333,8 +333,9 @@ An `emissive_volume` brush scales and tints the glow of the faces inside it, and
 2. Tie it to `emissive_volume` (**Entity > Tie to Entity**, or `T`). An entity may own several brushes.
 3. Set its keys. Only the brush's shape matters; its texture does not.
 
-A face belongs to a volume when the centre of the face as you drew it lies inside one of the volume's brushes. A face lying in the plane of a volume brush's side counts as inside, so a slab flush on a wall catches the wall's faces too; keep the slab clear of faces you do not mean. A face the compiler splits into pieces glows as one.
+Membership is decided per final face: each piece of world surface the compiler produces joins the volume whose brush holds that piece's centre. A face lying in the plane of a volume brush's side counts as inside, so a slab flush on a wall catches the wall's faces too; keep the slab clear of faces you do not mean.
 
+- **Split faces:** the compiler cuts a brush side where other brushes and room boundaries meet it. A glowing brush side that spans two volumes splits between them, each piece following the volume around it. The later cuts for the lightmap atlas never split a face's membership.
 - **Overlaps:** a face inside several volumes belongs to the smallest (by brush volume); two of the same size go to the later one in the map. A volume nested inside another keeps its faces whichever comes first.
 - **A volume with no glowing face warns**, naming the entity, including one a smaller volume has emptied. It still compiles, and scripts can still address it.
 - **At most 256 volumes per map.** The 257th stops the compile, naming the count.
@@ -983,7 +984,7 @@ emissive = 4.0
 ```
 
 - **Defaults:** a texture with an `_e` map and no entry glows at `1.0`. A texture with no `_e` map glows at `0`, whatever its entry says.
-- **Keys:** match texture names as the compiler does: case does not matter, `\` reads as `/`, and a leading `textures/` is ignored. Two keys that name the same texture warn once, and the later one wins.
+- **Keys:** match texture names as the compiler does: case does not matter, `\` reads as `/`, and a leading `textures/` is ignored. A key reaches every face whose texture resolves to it, whether the map names that texture with its collection (`signs/bar_sign`) or by its bare name (`bar_sign`). Two keys that name the same texture warn once, and the later one wins.
 - **Values:** `emissive` is a number. A negative value reads `0`; a value above `64` reads `64`; each warns.
 - **Mistakes never stop the compile.** Each warns, naming the file and line: a syntax error (every texture takes its default), an unknown key (ignored), a value that is not a number (that texture takes its default), and an entry for a texture with no `_e` map (ignored).
 

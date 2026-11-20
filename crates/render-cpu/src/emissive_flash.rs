@@ -105,7 +105,7 @@ impl EmissiveFlashSource {
         (strength, rgb)
     }
 
-    /// The glow factor that presents what the clamp let through.
+    /// The multiplier and colour that present what the clamp let through.
     ///
     /// - Multiplier: where the clamp passed the input strength unchanged, the
     ///   scripted multiplier exactly, so a volume past 1 presents its full
@@ -115,20 +115,31 @@ impl EmissiveFlashSource {
     ///   multiplier never exceeds one the script presented.
     /// - Colour: where the clamp passed the colour unchanged, the scripted
     ///   colour exactly. Otherwise each channel is `out ÷ glow` where the
-    ///   glow colour has that channel, so glow colour × presented colour is
-    ///   the clamp's colour: desaturated toward its own luminance, luminance
-    ///   unchanged, redness at the held level. A channel the glow colour lacks
-    ///   cannot show and keeps its scripted value.
+    ///   glow colour has that channel, capped at the scripted colour's
+    ///   brightest channel. A channel the glow colour lacks cannot show on the
+    ///   judged texture and keeps its scripted value.
+    ///   - With a neutral glow colour no channel reaches the cap, so glow
+    ///     colour × presented colour is the clamp's colour: desaturated toward
+    ///     its own luminance, luminance unchanged, redness at the held level
+    ///     (P52).
+    ///   - With a coloured glow, desaturating can need a weak glow channel
+    ///     boosted past the cap. It stops there, so the judged texture
+    ///     presents redness between the held level and the scripted one, and
+    ///     dims below the clamp's strength instead of keeping luminance (P59).
     ///
-    /// Each packed channel stays at or under the value ceiling, so a
-    /// desaturating boost to a weak glow channel keeps the ceiling's
-    /// half-float bound.
+    /// Invariant: no member face ever shows more than it would under a white
+    /// volume at the presented multiplier. Every presented colour channel is
+    /// at most the scripted colour's brightest, so each packed channel is at
+    /// most multiplier × that channel. The packed factor multiplies every
+    /// member face's `_e`, and an uncapped boost sized for the judged
+    /// texture's mean glow would brighten every other member texture, and
+    /// texels unlike the mean, past what the clamp let through.
     fn presented(
         self,
         glow: VolumeGlow,
         input: (f32, [f32; 3]),
         output: (f32, [f32; 3]),
-    ) -> [f32; 3] {
+    ) -> VolumeGlow {
         let (in_strength, in_rgb) = input;
         let (out_strength, out_rgb) = output;
         let multiplier = if out_strength == in_strength || self.peak <= 0.0 {
@@ -139,16 +150,25 @@ impl EmissiveFlashSource {
         let color = if out_rgb == in_rgb {
             glow.color
         } else {
+            let brightest = glow.color.into_iter().fold(0.0, f32::max);
             std::array::from_fn(|channel| {
                 if self.glow[channel] > 0.0 {
-                    out_rgb[channel] / self.glow[channel]
+                    (out_rgb[channel] / self.glow[channel]).min(brightest)
                 } else {
                     glow.color[channel]
                 }
             })
         };
-        color.map(|channel| non_negative(channel * multiplier).min(EMISSIVE_VALUE_CEILING))
+        VolumeGlow { multiplier, color }
     }
+}
+
+/// The glow factor the volume table packs for a presented glow. Each channel
+/// stays at or under the value ceiling, keeping the ceiling's half-float
+/// bound.
+fn packed(glow: VolumeGlow) -> [f32; 3] {
+    glow.factor()
+        .map(|channel| non_negative(channel).min(EMISSIVE_VALUE_CEILING))
 }
 
 /// Every emissive volume through the photosensitivity limiter, one
@@ -252,7 +272,7 @@ impl EmissiveFlashClamp {
                 clamp.restart(input.0, input.1);
             }
             let output = clamp.limit(input.0, input.1, &frame);
-            *out = source.presented(glow, input, output);
+            *out = packed(source.presented(glow, input, output));
         }
     }
 

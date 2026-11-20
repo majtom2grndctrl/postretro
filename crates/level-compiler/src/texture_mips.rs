@@ -2111,6 +2111,7 @@ mod tests {
         let paths = resolve_texture_bundle_paths(&map, "alpha/cobble");
         assert_eq!(paths.height, Some(alpha.join("cobble_h.png")));
         assert_eq!(paths.diffuse, None, "the bare-stem fallback must stay off");
+        assert_eq!(paths.bundle.as_deref(), Some("alpha/cobble"));
 
         let keys =
             bake_texture_mips(&["alpha/cobble".to_string()], &texture_root, &cache_root).unwrap();
@@ -2670,7 +2671,19 @@ mod tests {
                 Some(&height),
                 "height sibling for '{incoming}' should resolve from the same collection"
             );
+            // The bundle that resolved names its collection, whichever key
+            // found it: `materials.toml` looks the entry up by it (pin P46).
+            assert_eq!(
+                paths.bundle.as_deref(),
+                Some("50-free-textures/concrete_pavement_036"),
+                "'{incoming}'"
+            );
         }
+        assert_eq!(
+            resolve_texture_bundle_paths(&map, "missing").bundle,
+            None,
+            "nothing resolved"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

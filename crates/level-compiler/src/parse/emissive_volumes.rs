@@ -54,9 +54,17 @@ pub(super) fn read_emissive_volume(
     let mut min = read_multiplier(props, MIN_KEY, DEFAULT_MIN, &label);
     let mut max = read_multiplier(props, MAX_KEY, DEFAULT_MAX, &label);
     if max < min {
-        log::warn!(
-            "[Compiler] {label} `{MAX_KEY}` {max} is below `{MIN_KEY}` {min}; the two are swapped"
-        );
+        if authored(props, MAX_KEY).is_some() {
+            log::warn!(
+                "[Compiler] {label} `{MAX_KEY}` {max} is below `{MIN_KEY}` {min}; the two are \
+                 swapped"
+            );
+        } else {
+            log::warn!(
+                "[Compiler] {label} `{MAX_KEY}` is not authored, so its default {max} is below \
+                 the authored `{MIN_KEY}` {min}; the two are swapped"
+            );
+        }
         std::mem::swap(&mut min, &mut max);
     }
     let color = read_color(props, &label);
@@ -87,18 +95,24 @@ fn read_multiplier(props: &HashMap<String, String>, key: &str, default: f32, lab
     let Some(raw) = authored(props, key) else {
         return default;
     };
-    let Ok(value) = raw.parse::<f32>() else {
+    // f64, so a finite number past f32's range still reads as past the ceiling.
+    let Ok(mut value) = raw.parse::<f64>() else {
         log::warn!(
             "[Compiler] {label} `{key}` \"{raw}\" is not a number; it reads its default {default}"
         );
         return default;
     };
+    // A decimal that overflows f64 is finite and past the ceiling; only the
+    // `inf` keyword is non-finite.
+    if value.is_infinite() && raw.bytes().any(|byte| byte.is_ascii_digit()) {
+        value = value.signum() * f64::MAX;
+    }
     fix_multiplier(value, key, default, label)
 }
 
 /// One key's fix, in the order the Decision gives: non-finite → default,
 /// negative → 0, past the ceiling → the ceiling.
-fn fix_multiplier(value: f32, key: &str, default: f32, label: &str) -> f32 {
+fn fix_multiplier(value: f64, key: &str, default: f32, label: &str) -> f32 {
     if !value.is_finite() {
         log::warn!(
             "[Compiler] {label} `{key}` {value} is not finite; it reads its default {default}"
@@ -109,7 +123,7 @@ fn fix_multiplier(value: f32, key: &str, default: f32, label: &str) -> f32 {
         log::warn!("[Compiler] {label} `{key}` {value} is negative; it reads 0");
         return 0.0;
     }
-    if value > EMISSIVE_VALUE_CEILING {
+    if value > f64::from(EMISSIVE_VALUE_CEILING) {
         log::warn!(
             "[Compiler] {label} `{key}` {value} is past the ceiling; it reads \
              {EMISSIVE_VALUE_CEILING}"
@@ -117,7 +131,7 @@ fn fix_multiplier(value: f32, key: &str, default: f32, label: &str) -> f32 {
         return EMISSIVE_VALUE_CEILING;
     }
     // `-0` reads as 0, so both spellings write the same bits.
-    if value == 0.0 { 0.0 } else { value }
+    if value == 0.0 { 0.0 } else { value as f32 }
 }
 
 /// Read as every FGD colour key is: three integers 0..=255, each ÷ 255, used

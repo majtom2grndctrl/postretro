@@ -19,6 +19,9 @@ pub(super) struct MaterialStageResult {
     materials_toml: MaterialsToml,
     /// Per-name `_e` facts, world names first, fluid-only names appended.
     glow: Vec<EmissiveGlow>,
+    /// Per-name qualified bundle that resolved, aligned with `glow`: the
+    /// name its `materials.toml` entry is read by.
+    bundles: Vec<Option<String>>,
     world_name_count: usize,
 }
 
@@ -59,6 +62,7 @@ fn bake_world_materials_at(
         keys: name_to_key,
         stats,
         glow,
+        bundles,
     } = texture_mips::bake_materials_into(names, texture_root, prm_root, &mut texture_bytes, true)?;
     // SH hits index the table by texture index, so one record per name is the contract.
     anyhow::ensure!(
@@ -73,6 +77,7 @@ fn bake_world_materials_at(
         bounce_materials: BounceMaterials::new(stats, saturation)?,
         materials_toml,
         glow,
+        bundles,
         world_name_count: names.len(),
     })
 }
@@ -104,6 +109,7 @@ pub(super) fn bake_remaining_textures(
         )?;
         materials.name_to_key.extend(fluid.keys);
         materials.glow.extend(fluid.glow);
+        materials.bundles.extend(fluid.bundles);
     }
     let content_root = resolve_content_root(input);
     bake_model_textures(
@@ -122,14 +128,17 @@ pub(super) fn bake_remaining_textures(
     // the report describes the level's whole texture cost, deduplicated.
     texture_mips::log_texture_byte_summary(materials.texture_bytes.summary());
     anyhow::ensure!(
-        materials.glow.len() == texture_names.len(),
-        "material bakes produced {} glow records for {} texture names",
+        materials.glow.len() == texture_names.len()
+            && materials.bundles.len() == texture_names.len(),
+        "material bakes produced {} glow records and {} bundle names for {} texture names",
         materials.glow.len(),
+        materials.bundles.len(),
         texture_names.len()
     );
     Ok(build_emissive_textures(
         texture_names,
         &materials.glow,
+        &materials.bundles,
         &materials.materials_toml,
     ))
 }

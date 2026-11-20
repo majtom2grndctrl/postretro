@@ -279,8 +279,8 @@ pub struct MapReflectionVolume {
 /// and tint it gives the glow of the static world faces it holds, and the
 /// convex hulls that select them. Like [`MapEnvironmentVolume`], it retains no
 /// [`BrushVolume`] in the static world set, so its brushes never render,
-/// collide or bake. Membership resolves after the atlas cut
-/// (`emissive_membership`).
+/// collide or bake. Membership is per BSP fragment, listed on the final faces
+/// after the atlas cut (`emissive_membership`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapEmissiveVolume {
     /// Source map entity index, for diagnostics.
@@ -294,8 +294,8 @@ pub struct MapEmissiveVolume {
     pub max: f32,
     /// Linear tint, each channel in `[0, 1]`.
     pub color: [f32; 3],
-    /// One convex hull per authored brush. A face joins when its authored
-    /// side's centroid lies in any of them.
+    /// One convex hull per authored brush. A face joins when its BSP
+    /// fragment's centroid lies in any of them.
     pub hulls: Vec<MapEmissiveHull>,
     /// Sum of the hulls' volumes, m³: the overlap rule's size.
     pub summed_volume: f64,

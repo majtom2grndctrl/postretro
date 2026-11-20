@@ -18,6 +18,12 @@ pub(crate) struct MaterialBake {
     /// Per-name `_e` facts, in name order, always: the Emissive section
     /// covers fluid-only names too.
     pub glow: Vec<EmissiveGlow>,
+    /// Per-name qualified bundle that resolved, in name order, always
+    /// (`TextureBundlePaths::bundle`): the name `materials.toml` is read by,
+    /// so a bare-stem alias reads its bundle's entry. Only the binary's
+    /// material stage reads it; the helper library's test build never does.
+    #[cfg_attr(test, allow(dead_code))]
+    pub bundles: Vec<Option<String>>,
 }
 
 /// Bake every name's material bundle — per-texture mip pyramids in `.prm`
@@ -70,6 +76,7 @@ pub(crate) fn bake_materials_into(
         0
     });
     let mut glow = Vec::with_capacity(texture_names.len());
+    let mut bundles = Vec::with_capacity(texture_names.len());
 
     for name in texture_names {
         let mut probe = TextureProbe::begin();
@@ -83,6 +90,7 @@ pub(crate) fn bake_materials_into(
         // Only an entirely missing qualified bundle may fall back to the
         // unique bare-stem aliases.
         let resolved = resolve_texture_bundle_paths(&name_to_path, &normalized);
+        bundles.push(resolved.bundle);
         let diff_path = resolved.diffuse;
         let spec_path = resolved.specular;
         let norm_path = resolved.normal;
@@ -422,6 +430,7 @@ pub(crate) fn bake_materials_into(
         keys: out,
         stats,
         glow,
+        bundles,
     })
 }
 

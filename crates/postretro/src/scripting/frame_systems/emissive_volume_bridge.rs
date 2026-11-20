@@ -8,7 +8,9 @@ use postretro_entities::registry::{EntityId, EntityRegistry, Transform};
 use postretro_entities::{ComponentKind, ComponentValue, EmissiveVolumeComponent};
 use postretro_level_format::emissive::EmissiveVolumeRecord;
 use postretro_render_cpu::emissive_flash::{EmissiveFlashClamp, EmissiveFlashSource};
-use postretro_render_cpu::emissive_volume::{EmissiveTableUpload, EmissiveVolumeTable, VolumeGlow};
+use postretro_render_cpu::emissive_volume::{
+    EmissiveTableUpload, EmissiveVolumeTable, VolumeGlow, volume_factor,
+};
 use postretro_render_cpu::flash_limiter::LimiterFrameUniform;
 
 #[path = "emissive_volume_anim.rs"]
@@ -79,6 +81,12 @@ impl EmissiveVolumeBridge {
     /// `flash_sources` is what the flash limiter judges each record by
     /// ([`EmissiveFlashSource::for_volumes`]), in record order. Every clamp
     /// starts fresh.
+    ///
+    /// If the entity registry fills, the record that found it full and every
+    /// later one get no entity: no script reaches them and the limiter skips
+    /// them. Their table entries pack once at the authored no-script glow
+    /// (brightness 1, authored colour), the state the bake shaded them in,
+    /// and hold it for the level.
     pub(crate) fn populate_from_level(
         &mut self,
         registry: &mut EntityRegistry,
@@ -96,10 +104,14 @@ impl EmissiveVolumeBridge {
                 scale: Vec3::ONE,
             };
             let Some(id) = registry.try_spawn(transform, &record.tags) else {
+                let index = self.entity_ids.len();
                 log::warn!(
-                    "[EmissiveVolumeBridge] entity registry exhausted; dropping emissive volume \
-                     (index {}). Later volumes in this level present their authored glow.",
-                    self.entity_ids.len()
+                    "[EmissiveVolumeBridge] entity registry exhausted; dropping emissive volumes \
+                     {index}..{} ({} of {}). They hold their authored glow; scripts cannot \
+                     reach them.",
+                    records.len(),
+                    records.len() - index,
+                    records.len()
                 );
                 break;
             };
@@ -119,17 +131,18 @@ impl EmissiveVolumeBridge {
         }
         let count = self.entity_ids.len();
         self.factors.resize(count, [0.0; 3]);
-        // A source the caller did not supply feeds the clamp nothing; the
-        // install always supplies one per record.
-        let sources: Vec<EmissiveFlashSource> = (0..count)
-            .map(|index| {
-                flash_sources
-                    .get(index)
-                    .copied()
-                    .unwrap_or(EmissiveFlashSource::DARK)
-            })
-            .collect();
-        self.flash.install(&sources);
+        // Volumes the registry had no room for: `clear` left their entries at
+        // the no-volume identity, and the frame pack only reaches the first
+        // `count`, so pack each one's authored glow here, once.
+        for (index, record) in records.iter().enumerate().skip(count) {
+            self.table.pack_volume(
+                index,
+                volume_factor(record.min, record.max, 1.0, record.color),
+            );
+        }
+        // Only spawned volumes are limited; `count` stops short of
+        // `records.len()` (one source per record) when the registry filled.
+        self.flash.install(&flash_sources[..count]);
         self.clock.reset(count);
     }
 

@@ -6,7 +6,8 @@
 //! See: context/lib/networking.md §Presentation state · scripting.md §10.2a
 //!
 //! Pin map (`context/plans/in-progress/emissive-volumes/research.md`):
-//! P1 and P31 `p31_*` · P30 `p30_*` · P32 `p32_*` · P5 and P33 `p33_*` · P44 `p44_*`.
+//! P1 and P31 `p31_*` · P30 `p30_*` · P32 `p32_*` · P5 and P33 `p33_*` · P44 `p44_*` ·
+//! P6 on a finite run's last frame `p06_*`.
 use super::parity::{Kind, RED, approx, fire_on, host_write, joined, parity_world, record};
 use super::*;
 use postretro_entities::presentation_overrides::PresentationComponent;
@@ -192,4 +193,44 @@ fn p44_colour_write_keeps_the_running_flicker_on_host_and_client() {
     let client = SIGN.shown(&h.peers[0].app);
     assert!(client.animating);
     assert!((client.value - ramp_at(h.clock, start)).abs() < 0.05);
+}
+
+// P6 on the settle frame, across co-op: a host-only fade re-installed by a
+// body that runs on the frame its one play runs out. The drain lands before
+// the host's bridge would settle it, so the host restarts it there, and the
+// record names that frame as the start: the client replays the fade too,
+// rather than settling.
+#[test]
+fn p06_reinstall_on_a_fades_last_frame_restarts_on_host_and_client() {
+    // Ends half a frame before the 30th frame after the install, so that
+    // frame is the first the run has finished on.
+    let period_ms = 29.5 * DT * 1000.0;
+    let fade = || SIGN.animate(period_ms, Some(1), &[0.0, 1.0]);
+    let at = |clock: f64, start: f64| ((clock - start) * 1000.0 / period_ms) as f32;
+    let mut h = joined(parity_world());
+    host_write(&mut h, vec![SIGN.step(fade())]);
+    let first = h.clock;
+    assert_eq!(record(&h.host, SIGN).unwrap().anim_start, Some(first));
+    h.advance(29);
+    assert!(SIGN.shown(&h.host).animating, "one frame short of its end");
+    // The settle frame on the host: the body's drain, then the bridge tick.
+    h.clock += DT;
+    host_write(&mut h, vec![SIGN.step(fade())]);
+    let restart = h.clock;
+    assert_eq!(record(&h.host, SIGN).unwrap().anim_start, Some(restart));
+    let host = SIGN.shown(&h.host);
+    assert!(host.animating, "the host restarts instead of settling");
+    approx(host.value, 0.0, "from the first sample");
+    h.advance(12);
+    let expected = at(h.clock, restart);
+    let (host, client) = both(&h);
+    approx(host, expected, "the host's new run");
+    assert!(
+        SIGN.shown(&h.peers[0].app).animating,
+        "the client replays the fade"
+    );
+    assert!(
+        (client - expected).abs() < 0.05,
+        "client on the new run: {client} vs {expected}"
+    );
 }

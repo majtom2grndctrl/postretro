@@ -25,7 +25,7 @@ use super::shading::{CaptureScene, ShadeScratch};
 use super::tests::{alpha_light, tile_texel};
 use crate::bake_control::BakeControl;
 use crate::bvh_build::build_bvh;
-use crate::geometry::remap_face_brushes;
+use crate::geometry::remap_per_face;
 use crate::light_namespaces::StaticBakedLights;
 use crate::map_data::{FalloffModel, LightType, MapLight, ShadowType};
 
@@ -560,7 +560,7 @@ fn oversize_cut_remaps_each_sub_face_to_its_parent_brush_and_the_mask_follows() 
     .expect("fixture charts plan");
     let face_remap = cut.face_remap.expect("the walls are cut");
     let before = &room.world.face_brushes;
-    let after = remap_face_brushes(before, &face_remap);
+    let after = remap_per_face(before, &face_remap);
     assert_eq!(after.len(), geometry.geometry.faces.len());
     for (old, range) in face_remap.iter().enumerate() {
         for new in range.clone() {

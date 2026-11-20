@@ -137,6 +137,24 @@ fn each_bad_key_reads_its_fix_and_warns_once_naming_the_key() {
     }
 }
 
+// A finite number past f32's range reads the ceiling, not the default; the
+// ceiling is compared in f64.
+#[test]
+fn numbers_past_f32_range_read_the_ceiling() {
+    for raw in ["1e40", "1e400", "64.0000001"] {
+        let capture = LogCapture::start();
+        let volume = read(&[("emissive_max", raw)]);
+        assert_eq!(range(&volume), (0.0, 64.0), "{raw}");
+        capture.assert_logged_once(Level::Warn, "`emissive_max`");
+        capture.assert_logged_once(Level::Warn, "is past the ceiling; it reads 64");
+        capture.assert_not_logged(Level::Warn, "not finite");
+    }
+    let capture = LogCapture::start();
+    let volume = read(&[("emissive_min", "-1e400")]);
+    assert_eq!(range(&volume), (0.0, 1.0));
+    capture.assert_logged_once(Level::Warn, "is negative; it reads 0");
+}
+
 // Pin P38: each key is fixed before the pair swaps.
 #[test]
 fn keys_are_fixed_before_a_max_below_min_swaps() {
@@ -162,6 +180,19 @@ fn keys_are_fixed_before_a_max_below_min_swaps() {
     );
     capture.assert_logged_once(Level::Warn, "`emissive_min` inf is not finite");
     capture.assert_not_logged(Level::Warn, "swapped");
+    drop(capture);
+
+    // Only min authored: the warning names the default max.
+    let capture = LogCapture::start();
+    let volume = read(&[("emissive_min", "3")]);
+    assert_eq!(range(&volume), (1.0, 3.0));
+    capture.assert_logged_once(
+        Level::Warn,
+        &format!(
+            "{LABEL} `emissive_max` is not authored, so its default 1 is below the authored \
+             `emissive_min` 3; the two are swapped"
+        ),
+    );
     drop(capture);
 
     // A plain swap, and the ceiling fixed before it.

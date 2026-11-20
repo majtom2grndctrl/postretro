@@ -514,6 +514,7 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
             keys: mut split_keys,
             stats,
             glow,
+            ..
         } = bake_materials_into(
             &names[..3],
             &fixture.textures,

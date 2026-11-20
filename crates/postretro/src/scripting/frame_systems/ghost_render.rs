@@ -308,7 +308,8 @@ impl GhostRenderCollector {
     }
 }
 
-/// The per-ghost clamp's limiter input for this presented frame: the ghost
+/// The shared presented-frame limiter input, used by the ghost clamps and the
+/// emissive-volume flash clamps (one clock, one enable flag), for this frame: the ghost
 /// membership ramp's presented-frame time (`GhostLinks::presented_elapsed`, the
 /// same clock the ramp stepped by) and the player's fail-safe enable flag, read
 /// from the slot store this frame's resolve snapshot copies. The keyed clamp

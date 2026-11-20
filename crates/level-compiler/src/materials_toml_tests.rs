@@ -170,6 +170,67 @@ fn bad_values_are_fixed_and_each_warns_by_key_name() {
     capture.assert_not_logged(Level::Warn, "[\"f\"]");
 }
 
+#[test]
+fn out_of_range_numbers_read_by_sign_and_inf_keyword_stays_non_finite() {
+    let capture = LogCapture::start();
+    let parsed = parse(
+        "[\"a\"]\nemissive = 99999999999999999999\n\
+         [\"b\"]\nemissive = -99999999999999999999\n\
+         [\"c\"]\nemissive = 1e400\n\
+         [\"d\"]\nemissive = -1e400\n\
+         [\"e\"]\nemissive = -inf\n",
+    );
+    assert_eq!(emissive(&parsed, "a"), Some(EMISSIVE_VALUE_CEILING));
+    assert_eq!(emissive(&parsed, "b"), Some(0.0));
+    assert_eq!(emissive(&parsed, "c"), Some(EMISSIVE_VALUE_CEILING));
+    assert_eq!(emissive(&parsed, "d"), Some(0.0));
+    assert_eq!(emissive(&parsed, "e"), None);
+    capture.assert_logged_once(
+        Level::Warn,
+        "mod/materials.toml:2: [\"a\"] emissive 99999999999999999999 is above the ceiling 64; \
+         reading 64",
+    );
+    capture.assert_logged_once(
+        Level::Warn,
+        "mod/materials.toml:4: [\"b\"] emissive -99999999999999999999 is negative; reading 0",
+    );
+    capture.assert_logged_once(
+        Level::Warn,
+        "mod/materials.toml:6: [\"c\"] emissive 1e400 is above the ceiling 64; reading 64",
+    );
+    capture.assert_logged_once(
+        Level::Warn,
+        "mod/materials.toml:8: [\"d\"] emissive -1e400 is negative; reading 0",
+    );
+    capture.assert_logged_once(
+        Level::Warn,
+        "mod/materials.toml:10: [\"e\"] emissive -inf is not finite",
+    );
+    capture.assert_not_logged(Level::Warn, "NaN");
+}
+
+#[test]
+fn a_non_utf8_file_warns_naming_file_and_line() {
+    let root = tempfile::tempdir().unwrap();
+    // UTF-16 with a BOM: the first byte is not UTF-8.
+    std::fs::write(root.path().join(MATERIALS_TOML), [0xFF, 0xFE, b'[', 0]).unwrap();
+    let capture = LogCapture::start();
+    let parsed = MaterialsToml::load(root.path());
+    assert!(parsed.entry("signs/bar").is_none());
+    capture.assert_logged_once(Level::Warn, &format!("{MATERIALS_TOML}:1: cannot read"));
+    drop(capture);
+
+    // A bad byte on a later line names that line.
+    std::fs::write(
+        root.path().join(MATERIALS_TOML),
+        b"[\"a\"]\nemissive = 1\n# \xFF\n",
+    )
+    .unwrap();
+    let capture = LogCapture::start();
+    MaterialsToml::load(root.path());
+    capture.assert_logged_once(Level::Warn, &format!("{MATERIALS_TOML}:3: cannot read"));
+}
+
 // Pin P54: two keys that normalize alike warn once, naming both lines; the
 // later wins.
 #[test]

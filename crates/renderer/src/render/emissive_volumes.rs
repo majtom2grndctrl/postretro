@@ -91,6 +91,8 @@ impl Renderer {
             debug_assert!(run.end as usize <= EMISSIVE_TABLE_ENTRIES);
             let bytes = run.start as usize * EMISSIVE_TABLE_ENTRY_BYTES
                 ..run.end as usize * EMISSIVE_TABLE_ENTRY_BYTES;
+            // Runs come from the table's own dirty ranges within its fixed length
+            // (the debug_assert above guards it), so the lookup cannot fail.
             let Some(data) = table.get(bytes.clone()) else {
                 continue;
             };

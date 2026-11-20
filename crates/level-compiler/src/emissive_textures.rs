@@ -15,24 +15,33 @@ pub(crate) const DEFAULT_EMISSIVE_STRENGTH: f32 = 1.0;
 
 /// One record per TextureNames entry, in order. A texture with an `_e` map
 /// takes its entry's `emissive`, else 1; one without packs 0 and its entry,
-/// if any, warns once. Aliases normalize to one entry, so they share one
-/// value. Runs after fluid-only names join TextureNames, so they are covered.
+/// if any, warns once.
+///
+/// The entry is read by `bundles[i]`, the qualified bundle whose files
+/// resolved, normalized as the keys are, so a map name that reached
+/// `signs/bar` through the bare-stem alias (`bar`, `oldcoll/bar`) reads
+/// `["signs/bar"]` (pin P46). A name nothing resolved for reads its own
+/// normalized name. Aliases therefore share one value. Runs after fluid-only
+/// names join TextureNames, so they are covered.
 pub(crate) fn build_emissive_textures(
     names: &[String],
     glow: &[EmissiveGlow],
+    bundles: &[Option<String>],
     materials: &MaterialsToml,
 ) -> Vec<EmissiveTexture> {
     debug_assert_eq!(names.len(), glow.len(), "one glow record per texture name");
+    debug_assert_eq!(names.len(), bundles.len(), "one bundle per texture name");
     let mut warned = HashSet::new();
     names
         .iter()
         .zip(glow)
-        .map(|(name, glow)| {
-            let normalized = normalize_map_texture_name(name);
-            let entry = materials.entry(&normalized);
+        .zip(bundles)
+        .map(|((name, glow), bundle)| {
+            let key = normalize_map_texture_name(bundle.as_deref().unwrap_or(name));
+            let entry = materials.entry(&key);
             if !glow.has_emissive {
                 if let Some(entry) = entry.filter(|entry| entry.emissive.is_some())
-                    && warned.insert(normalized)
+                    && warned.insert(key)
                 {
                     log::warn!(
                         "[prl-build] {}:{}: [\"{}\"] sets emissive, but texture '{name}' has no \
@@ -78,12 +87,18 @@ mod tests {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
 
+    /// No name resolved a bundle: each reads its own normalized name.
+    fn unresolved(count: usize) -> Vec<Option<String>> {
+        vec![None; count]
+    }
+
     #[test]
     fn strength_defaults_to_one_with_an_emissive_map_whatever_the_prefix_and_zero_without() {
         let capture = LogCapture::start();
         let table = build_emissive_textures(
             &names(&["panels/sign", "metal/metal_sign", "panels/plain"]),
             &[LIT, LIT, UNLIT],
+            &unresolved(3),
             &MaterialsToml::empty(PathBuf::from("mod/materials.toml")),
         );
         assert_eq!(table[0].strength, 1.0, "no prefix");
@@ -105,10 +120,36 @@ mod tests {
                 "signs/other",
             ]),
             &[LIT; 4],
+            &unresolved(4),
             &materials("[\"signs/bar\"]\nemissive = 4\n"),
         );
         let strengths: Vec<f32> = table.iter().map(|texture| texture.strength).collect();
         assert_eq!(strengths, [4.0, 4.0, 4.0, 1.0]);
+        capture.assert_nothing_above(Level::Info);
+    }
+
+    // Pin P46: a name that reached `signs/bar`'s files through the bare-stem
+    // alias reads that bundle's entry, not one for its own spelling.
+    #[test]
+    fn a_bare_stem_alias_reads_the_entry_of_the_bundle_it_resolved() {
+        let capture = LogCapture::start();
+        let table = build_emissive_textures(
+            &names(&["signs/bar", "bar", "oldcoll/bar", "signs/other"]),
+            &[LIT; 4],
+            &[
+                Some("signs/bar".to_owned()),
+                Some("signs/bar".to_owned()),
+                Some("signs/bar".to_owned()),
+                Some("signs/other".to_owned()),
+            ],
+            &materials("[\"signs/bar\"]\nemissive = 4\n\n[\"bar\"]\nemissive = 2\n"),
+        );
+        let strengths: Vec<f32> = table.iter().map(|texture| texture.strength).collect();
+        assert_eq!(
+            strengths,
+            [4.0, 4.0, 4.0, 1.0],
+            "an entry for the bare spelling no bundle resolved to is not read"
+        );
         capture.assert_nothing_above(Level::Info);
     }
 
@@ -117,11 +158,16 @@ mod tests {
     fn an_entry_for_a_texture_without_an_emissive_map_warns_once_and_packs_zero() {
         let capture = LogCapture::start();
         let table = build_emissive_textures(
-            &names(&["metal/plate", "textures/metal/plate"]),
-            &[UNLIT, UNLIT],
+            &names(&["metal/plate", "textures/metal/plate", "plate"]),
+            &[UNLIT; 3],
+            &[
+                Some("metal/plate".to_owned()),
+                Some("metal/plate".to_owned()),
+                Some("metal/plate".to_owned()),
+            ],
             &materials("\n[\"metal/plate\"]\nemissive = 4\n"),
         );
-        assert_eq!(table, [EmissiveTexture::DARK; 2]);
+        assert_eq!(table, [EmissiveTexture::DARK; 3]);
         capture.assert_logged_once(
             Level::Warn,
             "mod/materials.toml:2: [\"metal/plate\"] sets emissive, but texture 'metal/plate' has \
@@ -134,6 +180,7 @@ mod tests {
         let table = build_emissive_textures(
             &names(&["signs/bar"]),
             &[LIT],
+            &unresolved(1),
             &materials("[\"signs/bar\"]\nemissive = 0\n"),
         );
         assert_eq!(table[0].strength, 0.0);

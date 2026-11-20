@@ -13,6 +13,8 @@ use postretro_level_format::fog_volumes::FogVolumeRecord;
 use postretro_level_loader::{LightType, MapLight};
 use postretro_render_cpu::fog_volume::{FogPointLight, FogVolume, MAX_FOG_POINT_LIGHTS};
 
+use crate::scripting_systems::curve_sample::sample_linear_curve;
+
 /// Authoring-time AABB and shape parameters cached alongside the entity. Not
 /// runtime-settable — these are baked at compile time and live in a side-table
 /// rather than the `FogVolumeComponent`.
@@ -595,30 +597,6 @@ fn normalized_phase(animation: &FogAnimation, start_ms: f64, now_ms: f64) -> f32
     let phase_offset = animation.phase.unwrap_or(0.0) as f64;
     let t = ((now_ms - start_ms) / period_ms + phase_offset).rem_euclid(1.0);
     t as f32
-}
-
-/// Linear interpolation across an N-sample curve, where samples are
-/// uniformly spaced over `[0.0, 1.0]`. Deliberately simpler than the shader's
-/// Catmull-Rom path: fog density is a single scalar per frame and the visual
-/// difference at curve boundaries is imperceptible at the cadence reactions
-/// drive fog at. The emissive bridge samples brightness curves with it too.
-pub(crate) fn sample_linear_curve(curve: &[f32], t: f32) -> f32 {
-    match curve.len() {
-        // Defensive: validation rejects empty curves at install time, so this
-        // arm is unreachable in practice. Return the no-fog identity rather
-        // than panicking from a hot path.
-        0 => 0.0,
-        1 => curve[0],
-        n => {
-            let pos = t * (n - 1) as f32;
-            let lo_idx = (pos as usize).min(n - 1);
-            let hi_idx = (lo_idx + 1).min(n - 1);
-            let frac = pos - lo_idx as f32;
-            let lo = curve[lo_idx];
-            let hi = curve[hi_idx];
-            lo + (hi - lo) * frac
-        }
-    }
 }
 
 /// Final values written back when a `play_count`-bounded animation settles.

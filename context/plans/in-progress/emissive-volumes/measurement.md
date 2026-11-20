@@ -1,9 +1,10 @@
 # emissive-volumes — measurement procedure
 
 Procedure for the brief's Measured rows Ms1, Ms2 and Ms4. Ms3 (bytes uploaded) is test-gated; the
-`emissive_uploaded` count below also reads it in-engine. Every run is report, not gate: a worse
-result is the owner's cue to weigh another implementation (`index.md` §Measured). Nothing here has
-been run. Each run needs an idle machine and the owner's go-ahead.
+`emissive_uploaded` count below also reads it in-engine. The first frame after a level load uploads
+all 257 entries, a full re-send by design, so Ms3's static-frame zero excludes that frame. Every
+run is report, not gate: a worse result is the owner's cue to weigh another implementation
+(`index.md` §Measured). Nothing here has been run. Each run needs an idle machine and the owner's go-ahead.
 
 ## Fixed for every run
 
@@ -107,7 +108,7 @@ Options › Accessibility, persisted as `accessibility.flash_limiter` in `settin
 afterwards. Collect at least five 120-frame windows after the first, per setting. Report the
 `emissive_update` avg and max (ms) and the `emissive_uploaded` avg: expect 16 with the limiter off.
 `python3 tools/telemetry_reduce.py <file>` gives the window percentiles. As controls, the static
-`emissive-volumes-stress-256.prl` should read `emissive_uploaded` 0 (Ms3), and `-0.prl` gives the
+`emissive-volumes-stress-256.prl` should read `emissive_uploaded` 0 after its first frame (Ms3), and `-0.prl` gives the
 update's floor with no volumes. The baseline has no such stage, so Ms2 has no baseline row.
 
 ## Ms4 — bake stage time

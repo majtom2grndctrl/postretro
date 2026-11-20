@@ -271,6 +271,51 @@ fn pipeline_bakes_shared_and_mover_names_once_and_tails_only_fluid_only_names() 
     );
 }
 
+// Pin P46: a map naming `signs/bar` and the bare `bar` (and a stale
+// collection, `oldcoll/bar`) reaches one bundle through the bare-stem alias,
+// so every spelling reads `["signs/bar"]` and packs its strength.
+#[test]
+fn a_bare_stem_alias_packs_its_bundles_materials_toml_strength() {
+    let root = tempfile::tempdir().unwrap();
+    let textures = root.path().join("textures");
+    std::fs::create_dir_all(textures.join("signs")).unwrap();
+    for (stem, pixel) in [("bar", [90, 20, 20, 255]), ("bar_e", [255, 128, 0, 255])] {
+        image::RgbaImage::from_pixel(2, 2, image::Rgba(pixel))
+            .save(textures.join(format!("signs/{stem}.png")))
+            .unwrap();
+    }
+    let prm_root = root.path().join("materials");
+    let names = ["signs/bar", "bar", "oldcoll/bar"].map(str::to_owned);
+    let toml = MaterialsToml::parse(
+        root.path().join("materials.toml"),
+        "[\"signs/bar\"]\nemissive = 4\n",
+    );
+    let logs = LogCapture::start();
+    let mut stage = bake_world_materials_at(&names, &textures, &prm_root, toml, 1.0).unwrap();
+    let emissive = bake_remaining_textures(
+        &root.path().join("maps/bar.map"),
+        &names,
+        &[],
+        &textures,
+        &prm_root,
+        &mut stage,
+    )
+    .unwrap();
+    let strengths: Vec<f32> = emissive.iter().map(|texture| texture.strength).collect();
+    assert_eq!(strengths, [4.0; 3], "{names:?}");
+    assert!(
+        emissive.iter().all(|texture| texture.glow_color[0] > 0.9),
+        "every spelling resolved the `_e` map"
+    );
+    for record in logs.records() {
+        assert!(
+            !(record.level <= log::Level::Warn && record.message.contains("materials.toml")),
+            "a resolved alias warns nothing: {}",
+            record.message
+        );
+    }
+}
+
 /// Compile the shared-name room (world `bounce/red` and `bounce/white`, mover
 /// `bounce/lift`, fluid-only `bounce/water`) under `root`; the PRL path.
 fn compile_shared_name_room(root: &Path) -> std::path::PathBuf {

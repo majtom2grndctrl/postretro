@@ -1720,6 +1720,18 @@ fn run_after_parsing(
         &governor,
     );
 
+    // Emissive membership is per BSP fragment: each pre-cut face tests its
+    // own centroid, so it is taken here, before the cut, and an atlas
+    // sub-face inherits its fragment's (P29). Membership itself waits for
+    // `_e` facts after the texture stage.
+    let centroids_start = Instant::now();
+    let mut fragment_centroids = if map_data.emissive_volumes.is_empty() {
+        Vec::new()
+    } else {
+        crate::emissive_membership::fragment_centroids(&geo_result)
+    };
+    let centroids_elapsed = centroids_start.elapsed();
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::AtlasPreparation);
     // An oversize face is cut here; the face-identity set (leaf face ranges,
     // BVH, CellDrawIndex) is then rebuilt over the cut geometry, and the
@@ -1733,6 +1745,7 @@ fn run_after_parsing(
         partition: cell_partition,
         rebuilt,
         pre_cut_geometry,
+        face_remap,
     } = atlas_stage::prepare_atlas_stage(
         atlas_stage::AtlasStageInputs {
             map_data: &map_data,
@@ -1752,6 +1765,11 @@ fn run_after_parsing(
     )?;
     // A whole geometry copy: keep it only for the SDF stage that reads it.
     let pre_cut_geometry = pre_cut_geometry.filter(|_| map_needs_sdf_atlas(&map_data.lights));
+    if let Some(face_remap) = &face_remap
+        && !fragment_centroids.is_empty()
+    {
+        fragment_centroids = crate::geometry::remap_per_face(&fragment_centroids, face_remap);
+    }
     if let Some(rebuilt) = rebuilt {
         bvh = rebuilt.bvh;
         bvh_primitives = rebuilt.primitives;
@@ -2206,23 +2224,26 @@ fn run_after_parsing(
         true,
     );
 
-    // Emissive membership reads the final static world: the atlas cut is
-    // done and no later stage reorders faces, so its indices are the ones
-    // Geometry (id 17) packs. It precedes reflection capture, which shades
-    // each member face at its volume's reference state.
+    // Emissive membership lists final faces: the atlas cut is done and no
+    // later stage reorders faces, so its indices are the ones Geometry
+    // (id 17) packs, each tested at its pre-cut fragment's centroid (above).
+    // It precedes reflection capture, which shades each member face at its
+    // volume's reference state.
     let membership_start = Instant::now();
     let emissive_section = postretro_level_format::emissive::EmissiveSection {
         textures: emissive_textures,
         volumes: crate::emissive_membership::resolve_emissive_volume_records(
             &map_data.emissive_volumes,
             &geo_result,
-            &face_brushes,
-            &map_data.brush_volumes,
+            &fragment_centroids,
             &has_emissive_map,
         ),
     };
     // Listed alone, not a stage: it runs uncached on every build.
-    timings.push(("Emissive Membership", membership_start.elapsed()));
+    timings.push((
+        "Emissive Membership",
+        centroids_elapsed + membership_start.elapsed(),
+    ));
 
     // Reflection probes read the encoded id 52 and id 22, the packed base SH,
     // ids 25 and 27 as they ship (culled, repacked, dropped and compacted),

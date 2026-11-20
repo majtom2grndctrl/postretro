@@ -147,6 +147,10 @@ pub(super) fn find_fill(
         ..
     } = best?;
     let candidate = &candidates[slot];
+    // Known capture-only approximation: the material comes from the covering
+    // side, but `lit.face` (which supplies the emissive volume factor) may
+    // belong to a different coplanar kept brush. The runtime draws no face
+    // here, so only the reflection capture can differ.
     let texture_index = candidate.sides[index]
         .texture_index
         .unwrap_or_else(|| tracer.geometry().geometry.faces[lit.face as usize].texture_index);

@@ -13,6 +13,8 @@ pub(crate) fn eval_curve(curve: &[f32], t: f32) -> f32 {
 pub(crate) mod attachments;
 #[path = "scripting/frame_systems/billboard_ghost_render.rs"]
 pub(crate) mod billboard_ghost_render;
+#[path = "scripting/frame_systems/curve_sample.rs"]
+pub(crate) mod curve_sample;
 #[path = "scripting/frame_systems/emissive_volume_bridge.rs"]
 pub(crate) mod emissive_volume_bridge;
 #[path = "scripting/frame_systems/emitter_bridge.rs"]

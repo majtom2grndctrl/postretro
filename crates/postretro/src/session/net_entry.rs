@@ -364,7 +364,7 @@ mod tests {
                     .strip_prefix(&root)
                     .unwrap()
                     .to_string_lossy()
-                    .to_string();
+                    .replace('\\', "/");
                 // Test-only modules: their files, fixtures and test dirs.
                 if relative.contains("test") || relative.contains("fixture") {
                     continue;

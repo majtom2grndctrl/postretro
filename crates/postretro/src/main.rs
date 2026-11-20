@@ -7833,6 +7833,7 @@ mod tests {
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
         );
         let terms = client_fire_muzzle_terms(&initial, 0).expect("host row exists");
@@ -7860,6 +7861,7 @@ mod tests {
             postretro_combat_model::EnvironmentTuning {
                 level_gravity: -9.81,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
         );
         let terms = client_fire_muzzle_terms(&replacement, 0).expect("replacement row exists");

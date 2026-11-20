@@ -122,6 +122,14 @@ impl StatusSet {
     }
 }
 
+/// A connected client's replicated status presence for one entity: bit `i`
+/// set while any instance of the host's `i`-th declared status is live. The
+/// client maps bits to its own statuses through the host's name table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct StatusPresenceComponent {
+    pub bits: u64,
+}
+
 /// An application made outside a fixed tick, applied at the next tick start.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PendingStatusApplication {
@@ -160,6 +168,10 @@ pub struct StatusTable {
     fluid_statuses: Vec<Option<FluidStatus>>,
     /// Fluid-application scratch the status stage reuses each tick.
     fluid_scratch: Vec<(EntityId, u16, u16)>,
+    /// On a connected client, the host's status names that name the bits of
+    /// each replicated [`StatusPresenceComponent`]; empty before the host's
+    /// table installs and on the host.
+    presence_names: Vec<String>,
 }
 
 /// The status one fluid applies, by name so a hot reload that reorders
@@ -659,5 +671,37 @@ impl crate::registry::EntityRegistry {
             self.apply_status(entity, status, StatusApplier::Source(source), source);
         }
         self.statuses.fluid_scratch = scratch;
+    }
+}
+
+impl crate::registry::EntityRegistry {
+    /// Install the host's status name table on a connected client: bit `i` of
+    /// a replicated presence names entry `i`. Presence that arrived before a
+    /// table shows nothing; after a host reload that reorders statuses, the
+    /// last installed table maps it.
+    pub fn set_presence_status_names(&mut self, names: &[String]) {
+        if self.statuses.presence_names != names {
+            self.statuses.presence_names = names.to_vec();
+        }
+    }
+
+    /// Whether `entity` shows this machine's status `name`: a connected
+    /// client reads its replicated presence through the host's name table,
+    /// mapping by name so a status the client does not declare shows nothing;
+    /// the host and single player read their live instances.
+    pub fn shows_status(&self, entity: EntityId, name: &str) -> bool {
+        if let Ok(presence) = self.get_component::<StatusPresenceComponent>(entity) {
+            return self.defense_vocabulary().status_index(name).is_some()
+                && self
+                    .statuses
+                    .presence_names
+                    .iter()
+                    .position(|host| host == name)
+                    .is_some_and(|bit| bit < 64 && presence.bits & (1 << bit) != 0);
+        }
+        self.defense_vocabulary()
+            .status_index(name)
+            .and_then(|index| u16::try_from(index).ok())
+            .is_some_and(|index| self.has_status(entity, index))
     }
 }

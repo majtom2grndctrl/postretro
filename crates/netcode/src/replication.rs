@@ -311,6 +311,20 @@ fn collect_payloads(
         );
         payloads.push(payload);
     }
+    // Status presence: one bit per live host status kind; none while no
+    // status is live, so an unafflicted entity costs nothing on the wire.
+    let presence = registry.status_presence_bits(id);
+    if presence != 0 {
+        let payload = ComponentPayload::StatusPresence(postretro_net::wire::WireStatusPresence {
+            bits: presence,
+        });
+        debug_assert_eq!(
+            component_kind_discriminant(ComponentKind::StatusPresence),
+            payload.kind(),
+            "engine/wire status presence discriminant diverged"
+        );
+        payloads.push(payload);
+    }
     if let Ok(link) = registry.get_component::<postretro_entities::GhostLinkComponent>(id) {
         // Always on: armed state, member categories, and each look field a
         // script has set, with its unclamped ramp.
@@ -1324,3 +1338,6 @@ mod presentation_tests;
 #[cfg(test)]
 #[path = "replication/ghost_link_tests.rs"]
 mod ghost_link_tests;
+#[cfg(test)]
+#[path = "replication/status_presence_tests.rs"]
+mod status_presence_tests;

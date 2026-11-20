@@ -724,7 +724,8 @@ export function defineStatus(
   if (typeof nameOrOptions !== "string") throw new TypeError(BINDING_NAME_SUGAR_DIAGNOSTIC);
   const name = nameOrOptions;
   const handle = { kind: "status", name };
-  hideProperty(handle, "active", storeRef(`player.status.${name}`, "boolean", false));
+  // A local-only read: no `byPlayer`, as `player.lifeState` has none.
+  hideProperty(handle, "active", Object.freeze({ slot: `player.status.${name}`, kind: "boolean" }));
   Object.freeze(handle);
   statusDeclarations.set(handle, Object.freeze({ ...(options ?? {}), kind: "status", name }));
   return handle as unknown as import("postretro").Status;

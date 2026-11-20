@@ -1000,6 +1000,9 @@ impl NetEndpoint {
                 *applied_movement_tuning_generation = *tuning_generation;
             }
         }
+        if let Some(payload) = tuning.as_deref() {
+            registry.set_presence_status_names(&payload.environment.status_names);
+        }
         if let Err(error) = result {
             log::error!("[Net] tuning payload epoch/decode failure: {error}");
         }
@@ -1080,6 +1083,7 @@ mod tests {
                 std::array::from_fn(|_| None),
                 EnvironmentTuning {
                     level_gravity,
+                    status_names: Vec::new(),
                     fluids: FluidMovementTable::new(
                         fluids
                             .iter()

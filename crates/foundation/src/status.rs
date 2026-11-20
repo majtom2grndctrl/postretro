@@ -23,6 +23,10 @@ pub const STATUS_MAX_STACKS_RANGE: (u8, u8) = (1, 64);
 /// entity carries a live instance of that registered status.
 pub const STATUS_INPUT_PREFIX: &str = "@status.";
 
+/// Prefix of the local-only `player.status.<name>` Bool slots a status
+/// handle's `.active` reads.
+pub const PLAYER_STATUS_SLOT_PREFIX: &str = "player.status.";
+
 /// Source id of an application whose impact had no damager and that came
 /// from a reaction verb rather than an impact (`players().applyStatus`).
 pub const APPLY_STATUS_SOURCE_ID: &str = "script.applyStatus";

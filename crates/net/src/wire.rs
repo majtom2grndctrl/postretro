@@ -49,11 +49,12 @@ pub use components::{
     COMPONENT_KIND_MAP_ORDINAL, COMPONENT_KIND_MESH_ANIMATION_STATE,
     COMPONENT_KIND_PLAYER_MOVEMENT_STATE, COMPONENT_KIND_PROJECTILE,
     COMPONENT_KIND_PROJECTILE_TRAP, COMPONENT_KIND_SPAWNER, COMPONENT_KIND_SPRITE_VISUAL,
-    COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE, COMPONENT_KIND_TRANSFORM,
-    COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON, ComponentPayload, MAX_WIRE_CURVE_KEYS,
-    RawComponentPayload, WireEmitterState, WireFogAnimation, WireFogState, WireGroundRef,
-    WireKinematicMoverState, WireLightAnimation, WireLightState, WireMeshAnimationState,
-    WireMovementState, WirePlayerMovementState, WireSpinAnimation, WireTransform,
+    COMPONENT_KIND_STATUS_PRESENCE, COMPONENT_KIND_TELEPORTER, COMPONENT_KIND_TOUCHABLE,
+    COMPONENT_KIND_TRANSFORM, COMPONENT_KIND_TRIGGER_VOLUME, COMPONENT_KIND_WEAPON,
+    ComponentPayload, MAX_WIRE_CURVE_KEYS, RawComponentPayload, WireEmitterState, WireFogAnimation,
+    WireFogState, WireGroundRef, WireKinematicMoverState, WireLightAnimation, WireLightState,
+    WireMeshAnimationState, WireMovementState, WirePlayerMovementState, WireSpinAnimation,
+    WireStatusPresence, WireTransform,
 };
 pub use ghost::{
     GHOST_LINK_MEMBER_BITS, GHOST_LOOK_FIELD_BITS, GHOST_LOOK_OPACITY, GHOST_LOOK_SATURATION,
@@ -383,7 +384,8 @@ impl WeaponCuesMessage {
 /// Bumped to 25 for teammate assist: player movement state gained the
 /// `assistable` bool, and the local-pawn record its assist pair table and
 /// received required ticks, all under the one bump.
-pub const SNAPSHOT_VERSION: u16 = 25;
+/// Bumped to 26 for the `status_presence` entity component payload.
+pub const SNAPSHOT_VERSION: u16 = 26;
 
 /// Stable map presentation identity. The receiver verifies the origin before applying.
 #[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
@@ -1018,7 +1020,8 @@ impl RawEntityRecord {
                 ComponentPayload::Transform(t) => t.all_finite(),
                 ComponentPayload::PlayerMovementState(_)
                 | ComponentPayload::TeleporterState(_)
-                | ComponentPayload::GhostLinkState(_) => false,
+                | ComponentPayload::GhostLinkState(_)
+                | ComponentPayload::StatusPresence(_) => false,
                 ComponentPayload::MeshAnimationState(_) => false,
                 ComponentPayload::KinematicMoverState(_)
                 | ComponentPayload::LightState(_)
@@ -1555,6 +1558,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         }
     }
 
@@ -1570,6 +1574,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         }
     }
 
@@ -1587,6 +1592,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         }
     }
 
@@ -1623,6 +1629,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         }
     }
 
@@ -2546,6 +2553,7 @@ mod tests {
                     emitter: None,
                     fog: None,
                     ghost_link: None,
+                    status_presence: None,
                 }],
             )],
             state_schema_fingerprint: [0u8; 32],
@@ -2574,6 +2582,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2597,6 +2606,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2622,6 +2632,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         };
         assert_eq!(
             payload.validate(),
@@ -2707,6 +2718,7 @@ mod tests {
             }),
             ComponentPayload::KinematicMoverState(sample_mover_state()),
             ComponentPayload::GhostLinkState(WireGhostLinkState::new(0, 1, true, 0b1111)),
+            ComponentPayload::StatusPresence(WireStatusPresence { bits: 0b101 }),
         ];
         for payload in cases {
             let expected = match payload {
@@ -2719,6 +2731,7 @@ mod tests {
                 ComponentPayload::FogState(_) => 4,
                 ComponentPayload::TeleporterState(_) => 24,
                 ComponentPayload::GhostLinkState(_) => 26,
+                ComponentPayload::StatusPresence(_) => 29,
             };
             assert_eq!(payload.kind(), expected);
         }
@@ -3342,6 +3355,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3372,6 +3386,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         };
         assert_eq!(
             payload.validate(),
@@ -3395,6 +3410,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         }
     }
 
@@ -3479,6 +3495,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         };
 
         assert_eq!(
@@ -3513,6 +3530,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             };
 
             assert_eq!(
@@ -3551,6 +3569,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             };
 
             assert_eq!(
@@ -3594,6 +3613,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3622,6 +3642,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             };
             assert_eq!(
                 payload.validate(),
@@ -3656,6 +3677,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             };
             assert_eq!(payload.validate(), Err(ValidationError::NonFiniteTransform));
         }
@@ -3686,6 +3708,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             }],
         );
         assert_eq!(record.validate(), Err(ValidationError::NonFiniteTransform));
@@ -3717,6 +3740,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             }],
         );
         record.has_entity_class = true;
@@ -3981,13 +4005,63 @@ mod tests {
                 received: 19
             })
         ));
+        // The layout before the status-presence component payload.
+        snapshot.version = 25;
+        assert_eq!(SNAPSHOT_VERSION, 26);
+        assert!(matches!(
+            snapshot.validate(),
+            Err(ValidationError::VersionMismatch {
+                expected: SNAPSHOT_VERSION,
+                received: 25
+            })
+        ));
+    }
+
+    // A status presence crosses as one non-empty bitset; an empty one is never
+    // sent, so a payload carrying none is malformed.
+    #[test]
+    fn status_presence_payload_round_trips_and_rejects_empty_bits() {
+        let raw = raw_from_typed(&ComponentPayload::StatusPresence(WireStatusPresence {
+            bits: 1 << 63 | 1,
+        }));
+        assert_eq!(
+            raw.validate(),
+            Ok(ComponentPayload::StatusPresence(WireStatusPresence {
+                bits: 1 << 63 | 1
+            }))
+        );
+        let mut empty = raw.clone();
+        empty.status_presence = Some(WireStatusPresence { bits: 0 });
+        assert!(empty.validate().is_err());
+        let mut missing = raw;
+        missing.status_presence = None;
+        assert_eq!(
+            missing.validate(),
+            Err(ValidationError::MissingComponentPayload(
+                COMPONENT_KIND_STATUS_PRESENCE
+            ))
+        );
     }
 
     fn raw_from_typed(payload: &ComponentPayload) -> RawComponentPayload {
         match payload {
+            ComponentPayload::StatusPresence(presence) => RawComponentPayload {
+                component_kind: COMPONENT_KIND_STATUS_PRESENCE,
+                status_presence: Some(*presence),
+                ghost_link: None,
+                teleporter: None,
+                transform: None,
+                player_movement: None,
+                mesh_animation_state: None,
+                kinematic_mover: None,
+                light: None,
+                emitter: None,
+                fog: None,
+            },
             ComponentPayload::GhostLinkState(state) => RawComponentPayload {
                 component_kind: COMPONENT_KIND_GHOST_LINK,
                 ghost_link: Some(*state),
+                status_presence: None,
                 teleporter: None,
                 transform: None,
                 player_movement: None,
@@ -4008,6 +4082,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             },
             ComponentPayload::Transform(t) => RawComponentPayload {
                 teleporter: None,
@@ -4020,6 +4095,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             },
             ComponentPayload::PlayerMovementState(m) => RawComponentPayload {
                 teleporter: None,
@@ -4032,6 +4108,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             },
             ComponentPayload::MeshAnimationState(m) => RawComponentPayload {
                 teleporter: None,
@@ -4044,6 +4121,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             },
             ComponentPayload::KinematicMoverState(m) => RawComponentPayload {
                 teleporter: None,
@@ -4056,6 +4134,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             },
             ComponentPayload::LightState(state) => RawComponentPayload {
                 teleporter: None,
@@ -4068,6 +4147,7 @@ mod tests {
                 emitter: None,
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             },
             ComponentPayload::EmitterState(state) => RawComponentPayload {
                 teleporter: None,
@@ -4080,6 +4160,7 @@ mod tests {
                 emitter: Some(state.clone()),
                 fog: None,
                 ghost_link: None,
+                status_presence: None,
             },
             ComponentPayload::FogState(state) => RawComponentPayload {
                 teleporter: None,
@@ -4092,6 +4173,7 @@ mod tests {
                 emitter: None,
                 fog: Some(state.clone()),
                 ghost_link: None,
+                status_presence: None,
             },
         }
     }
@@ -4129,6 +4211,7 @@ mod tests {
             emitter: None,
             fog: None,
             ghost_link: None,
+            status_presence: None,
         };
         assert!(matches!(
             raw(0).validate(),
@@ -4172,6 +4255,7 @@ mod tests {
     fn ghost_link_payload_validates_its_record_and_its_envelope_slot() {
         let raw = |state| RawComponentPayload {
             ghost_link: Some(state),
+            status_presence: None,
             component_kind: COMPONENT_KIND_GHOST_LINK,
             teleporter: None,
             transform: None,

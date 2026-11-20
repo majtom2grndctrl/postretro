@@ -187,6 +187,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::GhostLink => "ghost_link",
         ComponentKind::DefenseLayers => "defense_layers",
         ComponentKind::AttackPool => "attack_pool",
+        ComponentKind::StatusPresence => "status_presence",
     }
 }
 
@@ -436,6 +437,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "AttackPool component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::StatusPresence(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "StatusPresence component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::HitVolume(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "HitVolume component is engine-managed and not exposed to scripts",
@@ -642,6 +647,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::AttackPool(_) => Err(mlua::Error::RuntimeError(
                 "AttackPool component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::StatusPresence(_) => Err(mlua::Error::RuntimeError(
+                "StatusPresence component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::HitVolume(_) => Err(mlua::Error::RuntimeError(
                 "HitVolume component is engine-managed and not exposed to scripts".to_string(),

@@ -507,6 +507,7 @@ fn deliver_host_tuning(
         EnvironmentTuning {
             level_gravity: LEVEL_GRAVITY,
             fluids,
+            status_names: Vec::new(),
         },
     );
     crate::client_drain_control(

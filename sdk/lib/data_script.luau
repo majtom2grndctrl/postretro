@@ -1033,7 +1033,8 @@ function DataScriptSdk.defineStatus(...: any): Status
     error(BINDING_NAME_SUGAR_DIAGNOSTIC, 2)
   end
   local accessors = {
-    active = storeRef("player.status." .. name, "boolean", false),
+    -- A local-only read: no `byPlayer`, as `player.lifeState` has none.
+    active = table.freeze({ slot = "player.status." .. name, kind = "boolean" }),
   }
   local handle = table.freeze(setmetatable({ kind = "status", name = name }, { __index = accessors }))
   local declaration = table.clone(options or {})

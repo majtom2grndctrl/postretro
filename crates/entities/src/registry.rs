@@ -186,6 +186,10 @@ pub enum ComponentKind {
     /// state. Host-owned and never replicated; scripts address it through
     /// member handles.
     AttackPool = 28,
+    /// A connected client's copy of an entity's replicated status presence:
+    /// one bit per host status kind. The host never carries it; its live
+    /// instances sit in the registry's status table.
+    StatusPresence = 29,
 }
 
 impl ComponentKind {
@@ -224,6 +228,7 @@ impl ComponentKind {
             ComponentKind::GhostLink,
             ComponentKind::DefenseLayers,
             ComponentKind::AttackPool,
+            ComponentKind::StatusPresence,
         ];
         VARIANTS.len()
     };
@@ -302,6 +307,7 @@ pub enum ComponentValue {
     GhostLink(GhostLinkComponent),
     DefenseLayers(DefenseLayersComponent),
     AttackPool(AttackPoolComponent),
+    StatusPresence(crate::components::statuses::StatusPresenceComponent),
 }
 
 impl ComponentValue {
@@ -336,6 +342,7 @@ impl ComponentValue {
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
             ComponentValue::DefenseLayers(_) => ComponentKind::DefenseLayers,
             ComponentValue::AttackPool(_) => ComponentKind::AttackPool,
+            ComponentValue::StatusPresence(_) => ComponentKind::StatusPresence,
         }
     }
 }
@@ -763,6 +770,19 @@ impl Component for MapOrdinal {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::MapOrdinal(self)
+    }
+}
+
+impl Component for crate::components::statuses::StatusPresenceComponent {
+    const KIND: ComponentKind = ComponentKind::StatusPresence;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::StatusPresence(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::StatusPresence(self)
     }
 }
 

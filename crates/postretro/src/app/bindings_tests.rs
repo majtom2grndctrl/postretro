@@ -126,6 +126,7 @@ fn tuning_with_dash() -> TuningPayload {
         EnvironmentTuning {
             level_gravity: -9.81,
             fluids: Default::default(),
+            status_names: Vec::new(),
         },
     )
 }
@@ -175,6 +176,7 @@ fn host_tuning_wieldables_carry_magazine_and_secondary() {
         EnvironmentTuning {
             level_gravity: -9.81,
             fluids: Default::default(),
+            status_names: Vec::new(),
         },
     ));
     assert!(facts.magazine && facts.secondary && !facts.dash);

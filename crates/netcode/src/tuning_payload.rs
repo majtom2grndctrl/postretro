@@ -341,6 +341,7 @@ mod tests {
         EnvironmentTuning {
             level_gravity: HOST_LEVEL_GRAVITY,
             fluids: host_fluids(),
+            status_names: Vec::new(),
         }
     }
 
@@ -507,6 +508,7 @@ mod tests {
                 EnvironmentTuning {
                     level_gravity,
                     fluids: FluidMovementTable::default(),
+                    status_names: Vec::new(),
                 },
             );
             let decoded = decode_tuning_payload(&encode_tuning_payload(&payload)).unwrap();
@@ -566,6 +568,7 @@ mod tests {
             EnvironmentTuning {
                 level_gravity: HOST_LEVEL_GRAVITY,
                 fluids: FluidMovementTable::default(),
+                status_names: Vec::new(),
             },
         );
         let decoded = decode_tuning_payload(&encode_tuning_payload(&dry)).unwrap();
@@ -750,6 +753,24 @@ mod tests {
             Err(TuningPayloadError::EpochMismatch {
                 expected: TUNING_PAYLOAD_EPOCH,
                 received: 13,
+            })
+        ));
+    }
+
+    // Epoch 17 predates `statusNames`. A payload stamped 17 reports the stale
+    // epoch, so a client never maps presence without the host's name table.
+    #[test]
+    fn payload_rejects_epoch_17_before_status_names() {
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&encode_tuning_payload(&full_payload())).unwrap();
+        json["epoch"] = serde_json::json!(17);
+        let previous_epoch = serde_json::to_vec(&json).unwrap();
+        assert_eq!(TUNING_PAYLOAD_EPOCH, 18);
+        assert!(matches!(
+            decode_tuning_payload(&previous_epoch),
+            Err(TuningPayloadError::EpochMismatch {
+                expected: TUNING_PAYLOAD_EPOCH,
+                received: 17,
             })
         ));
     }

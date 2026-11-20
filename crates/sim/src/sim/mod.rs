@@ -27,6 +27,8 @@ mod layer_lifecycle_tests;
 mod layer_stress_tests;
 #[cfg(test)]
 mod script_impact_tick_tests;
+#[cfg(test)]
+mod status_tick_tests;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
@@ -573,6 +575,7 @@ where
 }
 
 mod pose_inputs;
+mod status_stage;
 mod tick;
 pub use pose_inputs::*;
 pub use tick::*;

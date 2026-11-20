@@ -71,6 +71,11 @@ impl EntityId {
         (self.0 >> Self::INDEX_BITS) as u16
     }
 
+    /// The registry slot this id addresses, for side tables keyed by slot.
+    pub(crate) fn slot_index(self) -> usize {
+        usize::from(self.index())
+    }
+
     /// Raw packed `u32` representation. The scripting FFI layer crosses the
     /// language boundary as a JS number / Lua integer — both of which can
     /// losslessly carry a 32-bit integer.
@@ -918,6 +923,8 @@ pub struct EntityRegistry {
     /// The committed damage vocabulary the chokepoint scales hits by. Empty
     /// until a mod registers one, which leaves every hit untyped.
     defense_vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
+    /// Live status instances and latched applications (`components::statuses`).
+    pub(crate) statuses: crate::components::statuses::StatusTable,
     /// The committed attack tokens and budget profiles the AI's attack
     /// budget arbitrates under. The SDK default until a mod commits one.
     attack_budgets: std::sync::Arc<postretro_foundation::attack_budget::AttackBudgetVocabulary>,
@@ -972,6 +979,7 @@ impl EntityRegistry {
             impact_dispatches: Vec::new(),
             host_tick: 0,
             defense_vocabulary: Default::default(),
+            statuses: Default::default(),
             attack_budgets:
                 postretro_foundation::attack_budget::AttackBudgetVocabulary::shared_default(),
             defense_parameters: None,
@@ -1343,6 +1351,7 @@ impl EntityRegistry {
         for column in &mut self.components {
             column[index] = None;
         }
+        self.statuses.clear_entity(index, id);
         if had_light {
             self.light_membership_generation = self.light_membership_generation.wrapping_add(1);
         }
@@ -1423,7 +1432,15 @@ impl EntityRegistry {
         &mut self,
         vocabulary: std::sync::Arc<postretro_foundation::defense::DefenseVocabulary>,
     ) {
-        self.defense_vocabulary = vocabulary;
+        // Live instances keep their kind by name; a removed kind's go.
+        let previous = std::mem::replace(&mut self.defense_vocabulary, vocabulary);
+        let next = &self.defense_vocabulary;
+        if !self.statuses.is_empty() || !self.statuses.pending().is_empty() {
+            self.statuses.remap(|status| {
+                let name = &previous.statuses.get(usize::from(status))?.name;
+                next.status_index(name).map(|index| index as u16)
+            });
+        }
     }
 
     /// The committed attack-budget vocabulary.
@@ -1706,6 +1723,7 @@ impl EntityRegistry {
                 .map(|(idx, _)| idx as u16),
         );
         self.impact_dispatches.clear();
+        self.statuses.clear();
         self.clear_presentation_spawns();
         self.impact_particle_requests.clear();
         self.dropped_impact_particle_requests = 0;

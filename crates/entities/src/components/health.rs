@@ -41,6 +41,9 @@ pub struct DamageContext {
     /// the producer has one. Splash, script, crush and AI contact attacks leave
     /// it `None`. Evaluator-only data, like `producer`.
     pub point: Option<Vec3>,
+    /// The registered status this hit is a tick of, `None` for any other hit.
+    /// Evaluator-only data: `impact.status(h)` reads it.
+    pub status: Option<u16>,
 }
 
 impl DamageContext {
@@ -52,6 +55,7 @@ impl DamageContext {
             zone: None,
             producer,
             point: None,
+            status: None,
         }
     }
 }
@@ -225,7 +229,8 @@ pub fn apply_damage_with_context(
     // that later sweep; only hits whose pre-impact HP was still alive belong
     // to this down.
     if target_was_live {
-        let mut record = ContributorLedgerRecord::new(context.source_id, drain.points_dealt);
+        let mut record =
+            ContributorLedgerRecord::new(context.source_id.clone(), drain.points_dealt);
         record.zone = context.zone;
         record.attacker = context.attacker;
         record.weapon = context.weapon;
@@ -258,6 +263,8 @@ pub fn apply_damage_with_context(
         max_health,
         target: id,
         source: context.attacker,
+        source_id: context.source_id,
+        status: context.status,
         producer: context.producer,
         point: context.point,
     });
@@ -588,6 +595,7 @@ mod tests {
                 zone: None,
                 producer: DamageProducer::InTick,
                 point: None,
+                status: None,
             },
         );
 
@@ -689,6 +697,7 @@ mod tests {
                 zone: Some("torso".to_string()),
                 producer: DamageProducer::InTick,
                 point: None,
+                status: None,
             },
         );
         apply_damage_with_context(
@@ -706,6 +715,7 @@ mod tests {
                 zone: Some("head".to_string()),
                 producer: DamageProducer::InTick,
                 point: None,
+                status: None,
             },
         );
 
@@ -748,6 +758,7 @@ mod tests {
                 zone: None,
                 producer: DamageProducer::InTick,
                 point: None,
+                status: None,
             },
         );
 

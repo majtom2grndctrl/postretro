@@ -5825,7 +5825,10 @@ impl App {
                 &mut script_ctx.presentation_overrides.borrow_mut(),
             );
         }
-        netcode::host_ingest_ready_hit_declarations(
+        // Hits that waited on this tick's fire authorization are in-tick
+        // producers of it: a status they apply counts on this tick.
+        registry.set_status_applications_immediate(true);
+        let ingested = netcode::host_ingest_ready_hit_declarations(
             server,
             &mut registry,
             &self.collision_world,
@@ -5854,7 +5857,9 @@ impl App {
             },
             |shot_id, point| projectile_presentations.note_contact(shot_id, point),
             |impact| remote_impacts.push(impact),
-        )
+        );
+        registry.set_status_applications_immediate(false);
+        ingested
     }
 
     /// Evaluate script impacts pending outside a fixed tick, in landing order:

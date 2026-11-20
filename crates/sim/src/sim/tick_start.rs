@@ -30,6 +30,9 @@ pub fn begin_tick(
         let mut registry = registry.borrow_mut();
         registry.snapshot_transforms();
         registry.advance_host_tick();
+        // Status applications made since the last tick count on this one,
+        // after the script impacts that landed before it evaluated.
+        registry.apply_latched_statuses();
     }
     let arrivals = if let Some(ctx) = ctx {
         crate::teleporter_commands::apply_pending_teleporter_mutations(ctx);

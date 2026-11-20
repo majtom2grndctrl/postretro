@@ -28,6 +28,7 @@ pub mod projectile;
 pub mod projectile_trap;
 pub mod spawner;
 pub mod sprite_visual;
+pub mod statuses;
 pub mod teleporter;
 pub mod touchable;
 pub mod trigger_volume;

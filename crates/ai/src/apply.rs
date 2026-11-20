@@ -350,6 +350,7 @@ where
                                 zone: None,
                                 producer: DamageProducer::InTick,
                                 point: None,
+                                status: None,
                             },
                         );
                         // Observe the direct damage result before impact policy

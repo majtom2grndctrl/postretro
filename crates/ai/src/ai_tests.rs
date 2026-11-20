@@ -3257,6 +3257,7 @@ fn lethal_ready_remote_hit_quiesces_brain_before_same_tick_ai_outcomes() {
                     zone: None,
                     producer: DamageProducer::InTick,
                     point: None,
+                    status: None,
                 },
             );
             on_impact(registry);

@@ -366,7 +366,7 @@ impl Rig {
             .current
     }
 
-    fn tick(&mut self) -> TickEvents {
+    pub(super) fn tick(&mut self) -> TickEvents {
         self.tick_with(&[], |_| {})
     }
 

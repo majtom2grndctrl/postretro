@@ -46,6 +46,11 @@ where
     use cpu_stages::SimStage;
     let cpu = postretro_stage_timing::StageFrame::new(timing);
     let tick_scope = cpu.scope(SimStage::Tick);
+    // A status application inside the tick counts on this tick; outside it,
+    // one latches to the next tick start (`scripting.md` §2).
+    registry
+        .borrow_mut()
+        .set_status_applications_immediate(true);
     // Every environment query this tick goes through `environment`, so a timer
     // attached here sees the player and agent resolves and the hitscan
     // crossings wherever they run. Off, the view carries none and reads no clock.
@@ -592,6 +597,11 @@ where
         cpu.add_nanos(SimStage::WeaponFluidCrossings, nanos);
     }
     drop(stage);
+    // Statuses run after every in-tick application and before the sweep, so
+    // a lethal tick latches and credits on its own tick.
+    let stage = cpu.scope(SimStage::Statuses);
+    super::status_stage::run_status_stage(&mut registry.borrow_mut(), &mut on_impact);
+    drop(stage);
     let death = run_death_sweep(&registry);
     // The assist accumulator reads the tick after the Weapons stage and the
     // death sweep, so an in-tick self-revive or kill is seen.
@@ -617,6 +627,9 @@ where
     if let Some(nanos) = collision_world.overlap_timer().finish() {
         cpu.add_nanos(SimStage::OverlapCheck, nanos);
     }
+    registry
+        .borrow_mut()
+        .set_status_applications_immediate(false);
     drop(tick_scope);
 
     TickEvents {

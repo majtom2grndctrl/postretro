@@ -69,6 +69,11 @@ pub struct ImpactDispatch {
     pub max_health: f32,
     pub target: EntityId,
     pub source: Option<EntityId>,
+    /// The hit's source id, as the contributor ledger records it: an applied
+    /// status keys to it when the hit has no damager.
+    pub source_id: String,
+    /// The registered status this hit is a tick of; `None` for any other hit.
+    pub status: Option<u16>,
     pub producer: DamageProducer,
     /// World-space contact point carried from [`DamageContext::point`].
     /// Evaluator-only: never an IR input, so [`Self::ir_values`] omits it.

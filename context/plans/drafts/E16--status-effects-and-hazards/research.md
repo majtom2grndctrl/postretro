@@ -74,7 +74,7 @@ Read at e7438238. Findings that inform the brief; the brief's Decisions conclude
 | P1 | Instance's own tick on its expiry tick; its policy reapplies it (`"refresh"`/`"stack"`) | Tick lands → its policies apply → expiry judged on the time left they leave | Instance survives with phase unmoved; next tick one `tickMs` later |
 | P2 | Weapon hit refreshes or stacks an instance on its expiry tick | Weapons (apply) → status stage (due tick, expiry) | Due tick lands at its old phase; instance continues |
 | P4 | Fluid application vs due ticks on one tick | Status stage: this tick's fluid applications first, then due ticks and expiry | Re-entering lava on a lingering instance's last tick keeps it and its phase |
-| P5 | Quantization | `tickMs` and `durationMs` each round up to whole fixed ticks; counts follow ticks | `burning` 500/3000 lands 6 ticks; `tickMs` 16 rejects, 17 loads at 60 Hz |
+| P5 | Quantization | `tickMs` and `durationMs` each round up to whole fixed ticks; counts follow ticks | `burning` 500/3000 lands 6 ticks; `tickMs` 1–16 tick every fixed tick and 17 every second one at 60 Hz |
 | P6 | Due tick on a target at health ≤ 0 before the latch | Status stage before sweep | Skipped: no chokepoint, no impact, no policy; the sweep clears the instance |
 | P7 | Several instances on one entity due the same tick | Creation order | First lethal tick credits its applier |
 | P8 | A tick's policy applies or clears statuses during the stage | Apply and clear take effect at once; each due tick re-checks its instance is live at its turn | Cleared instance does not land; a new instance does not tick this tick; dedupe counts it |
@@ -83,6 +83,7 @@ Read at e7438238. Findings that inform the brief; the brief's Decisions conclude
 | P11 | Lethal remote hit that waited on fire authorization | Post-tick remote-hit sweep latches → clears statuses → next tick's stage | No instance ticks after that latch |
 | P12 | Lethal hit and immediate `setHealth` recovery on one tick | Recovery before sweep: latch never sets | Instances survive; a recovery after the latch starts with none |
 | P13 | Script impact landing in a tick before its sweep, with or without a later in-tick hit | Host evaluation point just before each death sweep | Evaluates before that sweep either way |
+| P30 | Script impact pending when the status stage starts | Stage entry evaluates the queue in landing order → fluid applications → due ticks | A due tick sees health and statuses after every earlier script impact's policies, with or without another hit that tick and whatever entity the stage visits first |
 | P14 | Script impact from a player event after tick N; tick N+1 in the same frame or the next | Host evaluation point after each tick's player-event pass | Evaluates before tick N+1's sweep, independent of frame packing |
 | P15 | Script impact queued by `levelLoad` | Queued at install; level unload clears the queue | Evaluates at the reveal frame's first evaluation point against that level's policies; an abandoned load drops it |
 | P16 | Frame-end script-impact evaluation | Health republish → evaluate in landing order → overlay sink → removal pass, in both the frame loop and the headless driver (`observability/driver.rs`), which has its own removal pass | Policies read post-damage `player.health`; enemy enters damaged-enemy roster |

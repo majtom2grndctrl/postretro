@@ -12,6 +12,7 @@ use postretro_level_format::reflection_probes::{
 
 use super::capture::SUPERSAMPLE_OFFSETS;
 use super::capture_exclusion::ProbeExclusion;
+use super::emissive_factor::EmissiveFaceFactors;
 use super::exclusion::ExclusionConstants;
 use super::placement::PlacedProbe;
 use super::reference::REFERENCE_MEAN_SAMPLES;
@@ -168,6 +169,12 @@ pub(super) fn cache_key(
         materials.extend_from_slice(&strength.to_le_bytes());
     }
     section("materials", &materials);
+    // Each member face's volume factor, max × colour: the reference state
+    // the capture shades its emissive at.
+    section(
+        "emissive volumes",
+        &EmissiveFaceFactors::key_bytes(inputs.emissive_volumes),
+    );
     // The animated lights the capture reads: their baked direct and bounce as
     // the level ships them, and their runtime descriptors (whose clamped cycle
     // mean is each light's reference).

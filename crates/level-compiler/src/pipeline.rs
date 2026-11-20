@@ -2183,17 +2183,15 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
-    let emissive_section = postretro_level_format::emissive::EmissiveSection {
-        textures: texture_stage::bake_remaining_textures(
-            &args.input,
-            &geo_result.texture_names.names,
-            &map_data.map_entities,
-            &texture_root,
-            &prm_root,
-            &mut material_stage,
-        )?,
-        volumes: Vec::new(),
-    };
+    let emissive_textures = texture_stage::bake_remaining_textures(
+        &args.input,
+        &geo_result.texture_names.names,
+        &map_data.map_entities,
+        &texture_root,
+        &prm_root,
+        &mut material_stage,
+    )?;
+    let has_emissive_map = material_stage.has_emissive_maps();
     let name_to_key = material_stage.name_to_key;
     finish_stage(
         &mut timings,
@@ -2202,6 +2200,21 @@ fn run_after_parsing(
         stage_start,
         true,
     );
+
+    // Emissive membership reads the final static world: the atlas cut is
+    // done and no later stage reorders faces, so its indices are the ones
+    // Geometry (id 17) packs. It precedes reflection capture, which shades
+    // each member face at its volume's reference state.
+    let emissive_section = postretro_level_format::emissive::EmissiveSection {
+        textures: emissive_textures,
+        volumes: crate::emissive_membership::resolve_emissive_volume_records(
+            &map_data.emissive_volumes,
+            &geo_result,
+            &face_brushes,
+            &map_data.brush_volumes,
+            &has_emissive_map,
+        ),
+    };
 
     // Reflection probes read the encoded id 52 and id 22, the packed base SH,
     // ids 25 and 27 as they ship (culled, repacked, dropped and compacted),
@@ -2235,6 +2248,7 @@ fn run_after_parsing(
             chunk_light_list: &chunk_light_list_section,
             texture_keys: &name_to_key,
             emissive_textures: &emissive_section.textures,
+            emissive_volumes: &emissive_section.volumes,
             prm_root: &prm_root,
         },
         stage_cache.as_ref(),

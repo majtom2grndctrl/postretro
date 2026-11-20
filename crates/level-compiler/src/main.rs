@@ -33,6 +33,7 @@ pub mod delta_sections;
 pub mod delta_sh_bake;
 pub mod delta_sh_cache;
 pub mod direct_sh_bake;
+pub(crate) mod emissive_membership;
 pub(crate) mod emissive_textures;
 pub mod entity_shadow_select;
 pub mod environment_volumes;

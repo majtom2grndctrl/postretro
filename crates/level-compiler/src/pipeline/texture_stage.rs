@@ -22,6 +22,14 @@ pub(super) struct MaterialStageResult {
     world_name_count: usize,
 }
 
+impl MaterialStageResult {
+    /// Whether each TextureNames entry has an `_e` map, fluid-only names
+    /// included once the fluid tail has baked.
+    pub(super) fn has_emissive_maps(&self) -> Vec<bool> {
+        self.glow.iter().map(|glow| glow.has_emissive).collect()
+    }
+}
+
 pub(super) fn bake_world_materials(
     names: &[String],
     texture_root: &Path,

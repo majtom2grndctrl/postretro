@@ -11,6 +11,7 @@ use std::process::Output;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postretro_level_format::cells::CellsSection;
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::geometry::GeometrySection;
 use postretro_level_format::portals::PortalsSection;
@@ -433,8 +434,8 @@ fn doorway_volumes_leave_every_other_prl_section_byte_identical() {
 }
 
 /// A fluid whose surface texture the world does not use changes
-/// only EnvironmentVolumes, and TextureNames and TextureCacheKeys gain that one
-/// texture, appended after every world entry.
+/// only EnvironmentVolumes, and TextureNames, TextureCacheKeys and Emissive's
+/// texture records gain that one texture, appended after every world entry.
 #[test]
 fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_section() {
     let temp = TempBuildDir::new();
@@ -460,10 +461,12 @@ fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_sect
         expected_sections(&base, true),
         "the same sections are emitted, plus the fluid's reflection probes"
     );
+    // Emissive (id 60) carries one texture record per TextureNames entry.
     let tables = [
         SectionId::EnvironmentVolumes as u32,
         SectionId::TextureNames as u32,
         SectionId::TextureCacheKeys as u32,
+        SectionId::Emissive as u32,
     ];
     for (id, payload) in &base {
         if !tables.contains(id) {
@@ -498,6 +501,16 @@ fn fluid_surface_texture_appends_to_the_texture_tables_and_changes_no_other_sect
         [0u8; 32],
         "the appended key names the baked fluid texture"
     );
+
+    let base_emissive = EmissiveSection::from_bytes(section(&base, SectionId::Emissive)).unwrap();
+    let emissive = EmissiveSection::from_bytes(section(&with_fluid, SectionId::Emissive)).unwrap();
+    assert_eq!(emissive.textures.len(), base_emissive.textures.len() + 1);
+    assert_eq!(
+        emissive.textures[..base_emissive.textures.len()],
+        base_emissive.textures[..],
+        "only the fluid texture's record is appended"
+    );
+    assert_eq!(emissive.volumes, base_emissive.volumes);
 
     let environment = environment(&with_fluid);
     let record = &environment.volumes[0];

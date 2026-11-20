@@ -798,6 +798,24 @@
     _tags(string) : "Space-delimited tags for script queries" : ""
 ]
 
+// Emissive volume: scales and tints the glow of the static world faces inside
+// it. A face joins when the centre of the brush side it was drawn on lies
+// inside one of the volume's brushes (on its surface counts). Where volumes
+// overlap, the smallest wins; on a tie, the later in map order. Glow is the
+// texture's strength x (min + brightness x (max - min)) x colour; brightness
+// is the scripted value from 0 to 1, and 1 with no script. Only faces whose
+// texture has an _e map glow. Movers and fluids are never members. At most
+// 256 per map. Its brushes never render, collide or change the lighting.
+@SolidClass
+    color(255 200 80)
+    = emissive_volume : "Glow range and colour for the faces inside (brush)"
+[
+    emissive_min(float) : "Glow minimum" : "0" : "Default 0. The multiplier at scripted brightness 0. A negative value reads 0, a value past 64 reads 64, and a minimum above the maximum swaps with it, each with a warning."
+    emissive_max(float) : "Glow maximum" : "1" : "Default 1. The multiplier at scripted brightness 1, and with no script. A negative value reads 0, a value past 64 reads 64, each with a warning."
+    emissive_color(color255) : "Glow colour" : "255 255 255" : "Default white. Tints the glow; each channel is read as linear, 0 to 255. A malformed colour warns and reads white."
+    _tags(string) : "Space-delimited tags for script queries" : ""
+]
+
 // Compiler-only brush region that overrides lightmap texel density for surfaces
 // whose first face vertex falls inside its world-space AABB. Values below 1.0
 // make those charts coarser; values above 1.0 make them finer. Overlapping

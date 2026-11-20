@@ -7,6 +7,7 @@ use super::animated_direct::AnimatedDirectSampler;
 use super::capture_exclusion::{CaptureBrushes, ProbeExclusion, RayOutcome};
 use super::capture_fill::fill_surface;
 use super::delta_sample::DeltaShSampler;
+use super::emissive_factor::EmissiveFaceFactors;
 use super::hit::{SceneTracer, SurfacePoint};
 use super::lightmap_sample::LightmapSampler;
 use super::sdf_lights::SdfLights;
@@ -34,6 +35,8 @@ pub(crate) struct CaptureScene<'a> {
     /// The brushes a probe's excluded set names.
     pub brushes: CaptureBrushes<'a>,
     pub materials: SurfaceMaterials<'a>,
+    /// Each static-world face's emissive volume factor, `max × colour`.
+    pub emissive: EmissiveFaceFactors,
     pub lightmap: LightmapSampler<'a>,
     pub sh: ShVolumeSampler<'a>,
     /// Id 25, when the level has animated direct.
@@ -142,7 +145,9 @@ impl CaptureScene<'_> {
     /// the angular width one sample stands for.
     ///
     /// Static is `albedo × (lightmap + selected sdf direct + base SH ×
-    /// production weight) + emissive × baked strength (id 60)`; a light's unit term
+    /// production weight) + emissive × baked strength (id 60) × the face's
+    /// volume factor`, the volume at its no-script reference state, max ×
+    /// colour (1 outside any volume); a light's unit term
     /// is `albedo × (its weight-map direct + its delta SH × production
     /// weight)`. These are the forward pass's terms with the shading normal at
     /// the face normal (no normal map, so both bumped-Lambert factors are 1).
@@ -200,7 +205,8 @@ impl CaptureScene<'_> {
                 &mut scratch.animated,
             );
         }
-        Ok(shade(material.albedo, direct, indirect, material.emissive))
+        let emissive = material.emissive * self.emissive.of(surface.face);
+        Ok(shade(material.albedo, direct, indirect, emissive))
     }
 }
 

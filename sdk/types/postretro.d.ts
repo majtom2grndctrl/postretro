@@ -3754,7 +3754,7 @@ declare module "postretro/ui" {
   export function deleteRun(index: number): SystemReactionStep;
   /** Select the character in slot `index` (0-based `forEach` row of `getGameState().saves.characters`). A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function selectCharacter(index: number): SystemReactionStep;
-  /** Create a character in empty slot `index` (0-based `forEach` row), named from `ui.textEntry`, and select it. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
+  /** Create a character in empty slot `index` (0-based `forEach` row), named from `ui.textEntry` when this step fires, and select it; a later step that empties the entry keeps the name. Refused into an occupied slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function createCharacter(index: number): SystemReactionStep;
   /** Delete the character in slot `index` (0-based `forEach` row). Permitted on an unreadable slot. A save verb, frontend-only: refused with a warning inside a played level, on a connected client and while hosting. */
   export function deleteCharacter(index: number): SystemReactionStep;

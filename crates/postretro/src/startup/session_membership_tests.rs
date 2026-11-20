@@ -351,6 +351,7 @@ fn save_verbs_and_checkpoint_after_leave_drop_at_debug() {
         },
         SystemReactionCommand::CreateCharacter {
             index: 4,
+            name: Some("hunter2".into()),
             dispatch_source: source(),
             origin: own(),
         },
@@ -367,12 +368,21 @@ fn save_verbs_and_checkpoint_after_leave_drop_at_debug() {
     ] {
         let capture = LogCapture::start();
         let mut client = client_app();
+        // A name captured from the text entry may be a password being typed:
+        // the drop names only the row.
+        let shown = match &after {
+            SystemReactionCommand::CreateCharacter { index, .. } => {
+                format!("CreateCharacter {{ index: {index}, .. }}")
+            }
+            other => format!("{other:?}"),
+        };
         let dropped =
-            format!("{after:?} dropped: this machine left its session earlier in this drain");
+            format!("{shown} dropped: this machine left its session earlier in this drain");
         run(&mut client, [leave("ui:leave"), after]);
         assert_eq!(client.session_role(), SessionRole::SinglePlayer);
         assert_eq!(requests(&client), frontend_requests());
         capture.assert_logged_once(log::Level::Debug, &dropped);
+        capture.assert_not_logged(log::Level::Debug, "hunter2");
         capture.assert_nothing_above(log::Level::Info);
     }
 }

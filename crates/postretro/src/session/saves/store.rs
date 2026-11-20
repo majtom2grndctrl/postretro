@@ -52,7 +52,7 @@ pub(crate) fn boot_restore_with(
         player_id: session.player_options.player_id,
         run_keys,
     });
-    set_seat_zero_carry_from_selection(session);
+    set_seat_zero_from_selection(session);
     let is_client = matches!(
         session.net_endpoint.as_ref(),
         Some(crate::netcode::NetEndpoint::Client { .. })
@@ -65,12 +65,18 @@ pub(crate) fn boot_restore_with(
     publish_save_rows(session);
 }
 
-/// Seat 0 carries the selected character's saved loadout outside play, or
-/// nothing with no character selected.
-pub(crate) fn set_seat_zero_carry_from_selection(session: &mut Session) {
+/// Seat 0 takes the selected character outside play: its saved loadout as
+/// the carry and its name for the host's own row and roster entry. With no
+/// character selected it carries nothing and its name is empty (`Player 1`).
+/// Every path that changes the selection, or rebuilds the seat ledger, calls
+/// this; frontend entry with a character selected skips it to keep harvested
+/// gear, and the selection's name has not changed there.
+pub(crate) fn set_seat_zero_from_selection(session: &mut Session) {
     let carry = session.saves.selected_carry();
+    let name = session.saves.selected_character_name().to_owned();
     if let Some(seats) = session.seat_table.as_mut() {
         seats.set_carried_state(Seat(0), carry);
+        seats.set_local_display_name(&name);
     }
 }
 

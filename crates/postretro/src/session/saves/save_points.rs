@@ -84,7 +84,7 @@ pub(crate) fn end_run_at_frontend(session: &mut Session) {
     session.saves.clear_continue_arrival();
     session.saves.set_continue_seam_pose(None);
     if session.saves.selected_character().is_none() {
-        super::set_seat_zero_carry_from_selection(session);
+        super::set_seat_zero_from_selection(session);
     }
     publish_save_rows(session);
 }

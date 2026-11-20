@@ -4254,7 +4254,7 @@ omitted from the emitted `args` entirely when not supplied — they are never se
 | `newRun(i, level)` | `{ primitive: "newRun", args: { index, map: level } }` | Starts a new run in slot `i` at catalog map `level` with the selected character as it stands. Frontend only. |
 | `deleteRun(i)` | `{ primitive: "deleteRun", args: { index } }` | Deletes run slot `i`. Frontend only, not while hosting. |
 | `selectCharacter(i)` | `{ primitive: "selectCharacter", args: { index } }` | Selects character slot `i` and reloads its progress. Frontend only, not while hosting. |
-| `createCharacter(i)` | `{ primitive: "createCharacter", args: { index } }` | Creates a character in empty slot `i`, named from `ui.textEntry`, and selects it. Frontend only, not while hosting. |
+| `createCharacter(i)` | `{ primitive: "createCharacter", args: { index } }` | Creates a character in empty slot `i`, named from `ui.textEntry` when the step fires, and selects it. Frontend only, not while hosting. |
 | `deleteCharacter(i)` | `{ primitive: "deleteCharacter", args: { index } }` | Deletes character slot `i`. Frontend only, not while hosting. |
 | `checkpoint(name)` | `{ primitive: "checkpoint", args: { name } }` | Saves the active run at checkpoint `name`, then the character and the world file. Outside an active run it saves the character and the world file only. Run by the host or a single player; does nothing on a connected client or in the frontend backdrop. |
 | `leaveSession()` | `{ primitive: "leaveSession", args: {} }` | Leaves the co-op session on a connected client, which lands at the frontend as single-player. Membership only. See [Session membership](#session-membership). |
@@ -4485,8 +4485,11 @@ language's `forEach` gives it: from 0 in TypeScript, from 1 in Luau.
 - `selectCharacter(i)` selects a character. The store reloads: every mod slot
   returns to its default, then the world file and the character apply.
 - `createCharacter(i)` creates a character in an empty slot, naming it from
-  `ui.textEntry`, and selects it. Open the text entry with no target field and
-  fire it from the entry's commit. An occupied slot is refused.
+  `ui.textEntry` as it stands when the step fires, and selects it. Open the
+  text entry with no target field and fire it from the entry's commit. Empty
+  `ui.textEntry` with `clearText` in the reaction that opens the entry, since a
+  cancelled entry leaves its text there; emptying it after `createCharacter`
+  is not needed. An occupied slot is refused.
 - `deleteCharacter(i)` and `deleteRun(i)` delete a slot, readable or not.
   Deleting the selection sets it to `-1`.
 - `continueRun(i)` selects the run's character, reloads the store with the run

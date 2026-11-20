@@ -3718,10 +3718,14 @@ impl App {
                     | SystemReactionCommand::JoinSession { .. }
             );
             if left_this_drain && !enters_next_session {
-                // A text edit can carry a password being typed: name its slot only.
+                // A text edit, or a name captured from the text entry, can carry
+                // a password being typed: name only the slot or the row.
                 let shown = match &command {
                     SystemReactionCommand::AppendText { slot, .. } => {
                         format!("AppendText {{ slot: {slot:?}, .. }}")
+                    }
+                    SystemReactionCommand::CreateCharacter { index, .. } => {
+                        format!("CreateCharacter {{ index: {index}, .. }}")
                     }
                     other => format!("{other:?}"),
                 };

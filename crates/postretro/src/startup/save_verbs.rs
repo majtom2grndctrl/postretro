@@ -9,7 +9,7 @@ use super::{LevelRequest, LevelSource};
 use crate::App;
 use crate::session::role_state::SessionRole;
 use crate::session::saves::{
-    collect_world_and_run, publish_save_rows, reload_store, set_seat_zero_carry_from_selection,
+    collect_world_and_run, publish_save_rows, reload_store, set_seat_zero_from_selection,
 };
 
 /// The verbs a host at its frontend may run: they start or continue the
@@ -35,6 +35,7 @@ impl App {
             ),
             SystemReactionCommand::CreateCharacter {
                 index,
+                name,
                 dispatch_source,
                 origin,
             } => (
@@ -42,7 +43,7 @@ impl App {
                 dispatch_source,
                 origin,
                 self.gate("createCharacter")
-                    .and_then(|()| self.create_character_verb(index)),
+                    .and_then(|()| self.create_character_verb(index, name)),
             ),
             SystemReactionCommand::DeleteCharacter {
                 index,
@@ -169,35 +170,41 @@ impl App {
         session.saves.select_character(Some(index));
         let with_run = session.saves.run_active();
         reload_store(session, with_run);
-        set_seat_zero_carry_from_selection(session);
+        set_seat_zero_from_selection(session);
         Ok(())
     }
 
-    fn create_character_verb(&mut self, index: usize) -> Result<(), String> {
+    /// `name` is `ui.textEntry` as captured when the step fired. Every session
+    /// installs the dispatch-time sink, so a capture is always present in play;
+    /// without one (a sink-less harness) text edits queue in body order and
+    /// the slot read here sees that order.
+    fn create_character_verb(&mut self, index: usize, name: Option<String>) -> Result<(), String> {
         let session = self.session.as_mut().expect("gated on a session");
         match session.saves.character_slots().get(index) {
             Some(SlotFile::Empty) => {}
             Some(_) => return Err(format!("character slot {index} is occupied")),
             None => return Err(format!("character slot {index} is not declared")),
         }
-        let name = match session
-            .scripting
-            .script_ctx
-            .slot_table
-            .borrow()
-            .get("ui.textEntry")
-            .and_then(|slot| slot.value.clone())
-        {
-            Some(SlotValue::String(name)) => name,
-            _ => String::new(),
-        };
+        let name = name.unwrap_or_else(|| {
+            match session
+                .scripting
+                .script_ctx
+                .slot_table
+                .borrow()
+                .get(postretro_entities::engine_state_catalog::TEXT_ENTRY_SLOT)
+                .and_then(|slot| slot.value.clone())
+            {
+                Some(SlotValue::String(name)) => name,
+                _ => String::new(),
+            }
+        });
         if !session.saves.create_character(index, name) {
             return Err(format!("character slot {index} could not be written"));
         }
         session.saves.select_character(Some(index));
         let with_run = session.saves.run_active();
         reload_store(session, with_run);
-        set_seat_zero_carry_from_selection(session);
+        set_seat_zero_from_selection(session);
         Ok(())
     }
 
@@ -218,7 +225,7 @@ impl App {
         if selected {
             session.saves.select_character(None);
             reload_store(session, false);
-            set_seat_zero_carry_from_selection(session);
+            set_seat_zero_from_selection(session);
         }
         Ok(())
     }
@@ -285,7 +292,7 @@ impl App {
         }
         session.saves.select_run(Some(index));
         reload_store(session, true);
-        set_seat_zero_carry_from_selection(session);
+        set_seat_zero_from_selection(session);
         session.saves.set_run_active(true);
         session.saves.mark_continue_arrival(&level);
         // Continue arrives at the run's checkpoint, if it reached one. A seam
@@ -349,7 +356,7 @@ impl App {
         let previous_active = session.saves.run_active();
         session.saves.select_run(None);
         reload_store(session, false);
-        set_seat_zero_carry_from_selection(session);
+        set_seat_zero_from_selection(session);
         let (_, live) = collect_world_and_run(session);
         // The run file lands before its level load begins. A failed write
         // puts the previous selection and store back.
@@ -357,7 +364,7 @@ impl App {
             session.saves.select_run(previous_run);
             session.saves.set_run_active(previous_active);
             reload_store(session, previous_active);
-            set_seat_zero_carry_from_selection(session);
+            set_seat_zero_from_selection(session);
             return Err(format!("run slot {index} could not be written"));
         }
         session.saves.select_run(Some(index));

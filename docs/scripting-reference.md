@@ -2995,6 +2995,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
 | `teleportEvents` | Teleports bound with a teleporter member's `on("teleport", …)` (see [teleporters.md](teleporters.md#the-teleport-event)). |
+| `seamEvents` | Arrivals bound with a seam member's `on("arrive", …)` (see [level-seams.md](level-seams.md#the-arrive-event)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
@@ -3224,6 +3225,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
 | `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
+| `"seam"` | `SeamHandle` (`arm`, `disarm`, `on("arrive", …)`; see [level-seams.md](level-seams.md#scripting)) | `id`, `position`, `tags` |
 | `"ghostLink"` | `GhostLinkHandle` (`arm`, `disarm`, `setMembers`, `setColorFilter`; see [ghost-links.md](ghost-links.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
@@ -3257,7 +3259,7 @@ players();                    // every player
 
 ### Subject tokens
 
-A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event):
+A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event). A seam `arrive` reaction receives `on.activators` (the arriving player) and `on.seam` (the seam arrived through; `arm`, `disarm`), as described in [level-seams.md](level-seams.md#the-arrive-event):
 
 ```typescript
 const heal = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
@@ -4282,7 +4284,8 @@ checkpoint and saves the character. Spawns whose `checkpoint` key matches the
 name become where players respawn and late joiners arrive, and where Continue
 arrives later (see the level design reference's checkpoint spawns). The next
 level start clears it. A checkpoint outside an active run saves the character and the world file,
-never a run.
+never a run. A level seam crossing is a checkpoint too, at the destination seam,
+holding where the host crossed (see [level-seams.md](level-seams.md#seam-checkpoints)).
 
 ```typescript
 import { defineStore, defineReaction } from "postretro";
@@ -4478,7 +4481,8 @@ end))
 
 `getGameState().occupancy.tag(tag)` (`game.occupancy:tag(tag)` in Luau) reads
 two readonly Numbers about the trigger volumes carrying `tag`. A `switch` is a
-trigger volume, so it counts too.
+trigger volume, so it counts too, and so does a level seam carrying the tag,
+by its own brushes rather than a box (see [level-seams.md](level-seams.md#waiting-for-everyone)).
 
 - `occupiedCount`: how many of those volumes have at least one counted player
   inside.

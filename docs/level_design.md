@@ -100,6 +100,9 @@ Give the spawns players should use from then on `checkpoint bridge`:
   same rule as joiners.
 - **A checkpoint name no spawn carries** falls back to the level-start spawns
   and logs a warning.
+- **A level seam's name** is a set name too: after a crossing, and Continue
+  from one, players use the spawns keyed with the seam's name. With none keyed,
+  the level-start spawns apply with no warning (see [Level Seams](#level-seams)).
 
 Place at least as many spawns in a checkpoint's set as the game's player count.
 
@@ -601,6 +604,17 @@ relative to a pair of points with their offset, view and momentum kept
 (`seamless`), for shifts between copies of a room. Scripts turn teleporters on
 and off. Keys, room-copy layout, firing rules and scripting are in
 [docs/teleporters.md](teleporters.md).
+
+---
+
+## Level Seams
+
+A `level_seam` brush joins two maps: a player who walks into it crosses into the
+next map at the same place relative to the seam, facing and moving the same
+way, with their gear. Build the crossing in both maps with one shared seam
+`name`, and set each seam's `target` to the other map's catalog id. Keys,
+landmarks, what crosses, seam checkpoints and scripting are in
+[docs/level-seams.md](level-seams.md).
 
 ---
 

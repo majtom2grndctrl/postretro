@@ -190,14 +190,12 @@ fn parse_status(
     let tick_ms = tick_ms_exact as f32;
     let duration_ms = match object.get("durationMs") {
         None | Some(Value::Null) => None,
-        Some(_) => Some(
-            required_number(
-                object,
-                path,
-                "durationMs",
-                (tick_ms_exact, f64::from(STATUS_DURATION_MS_MAX)),
-            )? as f32,
-        ),
+        Some(_) => Some(required_number(
+            object,
+            path,
+            "durationMs",
+            (tick_ms_exact, f64::from(STATUS_DURATION_MS_MAX)),
+        )? as f32),
     };
     let stacking = match object.get("stacking") {
         None | Some(Value::Null) => StatusStacking::Refresh,
@@ -213,12 +211,8 @@ fn parse_status(
         None | Some(Value::Null) => 1,
         Some(_) => {
             let (min, max) = STATUS_MAX_STACKS_RANGE;
-            let value = required_number(
-                object,
-                path,
-                "maxStacks",
-                (f64::from(min), f64::from(max)),
-            )?;
+            let value =
+                required_number(object, path, "maxStacks", (f64::from(min), f64::from(max)))?;
             if value.fract() != 0.0 {
                 return Err(format!("`{path}.maxStacks` must be a whole number"));
             }
@@ -414,13 +408,19 @@ mod tests {
             (json!({ "tickMs": 0.99999999 }), "tickMs"),
             (json!({ "tickMs": 60000.01 }), "tickMs"),
             (json!({ "durationMs": 600000.03 }), "durationMs"),
-            (json!({ "tickMs": 500, "durationMs": 499.99999999 }), "durationMs"),
+            (
+                json!({ "tickMs": 500, "durationMs": 499.99999999 }),
+                "durationMs",
+            ),
             (json!({ "maxStacks": 64.00000001 }), "maxStacks"),
             (json!({ "maxStacks": 0.99999999 }), "maxStacks"),
         ];
         for (fields, key) in cases {
             let error = parse(json!([status(fields.clone())])).unwrap_err();
-            assert!(error.contains(&format!("`statuses[0].{key}`")), "{fields}: {error}");
+            assert!(
+                error.contains(&format!("`statuses[0].{key}`")),
+                "{fields}: {error}"
+            );
         }
     }
 

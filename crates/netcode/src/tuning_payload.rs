@@ -442,8 +442,7 @@ mod tests {
             .map(|index| format!("status{index}"))
             .collect();
         assert!(
-            decode_tuning_payload(&encode_tuning_payload(&payload_with_status_names(full)))
-                .is_ok()
+            decode_tuning_payload(&encode_tuning_payload(&payload_with_status_names(full))).is_ok()
         );
     }
 

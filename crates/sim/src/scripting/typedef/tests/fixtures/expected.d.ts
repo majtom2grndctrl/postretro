@@ -2555,9 +2555,9 @@ declare module "postretro" {
   }
   export interface SourceHandle {
     readonly [sourceBrand]: true;
-    /** Add health to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add health to the impact damager. A fire with no damager skips this effect. Every impact runs its policies whatever produced it. Script `applyDamage` evaluates on the host where it lands (in-tick right after its damage, otherwise at the next tick start or frame end) and has no damager, so a grant on it reaches no one. A status tick's damager is its applier, so a grant there reaches the applier. */
     grantHealth(amount: NumberValue): Effect;
-    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect; app-drain impacts run no policy in v1. */
+    /** Add an ammo-pool balance to the impact damager. A fire with no damager skips this effect. Script damage has no damager, so a grant on it reaches no one; a status tick's damager is its applier, so a grant there reaches the applier. */
     grantAmmo(type: string, amount: NumberValue): Effect;
     /** Refill `layer` on the impact damager: omit `amount` to fill to capacity, or add `amount`, clamped to capacity. The capacity is evaluated when the grant applies. A damager without that layer warns and skips; a fire with no damager skips this effect. */
     grantLayer(layer: DefenseLayer, amount?: NumberValue): Effect;
@@ -2693,9 +2693,9 @@ declare module "postretro" {
     update(fields: NpcStateUpdateArgs): GroupCommand;
     /** Damage each NPC by a finite, non-negative amount. */
     damage(amount: number, options?: DamageOptions): GroupCommand;
-    /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. */
+    /** Apply `status` to each NPC as `script.applyStatus`; one without health warns and is skipped. Host and single player only; applied at the next fixed tick when it fires outside one. */
     applyStatus(status: Status): GroupCommand;
-    /** Remove every applier's instance of `status` from each NPC. */
+    /** Remove every applier's instance of `status` from each NPC. Host and single player only. */
     clearStatus(status: Status): GroupCommand;
   }
   /** Options for relocating a player to its seat placement on the next tick. `health` lies in (0, max] and defaults to the pawn's maximum; a value outside that range, or a non-finite one, warns and restores the maximum. `lifeState` names the state to enter at elapsed zero and defaults to the descriptor's `initial`. */
@@ -2902,7 +2902,7 @@ declare module "postretro" {
     readonly emitter?: { kind: "billboard_emitter" } & BillboardEmitterComponent;
     readonly tickSound?: string;
   };
-  /** A status's literal parameters. `damage`: per tick per stack, in [0, 1e6]; `0` makes a marker that never enters the damage chokepoint. `type`: a registered damage type; omitted, ticks deal the mod's `defaultDamageType`. `tickMs` in [1, 60000] and `durationMs` in [`tickMs`, 600000], each rounded up to whole fixed ticks; omit `durationMs` to last until cleared. `maxStacks` in [1, 64], default 1. Any other key rejects load. */
+  /** A status's literal parameters. `damage`: per tick per stack, in [0, 1e6]; `0` makes a marker that never enters the damage chokepoint. `type`: a registered damage type; omitted, ticks deal the mod's `defaultDamageType`. `tickMs` in [1, 60000] and `durationMs` in [`tickMs`, 600000], each rounded up to whole fixed ticks; omit `durationMs` to last until cleared. `maxStacks` a whole number in [1, 64], default 1. Any other key rejects load. */
   export type StatusOptions = {
     readonly damage: number;
     readonly type?: DamageType;
@@ -2918,7 +2918,7 @@ declare module "postretro" {
     readonly name: string;
     readonly active: ComputedRef<boolean>;
   };
-  /** Declare a status kind. Omit `name` only in a TypeScript direct top-level binding declaration; scripts-build names it by its binding. Register it with `defineMod({ statuses: [status] })`. */
+  /** Declare a status kind. Omit `name` only in a TypeScript direct top-level binding declaration whose only argument is an object literal; scripts-build names it by its binding. Register it with `defineMod({ statuses: [status] })`. */
   export function defineStatus(options: StatusOptions): Status;
   export function defineStatus(name: string, options: StatusOptions): Status;
 
@@ -3074,7 +3074,7 @@ declare module "postretro" {
   export function defineFaction(name: string): FactionDescriptor;
   /** Build one directed relationship for `ModManifest.sentiment`; negative sentiment is hostile, zero neutral, and positive allied. Optional non-negative `decay` overrides the global return-to-baseline rate; zero holds the pair. */
   export function sentiment(fromFaction: string, toFaction: string, values: Pick<FactionSentimentDescriptor, "sentiment" | "tolerance" | "decay">): FactionSentimentDescriptor;
-  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. */
+  /** Pure identity builder for a fluid declaration in `ModManifest.fluids`. A map's `fluid_volume` names it through its `fluid` key; declaration order assigns its index. A field out of range, or a repeated name, is rejected with a warning naming the field, and the first declaration stands. `status`, a status handle, is the exception: one naming a status `defineMod` does not register fails the load. */
   export function defineFluid(desc: FluidDescriptor): FluidDescriptor;
   /** Pure identity builder for a ghost style in `ModManifest.ghostStyles`. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional and takes the floor style's value when omitted. A malformed field drops the whole style with a warning naming it, a repeated name is dropped and the first declaration stands, and a link naming no declared style uses the floor style. */
   export function defineGhostStyle(desc: GhostStyleDescriptor): GhostStyleDescriptor;

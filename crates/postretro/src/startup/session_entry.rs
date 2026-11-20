@@ -665,16 +665,14 @@ impl App {
             log::warn!("[Net] join refused: select a character first");
             return false;
         }
-        // A join during a playing camera route aborts the run instead, as a
-        // level request does, and the join is left undone. A join ends a
-        // recording's first gameplay level: it is written before the host's
-        // level replaces it.
+        // A join aborts any camera route run not yet ended, one still
+        // awaiting its level included, as a level request does, and the join
+        // is left undone.
         #[cfg(feature = "dev-tools")]
         {
             if self.playback_abort(self.playback_join_abort_reason(addr)) {
                 return false;
             }
-            self.recording_level_ends();
         }
         self.cancel_backdrop_load_for_join();
         self.save_progress_for_join();
@@ -683,6 +681,13 @@ impl App {
             getrandom::fill,
             password,
         ) else {
+            // The join is committed: it ends a recording's first gameplay
+            // level, written before the host's level replaces it. A join
+            // that fails leaves the recording running.
+            #[cfg(feature = "dev-tools")]
+            {
+                self.recording_level_ends();
+            }
             return true;
         };
         log::warn!("[Net] join to {addr} failed before connecting: {failure:?}");

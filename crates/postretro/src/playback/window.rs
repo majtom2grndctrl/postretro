@@ -45,6 +45,10 @@ impl PlaybackWindows {
         }
     }
 
+    /// The log line and the sink's flushed line are written synchronously at
+    /// the frame's end, so their cost lands in the following row's interval,
+    /// which carries no mark: one row in [`WINDOW_ROWS`] reads that much
+    /// slower. The cost is a line or two of I/O, and it is accepted.
     fn close(&mut self, rows: &[Row], pacing: &'static str, cap: CapReport, partial: bool) {
         let window = &rows[self.start..];
         let figures = WindowFigures::of(window);

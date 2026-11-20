@@ -2,6 +2,7 @@
 //! override set one seam on the level's drain step. Play drains admit against
 //! it; settling drains and the lightmap in-hand caps never read it. The walk's
 //! test-only in-hand lever moves the in-hand caps alone.
+//! `startup/camera_route_gate_tests.rs` also uses this file's grep helpers.
 //! See: context/lib/rendering_pipeline.md §4 · context/lib/testing_guide.md §3
 
 use std::num::NonZeroU64;

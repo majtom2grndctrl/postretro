@@ -75,7 +75,10 @@ impl WindowModes {
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     pub(crate) fn effective_mode(
         &self,
-    ) -> (crate::options::WindowMode, Option<&crate::options::DisplayMode>) {
+    ) -> (
+        crate::options::WindowMode,
+        Option<&crate::options::DisplayMode>,
+    ) {
         let effective = &self.controller.effective;
         (effective.mode, effective.display.as_ref())
     }

@@ -158,7 +158,12 @@ fn max_span_ticks(ns_per_tick: f32) -> u64 {
     }
 }
 
-fn decode_span(ticks: &[u64; QUERIES_PER_FRAME as usize], span: Span, ran: bool, ns_per_tick: f32) -> PlaybackGpuSpan {
+fn decode_span(
+    ticks: &[u64; QUERIES_PER_FRAME as usize],
+    span: Span,
+    ran: bool,
+    ns_per_tick: f32,
+) -> PlaybackGpuSpan {
     if !ran {
         return PlaybackGpuSpan::Absent;
     }

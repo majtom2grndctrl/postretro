@@ -440,6 +440,16 @@ fn playback_record_writes_once_to_its_path() {
     assert_eq!(written["rows"].as_array().unwrap().len(), 1);
     let missing_dir = dir.path().join("absent").join("run.json");
     assert!(record.write(&missing_dir).unwrap_err().contains("absent"));
+    // The launch check identifies a written record by its opening header
+    // schema: the next run may overwrite it.
+    assert_eq!(
+        crate::playback::args::check_report_path(
+            std::path::Path::new("run.playback.json"),
+            std::path::Path::new("cp.txt"),
+            dir.path(),
+        ),
+        Ok(())
+    );
 }
 
 #[test]
@@ -496,6 +506,22 @@ fn playback_record_plans_wall_clock_rows_over_the_route_duration() {
     let record = PlaybackRecord::new(&wall, &file);
     // 600 poses at 60 Hz is 10 s: 2,400 rows at 240 Hz, plus the hold.
     assert!(record.rows.capacity() >= 10 + 2_400 + ROW_SLACK);
+}
+
+#[test]
+fn playback_record_caps_its_launch_reservation_whatever_the_pose_count() {
+    // A pose file planning more rows than the cap reserves the cap, never
+    // gigabytes; growth past it is gap-marked. Checked on the reservation
+    // size, without allocating it.
+    let mut file = pose_file(100.0, 5_000);
+    file.header.cadence_hz = 1;
+    let mut wall = args(crate::playback::args::MAX_HOLD_FRAMES);
+    wall.pacing = Pacing::WallClock;
+    // 5,000 poses at 1 Hz is 5,000 s: 1,200,001 rows planned at 240 Hz.
+    assert!(planned_route_rows(&wall, &file) > MAX_RESERVED_ROWS);
+    assert_eq!(reserved_rows(&wall, &file), MAX_RESERVED_ROWS);
+    let small = pose_file(100.0, 600);
+    assert_eq!(reserved_rows(&args(10), &small), 10 + 600 + ROW_SLACK);
 }
 
 #[test]

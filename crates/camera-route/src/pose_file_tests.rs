@@ -302,7 +302,10 @@ fn pose_file_parser_accepts_the_windows_editor_habits() {
     assert_eq!(parse_pose_file(&trailing_spaces).expect("spaces"), expected);
 
     let everything = format!("\u{feff}{}", minimal().replace('\n', " \r\n")) + "\r\n\r\n";
-    assert_eq!(parse_pose_file(&everything).expect("all together"), expected);
+    assert_eq!(
+        parse_pose_file(&everything).expect("all together"),
+        expected
+    );
 }
 
 #[test]
@@ -313,7 +316,14 @@ fn pose_file_parser_keeps_refusing_blank_lines_mid_file_under_crlf() {
 
 #[test]
 fn pose_file_parser_reports_an_empty_file_for_whitespace_only_text() {
-    for text in ["\n", "\n\n\n", "  \n \t\n", "\r\n", "\u{feff}", "\u{feff}\r\n"] {
+    for text in [
+        "\n",
+        "\n\n\n",
+        "  \n \t\n",
+        "\r\n",
+        "\u{feff}",
+        "\u{feff}\r\n",
+    ] {
         assert_eq!(error(text), (1, ParseReason::Empty), "{text:?}");
     }
 }
@@ -336,6 +346,27 @@ fn pose_file_parser_names_an_unsupported_version() {
         .expect_err("refused")
         .to_string();
     assert!(message.contains("unsupported version 2"), "{message}");
+    // A zero-padded spelling of the supported number is malformed, not a
+    // different version.
+    for padded in ["01", "001"] {
+        let text = format!("postretro-camera-route {padded}\npose 0 0 0 0 0\n");
+        let (line, reason) = error(&text);
+        assert_eq!(line, 1);
+        assert!(
+            matches!(
+                reason,
+                ParseReason::Malformed {
+                    line: "version",
+                    ..
+                }
+            ),
+            "{padded}: {reason}"
+        );
+        assert!(
+            reason.to_string().contains("must be written `1`"),
+            "{padded}: {reason}"
+        );
+    }
     for foreign in [
         "postretro-camera-route",
         "postretro-camera-route x",
@@ -354,7 +385,13 @@ fn pose_file_parser_refuses_any_cadence_but_the_contract_rate() {
         let text =
             HEAD.replace("cadence_hz 60", &format!("cadence_hz {cadence}")) + "pose 0 0 0 0 0\n";
         match error(&text) {
-            (6, ParseReason::Malformed { line: "cadence_hz", why }) => {
+            (
+                6,
+                ParseReason::Malformed {
+                    line: "cadence_hz",
+                    why,
+                },
+            ) => {
                 if cadence != "0" {
                     assert!(why.contains("60"), "{why}");
                 }

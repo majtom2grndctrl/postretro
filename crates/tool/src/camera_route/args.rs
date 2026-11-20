@@ -6,7 +6,7 @@
 //! See: context/lib/rendering_pipeline.md §12
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use postretro_camera_route::{
     DEFAULT_HFOV_DEGREES, DEFAULT_STEPS, GeneratedKind, Smoothing, WALK_SEED, WalkKind,
@@ -137,6 +137,9 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
         }
     };
 
+    let out = out.ok_or_else(|| usage("generate-camera-route requires -o <out-file>"))?;
+    check_output_folder(&out)?;
+
     Ok(GenerateArgs {
         level: level.ok_or_else(|| usage("generate-camera-route requires a level path"))?,
         kind,
@@ -146,8 +149,30 @@ pub(super) fn parse_args(args: Vec<OsString>) -> Result<GenerateArgs, String> {
         steps: steps.unwrap_or(DEFAULT_STEPS),
         pitch_degrees: pitch.unwrap_or(0.0),
         hfov_degrees: hfov.unwrap_or(DEFAULT_HFOV_DEGREES),
-        out: out.ok_or_else(|| usage("generate-camera-route requires -o <out-file>"))?,
+        out,
     })
+}
+
+/// `-o` names a file whose folder exists: the tool creates no folder, and
+/// refuses before the level is read rather than after the route is built.
+fn check_output_folder(out: &Path) -> Result<(), String> {
+    let text = out.to_string_lossy();
+    if text.ends_with(['/', '\\']) || out.is_dir() {
+        return Err(format!(
+            "-o {}: name a file to write, not a folder",
+            out.display()
+        ));
+    }
+    // A bare file name's folder is the working directory.
+    match out.parent() {
+        Some(folder) if folder.as_os_str().is_empty() || folder.is_dir() => Ok(()),
+        Some(folder) => Err(format!(
+            "-o {}: its folder {} does not exist, and the tool creates none",
+            out.display(),
+            folder.display(),
+        )),
+        None => Err(format!("-o {} names no file", out.display())),
+    }
 }
 
 fn parse_kind(value: &str) -> Result<GeneratedKind, String> {

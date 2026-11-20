@@ -129,8 +129,7 @@ impl Playback {
         // Output paths are checked now, before any window, so a run never
         // plays to the end to find it cannot write.
         let cwd = || {
-            std::env::current_dir()
-                .map_err(|err| format!("reading the working directory: {err}"))
+            std::env::current_dir().map_err(|err| format!("reading the working directory: {err}"))
         };
         let Some(args) = args::playback_args(launch)? else {
             let mut playback = Self {

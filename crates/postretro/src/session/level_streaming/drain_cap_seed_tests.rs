@@ -191,8 +191,10 @@ fn a_build_without_dev_tools_never_reads_the_play_drain_cap_seed() {
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
-        .join("
-");
+        .join(
+            "
+",
+        );
     for read in [
         "seed_play_drain_cap",
         "PLAY_DRAIN_CAP_SEED_ENV",

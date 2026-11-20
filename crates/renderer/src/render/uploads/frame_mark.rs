@@ -1,32 +1,56 @@
-// Playback frame marks: a debug group naming the playback frame index around
-// each frame's drain and frame encoders, so a GPU trace reduces per frame.
+// Playback frame marks: a debug group naming the playback frame index and the
+// marked site around each frame's drain and frame encoders, so a GPU trace
+// reduces per frame.
 // See: context/lib/rendering_pipeline.md §12
 
 use std::fmt::Write as _;
 
-/// The current playback frame's debug-group label. Formatted into one reused
-/// `String`, so a mark allocates nothing once the label has grown to its
-/// longest index.
+use super::MarkSite;
+
+/// Each marked site and its name in the label, in label-slot order. The site
+/// rides in the label because wgpu's Metal backend relabels the last command
+/// buffer of every submit "(wgpu internal) Signal", so a trace reducer cannot
+/// always tell a drain from its command buffer's label.
+const SITES: [(MarkSite, &str); 3] = [
+    (MarkSite::LightmapDrain, "lightmap"),
+    (MarkSite::ShUploads, "sh"),
+    (MarkSite::Frame, "frame"),
+];
+
+/// `site`'s index into [`SITES`] and the label slots.
+fn slot(site: MarkSite) -> usize {
+    match site {
+        MarkSite::LightmapDrain => 0,
+        MarkSite::ShUploads => 1,
+        MarkSite::Frame => 2,
+    }
+}
+
+/// The current playback frame's debug-group labels, one per marked site.
+/// Each is formatted into its own reused `String`, so a mark allocates
+/// nothing once the labels have grown to their longest index.
 #[derive(Debug, Default)]
 pub(crate) struct FrameMark {
-    label: String,
+    labels: [String; SITES.len()],
     active: bool,
 }
 
 impl FrameMark {
-    /// `Some(k)` labels every marked encoder `pr-frame <k>` until the next
-    /// set; `None` leaves every encoder unmarked.
+    /// `Some(k)` labels every marked encoder `pr-frame <k> <site>`, with
+    /// `<site>` one of `lightmap`, `sh` or `frame`, until the next set;
+    /// `None` leaves every encoder unmarked.
     pub(crate) fn set(&mut self, frame: Option<u64>) {
-        self.label.clear();
-        self.active = false;
-        if let Some(frame) = frame {
-            write!(self.label, "pr-frame {frame}").expect("string write");
-            self.active = true;
+        for ((_, name), label) in SITES.iter().zip(self.labels.iter_mut()) {
+            label.clear();
+            if let Some(frame) = frame {
+                write!(label, "pr-frame {frame} {name}").expect("string write");
+            }
         }
+        self.active = frame.is_some();
     }
 
-    pub(crate) fn label(&self) -> Option<&str> {
-        self.active.then_some(self.label.as_str())
+    pub(crate) fn label(&self, site: MarkSite) -> Option<&str> {
+        self.active.then_some(self.labels[slot(site)].as_str())
     }
 }
 
@@ -35,28 +59,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_mark_labels_the_playback_frame_and_clears_to_unmarked() {
+    fn frame_mark_labels_the_playback_frame_and_site_and_clears_to_unmarked() {
         let mut mark = FrameMark::default();
-        assert_eq!(mark.label(), None, "a renderer starts unmarked");
+        for (site, _) in SITES {
+            assert_eq!(mark.label(site), None, "a renderer starts unmarked");
+        }
         mark.set(Some(7));
-        assert_eq!(mark.label(), Some("pr-frame 7"));
+        assert_eq!(
+            mark.label(MarkSite::LightmapDrain),
+            Some("pr-frame 7 lightmap")
+        );
+        assert_eq!(mark.label(MarkSite::ShUploads), Some("pr-frame 7 sh"));
+        assert_eq!(mark.label(MarkSite::Frame), Some("pr-frame 7 frame"));
         mark.set(Some(1_234));
-        assert_eq!(mark.label(), Some("pr-frame 1234"));
+        assert_eq!(mark.label(MarkSite::ShUploads), Some("pr-frame 1234 sh"));
         mark.set(None);
-        assert_eq!(mark.label(), None, "playback inactive marks nothing");
+        for (site, _) in SITES {
+            assert_eq!(mark.label(site), None, "playback inactive marks nothing");
+        }
+    }
+
+    #[test]
+    fn every_site_owns_its_label_slot() {
+        for (index, (site, _)) in SITES.iter().enumerate() {
+            assert_eq!(slot(*site), index, "{site:?}");
+        }
     }
 
     #[test]
     fn frame_mark_reuses_its_label_storage_across_frames() {
         let mut mark = FrameMark::default();
         mark.set(Some(u64::MAX));
-        let storage = mark.label.as_ptr();
-        let capacity = mark.label.capacity();
+        let storage = mark.labels.each_ref().map(|label| label.as_ptr());
+        let capacity = mark.labels.each_ref().map(String::capacity);
         for frame in 0..1_000 {
             mark.set(Some(frame));
         }
-        assert_eq!(mark.label.as_ptr(), storage, "the label never reallocates");
-        assert_eq!(mark.label.capacity(), capacity);
+        assert_eq!(
+            mark.labels.each_ref().map(|label| label.as_ptr()),
+            storage,
+            "no label reallocates"
+        );
+        assert_eq!(mark.labels.each_ref().map(String::capacity), capacity);
     }
 
     /// Marking brackets an encoder in a debug group; it never renames one,

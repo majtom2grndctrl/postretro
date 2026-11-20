@@ -250,9 +250,10 @@ impl Renderer {
 
     /// Camera-route playback's frame index for the frame about to record:
     /// while `Some(k)`, the lightmap drain, SH upload-copies and frame
-    /// encoders each carry a `pr-frame <k>` debug group, so a GPU trace
-    /// attributes their work to that frame. `None` marks nothing and leaves
-    /// every encoder label as it is. Set before the frame's streaming step.
+    /// encoders each carry a `pr-frame <k> <site>` debug group (`<site>` is
+    /// `lightmap`, `sh` or `frame`), so a GPU trace attributes their work to
+    /// that frame and site. `None` marks nothing and leaves every encoder
+    /// label as it is. Set before the frame's streaming step.
     #[cfg(feature = "dev-tools")]
     pub fn set_frame_mark(&mut self, frame: Option<u64>) {
         self.queue.set_frame_mark(frame);

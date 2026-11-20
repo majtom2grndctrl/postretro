@@ -342,8 +342,7 @@ fn playback_error_exit_mid_route_records_that_error_as_the_reason() {
     let record = record(&run);
     assert_eq!(record["header"]["outcome"], "aborted");
     assert_eq!(
-        record["header"]["abort_reason"],
-        "surface lost: device removed",
+        record["header"]["abort_reason"], "surface lost: device removed",
         "the cause, never a window close"
     );
     assert_eq!(
@@ -351,6 +350,39 @@ fn playback_error_exit_mid_route_records_that_error_as_the_reason() {
         "surface lost: device removed",
         "the session's own error stays the exit"
     );
+}
+
+// Regression: a failed record write replaced the engine error a `Failed`
+// ending carried, so the exit named the write, not the cause.
+#[test]
+fn playback_engine_error_stays_the_exit_when_the_record_write_also_fails() {
+    let mut run = playing(0, 5, &[]);
+    frame(&mut run.app, Instant::now(), true, true);
+    let unwritable = run.report.with_file_name("missing").join("run.json");
+    run.app.playback.active.as_mut().unwrap().args.report = unwritable.clone();
+    run.app.exit_result = Err(anyhow::anyhow!("surface lost: device removed"));
+    run.app.playback_closed_on_exit();
+    assert!(!unwritable.exists(), "the write failed");
+    assert_eq!(
+        exit_error(&run.app),
+        "surface lost: device removed",
+        "the engine error stays the exit, never the write's"
+    );
+}
+
+// Regression: an abort in the same iteration as an earlier error (a stall
+// after a refusal, say) replaced that error as the exit.
+#[test]
+fn playback_abort_keeps_an_earlier_exit_error() {
+    let mut run = playing(0, 5, &[]);
+    run.app.exit_result = Err(anyhow::anyhow!("settling failed: device removed"));
+    let reason = Some("level unload requested".to_string());
+    assert!(run.app.playback_abort(reason));
+    assert_eq!(
+        record(&run)["header"]["abort_reason"],
+        "level unload requested"
+    );
+    assert_eq!(exit_error(&run.app), "settling failed: device removed");
 }
 
 #[test]

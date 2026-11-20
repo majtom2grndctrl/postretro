@@ -36,9 +36,20 @@ pub fn parse_pose_file(text: &str) -> Result<PoseFile, PoseFileError> {
         let version = magic
             .strip_prefix(POSE_FILE_MAGIC_PREFIX)
             .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()));
+        let supported = POSE_FILE_MAGIC
+            .strip_prefix(POSE_FILE_MAGIC_PREFIX)
+            .unwrap_or_default();
         return Err(PoseFileError {
             line: 1,
             reason: match version {
+                // Same number, spelled non-canonically (zero-padded): not a
+                // different version, so say how to write it.
+                Some(version) if version.trim_start_matches('0') == supported => {
+                    ParseReason::Malformed {
+                        line: "version",
+                        why: format!("the version must be written `{supported}`"),
+                    }
+                }
                 Some(version) => ParseReason::UnsupportedVersion {
                     version: version.to_string(),
                 },

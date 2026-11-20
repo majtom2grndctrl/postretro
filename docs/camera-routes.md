@@ -54,6 +54,8 @@ The recording starts on the first frame of the first level you play. It does not
 
 A recording follows the camera only. When it plays back, the world starts as the level starts: doors you opened while recording are closed again.
 
+A recording takes the same stall timeout as playback, `--camera-route-stall-timeout <seconds>` (300 by default). If the level you record never shows on screen in time, the engine exits with an error and writes no file. A menu or a loading screen does not count.
+
 ## Playing a route
 
 ```bash
@@ -68,28 +70,29 @@ The engine loads the level, waits until what the first pose sees is ready, holds
 | `--camera-route-pacing frame-locked\|wall-clock` | `frame-locked` | `frame-locked` draws pose N on frame N, so every run makes the same demand at any frame rate. `wall-clock` keeps the route's own speed and skips poses when frames are slow, as a player would see it. |
 | `--camera-route-hold <frames>` | 600 | Frames to hold the first pose before flying, for example to attach a profiler; at most 100000 |
 | `--camera-route-report <file>` | `<route name>.playback.json` in the bundle root | Where the report goes. `postretro-tool run` starts the engine in the bundle root, so a relative path is relative to it. |
-| `--camera-route-stall-timeout <seconds>` | 300 | Give up if nothing reaches the screen in time; at most 86400 (a day) |
+| `--camera-route-stall-timeout <seconds>` | 300 | Give up if no frame of the run (a hold or route frame) has shown in time, even while the window shows a menu or a loading screen; at most 86400 (a day) |
 | `--present-mode vsync\|no-vsync` | `vsync` | `vsync` shows the stutter a player sees. `no-vsync` shows how long each frame takes to make. |
 
 The engine refuses to start, and names the file and the reason, when:
 - the route is empty, malformed or unreadable
 - its field of view is outside 60–130°, or a pose's pitch is past ±89° (the error names the pose's line)
-- it was made for a different bake of the level
-- the report's folder doesn't exist, or the report would overwrite the route itself
+- the report's folder doesn't exist, the report path ends in `/` or `\`, the report would overwrite the route itself, or it names an existing file that isn't an earlier report
 - the launch also has `--connect` or `--record-camera-route`
 - an option is given twice, or a value is outside its range
 
-`--record-camera-route` refuses to start the same way when its file's folder doesn't exist.
+`--record-camera-route` refuses to start the same way when its file's folder doesn't exist, its path ends in `/` or `\`, or it names an existing file that isn't an earlier route.
+
+A route made for a different bake of the level is caught when the level loads, not before launch: the window opens and the level loads, then the engine exits with an error naming the route and the level. No report is written.
 
 Rebuilding a level that changes its rooms invalidates the routes made for it. Generate them again.
 
-Only the bundle's authoring engine, the `postretro` at the bundle root that `postretro-tool run` starts, plays and records routes. The release engine in `bin/` is a player build: it logs a warning for `--camera-route` and `--record-camera-route` and runs as if they were not there.
+Only the bundle's authoring engine, the `postretro` at the bundle root that `postretro-tool run` starts, plays and records routes. The release engine in `bin/` is a player build: it logs a warning for `--camera-route`, `--record-camera-route` and `--present-mode` and runs as if they were not there.
 
-A run that can't finish exits with an error and still writes its report, marked aborted with the reason. That happens when the level changes, unloads or reloads mid-run, when you join a game from the menu before or during the run, or when the window never shows a frame. Closing the window or quitting before the route ends also writes the report marked aborted, and the engine exits with an error. If the engine stops on an error of its own mid-run, the report names that error.
+A run that can't finish exits with an error and still writes its report, marked aborted with the reason. That happens when the level changes, unloads or reloads mid-run, when you join a game from the menu before or during the run, or when no frame of the run shows before the stall timeout. Closing the window or quitting before the route ends also writes the report marked aborted, and the engine exits with an error. If the engine stops on an error of its own mid-run, the report names that error.
 
 ### Keep the display awake
 
-A locked screen or a sleeping display stops the window from drawing. Before the first frame, the run gives up when the stall timeout runs out. After it, the run waits until the window shows again, with no deadline, so an unattended run can sit there with no report. Keep the window in front, and keep the display awake for the whole run:
+A locked screen or a sleeping display stops the window from drawing. Until the run's first hold or route frame shows (for a recording, its first recorded frame), the run gives up when the stall timeout runs out, even if the window is showing a menu or a loading screen. After that frame, the run waits until the window shows again, with no deadline, so an unattended run can sit there with no report. Keep the window in front, and keep the display awake for the whole run:
 
 - **macOS:** start the run under `caffeinate`, which holds the display and the machine awake until the command exits:
 
@@ -113,7 +116,7 @@ POSTRETRO_PLAY_DRAIN_CAP_MIB=4 bin/postretro-tool run maps/<name>.prl --camera-r
 
 On Windows PowerShell, set the variable first with `$env:POSTRETRO_PLAY_DRAIN_CAP_MIB = "4"`, then run the command without the prefix. It stays set for the rest of that PowerShell window; clear it with `Remove-Item Env:POSTRETRO_PLAY_DRAIN_CAP_MIB`. The same goes for the other variables on this page.
 
-A value the engine can't read, or one outside that range or between its steps, logs a warning and keeps the default. The loading hold uses its own, larger budget (32 MiB) either way.
+A value the engine can't read, or one outside that range or between its steps, logs a warning and keeps the default. The loading hold uses its own budget of 32 MiB, larger than the default, either way.
 
 ## The report
 
@@ -139,11 +142,11 @@ Leave marked rows out of frame-time figures.
 
 To add per-stage CPU times to each row, set `POSTRETRO_CPU_TIMING=1`. On GPUs that support timestamp queries, `POSTRETRO_GPU_TIMING=1` adds each frame's GPU time and the time its streaming installs took on the GPU.
 
-With `POSTRETRO_TELEMETRY=<file>`, the run also writes one `playback_window` event per 120 rows to the telemetry file: frame-time p99, frames over 33 ms, the streaming stages' CPU maximum, and late block and cluster counts.
+With `POSTRETRO_TELEMETRY=<file>`, the run also writes one `playback_window` event per 120 rows to the telemetry file, and a final partial one for the rows left when the run ends: frame-time p99, frames over 33 ms, the streaming stages' CPU maximum, and late block and cluster counts.
 
 ### GPU time on a Mac
 
-Some Mac GPUs have no timestamp queries. There, GPU time comes from an Instruments Metal System Trace instead. During playback, each frame's GPU work is labelled `pr-frame <N>`, where N is the `frame` of that frame's report row.
+Some Mac GPUs have no timestamp queries. There, GPU time comes from an Instruments Metal System Trace instead. During playback, each frame's GPU work is labelled `pr-frame <N> <site>`. N is the `frame` of that frame's report row, and the site says which work it is: `lightmap` and `sh` for the two streaming installs, `frame` for the frame's rendering.
 
 1. In a second terminal, start logging the GPU clock, and leave it running until the trace is saved:
 
@@ -173,7 +176,11 @@ Some Mac GPUs have no timestamp queries. There, GPU time comes from an Instrumen
    python3 tools/playback_trace_reduce.py --record far-point.playback.json --trace-dir trace --ioreg ioreg.log
    ```
 
-It reports each frame's streaming GPU time and the run's frame-time figures, and names the GPU clock the figures ran at. Without `--ioreg`, the clock reads unrecorded. A GPU running at a low idle clock makes every figure an upper bound.
+It reports each frame's streaming GPU time and the run's frame-time figures, and names the GPU clock the figures ran at. Without `--ioreg`, the clock reads unrecorded. The table of contents lines the clock log up with the trace. If it is somewhere else, name it with `--toc <file>`. Without it, the clock is reported over the whole log, and the reducer says so. A GPU running at a low idle clock makes every figure an upper bound.
+
+A frame counts as over budget when its frame time is above 16.667 ms, one frame at 60 Hz. Change that with `--budget-ms <ms>`. The telemetry `playback_window` event counts frames over 33 ms instead, so the two counts differ. By default the per-frame tables list only frames that installed something, or that ran over budget while an earlier install may still have been on the GPU. Add `--all-frames` to list every frame, or `--json` for everything the reducer computed.
+
+A figure the trace can't settle reads `missing`, never a guess. A trace from a build older than the site labels has `pr-frame <N>` alone, and some of its streaming work can't be assigned to either install. Those frames' install times read `missing`, and the reducer reports that work on its own line.
 
 ## Timing figures need a measurement build
 

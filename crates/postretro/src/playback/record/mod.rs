@@ -32,6 +32,13 @@ const ROW_SLACK: usize = 256;
 /// duration; a faster run grows the row store rarely, never per frame.
 const WALL_CLOCK_PLANNED_HZ: f64 = 240.0;
 
+/// The most rows reserved at launch, whatever the pose file plans: a row is
+/// about half a kilobyte, so this bounds the launch reservation near half a
+/// gigabyte, where a huge pose file would otherwise ask for several. It
+/// covers a 600-frame hold and a 100,000-pose route at 240 Hz wall-clock.
+/// A longer run still records: growth past it is gap-marked (`push_row`).
+const MAX_RESERVED_ROWS: usize = 1_000_000;
+
 /// Life-state entries reserved: a run logs one per death, respawn or
 /// teleport, so the steady state never allocates.
 const LIFE_STATE_SLACK: usize = 32;
@@ -84,9 +91,7 @@ impl PlaybackRecord {
     pub(crate) fn new(args: &PlaybackArgs, file: &PoseFile) -> Self {
         Self {
             header: RecordHeader::new(args, file),
-            rows: Vec::with_capacity(
-                args.hold as usize + planned_route_rows(args, file) + ROW_SLACK,
-            ),
+            rows: Vec::with_capacity(reserved_rows(args, file)),
             life_states: Vec::with_capacity(LIFE_STATE_SLACK),
             gap_next: false,
             unstamped_life: 0,
@@ -197,7 +202,10 @@ impl PlaybackRecord {
         // far, inside this frame's end. The next row's interval runs from
         // this frame's start, so it spans the copy: it is gap-marked like a
         // hidden-window stretch, and the per-run figures leave it out rather
-        // than read the copy as a stutter.
+        // than read the copy as a stutter. The mark goes on the next row
+        // written, not the next frame: when the next frame writes no row, a
+        // later clean row takes it and leaves the figures too. Growth is rare
+        // and that errs toward excluding, so it stays.
         let grows = self.rows.len() == self.rows.capacity();
         let spans_growth = std::mem::replace(&mut self.gap_next, grows);
         self.rows.push(Row {
@@ -264,6 +272,15 @@ impl PlaybackRecord {
         std::fs::write(path, text)
             .map_err(|err| format!("writing the playback record {}: {err}", path.display()))
     }
+}
+
+/// Rows reserved at launch: the hold, the planned route rows and the slack,
+/// capped at [`MAX_RESERVED_ROWS`].
+fn reserved_rows(args: &PlaybackArgs, file: &PoseFile) -> usize {
+    (args.hold as usize)
+        .saturating_add(planned_route_rows(args, file))
+        .saturating_add(ROW_SLACK)
+        .min(MAX_RESERVED_ROWS)
 }
 
 /// Route rows a run plans: one per pose frame-locked; the route's duration

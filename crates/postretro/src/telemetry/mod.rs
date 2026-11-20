@@ -256,11 +256,10 @@ pub(crate) fn settle_gpu_timing(support: postretro_renderer::GpuTimingSupport) {
             postretro_renderer::GpuTimingSupport::NotRequested => {
                 ProducerEntry::disabled(producers::GPU_TIMING, GPU_TIMING_ENV)
             }
-            postretro_renderer::GpuTimingSupport::Unsupported => ProducerEntry::unsupported(
-                producers::GPU_TIMING,
-                GPU_TIMING_UNSUPPORTED_REASON,
-            )
-            .with_variable(GPU_TIMING_ENV),
+            postretro_renderer::GpuTimingSupport::Unsupported => {
+                ProducerEntry::unsupported(producers::GPU_TIMING, GPU_TIMING_UNSUPPORTED_REASON)
+                    .with_variable(GPU_TIMING_ENV)
+            }
         };
         hub.set_producer_state(entry);
     });

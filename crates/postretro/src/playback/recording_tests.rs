@@ -1,8 +1,8 @@
 // Camera-route recording: the pre-view-feel view each presented world frame
 // holds, resampling to 60 Hz by time and never across a pawn's jump, a
 // frame-locked replay bit-equal to the resampled file, the first gameplay
-// level's scope, and the one write on every exit route, refused when
-// playback could not read it. The frame loop needs an event loop, so App-level tests
+// level's scope, and the one write on every exit route, refused when the
+// file would not parse. The frame loop needs an event loop, so App-level tests
 // drive the hooks in its order and source-order tests pin the call sites.
 // See: context/lib/rendering_pipeline.md §12 · context/lib/boot_sequence.md §1, §4, §5
 
@@ -20,7 +20,7 @@ use postretro_foundation::{
 use postretro_test_log_capture::LogCapture;
 use tempfile::TempDir;
 
-use super::recording::{RecordState, Sample, resample};
+use super::recording::{Continuity, RecordState, Sample, resample};
 use crate::App;
 use crate::camera::{HFOV, RenderCamera};
 use crate::frame_eye::{self, FrameEyeInputs, ViewFeelDriver, ViewFeelTracking};
@@ -119,6 +119,46 @@ fn recording_resample_keeps_a_lone_frame_and_ends_at_the_last_sample() {
     assert_eq!((lone[0].eye, lone[0].yaw, lone[0].pitch), (eye, yaw, pitch));
     // 25 ms of frames: poses at 0 and 1/60 s only, nothing past the last.
     assert_eq!(resample(&samples(start, [0.0, 0.01, 0.025]), 60.0).len(), 2);
+}
+
+// Regression: the bracket advance lacked the count's epsilon, so a sample
+// stamped a nanosecond-rounding past pose 1's time stayed unreached and its
+// cut was dropped: pose 1 held the pre-jump view.
+#[test]
+fn recording_resample_cuts_on_a_last_sample_a_rounding_past_the_pose_time() {
+    let start = Instant::now();
+    let continuity = |life_state_entry| {
+        Some(Continuity {
+            pawn: 1,
+            teleport_generation: 0,
+            life_state: 0,
+            life_state_entry,
+        })
+    };
+    let before = Sample {
+        at: start,
+        eye: Vec3::ZERO,
+        yaw: 0.0,
+        pitch: 0.0,
+        continuity: continuity(0),
+    };
+    let after = Sample {
+        // 1/60 s rounded up to whole nanoseconds.
+        at: start + Duration::from_nanos(16_666_667),
+        eye: Vec3::new(40.0, 2.0, -7.0),
+        yaw: 1.25,
+        pitch: -0.3,
+        continuity: continuity(1),
+    };
+    let poses = resample(&[before, after], 60.0);
+    assert_eq!(poses.len(), 2);
+    assert!(!poses[0].cut);
+    assert!(poses[1].cut, "the jump on the last sample cuts pose 1");
+    assert_eq!(
+        (poses[1].eye, poses[1].yaw, poses[1].pitch),
+        (after.eye, after.yaw, after.pitch),
+        "pose 1 draws the post-jump view"
+    );
 }
 
 // --- App-level hooks ---
@@ -702,8 +742,15 @@ fn playback_closed_by_the_person_writes_its_record_aborted_and_exits_non_zero() 
     }
     run.app.playback_session_exits();
     assert!(run.app.playback.active.is_none());
-    let exit = run.app.exit_result.as_ref().expect_err("a close before the route ends is an aborted run");
-    assert!(exit.to_string().contains("window closed or quit before the route ended"));
+    let exit = run
+        .app
+        .exit_result
+        .as_ref()
+        .expect_err("a close before the route ends is an aborted run");
+    assert!(
+        exit.to_string()
+            .contains("window closed or quit before the route ended")
+    );
     let record = crate::playback::lifecycle::tests::record(&run);
     assert_eq!(record["header"]["outcome"], "aborted");
     assert!(
@@ -812,14 +859,30 @@ fn level_requests_end_a_recording_before_the_level_unloads() {
 }
 
 #[test]
-fn a_frontend_join_ends_a_recording_after_the_playback_abort_check() {
+fn a_frontend_join_ends_a_recording_only_once_the_join_is_committed() {
     // A join leaves for the host's level: a recording of the first gameplay
-    // level is written before it, unless a playing route refuses the join.
+    // level is written once the client endpoint exists, so a join that fails
+    // (or that a live route refuses) leaves the recording running.
     let join = at(SESSION_ENTRY, "pub(crate) fn join_from_frontend_with(", 0);
     let abort = at(SESSION_ENTRY, "self.playback_join_abort_reason(addr)", join);
-    let end = at(SESSION_ENTRY, "self.recording_level_ends();", abort);
-    let connect = at(SESSION_ENTRY, "self.enter_net_role(", join);
-    assert!(abort < end && end < connect);
+    let connect = at(SESSION_ENTRY, "self.enter_net_role(", abort);
+    let committed = at(SESSION_ENTRY, "else {", connect);
+    let end = at(SESSION_ENTRY, "self.recording_level_ends();", committed);
+    let joined = at(SESSION_ENTRY, "return true;", end);
+    let failed = at(
+        SESSION_ENTRY,
+        "join to {addr} failed before connecting",
+        joined,
+    );
+    assert!(abort < connect && connect < committed && committed < end && end < joined);
+    assert!(
+        joined < failed,
+        "the success arm ends the recording, never the failure"
+    );
+    assert!(
+        !SESSION_ENTRY[join..connect].contains("self.recording_level_ends();"),
+        "nothing ends a recording before the join commits"
+    );
 }
 
 #[test]

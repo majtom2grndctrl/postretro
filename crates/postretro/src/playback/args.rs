@@ -4,12 +4,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use postretro_camera_route::{POSE_FILE_MAGIC, parse_pose_file};
 use postretro_renderer::PresentChoice;
 
 use crate::startup::camera_route_flags::{
     CAMERA_ROUTE_FLAG, CAMERA_ROUTE_HOLD_FLAG, CAMERA_ROUTE_PACING_FLAG, CAMERA_ROUTE_REPORT_FLAG,
     CAMERA_ROUTE_STALL_TIMEOUT_FLAG, PRESENT_MODE_FLAG, RECORD_CAMERA_ROUTE_FLAG,
 };
+
+use super::record::SCHEMA;
 
 /// Hold frames when `--camera-route-hold` is absent: about 10 s at 60 Hz,
 /// time to attach a GPU trace before the route starts.
@@ -78,8 +81,7 @@ pub(crate) fn playback_args(args: &[String]) -> Result<Option<PlaybackArgs>, Str
                 CAMERA_ROUTE_PACING_FLAG,
                 CAMERA_ROUTE_STALL_TIMEOUT_FLAG,
             ] {
-                if (recording && flag == CAMERA_ROUTE_STALL_TIMEOUT_FLAG)
-                    || !names_flag(args, flag)
+                if (recording && flag == CAMERA_ROUTE_STALL_TIMEOUT_FLAG) || !names_flag(args, flag)
                 {
                     continue;
                 }
@@ -189,28 +191,44 @@ pub(crate) fn stall_timeout(args: &[String]) -> Result<Duration, String> {
 }
 
 /// Where a playback run writes, checked at launch before any window: the
-/// record's folder exists, and the record is not the route file itself,
-/// which its one write would overwrite. Metadata only: nothing is created.
+/// record's folder exists, the record is not the route file itself, which
+/// its one write would overwrite, and an existing file there is an older
+/// playback record. Nothing is created; an existing file is only read.
 /// Relative paths resolve against `cwd`, as the write will.
 pub(crate) fn check_report_path(report: &Path, poses: &Path, cwd: &Path) -> Result<(), String> {
     check_output_folder(CAMERA_ROUTE_REPORT_FLAG, report, cwd)?;
-    if resolved(report, cwd) == resolved(poses, cwd) {
+    if names_one_file(report, poses, cwd) {
         return Err(format!(
             "{CAMERA_ROUTE_REPORT_FLAG} {} is the route file {}: the record would overwrite the route it plays",
             report.display(),
             poses.display(),
         ));
     }
-    Ok(())
+    check_existing_output(
+        CAMERA_ROUTE_REPORT_FLAG,
+        report,
+        cwd,
+        Output::PlaybackRecord,
+    )
 }
 
-/// Where a recording writes, checked at launch like the record's path.
+/// Where a recording writes, checked at launch like the record's path: an
+/// existing file there must be an older pose file.
 pub(crate) fn check_record_path(path: &Path, cwd: &Path) -> Result<(), String> {
-    check_output_folder(RECORD_CAMERA_ROUTE_FLAG, path, cwd)
+    check_output_folder(RECORD_CAMERA_ROUTE_FLAG, path, cwd)?;
+    check_existing_output(RECORD_CAMERA_ROUTE_FLAG, path, cwd, Output::PoseFile)
 }
 
 /// `path` names a file whose folder exists; the engine creates no folder.
+/// A trailing separator names a folder: `Path::parent` would drop it and
+/// pass the check, and the write would then fail at the run's end.
 fn check_output_folder(flag: &str, path: &Path, cwd: &Path) -> Result<(), String> {
+    if path.to_string_lossy().ends_with(['/', '\\']) {
+        return Err(format!(
+            "{flag} {} ends in a separator: name the file to write",
+            path.display()
+        ));
+    }
     let absolute = cwd.join(path);
     if absolute.is_dir() {
         return Err(format!(
@@ -229,16 +247,138 @@ fn check_output_folder(flag: &str, path: &Path, cwd: &Path) -> Result<(), String
     }
 }
 
-/// `path` made absolute against `cwd`, its folder canonicalized: two
-/// spellings of one file compare equal, whether or not the file exists.
-fn resolved(path: &Path, cwd: &Path) -> PathBuf {
+/// The kind of file an output flag writes, and so the only kind it may
+/// overwrite.
+#[derive(Debug, Clone, Copy)]
+enum Output {
+    /// JSON whose header names the playback record's [`SCHEMA`].
+    PlaybackRecord,
+    /// A camera-route pose file that parses.
+    PoseFile,
+}
+
+/// Bytes read to identify an existing output before anything else: enough
+/// for a pose file's first line or a record's opening `schema` field, so a
+/// level or other large file named by mistake is never read whole.
+const IDENTIFY_BYTES: u64 = 256;
+
+/// An existing file at `path` must already be of `kind`: an older record or
+/// recording is overwritten, but a level or any other file named by mistake
+/// (`resolve_map_path` steps over a flag's value) is refused, never replaced.
+fn check_existing_output(flag: &str, path: &Path, cwd: &Path, kind: Output) -> Result<(), String> {
     let absolute = cwd.join(path);
-    match (absolute.parent(), absolute.file_name()) {
-        (Some(folder), Some(name)) => folder
-            .canonicalize()
-            .map_or_else(|_| absolute.clone(), |folder| folder.join(name)),
-        _ => absolute,
+    let metadata = match std::fs::metadata(&absolute) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(format!("{flag} {}: unreadable: {err}", path.display())),
+    };
+    let refuse = |what: &str| {
+        format!(
+            "{flag} {} exists and is not {what}: the write would overwrite it; name another file",
+            path.display()
+        )
+    };
+    if !metadata.is_file() {
+        return Err(refuse("a file"));
     }
+    let head = read_head(&absolute)
+        .map_err(|err| format!("{flag} {}: unreadable: {err}", path.display()))?;
+    match kind {
+        Output::PlaybackRecord => {
+            // serde writes the header first and the schema as its first
+            // field; a written record's round-trip test pins that.
+            let compact: String = head.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+            let opening = format!("{{\"header\":{{\"schema\":\"{SCHEMA}\"");
+            if compact.starts_with(&opening) {
+                Ok(())
+            } else {
+                Err(refuse(&format!("a playback record ({SCHEMA})")))
+            }
+        }
+        Output::PoseFile => {
+            let pose_file = head.starts_with(POSE_FILE_MAGIC)
+                && std::fs::read_to_string(&absolute)
+                    .ok()
+                    .is_some_and(|text| parse_pose_file(&text).is_ok());
+            if pose_file {
+                Ok(())
+            } else {
+                Err(refuse("a camera-route pose file"))
+            }
+        }
+    }
+}
+
+/// The first [`IDENTIFY_BYTES`] of `path`, lossily decoded.
+fn read_head(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(path)?
+        .take(IDENTIFY_BYTES)
+        .read_to_end(&mut head)?;
+    Ok(String::from_utf8_lossy(&head).into_owned())
+}
+
+/// Whether `a` and `b` name one file. When both exist they compare as the
+/// file system resolves them: by case on a case-insensitive volume, through
+/// symlinks, and on Windows past trailing dots and spaces. Otherwise they
+/// compare as spelled, folder canonicalized.
+fn names_one_file(a: &Path, b: &Path, cwd: &Path) -> bool {
+    let (a, b) = (cwd.join(a), cwd.join(b));
+    if let (Ok(canonical_a), Ok(canonical_b)) = (a.canonicalize(), b.canonicalize()) {
+        return canonical_a == canonical_b || same_inode(&canonical_a, &canonical_b);
+    }
+    resolved(&a) == resolved(&b)
+}
+
+/// One inode under two names: macOS `canonicalize` may keep a name's case
+/// as typed on a case-insensitive volume.
+#[cfg(unix)]
+fn same_inode(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Windows' `canonicalize` returns the on-disk final path, which already
+/// resolves case and links.
+#[cfg(not(unix))]
+fn same_inode(_a: &Path, _b: &Path) -> bool {
+    false
+}
+
+/// An absolute path with its folder canonicalized and, on Windows, the
+/// trailing dots and spaces the file system drops stripped from its name:
+/// two spellings of a file not yet written compare equal.
+fn resolved(absolute: &Path) -> PathBuf {
+    match (absolute.parent(), absolute.file_name()) {
+        (Some(folder), Some(name)) => {
+            let name = win32_file_name(name);
+            folder
+                .canonicalize()
+                .map_or_else(|_| folder.join(&name), |folder| folder.join(&name))
+        }
+        _ => absolute.to_path_buf(),
+    }
+}
+
+/// Windows opens `run.json.` and `run.json ` as `run.json`.
+#[cfg(windows)]
+fn win32_file_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
+    let text = name.to_string_lossy();
+    let trimmed = text.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        name.to_os_string()
+    } else {
+        trimmed.into()
+    }
+}
+
+#[cfg(not(windows))]
+fn win32_file_name(name: &std::ffi::OsStr) -> std::ffi::OsString {
+    name.to_os_string()
 }
 
 /// `flag` appears as its own argument or in `--flag=value` form.
@@ -603,6 +743,148 @@ mod tests {
             "{error}"
         );
         assert!(!cwd.join("missing").exists());
+    }
+
+    // Regression: `Path::parent` ignores a trailing separator, so the folder
+    // check passed and the write failed at the run's end.
+    #[test]
+    fn output_paths_ending_in_a_separator_are_refused_naming_the_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        let route = Path::new("cp.txt");
+        for path in ["out/", "out\\", "rec/"] {
+            let error = check_report_path(Path::new(path), route, cwd).unwrap_err();
+            assert!(
+                error.contains(CAMERA_ROUTE_REPORT_FLAG) && error.contains("separator"),
+                "{path}: {error}"
+            );
+            let error = check_record_path(Path::new(path), cwd).unwrap_err();
+            assert!(
+                error.contains(RECORD_CAMERA_ROUTE_FLAG) && error.contains("separator"),
+                "{path}: {error}"
+            );
+        }
+        assert!(!cwd.join("out").exists() && !cwd.join("rec").exists());
+    }
+
+    // Regression: only the folder was canonicalized, so another spelling of
+    // the route's own name passed and the record overwrote the route.
+    #[test]
+    fn report_path_naming_the_route_by_another_spelling_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        std::fs::create_dir(cwd.join("routes")).unwrap();
+        let route = Path::new("routes/cp.txt");
+        std::fs::write(cwd.join(route), "route").unwrap();
+        let overwrites = |report: &Path| {
+            check_report_path(report, route, cwd)
+                .is_err_and(|error| error.contains("overwrite the route"))
+        };
+
+        // Case: on a case-insensitive volume (NTFS, APFS) it is the route.
+        let upper = Path::new("routes/CP.TXT");
+        if cwd.join(upper).exists() {
+            assert!(overwrites(upper), "a case-folded spelling is the route");
+        } else {
+            assert_eq!(check_report_path(upper, route, cwd), Ok(()));
+        }
+
+        // Windows opens a name with trailing dots or spaces as the name
+        // without them.
+        #[cfg(windows)]
+        for spelling in ["routes/cp.txt.", "routes/cp.txt ", "routes/cp.txt. ."] {
+            assert!(overwrites(Path::new(spelling)), "{spelling}");
+        }
+
+        // A symlink to the route. Windows needs a privilege to make one;
+        // without it this part is skipped.
+        let link = cwd.join("routes/link.json");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(cwd.join(route), &link);
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(cwd.join(route), &link);
+        match linked {
+            Ok(()) => assert!(overwrites(Path::new("routes/link.json"))),
+            Err(err) => eprintln!("skipping the symlink case: {err}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(cwd.join(route)).unwrap(),
+            "route",
+            "the checks never write"
+        );
+    }
+
+    // Regression: a level typed as the flag's value (`resolve_map_path`
+    // steps over it) passed the launch check, and the run's one write
+    // replaced the level.
+    #[test]
+    fn an_existing_output_is_refused_unless_it_is_an_older_file_of_its_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        std::fs::create_dir(cwd.join("maps")).unwrap();
+        let route = Path::new("cp.txt");
+        let level = Path::new("maps/test.prl");
+        let level_bytes = b"PRL\x00\x01not a route or a record";
+        std::fs::write(cwd.join(level), level_bytes).unwrap();
+        let empty = Path::new("empty.txt");
+        std::fs::write(cwd.join(empty), "").unwrap();
+
+        for path in [level, empty] {
+            let error = check_record_path(path, cwd).unwrap_err();
+            assert!(
+                error.contains(RECORD_CAMERA_ROUTE_FLAG) && error.contains("pose file"),
+                "{}: {error}",
+                path.display()
+            );
+            let error = check_report_path(path, route, cwd).unwrap_err();
+            assert!(
+                error.contains(CAMERA_ROUTE_REPORT_FLAG) && error.contains("playback record"),
+                "{}: {error}",
+                path.display()
+            );
+        }
+
+        // An older recording may be recorded over; it is no record.
+        let older = Path::new("old.txt");
+        let pose_text = postretro_camera_route::format_pose_file(
+            &crate::playback::route::tests::pose_file(100.0, 3),
+        );
+        std::fs::write(cwd.join(older), &pose_text).unwrap();
+        assert_eq!(check_record_path(older, cwd), Ok(()));
+        assert!(check_report_path(older, route, cwd).is_err());
+        let truncated = Path::new("truncated.txt");
+        std::fs::write(cwd.join(truncated), POSE_FILE_MAGIC).unwrap();
+        assert!(
+            check_record_path(truncated, cwd).is_err(),
+            "the magic alone does not parse"
+        );
+
+        // An older record may be replaced; another schema or JSON may not.
+        let record = |schema: &str| {
+            format!(
+                "{{\n  \"header\": {{\n    \"schema\": \"{schema}\",\n    \"revision\": null\n  }},\n  \"rows\": []\n}}"
+            )
+        };
+        let old_record = Path::new("old.playback.json");
+        std::fs::write(cwd.join(old_record), record(SCHEMA)).unwrap();
+        assert_eq!(check_report_path(old_record, route, cwd), Ok(()));
+        assert!(check_record_path(old_record, cwd).is_err());
+        for (name, text) in [
+            ("v0.json", record("postretro.camera_route_playback.v0")),
+            ("other.json", "{\"rows\": []}".to_string()),
+        ] {
+            std::fs::write(cwd.join(name), text).unwrap();
+            assert!(
+                check_report_path(Path::new(name), route, cwd).is_err(),
+                "{name}"
+            );
+        }
+
+        assert_eq!(
+            std::fs::read(cwd.join(level)).unwrap(),
+            level_bytes,
+            "the checks never write"
+        );
     }
 
     #[test]

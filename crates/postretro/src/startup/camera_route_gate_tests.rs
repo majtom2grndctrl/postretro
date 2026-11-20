@@ -1,7 +1,11 @@
 //! Grep gate for camera-route playback and recording: they build only with
 //! `dev-tools`, the engine never generates a route, and no player setting
 //! names them. The walk override, its tallies and its levers stay in test
-//! code by the spike's gates in `drain_cap_tests`.
+//! code by the spike's gates in `drain_cap_tests`
+//! (`walk_drain_cap_override_lives_only_in_the_test_walk_harness`,
+//! `walk_tallies_and_their_seams_are_test_only`,
+//! `in_hand_cap_override_seam_is_test_only`). This file uses
+//! `drain_cap_tests`'s grep helpers, which therefore must stay `#[cfg(test)]`.
 //! See: context/lib/development_guide.md §6.4 · context/lib/testing_guide.md §3
 
 use std::path::{Path, PathBuf};

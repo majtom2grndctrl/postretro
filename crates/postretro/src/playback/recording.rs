@@ -175,8 +175,9 @@ pub(crate) fn recorded_file(samples: &[Sample], projection: Projection, bake: St
     }
 }
 
-/// Writes `file` to `path`: the recording's one write. A file playback would
-/// refuse, such as one with an empty bake or level path, is not written.
+/// Writes `file` to `path`: the recording's one write. A file that would not
+/// parse, such as one with an empty bake or level path, is not written.
+/// Playback's FOV and pitch range checks are not repeated here.
 pub(crate) fn write(path: &Path, file: &PoseFile) -> Result<(), String> {
     let text = format_pose_file(file);
     if let Err(err) = parse_pose_file(&text) {
@@ -216,16 +217,18 @@ pub(crate) fn resample(samples: &[Sample], cadence_hz: f64) -> Vec<RoutePose> {
     };
     let seconds = |sample: &Sample| sample.at.saturating_duration_since(first.at).as_secs_f64();
     let span = samples.last().map_or(0.0, seconds);
-    // Stamps are whole nanoseconds: the epsilon (17 ns at 60 Hz) keeps a
-    // pose that lands on the last sample's time from rounding out. Such a
-    // pose draws the last sample.
+    // Stamps are whole nanoseconds: the epsilon (1e-6 of a pose, 17 ns at
+    // 60 Hz) keeps a pose that lands on a sample's time from rounding out,
+    // in the count and in the bracket advance alike. Such a pose draws that
+    // sample, so a cut on the last sample is never held off by rounding.
     let count = (span * cadence_hz + 1.0e-6).floor() as usize + 1;
+    let slack = 1.0e-6 / cadence_hz;
     let mut poses = Vec::with_capacity(count);
     let mut from = 0;
     for k in 0..count {
         let t = k as f64 / cadence_hz;
         let mut jumped = false;
-        while from + 1 < samples.len() && seconds(&samples[from + 1]) <= t {
+        while from + 1 < samples.len() && seconds(&samples[from + 1]) <= t + slack {
             jumped |= jumps(&samples[from], &samples[from + 1]);
             from += 1;
         }
@@ -233,7 +236,9 @@ pub(crate) fn resample(samples: &[Sample], cadence_hz: f64) -> Vec<RoutePose> {
         let (eye, yaw, pitch) = match samples.get(from + 1) {
             Some(b) if !jumps(a, b) => {
                 let (ta, tb) = (seconds(a), seconds(b));
-                let blend = ((t - ta) / (tb - ta)) as f32;
+                // Within the slack `t` can sit a hair before `a`: draw `a`,
+                // never extrapolate back past it.
+                let blend = ((t - ta) / (tb - ta)).max(0.0) as f32;
                 pacing::interpolate(&route_pose(a), &route_pose(b), blend)
             }
             _ => (a.eye, a.yaw, a.pitch),

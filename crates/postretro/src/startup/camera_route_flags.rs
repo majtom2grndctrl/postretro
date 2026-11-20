@@ -23,9 +23,11 @@ pub(crate) const CAMERA_ROUTE_VALUE_FLAGS: [&str; 7] = [
     PRESENT_MODE_FLAG,
 ];
 
-/// The feature playback and recording build behind. It must name the
-/// feature the `cfg(feature = "dev-tools")` gates on playback test: change
-/// both together, or the warning names a feature that enables nothing.
+/// The feature playback and recording build behind. It must match the
+/// feature gating `mod playback;` in `main.rs` and the feature the SDK's
+/// authoring engine builds with, or the warning names a feature that enables
+/// nothing. Tests in this file and in xtask's `dist.rs` check both. Keep the
+/// declaration on one line: xtask reads it by source text.
 pub(crate) const CAMERA_ROUTE_FEATURE: &str = "dev-tools";
 
 /// In a build without playback's feature, warns once for each of the
@@ -132,7 +134,10 @@ mod tests {
     fn camera_route_feature_names_the_gate_playback_builds_behind() {
         let main = include_str!("../main.rs");
         let gate = format!("#[cfg(feature = \"{CAMERA_ROUTE_FEATURE}\")]\nmod playback;");
-        assert!(main.contains(&gate), "main.rs gates playback on {CAMERA_ROUTE_FEATURE}");
+        assert!(
+            main.contains(&gate),
+            "main.rs gates playback on {CAMERA_ROUTE_FEATURE}"
+        );
     }
 
     #[test]

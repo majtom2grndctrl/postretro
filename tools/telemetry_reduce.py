@@ -18,8 +18,10 @@ This reducer joins them per run and per load:
   emits nothing.
 * windows, grouped by the level in their envelope: SH and lightmap miss
   buckets, CPU stage and GPU pass p50 and max, and camera-route playback
-  windows (row counts, worst frame-time p99, frames over 33 ms, drain CPU max
-  and late counts). A null GPU mean or playback figure is absent, never zero.
+  windows (row counts, worst frame-time p99, frames over 33 ms, drain CPU max,
+  late counts, pacing, and cap with how often it changed between windows). A
+  null GPU mean or playback figure is absent, never zero. The 33 ms threshold
+  is the engine's, not `playback_trace_reduce.py`'s `--budget-ms`.
 * log record counts per level.
 
 Standard library only. Usage:
@@ -160,6 +162,10 @@ def validate_payload(kind, payload):
         for name in PLAYBACK_MAXES + PLAYBACK_SUMS:
             value = payload.get(name)
             check(value is None or is_number(value), f"playback_window {name} is not a number")
+        pacing = payload.get("pacing")
+        check(pacing is None or isinstance(pacing, str), "playback_window pacing is not a string")
+        cap = payload.get("cap")
+        check(cap is None or isinstance(cap, dict), "playback_window cap is not an object")
 
 
 def p50(values):
@@ -215,7 +221,10 @@ class WindowGroup:
 
 class PlaybackSeries:
     """`playback_window` events: counts summed, nullable figures folded so a
-    window's null never reads as zero."""
+    window's null never reads as zero. Pacings are listed once each, in window
+    order. Caps are listed in window order, a repeat of the previous window's
+    cap left out, so `cap_changes` counts windows whose cap differs from the
+    previous window's."""
 
     def __init__(self):
         self.windows = 0
@@ -223,9 +232,17 @@ class PlaybackSeries:
         self.counts = Counter()
         self.maxes = {name: None for name in PLAYBACK_MAXES}
         self.sums = {name: None for name in PLAYBACK_SUMS}
+        self.pacings = []
+        self.caps = []
 
     def add(self, payload):
         self.windows += 1
+        pacing = payload.get("pacing")
+        if pacing is not None and pacing not in self.pacings:
+            self.pacings.append(pacing)
+        cap = payload.get("cap")
+        if cap is not None and (not self.caps or cap != self.caps[-1]):
+            self.caps.append(cap)
         if payload.get("partial"):
             self.partial += 1
         for name in PLAYBACK_ROW_COUNTS:
@@ -246,6 +263,9 @@ class PlaybackSeries:
         out["lightmap_drain_cpu_max_ms"] = self.maxes["lightmap_drain_cpu_max_ms"]
         out["sh_drain_cpu_max_ms"] = self.maxes["sh_drain_cpu_max_ms"]
         out.update(self.sums)
+        out["pacings"] = list(self.pacings)
+        out["caps"] = [dict(cap) for cap in self.caps]
+        out["cap_changes"] = max(len(self.caps) - 1, 0)
         return out
 
 
@@ -652,9 +672,16 @@ def render_playback(playback, indent):
     def count(value):
         return "-" if value is None else str(value)
 
+    def cap_text(cap):
+        return f"{cap.get('source')} {cap.get('decoded_bytes_per_drain')} B"
+
     out = [f"{indent}playback windows: {playback['windows']} ({playback['partial_windows']} partial);"
            f" rows {playback['rows']}, route {playback['route_rows']}, measured "
            f"{playback['measured_rows']}, excluded {playback['excluded_rows']}"]
+    caps = " -> ".join(cap_text(cap) for cap in playback["caps"]) or "-"
+    changed = (f" (changed between windows {playback['cap_changes']} time(s))"
+               if playback["cap_changes"] else "")
+    out.append(f"{indent}  pacing {', '.join(playback['pacings']) or '-'}; cap {caps}{changed}")
     out += table(["p99 max", "over 33 ms", "lightmap drain CPU max", "SH drain CPU max",
                   "late lightmap block-frames", "late SH cluster-frames"],
                  [[fmt_ms(playback["frame_time_p99_ms_max"]), count(playback["frames_over_33ms"]),

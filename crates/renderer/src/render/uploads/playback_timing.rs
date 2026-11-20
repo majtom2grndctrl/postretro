@@ -200,7 +200,10 @@ impl PlaybackTiming {
                             .slice(..)
                             .get_mapped_range()
                             .expect("a ready map's range is mapped; fails only after device loss");
-                        for (tick, chunk) in ticks.iter_mut().zip(view.as_chunks::<{ size_of::<u64>() }>().0) {
+                        for (tick, chunk) in ticks
+                            .iter_mut()
+                            .zip(view.as_chunks::<{ size_of::<u64>() }>().0)
+                        {
                             *tick = u64::from_le_bytes(*chunk);
                         }
                     }

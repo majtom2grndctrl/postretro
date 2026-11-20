@@ -342,6 +342,9 @@ impl App {
         }
         let rows = active.record.next_frame();
         let written = active.record.write(&report);
+        // The first error stays the exit: a `Failed` ending's own, or one
+        // set earlier in the same iteration (a refusal, a Settling error)
+        // before the stall or an abort ended the run.
         match (ending, written) {
             (Ending::Complete, Ok(())) => log::info!(
                 "[Playback] camera route complete: {rows} frames recorded to {}",
@@ -352,7 +355,9 @@ impl App {
                     "[Playback] camera route aborted: {reason}; {rows} frames recorded to {}",
                     report.display(),
                 );
-                self.exit_result = Err(anyhow::anyhow!("camera route aborted: {reason}"));
+                if self.exit_result.is_ok() {
+                    self.exit_result = Err(anyhow::anyhow!("camera route aborted: {reason}"));
+                }
             }
             (Ending::Failed(reason), Ok(())) => log::error!(
                 "[Playback] camera route aborted: {reason}; {rows} frames recorded to {}",
@@ -360,7 +365,9 @@ impl App {
             ),
             (_, Err(err)) => {
                 log::error!("[Playback] {err}");
-                self.exit_result = Err(anyhow::anyhow!(err));
+                if self.exit_result.is_ok() {
+                    self.exit_result = Err(anyhow::anyhow!(err));
+                }
             }
         }
         self.playback.stall = None;

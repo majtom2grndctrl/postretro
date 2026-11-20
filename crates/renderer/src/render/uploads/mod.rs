@@ -132,9 +132,10 @@ impl UploadQueue {
     }
 
     /// Camera-route playback names the frame it records: `Some(k)` brackets
-    /// each drain and frame encoder in a `pr-frame <k>` debug group until the
-    /// next call, and gives frame `k` a slot group of the playback ring when
-    /// one is enabled; `None` leaves every encoder as it is.
+    /// each drain and frame encoder in a `pr-frame <k> <site>` debug group
+    /// (`<site>` is `lightmap`, `sh` or `frame`) until the next call, and
+    /// gives frame `k` a slot group of the playback ring when one is enabled;
+    /// `None` leaves every encoder as it is.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn set_frame_mark(&self, frame: Option<u64>) {
         self.frame_mark.borrow_mut().set(frame);
@@ -174,10 +175,10 @@ impl UploadQueue {
         }
     }
 
-    /// Opens this frame's playback mark on `encoder`, returning whether it
-    /// did; hand the result to [`Self::close_frame_mark`] before `finish`.
-    /// While the playback ring is enabled the mark also writes the begin
-    /// timestamps of `site`'s spans. Unmarked, and in builds without
+    /// Opens this frame's playback mark for `site` on `encoder`, returning
+    /// whether it did; hand the result to [`Self::close_frame_mark`] before
+    /// `finish`. While the playback ring is enabled the mark also writes the
+    /// begin timestamps of `site`'s spans. Unmarked, and in builds without
     /// playback, it records nothing.
     pub(crate) fn open_frame_mark(
         &self,
@@ -185,7 +186,7 @@ impl UploadQueue {
         site: MarkSite,
     ) -> bool {
         #[cfg(feature = "dev-tools")]
-        if let Some(label) = self.frame_mark.borrow().label() {
+        if let Some(label) = self.frame_mark.borrow().label(site) {
             encoder.push_debug_group(label);
             if let Some(timing) = self.playback_timing.borrow_mut().as_mut() {
                 timing.open(encoder, site);

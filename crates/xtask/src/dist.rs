@@ -616,6 +616,9 @@ mod tests {
         assert!(tool.contains(&"postretro-tool"), "{tool:?}");
         let root = workspace_root().expect("workspace root");
         let read = |path: &str| std::fs::read_to_string(root.join(path)).expect(path);
+        // These pin the two call sites by their source text, not their
+        // behaviour: a reformat of either line trips them, so update the
+        // strings with it.
         assert!(
             read("crates/tool/src/main.rs")
                 .contains("\"generate-camera-route\" => camera_route::run(rest)"),

@@ -18,9 +18,14 @@ fixture README points to. It keeps:
 * `toc.xml`: the export's table of contents, cut to its summary.
 * `ioreg.log`: 8 clock polls, from trace time 6.4 s to 10.4 s.
 
-The expected values were checked by hand against the raw rows. Cold, growth,
-change and gap marks, partial traces and late drains are covered by synthetic
-cases that follow the current record schema
+Its marks predate the site tag (`pr-frame <k>`, not `pr-frame <k> <site>`),
+and wgpu relabelled the last command buffer of some submits "(wgpu internal)
+Signal": frames 1136, 1139, 1141 and 1247 each hold marked work on such a
+buffer, which the reducer cannot attribute.
+
+The expected values were checked by hand against the raw rows. Site-tagged
+marks, cold, growth, change and gap marks, partial traces and late drains are
+covered by synthetic cases that follow the current record schema
 (`crates/postretro/src/playback/record/`).
 """
 
@@ -92,17 +97,46 @@ class SampleTests(unittest.TestCase):
     def test_per_frame_drain_gpu_is_the_union_of_each_frames_marked_intervals(self):
         f = self.frames
         # Hand-checked unions of the raw SDMA0 and GFX rows, in ms.
-        self.assertAlmostEqual(gpu_ms(f[1136], "sh"), 1.239487, places=6)  # 4 command buffers
         self.assertAlmostEqual(gpu_ms(f[1137], "sh"), 1.883889, places=6)  # 8 rows, no overlap
         self.assertAlmostEqual(gpu_ms(f[1138], "sh"), 1.943563, places=6)  # SDMA0/GFX overlap
-        self.assertAlmostEqual(gpu_ms(f[1139], "sh"), 0.019994, places=6)
         self.assertAlmostEqual(gpu_ms(f[1248], "lightmap"), 0.421549, places=6)
-        self.assertEqual(f[1136]["drains"]["sh"]["encoders"], 4)
         self.assertEqual(f[1138]["drains"]["sh"]["encoders"], 3)
         self.assertAlmostEqual(gpu_ms(f[1248], "total"), 0.421549, places=6)
-        for frame in (1134, 1135, 1140, 1141, 1247, 1249, 1250, 725):
+        for frame in (1134, 1135, 1140, 1249, 1250, 725):
             self.assertEqual(f[frame]["drains"]["total"]["state"], "none", frame)
-        self.assertEqual(f[1136]["drains"]["lightmap"]["state"], "none")
+            self.assertIsNone(f[frame]["unattributed"], frame)
+
+    def test_marked_work_on_a_relabelled_buffer_makes_the_drains_missing(self):
+        # Old-format marks on "(wgpu internal) Signal" command buffers. Their
+        # unions, from the raw rows, in ms:
+        # * 1136, 0x...464: SDMA0 7340.808168-7340.822685 (0.014517) and GFX
+        #   7341.172740-7342.524690 (1.351950): 1.366467. Its four labelled SH
+        #   buffers alone give 1.239487, which used to read as the whole drain.
+        # * 1139, 0x...626 and 0x...62c: SDMA0 0.024335 + 0.079098 + 0.055076 +
+        #   0.044113 and GFX 1.143998 + 0.243942 + 0.364242 + 0.111690: 2.066494,
+        #   beside 0.019994 of labelled SH.
+        # * 1141, 0x...755: 0.026446 + 0.539511 = 0.565957; 1247, 0x...27d: 0.016428.
+        f = self.frames
+        for frame, unattributed in ((1136, 1.366467), (1139, 2.066494), (1141, 0.565957),
+                                    (1247, 0.016428)):
+            work = f[frame]["unattributed"]
+            self.assertAlmostEqual(work["gpu_us"] / 1000.0, unattributed, places=6, msg=frame)
+            self.assertEqual(work["relabelled"], work["encoders"], frame)
+            for resource in ("lightmap", "sh", "total"):
+                entry = f[frame]["drains"][resource]
+                self.assertEqual(entry["state"], "missing", (frame, resource))
+                self.assertIsNone(entry["gpu_us"], (frame, resource))
+                self.assertIn(R.UNATTRIBUTED_REASON, entry["reason"], (frame, resource))
+        self.assertEqual(f[1136]["drains"]["sh"]["encoders"], 4)
+        self.assertEqual(f[1139]["unattributed"]["encoders"], 2)
+        u = self.summary["unattributed"]
+        self.assertEqual((u["frames"], u["frame_list"], u["encoders"], u["relabelled"]),
+                         (4, "1136, 1139, 1141, 1247", 5, 5))
+        self.assertAlmostEqual(u["gpu_ms_sum"], 4.015346, places=6)
+        self.assertAlmostEqual(u["gpu_ms_max"], 2.066494, places=6)
+        trace = self.summary["trace"]
+        self.assertEqual((trace["marks_with_site"], trace["marks"]), (0, 33))
+        self.assertEqual(trace["marked_encoders"][R.OTHER], 5)
 
     def test_per_frame_columns_carry_phase_interval_and_unknown_flags(self):
         f = self.frames[1137]
@@ -128,52 +162,90 @@ class SampleTests(unittest.TestCase):
         d = self.summary["drain_gpu"]["resources"]
         self.assertEqual(d["lightmap"]["n"], 1)
         self.assertAlmostEqual(d["lightmap"]["max"], 0.421549, places=6)
-        self.assertEqual(d["sh"]["n"], 4)
-        self.assertAlmostEqual(d["sh"]["p50"], 1.239487, places=6)
+        # 1137 and 1138; 1136 and 1139 hold unattributed work and read missing.
+        self.assertEqual(d["sh"]["n"], 2)
+        self.assertAlmostEqual(d["sh"]["p50"], 1.883889, places=6)
         self.assertAlmostEqual(d["sh"]["max"], 1.943563, places=6)
-        self.assertEqual(d["total"]["n"], 5)
+        self.assertEqual(d["total"]["n"], 3)
+        self.assertEqual(self.summary["drain_gpu"]["missing"],
+                         {"lightmap": 4, "sh": 4, "total": 4})  # 1136, 1139, 1141, 1247
         cats = self.summary["drain_gpu"]["categories"]["total"]
-        self.assertEqual(cats["unknown"]["n"], 5, "a minimal record's drains are unknown")
+        self.assertEqual(cats["unknown"]["n"], 3, "a minimal record's drains are unknown")
         self.assertEqual((cats["warm"]["n"], cats["cold"]["n"], cats["growth"]["n"]), (0, 0, 0))
 
     def test_over_budget_charge_reports_both_readings(self):
-        # Row k's interval runs from frame k - 1's start to frame k's, so own
-        # is frame k - 1's drain. Derived by hand from the raw rows: F(k) is
-        # the start of frame k's "Frame Encoder" encoding row in
-        # metal-application-intervals, the window is [F(k) - interval_k, F(k)],
-        # and a drain's end is the latest end of its encoders' GPU rows.
-        # * 1135: 1134 drained nothing, so own is 0. The window opens at trace
-        #   7308.609 ms, 2.5 ms before 1134's first encoding (7311.093 ms). The
-        #   slice drops 1132, so 1133 is uncovered and its drains unknown: the
+        # Row k's interval runs from frame k - 1's start S(k - 1) to S(k), so
+        # own is frame k - 1's drain. The trace has no frame-start event, so
+        # S(k - 1) is bounded from the marked rows (trace ms below): a frame's
+        # marked encoder rows and their command buffer rows all fall after its
+        # own start and before the next frame's.
+        #   U = min(earliest(k - 1), earliest(k) - interval_k)
+        #   L = max(latest(k - 2), latest(k - 1) - interval_k - 0.001)
+        # A drain ending <= L was done; one ending > U was in flight; one
+        # between may have been. A drain's end is the latest end of its
+        # encoders' GPU rows.
+        # * 1135: 1134 drained nothing, so own is 0. L = latest(1133) =
+        #   7297.568393, the end of 1133's Frame Encoder buffer row; U =
+        #   min(7311.056378, 7326.173606 - 17.596) = 7308.577606. The slice
+        #   drops 1132, so 1133 is uncovered, and 1134 opens the covered
+        #   stretch at 7311.056378 > L: an earlier drain may be unseen, so the
         #   in-flight reading is missing.
-        # * 1137: own is 1136's SH union, 1.239487 ms. The window opens at
-        #   7343.330 ms; no frame before 1136 drained, so nothing is in flight.
-        # * 1139: own is 1138's SH, 1.943563 ms. 1137's SH ended at 7367.090 ms,
-        #   before the window opened at 7375.903 ms.
-        # * 1140: own is 1139's SH, 0.019994 ms. 1138's SH ended at 7380.094 ms,
-        #   before 7392.638 ms.
-        # * 1250: 1249 drained nothing, and 1248's lightmap ended at
-        #   9274.999 ms, before 9286.030 ms: no drain at all.
+        # * 1137: own is 1136's drain, missing: 1136 holds unattributed work.
+        #   L = max(7330.643551, 7348.437393 - 17.603 - 0.001) = 7330.833393;
+        #   U = min(7334.705799, 7351.752213 - 17.603) = 7334.149213. No frame
+        #   before 1136 drained.
+        # * 1139: own is 1138's SH, 1.943563 ms. L = max(latest(1137) =
+        #   7364.473924, its Frame Encoder buffer row's end, 7380.786971 -
+        #   16.684 - 0.001); U = min(earliest(1138) = 7367.581896,
+        #   7384.353071 - 16.684 = 7367.669071) = 7367.581896. 1137's SH ended
+        #   at 7367.090090, inside (L, U]: it may have been in flight. (The old
+        #   window, anchored at F(1139) - interval = 7375.903 ms, opened 8.3 ms
+        #   after U and called it done.)
+        # * 1140: own is 1139's drain, missing (unattributed). L = latest(1138)
+        #   = 7380.786971; U = min(7384.353071, 7410.554540 - 17.945). 1138's SH
+        #   ended at 7380.093717 and 1136's work at 7343.413473, both before L.
+        # * 1250: 1249 drained nothing. L = latest(1248) = 9279.102342; U =
+        #   min(9294.900917, 9309.103457 - 23.102) = 9286.001457. 1248's
+        #   lightmap ended at 9274.998997 and 1247's work at 9257.188035: no
+        #   drain at all.
         charge = self.summary["over_budget_charge"]
         self.assertEqual(charge["over_budget"], 5)
         rows = {f["frame"]: f for f in charge["frames"]}
         self.assertEqual(sorted(rows), [1135, 1137, 1139, 1140, 1250])
         self.assertEqual(rows[1137]["own_frame"], 1136)
-        for frame, own in ((1135, 0.0), (1137, 1.239487), (1139, 1.943563),
-                           (1140, 0.019994), (1250, 0.0)):
+        for frame, lower, upper in ((1135, 7297.568393, 7308.577606),
+                                    (1137, 7330.833393, 7334.149213),
+                                    (1139, 7364.473924, 7367.581896),
+                                    (1140, 7380.786971, 7384.353071),
+                                    (1250, 9279.102342, 9286.001457)):
+            self.assertAlmostEqual(rows[frame]["start_lower_ns"] / 1e6, lower, places=6,
+                                   msg=frame)
+            self.assertAlmostEqual(rows[frame]["start_upper_ns"] / 1e6, upper, places=6,
+                                   msg=frame)
+        for frame, own in ((1135, 0.0), (1139, 1.943563), (1250, 0.0)):
             self.assertAlmostEqual(rows[frame]["own_ms"], own, places=6, msg=frame)
+        for frame in (1137, 1140):
+            self.assertEqual(rows[frame]["own_state"], "missing", frame)
+            self.assertIn(R.UNATTRIBUTED_REASON, rows[frame]["own_reason"])
+            self.assertIsNone(rows[frame]["own_plus_in_flight_ms"], frame)
+        for frame in rows:
             self.assertEqual(rows[frame]["in_flight_frames"], [], frame)
             self.assertEqual(rows[frame]["in_flight_partial_frames"], [], frame)
+        self.assertEqual(rows[1139]["in_flight_possible_frames"], [1137])
+        self.assertIsNone(rows[1139]["own_plus_in_flight_ms"])
         self.assertEqual(rows[1135]["own_state"], "none")
         self.assertIsNone(rows[1135]["own_plus_in_flight_ms"])
-        self.assertIn("window opens before", rows[1135]["in_flight_reason"])
-        for frame in (1137, 1139, 1140, 1250):
+        self.assertIn("opens the trace's covered stretch", rows[1135]["in_flight_reason"])
+        for frame in (1137, 1140, 1250):
             self.assertIsNone(rows[frame]["in_flight_reason"], frame)
-            self.assertAlmostEqual(rows[frame]["own_plus_in_flight_ms"], rows[frame]["own_ms"],
-                                   places=9, msg=frame)
+        self.assertAlmostEqual(rows[1250]["own_plus_in_flight_ms"], 0.0)
         self.assertEqual((charge["with_own_drain"], charge["with_own_or_in_flight_drain"],
-                          charge["with_no_drain"], charge["own_missing"],
-                          charge["in_flight_missing"]), (3, 3, 1, 0, 1))
+                          charge["with_possible_in_flight_drain"], charge["with_no_drain"],
+                          charge["own_missing"], charge["in_flight_missing"]),
+                         (1, 1, 1, 1, 2, 2))
+        self.assertEqual([(b["cause"], b["frame"], b["rows"])
+                          for b in charge["in_flight_blanked_by"]],
+                         [("uncovered", 1134, 1), ("possible", 1137, 1)])
 
     def test_clock_joins_the_route_span_by_time(self):
         clock = self.summary["gpu_clock"]
@@ -277,18 +349,24 @@ class Trace:
         self.gpu = []
         self.next_cmdbuffer = 0x1000
 
-    def encoder(self, frame, kind, cpu_ns, gpu=(), marked=True, buffer_mark=False):
+    def encoder(self, frame, kind, cpu_ns, gpu=(), marked=True, buffer_mark=False,
+                site=False, buffer_label=None):
         """One command buffer with one encoder; `gpu` holds (start, duration, channel).
-        `marked` marks the encoder row, `buffer_mark` the command buffer row."""
+        `marked` marks the encoder row, `buffer_mark` the command buffer row.
+        `site` writes the current mark, `pr-frame <k> <site>`, with `kind` as
+        the site; otherwise the mark is the older `pr-frame <k>`.
+        `buffer_label` replaces the command buffer's label, as wgpu's
+        "(wgpu internal) Signal" relabel does."""
         cmdbuffer = self.next_cmdbuffer
         encoder = cmdbuffer + 1
         self.next_cmdbuffer += 2
-        label = COMMAND_BUFFER_LABEL[kind]
-        buffer = f"  -  :pr-frame {frame}" if buffer_mark else ""
+        label = buffer_label or COMMAND_BUFFER_LABEL[kind]
+        text = f"pr-frame {frame} {kind}" if site else f"pr-frame {frame}"
+        buffer = f"  -  :{text}" if buffer_mark else ""
         self.app.append((cpu_ns, 50_000,
                          f"{label}{buffer}  (Frame  {frame % 7} ) ( postretro (1) )",
                          34, cmdbuffer, R.ALL_ONES))
-        mark = f"  -  :pr-frame {frame}" if marked else ""
+        mark = f"  -  :{text}" if marked else ""
         self.app.append((cpu_ns + 1_000, 30_000,
                          f"Blit Command 0{mark}  ( Main Thread (0x1) (postretro, pid: 1) )",
                          35, cmdbuffer, encoder))
@@ -506,12 +584,20 @@ class MalformedRecordTests(unittest.TestCase):
                              "`drain.sh_admitted_items` is not an integer")
         self.assert_rejected(record([good, dict(row(1), changes="vsync")]),
                              "`changes` is not a list of strings")
+        for field in ("cap", "machine"):
+            bad = record([good])
+            bad["header"][field] = "seed"
+            self.assert_rejected(bad, f"header's `{field}` is not an object")
 
     def test_the_cli_exits_2_on_a_malformed_or_unparseable_record(self):
         trace = steady_trace(range(4))
         for name, text in (("not json", "{\"rows\": [ "),
                            ("bad row", json.dumps(record([row(0), {"frame": None}]))),
-                           ("top-level list", json.dumps([row(0)]))):
+                           ("top-level list", json.dumps([row(0)])),
+                           ("cap not an object",
+                            json.dumps(dict(record([row(0)]), header={"cap": 4194304}))),
+                           ("machine not an object",
+                            json.dumps(dict(record([row(0)]), header={"machine": ["m"]})))):
             with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
                 trace.write(tmp)
                 path = Path(tmp) / "record.json"
@@ -735,8 +821,10 @@ class DrainKindTests(unittest.TestCase):
 
 class OverBudgetTests(unittest.TestCase):
     """F = FRAME_NS. Trace.frame encodes frame k's drains from kF, 0.2 ms
-    apart, then its frame encoder, so F(k), the window's anchor, is kF plus
-    0.2 ms per drain. Row k's window is [F(k) - interval_k, F(k)]."""
+    apart, then its frame encoder; each command buffer row lasts 0.05 ms. So
+    earliest(k) = kF and latest(k) = kF + 0.05 ms + 0.2 ms per drain. Row k
+    bounds S(k - 1) by L = max(latest(k - 2), latest(k - 1) - interval_k -
+    1 µs) and U = min(earliest(k - 1), earliest(k) - interval_k)."""
 
     def charges(self, summary):
         return {f["frame"]: f for f in summary["over_budget_charge"]["frames"]}
@@ -745,42 +833,101 @@ class OverBudgetTests(unittest.TestCase):
         trace = Trace()
         for k in range(0, 5):
             trace.frame(k, k * FRAME_NS)
-        # Frame 5's drain runs 30 ms, from 5F + 1 ms to 5F + 31 ms (114.3 ms).
+        # Frame 5's drain runs 30 ms, from 5F + 1 ms to 5F + 31 ms (114.333 ms).
         trace.frame(5, 5 * FRAME_NS, [("lightmap", [(5 * FRAME_NS + 1_000_000, 30_000_000,
                                                      "SDMA0")])])
         trace.frame(6, 6 * FRAME_NS)
-        trace.frame(7, 7 * FRAME_NS, [sh(7, 1_000_000)])  # 7F + 1.5 ms to 7F + 2.5 ms
-        trace.frame(8, 8 * FRAME_NS)
-        trace.frame(9, 9 * FRAME_NS)
-        rows = [row(k) for k in range(10)]
-        for k in (6, 7, 8, 9):
+        trace.frame(7, 7 * FRAME_NS, [sh(7, 1_000_000)])  # 7F + 1.5 ms to 7F + 2.5 ms (119.167)
+        for k in range(8, 12):
+            trace.frame(k, k * FRAME_NS)
+        rows = [row(k) for k in range(12)]
+        for k in (6, 7, 8, 9, 11):
             rows[k]["interval_us"] = 25_000
         summary = reduce_synthetic(trace, rows)
         charge = self.charges(summary)
-        self.assertEqual(sorted(charge), [6, 7, 8, 9])
+        self.assertEqual(sorted(charge), [6, 7, 8, 9, 11])
         # 6: frame 5 opened its interval, so 5's drain is own.
         self.assertEqual((charge[6]["own_frame"], charge[6]["own_state"]), (5, "measured"))
         self.assertAlmostEqual(charge[6]["own_ms"], 30.0)
         self.assertEqual(charge[6]["in_flight_frames"], [])
         self.assertAlmostEqual(charge[6]["own_plus_in_flight_ms"], 30.0)
-        # 7: frame 6 drained nothing; 5's drain ends after 7's window opens
-        # (F(7) - 25 ms = 91.9 ms).
+        # 7: frame 6 drained nothing. U = min(earliest(6) = 100.0,
+        # earliest(7) - 25 = 91.667) = 91.667 ms; 5's drain ends after U.
         self.assertEqual(charge[7]["own_state"], "none")
         self.assertAlmostEqual(charge[7]["own_ms"], 0.0)
+        self.assertAlmostEqual(charge[7]["start_upper_ns"] / 1e6, 91.666667, places=5)
         self.assertEqual(charge[7]["in_flight_frames"], [5])
         self.assertAlmostEqual(charge[7]["own_plus_in_flight_ms"], 30.0)
-        # 8: own is 7's SH drain; 5's still runs after 8F - 25 ms = 108.3 ms.
+        # 8: own is 7's SH drain; U = min(116.667, 133.333 - 25) = 108.333 ms,
+        # and 5's drain still runs after it.
         self.assertAlmostEqual(charge[8]["own_ms"], 1.0)
         self.assertEqual(charge[8]["in_flight_frames"], [5])
         self.assertAlmostEqual(charge[8]["own_plus_in_flight_ms"], 31.0)
-        # 9: 8 drained nothing; 5's and 7's drains ended before 9F - 25 ms = 125 ms.
+        # 9: 8 drained nothing. L = latest(7) = 116.917 ms, U = 150 - 25 =
+        # 125 ms. 5's drain ended at 114.333, before L; 7's at 119.167, between
+        # L and U: it may have been in flight, so the reading is missing.
+        self.assertAlmostEqual(charge[9]["start_lower_ns"] / 1e6, 116.916667, places=5)
+        self.assertAlmostEqual(charge[9]["start_upper_ns"] / 1e6, 125.0, places=5)
         self.assertAlmostEqual(charge[9]["own_ms"], 0.0)
         self.assertEqual(charge[9]["in_flight_frames"], [])
-        self.assertAlmostEqual(charge[9]["own_plus_in_flight_ms"], 0.0)
+        self.assertEqual(charge[9]["in_flight_possible_frames"], [7])
+        self.assertIn("frame 7's drain may have been in flight", charge[9]["in_flight_reason"])
+        self.assertIsNone(charge[9]["own_plus_in_flight_ms"])
+        # 11: L = latest(9) = 150.05 ms; every earlier drain ended before it.
+        self.assertEqual(charge[11]["in_flight_possible_frames"], [])
+        self.assertAlmostEqual(charge[11]["own_plus_in_flight_ms"], 0.0)
         c = summary["over_budget_charge"]
         self.assertEqual((c["with_own_drain"], c["with_own_or_in_flight_drain"],
-                          c["with_no_drain"], c["own_missing"], c["in_flight_missing"]),
-                         (2, 3, 1, 0, 0))
+                          c["with_possible_in_flight_drain"], c["with_no_drain"],
+                          c["own_missing"], c["in_flight_missing"]),
+                         (2, 3, 1, 1, 0, 1))
+        text = R.render_text(summary)
+        self.assertIn("possibly 7", text)
+
+    def test_a_late_frame_encoder_anchor_does_not_hide_an_in_flight_drain(self):
+        # Frame 6 encodes its SH drain 0.5 ms after its start, but its frame
+        # encoder only 9 ms after (as acquire under vsync can make it), and so
+        # does frame 7. Frame 5's lightmap drain runs to 5F + 21 ms = 104.333
+        # ms, past S(6) = 100 ms.
+        trace = Trace()
+        for k in range(0, 5):
+            trace.frame(k, k * FRAME_NS)
+        trace.frame(5, 5 * FRAME_NS, [("lightmap", [(5 * FRAME_NS + 1_000_000, 20_000_000,
+                                                     "SDMA0")])])
+        f6, f7 = 6 * FRAME_NS, 7 * FRAME_NS
+        trace.encoder(6, "sh", f6 + 500_000, [(f6 + 5_000_000, 400_000, "GFX")])
+        trace.encoder(6, "frame", f6 + 9_000_000, [(f6 + 12_000_000, 1_000_000, "GFX")])
+        trace.encoder(7, "frame", f7 + 9_000_000, [(f7 + 12_000_000, 1_000_000, "GFX")])
+        trace.frame(8, 8 * FRAME_NS)
+        rows = [row(k, interval_us=16_666) for k in range(9)]
+        summary = reduce_synthetic(trace, rows, budget_ms=10.0)
+        charge = self.charges(summary)[7]
+        # Anchored on F(7) = 125.667 ms, the old window opened at 109.0 ms,
+        # after the drain ended. U = min(earliest(6) = 100.5,
+        # earliest(7) - 16.666 = 109.0) = 100.5 ms < 104.333: in flight.
+        self.assertAlmostEqual(charge["start_upper_ns"] / 1e6, 100.5, places=5)
+        self.assertAlmostEqual(charge["own_ms"], 0.4)
+        self.assertEqual(charge["in_flight_frames"], [5])
+        self.assertAlmostEqual(charge["own_plus_in_flight_ms"], 20.4)
+
+    def test_one_unknown_drain_end_names_every_reading_it_blanks(self):
+        trace = steady_trace(range(0, 12))
+        # Frame 3's SH encoder never got a GPU row: its end is unknown, so it
+        # may still be in flight for every later window.
+        trace.encoder(3, "sh", 3 * FRAME_NS - 1_000_000)
+        rows = [row(k) for k in range(12)]
+        for k in range(6, 11):
+            rows[k]["interval_us"] = 25_000
+        summary = reduce_synthetic(trace, rows)
+        c = summary["over_budget_charge"]
+        self.assertEqual(c["in_flight_missing"], 5)
+        self.assertEqual(c["with_possible_in_flight_drain"], 5)
+        self.assertEqual(c["with_own_or_in_flight_drain"], 0, "a possible drain is not known")
+        self.assertEqual(c["in_flight_blanked_by"], [{
+            "cause": "end_unknown", "frame": 3, "text": "frame 3's drain end is unknown",
+            "rows": 5, "row_frames": "6-10"}])
+        text = R.render_text(summary)
+        self.assertIn("frame 3's drain end is unknown: 5 row(s) (6-10)", text)
 
     def test_own_reads_a_hold_rows_drain(self):
         trace = steady_trace(range(0, 7), {3: [lm(3)]})
@@ -842,7 +989,7 @@ class OverBudgetTests(unittest.TestCase):
             self.assertAlmostEqual(charge[k]["own_ms"], 0.0, msg=k)
             self.assertEqual(charge[k]["in_flight_frames"], [], k)
             self.assertEqual(charge[k]["in_flight_partial_frames"], [4], k)
-            self.assertIn("frame(s) 4", charge[k]["in_flight_reason"])
+            self.assertIn("frame 4's drain end is unknown", charge[k]["in_flight_reason"])
             self.assertIsNone(charge[k]["own_plus_in_flight_ms"], k)
         c = summary["over_budget_charge"]
         self.assertEqual((c["in_flight_missing"], c["with_no_drain"]), (2, 0))
@@ -863,6 +1010,100 @@ class OverBudgetTests(unittest.TestCase):
         self.assertAlmostEqual(charge[5]["own_ms"], 0.0)
         self.assertEqual(charge[5]["in_flight_partial_frames"], [3])
         self.assertIsNone(charge[5]["own_plus_in_flight_ms"])
+
+
+class SiteTagTests(unittest.TestCase):
+    """wgpu's Metal backend relabels the last command buffer of every submit
+    "(wgpu internal) Signal", so a drain's buffer label can be lost. The
+    current mark, `pr-frame <k> <site>`, carries the site itself."""
+
+    def test_the_mark_parses_with_and_without_a_site(self):
+        for text, frame, site in (("Blit Command 0  -  :pr-frame 12 lightmap  ( Main", 12,
+                                   "lightmap"),
+                                  ("Blit Command 0  -  :pr-frame 12 sh  ( Main", 12, "sh"),
+                                  ("Blit Command 0  -  :pr-frame 3 frame  ( Main", 3, "frame"),
+                                  ("Blit Command 0  -  :pr-frame 1136  ( Main", 1136, None),
+                                  ("Blit Command 0  -  :pr-frame 7 shadow", 7, None)):
+            match = R.MARK.search(text)
+            self.assertEqual((int(match.group(1)), match.group(2)), (frame, site), text)
+
+    def test_a_site_tagged_mark_on_a_signal_buffer_counts_toward_its_drain(self):
+        trace = steady_trace(range(0, 5), {})
+        base = 5 * FRAME_NS
+        trace.encoder(5, "lightmap", base, [(base + 1_000_000, 300_000, "SDMA0")], site=True,
+                      buffer_label=R.SIGNAL_LABEL)
+        trace.encoder(5, "sh", base + 100_000, [(base + 2_000_000, 500_000, "GFX")], site=True,
+                      buffer_label=R.SIGNAL_LABEL)
+        # The site wins over a buffer label naming another kind.
+        trace.encoder(5, "sh", base + 200_000, [(base + 3_000_000, 200_000, "GFX")], site=True,
+                      buffer_label=COMMAND_BUFFER_LABEL["lightmap"])
+        trace.encoder(5, "frame", base + 300_000, [(base + 4_000_000, 1_000_000, "GFX")],
+                      site=True, buffer_label=R.SIGNAL_LABEL)
+        trace.frame(6, 6 * FRAME_NS)
+        summary = reduce_synthetic(trace, [row(k) for k in range(7)])
+        f = by_frame(summary)[5]
+        self.assertTrue(f["matched"], "a site-tagged frame mark places the frame encoder")
+        self.assertIsNone(f["unattributed"])
+        self.assertAlmostEqual(gpu_ms(f, "lightmap"), 0.3)
+        self.assertAlmostEqual(gpu_ms(f, "sh"), 0.7)
+        self.assertEqual(f["drains"]["sh"]["encoders"], 2)
+        self.assertAlmostEqual(gpu_ms(f, "total"), 1.0)
+        self.assertEqual(summary["unattributed"]["frames"], 0)
+        self.assertEqual(summary["trace"]["marked_encoders"][R.OTHER], 0)
+
+    def test_an_old_mark_on_a_signal_buffer_makes_the_drain_missing_not_partial(self):
+        trace = steady_trace(range(0, 5), {})
+        base = 5 * FRAME_NS
+        trace.encoder(5, "lightmap", base, [(base + 1_000_000, 300_000, "SDMA0"),
+                                            (base + 1_200_000, 400_000, "GFX")],
+                      buffer_label=R.SIGNAL_LABEL)
+        trace.encoder(5, "sh", base + 100_000, [(base + 2_000_000, 500_000, "GFX")])
+        trace.encoder(5, "frame", base + 300_000, [(base + 4_000_000, 1_000_000, "GFX")])
+        trace.frame(6, 6 * FRAME_NS)
+        trace.frame(7, 7 * FRAME_NS)
+        rows = [row(k) for k in range(8)]
+        rows[6]["interval_us"] = 25_000
+        summary = reduce_synthetic(trace, rows)
+        f = by_frame(summary)[5]
+        for resource in ("lightmap", "sh", "total"):
+            entry = f["drains"][resource]
+            self.assertEqual(entry["state"], "missing", resource)
+            self.assertIsNone(entry["gpu_us"], resource)
+            self.assertIn(R.UNATTRIBUTED_REASON, entry["reason"], resource)
+        self.assertEqual(f["drains"]["total"]["causes"], ["unattributed"])
+        self.assertAlmostEqual(f["unattributed"]["gpu_us"], 600.0)  # 1.0-1.6 ms
+        self.assertEqual((f["unattributed"]["encoders"], f["unattributed"]["relabelled"]), (1, 1))
+        u = summary["unattributed"]
+        self.assertEqual((u["frames"], u["frame_list"]), (1, "5"))
+        self.assertAlmostEqual(u["gpu_ms_max"], 0.6)
+        d = summary["drain_gpu"]
+        self.assertEqual(d["missing"], {"lightmap": 1, "sh": 1, "total": 1})
+        self.assertEqual(d["resources"]["sh"]["n"], 0, "the labelled SH alone is not the drain")
+        charge = {c["frame"]: c for c in summary["over_budget_charge"]["frames"]}
+        self.assertEqual(charge[6]["own_state"], "missing")
+        self.assertIn(R.UNATTRIBUTED_REASON, charge[6]["own_reason"])
+        text = R.render_text(summary)
+        self.assertIn("unattributed 1", text)
+        self.assertIn('1 on a "(wgpu internal) Signal" command buffer', text)
+        line = next(l for l in text.splitlines() if l.strip().startswith("5 "))
+        self.assertIn("0.600", line)
+
+    def test_a_marked_unattributed_drain_with_a_known_end_is_not_in_flight_after_it(self):
+        # Frame 2's unattributed work ends at 2F + 1.6 ms, long before frame
+        # 6 starts: it never blanks row 7's in-flight reading.
+        trace = steady_trace(range(0, 2), {})
+        base = 2 * FRAME_NS
+        trace.encoder(2, "lightmap", base, [(base + 1_000_000, 600_000, "SDMA0")],
+                      buffer_label=R.SIGNAL_LABEL)
+        trace.encoder(2, "frame", base + 300_000, [(base + 4_000_000, 1_000_000, "GFX")])
+        for k in range(3, 9):
+            trace.frame(k, k * FRAME_NS)
+        rows = [row(k) for k in range(9)]
+        rows[7]["interval_us"] = 25_000
+        charge = {c["frame"]: c for c in reduce_synthetic(trace, rows)["over_budget_charge"]
+                  ["frames"]}
+        self.assertIsNone(charge[7]["in_flight_reason"])
+        self.assertAlmostEqual(charge[7]["own_plus_in_flight_ms"], 0.0)
 
 
 class ClockTests(unittest.TestCase):
@@ -914,6 +1155,26 @@ class ClockTests(unittest.TestCase):
         clock = self.summary(ioreg, toc=False)["gpu_clock"]
         self.assertAlmostEqual(clock["median_mhz"], 400)
         self.assertIn("whole poll log (time bases not aligned", clock["text"])
+
+    def test_an_unparseable_toc_start_date_is_quoted(self):
+        toc = self.TOC.replace("2026-11-19T17:29:30.000-08:00", "yesterday at noon")
+        trace = steady_trace(range(0, 30), {10: [lm(10)]})
+        summary = reduce_synthetic(trace, [row(k) for k in range(30)],
+                                   ioreg=self.poll("12.5", [300]), toc=toc)
+        clock = summary["gpu_clock"]
+        self.assertIn("whole poll log (time bases not aligned", clock["text"])
+        self.assertIn("start date `yesterday at noon` did not parse", clock["text"])
+        self.assertNotIn("no trace table of contents", clock["text"])
+
+    def test_start_dates_normalize_for_older_pythons(self):
+        for text, expected in (("2026-11-19T17:29:30.000-08:00", self.START),
+                               ("2026-11-20T01:29:30Z", self.START),
+                               ("2026-11-20T01:29:30.25Z", self.START + 0.25),
+                               ("2026-11-20T01:29:30.1234567+00:00", self.START + 0.123456),
+                               ("2026-11-19T17:29:30-0800", self.START)):
+            self.assertAlmostEqual(R.parse_start_date(text), expected, places=6, msg=text)
+        for text in ("2026-11-20T01:29:30", "yesterday", "2026-13-40T01:29:30Z"):
+            self.assertIsNone(R.parse_start_date(text), text)
 
     def test_a_record_naming_an_unrecorded_clock_and_no_poll_reads_unrecorded(self):
         clock = self.summary(None)["gpu_clock"]

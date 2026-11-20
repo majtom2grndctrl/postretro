@@ -464,6 +464,42 @@ fn generate_camera_route_usage_states_ranges_defaults_and_the_smoothed_only_flag
 }
 
 #[test]
+fn generate_camera_route_refuses_a_missing_output_folder_before_loading_the_level() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("no-such-folder").join("out.route");
+    let missing = missing.to_str().expect("utf-8 path");
+    // The level path does not exist either: the output check comes first.
+    let error = run(os(&["nowhere.prl", "--kind", "random", "-o", missing])).expect_err("refused");
+    assert!(error.contains("no-such-folder"), "{error}");
+    assert!(
+        error.contains("does not exist, and the tool creates none"),
+        "{error}"
+    );
+    assert!(!error.contains("cannot read level"), "{error}");
+}
+
+#[test]
+fn generate_camera_route_refuses_an_output_path_that_names_a_folder() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let existing = dir.path().to_str().expect("utf-8 path");
+    let trailing = format!("{existing}/new-name/");
+    for out in [existing, trailing.as_str(), "ends-in-backslash\\"] {
+        let error = parse_args(os(&["l.prl", "--kind", "random", "-o", out])).expect_err("refused");
+        assert!(error.contains("not a folder"), "{out}: {error}");
+    }
+    // An existing folder with a new file name is accepted.
+    let fine = dir.path().join("out.route");
+    parse_args(os(&[
+        "l.prl",
+        "--kind",
+        "random",
+        "-o",
+        fine.to_str().expect("utf-8 path"),
+    ]))
+    .expect("an existing folder is enough");
+}
+
+#[test]
 fn generate_camera_route_names_the_right_cause_for_each_route_error() {
     let world = two_cell_world(false);
     let named = |extra: &[&str]| {

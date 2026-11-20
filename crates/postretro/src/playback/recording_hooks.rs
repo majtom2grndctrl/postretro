@@ -103,8 +103,8 @@ impl App {
     }
 
     /// The first gameplay level is about to end: a level request drained
-    /// and is about to act, or a frontend join is about to leave for the
-    /// host's level. A recording of that level is written now with the frames
+    /// and is about to act, or a frontend join has committed (its client
+    /// endpoint exists) and leaves for the host's level. A recording of that level is written now with the frames
     /// before it, and nothing after it records, the next level included.
     /// Before any world frame it changes nothing: the next gameplay level is
     /// then the first.

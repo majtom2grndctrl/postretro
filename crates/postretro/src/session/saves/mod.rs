@@ -18,7 +18,7 @@ pub(crate) use save_points::{end_run_at_frontend, save_on_frontend_entry, save_o
 pub(crate) use store::boot_restore_with;
 pub(crate) use store::{
     boot_restore, collect_character_record, collect_world_and_run, reload_store,
-    set_seat_zero_carry_from_selection, set_seat_zero_name_from_selection,
+    set_seat_zero_from_selection,
 };
 
 use postretro_combat_model::CarriedState;

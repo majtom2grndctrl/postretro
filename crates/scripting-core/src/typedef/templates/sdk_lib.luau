@@ -1339,7 +1339,8 @@ declare function deleteRun(index: number): SystemReactionStep
 declare function selectCharacter(index: number): SystemReactionStep
 
 --- System reaction: create a character in empty slot `index` (1-based
---- `forEach` row), named from `ui.textEntry`. A save verb, frontend-only.
+--- `forEach` row), named from `ui.textEntry` when this step fires. A save
+--- verb, frontend-only.
 --- Machine-local. Pure: returns a SystemReactionStep.
 declare function createCharacter(index: number): SystemReactionStep
 

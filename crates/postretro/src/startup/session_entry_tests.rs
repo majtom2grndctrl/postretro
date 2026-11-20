@@ -676,12 +676,31 @@ fn join_then_leave_restores_seat_zero_carry_from_selected_character() {
     let mut view = single_player_at_menu(spawn_points(3));
     with_saves(&mut view, dir.path());
     save_character_with_shells(&mut view, 5);
+    {
+        let session = view.app.session.as_mut().unwrap();
+        let mut record = session.saves.selected_character().cloned().unwrap();
+        record.name = "Vex".into();
+        assert!(session.saves.save_selected_character(record));
+    }
 
     assert!(view.app.join_from_frontend(relay.address()));
     assert!(view.app.leave_session(LeaveCause::Own));
 
     assert_eq!(seat_zero_shells(&view.app), Some(5));
     assert_eq!(saved_shells(&view.app), Some(5));
+    // The leave rebuilt the seat ledger; seat 0 is named for the character
+    // again.
+    assert_eq!(
+        view.app
+            .session
+            .as_ref()
+            .unwrap()
+            .seat_table
+            .as_ref()
+            .unwrap()
+            .display_name(Seat(0)),
+        "Vex"
+    );
 }
 
 /// A client with saves, joined and participating in the relay host's level.

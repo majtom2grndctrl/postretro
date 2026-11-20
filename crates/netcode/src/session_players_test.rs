@@ -271,6 +271,17 @@ fn host_seat_reads_the_local_name_in_rows_and_roster() {
     assert_eq!(row(&table, 0), shown(true, "Vex", "inPlay", true));
     assert_eq!(seats.roster_entries()[0].name, "Vex");
 
-    seats.set_local_display_name(&"a".repeat(DISPLAY_NAME_MAX_BYTES + 5));
-    assert_eq!(seats.display_name(Seat(0)).len(), DISPLAY_NAME_MAX_BYTES);
+    // A rename republishes the roster at once; the same name again does not.
+    let _ = seats.take_roster_dirty();
+    seats.set_local_display_name("Ash");
+    assert!(seats.take_roster_dirty(), "a new name republishes");
+    seats.set_local_display_name("Ash");
+    assert!(!seats.take_roster_dirty(), "an unchanged name does not");
+
+    // An overlong name cuts on a character boundary, as a claim's does.
+    seats.set_local_display_name(&format!("{}é", "a".repeat(DISPLAY_NAME_MAX_BYTES - 1)));
+    assert_eq!(
+        seats.display_name(Seat(0)),
+        "a".repeat(DISPLAY_NAME_MAX_BYTES - 1)
+    );
 }

@@ -3,6 +3,7 @@
 // See: context/lib/scripting.md §10.4 · context/lib/scripting.md §5
 
 use postretro_entities::FireOrigin;
+use postretro_entities::engine_state_catalog::TEXT_ENTRY_SLOT;
 use postretro_scripting_core::data_descriptors::{
     AuthoredRowBase, SaveVerbArgs, parse_save_verb_args,
 };
@@ -38,15 +39,19 @@ pub(super) fn register_save_verb_primitives(registry: &mut SystemReactionRegistr
             origin,
         },
     );
-    register_row_verb(
-        registry,
-        "createCharacter",
-        |index, dispatch_source, origin| SystemReactionCommand::CreateCharacter {
+    registry.register("createCharacter", |args, queue| {
+        let SaveVerbArgs::Row(index) = parse(args, "createCharacter")? else {
+            unreachable!("`createCharacter` parses to a slot row");
+        };
+        let context = queue.fire_context();
+        queue.push(SystemReactionCommand::CreateCharacter {
             index,
-            dispatch_source,
-            origin,
-        },
-    );
+            name: queue.text_at_dispatch(TEXT_ENTRY_SLOT),
+            dispatch_source: context.source,
+            origin: context.origin,
+        });
+        Ok(())
+    });
     register_row_verb(
         registry,
         "deleteCharacter",

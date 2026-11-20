@@ -14,6 +14,7 @@ mod capture_point;
 mod capture_visibility;
 mod delta_sample;
 mod derived;
+mod emissive_factor;
 mod exclusion;
 mod exclusion_underside;
 mod hit;
@@ -63,6 +64,7 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::emissive::{EmissiveTexture, EmissiveVolumeRecord};
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
@@ -89,6 +91,7 @@ use capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
 use capture_point::PointClassifier;
 use capture_visibility::warn_hidden_water;
 use delta_sample::DeltaShSampler;
+use emissive_factor::EmissiveFaceFactors;
 use exclusion::{ExclusionConstants, ExclusionScene, classify_probes_within_boxes};
 pub(crate) use hit::SceneTracer;
 use lightmap_sample::LightmapSampler;
@@ -127,7 +130,11 @@ const STAGE_ID: &str = "reflection_probes";
 /// bounds every later read: past its depth the ray takes the leak guard.
 /// 14: a probe with a depth tile (id 59) weighs by the tile's moments toward
 /// the sample, as the runtime does; the key gains id 59.
-const STAGE_VERSION: u32 = 14;
+/// 15: emissive strength is the baked id-60 value (`materials.toml`, else 1
+/// with an `_e` map), not the texture-name prefix, times a member face's
+/// emissive volume `max × colour`; the key gains each volume's factor and
+/// faces.
+const STAGE_VERSION: u32 = 15;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -177,6 +184,12 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     pub chunk_light_list: &'a ChunkLightListSection,
     /// Texture name → `.prm` key, from the TextureMips stage.
     pub texture_keys: &'a HashMap<String, [u8; 32]>,
+    /// Id 60's per-texture records, index-aligned with the texture names:
+    /// the strength the runtime material uniform also packs.
+    pub emissive_textures: &'a [EmissiveTexture],
+    /// Id 60's volume records: a member face shades at its volume's
+    /// no-script reference state, `max × colour`.
+    pub emissive_volumes: &'a [EmissiveVolumeRecord],
     pub prm_root: &'a Path,
 }
 
@@ -408,7 +421,12 @@ fn bake_or_load_with(
         materials: SurfaceMaterials::new(
             &inputs.geometry.texture_names.names,
             inputs.texture_keys,
+            inputs.emissive_textures,
             inputs.prm_root,
+        ),
+        emissive: EmissiveFaceFactors::new(
+            inputs.emissive_volumes,
+            inputs.geometry.geometry.faces.len(),
         ),
         lightmap: LightmapSampler::new(inputs.lightmap),
         sh,

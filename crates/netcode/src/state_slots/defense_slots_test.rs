@@ -209,7 +209,7 @@ fn registering_a_layer_changes_fingerprint_not_wire_version() {
         assert!(record.schema.readonly);
     }
     // A layer is a schema change, not a wire change.
-    assert_eq!(postretro_net::handshake::WIRE_VERSION, 42);
+    assert_eq!(postretro_net::handshake::WIRE_VERSION, 43);
 
     // Re-registering without the layer removes its slots.
     layered.replace_player_defense_slots(&[]);

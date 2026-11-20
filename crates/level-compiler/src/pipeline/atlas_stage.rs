@@ -54,6 +54,10 @@ pub(super) struct AtlasStageOutput {
     /// `Some` when a face was cut: the geometry before the cut, which the SDF
     /// bakes so density edits that move a cut never re-key it.
     pub(super) pre_cut_geometry: Option<GeometryResult>,
+    /// `Some` when a face was cut: `face_remap[old]` is the range of final
+    /// faces that replaced pre-cut face `old`, for per-face tables taken
+    /// before the cut ([`crate::geometry::remap_per_face`]).
+    pub(super) face_remap: Option<Vec<Range<usize>>>,
 }
 
 /// Plan charts and cut oversize faces; when a face was cut, rebuild the
@@ -93,7 +97,7 @@ pub(super) fn prepare_atlas_stage(
                     .sum::<usize>(),
                 face_remap.last().map_or(0, |range| range.end),
             );
-            *face_brushes = crate::geometry::remap_face_brushes(face_brushes, face_remap);
+            *face_brushes = crate::geometry::remap_per_face(face_brushes, face_remap);
             Some(rebuild_face_identity(geometry, leaves, face_remap)?)
         }
         None => None,
@@ -137,6 +141,7 @@ pub(super) fn prepare_atlas_stage(
         partition,
         rebuilt,
         pre_cut_geometry: cut.pre_cut,
+        face_remap: cut.face_remap,
     })
 }
 

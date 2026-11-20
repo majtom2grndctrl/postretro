@@ -579,7 +579,7 @@ fn production_bounce_materials(map: &str, fx: &FixturePipeline) -> Option<Bounce
     let mut bytes = StageTextureBytes::new();
     let names = &fx.geometry.texture_names.names;
     match bake_materials_into(names, &texture_root, scratch.path(), &mut bytes, true)
-        .and_then(|(_, stats)| BounceMaterials::new(stats, BOUNCE_SATURATION))
+        .and_then(|bake| BounceMaterials::new(bake.stats, BOUNCE_SATURATION))
     {
         Ok(materials) => Some(materials),
         Err(error) => {

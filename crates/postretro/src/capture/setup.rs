@@ -95,7 +95,7 @@ pub(super) fn install_capture_animated_promotion_bridge(
 /// selection and replaces only the static light-related slices.
 pub(super) fn capture_level_geometry<'a>(
     world: &'a postretro_level_loader::LevelWorld,
-    texture_materials: &'a [postretro_render_data::material::Material],
+    texture_materials: &'a [postretro_render_data::material::TextureMaterial],
     static_lights: &'a [postretro_level_loader::MapLight],
     static_light_influences: &'a [postretro_render_data::influence::LightInfluence],
     static_entity_shadow_lights: &'a [u32],
@@ -504,29 +504,12 @@ pub(super) fn capture_static_lights_and_shadow_selection(
     )
 }
 
+/// The capture's texture table: the same derivation a level load runs, so a
+/// capture binds the baked glow strength (id 60) the game binds.
 pub(super) fn derive_texture_materials(
-    texture_names: &[String],
-) -> Vec<postretro_render_data::material::Material> {
-    let mut warned = HashSet::new();
-    texture_names
-        .iter()
-        .map(|name| {
-            let warned_count = warned.len();
-            let material = postretro_render_data::material::derive_material(name, &mut warned);
-            let prefix = postretro_render_data::material::parse_prefix(name);
-            if material == postretro_render_data::material::Material::Default
-                && !prefix.is_empty()
-                && warned.len() > warned_count
-            {
-                log::warn!(
-                    "[Material] Unknown prefix '{}' in texture '{}' — using default material",
-                    prefix,
-                    name,
-                );
-            }
-            material
-        })
-        .collect()
+    world: &postretro_level_loader::LevelWorld,
+) -> Vec<postretro_render_data::material::TextureMaterial> {
+    crate::level_load::level_texture_materials(&world.texture_names, &world.emissive)
 }
 
 /// The static capture camera's view-projection; see [`capture_camera`].

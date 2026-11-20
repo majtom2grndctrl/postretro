@@ -9,8 +9,9 @@ use crate::state_slots::{
 use crate::transport::{Channel, connection_config};
 use crate::wire::{
     MAX_WIRE_CURVE_KEYS, ParticipationFrame, RECORD_KIND_DELTA, RECORD_KIND_DESPAWN,
-    RECORD_KIND_FULL_BASELINE, WireEmitterState, WireFogAnimation, WireFogState,
-    WireLightAnimation, WireLightState, WireSpinAnimation, WireTransform,
+    RECORD_KIND_FULL_BASELINE, WireEmissiveAnimation, WireEmissiveState, WireEmitterState,
+    WireFogAnimation, WireFogState, WireLightAnimation, WireLightState, WireSpinAnimation,
+    WireTransform,
 };
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -19,7 +20,10 @@ const CLIENT: u64 = 7;
 const LIGHTS: usize = 1278;
 const EMITTERS: usize = 40;
 const FOG: usize = 6;
-const ROSTER: usize = LIGHTS + EMITTERS + FOG;
+/// The compiler's per-map emissive volume cap: a host-only write to every
+/// volume rides the join baseline (`research.md` P25).
+const EMISSIVE: usize = 256;
+const ROSTER: usize = LIGHTS + EMITTERS + FOG + EMISSIVE;
 const HELD_DELTA: u32 = 2001;
 const HELD_REFRESH: u32 = 2002;
 const HELD_DESPAWN: u32 = 2003;
@@ -79,7 +83,7 @@ fn stress_roster() -> Vec<EntitySnapshot> {
                 };
                 state.validate().unwrap();
                 (2, index - LIGHTS, ComponentPayload::EmitterState(state))
-            } else {
+            } else if index < LIGHTS + EMITTERS + FOG {
                 let state = WireFogState {
                     density: 0.1,
                     glow: 0.2,
@@ -106,6 +110,20 @@ fn stress_roster() -> Vec<EntitySnapshot> {
                     index - LIGHTS - EMITTERS,
                     ComponentPayload::FogState(state),
                 )
+            } else {
+                let ordinal = index - LIGHTS - EMITTERS - FOG;
+                let state = WireEmissiveState {
+                    brightness: ordinal as f32 / EMISSIVE as f32,
+                    color: [1.0, 0.05, 0.02],
+                    animation: Some(WireEmissiveAnimation {
+                        period_ms: 166.0,
+                        play_count: None,
+                        brightness: scalar_curve(0.3, 1.0),
+                    }),
+                    anim_start: Some(2.0),
+                };
+                state.validate().unwrap();
+                (3, ordinal, ComponentPayload::EmissiveState(state))
             };
             let mut snapshot = EntitySnapshot::unowned(index as u32 + 1, vec![component]);
             snapshot.presentation_binding = Some(WirePresentationBinding {
@@ -182,8 +200,8 @@ fn complete_envelope(raw: &mut RawSnapshotMessage) {
 }
 
 #[test]
-fn presentation_budget_1324_max_curves_converge_and_transport_admits_full_envelopes() {
-    assert_eq!(ROSTER, 1324);
+fn presentation_budget_1580_max_curves_converge_and_transport_admits_full_envelopes() {
+    assert_eq!(ROSTER, 1580);
     let roster = stress_roster();
     assert_eq!(
         roster
@@ -205,6 +223,13 @@ fn presentation_budget_1324_max_curves_converge_and_transport_admits_full_envelo
             .filter(|r| r.presentation_binding.unwrap().kind == 1)
             .count(),
         FOG
+    );
+    assert_eq!(
+        roster
+            .iter()
+            .filter(|r| r.presentation_binding.unwrap().kind == 3)
+            .count(),
+        EMISSIVE
     );
     let mut tracker = ServerReplication::new();
     tracker.register_client(CLIENT);
@@ -375,6 +400,6 @@ fn presentation_budget_1324_max_curves_converge_and_transport_admits_full_envelo
     assert!(!tracker.has_registered_clients());
     transport.remove_connection(CLIENT);
     println!(
-        "AC13 roster={LIGHTS}+{EMITTERS}+{FOG}={ROSTER} keys={MAX_WIRE_CURVE_KEYS} baseline_bytes={total_baseline_bytes} max_budget_subtotal={maximum_subtotal} max_snapshot_bytes={maximum_snapshot} max_participation_carrier_bytes={maximum_carrier} max_renet_packets={maximum_packets} admission_bytes_per_tick={allowance} convergence_snapshots={converged} bound_snapshots={limit} one_way_snapshots={ONE_WAY_STEPS}"
+        "AC13 roster={LIGHTS}+{EMITTERS}+{FOG}+{EMISSIVE}={ROSTER} keys={MAX_WIRE_CURVE_KEYS} baseline_bytes={total_baseline_bytes} max_budget_subtotal={maximum_subtotal} max_snapshot_bytes={maximum_snapshot} max_participation_carrier_bytes={maximum_carrier} max_renet_packets={maximum_packets} admission_bytes_per_tick={allowance} convergence_snapshots={converged} bound_snapshots={limit} one_way_snapshots={ONE_WAY_STEPS}"
     );
 }

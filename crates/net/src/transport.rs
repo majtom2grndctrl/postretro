@@ -3409,16 +3409,16 @@ mod tests {
     // peer the player life-state record, a wire-38 peer the assist fields, and a
     // wire-39 peer the roster entry's name and status.
     // A PRLC peer predates the spawn-pose hint, a PRLD peer the session-ended
-    // cause, a PRLE peer the session-password challenge, and a PRLF or
-    // wire-40 peer the carried loadout. The admission gate refuses each
-    // declaration with a typed cause, logging the protocol mismatch, and
-    // admits a PRLG / 42 one. A wire-41 peer lacks the status-presence
-    // component payload.
+    // cause, a PRLE peer the session-password challenge, a PRLF or
+    // wire-40 peer the carried loadout, a wire-41 peer the status-presence
+    // component payload, and a wire-42 peer the emissive presentation record.
+    // The admission gate refuses each declaration with a typed cause, logging
+    // the protocol mismatch, and admits a PRLG / 43 one.
     #[test]
-    fn admission_refuses_prlb_to_prlf_or_wire_32_to_41_and_admits_prlg_42() {
+    fn admission_refuses_prlb_to_prlf_or_wire_32_to_42_and_admits_prlg_43() {
         let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C47,
-            wire_version: 42,
+            wire_version: 43,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
@@ -3523,6 +3523,13 @@ mod tests {
             (
                 wire::ProtocolVersion {
                     wire_version: 39,
+                    ..current
+                },
+                false,
+            ),
+            (
+                wire::ProtocolVersion {
+                    wire_version: 42,
                     ..current
                 },
                 false,

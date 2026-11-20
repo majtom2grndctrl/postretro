@@ -23,6 +23,7 @@ use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use super::ReflectionProbeInputs;
 use super::animated_direct::AnimatedDirectSampler;
 use super::capture_exclusion::{BrushFaces, CaptureBrushes, ProbeExclusion};
+use super::emissive_factor::EmissiveFaceFactors;
 use super::hit::SceneTracer;
 use super::lightmap_sample::LightmapSampler;
 use super::placement::PlacedProbe;
@@ -395,6 +396,8 @@ impl CaptureFixture {
             alpha_lights: &self.alpha_lights,
             chunk_light_list: &self.chunk_list,
             texture_keys: &self.keys,
+            emissive_textures: &[],
+            emissive_volumes: &[],
             prm_root: self.prm_dir.path(),
         })
     }
@@ -415,8 +418,10 @@ impl CaptureFixture {
             materials: SurfaceMaterials::new(
                 &self.world.geometry.texture_names.names,
                 &self.keys,
+                &[],
                 self.prm_dir.path(),
             ),
+            emissive: EmissiveFaceFactors::none(),
             lightmap: LightmapSampler::new(&self.lightmap),
             sh: ShVolumeSampler::new(&self.sh, PRODUCTION_PROBE_OCCLUSION).unwrap(),
             animated_direct: self

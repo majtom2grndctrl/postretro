@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use postretro_level_format::SectionId;
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection, NO_TEXTURE};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -73,6 +74,17 @@ pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode
         read_section(SectionId::TextureCacheKeys)?.ok_or(PrlLoadError::NoTextureCacheKeys)?;
     let texture_cache_keys = TextureCacheKeysSection::from_bytes(&texture_cache_keys_data)?;
 
+    // Required: the baked glow strength every material uniform packs. A level
+    // compiled before it has no strength the runtime may derive, so it is
+    // stale rather than defaulted.
+    let emissive_data = read_section(SectionId::Emissive)?
+        .ok_or_else(|| stale_section("Emissive", SectionId::Emissive))?;
+    let emissive = EmissiveSection::from_bytes(&emissive_data)
+        .map_err(|err| section_validation_from_error("Emissive", err))?;
+    emissive
+        .validate_against_level(texture_names.len(), geom.faces.len())
+        .map_err(|err| section_validation_from_error("Emissive", err))?;
+
     let mut warned_prefixes = HashSet::new();
     let vertices: Vec<WorldVertex> = geom
         .vertices
@@ -128,5 +140,36 @@ pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode
         face_meta,
         texture_names,
         texture_cache_keys,
+        emissive,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use log::Level;
+    use postretro_render_data::material::Material;
+    use postretro_test_log_capture::LogCapture;
+
+    use super::derive_material_with_warning;
+
+    // The `neon` prefix retired: a former `neon_` face is an unknown prefix,
+    // warned once however many faces carry it.
+    #[test]
+    fn a_former_neon_face_derives_default_and_warns_once() {
+        let capture = LogCapture::start();
+        let mut warned = HashSet::new();
+        for name in [
+            "neon/neon_glow_panel",
+            "neon/neon_dim_panel",
+            "neon/neon_glow_panel",
+        ] {
+            assert_eq!(
+                derive_material_with_warning(name, &mut warned),
+                Material::Default
+            );
+        }
+        capture.assert_logged_once(Level::Warn, "Unknown prefix 'neon'");
+    }
 }

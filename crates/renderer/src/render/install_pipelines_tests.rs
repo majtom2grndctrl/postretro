@@ -8,7 +8,7 @@ use crate::render::gpu_test_harness::{
 };
 use crate::render::renderer_textures::tests::install_one_triangle_with_sh;
 use crate::render::upload_thread::tests::wait_for;
-use crate::render::{Material, Renderer, SPLASH_CLEAR_COLOR};
+use crate::render::{Renderer, SPLASH_CLEAR_COLOR, TextureMaterial};
 use glam::Vec3;
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,12 @@ fn uniform_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 fn install_lit_triangle(renderer: &mut Renderer) {
     let sh = sh_section([-1.0; 3], [1.0; 3], [2, 2, 2], |_| Vec3::splat(0.25));
     let direct = direct_section(&sh, Vec3::splat(0.5));
-    install_one_triangle_with_sh(renderer, &[Material::Default], Some(&sh), Some(&direct));
+    install_one_triangle_with_sh(
+        renderer,
+        &[TextureMaterial::DEFAULT],
+        Some(&sh),
+        Some(&direct),
+    );
 }
 
 /// Every family the fixture enables binds the slot's pipeline, not a copy.

@@ -6,6 +6,7 @@
 
 import type {
   AttackPoolEntity,
+  EmissiveVolumeEntity,
   EmitterEntity,
   FogVolumeEntity,
   LightEntity,
@@ -24,6 +25,8 @@ import { wrapLightEntity } from "./entities/lights";
 import type { LightEntityHandle } from "./entities/lights";
 import { wrapFogVolumeEntity } from "./entities/fog_volumes";
 import type { FogVolumeHandle } from "./entities/fog_volumes";
+import { wrapEmissiveVolumeEntity } from "./entities/emissive_volumes";
+import type { EmissiveVolumeHandle } from "./entities/emissive_volumes";
 import { wrapMoverEntity } from "./entities/movers";
 import type { MoverEntityHandle } from "./entities/movers";
 import { wrapTriggerVolumeEntity } from "./entities/triggers";
@@ -48,6 +51,7 @@ export type MapEntityKind =
   | "ghostLink"
   | "light"
   | "fog"
+  | "emissive"
   | "emitter"
   | "spawner"
   | "trap"
@@ -62,6 +66,7 @@ export type MapEntityForKind<K extends MapEntityKind> =
   K extends "ghostLink" ? GhostLinkHandle :
   K extends "light" ? LightEntityHandle :
   K extends "fog" ? FogVolumeHandle :
+  K extends "emissive" ? EmissiveVolumeHandle :
   K extends "emitter" ? EmitterEntity :
   K extends "spawner" ? SpawnerEntityHandle :
   K extends "trap" ? TrapEntityHandle :
@@ -80,6 +85,7 @@ const MAP_KIND_COMPONENTS: Readonly<Record<MapEntityKind, string>> = Object.free
   ghostLink: "ghost_link",
   light: "light",
   fog: "fog_volume",
+  emissive: "emissive_volume",
   emitter: "emitter",
   spawner: "spawner",
   trap: "projectile_trap",
@@ -128,6 +134,8 @@ export function getMapEntities<K extends MapEntityKind>(
         return (raw as ReadonlyArray<LightEntity>).map(wrapLightEntity);
       case "fog":
         return (raw as ReadonlyArray<FogVolumeEntity>).map(wrapFogVolumeEntity);
+      case "emissive":
+        return (raw as ReadonlyArray<EmissiveVolumeEntity>).map(wrapEmissiveVolumeEntity);
       case "emitter":
         return (raw as ReadonlyArray<EmitterEntity>).map(projectEmitter);
       case "spawner":

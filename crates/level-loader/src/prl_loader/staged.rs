@@ -20,6 +20,7 @@ use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumeRecord;
 use postretro_level_format::ghost_links::GhostLinksSection;
@@ -238,6 +239,9 @@ pub struct GeometryHandOut {
     pub face_meta: Vec<FaceMeta>,
     pub texture_names: Vec<String>,
     pub texture_cache_keys: TextureCacheKeysSection,
+    /// Id 60: per-texture glow strength, parallel to `texture_names`, and
+    /// the emissive volumes.
+    pub emissive: EmissiveSection,
 }
 
 /// Hand-out 3: BVH, cells, visibility, residency set and locator. The portal
@@ -301,6 +305,7 @@ pub struct FinalLighting {
     pub entity_shadow_lights: Vec<u32>,
     pub shadowmask_atlas: Option<ShadowmaskBlockIndex>,
     pub vertex_spec_owners: Vec<SpecOwnerVertex>,
+    pub vertex_emissive_volumes: Vec<u32>,
     pub gpu_lighting_payloads: GpuLightingPayloads,
     pub lightmap_storage: LightmapStorage,
     pub cluster_directory: Option<ClusterDirectorySection>,
@@ -588,6 +593,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         face_meta,
         texture_names,
         texture_cache_keys,
+        emissive,
     } = unshare(geometry);
     let SpatialHandOut {
         bvh,
@@ -643,6 +649,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         entity_shadow_lights,
         shadowmask_atlas,
         vertex_spec_owners,
+        vertex_emissive_volumes,
         gpu_lighting_payloads,
         lightmap_storage,
         cluster_directory,
@@ -675,6 +682,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         cell_visibility,
         texture_names,
         texture_cache_keys,
+        emissive,
         bvh,
         lights,
         light_influences,
@@ -697,6 +705,7 @@ pub fn assemble(hand_outs: CompleteHandOuts) -> LevelWorld {
         entity_shadow_lights,
         shadowmask_atlas,
         vertex_spec_owners,
+        vertex_emissive_volumes,
         gpu_lighting_payloads,
         lightmap_storage,
         data_script,

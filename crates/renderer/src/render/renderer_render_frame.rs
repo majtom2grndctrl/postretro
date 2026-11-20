@@ -581,6 +581,7 @@ impl Renderer {
                 );
                 render_pass.set_vertex_buffer(0, self.level().vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, self.level().spec_owner_buffer.slice(..));
+                render_pass.set_vertex_buffer(2, self.level().emissive_volumes.vertex.slice(..));
                 render_pass.set_index_buffer(
                     self.level().index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,

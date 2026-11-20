@@ -45,7 +45,7 @@ fn real_map_streamed_scene_stages_every_indirect_promotion_and_animated_writer()
     let materials: Vec<_> = world
         .texture_names
         .iter()
-        .map(|_| postretro_render_data::material::Material::Default)
+        .map(|_| postretro_render_data::material::TextureMaterial::DEFAULT)
         .collect();
     renderer.install_textures(
         &world.texture_names,

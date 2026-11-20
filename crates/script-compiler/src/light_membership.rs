@@ -64,6 +64,11 @@ const MEMBER_WRAPPER_LUAU: &[(&str, &str, &str)] = &[
         "sdk/lib/entities/fog_volumes.luau",
     ),
     (
+        "wrapEmissiveVolumeEntity",
+        include_str!("../../../sdk/lib/entities/emissive_volumes.luau"),
+        "sdk/lib/entities/emissive_volumes.luau",
+    ),
+    (
         "wrapMoverEntity",
         include_str!("../../../sdk/lib/entities/movers.luau"),
         "sdk/lib/entities/movers.luau",
@@ -406,6 +411,9 @@ const STUBBED_PRIMITIVES: &[(&str, StubReturn)] = &[
     ("setFogFalloff", StubReturn::Null),
     ("setFogParams", StubReturn::Null),
     ("setFogAnimation", StubReturn::Null),
+    ("setEmissiveBrightness", StubReturn::Null),
+    ("setEmissiveColor", StubReturn::Null),
+    ("setEmissiveAnimation", StubReturn::Null),
     ("moverStart", StubReturn::Null),
     ("moverStop", StubReturn::Null),
     ("moverReverse", StubReturn::Null),
@@ -1363,6 +1371,7 @@ const WORLD_QUERY_COMPONENTS: &[&str] = &[
     "transform",
     "emitter",
     "fog_volume",
+    "emissive_volume",
     "kinematic_mover",
     "trigger_volume",
     "teleporter",
@@ -2283,7 +2292,7 @@ mod tests {
         assert_eq!(manifest.stubbed_primitives, vec!["fireTick"]);
     }
 
-    // Kinds the build carries no table for (fog, emitter) degrade to `[]` and
+    // Kinds the build carries no table for (fog, emissive, emitter) degrade to `[]` and
     // land in the stub inventory. Mover, trigger, teleporter and spawner queries answer
     // from the member table, so an empty one is an authoritative `[]`, not a
     // stub.
@@ -2292,6 +2301,7 @@ mod tests {
         let source = r#"
             function setupLevel() {
               const fogs = getMapEntities("fog");
+              getMapEntities("emissive");
               getMapEntities("emitter");
               getMapEntities("mover");
               getMapEntities("trigger");
@@ -2312,7 +2322,11 @@ mod tests {
         assert!(manifest.lights.is_empty());
         assert_eq!(
             manifest.stubbed_primitives,
-            vec!["worldQuery:emitter", "worldQuery:fog_volume"]
+            vec![
+                "worldQuery:emissive_volume",
+                "worldQuery:emitter",
+                "worldQuery:fog_volume"
+            ]
         );
     }
 

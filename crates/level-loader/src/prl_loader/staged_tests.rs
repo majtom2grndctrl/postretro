@@ -167,6 +167,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         cell_visibility,
         texture_names,
         texture_cache_keys,
+        emissive,
         bvh,
         lights,
         light_influences,
@@ -189,6 +190,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         entity_shadow_lights,
         shadowmask_atlas,
         vertex_spec_owners,
+        vertex_emissive_volumes,
         gpu_lighting_payloads,
         lightmap_storage,
         data_script,
@@ -232,6 +234,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         texture_cache_keys,
         &m.texture_cache_keys,
     );
+    same_debug("emissive", emissive, &m.emissive);
     same_debug("bvh", bvh, &m.bvh);
     same_debug("lights", lights, &m.lights);
     same_debug("light_influences", light_influences, &m.light_influences);
@@ -289,6 +292,11 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         "vertex_spec_owners",
         vertex_spec_owners,
         &m.vertex_spec_owners,
+    );
+    same_debug(
+        "vertex_emissive_volumes",
+        vertex_emissive_volumes,
+        &m.vertex_emissive_volumes,
     );
     same_debug(
         "gpu_lighting_payloads",
@@ -360,7 +368,8 @@ fn assert_hand_outs_match(hand_outs: &[HandOut], monolithic: &LevelWorld) {
                     indices,
                     face_meta,
                     texture_names,
-                    texture_cache_keys
+                    texture_cache_keys,
+                    emissive
                 ]
             ),
             HandOut::Spatial(spatial) => same_fields!(
@@ -435,6 +444,7 @@ fn assert_hand_outs_match(hand_outs: &[HandOut], monolithic: &LevelWorld) {
                         entity_shadow_lights,
                         shadowmask_atlas,
                         vertex_spec_owners,
+                        vertex_emissive_volumes,
                         gpu_lighting_payloads,
                         cluster_directory,
                     ]

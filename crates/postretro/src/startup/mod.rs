@@ -22,6 +22,8 @@ mod coop_activation_tests;
 pub(crate) mod data_script_staleness;
 #[cfg(test)]
 mod e16_content_tests;
+#[cfg(test)]
+mod emissive_volumes_surface_tests;
 pub(crate) mod environment_install;
 pub(crate) mod first_launch_hold;
 #[cfg(test)]

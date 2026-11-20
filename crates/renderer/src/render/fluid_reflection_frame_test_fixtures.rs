@@ -313,6 +313,8 @@ pub(super) fn with_world_quads<R>(
     use_geometry(&super::LevelGeometry {
         vertices: &vertices,
         vertex_spec_owners: &[],
+        vertex_emissive_volumes: &[],
+        emissive_volumes: &[],
         indices: &indices,
         bvh: &bvh,
         lights: &[],

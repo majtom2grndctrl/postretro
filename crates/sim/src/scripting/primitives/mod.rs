@@ -253,6 +253,49 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
             "Full fog-volume component snapshot at query time.",
         )
         .finish();
+    registry
+        .register_type("EmissiveAnimation")
+        .doc("Brightness animation installed on an emissive volume by the `setEmissiveAnimation` reaction primitive, or by an `EmissiveVolumeHandle`'s `pulse` / `fade` / `flicker`. Samples are brightness in `[0, 1]` across the volume's authored `emissive_min`..`emissive_max`; out-of-range samples clamp. `periodMs` must be finite and > 0 and the curve non-empty, or the install is skipped with a warning and the prior state stands. `playCount = null` loops forever; a finite count settles on the last sample, which becomes the held `brightness`. Re-installing the running curve keeps its start time; any other install, including one after a `setEmissiveBrightness` cleared the curve, starts from its first sample. A `null` clear in the same drain also makes the next install a new run, and a re-install on a finite run's last frame restarts it.")
+        .field("periodMs", "f32", "Total period of the loop, in milliseconds.")
+        .field(
+            "playCount",
+            "Option<u32>",
+            "Total full periods to play; null loops forever. 0 reads 1, with a warning.",
+        )
+        .field(
+            "brightness",
+            "Vec<f32>",
+            "Brightness samples in `[0, 1]`, evenly spaced over one period and linearly interpolated.",
+        )
+        .finish();
+    registry
+        .register_type("EmissiveVolumeComponent")
+        .doc("Script-facing emissive-volume snapshot. A member face glows at its texture strength × (min + brightness × (max − min)) × color. The map owns `min` and `max`; scripts own `brightness` and `color` through `setEmissiveBrightness`, `setEmissiveColor` and `setEmissiveAnimation`.")
+        .field("min", "f32", "Authored glow multiplier at brightness 0 (`emissive_min`). Read-only: no primitive writes it.")
+        .field("max", "f32", "Authored glow multiplier at brightness 1 and with no script (`emissive_max`), at least `min`. Read-only: no primitive writes it.")
+        .field("brightness", "f32", "Scripted position in the authored range, `[0, 1]`; 1 with no script. While an animation runs, its current sample.")
+        .field("color", "[f32; 3]", "Scripted linear tint, channels in `[0, 1]`; the authored `emissive_color` until a script writes one.")
+        .finish();
+    registry
+        .register_type("EmissiveVolumeEntity")
+        .doc("Emissive-volume snapshot that `getMapEntities(\"emissive\")` wraps into an `EmissiveVolumeHandle`.")
+        .field("id", "EntityId", "")
+        .field(
+            "position",
+            "Vec3",
+            "Centre of the volume's brush bounds, baked at compile time.",
+        )
+        .field(
+            "tags",
+            "Vec<String>",
+            "The entity's tags at query time. Empty array if untagged.",
+        )
+        .field(
+            "component",
+            "EmissiveVolumeComponent",
+            "Emissive-volume snapshot at query time.",
+        )
+        .finish();
     life_states::register_types(registry);
     registry
         .register_type("EntityTypeComponents")

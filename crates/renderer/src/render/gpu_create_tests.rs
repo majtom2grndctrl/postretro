@@ -6,7 +6,7 @@ use crate::render::gpu_test_harness::{gpu_or_skip, offscreen_renderer_or_skip};
 use crate::render::renderer_textures::tests::{chain, install_one_triangle, write_prm};
 use crate::render::upload_thread::tests::wait_for;
 use crate::render::upload_thread::{UploadContext, UploadThread};
-use crate::render::{Material, TextureCacheKeysSection};
+use crate::render::{TextureCacheKeysSection, TextureMaterial};
 use postretro_level_format::prm::PrmFormat;
 
 #[test]
@@ -59,7 +59,7 @@ fn creation_counter_counts_oracle_install() {
     );
     let names = vec!["baked".to_string()];
     let keys = TextureCacheKeysSection { keys: vec![key] };
-    let materials = vec![Material::Default];
+    let materials = vec![TextureMaterial::DEFAULT];
 
     let before = gpu_creation_counts();
     renderer.install_textures(&names, &keys, dir.path(), &materials);

@@ -59,7 +59,7 @@ impl Closet {
         let materials: Vec<_> = world
             .texture_names
             .iter()
-            .map(|_| postretro_render_data::material::Material::Default)
+            .map(|_| postretro_render_data::material::TextureMaterial::DEFAULT)
             .collect();
         renderer.install_textures(
             &world.texture_names,

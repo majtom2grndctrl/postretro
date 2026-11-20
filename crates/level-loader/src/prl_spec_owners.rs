@@ -1,21 +1,17 @@
 // The forward pass's per-vertex static specular owner stream, stamped from id 42's owner table.
 // See: context/lib/rendering_pipeline.md §4 (Static specular ownership)
 
-use std::ops::Range;
-
 use postretro_level_format::shadowmask_atlas::{FaceOwners, MaskOffset, SpecOwnerVertex};
 use postretro_render_data::geometry::BvhLeaf;
+
+use crate::prl_face_ranges::face_index_ranges;
 
 /// One owner entry per world vertex: its face's id-42 owners and mask offset,
 /// or [`SpecOwnerVertex::EMPTY`]. Always `vertex_count` long, so the forward
 /// pass never binds a short buffer. `face_owners` holds id 42's owners and
 /// mask offsets, one of each per face.
 ///
-/// Id 17 keeps no face index ranges, but the compiler emits each face's
-/// indices as one contiguous range, ranges in face order, and each face owns
-/// exactly one non-empty BVH leaf covering its range. The BVH flattens leaves
-/// in material-bucket order, so they arrive shuffled; sorting by `index_offset`
-/// restores face order, and face `i`'s range is the `i`-th. One non-empty leaf
+/// Each face's indices come from [`face_index_ranges`]. One non-empty leaf
 /// per face holds because the compiler refuses to pack id 42 when a face has
 /// no triangle.
 ///
@@ -102,45 +98,6 @@ pub(crate) fn build_vertex_spec_owners(
         stream.fill(SpecOwnerVertex::EMPTY);
     }
     stream
-}
-
-/// Face `i`'s index range is the `i`-th BVH leaf range by `index_offset`.
-/// The ranges must tile `0..index_count` exactly, one non-empty leaf per face.
-fn face_index_ranges(
-    leaves: &[BvhLeaf],
-    face_count: usize,
-    index_count: usize,
-) -> Result<Vec<Range<usize>>, String> {
-    if leaves.len() != face_count {
-        return Err(format!(
-            "{} BVH leaves for {face_count} Geometry faces",
-            leaves.len()
-        ));
-    }
-    let mut ranges: Vec<Range<usize>> = leaves
-        .iter()
-        .map(|leaf| {
-            let start = leaf.index_offset as usize;
-            start..start + leaf.index_count as usize
-        })
-        .collect();
-    ranges.sort_unstable_by_key(|range| range.start);
-    let mut expected = 0;
-    for (face, range) in ranges.iter().enumerate() {
-        if range.start != expected || range.is_empty() {
-            return Err(format!(
-                "face {face}'s leaf covers indices {range:?}, expected a non-empty range \
-                 starting at {expected}"
-            ));
-        }
-        expected = range.end;
-    }
-    if expected != index_count {
-        return Err(format!(
-            "BVH leaves cover {expected} of the {index_count} Geometry indices"
-        ));
-    }
-    Ok(ranges)
 }
 
 #[cfg(test)]

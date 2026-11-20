@@ -167,6 +167,7 @@ impl Level {
                 active_level_tags: &[],
                 nav_graph: nav_graph.as_ref(),
                 fog_volume_bridge: &mut session.fog_volume_bridge,
+                emissive_volume_bridge: &mut session.emissive_volume_bridge,
                 trigger_volume_bridge: &mut session.trigger_volume_bridge,
                 classname_dispatch: &session.classname_dispatch,
                 script_runtime: &session.scripting.script_runtime,

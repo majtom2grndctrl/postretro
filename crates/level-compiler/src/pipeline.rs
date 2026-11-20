@@ -907,10 +907,17 @@ fn run_after_parsing(
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Materials);
     let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
+    // Read every build, warm or cold: only reflection capture and id 60
+    // see its values, and both are computed from them each time.
+    let materials_toml_start = Instant::now();
+    let materials_toml =
+        crate::materials_toml::MaterialsToml::load(&resolve_content_root(&args.input));
+    let materials_toml_elapsed = materials_toml_start.elapsed();
     let mut material_stage = texture_stage::bake_world_materials(
         &geo_result.texture_names.names,
         &texture_root,
         &prm_root,
+        materials_toml,
     )?;
     finish_stage(
         &mut timings,
@@ -919,6 +926,9 @@ fn run_after_parsing(
         stage_start,
         true,
     );
+    // A sub-line of Materials, not a stage: reading and parsing the mod's
+    // `materials.toml`, uncached, on every build.
+    timings.push(("  materials.toml", materials_toml_elapsed));
     // Built only once the material table exists, so no SH bake can see a
     // colour-blind context by accident.
     let sh_ctx = sh_bake::ShBakeCtx {
@@ -1711,6 +1721,18 @@ fn run_after_parsing(
         &governor,
     );
 
+    // Emissive membership is per BSP fragment: each pre-cut face tests its
+    // own centroid, so it is taken here, before the cut, and every atlas
+    // sub-face inherits its fragment's, so the cut never splits a membership.
+    // Membership itself waits for `_e` facts after the texture stage.
+    let centroids_start = Instant::now();
+    let mut fragment_centroids = if map_data.emissive_volumes.is_empty() {
+        Vec::new()
+    } else {
+        crate::emissive_membership::fragment_centroids(&geo_result)
+    };
+    let centroids_elapsed = centroids_start.elapsed();
+
     let stage_start = begin_stage(reporter.as_ref(), StageId::AtlasPreparation);
     // An oversize face is cut here; the face-identity set (leaf face ranges,
     // BVH, CellDrawIndex) is then rebuilt over the cut geometry, and the
@@ -1724,6 +1746,7 @@ fn run_after_parsing(
         partition: cell_partition,
         rebuilt,
         pre_cut_geometry,
+        face_remap,
     } = atlas_stage::prepare_atlas_stage(
         atlas_stage::AtlasStageInputs {
             map_data: &map_data,
@@ -1743,6 +1766,11 @@ fn run_after_parsing(
     )?;
     // A whole geometry copy: keep it only for the SDF stage that reads it.
     let pre_cut_geometry = pre_cut_geometry.filter(|_| map_needs_sdf_atlas(&map_data.lights));
+    if let Some(face_remap) = &face_remap
+        && !fragment_centroids.is_empty()
+    {
+        fragment_centroids = crate::geometry::remap_per_face(&fragment_centroids, face_remap);
+    }
     if let Some(rebuilt) = rebuilt {
         bvh = rebuilt.bvh;
         bvh_primitives = rebuilt.primitives;
@@ -2182,7 +2210,7 @@ fn run_after_parsing(
     };
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
-    texture_stage::bake_remaining_textures(
+    let emissive_textures = texture_stage::bake_remaining_textures(
         &args.input,
         &geo_result.texture_names.names,
         &map_data.map_entities,
@@ -2190,6 +2218,7 @@ fn run_after_parsing(
         &prm_root,
         &mut material_stage,
     )?;
+    let has_emissive_map = material_stage.has_emissive_maps();
     let name_to_key = material_stage.name_to_key;
     finish_stage(
         &mut timings,
@@ -2198,6 +2227,33 @@ fn run_after_parsing(
         stage_start,
         true,
     );
+
+    // Emissive membership lists final faces: the atlas cut is done and no
+    // later stage reorders faces, so its indices are the ones Geometry
+    // (id 17) packs, each tested at its pre-cut fragment's centroid (above).
+    // It precedes reflection capture, which shades each member face at its
+    // volume's reference state.
+    let membership_start = Instant::now();
+    let emissive_section = postretro_level_format::emissive::EmissiveSection {
+        textures: emissive_textures,
+        volumes: crate::emissive_membership::resolve_emissive_volume_records(
+            &map_data.emissive_volumes,
+            &geo_result,
+            &fragment_centroids,
+            &has_emissive_map,
+        ),
+    };
+    crate::emissive_membership::refuse_members_beside_a_triangle_less_face(
+        &map_data.emissive_volumes,
+        &emissive_section.volumes,
+        &geo_result,
+        &face_brushes,
+    )?;
+    // Listed alone, not a stage: it runs uncached on every build.
+    timings.push((
+        "Emissive Membership",
+        centroids_elapsed + membership_start.elapsed(),
+    ));
 
     // Reflection probes read the encoded id 52 and id 22, the packed base SH,
     // ids 25 and 27 as they ship (culled, repacked, dropped and compacted),
@@ -2230,6 +2286,8 @@ fn run_after_parsing(
             alpha_lights: &alpha_lights_section,
             chunk_light_list: &chunk_light_list_section,
             texture_keys: &name_to_key,
+            emissive_textures: &emissive_section.textures,
+            emissive_volumes: &emissive_section.volumes,
             prm_root: &prm_root,
         },
         stage_cache.as_ref(),
@@ -2299,6 +2357,7 @@ fn run_after_parsing(
         map_entities: map_entities_section.as_ref(),
         fog_volumes: &fog_volumes_section,
         fog_cell_masks: fog_cell_masks_section.as_ref(),
+        emissive: &emissive_section,
         sdf_atlas: sdf_atlas_section.as_ref(),
         navmesh: navmesh_section.as_ref(),
         kinematic_geometry: kinematic_geometry_section.as_ref(),

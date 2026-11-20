@@ -38,7 +38,7 @@ fn install_fixture(renderer: &mut Renderer, root: &Path) {
     );
     let names = vec!["baked".to_string()];
     let keys = TextureCacheKeysSection { keys: vec![key] };
-    let materials = vec![Material::Default];
+    let materials = vec![TextureMaterial::DEFAULT];
     renderer.install_textures(&names, &keys, root, &materials);
     let sh = sh_section([-1.0; 3], [1.0; 3], [2, 2, 2], |_| Vec3::splat(0.25));
     let direct = direct_section(&sh, Vec3::splat(0.5));
@@ -234,7 +234,7 @@ fn build_fixture_with(
     );
     let names = vec![format!("baked-{fill:02x}")];
     let keys = TextureCacheKeysSection { keys: vec![key] };
-    let materials = vec![Material::Default];
+    let materials = vec![TextureMaterial::DEFAULT];
     renderer.install_textures(&names, &keys, root, &materials);
     let sh = sh_section([-1.0; 3], [1.0; 3], [2, 2, 2], |_| Vec3::splat(0.25));
     let direct = direct_section(&sh, Vec3::splat(0.5));
@@ -582,7 +582,7 @@ fn fluid_reflection_targets_follow_their_set_across_publishes() {
     let fluid_draw = capture_checked(&mut renderer, base_view());
     let builds = renderer.full().fluid_surface.reflection_target_builds();
 
-    let other = with_one_triangle(&[Material::Default], None, None, &[], |geometry| {
+    let other = with_one_triangle(&[TextureMaterial::DEFAULT], None, None, &[], |geometry| {
         renderer
             .build_level_set(geometry, Default::default())
             .expect("level set builds")

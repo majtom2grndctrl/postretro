@@ -30,6 +30,8 @@ export type { LightEntityHandle } from "./entities/lights";
 
 export type { FogVolumeHandle } from "./entities/fog_volumes";
 
+export type { EmissiveVolumeHandle } from "./entities/emissive_volumes";
+
 export type { MoverEntityHandle } from "./entities/movers";
 
 export type { TriggerVolumeHandle } from "./entities/triggers";
@@ -65,6 +67,9 @@ export type {
   SetFogFalloffStep,
   SetFogParamsStep,
   SetFogGlowStep,
+  SetEmissiveAnimationStep,
+  SetEmissiveBrightnessStep,
+  SetEmissiveColorStep,
   SetLightAnimationStep,
   MoverStartStep,
   MoverStopStep,

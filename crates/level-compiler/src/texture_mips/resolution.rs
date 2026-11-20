@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub(super) fn normalize_map_texture_name(name: &str) -> String {
+pub(crate) fn normalize_map_texture_name(name: &str) -> String {
     let lowered = name.to_lowercase().replace('\\', "/");
     lowered
         .strip_prefix("textures/")
@@ -26,6 +26,14 @@ pub(super) struct TextureBundlePaths {
     /// the specular slot's G channel. See `context/lib/resource_management.md`
     /// §4.6.
     pub height: Option<PathBuf>,
+    /// The qualified `collection/name` whose files resolved: `signs/bar` for
+    /// a map name `bar` or `oldcoll/bar` that fell back to the bare-stem
+    /// alias. Read from the emissive slot's collection directory when it
+    /// resolved, else diffuse, specular, normal, height, so the strength
+    /// `materials.toml` keys to it scales the glow the bundle actually loads,
+    /// even when per-slot bare aliases cross collections (`a/bar.png` beside
+    /// `b/bar_e.png`). `None` when no slot resolved.
+    pub bundle: Option<String>,
 }
 
 /// Every sibling suffix a bundle can be spelled with, including the bare
@@ -48,12 +56,33 @@ pub(super) fn resolve_texture_bundle_paths(
         bare_segment(normalized)
     };
 
+    let diffuse = name_to_path.get(resolved_base).cloned();
+    let specular = name_to_path.get(&format!("{resolved_base}_s")).cloned();
+    let normal = name_to_path.get(&format!("{resolved_base}_n")).cloned();
+    let emissive = name_to_path.get(&format!("{resolved_base}_e")).cloned();
+    let height = name_to_path.get(&format!("{resolved_base}_h")).cloned();
+    // Every key is `collection/stem` or a bare stem, so a resolved file's
+    // directory names the collection whichever key found it. The glow slot
+    // goes first: strength scales it.
+    let bundle = [&emissive, &diffuse, &specular, &normal, &height]
+        .into_iter()
+        .flatten()
+        .next()
+        .and_then(|path| path.parent()?.file_name()?.to_str())
+        .map(|collection| {
+            format!(
+                "{}/{}",
+                collection.to_lowercase(),
+                bare_segment(resolved_base)
+            )
+        });
     TextureBundlePaths {
-        diffuse: name_to_path.get(resolved_base).cloned(),
-        specular: name_to_path.get(&format!("{resolved_base}_s")).cloned(),
-        normal: name_to_path.get(&format!("{resolved_base}_n")).cloned(),
-        emissive: name_to_path.get(&format!("{resolved_base}_e")).cloned(),
-        height: name_to_path.get(&format!("{resolved_base}_h")).cloned(),
+        diffuse,
+        specular,
+        normal,
+        emissive,
+        height,
+        bundle,
     }
 }
 

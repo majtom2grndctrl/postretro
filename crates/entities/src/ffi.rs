@@ -189,6 +189,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::AttackPool => "attack_pool",
         ComponentKind::Seam => "seam",
         ComponentKind::StatusPresence => "status_presence",
+        ComponentKind::EmissiveVolume => "emissive_volume",
     }
 }
 
@@ -293,6 +294,10 @@ impl<'js> FromJs<'js> for ComponentValue {
                 ctx,
                 "Seam component is engine-managed and not exposed to scripts",
             )),
+            "emissive_volume" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "emissive_volume is bridge-managed; setComponent is not supported (use the setEmissive* reaction primitives instead)",
+            )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
                 ctx,
@@ -353,7 +358,8 @@ impl<'js> IntoJs<'js> for ComponentValue {
             ComponentValue::FogVolume(fog) => fog_to_js(ctx, fog),
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::SpriteVisual(_)
-            | ComponentValue::Weapon(_)) => component_to_js(ctx, other),
+            | ComponentValue::Weapon(_)
+            | ComponentValue::EmissiveVolume(_)) => component_to_js(ctx, other),
             ComponentValue::PlayerMovement(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "PlayerMovement component is engine-managed and not exposed to scripts",
@@ -545,6 +551,9 @@ impl FromLua for ComponentValue {
             "seam" => Err(mlua::Error::RuntimeError(
                 "Seam component is engine-managed and not exposed to scripts".to_string(),
             )),
+            "emissive_volume" => Err(mlua::Error::RuntimeError(
+                "emissive_volume is bridge-managed; setComponent is not supported (use the setEmissive* reaction primitives instead)".to_string(),
+            )),
             "fog_volume" => fog_from_lua(t),
             other => Err(mlua::Error::RuntimeError(format!(
                 "unknown ComponentValue kind `{other}`"
@@ -593,7 +602,8 @@ impl IntoLua for ComponentValue {
             ComponentValue::FogVolume(fog) => fog_to_lua(lua, fog),
             other @ (ComponentValue::BillboardEmitter(_)
             | ComponentValue::SpriteVisual(_)
-            | ComponentValue::Weapon(_)) => component_to_lua(lua, other),
+            | ComponentValue::Weapon(_)
+            | ComponentValue::EmissiveVolume(_)) => component_to_lua(lua, other),
             ComponentValue::PlayerMovement(_) => Err(mlua::Error::RuntimeError(
                 "PlayerMovement component is engine-managed and not exposed to scripts".to_string(),
             )),

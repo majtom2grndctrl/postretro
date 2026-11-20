@@ -87,7 +87,7 @@ impl App {
         // Refreshing attack-turn counts and running attack pools name this
         // level's entities; none carries into the next install.
         self.ai_runtime.clear_level_state();
-        // Fog- and trigger-volume entities live in the script registry;
+        // Fog-, emissive- and trigger-volume entities live in the script registry;
         // clearing their bridge id tables and trigger state prevents stale
         // slots or bindings if a future surface re-creation re-runs
         // `populate_from_level`. Install replaces collision_world by
@@ -112,6 +112,7 @@ impl App {
             session.scripting.scheduler.clear();
             session.scripting.impact_policy_runtime.clear_level_events();
             session.fog_volume_bridge.clear();
+            session.emissive_volume_bridge.clear();
             session.trigger_volume_bridge.clear();
             session.trigger_system.clear();
             session.touch_system.clear();

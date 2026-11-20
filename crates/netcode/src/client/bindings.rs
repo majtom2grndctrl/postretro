@@ -11,8 +11,8 @@ use postretro_entities::presentation_binding::{
 };
 
 use postretro_entities::{
-    ComponentKind, ComponentValue, EntityId, EntityRegistry, FogVolumeComponent,
-    KinematicMoverComponent,
+    ComponentKind, ComponentValue, EmissiveVolumeComponent, EntityId, EntityRegistry,
+    FogVolumeComponent, KinematicMoverComponent,
 };
 use postretro_net::wire::{
     ComponentPayload, NetworkId, WireKinematicMoverState, WirePresentationBinding,
@@ -75,12 +75,7 @@ impl ClientBindings {
             return None;
         }
         let resolved = (|| {
-            let kind = match binding.kind {
-                0 => PresentationBindingKind::MapLight,
-                1 => PresentationBindingKind::FogVolume,
-                2 => PresentationBindingKind::MapEntity,
-                _ => return None,
-            };
+            let kind = PresentationBindingKind::from_wire(binding.kind)?;
             let key = PresentationBindingKey {
                 kind,
                 index: binding.index,
@@ -297,6 +292,7 @@ pub(super) fn is_presentation_payload(payload: &ComponentPayload) -> bool {
         ComponentPayload::LightState(_)
             | ComponentPayload::FogState(_)
             | ComponentPayload::EmitterState(_)
+            | ComponentPayload::EmissiveState(_)
     )
 }
 
@@ -310,6 +306,9 @@ fn presentation_component_present(
         ComponentPayload::FogState(_) => registry.get_component::<FogVolumeComponent>(id).is_ok(),
         ComponentPayload::EmitterState(_) => registry
             .get_component::<BillboardEmitterComponent>(id)
+            .is_ok(),
+        ComponentPayload::EmissiveState(_) => registry
+            .get_component::<EmissiveVolumeComponent>(id)
             .is_ok(),
         _ => false,
     }
@@ -961,6 +960,111 @@ mod tests {
             1
         );
         assert_eq!(resolver.seeds.last().unwrap().1, Some(29.0));
+    }
+
+    // Drift guard: the net gate admits exactly the binding bytes the engine's
+    // kinds name, so a new kind cannot ride a byte the wire refuses.
+    #[test]
+    fn presentation_binding_wire_gate_admits_exactly_the_engine_kinds() {
+        let max = postretro_net::wire::MAX_PRESENTATION_BINDING_KIND;
+        for byte in 0..=max {
+            assert!(
+                PresentationBindingKind::from_wire(byte).is_some(),
+                "byte {byte}"
+            );
+        }
+        assert_eq!(PresentationBindingKind::from_wire(max + 1), None);
+    }
+
+    fn emissive_payload() -> ComponentPayload {
+        ComponentPayload::EmissiveState(postretro_net::wire::WireEmissiveState {
+            brightness: 0.0,
+            color: [1.0, 0.05, 0.02],
+            animation: None,
+            anim_start: None,
+        })
+    }
+
+    // P23 and P55 for the emissive kind: the kind is part of the key, so fog
+    // record 0's binding never lands on emissive volume 0, and a volume whose
+    // origin is 2 cm from the host's warns once and drops every update, never
+    // writing this or another volume.
+    #[test]
+    fn presentation_bindings_emissive_kind_is_part_of_the_key_and_a_2cm_origin_drops() {
+        let mut registry = EntityRegistry::new();
+        let id = registry.try_spawn(Transform::default(), &[]).unwrap();
+        let authored = EmissiveVolumeComponent::authored(0.0, 1.0, [1.0; 3]);
+        registry.set_component(id, authored.clone()).unwrap();
+        let resolver = Resolver {
+            id,
+            key: PresentationBindingKey {
+                kind: PresentationBindingKind::EmissiveVolume,
+                index: 0,
+            },
+            origin: Vec3::new(4.0, 2.0, -1.0),
+            seeds: Vec::new(),
+        };
+        let binding = WirePresentationBinding {
+            kind: PresentationBindingKind::EmissiveVolume as u8,
+            index: 0,
+            origin: [4.0, 2.0, -1.0],
+        };
+        let logs = LogCapture::start();
+        let mut bindings = ClientBindings::default();
+        assert_eq!(
+            bindings.resolve_presentation_baseline(
+                &registry,
+                NetworkId(1),
+                &binding,
+                &[emissive_payload()],
+                &resolver
+            ),
+            Some(id)
+        );
+
+        // Fog record 0, same index, carrying fog state: refused by kind.
+        let fog_binding = WirePresentationBinding {
+            kind: PresentationBindingKind::FogVolume as u8,
+            ..binding
+        };
+        for (nid, components) in [
+            (NetworkId(2), vec![fog_payload()]),
+            (NetworkId(5), vec![emissive_payload()]),
+        ] {
+            assert_eq!(
+                bindings.resolve_presentation_baseline(
+                    &registry,
+                    nid,
+                    &fog_binding,
+                    &components,
+                    &resolver
+                ),
+                None
+            );
+        }
+
+        let mut moved = binding;
+        moved.origin[2] += 0.02;
+        for nid in [NetworkId(3), NetworkId(4)] {
+            assert_eq!(
+                bindings.resolve_presentation_baseline(
+                    &registry,
+                    nid,
+                    &moved,
+                    &[emissive_payload()],
+                    &resolver
+                ),
+                None
+            );
+            assert!(bindings.is_presentation_rejected(nid));
+        }
+        logs.assert_logged_once(log::Level::Warn, "presentation binding kind 3 index 0");
+        assert_eq!(
+            registry
+                .get_component::<EmissiveVolumeComponent>(id)
+                .unwrap(),
+            &authored
+        );
     }
 
     fn assert_reading(reading: Option<f64>, expected: f64) {

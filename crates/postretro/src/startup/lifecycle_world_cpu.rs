@@ -35,6 +35,7 @@ pub(crate) fn start_installed_presentation_animations(
     registry: &postretro_entities::EntityRegistry,
     lights: &mut crate::scripting_systems::light_bridge::LightBridge,
     fog: &mut crate::scripting_systems::fog_volume_bridge::FogVolumeBridge,
+    emissive: &mut crate::scripting_systems::emissive_volume_bridge::EmissiveVolumeBridge,
     emitters: &mut crate::scripting_systems::emitter_bridge::EmitterBridge,
 ) {
     use postretro_entities::{ComponentKind, ComponentValue};
@@ -53,10 +54,11 @@ pub(crate) fn start_installed_presentation_animations(
             fog.seed_replicated_state(registry, id, Some(0.0));
         }
     }
+    emissive.start_installed_animations(registry);
     emitters.start_installed_animations(registry);
 }
 
-/// Segment B of the CPU world install (renderer-free): fog-volume entities,
+/// Segment B of the CPU world install (renderer-free): fog- and emissive-volume entities,
 /// kinematic movers, classname dispatch, the data script, the
 /// data-archetype sweep (incl. player-pawn spawn), the mesh sweep's CPU half
 /// (one glTF parse per model, hit-zone store build + clip-index resolve), the
@@ -117,6 +119,7 @@ pub(crate) fn install_world_cpu_with_models(
         active_level_tags,
         nav_graph,
         fog_volume_bridge,
+        emissive_volume_bridge,
         trigger_volume_bridge,
         classname_dispatch,
         script_runtime,
@@ -174,6 +177,29 @@ pub(crate) fn install_world_cpu_with_models(
     );
     crate::runtime_seams::spawn_loaded_seams(&mut script_ctx.registry.borrow_mut(), world);
     crate::ghost_links::spawn_loaded_ghost_links(&mut script_ctx.registry.borrow_mut(), world);
+
+    // Emissive volumes — one entity per id-60 record, in record order; co-op
+    // binds them by record index, as fog. Placed after the fog → trigger pair
+    // so that pair stays adjacent.
+    {
+        let mut registry = script_ctx.registry.borrow_mut();
+        // The flash limiter judges each volume by its brightest member
+        // texture: strength × mean glow luminance.
+        let flash_sources = postretro_render_cpu::emissive_flash::EmissiveFlashSource::for_volumes(
+            &world.emissive,
+            |face| {
+                world
+                    .face_meta
+                    .get(face as usize)
+                    .and_then(|meta| meta.texture_index)
+            },
+        );
+        emissive_volume_bridge.populate_from_level(
+            &mut registry,
+            &world.emissive.volumes,
+            &flash_sources,
+        );
+    }
 
     // Kinematic movers. The caller commits the static collision world (built
     // and validated before any install mutation) ahead of this call.

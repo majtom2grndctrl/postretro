@@ -21,6 +21,7 @@ const doors = getMapEntities("mover", { tag: "door" });
 const plates = getMapEntities("trigger");
 const lights = getMapEntities("light", { tag: "alarm" });
 const fogs = getMapEntities("fog");
+const signs = getMapEntities("emissive", { tag: "bar_sign" });
 const emitters = getMapEntities("emitter");
 const closets = getMapEntities("spawner", { tag: "closet_spawner" });
 
@@ -28,10 +29,18 @@ const memberSteps: SequenceStep[] = [
   ...doors.flatMap((m) => m.start()),
   ...lights.flatMap((l, i) => l.pulse({ min: 0.3, max: 1, periodMs: 400 + i * 50 })),
   ...fogs.flatMap((f) => f.pulseSaturation({ min: 0, max: 1, periodMs: 500 })),
+  ...signs.flatMap((e) => e.flicker({ min: 0.3, max: 1, rate: 6 })),
+  ...signs.flatMap((e) => e.fade({ from: 1, to: 0, periodMs: 750 })),
   ...closets.flatMap((s) => s.fire()),
 ];
 const spawnedTags: ReadonlyArray<string> = closets[0].spawnedTags;
 const emitterRate: number = emitters[0].component.rate;
+// An emissive member reads its authored range and scripted state.
+const glow = signs[0].component;
+const glowRange: [number, number, number, ReadonlyArray<number>] = [glow.min, glow.max, glow.brightness, glow.color];
+// Static writes are tag-targeted primitives; none carries the authored range.
+defineReaction("powerCut", { primitive: "setEmissiveBrightness", tag: "bar_sign", args: { brightness: 0 } });
+defineReaction("doorLocked", { primitive: "setEmissiveColor", tag: "status_lamp", args: { color: [1, 0.05, 0.02] } });
 // Descriptor-only lights resolve by tag when the reaction fires. Null clears.
 defineReaction("alarm.clear", {
   primitive: "setLightAnimation", tag: "alarm", args: null,
@@ -49,6 +58,10 @@ lights[0].start();
 emitters[0].fire();
 // @ts-expect-error A spawner member has no light verbs.
 closets[0].pulse({ min: 0, max: 1, periodMs: 1 });
+// @ts-expect-error An emissive member has no fog saturation verbs.
+signs[0].pulseSaturation({ min: 0, max: 1, periodMs: 1 });
+// @ts-expect-error An emissive step's brightness is a number.
+const badBrightness: Postretro.SetEmissiveBrightnessStep = { id: signs[0].id, primitive: "setEmissiveBrightness", args: { brightness: "0" } };
 
 // Groups: one descriptor per verb, legal as a body and directly as a step.
 const closet = npcs({ tag: "closet" });
@@ -114,6 +127,8 @@ setGravity(getGravity() * 0.5);
 
 void spawnedTags;
 void emitterRate;
+void glowRange;
+void badBrightness;
 void sorted;
 void groupStep;
 void patchUp;

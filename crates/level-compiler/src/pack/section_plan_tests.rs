@@ -1,12 +1,16 @@
-// Pack-time refusals of id 34 and id 59, and the SH body-presence choice.
+// Pack-time refusals of ids 34, 59 and 60, and the SH body-presence choice.
 // See: context/lib/build_pipeline.md §PRL section IDs
 
 use postretro_level_format::probe_depth_tiles::{PROBE_DEPTH_TILE_TEXELS, ProbeDepthTilesSection};
 use postretro_level_format::sh_volume::{OctahedralShProbe, OctahedralShVolumeSection};
 
+use postretro_level_format::emissive::{EmissiveSection, EmissiveVolumeRecord};
+use postretro_level_format::geometry::{FaceMeta, GeometrySection};
 use postretro_level_format::sh_body::ShBodyPresence;
+use postretro_level_format::texture_names::TextureNamesSection;
 
-use super::{legacy_sh_body, refuse_what_the_loader_refuses};
+use super::{legacy_sh_body, refuse_unstampable_emissive_members, refuse_what_the_loader_refuses};
+use crate::geometry::{FaceIndexRange, GeometryResult};
 
 /// A one-row id 34 holding `probes`.
 fn volume(probes: Vec<OctahedralShProbe>) -> OctahedralShVolumeSection {
@@ -80,4 +84,69 @@ fn sh_bodies_are_omitted_only_beside_id_50_without_the_flag() {
     assert_eq!(legacy_sh_body(true, true), ShBodyPresence::Present);
     assert_eq!(legacy_sh_body(false, false), ShBodyPresence::Present);
     assert_eq!(legacy_sh_body(false, true), ShBodyPresence::Present);
+}
+
+/// Two faces, the second with no triangle. Vertices are not read.
+fn geometry_with_a_triangle_less_face() -> GeometryResult {
+    GeometryResult {
+        geometry: GeometrySection {
+            vertices: Vec::new(),
+            indices: vec![0, 1, 2],
+            faces: vec![
+                FaceMeta {
+                    leaf_index: 0,
+                    texture_index: 0,
+                };
+                2
+            ],
+        },
+        texture_names: TextureNamesSection {
+            names: vec!["glow".to_owned()],
+        },
+        face_index_ranges: vec![
+            FaceIndexRange {
+                index_offset: 0,
+                index_count: 3,
+            },
+            FaceIndexRange {
+                index_offset: 3,
+                index_count: 0,
+            },
+        ],
+    }
+}
+
+fn emissive_listing(faces: Vec<u32>) -> EmissiveSection {
+    EmissiveSection {
+        textures: EmissiveSection::dark(1).textures,
+        volumes: vec![EmissiveVolumeRecord {
+            min: 0.0,
+            max: 1.0,
+            color: [1.0; 3],
+            origin: [0.0; 3],
+            faces,
+            tags: Vec::new(),
+        }],
+    }
+}
+
+// Once any volume lists a face, the loader recovers every face's range from
+// its BVH leaf, and a face with no triangle has none: the build fails naming
+// it rather than write a level the loader refuses. With no member listed the
+// loader never looks, so the level packs.
+#[test]
+fn emissive_members_refuse_a_level_with_a_triangle_less_face_by_name() {
+    let geometry = geometry_with_a_triangle_less_face();
+    let message = refuse_unstampable_emissive_members(&emissive_listing(vec![0]), &geometry)
+        .expect_err("a member list beside a triangle-less face is refused")
+        .to_string();
+    assert!(
+        message.contains("Emissive volume membership needs a triangle on every Geometry face")
+            && message.contains("face 1 has none"),
+        "{message}"
+    );
+    refuse_unstampable_emissive_members(&emissive_listing(Vec::new()), &geometry)
+        .expect("an empty volume stamps nothing");
+    refuse_unstampable_emissive_members(&EmissiveSection::dark(1), &geometry)
+        .expect("no volume stamps nothing");
 }

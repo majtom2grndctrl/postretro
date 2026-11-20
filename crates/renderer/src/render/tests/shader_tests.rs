@@ -857,8 +857,12 @@ fn forward_mask_words_ride_one_flat_varying_past_the_vertex_only_table() {
         varyings.contains("@location(11) @interpolate(flat) mask_offset: u32,"),
         "the face's mask offset rides location 11, flat",
     );
+    assert!(
+        varyings.contains("@location(12) @interpolate(flat) emissive_volume: u32,"),
+        "the face's emissive volume id rides location 12, flat",
+    );
     let locations = varyings.matches("@location(").count();
-    assert_eq!(locations, 12, "locations 0 to 11");
+    assert_eq!(locations, 13, "locations 0 to 12");
     assert!(
         locations <= wgpu::Limits::default().max_inter_stage_shader_variables as usize,
         "{locations} inter-stage locations pass the device default",

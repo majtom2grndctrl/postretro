@@ -157,6 +157,9 @@ export type SetFogEdgeSoftnessStep = import("postretro").SetFogEdgeSoftnessStep;
 export type SetFogFalloffStep = import("postretro").SetFogFalloffStep;
 export type SetFogParamsStep = import("postretro").SetFogParamsStep;
 export type SetFogAnimationStep = import("postretro").SetFogAnimationStep;
+export type SetEmissiveBrightnessStep = import("postretro").SetEmissiveBrightnessStep;
+export type SetEmissiveColorStep = import("postretro").SetEmissiveColorStep;
+export type SetEmissiveAnimationStep = import("postretro").SetEmissiveAnimationStep;
 export type MoverStartStep = import("postretro").MoverStartStep;
 export type MoverStopStep = import("postretro").MoverStopStep;
 export type MoverReverseStep = import("postretro").MoverReverseStep;
@@ -197,6 +200,9 @@ export type SequenceStep =
   | SetFogFalloffStep
   | SetFogParamsStep
   | SetFogAnimationStep
+  | SetEmissiveBrightnessStep
+  | SetEmissiveColorStep
+  | SetEmissiveAnimationStep
   | MoverStartStep
   | MoverStopStep
   | MoverReverseStep

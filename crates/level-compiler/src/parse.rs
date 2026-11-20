@@ -30,6 +30,8 @@ use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_L
 mod attack_pools;
 #[path = "parse/authoring_regions.rs"]
 mod authoring_regions;
+#[path = "parse/emissive_volumes.rs"]
+mod emissive_volumes;
 #[cfg(test)]
 #[path = "parse/environment_volume_tests.rs"]
 mod environment_volume_tests;
@@ -787,8 +789,9 @@ const MAX_SWITCH_USE_REACH: f32 = 128.0;
 ///
 /// Used by every comparison in [`apply_switch_use_reach`] that could straddle a
 /// contact plane, and as the floor on `use_reach`: a margin the gate would discard
-/// as float dust is a no-op, not a small reach.
-const FLUSH_TOLERANCE_METERS: f64 = 1e-3;
+/// as float dust is a no-op, not a small reach. Emissive membership reads it as its
+/// containment slack, so a face in the plane of a volume brush's side joins.
+pub(crate) const FLUSH_TOLERANCE_METERS: f64 = 1e-3;
 
 /// A `switch` trigger awaiting its per-face reach margins.
 ///
@@ -999,6 +1002,9 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut environment_volume_brush_ids: Vec<Vec<BrushId>> = Vec::new();
     // Authored reflection-probe boxes, in map entity order.
     let mut reflection_volumes = Vec::new();
+    // `emissive_volume` entities in map entity order, keys fixed; their hulls
+    // resolve after the walk.
+    let mut pending_emissive_volumes = Vec::new();
     let mut pending_switch_reach: Vec<PendingSwitchReach> = Vec::new();
     // Mapper-authored SH probe-coarsening protection volumes, each a world-space
     // AABB `[minx,miny,minz,maxx,maxy,maxz]` in engine meters. Unioned with the
@@ -1397,6 +1403,19 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 &props,
                 scale,
                 entities.len() - 1,
+            )?);
+            continue;
+        }
+
+        // Emissive volumes select static world faces after the atlas cut; their
+        // brushes stay out of the world set, so they never render, collide or
+        // bake.
+        if classname == emissive_volumes::EMISSIVE_VOLUME {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            pending_emissive_volumes.push(emissive_volumes::read_emissive_volume(
+                &props,
+                entities.len() - 1,
+                brush_ids,
             )?);
             continue;
         }
@@ -1804,6 +1823,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         &environment_volume_brush_ids,
         scale,
     );
+    let emissive_volumes =
+        emissive_volumes::resolve_emissive_volumes(&geo_map, pending_emissive_volumes, scale)?;
     let world_hulls = build_brush_volumes_with_ids(&geo_map, &world_brush_ids, scale);
     // Kinematic mover brushes never reach the world set, but a switch mounted on a
     // door or lift must still clamp against its mount. Their hulls exist only for
@@ -1869,6 +1890,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Map entities (classname dispatch): {}", map_entities.len());
     log::info!("Environment volumes: {}", environment_volumes.len());
     log::info!("Reflection volumes: {}", reflection_volumes.len());
+    log::info!("Emissive volumes: {}", emissive_volumes.len());
     let ghost_links = ghost_links.finish(teleporters.destinations())?;
     seams.warn_without_player_spawn(&map_entities);
     let seams = seams.finish(teleporters.destinations())?;
@@ -1891,6 +1913,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         trigger_volumes,
         environment_volumes,
         reflection_volumes,
+        emissive_volumes,
         teleporters: teleporters.finish()?,
         ghost_links,
         seams,

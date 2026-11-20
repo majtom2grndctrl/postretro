@@ -44,6 +44,11 @@ pub const BIND_SHADOWMASK_ATLAS: u32 = 6;
 /// Animated block table for the forward shader: where each animated face's
 /// block sits in the compact atlas. FRAGMENT-only uniform.
 pub const BIND_ANIMATED_BLOCK_TABLE: u32 = 7;
+/// Emissive volume table: one rgb glow factor per volume, entry 0 "no
+/// volume". FRAGMENT-only uniform, read only for faces whose texture glows.
+/// Group 4 hosts it because the fragment stage has uniform slots to spare and
+/// no sampled-texture or storage slot (rendering_pipeline.md §7.3).
+pub const BIND_EMISSIVE_VOLUME_TABLE: u32 = 8;
 
 /// Group 6, binding 0: the lightmap block table the forward vertex stage
 /// reads, one `vec4<u32>` per `WorldVertex::lightmap_block`
@@ -83,7 +88,7 @@ pub(crate) fn filtering_sampler_descriptor() -> wgpu::SamplerDescriptor<'static>
     }
 }
 
-pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
+pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 9] {
     // Two samplers (binding 2 nearest, binding 4 linear), split by what each
     // texture needs:
     //   - Irradiance (0) and animated atlas (3) are `Rgba16Float`, which is
@@ -177,6 +182,18 @@ pub(crate) fn bind_group_layout_entries() -> [wgpu::BindGroupLayoutEntry; 8] {
             },
             count: None,
         },
+        wgpu::BindGroupLayoutEntry {
+            binding: BIND_EMISSIVE_VOLUME_TABLE,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(
+                    postretro_render_cpu::emissive_volume::EMISSIVE_TABLE_BYTES as u64,
+                ),
+            },
+            count: None,
+        },
     ]
 }
 
@@ -191,6 +208,9 @@ pub(crate) struct Group4Bindings {
     pub(crate) animated_atlas_view: wgpu::TextureView,
     pub(crate) animated_direction_view: wgpu::TextureView,
     pub(crate) animated_block_table: wgpu::Buffer,
+    /// The level set's emissive volume table, written per frame by the
+    /// renderer's volume-table upload.
+    pub(crate) emissive_volume_table: wgpu::Buffer,
 }
 
 impl Group4Bindings {
@@ -248,6 +268,10 @@ impl Group4Bindings {
                 wgpu::BindGroupEntry {
                     binding: BIND_ANIMATED_BLOCK_TABLE,
                     resource: self.animated_block_table.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: BIND_EMISSIVE_VOLUME_TABLE,
+                    resource: self.emissive_volume_table.as_entire_binding(),
                 },
             ],
         })

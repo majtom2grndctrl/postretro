@@ -181,6 +181,7 @@ pub fn produce_owned_snapshots_with_host_aim(
             ComponentKind::Light,
             ComponentKind::FogVolume,
             ComponentKind::BillboardEmitter,
+            ComponentKind::EmissiveVolume,
         ] {
             let key = (id, kind);
             let Some(record) = overrides.records.get(&key) else {

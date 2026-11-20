@@ -243,7 +243,7 @@ impl App {
             let ComponentValue::Immersion(immersion) = value else {
                 return;
             };
-            immersion.fluid = immersion.fluid.and_then(&remap);
+            immersion.fluid = immersion.fluid.and_then(remap);
         });
     }
 

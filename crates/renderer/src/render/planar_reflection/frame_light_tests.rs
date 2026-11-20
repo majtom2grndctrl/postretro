@@ -138,6 +138,8 @@ fn install_lit_quads(renderer: &mut Renderer, quads: &[WorldQuad], lights: &[Map
             &crate::render::LevelGeometry {
                 vertices: &vertices,
                 vertex_spec_owners: &[],
+                vertex_emissive_volumes: &[],
+                emissive_volumes: &[],
                 indices: &indices,
                 bvh: &bvh,
                 lights,

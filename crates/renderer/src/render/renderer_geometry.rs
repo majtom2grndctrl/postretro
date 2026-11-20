@@ -126,7 +126,7 @@ pub(crate) fn bytemuck_cast_slice_u32(data: &[u32]) -> Vec<u8> {
 /// See: context/lib/boot_sequence.md §3 (Level Install Order)
 pub fn level_world_to_geometry<'a>(
     world: &'a postretro_level_loader::LevelWorld,
-    texture_materials: &'a [Material],
+    texture_materials: &'a [TextureMaterial],
 ) -> LevelGeometry<'a> {
     let sh_storage = match world.sh_stream_manifest() {
         Some(manifest) => LevelGeometryShStorage::Streaming {
@@ -138,6 +138,8 @@ pub fn level_world_to_geometry<'a>(
     LevelGeometry {
         vertices: &world.vertices,
         vertex_spec_owners: &world.vertex_spec_owners,
+        vertex_emissive_volumes: &world.vertex_emissive_volumes,
+        emissive_volumes: &world.emissive.volumes,
         indices: &world.indices,
         bvh: &world.bvh,
         lights: &world.lights,

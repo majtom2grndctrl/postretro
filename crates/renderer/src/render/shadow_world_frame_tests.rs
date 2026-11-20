@@ -173,6 +173,8 @@ impl World {
                 &LevelGeometry {
                     vertices: &self.vertices,
                     vertex_spec_owners: &[],
+                    vertex_emissive_volumes: &[],
+                    emissive_volumes: &[],
                     indices: &self.indices,
                     bvh: &self.bvh,
                     lights: &self.lights,

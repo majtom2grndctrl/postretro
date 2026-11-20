@@ -69,20 +69,26 @@ fn install(
     channel: Option<&MoverProbeChannelSection>,
 ) {
     use crate::render::renderer_textures::tests::with_one_triangle;
-    use postretro_render_data::material::Material;
-    with_one_triangle(&[Material::Default], Some(sh), None, &[], |geometry| {
-        renderer
-            .install_level_geometry(
-                &crate::render::LevelGeometry {
-                    probe_depth_tiles: tiles,
-                    mover_probe_channel: channel,
-                    sh_storage: crate::render::LevelGeometryShStorage::Legacy,
-                    ..*geometry
-                },
-                Default::default(),
-            )
-            .expect("level resources install")
-    });
+    use postretro_render_data::material::TextureMaterial;
+    with_one_triangle(
+        &[TextureMaterial::DEFAULT],
+        Some(sh),
+        None,
+        &[],
+        |geometry| {
+            renderer
+                .install_level_geometry(
+                    &crate::render::LevelGeometry {
+                        probe_depth_tiles: tiles,
+                        mover_probe_channel: channel,
+                        sh_storage: crate::render::LevelGeometryShStorage::Legacy,
+                        ..*geometry
+                    },
+                    Default::default(),
+                )
+                .expect("level resources install")
+        },
+    );
 }
 
 fn state(mover_id: u32, t: f32) -> MoverTravel {

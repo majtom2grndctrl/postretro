@@ -1,4 +1,4 @@
-// Light, fog, trap and attack pool member builders in both runtimes: every verb emits the
+// Light, fog, emissive, trap and attack pool member builders in both runtimes: every verb emits the
 // same step wire, unset fields omitted rather than null.
 // See: context/lib/scripting.md §7 (Animation capabilities)
 use super::*;
@@ -12,10 +12,11 @@ const LIGHT_ID: u32 = 7;
 const FOG_ID: u32 = 11;
 const TRAP_ID: u32 = 13;
 const POOL_ID: u32 = 17;
+const EMISSIVE_ID: u32 = 19;
 
 /// A registry whose only primitive is a `worldQuery` answering one light, one
-/// fog volume, one projectile trap and one attack pool, so `getMapEntities`
-/// wraps real member handles.
+/// fog volume, one emissive volume, one projectile trap and one attack pool,
+/// so `getMapEntities` wraps real member handles.
 fn member_registry() -> PrimitiveRegistry {
     let mut registry = PrimitiveRegistry::new();
     registry
@@ -34,6 +35,11 @@ fn member_registry() -> PrimitiveRegistry {
                         "id": FOG_ID,
                         "position": position,
                         "tags": ["mist"],
+                    }]),
+                    "emissive_volume" => serde_json::json!([{
+                        "id": EMISSIVE_ID,
+                        "position": position,
+                        "tags": ["bar_sign"],
                     }]),
                     "projectile_trap" => serde_json::json!([{
                         "id": TRAP_ID,
@@ -88,18 +94,19 @@ fn luau_member_steps(source: &str) -> serde_json::Value {
     lua_to_json(value).expect("luau steps -> json")
 }
 
-// Every light and fog verb, with the inputs that change which animation
-// fields are present (`fade`'s finite `playCount`, `colorShift`'s color,
-// `sweep`'s direction including a zero-length and a non-unit sample,
+// Every light, fog and emissive verb, with the inputs that change which
+// animation fields are present (`fade`'s finite `playCount`, `colorShift`'s
+// color, `sweep`'s direction including a zero-length and a non-unit sample,
 // `flicker`'s fractional period, a reversed `min`/`max`). The twins must emit
 // byte-identical steps through the value converters the step drains use.
 #[test]
-fn light_and_fog_member_builders_emit_byte_identical_steps_in_both_runtimes() {
+fn light_fog_and_emissive_member_builders_emit_byte_identical_steps_in_both_runtimes() {
     let ts = quickjs_member_steps(
         r#"
         import { getMapEntities } from "postretro";
         const light = getMapEntities("light")[0];
         const fog = getMapEntities("fog")[0];
+        const sign = getMapEntities("emissive")[0];
         (globalThis as any).__memberSteps = {
           lightPulse: light.pulse({ min: 0.9, max: 0.1, periodMs: 1200 }),
           lightFade: light.fade({ from: 1, to: 0.25, periodMs: 500 }),
@@ -117,6 +124,9 @@ fn light_and_fog_member_builders_emit_byte_identical_steps_in_both_runtimes() {
           fogFlicker: fog.flicker({ min: 0.3, max: 0.05, rate: 7 }),
           fogPulseSaturation: fog.pulseSaturation({ min: 0, max: 2, periodMs: 1600 }),
           fogFadeSaturation: fog.fadeSaturation({ from: 1, to: 0.5, periodMs: 400 }),
+          emissivePulse: sign.pulse({ min: 0.2, max: 0.9, periodMs: 1500 }),
+          emissiveFade: sign.fade({ from: 1, to: 0, periodMs: 600 }),
+          emissiveFlicker: sign.flicker({ min: 1, max: 0.3, rate: 6 }),
         };
         "#,
     );
@@ -124,6 +134,7 @@ fn light_and_fog_member_builders_emit_byte_identical_steps_in_both_runtimes() {
         r#"
         local light = getMapEntities("light")[1]
         local fog = getMapEntities("fog")[1]
+        local sign = getMapEntities("emissive")[1]
         return {
           lightPulse = light:pulse({ min = 0.9, max = 0.1, periodMs = 1200 }),
           lightFade = light:fade({ from = 1, to = 0.25, periodMs = 500 }),
@@ -141,6 +152,9 @@ fn light_and_fog_member_builders_emit_byte_identical_steps_in_both_runtimes() {
           fogFlicker = fog:flicker({ min = 0.3, max = 0.05, rate = 7 }),
           fogPulseSaturation = fog:pulseSaturation({ min = 0, max = 2, periodMs = 1600 }),
           fogFadeSaturation = fog:fadeSaturation({ from = 1, to = 0.5, periodMs = 400 }),
+          emissivePulse = sign:pulse({ min = 0.2, max = 0.9, periodMs = 1500 }),
+          emissiveFade = sign:fade({ from = 1, to = 0, periodMs = 600 }),
+          emissiveFlicker = sign:flicker({ min = 1, max = 0.3, rate = 6 }),
         }
         "#,
     );
@@ -167,9 +181,14 @@ fn light_and_fog_member_builders_emit_byte_identical_steps_in_both_runtimes() {
             "fogFadeSaturation",
             &["periodMs", "playCount", "saturation"][..],
         ),
+        ("emissivePulse", &["brightness", "periodMs"][..]),
+        ("emissiveFade", &["brightness", "periodMs", "playCount"][..]),
+        ("emissiveFlicker", &["brightness", "periodMs"][..]),
     ] {
         let (id, primitive) = if verb.starts_with("light") {
             (LIGHT_ID, "setLightAnimation")
+        } else if verb.starts_with("emissive") {
+            (EMISSIVE_ID, "setEmissiveAnimation")
         } else {
             (FOG_ID, "setFogAnimation")
         };

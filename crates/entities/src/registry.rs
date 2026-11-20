@@ -20,6 +20,7 @@ use crate::components::billboard_emitter::BillboardEmitterComponent;
 use crate::components::brain::BrainComponent;
 use crate::components::defense_layers::DefenseLayersComponent;
 use crate::components::deferred_effect::DeferredEffectComponent;
+use crate::components::emissive_volume::EmissiveVolumeComponent;
 use crate::components::entity_state::EntityStateComponent;
 use crate::components::fog_volume::FogAnimation;
 use crate::components::ghost_link::GhostLinkComponent;
@@ -194,6 +195,10 @@ pub enum ComponentKind {
     /// one bit per host status kind. The host never carries it; its live
     /// instances sit in the registry's status table.
     StatusPresence = 30,
+    /// Map-authored emissive volume: authored glow range plus scripted
+    /// brightness, colour and animation. Scripts address it through member
+    /// handles and the `setEmissive*` primitives.
+    EmissiveVolume = 31,
 }
 
 impl ComponentKind {
@@ -234,6 +239,7 @@ impl ComponentKind {
             ComponentKind::AttackPool,
             ComponentKind::Seam,
             ComponentKind::StatusPresence,
+            ComponentKind::EmissiveVolume,
         ];
         VARIANTS.len()
     };
@@ -314,6 +320,7 @@ pub enum ComponentValue {
     AttackPool(AttackPoolComponent),
     Seam(SeamComponent),
     StatusPresence(crate::components::statuses::StatusPresenceComponent),
+    EmissiveVolume(EmissiveVolumeComponent),
 }
 
 impl ComponentValue {
@@ -350,6 +357,7 @@ impl ComponentValue {
             ComponentValue::AttackPool(_) => ComponentKind::AttackPool,
             ComponentValue::Seam(_) => ComponentKind::Seam,
             ComponentValue::StatusPresence(_) => ComponentKind::StatusPresence,
+            ComponentValue::EmissiveVolume(_) => ComponentKind::EmissiveVolume,
         }
     }
 }

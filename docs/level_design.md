@@ -596,6 +596,27 @@ The Build Summary's `Mover lighting` lines also name each mover that blocks a li
 
 ---
 
+## Enemies Out of Sight
+
+Enemies no player can perceive run their AI at a lower rate, so a map can hold hundreds of them without slowing the game. An enemy counts as perceived when it stands in a cell a player's cell can see, or within the level's AI wake lead of one. Every player counts, host and clients alike, including dead or downed ones. An unperceived enemy with no target runs its whole AI tick twice a second and checks for targets every 2 s. A perceived or engaged enemy decides 15 times a second and moves every tick, so play in view is unchanged. One that wakes moves up on that tick without catching up movement, so it never jumps.
+
+Things that still reach an unseen enemy every tick: lifts carry it, doors push it, and damage, an opened aggro gate or a target wakes it.
+
+### Keys
+
+| Key | On | Effect |
+|-----|-----|--------|
+| `ai_wake_lead` | `worldspawn` | Metres past each player's cell in which enemies still count as perceived. Default 16. A value above the level's baked visibility reach is capped to it, with a warning. `0` keeps only the cells players can see. A negative or non-finite value fails the build. |
+| `always_active` | an enemy placement | `1` keeps this enemy at full rate even when no player can perceive it; `0` lets it go dormant even if its archetype sets `alwaysActive`. Leave it unset to follow the archetype. Any other value fails the build. Enemies a spawner releases always follow the archetype. |
+
+### Tips
+
+- **Give escorts, racers and scripted walkers `always_active 1`.** An unseen dormant enemy steps in half-second strides, so it can reach a trigger a fraction of a second late. One with `always_active` crosses it on time. It costs full rate for that enemy only.
+- **Monster closets need nothing special.** A closet enemy stays dormant until a player can perceive it, then wakes at once.
+- **Doors do not hide enemies.** Perception ignores doors, so a closed door never puts an enemy to sleep early.
+- **Ghost links count as sight.** Enemies seen through an armed ghost link stay perceived.
+- **An enemy in view that moves in half-second strides marks a visibility gap.** The same spot will show lighting or probe problems too, because enemies use the visibility the lighting uses. Fix the level's visibility there; there is no separate AI visibility bake.
+
 ## Teleporters
 
 A `trigger_teleport` brush sends a player who walks into it to a

@@ -1184,6 +1184,40 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         }
     };
 
+    // Worldspawn `ai_wake_lead` (metres): how far past each player's cell the
+    // AI scheduler still counts NPCs as perceived. Absent keeps the runtime's
+    // default; 0 is the players' cells and visible sets alone. A negative or
+    // non-finite value fails the build by name.
+    let ai_wake_lead: Option<f32> = match get_property(&geo_map, &worldspawn_id, "ai_wake_lead") {
+        Some(raw) => {
+            let parsed: f32 = raw.trim().parse().map_err(|e| {
+                anyhow::anyhow!("worldspawn `ai_wake_lead` value `{raw}` is not a valid float: {e}")
+            })?;
+            if !parsed.is_finite() || parsed < 0.0 {
+                anyhow::bail!(
+                    "worldspawn `ai_wake_lead` value `{raw}` must be a finite number of metres >= 0"
+                );
+            }
+            // `-0` reads as 0.
+            Some(if parsed == 0.0 { 0.0 } else { parsed })
+        }
+        None => None,
+    };
+
+    // A placed NPC's `always_active` is engine-reserved: 0 or 1. Anything else
+    // fails the build naming the entity, so no PRL carries a value the
+    // scheduler would have to guess at.
+    for (index, entity_id) in geo_map.entities.iter().enumerate() {
+        if let Some(raw) = get_property(&geo_map, entity_id, "always_active")
+            && !matches!(raw.trim(), "0" | "1")
+        {
+            let classname = get_property(&geo_map, entity_id, "classname").unwrap_or_default();
+            anyhow::bail!(
+                "entity {index} '{classname}': `always_active` value `{raw}` must be 0 or 1"
+            );
+        }
+    }
+
     for entity_id in geo_map.entities.iter() {
         let classname =
             get_property(&geo_map, entity_id, "classname").unwrap_or_else(|| "unknown".to_string());
@@ -1869,6 +1903,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         stream_priority_regions,
         fog_pixel_scale,
         initial_gravity,
+        ai_wake_lead,
         lightmap_density,
         sh_density_fidelity,
         bounce_fill,

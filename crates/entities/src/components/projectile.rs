@@ -41,6 +41,11 @@ pub struct ProjectileComponent {
     #[serde(default)]
     pub damage_type: Option<u16>,
     pub owner_pawn: EntityId,
+    /// `owner_pawn`'s life counter when the shot was fired. A shot landing
+    /// after its owner respawned touches no NPC's meter or attacker ledger.
+    /// Host-local: never on the wire.
+    #[serde(default)]
+    pub owner_life: u32,
     pub owner_weapon: EntityId,
     /// A shot with no shooter to credit (a projectile trap). Its damage,
     /// direct or splash, carries no attacker even while `owner_pawn` lives;

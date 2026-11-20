@@ -4270,6 +4270,10 @@ fn parse_map_file_rejects_malformed_or_non_finite_initial_gravity() {
 /// `_lightmap_density` round-trip tests below to avoid duplicating the
 /// brush fixture six ways.
 fn parse_worldspawn_with_kvp(extra_kvp: &str) -> MapData {
+    try_parse_worldspawn_with_kvp(extra_kvp).expect("fixture should parse without error")
+}
+
+fn try_parse_worldspawn_with_kvp(extra_kvp: &str) -> anyhow::Result<MapData> {
     // Inline `extra_kvp` only when non-empty; an empty line between KVPs
     // and the first brush trips shalrath's "no worldspawn entity found"
     // path on some platforms.
@@ -4307,7 +4311,81 @@ fn parse_worldspawn_with_kvp(extra_kvp: &str) -> MapData {
     std::fs::write(&tmp, map_text).unwrap();
     let result = parse_map_file(&tmp, MapFormat::IdTech2);
     let _ = std::fs::remove_file(&tmp);
-    result.expect("fixture should parse without error")
+    result
+}
+
+#[test]
+fn parse_map_file_reads_ai_wake_lead_and_leaves_it_absent_by_default() {
+    assert_eq!(parse_worldspawn_with_kvp("").ai_wake_lead, None);
+    assert_eq!(
+        parse_worldspawn_with_kvp("\"ai_wake_lead\" \"24.5\"").ai_wake_lead,
+        Some(24.5)
+    );
+    assert_eq!(
+        parse_worldspawn_with_kvp("\"ai_wake_lead\" \"0\"").ai_wake_lead,
+        Some(0.0)
+    );
+}
+
+#[test]
+fn parse_map_file_rejects_an_always_active_other_than_0_or_1_by_name() {
+    let parse = |value: &str| {
+        let map_text = format!(
+            "\
+// entity 0
+{{
+\"classname\" \"worldspawn\"
+{{
+( -16 -16 -16 ) ( -16 -16 16 ) ( -16 16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( -16 16 -16 ) ( 16 -16 -16 ) tex 0 0 0 1 1
+( -16 -16 -16 ) ( 16 -16 -16 ) ( -16 -16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 -16 16 ) ( 16 16 -16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( 16 16 -16 ) ( -16 16 16 ) tex 0 0 0 1 1
+( 16 16 16 ) ( -16 16 16 ) ( 16 -16 16 ) tex 0 0 0 1 1
+}}
+}}
+// entity 1
+{{
+\"classname\" \"enemy_grunt\"
+\"origin\" \"0 0 0\"
+\"always_active\" \"{value}\"
+}}
+"
+        );
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tid = std::thread::current().id();
+        let tmp = std::env::temp_dir().join(format!("postretro_always_active_{nanos}_{tid:?}.map"));
+        std::fs::write(&tmp, map_text).unwrap();
+        let result = parse_map_file(&tmp, MapFormat::IdTech2);
+        let _ = std::fs::remove_file(&tmp);
+        result
+    };
+    for value in ["0", "1"] {
+        parse(value).unwrap_or_else(|err| panic!("`always_active` {value} must build: {err}"));
+    }
+    for value in ["2", "true", "", "yes"] {
+        let err = parse(value).expect_err("a bad `always_active` must fail the build");
+        let message = err.to_string();
+        assert!(
+            message.contains("always_active") && message.contains("enemy_grunt"),
+            "error for `{value}` should name the key and the entity, got: {message}",
+        );
+    }
+}
+
+#[test]
+fn parse_map_file_rejects_a_negative_non_finite_or_malformed_ai_wake_lead_by_name() {
+    for value in ["-1", "NaN", "inf", "-inf", "sixteen"] {
+        let err = try_parse_worldspawn_with_kvp(&format!("\"ai_wake_lead\" \"{value}\""))
+            .expect_err("a bad `ai_wake_lead` must fail the build");
+        assert!(
+            err.to_string().contains("ai_wake_lead"),
+            "error for `{value}` should name `ai_wake_lead`, got: {err}",
+        );
+    }
 }
 
 #[test]

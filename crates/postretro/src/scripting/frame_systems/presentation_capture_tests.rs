@@ -103,6 +103,7 @@ impl Fixture {
         registry.set_component(id, component).unwrap();
         if networked_npc {
             let graph = postretro_foundation::BehaviorGraphDescriptor {
+                ai: Default::default(),
                 knockback: Default::default(),
                 envelope: postretro_foundation::BehaviorGraphEnvelope {
                     initial: "idle".into(),

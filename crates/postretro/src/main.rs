@@ -880,6 +880,11 @@ pub(crate) struct App {
     /// every build; the `Alt+Shift+N` debug overlay (dev-tools-only) also
     /// consumes it.
     nav_graph: Option<nav::NavGraph>,
+    /// The NPC tick scheduler for the loaded level: perception (AI lead,
+    /// ghost-link cells, perceived cells, each NPC's cell) and each NPC's tier.
+    /// Built with the level; `None` without one, which runs every NPC every
+    /// tick.
+    npc_scheduler: Option<postretro_sim::npc_tiers::NpcScheduler>,
 
     /// Optional map path resolved from CLI args. When absent, boot lands in
     /// Frontend after the splash instead of requesting a boot level load.

@@ -350,6 +350,7 @@ mod tests {
             ComponentKind::Agent => ComponentValue::Agent(AgentComponent::new(0.3, 1.6, 0.35, 5.0)),
             ComponentKind::Brain => {
                 ComponentValue::Brain(BrainComponent::from_graph(&BehaviorGraphDescriptor {
+                    ai: Default::default(),
                     knockback: Default::default(),
                     envelope: BehaviorGraphEnvelope {
                         initial: "idle".to_string(),
@@ -524,6 +525,7 @@ mod tests {
                 damage: 10.0,
                 credit_source: "test.projectile".to_string(),
                 owner_pawn: EntityId::from_raw(1),
+                owner_life: 0,
                 owner_weapon: EntityId::from_raw(2),
                 attackerless: false,
                 spawned: false,

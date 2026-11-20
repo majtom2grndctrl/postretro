@@ -13,9 +13,9 @@ use postretro_entities::{
 };
 use postretro_foundation::attack_budget::AttackBudgetVocabulary;
 use postretro_foundation::{
-    BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope, BehaviorLayerDescriptor,
-    BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow, IrType, ResolutionMode,
-    bind,
+    AwarenessDescriptor, BakedIr, BehaviorGraphDescriptor, BehaviorGraphEnvelope,
+    BehaviorLayerDescriptor, BehaviorSelectorEntry, BoundProgram, CURRENT_IR_VERSION, GuardedRow,
+    IrType, ResolutionMode, bind,
 };
 
 use super::attack_turns::{ATTACK_DRAW_WARNING, live_behavior, resolve_graph_draws};
@@ -100,6 +100,10 @@ pub(crate) struct BrainEntityPrograms {
     attack_draws: Vec<ResolvedDraws>,
     /// The entity's clip-timed attacks were checked against its bound clips.
     clips_checked: bool,
+    /// Its tactical line in metres, from the live descriptor.
+    tactical_range_m: f32,
+    /// Its awareness rates, from the live descriptor.
+    awareness: AwarenessDescriptor,
 }
 
 impl BrainEntityPrograms {
@@ -122,6 +126,18 @@ impl BrainEntityPrograms {
         attack_name: &str,
     ) -> Option<&ResolvedProjectileAttack> {
         self.resolved_projectile_attacks.get(attack_name)
+    }
+
+    /// The tactical line in metres: the live archetype's `tacticalRange`
+    /// raised to its largest attack standoff plus the margin.
+    pub(crate) fn tactical_range_m(&self) -> f32 {
+        self.tactical_range_m
+    }
+
+    /// The live archetype's awareness rates: a reload keeps every meter's
+    /// value and applies its rates from the next check.
+    pub(crate) fn awareness(&self) -> AwarenessDescriptor {
+        self.awareness
     }
 
     /// What the attack at `attack` (its index in the graph's attacks) draws.
@@ -280,6 +296,19 @@ impl BrainPrograms {
                         warned,
                     ),
                 );
+                if let Some(entry) = self.entries.get_mut(&entity) {
+                    entry.tactical_range_m = tactical_range_m(
+                        registry,
+                        entity,
+                        &brain.graph,
+                        descriptors,
+                        descriptor_generation,
+                        warned,
+                    );
+                    entry.awareness = live_behavior(registry, entity, descriptors)
+                        .unwrap_or(&brain.graph)
+                        .awareness();
+                }
                 continue;
             }
             let Some(entry) = self.entries.get_mut(&entity) else {
@@ -287,6 +316,17 @@ impl BrainPrograms {
             };
             let generation_changed = entry.descriptor_generation != descriptor_generation;
             if generation_changed {
+                entry.tactical_range_m = tactical_range_m(
+                    registry,
+                    entity,
+                    &brain.graph,
+                    descriptors,
+                    descriptor_generation,
+                    warned,
+                );
+                entry.awareness = live_behavior(registry, entity, descriptors)
+                    .unwrap_or(&brain.graph)
+                    .awareness();
                 entry.resolved_projectile_attacks =
                     resolve_projectile_attacks(&brain.graph, descriptors, warned);
                 entry.descriptor_generation = descriptor_generation;
@@ -333,7 +373,50 @@ pub(super) fn bind_graph(
         resolved_projectile_attacks,
         attack_draws,
         clips_checked: false,
+        tactical_range_m: BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M,
+        awareness: AwarenessDescriptor::default(),
     }
+}
+
+/// Prefix of the warn-once keys for a tactical range raised to its floor:
+/// one per archetype and descriptor generation, so load warns once and every
+/// committed reload warns again.
+pub(crate) const TACTICAL_RANGE_WARNING: &str = "tactical-range:";
+
+/// The entity's tactical line, from the live descriptor it was materialized
+/// from (else its spawn-time graph). A range raised to its attacks' floor
+/// warns once per archetype and generation.
+fn tactical_range_m(
+    registry: &EntityRegistry,
+    entity: postretro_entities::EntityId,
+    graph: &BehaviorGraphDescriptor,
+    descriptors: &[EntityTypeDescriptor],
+    descriptor_generation: u64,
+    warned: &mut HashSet<String>,
+) -> f32 {
+    let behavior = live_behavior(registry, entity, descriptors).unwrap_or(graph);
+    let line = behavior.tactical_line();
+    if line.raised() {
+        let archetype = registry
+            .get_component::<postretro_entities::provenance::DescriptorProvenance>(entity)
+            .map_or("<unnamed>", |provenance| provenance.canonical_name.as_str());
+        if warned.insert(format!(
+            "{TACTICAL_RANGE_WARNING}{archetype}:{descriptor_generation}"
+        )) {
+            // Name the field only when the author wrote it.
+            let range = match behavior.ai.tactical_range {
+                Some(_) => format!("tacticalRange {} m", line.requested),
+                None => format!("the default tactical range ({} m)", line.requested),
+            };
+            log::warn!(
+                "[AI] `{archetype}`: {range} is inside its largest attack standoff plus {} m; \
+                 using {} m",
+                BehaviorGraphDescriptor::TACTICAL_RANGE_MARGIN_M,
+                line.metres,
+            );
+        }
+    }
+    line.metres
 }
 
 fn resolve_projectile_attacks(
@@ -565,6 +648,7 @@ mod tests {
 
     fn graph_with_attacks(attacks: BTreeMap<String, AttackParams>) -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
@@ -682,6 +766,108 @@ mod tests {
             .set_component(enemy, BrainComponent::from_graph(graph))
             .expect("fresh enemy is live");
         (registry, enemy)
+    }
+
+    // AC 36: the tactical line follows the live descriptor on each committed
+    // reload, and a range raised to its floor warns once at load and once on
+    // every reload that commits it.
+    #[test]
+    fn tactical_range_reload_moves_the_line_and_warns_per_committed_generation() {
+        use postretro_sim::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
+
+        let mut descriptor = behavior_enemy_descriptor("tactician");
+        let behavior = descriptor.behavior.as_mut().unwrap();
+        behavior.ai.tactical_range = Some(0.5);
+        let floor = behavior
+            .tactical_line()
+            .floor
+            .expect("the fixture has attacks");
+        let (mut registry, enemy) = registry_with_brain(descriptor.behavior.as_ref().unwrap());
+        registry
+            .set_component(
+                enemy,
+                postretro_entities::provenance::DescriptorProvenance {
+                    canonical_name: "tactician".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: postretro_entities::provenance::DescriptorSpawnPath::MapPlacement,
+                },
+            )
+            .unwrap();
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+        let capture = LogCapture::start();
+        let warning = "`tactician`: tacticalRange 0.5 m is inside its largest attack standoff";
+
+        programs.sync(&registry, std::slice::from_ref(&descriptor), 1, &mut warned);
+        programs.sync(&registry, std::slice::from_ref(&descriptor), 1, &mut warned);
+        assert_float_eq(programs.get(enemy).unwrap().tactical_range_m(), floor);
+        capture.assert_logged_once(Level::Warn, warning);
+
+        // The same value committed again by a reload warns again.
+        programs.sync(&registry, std::slice::from_ref(&descriptor), 2, &mut warned);
+        assert_eq!(
+            capture
+                .records()
+                .iter()
+                .filter(|record| record.level == Level::Warn && record.message.contains(warning))
+                .count(),
+            2
+        );
+
+        // A reload that moves the line moves it for the live NPC.
+        descriptor.behavior.as_mut().unwrap().ai.tactical_range = Some(floor + 40.0);
+        programs.sync(&registry, std::slice::from_ref(&descriptor), 3, &mut warned);
+        assert_float_eq(
+            programs.get(enemy).unwrap().tactical_range_m(),
+            floor + 40.0,
+        );
+    }
+
+    // AC 36: an unauthored `tacticalRange` raised to its attacks' floor warns
+    // about the default it fell back to, never naming a field the author did
+    // not write.
+    #[test]
+    fn unauthored_tactical_range_raised_to_its_floor_warns_about_the_default() {
+        use postretro_sim::scripting::builtins::data_archetype_test_fixtures::behavior_enemy_descriptor;
+
+        let mut descriptor = behavior_enemy_descriptor("sniper");
+        let behavior = descriptor.behavior.as_mut().unwrap();
+        behavior.ai.tactical_range = None;
+        for attack in behavior.attacks.values_mut() {
+            attack.standoff_distance = Some(120.0);
+        }
+        let line = behavior.tactical_line();
+        assert!(line.raised(), "a 120 m standoff raises the 100 m default");
+        let (mut registry, enemy) = registry_with_brain(descriptor.behavior.as_ref().unwrap());
+        registry
+            .set_component(
+                enemy,
+                postretro_entities::provenance::DescriptorProvenance {
+                    canonical_name: "sniper".to_string(),
+                    owned_components: Default::default(),
+                    map_overrides: Default::default(),
+                    spawn_path: postretro_entities::provenance::DescriptorSpawnPath::MapPlacement,
+                },
+            )
+            .unwrap();
+        let mut programs = BrainPrograms::new();
+        let mut warned = HashSet::new();
+        let capture = LogCapture::start();
+
+        programs.sync(&registry, std::slice::from_ref(&descriptor), 1, &mut warned);
+        assert_float_eq(programs.get(enemy).unwrap().tactical_range_m(), line.metres);
+        capture.assert_logged_once(
+            Level::Warn,
+            "`sniper`: the default tactical range (100 m) is inside its largest attack standoff",
+        );
+        assert!(
+            !capture
+                .records()
+                .iter()
+                .any(|record| record.message.contains("tacticalRange")),
+            "an unauthored field is never named"
+        );
     }
 
     #[test]

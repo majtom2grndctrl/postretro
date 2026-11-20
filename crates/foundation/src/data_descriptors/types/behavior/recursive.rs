@@ -195,6 +195,87 @@ pub struct BehaviorGraphDescriptor {
     #[serde(default)]
     pub engagement_radius: Option<f32>,
     pub move_speed: f32,
+    /// Root fields the AI tick scheduler reads.
+    #[serde(flatten)]
+    pub ai: BehaviorAiTuning,
+}
+
+/// Behavior-root fields the AI tick scheduler reads, on the wire beside the
+/// other root fields. Each serializes only when authored off its default, so
+/// a graph that sets none keeps its bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BehaviorAiTuning {
+    /// Keeps the archetype's NPCs out of the dormant tier: they run idle or
+    /// engaged whether or not a player perceives them. A placement's
+    /// `always_active` key overrides it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub always_active: bool,
+    /// Metres: an engaged NPC whose target is farther (XZ) routes toward it
+    /// instead of choosing a combat slot. `None` is
+    /// [`BehaviorGraphDescriptor::DEFAULT_TACTICAL_RANGE_M`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tactical_range: Option<f32>,
+    /// How fast an NPC without a target notices each candidate. `None` is
+    /// [`AwarenessDescriptor::default`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awareness: Option<AwarenessDescriptor>,
+}
+
+/// The `awareness` block: an NPC without a target fills one meter per
+/// candidate over `fill_ms` while it sees them on consecutive acquisition
+/// checks and they pass its candidacy, drains it over `drain_ms` otherwise,
+/// and acquires a candidate whose meter reaches 1. Each is finite and
+/// `>= 0`; 0 acts as one check interval.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AwarenessDescriptor {
+    #[serde(default = "default_awareness_fill_ms")]
+    pub fill_ms: f32,
+    #[serde(default = "default_awareness_drain_ms")]
+    pub drain_ms: f32,
+}
+
+impl AwarenessDescriptor {
+    /// `fillMs` when unauthored.
+    pub const DEFAULT_FILL_MS: f32 = 1_000.0;
+    /// `drainMs` when unauthored.
+    pub const DEFAULT_DRAIN_MS: f32 = 2_000.0;
+}
+
+impl Default for AwarenessDescriptor {
+    fn default() -> Self {
+        Self {
+            fill_ms: Self::DEFAULT_FILL_MS,
+            drain_ms: Self::DEFAULT_DRAIN_MS,
+        }
+    }
+}
+
+fn default_awareness_fill_ms() -> f32 {
+    AwarenessDescriptor::DEFAULT_FILL_MS
+}
+
+fn default_awareness_drain_ms() -> f32 {
+    AwarenessDescriptor::DEFAULT_DRAIN_MS
+}
+
+/// An archetype's resolved tactical line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TacticalLine {
+    /// The line in metres: the authored or default range, raised to the floor.
+    pub metres: f32,
+    /// The range as authored, or the default.
+    pub requested: f32,
+    /// Its largest attack standoff plus the margin; `None` with no attack.
+    pub floor: Option<f32>,
+}
+
+impl TacticalLine {
+    /// The requested range sat below the floor and was raised to it.
+    pub fn raised(&self) -> bool {
+        self.metres > self.requested
+    }
 }
 
 /// Scalar tuning for the engine-owned retaliation preference. The candidate
@@ -262,6 +343,12 @@ struct RawBehaviorGraphDescriptor {
     #[serde(default)]
     engagement_radius: Option<f32>,
     move_speed: f32,
+    #[serde(default)]
+    always_active: bool,
+    #[serde(default)]
+    tactical_range: Option<f32>,
+    #[serde(default)]
+    awareness: Option<AwarenessDescriptor>,
 }
 
 impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
@@ -283,6 +370,11 @@ impl<'de> Deserialize<'de> for BehaviorGraphDescriptor {
             attacks: raw.attacks,
             engagement_radius: raw.engagement_radius,
             move_speed: raw.move_speed,
+            ai: BehaviorAiTuning {
+                always_active: raw.always_active,
+                tactical_range: raw.tactical_range,
+                awareness: raw.awareness,
+            },
         })
     }
 }
@@ -358,6 +450,44 @@ impl BehaviorGraphDescriptor {
         }
     }
 
+    /// Default tactical range, metres.
+    pub const DEFAULT_TACTICAL_RANGE_M: f32 = 100.0;
+    /// How far inside its tactical line a target comes before the NPC chooses
+    /// slots again, and how far above its largest standoff the line sits.
+    pub const TACTICAL_RANGE_MARGIN_M: f32 = 10.0;
+
+    /// The tactical line: `tacticalRange` or the default, raised to the
+    /// largest attack standoff plus the margin, so an NPC never routes past a
+    /// target it could attack from where it stands.
+    pub fn tactical_line(&self) -> TacticalLine {
+        let requested = self
+            .ai
+            .tactical_range
+            .unwrap_or(Self::DEFAULT_TACTICAL_RANGE_M);
+        let floor = self
+            .attacks
+            .keys()
+            .map(|name| {
+                self.standoff_distance_for_action(Some(&ActionVerb::Attack {
+                    name: name.clone(),
+                    at: None,
+                    at_default: false,
+                }))
+            })
+            .reduce(f32::max)
+            .map(|standoff| standoff + Self::TACTICAL_RANGE_MARGIN_M);
+        TacticalLine {
+            metres: floor.map_or(requested, |floor| requested.max(floor)),
+            requested,
+            floor,
+        }
+    }
+
+    /// The archetype's awareness rates: the authored block, else the defaults.
+    pub fn awareness(&self) -> AwarenessDescriptor {
+        self.ai.awareness.unwrap_or_default()
+    }
+
     /// Combat-slot distance for the selected action. A per-attack standoff is
     /// explicit; otherwise retain the action-relative engagement-radius
     /// behavior so an attack override remains the positioning default.
@@ -378,6 +508,13 @@ impl BehaviorGraphDescriptor {
         validate_positive("moveSpeed", self.move_speed)?;
         if let Some(radius) = self.engagement_radius {
             validate_positive("engagementRadius", radius)?;
+        }
+        if let Some(range) = self.ai.tactical_range {
+            validate_positive("tacticalRange", range)?;
+        }
+        if let Some(awareness) = self.ai.awareness {
+            validate_non_negative("awareness.fillMs", awareness.fill_ms)?;
+            validate_non_negative("awareness.drainMs", awareness.drain_ms)?;
         }
         if let Some(retaliation) = self.retaliation {
             validate_non_negative("retaliation.windowMs", retaliation.window_ms)?;
@@ -1323,6 +1460,7 @@ mod tests {
     #[test]
     fn standoff_distance_defaults_to_per_attack_engagement_radius_override() {
         let graph = BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
@@ -1434,6 +1572,176 @@ mod tests {
             error.to_string().contains("attacks.slam.standoffDistance"),
             "{error}"
         );
+    }
+
+    fn ranged_graph(tactical_range: Option<f32>, standoffs: &[f32]) -> BehaviorGraphDescriptor {
+        let attacks: serde_json::Map<String, serde_json::Value> = standoffs
+            .iter()
+            .enumerate()
+            .map(|(index, standoff)| {
+                (
+                    format!("attack{index}"),
+                    serde_json::json!({
+                        "damage": 1.0,
+                        "maxRange": standoff + 1.0,
+                        "cooldownMs": 500.0,
+                        "standoffDistance": standoff,
+                    }),
+                )
+            })
+            .collect();
+        let mut json = serde_json::json!({
+            "initial": "idle",
+            "moveSpeed": 3.0,
+            "attacks": attacks,
+            "activities": { "idle": { "animation": "idle", "motion": "hold" } },
+            "transitions": {},
+        });
+        if let Some(range) = tactical_range {
+            json["tacticalRange"] = serde_json::json!(range);
+        }
+        serde_json::from_value(json).expect("fixture graph parses")
+    }
+
+    #[test]
+    fn tactical_range_raises_to_the_largest_standoff_plus_the_margin() {
+        // Omitted: 100 m. Authored: as written.
+        assert_eq!(ranged_graph(None, &[4.0]).tactical_line().metres, 100.0);
+        assert_eq!(
+            ranged_graph(Some(60.0), &[4.0]).tactical_line().metres,
+            60.0
+        );
+        // 30 m with a 45 m attack runs at 55 m, raised (and warned at bind).
+        let line = ranged_graph(Some(30.0), &[45.0]).tactical_line();
+        assert_eq!(line.metres, 55.0);
+        assert!(line.raised());
+        // A 5 m and a 120 m attack, no `tacticalRange`: 130 m whichever is
+        // selected.
+        let line = ranged_graph(None, &[5.0, 120.0]).tactical_line();
+        assert_eq!(line.metres, 130.0);
+        assert!(line.raised());
+    }
+
+    #[test]
+    fn tactical_range_rejects_a_non_finite_or_non_positive_value() {
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut graph = ranged_graph(None, &[4.0]);
+            graph.ai.tactical_range = Some(bad);
+            let error = graph
+                .validate()
+                .expect_err("a bad tacticalRange is rejected");
+            assert!(error.to_string().contains("tacticalRange"), "{error}");
+        }
+        ranged_graph(Some(60.0), &[4.0])
+            .validate()
+            .expect("a positive tacticalRange is valid");
+    }
+
+    #[test]
+    fn always_active_is_an_optional_root_boolean_that_keeps_default_bytes() {
+        let graph = |extra: serde_json::Value| {
+            let mut json = serde_json::json!({
+                "initial": "idle",
+                "moveSpeed": 3.0,
+                "activities": { "idle": { "animation": "idle", "motion": "hold" } },
+                "transitions": {},
+            });
+            json.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<BehaviorGraphDescriptor>(json)
+        };
+        let absent = graph(serde_json::json!({})).expect("absent `alwaysActive` parses");
+        assert!(!absent.ai.always_active);
+        assert!(
+            serde_json::to_value(&absent)
+                .unwrap()
+                .get("alwaysActive")
+                .is_none(),
+            "an unauthored `alwaysActive` adds no bytes"
+        );
+        let on = graph(serde_json::json!({ "alwaysActive": true })).expect("`true` parses");
+        assert!(on.ai.always_active);
+        assert_eq!(
+            serde_json::to_value(&on).unwrap()["alwaysActive"],
+            serde_json::json!(true)
+        );
+        for bad in [serde_json::json!("yes"), serde_json::json!(1)] {
+            assert!(
+                graph(serde_json::json!({ "alwaysActive": bad })).is_err(),
+                "`alwaysActive: {bad}` must be rejected"
+            );
+        }
+    }
+
+    // AC 5, 26 (P31, P37): `awareness` is an optional root block whose
+    // fields default to 1000 and 2000 ms; each is finite and >= 0, 0 accepted.
+    #[test]
+    fn awareness_is_an_optional_root_block_that_keeps_default_bytes() {
+        let graph = |extra: serde_json::Value| {
+            let mut json = serde_json::json!({
+                "initial": "idle",
+                "moveSpeed": 3.0,
+                "activities": { "idle": { "animation": "idle", "motion": "hold" } },
+                "transitions": {},
+            });
+            json.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<BehaviorGraphDescriptor>(json)
+        };
+        let absent = graph(serde_json::json!({})).expect("absent `awareness` parses");
+        assert_eq!(absent.ai.awareness, None);
+        assert_eq!(absent.awareness(), AwarenessDescriptor::default());
+        assert_eq!(absent.awareness().fill_ms, 1_000.0);
+        assert_eq!(absent.awareness().drain_ms, 2_000.0);
+        assert!(
+            serde_json::to_value(&absent)
+                .unwrap()
+                .get("awareness")
+                .is_none(),
+            "an unauthored `awareness` adds no bytes"
+        );
+        let partial = graph(serde_json::json!({ "awareness": { "fillMs": 300.0 } }))
+            .expect("a partial block parses");
+        assert_eq!(partial.awareness().fill_ms, 300.0);
+        assert_eq!(partial.awareness().drain_ms, 2_000.0);
+        let authored = graph(serde_json::json!({
+            "awareness": { "fillMs": 300.0, "drainMs": 4000.0 }
+        }))
+        .expect("an authored block parses");
+        assert_eq!(
+            serde_json::to_value(&authored).unwrap()["awareness"],
+            serde_json::json!({ "fillMs": 300.0, "drainMs": 4000.0 })
+        );
+        let zero = graph(serde_json::json!({ "awareness": { "fillMs": 0.0, "drainMs": 0.0 } }))
+            .expect("zero parses")
+            .validate()
+            .expect("zero durations are accepted");
+        assert_eq!(zero.awareness().fill_ms, 0.0);
+        assert!(
+            graph(serde_json::json!({ "awareness": { "fillMs": 1.0, "rate": 2.0 } })).is_err(),
+            "an unknown awareness field is rejected"
+        );
+        for field in ["fillMs", "drainMs"] {
+            for bad in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut parsed = graph(serde_json::json!({})).unwrap();
+                let mut block = AwarenessDescriptor::default();
+                if field == "fillMs" {
+                    block.fill_ms = bad;
+                } else {
+                    block.drain_ms = bad;
+                }
+                parsed.ai.awareness = Some(block);
+                let error = parsed
+                    .validate()
+                    .expect_err("a bad awareness duration is rejected");
+                assert!(
+                    error.to_string().contains(&format!("awareness.{field}")),
+                    "{error}"
+                );
+            }
+        }
     }
 
     #[test]

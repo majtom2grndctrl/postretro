@@ -193,6 +193,7 @@ impl Scene {
                     knockback_impulse: [0.0; 3],
                     credit_source: weapon.to_string(),
                     owner_pawn: owner,
+                    owner_life: 0,
                     // An enemy's projectile carries the enemy as its damage
                     // provenance, never a weapon entity.
                     owner_weapon: owner,

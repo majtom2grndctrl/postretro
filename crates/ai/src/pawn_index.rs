@@ -22,6 +22,8 @@ pub(crate) struct IndexedPawn {
     pub(crate) position: Vec3,
     /// The pawn's faction leaf, read once per pass.
     pub(crate) faction: f32,
+    /// The pawn's life counter, read once per pass: 0 for an NPC.
+    pub(crate) life: u32,
     bucket: u32,
 }
 
@@ -79,6 +81,9 @@ impl PawnIndex {
             let faction = registry
                 .get_component::<EntityStateComponent>(entity)
                 .map_or(0.0, |state| state.get(FACTION_STATE_FIELD));
+            let life = registry
+                .get_component::<PlayerMovementComponent>(entity)
+                .map_or(0, |movement| movement.life_counter);
             let next = self.buckets.len() as u32;
             let bucket = *self.bucket_of.entry(faction.to_bits()).or_insert(next);
             if bucket == next {
@@ -95,6 +100,7 @@ impl PawnIndex {
                 entity,
                 position: transform.position,
                 faction,
+                life,
                 bucket,
             });
         }
@@ -141,6 +147,12 @@ impl PawnIndex {
 
     pub(crate) fn pawn(&self, position: u32) -> &IndexedPawn {
         &self.pawns[position as usize]
+    }
+
+    /// `entity`'s life counter, when it is a pawn of this pass.
+    pub(crate) fn life_of(&self, entity: EntityId) -> Option<u32> {
+        self.position_of(entity)
+            .map(|position| self.pawn(position).life)
     }
 
     /// `entity`'s scan position, when it is a pawn of this pass.

@@ -693,6 +693,7 @@ mod tests {
                     damage: 25.0,
                     credit_source: "plasma.primary".to_string(),
                     owner_pawn: EntityId::from_raw(1),
+                    owner_life: 0,
                     owner_weapon: EntityId::from_raw(2),
                     attackerless: false,
                     spawned: false,

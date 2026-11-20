@@ -953,6 +953,15 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 presentation_camera_aim,
                 progress_tracker,
                 postretro_ai::tick_runner!(&mut app.ai_runtime),
+                app.level
+                    .as_ref()
+                    .zip(app.npc_scheduler.as_mut())
+                    .map(
+                        |(level, scheduler)| postretro_sim::npc_tiers::ScheduleInput {
+                            level,
+                            scheduler,
+                        },
+                    ),
                 &app.kinematic_mover_colliders,
                 &mut app.kinematic_mover_tick_states,
                 &remote_pawn_commands,

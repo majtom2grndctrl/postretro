@@ -9,7 +9,7 @@ use super::*;
 fn default_token_admits_three_and_queues_fourth() {
     let graph = striker(100_000.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemies: Vec<EntityId> = (0..4)
         .map(|index| spawn_at(&mut reg, index, &graph, "strike"))
@@ -37,7 +37,7 @@ fn default_token_admits_three_and_queues_fourth() {
 fn third_requester_waits_until_a_holder_releases() {
     let graph = striker(160.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[2]);
     spawn_player(&mut reg, player_spot());
     let enemies: Vec<EntityId> = (0..3)
@@ -92,7 +92,7 @@ fn one_enemy_holds_melee_and_ranged_turns_at_once() {
         ],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1, 1]);
     spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "claw_act");
@@ -154,7 +154,7 @@ fn one_enemy_holds_melee_and_ranged_turns_at_once() {
 fn refused_attack_commits_nothing_and_fires_when_granted() {
     let graph = striker(160.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &graph, "strike");
@@ -204,7 +204,7 @@ fn contact_attackers_take_bounded_turns_under_limit_one() {
     const COOLDOWN_TICKS: usize = 10;
     let graph = cycling_striker(COOLDOWN_TICKS as f32 * 16.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     spawn_player(&mut reg, player_spot());
     let enemies: Vec<EntityId> = (0..3)
@@ -244,18 +244,14 @@ fn contact_attackers_take_bounded_turns_under_limit_one() {
     }
 }
 
-// B29 beyond the near stride band: a holder resting after its attack has no
-// target on ticks not due to acquire, and still holds through its cooldown.
+// B29 between decides: a holder resting after its attack has no
+// target on ticks that are not decides, and still holds through its cooldown.
 // Regression: a missing target released a held unmarked turn early.
 #[test]
-fn unmarked_turn_holds_through_cooldown_between_strided_acquisitions() {
+fn unmarked_turn_holds_through_cooldown_between_decide_acquisitions() {
     const COOLDOWN_TICKS: usize = 20;
     let player = Vec3::new(14.0, 0.0, 0.0);
     let enemy_at = attacker_spot(0);
-    assert!(
-        crate::engine_floor::think_stride_for_distance(player.distance(enemy_at)) > 1,
-        "fixture: acquisition is strided"
-    );
     let mut long_reach = contact(1.0, COOLDOWN_TICKS as f32 * 16.0);
     long_reach.max_range = Some(20.0);
     let graph = graph(
@@ -276,12 +272,10 @@ fn unmarked_turn_holds_through_cooldown_between_strided_acquisitions() {
         vec![("attack", long_reach)],
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player);
-    let mut brain = authored_brain(&graph, "strike");
-    // The first tick is due to acquire, so the attack lands on it.
-    brain.think_stride_counter = 3;
+    let brain = authored_brain(&graph, "strike");
     let enemy = spawn_enemy(&mut reg, enemy_at, brain, 50.0);
 
     tick(&mut reg, &mut runtime);
@@ -343,7 +337,7 @@ fn full_turn_capacity_refuses_drawn_attacks_but_not_undrawn_ones() {
             .collect(),
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1; 5]);
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "full");
@@ -424,7 +418,7 @@ fn undrawn_attack_past_capacity_fires_holding_no_turn() {
             .collect(),
     );
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_at(&mut reg, 0, &graph, "neither");
 
@@ -462,7 +456,7 @@ fn undrawn_attack_past_capacity_fires_holding_no_turn() {
 fn unmarked_attack_requests_only_when_fire_gates_pass() {
     let graph = striker(100_000.0);
     let mut reg = EntityRegistry::new();
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     set_limits(&mut runtime, &[1]);
     let pawn = spawn_player(&mut reg, player_spot());
     // Earlier slots than the ready attacker, so either would win a tie.

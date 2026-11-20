@@ -198,7 +198,9 @@ The client predicts with the host's numbers, never its own, and the sites that r
 
 **Defense layers resolve on the host.** Damage stays host-only, and so do layer drain, recharge and parameter evaluation; a connected client predicts no layer value and evaluates no layer parameter, so a parameter fault warns only on the host. The layer component never replicates. A player's layer values ride owner-private engine slots keyed by registered layer name (`scripting.md` §5) and never reach a teammate; a teammate HUD would be its own replication decision. A pawn without a layer sends that pair as `Unset`, which clears its owner's slot (§Combat authority). An enemy's layer reaches clients only as the damaged-enemy roster's host-sampled shield pair. Per-owner values arrive after spawn, so the host re-evaluates a pawn's layers at once when its seat binds, which also restores a carried value waiting on the seat, and when a join seed writes a slot. Each time, a layer still full at the capacity it had refills to the new one, and one below it only clamps.
 
-**Level environment rides the same payload.** Every pawn's tuning carries the host's level environment: the level default gravity (worldspawn `initialGravity`, then any `setGravity`) and the host's fluid table, name and viscosity per fluid in declaration order. It is level-scoped, so an environment-only change installs without rebuilding the client's pawn tuning. A connected client builds its prediction and replay environment only from the installed values: it never reads its own level gravity, and it resolves level fluid names only against the host table, never its own registry, because admission gates on mod id and never on version. A name the host lacks is dry on the client even if the client declares it. Before the first install the client builds its volumes with every fluid dry and does not predict. Every fluid field but name and viscosity is presentation and resolves locally by name, as sound keys do; a client without the fluid shows none. Peers may therefore see different opacity and murk, a visibility difference non-competitive co-op accepts. Fluid surface drift is the exception: it agrees with the swimmer it depicts, so it resolves from the installed fluid table and tuning, and re-resolves on each install (`rendering_pipeline.md` §7.3a). Changed tuning is queued immediately before the snapshot send, so a mid-level `setGravity` costs at most one correction; loss retransmit or lane reorder on a lossy link can still deliver it after a snapshot. Regional volumes themselves are PRL data the content digest proves, not replicated; a teleporter's armed state is the one runtime exception (§Current contract).
+**Statuses resolve on the host; presence is presentation.** Decided, not yet built (`plans/ready/E16--status-effects-and-hazards`): a connected client predicts no status and no tick. Each entity's status presence replicates as a bitset over the host's declaration order. The host's status names ride the tuning payload, so a client maps presence to its own statuses by name and shows nothing for a name it lacks. Each machine attaches a status's emitter and tick sound from presence; no emitter crosses the wire. A host reload that reorders statuses may mis-map presence until the new name table installs; the mis-map is cosmetic. Status names enter neither the mod digest nor the state-schema fingerprint. A client fills a status handle's local-only `.active` read (`scripting.md` §2) from its own pawn's replicated presence.
+
+**Level environment rides the same payload.** Every pawn's tuning carries the host's level environment: the level default gravity (worldspawn `initialGravity`, then any `setGravity`) and the host's fluid table, name and viscosity per fluid in declaration order. Decided, not yet built: a fluid's `status` is host-only gameplay data and never rides the fluid table. The environment is level-scoped, so an environment-only change installs without rebuilding the client's pawn tuning. A connected client builds its prediction and replay environment only from the installed values: it never reads its own level gravity, and it resolves level fluid names only against the host table, never its own registry, because admission gates on mod id and never on version. A name the host lacks is dry on the client even if the client declares it. Before the first install the client builds its volumes with every fluid dry and does not predict. Every fluid field but name and viscosity is presentation and resolves locally by name, as sound keys do; a client without the fluid shows none. Peers may therefore see different opacity and murk, a visibility difference non-competitive co-op accepts. Fluid surface drift is the exception: it agrees with the swimmer it depicts, so it resolves from the installed fluid table and tuning, and re-resolves on each install (`rendering_pipeline.md` §7.3a). Changed tuning is queued immediately before the snapshot send, so a mid-level `setGravity` costs at most one correction; loss retransmit or lane reorder on a lossy link can still deliver it after a snapshot. Regional volumes themselves are PRL data the content digest proves, not replicated; a teleporter's armed state is the one runtime exception (§Current contract).
 
 Repeated receive of unchanged effective weapon tuning is idempotent: it does not refresh the descriptor, rewrite the live Weapon or cancel activation execution. A genuine tuning/program change validates atomically and cancels future work under the existing lifecycle. Snapshot materialization must preserve a live burst or charge across ordinary repeated receives.
 
@@ -212,7 +214,7 @@ Within a type the digest does reach, the recipe is a **denylist**: bind every fi
 
 Two values answering two questions. **Identity** says *which map* — the catalog id, falling back to a normalized content-root-relative path for an uncatalogued level. **The content digest** says *is the content the same*.
 
-The digest's membership rule is one line: **a deterministic input to client prediction belongs in the hash.** That rule is what put mover identity, path, motion, carry policy, and mover collision geometry in it, and what later added the static world collision the client builds its own trimesh from — the same fail-open recurring on a second surface, because movement prediction and client-authoritative hit declaration both run against that trimesh. Environment volumes joined by the same rule (`FINGERPRINT_EPOCH` 3): every record field — source entity, priority, gravity, push, fluid name, brush planes and bounds — in map order, since order breaks overlap ties. A push volume's `force` rides a sibling section the record recipe cannot see, so it is hashed explicitly after the records: only forces other than 1, each keyed by its record index. A map whose every force is 1 hashes as it did before `force` existed, with or without the section, so the epoch stays 3. The digest names two skips: fluid surface faces, which are presentation, and the level default gravity, which the tuning payload sends. Fluid declarations stay out of the mod compatibility digest for the same reason. Teleporters joined by the same rule (`FINGERPRINT_EPOCH` 4): each record's source entity, mode, brush leaves, destination pose and, for seamless, landmark pose, in map order. They skip `arrival_sound`, which is presentation, `on_teleport`, which only the host dispatches, and `enabled_on_spawn`, since armed state replicates. Anything a client *simulates against* and the host cannot send is a candidate; presentation is not.
+The digest's membership rule is one line: **a deterministic input to client prediction belongs in the hash.** That rule is what put mover identity, path, motion, carry policy, and mover collision geometry in it, and what later added the static world collision the client builds its own trimesh from — the same fail-open recurring on a second surface, because movement prediction and client-authoritative hit declaration both run against that trimesh. Environment volumes joined by the same rule (`FINGERPRINT_EPOCH` 3): every record field — source entity, priority, gravity, push, fluid name, brush planes and bounds — in map order, since order breaks overlap ties. A push volume's `force` rides a sibling section the record recipe cannot see, so it is hashed explicitly after the records: only forces other than 1, each keyed by its record index. A map whose every force is 1 hashes as it did before `force` existed, with or without the section, so the epoch stays 3. The digest names three skips: fluid surface faces, which are presentation, the level default gravity, which the tuning payload sends, and the worldspawn `ai_wake_lead`, which only the host's AI tiers read. Fluid declarations stay out of the mod compatibility digest for the same reason. Teleporters joined by the same rule (`FINGERPRINT_EPOCH` 4): each record's source entity, mode, brush leaves, destination pose and, for seamless, landmark pose, in map order. They skip `arrival_sound`, which is presentation, `on_teleport`, which only the host dispatches, and `enabled_on_spawn`, since armed state replicates. Anything a client *simulates against* and the host cannot send is a candidate; presentation is not.
 
 They stay separate rather than folded together because same-map-different-content is a different diagnosis from wrong-map, and a player can act on the difference. Identity alone cannot discriminate: a catalog id is **mod-scoped**, so two mods may each declare the same id over different files. Admission closes that case, not identity.
 
@@ -648,7 +650,8 @@ admits activations, resolves charge and shot statistics, debits each shot's reso
 owns timed reload progression and reserve transfer, and mints authorized shots. It
 never applies a client's target or damage from this path. Projectile FIRE resolves
 the eye ray against static world and live targetable entities to reconstruct an
-obstruction-safe origin and crosshair-converged direction. Every authorized shot
+obstruction-safe origin and crosshair-converged direction. Decided, not yet built: that
+world includes movers at the host tick's pose. Every authorized shot
 retains its resolved combat and presentation tuning through later switching or
 descriptor replacement. Hit declarations cannot select those statistics.
 
@@ -1021,6 +1024,33 @@ point: a longer wait would replay against a target that has since moved. If the 
 ray misses that entity, nothing detonates; a known gap. The declaration only delays the
 replay and never selects the detonation.
 
+**Decided, not yet built: the host marches client splash shots and credits on-path
+impacts.** This replaces the replay, the hold and the frozen static contact above. It
+reverses "the client never selects a splash center", so the shooter gets credit for
+the impact it saw.
+
+- **March.** Each host tick, where host projectiles advance, the host steps each open
+  client splash shot's frozen path one tick against that tick's world, with movers at
+  that tick's pose. It tests world contacts only and never steps on the FIRE tick.
+- **Credit.** The first valid declared contact counts when it lies within an on-path
+  tolerance of the host's frozen path. A late start's contact usually does not.
+- **Deciding point.** A host world contact nearer than the declared point wins, with its
+  own surface. So does a host contact at a declared world point. Otherwise the blast
+  lands at the declared point. A declared enemy still live there is the impact target,
+  so the weapon's direct push composes with splash. Otherwise the declared normal
+  orients the blast.
+- **Fallbacks.** With an off-path first contact, the host's own march contact decides.
+  A declaration with no valid contact sets off nothing.
+- **Release.** With the declaration in hand, the blast lands before AI on the first tick
+  the march reaches its deciding point.
+- **Observers.** A client splash rocket's display flight steps with the march and
+  vanishes at the deciding point without a contact flash. The burst shows with the
+  blast.
+
+Entities never cut the host path short, so a direct hit the host's flight passes by
+still detonates. The client selects only which point on the host's path counts. One
+authoritative blast still reaches every peer.
+
 ### `shot_id`: the security spine
 
 A `shot_id` binds a hit declaration to a specific host-authorized fire. The host mints and
@@ -1068,6 +1098,11 @@ enemies — the same staleness problem lag-compensating rewind exists to paper o
 this design avoids outright by not needing rewind at all. The attacker eye origin for
 validation is the live, crouch-aware eye height, never the standing reference — a
 standing-eye ray would false-reject a legitimate crouched shot near cover.
+
+Movers are dynamic occluders, so validation ignores them too. Decided, not yet built: the
+shooter's own cast sees movers at its predicted poses, so an honest client never declares
+through a closed door. A host mover check would reject honest hits near a moving edge,
+where host and predicted poses differ by up to a round trip of travel.
 
 ### Ownership and identity maps
 

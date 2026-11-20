@@ -51,6 +51,7 @@ fn heavy_turn(target: EntityId, pool: AttackPoolId) -> AttackTurnState {
     assert!(turns.hold(HeldTurn {
         attack: 0,
         target,
+        target_life: 0,
         pool,
         draws: draws(&[(HEAVY_ID.0, 1)]),
         until_cooldown: true,

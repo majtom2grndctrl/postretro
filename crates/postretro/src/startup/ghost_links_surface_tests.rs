@@ -841,6 +841,35 @@ fn reaction(level: &Level, name: &str) -> ReactionDescriptor {
 // Scripting surface examples — install and run with zero warnings, emit
 // byte-identical wire, and resolve `setGhostAudio` from `postretro/audio` in
 // both runtimes. The `ghostLink` query returns both dev-map links in map order.
+/// The AI scheduler couples a ghost link's cells: those under its volume and
+/// under the volume's image through the link's mapping. Each side holds the
+/// cell its centre stands in.
+#[test]
+fn ghost_link_cells_cover_each_links_volume_and_its_image() {
+    let out = tempfile::tempdir().unwrap();
+    let world = compile("ghost-links", out.path());
+    let cells = postretro_sim::npc_perception::GhostLinkCells::build(&world);
+    assert_eq!(cells.link_count(), world.ghost_links.links.len());
+    assert!(cells.link_count() > 0, "the fixture has ghost links");
+    for (index, volume, image) in cells.links() {
+        let record = &world.ghost_links.links[usize::from(index)];
+        let brush = &record.brushes[0];
+        let centre = (Vec3::from(brush.aabb_min) + Vec3::from(brush.aabb_max)) * 0.5;
+        let mapping = postretro_foundation::movement::teleport::SeamlessMapping::new(
+            Vec3::from(record.landmark_origin),
+            record.landmark_yaw,
+            Vec3::from(record.target_origin),
+            record.target_yaw,
+        );
+        let at = |point: Vec3| world.locate_cell(point) as u32;
+        assert!(volume.contains(&at(centre)), "link {index} volume cells");
+        assert!(
+            image.contains(&at(mapping.point(centre))),
+            "link {index} image cells"
+        );
+    }
+}
+
 #[test]
 fn ghost_link_twins_install_the_scripting_surface_with_zero_warnings() {
     let logs = LogCapture::start();

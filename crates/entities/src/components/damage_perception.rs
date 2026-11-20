@@ -14,11 +14,38 @@ pub(crate) fn record_damage_perception(
     registry: &mut EntityRegistry,
     id: EntityId,
     attacker: Option<EntityId>,
+    attacker_life: Option<u32>,
     amount: f32,
 ) {
+    // A shot fired before its pawn's latest respawn lands as damage, but this
+    // brain perceives no attacker in it: no ledger entry, no meter, no bearing.
+    let attacker = attacker.filter(|&attacker| {
+        attacker_life.is_none_or(|life| {
+            life == crate::components::player_movement::life_counter(registry, attacker)
+        })
+    });
+    let life = attacker.map_or(0, |attacker| {
+        crate::components::player_movement::life_counter(registry, attacker)
+    });
     let attacker_transform =
         attacker.and_then(|attacker| registry.get_component::<Transform>(attacker).ok().copied());
     let damaged_transform = registry.get_component::<Transform>(id).ok().copied();
+    // Whether the held target's pawn has respawned since it was acquired. A
+    // respawn lands at tick start, before this brain's next run drops a target
+    // from the earlier life, so a hit in between finds a target that is
+    // already gone: it counts as none. A target that is no pawn now (an NPC,
+    // a despawned pawn) is still held, as the AI's respawn drop reads it.
+    let target_respawned = registry
+        .get_component::<crate::components::brain::BrainComponent>(id)
+        .ok()
+        .and_then(|brain| {
+            let now = crate::components::player_movement::pawn_life_counter(
+                registry,
+                brain.acquired_target?,
+            )?;
+            Some(now != brain.acquired_target_life)
+        })
+        .unwrap_or(false);
     if let Ok(ComponentValue::Brain(brain)) =
         registry.get_component_value_mut(id, ComponentKind::Brain)
     {
@@ -31,7 +58,25 @@ pub(crate) fn record_damage_perception(
         // position below deliberately require spatial provenance. Contextless
         // damage still resets generic recency but creates no ledger entry.
         if let Some(attacker) = attacker {
-            brain.record_attacker_damage(attacker, amount);
+            brain.record_attacker_damage_in_life(attacker, amount, life);
+        }
+        // On an NPC without a target, a hit sets its attacker's awareness
+        // meter to 1, draining from this hit. One holding a target changes
+        // no meter; damage with no attacker changes none. A target whose
+        // pawn respawned since it was acquired is held no longer.
+        let holds_target = brain.acquired_target.is_some() && !target_respawned;
+        if let Some(attacker) = attacker
+            && attacker != id
+            && !holds_target
+        {
+            let distance = match (attacker_transform, damaged_transform) {
+                (Some(attacker), Some(damaged)) => {
+                    let delta = attacker.position - damaged.position;
+                    (delta.x * delta.x + delta.z * delta.z).sqrt()
+                }
+                _ => f32::INFINITY,
+            };
+            brain.awareness.record_hit(attacker, distance, life);
         }
         // Bearing is meaningful only for this hit. A contextless hit must not
         // make an older directional stimulus look recent again.
@@ -64,5 +109,17 @@ pub(crate) fn record_damage_perception(
                 }
             }
         }
+    }
+}
+
+/// A revive starts the brain's damage clock afresh: the lethal hit froze it at
+/// zero and a dead brain is never aged, so the AI tier choice would read the
+/// revived NPC's first tick as a fresh hit. A hit landing after the revive
+/// zeroes it again.
+pub(crate) fn restart_damage_clock(registry: &mut EntityRegistry, id: EntityId) {
+    if let Ok(ComponentValue::Brain(brain)) =
+        registry.get_component_value_mut(id, ComponentKind::Brain)
+    {
+        brain.time_since_damage_ms = crate::components::brain::default_time_since_damage_ms();
     }
 }

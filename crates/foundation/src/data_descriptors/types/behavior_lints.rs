@@ -89,6 +89,7 @@ mod tests {
 
     fn graph() -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "initial".to_string(),

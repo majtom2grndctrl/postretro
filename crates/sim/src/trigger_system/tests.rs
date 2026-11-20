@@ -1032,6 +1032,7 @@ fn closet_reveal_enter_edge_dispatches_door_and_enemy_release_reactions() {
         .set_tags(enemy, vec!["closet_enemies".into()])
         .expect("tag closet enemy");
     let graph = BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),

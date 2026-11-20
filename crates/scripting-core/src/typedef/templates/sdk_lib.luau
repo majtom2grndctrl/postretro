@@ -2164,7 +2164,7 @@ export type BrainInputs = {
   timeInActivityMs: RuntimeGuardNode,
   --- Milliseconds remaining on the selected offense action's named attack timer; zero with no action or a missing attack-map entry. Guard reads are pre-transition (number).
   attackCooldownMs: RuntimeGuardNode,
-  --- `true` on the think-stride ticks where acquisition is re-evaluated (boolean).
+  --- `true` on the enemy's decide ticks, where acquisition is checked: 15 times a second in view or engaged, every 2 s dormant (boolean).
   acquisitionDue: RuntimeGuardNode,
   --- The enemy's current hit points (number).
   health: RuntimeGuardNode,
@@ -2206,6 +2206,8 @@ export type BrainInputs = {
   activityRoll: RuntimeGuardNode,
   --- Points drained from this enemy's defense layers and health since the currently-evaluated activity was entered, counting every damage producer, `applyDamage` included. Scope-relative like `timeInActivityMs`: each level, and its selectors, read their own sum, which resets to 0 when that level is entered (number).
   damageInActivity: RuntimeGuardNode,
+  --- Highest awareness of any candidate, 0 to 1; 1 once it has a target. A guard on a decide reads the value that decide's acquisition check produced (number).
+  awareness: RuntimeGuardNode,
 }
 
 --- Pre-wrapped guard input leaves for the fixed `@brain.*` namespace.
@@ -2223,9 +2225,9 @@ export type CandidateInputs = {
   died: RuntimeGuardNode,
   --- Directional sentiment from the evaluating faction toward this candidate: negative hostile, zero neutral, positive allied (number).
   sentiment: RuntimeGuardNode,
-  --- Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy (number).
+  --- Accumulated positive damage this candidate has dealt to the evaluating enemy, or zero when it has not damaged that enemy since its latest respawn (number).
   damageDealtToMe: RuntimeGuardNode,
-  --- Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy (number).
+  --- Milliseconds since this candidate last damaged the evaluating enemy, or `1e9` when it has not damaged that enemy since its latest respawn (number).
   timeSinceDamageFromCandidate: RuntimeGuardNode,
   --- Retaliation tolerance resolved from this enemy's archetype override, then its directed faction pair toward this candidate, or `f32::MAX` when unauthored (number).
   tolerance: RuntimeGuardNode,

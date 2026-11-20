@@ -144,6 +144,7 @@ fn perfect_link() -> LinkConfig {
 /// `BrainComponent` keeps the fixture honest.
 fn brain() -> BrainComponent {
     BrainComponent::from_graph(&BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),
@@ -369,6 +370,7 @@ fn enemy_descriptor(class: &str) -> EntityTypeDescriptor {
 
 fn enemy_behavior_graph() -> BehaviorGraphDescriptor {
     BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),

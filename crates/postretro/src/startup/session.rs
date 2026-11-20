@@ -303,6 +303,7 @@ pub(crate) fn build_session() -> Result<BootSession> {
         window_modes: crate::app::window_modes::WindowModes::new(windowed),
         level: None,
         nav_graph: None,
+        npc_scheduler: None,
         map_path,
         content_root,
         baked_root,

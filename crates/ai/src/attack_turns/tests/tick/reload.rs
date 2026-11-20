@@ -51,7 +51,7 @@ fn profile_override_keeps_unnamed_fields_and_tokens() {
         json!([declare("melee", 3, 4000.0), declare("heavy", 2, 0.0)]),
         json!({ "default": [override_ref("melee", json!({ "limit": 1 }))] }),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let jabbers = [
         spawn_at(&mut reg, 0, &graph, "jab_act"),
@@ -97,7 +97,7 @@ fn reload_lowering_budgets_revokes_no_turn_and_applies_next_tick() {
         ])
     };
     commit(&mut reg, tokens(2, 0.0), json!({}));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let holders = [
         spawn_at(&mut reg, 0, &graph, "slam_act"),
@@ -214,6 +214,7 @@ fn tick_at(
             factions: &FactionRegistry::default(),
             faction_sentiment: &RefCell::new(FactionSentimentState::default()),
             clips: None,
+            schedule: Default::default(),
             cpu: None,
         },
         |_| {},
@@ -244,7 +245,7 @@ fn reload_changing_resolved_draws_releases_holders() {
         json!([declare("melee", 1, 0.0), declare("heavy", 1, 4000.0)]),
         json!({ "default": [override_ref("default", json!({ "refreshMs": 4000 }))] }),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let slammer = spawn_brute(&mut reg, 0, &original, "slam_act");
     let jabber = spawn_brute(&mut reg, 1, &original, "jab_act");
@@ -300,7 +301,7 @@ fn reload_removing_a_drawn_token_warns_on_each_reload() {
         json!([declare("melee", 1, 0.0), declare("heavy", 1, 4000.0)]),
         json!({}),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     spawn_brute(&mut reg, 0, &graph, "slam_act");
     let descriptors = vec![brute(&graph)];
@@ -335,7 +336,7 @@ fn reload_reordering_draws_keeps_the_turn() {
         json!([declare("melee", 3, 0.0), declare("heavy", 1, 4000.0)]),
         json!({}),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let slammer = spawn_brute(&mut reg, 0, &original, "slam_act");
     let mut descriptors = vec![brute(&original)];
@@ -374,7 +375,7 @@ fn vocabulary_shift_keeps_held_turns_and_refreshing_counts() {
         json!([declare("melee", 3, 0.0), declare("heavy", 2, 4000.0)]),
         json!({}),
     );
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let holder = spawn_at(&mut reg, 0, &graph, "slam_act");
     let ender = spawn_at(&mut reg, 1, &graph, "slam_act");

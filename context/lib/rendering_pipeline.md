@@ -221,7 +221,10 @@ decoded-byte budget it shares with lightmap blocks, always at least one, and sto
 than skipping ahead to smaller lower-priority work, so frame cost tracks bytes rather than
 cluster count. The budget's size, 8 MiB per play drain and 32 MiB per settling drain, is a tuning
 value, not a contract: a retune that keeps the one owner, the admission order and the lightmap
-in-hand totals lands without a brief (`plans/ready/streaming-drain-budget-spike`). A newly installed cluster remains unavailable to sampling until the next drain,
+in-hand totals lands without a brief. In the dev-tools Streaming tab, a slider beside lead L
+overrides the play cap live, and a production button unsets it; settling and the lightmap
+in-hand totals keep production. It is not a player setting.
+A newly installed cluster remains unavailable to sampling until the next drain,
 after all applicable indirect and direct compose work has completed. The all-zero word
 remains the miss representation: valid neighbors are renormalized and an all-miss sample
 reaches the ambient floor.
@@ -386,9 +389,15 @@ logs a load warning. Lightmap streaming reports through a throttled
 `lightmap_streaming` block, and the `lightmap_residency` and `lightmap_drain` CPU-timing
 stages (§12). Layers, peak layers, live and retiring bytes, band headroom, repacks,
 compactions, compaction rollbacks and growths count per pool. Lightmap visible misses carry cause
-buckets as SH's do (decided, not yet built): each drawn-not-resident block-frame lands in exactly
-one, named as SH's where the cause is the same, and every surface names its unit, block-frames
-for lightmaps and episodes for SH (`plans/ready/streaming-drain-budget-spike`).
+buckets as SH's do: each drawn-not-resident block-frame lands in exactly one, named as SH's where
+the cause is the same, and every surface names its unit, block-frames for lightmaps and episodes
+for SH. The buckets are outside the reach, read in flight, waiting on a permit, waiting on the
+in-hand cap, held by the drain budget (ready, offered to this frame's drain, past its cut),
+awaiting the renderer's drain (ready behind a batch the renderer has not returned, or in it),
+deferred by the pool, refused (by the pool, or held back from reading for band headroom), and
+failed (a failure or rolled-back drain this frame, or a failed pair). A wait on permits or in-hand
+bytes is the latest request pass's verdict, kept until the next pass; a deferral or failure counts
+only in its frame. Admission never reads them (`lightmap_streaming/miss_causes.rs`).
 
 **Sampled-row compose.** Each frame, after visibility and draw culls and before compose,
 the application hands the renderer `ShSampleRegionSets`: the ids of visible cells and
@@ -1278,6 +1287,7 @@ render-pass encoder counts: those rows go missing from part of some traces, whic
 undercounts frames by up to a quarter and invents between-launch "regimes" that are not there.
 The engine renders no frames while its window is hidden or backgrounded,
 or while the screen is locked. Keep the window in front for the whole capture.
+The renderer's ignored install-cost tests (`install_cost_measurement.rs` beside the lightmap stream and the SH streaming GPU state) bracket each measured drain with labelled marker command buffers and write the drain order to the directory named by `POSTRETRO_INSTALL_COST_TRACE_DIR`, so a trace of them reduces per drain. Those tests wait for the GPU after every drain, so the GPU idles at a low clock and their figures are upper bounds.
 Each recording also leaves an `instruments*.ktrace` temp file of about 1 GB in
 `$TMPDIR`, and the `.trace` bundle stays wherever `--output` put it. Delete both once
 the export is parsed.

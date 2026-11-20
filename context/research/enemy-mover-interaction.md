@@ -94,7 +94,7 @@ Also required:
 
 - **Host only.** Agent carry, displace and blocking stay host-authoritative. Clients have no `Agent` and never simulate enemies (`networking.md:1081`). There is no change to mover prediction and no change to the static-content digest: the nav gate derives from data already hashed.
 - **Presentation (the real wire question).** Remote enemies are interpolated in the **past** (`render_server_tick`). Movers are **predicted in the present** (`networking.md:1071`). An enemy riding a 3 m/s lift therefore renders about RTT/2 + interp delay off the lift, which is 30–50 cm at a 150 ms RTT.
-  - The draft `context/plans/drafts/E17--mover-relative-rider-presentation/` solves this for remote **players** by rebasing delayed riders onto the render-time mover, using `WirePlayerMovementState.ground`.
+  - The brief `context/plans/ready/E17--mover-relative-rider-presentation/` solves this for remote **players** by rebasing delayed riders onto the render-time mover, using `WirePlayerMovementState.ground`.
   - Enemies replicate only `Transform` + `MeshAnimationState` (`E10--networked-enemy-authority-baseline`), so they need **one new field: the enemy's ground mover** (reuse `WireGroundRef`). That means a `WIRE_VERSION`/`SNAPSHOT_VERSION` bump.
   - The draft's rebase is then generalized from "remote player" to "remote ground-attached entity". This is the same idea as Unreal's replicated based movement (unverified) and Source's ground entity.
 - **Hit validation is unaffected.** It is world-LOS-only (`networking.md:919`), so a client aiming at the rebased pose is safe.

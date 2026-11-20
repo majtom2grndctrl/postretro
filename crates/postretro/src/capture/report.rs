@@ -447,7 +447,11 @@ impl From<CaptureLightmapResidency> for LightmapStreamingReportJson {
 /// per section: `lightmap` is id 22, `shadowmask` is id 42. Mandatory is the
 /// view's camera cell's baked set within `lead_metres`, plus the pins.
 /// Visible misses are the view's drawn blocks in two buckets, which may
-/// overlap: outside the baked set, and not resident.
+/// overlap: outside the baked set, and not resident. The `miss_*` fields split
+/// not resident by cause, in the unit `miss_unit` names, and sum to it.
+/// Capture's forced-missing blocks (`force_missing_lightmap_blocks`) are never
+/// read; capture has no read issuer, so they land in `miss_read_in_flight`,
+/// and `forced_missing_blocks` counts them.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct LightmapStreamingCountersJson {
     lead_metres: f32,
@@ -478,6 +482,16 @@ struct LightmapStreamingCountersJson {
     shadowmask_bytes_read: u64,
     visible_misses_outside_baked_set: u64,
     visible_misses_not_resident: u64,
+    miss_unit: Cow<'static, str>,
+    miss_outside_reach: u64,
+    miss_read_in_flight: u64,
+    miss_waiting_on_permit: u64,
+    miss_waiting_on_in_hand_cap: u64,
+    miss_held_by_drain_budget: u64,
+    miss_awaiting_renderer_drain: u64,
+    miss_deferred_by_pool: u64,
+    miss_refused: u64,
+    miss_failed: u64,
     failed_installs: u64,
     failed_reads: u64,
     refusals: u64,
@@ -512,6 +526,16 @@ impl From<&LightmapStreamingLiveDiagnostics> for LightmapStreamingCountersJson {
             shadowmask_bytes_read: live.shadowmask_bytes_read,
             visible_misses_outside_baked_set: live.drawn_outside_baked_set,
             visible_misses_not_resident: live.drawn_not_resident,
+            miss_unit: LIGHTMAP_MISS_UNIT.into(),
+            miss_outside_reach: live.miss_buckets.outside_reach,
+            miss_read_in_flight: live.miss_buckets.read_in_flight,
+            miss_waiting_on_permit: live.miss_buckets.waiting_on_permit,
+            miss_waiting_on_in_hand_cap: live.miss_buckets.waiting_on_in_hand_cap,
+            miss_held_by_drain_budget: live.miss_buckets.held_by_drain_budget,
+            miss_awaiting_renderer_drain: live.miss_buckets.awaiting_renderer_drain,
+            miss_deferred_by_pool: live.miss_buckets.deferred_by_pool,
+            miss_refused: live.miss_buckets.refused,
+            miss_failed: live.miss_buckets.failed,
             failed_installs: live.failed_installs,
             failed_reads: live.failed_reads,
             refusals: live.refusals,
@@ -519,6 +543,11 @@ impl From<&LightmapStreamingLiveDiagnostics> for LightmapStreamingCountersJson {
         }
     }
 }
+
+/// SH counts a visible miss once per continuous visible episode.
+const SH_MISS_UNIT: &str = "episodes";
+/// The lightmap counts a visible miss once per drawn block per frame.
+const LIGHTMAP_MISS_UNIT: &str = "block-frames";
 
 /// Streaming values remain outside descriptor rows because logical occupancy
 /// and replacement peak are accounting views, not new wgpu allocations.
@@ -549,6 +578,8 @@ struct ShStreamingLifecycleSummaryJson {
     sampleable_clusters: u64,
     failed_clusters: u64,
     misses: u64,
+    /// The unit of `misses` and its buckets.
+    miss_unit: Cow<'static, str>,
     /// `misses` by cause: outside reach, trimmed by pressure, read in flight,
     /// held by the drain budget, awaiting compose, failed, device limited.
     miss_outside_reach: u64,
@@ -631,6 +662,7 @@ impl From<ShStreamingLifecycleSummary> for ShStreamingLifecycleSummaryJson {
             sampleable_clusters: summary.sampleable_clusters,
             failed_clusters: summary.failed_clusters,
             misses: summary.misses,
+            miss_unit: SH_MISS_UNIT.into(),
             miss_outside_reach: summary.miss_buckets.outside_reach,
             miss_trimmed_by_pressure: summary.miss_buckets.trimmed_by_pressure,
             miss_read_in_flight: summary.miss_buckets.read_in_flight,
@@ -999,6 +1031,17 @@ mod tests {
             shadowmask_bytes_read: 14,
             drawn_outside_baked_set: 15,
             drawn_not_resident: 16,
+            miss_buckets: postretro_renderer::LightmapMissBuckets {
+                outside_reach: 31,
+                read_in_flight: 32,
+                waiting_on_permit: 33,
+                waiting_on_in_hand_cap: 34,
+                held_by_drain_budget: 35,
+                awaiting_renderer_drain: 36,
+                deferred_by_pool: 37,
+                refused: 38,
+                failed: 39,
+            },
             failed_installs: 17,
             failed_reads: 18,
             refusals: 19,
@@ -1045,6 +1088,16 @@ mod tests {
             "shadowmask_bytes_read": 14,
             "visible_misses_outside_baked_set": 15,
             "visible_misses_not_resident": 16,
+            "miss_unit": "block-frames",
+            "miss_outside_reach": 31,
+            "miss_read_in_flight": 32,
+            "miss_waiting_on_permit": 33,
+            "miss_waiting_on_in_hand_cap": 34,
+            "miss_held_by_drain_budget": 35,
+            "miss_awaiting_renderer_drain": 36,
+            "miss_deferred_by_pool": 37,
+            "miss_refused": 38,
+            "miss_failed": 39,
             "failed_installs": 17,
             "failed_reads": 18,
             "refusals": 19,
@@ -1267,6 +1320,7 @@ mod tests {
         assert_eq!(lifecycle["permits_in_use"], 2);
         assert_eq!(lifecycle["sampleable_clusters"], 5);
         assert_eq!(lifecycle["miss_device_limited"], 7);
+        assert_eq!(lifecycle["miss_unit"], "episodes");
         assert_eq!(lifecycle["retries"], 10);
         assert_eq!(lifecycle["lead_clusters"], 8);
         assert_eq!(lifecycle["reads_issued"], 11);

@@ -12,18 +12,22 @@ use crate::streaming::shared_drain::SharedDrain;
 impl LightmapResidencyController {
     /// Offers every ready pair to the shared drain as one item, so a pair is
     /// admitted or deferred whole. Nothing is offered while the renderer has
-    /// not yet returned the previous batch's outcome.
+    /// not yet returned the previous batch's outcome. An offered pair is
+    /// marked for this frame's miss cause.
     pub(crate) fn offer_ready(
-        &self,
+        &mut self,
         drain: &mut SharedDrain,
     ) -> Result<(), LightmapResidencyError> {
         if self.drain_outstanding {
             return Ok(());
         }
+        let epoch = self.miss_epoch;
         for &block in self.ready.keys() {
-            let Some(target) = self.slots[block as usize].target else {
+            let slot = &mut self.slots[block as usize];
+            let Some(target) = slot.target else {
                 continue;
             };
+            slot.marks.mark(epoch, FrameMarks::OFFERED);
             let facts = self.map.facts(block);
             drain.offer(
                 DrainItem::pair(
@@ -168,6 +172,7 @@ impl LightmapResidencyController {
             // lasts at the device limit. Either way the pair stays owned, and
             // in hand, for a later drain.
             self.slots[prepared.block as usize].phase = BlockPhase::Ready;
+            self.mark_frame(prepared.block, FrameMarks::DEFERRED);
             self.ready.insert(prepared.block, prepared);
             self.counters.deferrals += 1;
         }
@@ -205,8 +210,9 @@ impl LightmapResidencyController {
     /// no pair installed, no target changed, nothing evicted. Every drained
     /// pair returns to Absent, its buffers and permit released, to be read
     /// again; a held one is re-evaluated at the next demand update, so it is
-    /// not read at the raised class its pair earned. The next batch re-sends
-    /// every target as a reset. Does nothing without an outstanding batch.
+    /// not read at the raised class its pair earned. Each counts as failed
+    /// for this frame's misses. The next batch re-sends every target as a
+    /// reset. Does nothing without an outstanding batch.
     pub(crate) fn abort_drain(&mut self) {
         if !self.drain_outstanding {
             return;
@@ -215,6 +221,7 @@ impl LightmapResidencyController {
             let block = self.in_drain[index];
             self.release_in_hand(block);
             self.slots[block as usize].phase = BlockPhase::Absent;
+            self.mark_frame(block, FrameMarks::FAILED);
             self.demand.recheck_if_held(block);
         }
         self.in_drain.clear();

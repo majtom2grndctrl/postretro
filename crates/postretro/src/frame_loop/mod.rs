@@ -2124,13 +2124,19 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
         // Emissive volume bridge — after the script drain, before render, so
         // a brightness or colour written this frame presents this frame. It
-        // samples brightness animations on the freeze-aware script clock. Only
-        // entries that changed are sent; a static frame sends nothing. A
+        // samples brightness animations on the freeze-aware script clock and
+        // limits each volume through the photosensitivity limiter on
+        // presented-frame time, the same limiter input the ghost clamps take.
+        // Only entries that changed are sent; a static frame sends nothing. A
         // renderer with no level keeps them pending for the next frame.
         {
+            let limiter = crate::scripting_systems::ghost_render::ghost_limiter_frame(
+                &script_ctx.slot_table.borrow(),
+                app.ghost_links.presented_elapsed(),
+            );
             let mut registry = script_ctx.registry.borrow_mut();
             let bridge = &mut session.emissive_volume_bridge;
-            bridge.update(&mut registry, app.script_time);
+            bridge.update(&mut registry, app.script_time, Some(&limiter));
             let upload = bridge.pending_upload();
             if !upload.runs.is_empty() && renderer.upload_emissive_volume_table(upload) {
                 bridge.mark_uploaded();
@@ -2836,12 +2842,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             }
         };
         // A frame whose surface acquire failed never consumes its presented
-        // time: the ghost look clamps, run before rendering, return to where
-        // they began and carry its time forward, as the resolve's limiter does.
+        // time: the ghost look clamps and the emissive volume clamps, run
+        // before rendering, return to where they began and carry its time
+        // forward, as the resolve's limiter does.
         let presented = present_handle.is_some();
         app.ghost_render.finish_presentation(presented);
         app.mover_ghost_render.finish_presentation(presented);
         app.billboard_ghost_render.finish_presentation(presented);
+        session
+            .emissive_volume_bridge
+            .finish_presentation(presented);
         session.mark_sh_streaming_compose_submitted(compose_submitted);
         // Read back the focus rect list the renderer just exported
         // for the top stack layer (the gameplay render above laid it

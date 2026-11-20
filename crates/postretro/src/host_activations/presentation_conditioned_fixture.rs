@@ -514,7 +514,7 @@ fn sample_deltas(app: &mut App, clock: f64, delta: f32, spin_delta: f32) -> Vec<
         .map(|u| u.effective_brightness.to_vec())
         .unwrap_or_default();
     session.fog_volume_bridge.tick(&mut registry, clock);
-    session.emissive_volume_bridge.update(&mut registry, clock);
+    session.emissive_volume_bridge.update(&mut registry, clock, None);
     session.emitter_bridge.update(
         &mut registry,
         delta,

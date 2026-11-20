@@ -240,7 +240,11 @@ mod tests {
         let mut emissive_bridge = EmissiveVolumeBridge::new();
         lights.populate_from_level(&[light()], &mut registry, 0);
         fog_bridge.populate_from_level(&mut registry, &[fog()]);
-        emissive_bridge.populate_from_level(&mut registry, &[emissive()]);
+        emissive_bridge.populate_from_level(
+            &mut registry,
+            &[emissive()],
+            &[postretro_render_cpu::emissive_flash::EmissiveFlashSource::DARK],
+        );
         let map_entities = [MapEntityRecord {
             origin: [4.0, 5.0, 6.0],
             classname: "light_only".into(),
@@ -354,7 +358,11 @@ mod tests {
         let mut emissive_bridge = EmissiveVolumeBridge::new();
         lights.populate_from_level(&[light()], &mut registry, 0);
         fog_bridge.populate_from_level(&mut registry, &[fog()]);
-        emissive_bridge.populate_from_level(&mut registry, &[emissive()]);
+        emissive_bridge.populate_from_level(
+            &mut registry,
+            &[emissive()],
+            &[postretro_render_cpu::emissive_flash::EmissiveFlashSource::DARK],
+        );
         let light_id = lights.entity_for_map_index(0).unwrap();
         let fog_id = fog_bridge.entity_for_map_index(0).unwrap();
         let emissive_id = emissive_bridge.entity_for_map_index(0).unwrap();

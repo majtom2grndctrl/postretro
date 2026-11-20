@@ -196,9 +196,11 @@ impl Level {
     /// The frame loop's emissive step at the current script time.
     fn present(&mut self) {
         let session = self.app.session.as_mut().unwrap();
-        session
-            .emissive_volume_bridge
-            .update(&mut self.ctx.registry.borrow_mut(), self.script_time);
+        session.emissive_volume_bridge.update(
+            &mut self.ctx.registry.borrow_mut(),
+            self.script_time,
+            None,
+        );
     }
 
     /// Advance the script clock one presented frame and present it.

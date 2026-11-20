@@ -180,7 +180,22 @@ pub(crate) fn install_world_cpu_with_models(
     // so that pair stays adjacent.
     {
         let mut registry = script_ctx.registry.borrow_mut();
-        emissive_volume_bridge.populate_from_level(&mut registry, &world.emissive.volumes);
+        // The flash limiter judges each volume by its brightest member
+        // texture: strength × mean glow luminance.
+        let flash_sources = postretro_render_cpu::emissive_flash::EmissiveFlashSource::for_volumes(
+            &world.emissive,
+            |face| {
+                world
+                    .face_meta
+                    .get(face as usize)
+                    .and_then(|meta| meta.texture_index)
+            },
+        );
+        emissive_volume_bridge.populate_from_level(
+            &mut registry,
+            &world.emissive.volumes,
+            &flash_sources,
+        );
     }
 
     // Kinematic movers. The caller commits the static collision world (built

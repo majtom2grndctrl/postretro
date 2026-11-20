@@ -16,15 +16,42 @@ pub const EMISSIVE_TABLE_BYTES: usize = EMISSIVE_TABLE_ENTRIES * EMISSIVE_TABLE_
 /// The factor a face in no volume presents: its texture strength unchanged.
 pub const NO_VOLUME_FACTOR: [f32; 3] = [1.0; 3];
 
-/// One volume's glow factor: `(min + brightness × (max − min)) × color`.
-///
-/// Scripts own `brightness` and `color`, so both clamp here to `[0, 1]`: a
-/// script never pushes a surface past the mapper's `max`. A NaN brightness
-/// reads 0, as fog's `glow` does; a non-finite colour channel reads 0.
+/// One volume's glow before it packs: the scalar multiplier the brightness
+/// maps to and the colour it tints by, kept apart so the flash limiter can
+/// judge the scalar and the colour separately (`emissive_flash.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VolumeGlow {
+    /// `min + brightness × (max − min)`.
+    pub multiplier: f32,
+    /// Linear tint, each channel in `[0, 1]`.
+    pub color: [f32; 3],
+}
+
+impl VolumeGlow {
+    /// The glow a script's values present.
+    ///
+    /// Scripts own `brightness` and `color`, so both clamp here to `[0, 1]`:
+    /// a script never pushes a surface past the mapper's `max`. A NaN
+    /// brightness reads 0, as fog's `glow` does; a non-finite colour channel
+    /// reads 0.
+    pub fn scripted(min: f32, max: f32, brightness: f32, color: [f32; 3]) -> Self {
+        let brightness = unit(brightness);
+        Self {
+            multiplier: min + brightness * (max - min),
+            color: color.map(unit),
+        }
+    }
+
+    /// The rgb factor the volume table packs: `multiplier × color`.
+    pub fn factor(self) -> [f32; 3] {
+        self.color.map(|channel| channel * self.multiplier)
+    }
+}
+
+/// One volume's glow factor: `(min + brightness × (max − min)) × color`,
+/// clamped as [`VolumeGlow::scripted`] clamps.
 pub fn volume_factor(min: f32, max: f32, brightness: f32, color: [f32; 3]) -> [f32; 3] {
-    let brightness = unit(brightness);
-    let multiplier = min + brightness * (max - min);
-    color.map(|channel| unit(channel) * multiplier)
+    VolumeGlow::scripted(min, max, brightness, color).factor()
 }
 
 /// `value` clamped to `[0, 1]`; NaN reads 0, +inf 1.

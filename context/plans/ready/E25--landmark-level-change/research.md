@@ -1,6 +1,6 @@
 # Landmark level change — research
 
-Read at `ab08438`, re-read at `6c862fd` (§7). Session-verified facts behind the brief, cited by symbol. Hub: `drafts/E25--map-transitions/` (U2).
+Read at `ab08438`, re-read at `6c862fd` (§7) and `8489a1f` (§8). Session-verified facts behind the brief, cited by symbol. Hub: `drafts/E25--map-transitions/` (U2).
 
 ## 1. Teleport arrival today
 
@@ -22,7 +22,7 @@ Read at `ab08438`, re-read at `6c862fd` (§7). Session-verified facts behind the
 
 ## 3. Level change
 
-- **`unload_level` order** (`startup/lifecycle_net.rs`): CPU timer; **net reset** (`clear_net_level_parity` → `reset_level_scoped_host_state` replaces `command_queues`); client reset; audio; renderer release; streaming clear; `level = None`; surface-lifetime clear (weapon activations cancelled, triggers, collision, teleporter bindings); nav, environment; session clears; **`harvest_bound_pawns`**; **registry despawn**; `clear_pawn_bindings_for_level_unload`; UI; **camera reset** to the origin, yaw and pitch 0.
+- **`unload_level` order** (`startup/lifecycle_net.rs`): take `backdrop_installed` (gates the carry harvest); CPU timer; **net reset** (`clear_net_level_parity` → `reset_level_scoped_host_state` replaces `command_queues`); client reset; audio; renderer release; streaming clear; `level = None`; surface-lifetime clear (weapon activations cancelled, triggers, collision, teleporter bindings); nav, environment; session clears (including `occupancy_families.unload_level`); **`harvest_bound_pawns`**, skipped for a backdrop; **registry despawn**; `clear_pawn_bindings_for_level_unload`; UI; `spawn_poses.clear_for_level_unload`; **camera reset** to the origin, yaw and pitch 0.
 - **Harvest placement.** At the top of `unload_level` the registry and pawn bindings are intact. Suspend already harvests before the net reset (`suspended`). Only production caller of unload: `drain_level_requests`.
 - **Carried state.** `CarriedState` holds health, reserve, wieldables, magazines and active slot; cleared only by `release_seat`. No per-seat record is consumed once by a first spawn today.
 - **Placement.** Host pawn spawns at install stage 11 (`spawn_from_player_starts_with_carried_loadout`, first spawn in `first_player_spawn_order`). A client pawn spawns at participation entry, after the host's reveal, through `assign_joiner_placement` and `spawn_net_slot_pawn_with_carried_loadout`. Engine `respawn` drains at tick start and relocates the existing pawn through `settle_arrival`; it spawns nothing (`sim::tick_start`).
@@ -63,6 +63,17 @@ Read at `ab08438`, re-read at `6c862fd` (§7). Session-verified facts behind the
 | P19 | Respawn into a disarmed seam armed the same tick | respawn requested → seam arm queued → next tick start applies mutations and relocates the pawn onto a start inside the seam, in either order → trigger stage | Latched whatever the seam's armed state at relocation; no fire until the capsule leaves and re-enters |
 | P20 | Seam crossing before a crossing client spawns | seam A→B (name N) → client still loading B → host crosses B→C by a seam, C holding a seam named N | The client's N arrival is cleared at B's unload; it arrives in C at a player start with no warning |
 | P21 | Seam state changes after activation, same frame | seam activates on tick T → on a later tick of the frame it is disarmed, or (several seams) its last occupant leaves → boundary drain | The load proceeds; among several, the first in map order that activated wins. The harvest still decides who arrives landmark-relative (P1) |
+| P22 | Seam checkpoint survives a failed load and a second Continue | single player crosses A→B in a run → `unload_level` harvests the arrival → `save_on_level_start` writes B with the seam's name and pose → B fails, or loads; quit → Continue → quit → Continue | Each Continue spawns at the saved pose; the level start Continue makes keeps the checkpoint |
+| P23 | Seam spawn set across a later checkpoint and level start | crossing into B (seam N, `player_spawn`s keyed `N`) → respawn → `checkpoint("bridge")` → respawn → `loadLevel` C | First respawn takes the `N` set; second the `bridge` set; C starts in its level-start set |
+| P24 | Continue over a backdrop | Continue marks its arrival and queues B → the drain unloads the backdrop (arrivals clear) → level-start save keeps the checkpoint → B installs | The player spawns at the saved pose; no unload or supersede before B's install drops a pose Continue set |
+| P25 | Crossing with no run to save | seam load drains → unload harvests → level-start save finds no active run, or a store that cannot save → B installs → respawn | The respawn takes the seam's set, as in a run; nothing writes a run |
+| P26 | Silent fallback lasts as long as the seam's set | (a) crossing by seam N, none keyed N → respawn → `checkpoint("typo")`, none keyed → respawn; (b) crossing by N with the host outside (no pose saved) → quit → Continue → install | (a) the first respawn is silent and the typo warns once; (b) Continue's install falls back to the level-start set silently |
+| P27 | Seam pose outlived by a later save | crossing into B by seam N (pose saved) → (a) `checkpoint("bridge")`, (b) `checkpoint("N")`, (c) `restartLevel` → quit → Continue | (a) the bridge set; (b) the N set at a start, not the pose; (c) the level-start set. Only the seam load's level start and the level start Continue makes carry the pose |
+| P28 | Suspend, then Continue | (a) seam activates → suspend before the drain; (b) A unloads, level-start save writes B with seam and pose → suspend while B loads; (c) host in B → suspend while a crossing client loads B; then resume → Continue | (a) Continue loads A at its own checkpoint; (b) and (c) Continue spawns at the saved pose. P6's player start holds for any other load after resume |
+| P29 | Clients at a hosted Continue | host continues a run at seam N → client A, connected, resolves at host install → host spawns at the saved pose → client B joins after the reveal | A and B start in the N set (the level-start set, silently, with none keyed); neither starts at seat 0's pose |
+| P30 | Frontend root popped over a backdrop | backdrop installs under the menu → a mod pops the frontend root → a pawn enters a touch seam → trigger stage | The seam does not fire; the gate is how the level was loaded, not whether the menu shows |
+| P31 | Seam activation under a pushed tree | host pushes its pause menu, or the frontend root → a client enters a touch seam on tick T → boundary drain → unload → level-start save → install | The seam clears no tree. Pause menu: B installs as a played level and the save records the seam. Frontend root: B installs as a backdrop, no run save, seams inert |
+| P32 | Checkpoint on the activation frame | seam activates on tick T; a reaction on the same frame runs `checkpoint("bridge")`, before or after T → frame-end drain → boundary drain → unload → level-start save | The run ends at B with the seam's checkpoint (and pose); B's spawn set is the seam's |
 
 ## 7. Changes since `ab08438` (re-read at `6c862fd`)
 
@@ -72,3 +83,19 @@ Read at `ab08438`, re-read at `6c862fd` (§7). Session-verified facts behind the
 - **`loadLevel` with an unknown id** enqueues with no catalog check, drops any queued load at enqueue, and warns at the drain.
 - **Section 44** carries a trigger `name`; it still has no target, mode or landmark.
 - **Occupancy refs absent.** `occupiedCount` / `occupants` and the `trigger.<tag>.*` slots appear in no file under `sdk/`, `crates/`, `docs/` or `content/`, though `E18--coop-activation-policy` is in `done/`. The trigger stage computes effective occupants (`PlayerCapabilities::effective_occupants`) but publishes no per-tag slot.
+
+## 8. Changes since `6c862fd` (re-read at `8489a1f`)
+
+`E18--coop-activation-policy` and `coop--character-and-run-saves` landed.
+
+- **Unload gate.** `unload_level` first takes `backdrop_installed`; a frontend backdrop's pawns are not harvested. `suspend_platform` harvests only when `played_level_present()`.
+- **Level-start save.** `drain_level_requests`' Load branch: `cancel_beside_level_load` → `unload_level` → `save_on_level_start` → `begin_level_load`. The save is skipped under the frontend menu and on a client, and clears the spawn checkpoint unless Continue marked the destination (`take_continue_arrival`).
+- **Run record.** `LevelRecord { catalog_id, checkpoint: Option<String> }` (`sim/src/scripting/save_files/document.rs`). Unknown top-level sections are kept raw.
+- **Spawn sets.** `active_spawn_set` (`sim/.../builtins/player_spawn.rs`) filters `host_spawn_points`; an unknown checkpoint falls back to the level-start set with a warning. Placement consumers read only the filtered list. `apply_spawn_checkpoint` → `reset_placements_for_spawn_set` clears placement assignments, the host install start and the overflow cursor; live pawns stay. `SpawnPoseResolver.resolved` is not cleared there (pre-existing; a recorded `Placement` re-assigns at promotion).
+- **CarriedState** now also holds `life_state` and `layers`; seat 0's carry comes from the selected character. `clear_pawn_bindings_for_level_unload` clears carried life state.
+- **Teleport skip.** `resolve` gates a declared pawn by `Capability::Touch`, an undeclared one by `vault_barred`; a non-finite arrival is refused silently.
+- **Occupancy.** `getGameState().occupancy.tag(t)` → `{ occupiedCount, occupants }`; `session.playerCounts.{connected, loading, inPlay, down, reconnecting}`. Published by `OccupancyFamilies::publish_tick` from `TriggerSystem::counted_volumes`, armed or not, seated pawns only, one count per volume per tag.
+- **PRL.** Teleporters and GhostLinks use a `u16` version and `u32` count. Highest enum id 59; `build_pipeline.md` reserves 60 for `Emissive`.
+- **Menus.** The `LoadLevel` and `RestartLevel` handlers call `modal_stack.clear_pushed()` before enqueueing; `enqueue_level_request` does not. Install marks a backdrop when the frontend menu is present; `save_on_level_start` skips under it. A mod's `popTree` can pop the frontend root over a backdrop; `backdrop_installed` stays set.
+- **Occupancy tag check.** The absent-tag warning collects tags from `ComponentKind::TriggerVolume` only (`lifecycle_world_cpu`, `occupancy_families`).
+- **Rename** not done: 13 files outside plans and two dev `.map` files hold `streaming_seam_volume`.

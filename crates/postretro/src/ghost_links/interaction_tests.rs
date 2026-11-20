@@ -104,6 +104,7 @@ fn shot_through(
                     knockback_impulse: [0.0; 3],
                     credit_source: "probe".into(),
                     owner_pawn: shooter,
+                    owner_life: 0,
                     owner_weapon: shooter,
                     attackerless: false,
                     spawned: false,
@@ -270,6 +271,7 @@ fn a_trigger_at_a_ghost_pawn_does_not_fire_while_one_at_the_real_pawn_does() {
 /// An enemy that acquires any hostile candidate within 4 m.
 fn enemy(registry: &mut EntityRegistry, at: Vec3) -> EntityId {
     let graph = BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "watch".into(),
@@ -349,7 +351,8 @@ fn acquired_after_ticks(registry: &mut EntityRegistry, enemy: EntityId) -> Optio
     let sentiment = RefCell::new(postretro_entities::FactionSentimentState::default());
     let mut callback = |_: &mut EntityRegistry| {};
     let mut host = SimAiHost::new(&mut callback);
-    for _ in 0..4 {
+    // A first sighting, then the default 1 s awareness fill at 15 Hz checks.
+    for _ in 0..1 + 16 * 4 {
         let _ = postretro_ai::run_ai_tick_with_host(
             registry,
             &mut runtime,
@@ -363,6 +366,7 @@ fn acquired_after_ticks(registry: &mut EntityRegistry, enemy: EntityId) -> Optio
                 factions: &factions,
                 faction_sentiment: &sentiment,
                 clips: None,
+                schedule: Default::default(),
                 cpu: None,
             },
             &mut host,

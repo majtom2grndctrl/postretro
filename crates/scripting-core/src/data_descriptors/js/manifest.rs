@@ -47,6 +47,7 @@ impl LevelManifest {
         let events = drain_impact_events_js(ctx, &obj, "setupLevel")?;
         let trigger_events = drain_level_trigger_events_js(&obj, "setupLevel")?;
         let teleport_events = drain_level_teleport_events_js(&obj, "setupLevel")?;
+        let seam_events = drain_level_seam_events_js(&obj, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_js(&obj, "setupLevel")?;
         let player_events =
             drain_player_events_js(ctx, &obj, PlayerEventSite::Level, "setupLevel")?;
@@ -59,6 +60,7 @@ impl LevelManifest {
             crossings,
             trigger_events,
             teleport_events,
+            seam_events,
             trigger_pools,
             player_events,
             ui_trees,

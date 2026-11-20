@@ -269,7 +269,7 @@ fn a_rest_requests_nothing_with_its_target_out_of_range() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, Vec3::new(3.0, 0.0, 0.0));
     let enemy = spawn_resting(&mut reg, 0, &graph);
     for tick_index in 0..8 {
@@ -304,7 +304,7 @@ fn a_rest_requests_nothing_while_its_rows_when_is_false() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let enemy = spawn_resting(&mut reg, 0, &graph);
     for tick_index in 0..8 {
@@ -334,7 +334,7 @@ fn an_attack_with_no_max_range_adds_no_range_gate() {
     let graph = queue_graph(vec![queued(SLAM, always())], vec![(SLAM, shoot)], NEVER);
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, Vec3::new(9.0, 0.0, 0.0));
     let enemy = spawn_resting(&mut reg, 0, &graph);
     let mut entered = false;
@@ -360,7 +360,7 @@ fn a_rests_grant_survives_into_the_next_evaluation_and_the_hold_keeps_it() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 1000.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_resting(&mut reg, 0, &graph);
 
@@ -395,7 +395,7 @@ fn a_rests_grant_ends_with_its_refresh_when_the_next_evaluation_takes_another_ro
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 1000.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_resting(&mut reg, 0, &graph);
 
@@ -425,7 +425,7 @@ fn a_rerank_inside_the_margin_between_grant_and_hold_keeps_the_target_and_the_gr
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 1000.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let first = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_at(&mut reg, 0, &graph, REST);
     set_enemy_position(&mut reg, enemy, Vec3::ZERO);
@@ -455,7 +455,7 @@ fn a_switch_past_the_margin_between_grant_and_hold_moves_the_turn_to_the_new_tar
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 1000.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let first = spawn_player(&mut reg, Vec3::new(1.5, 0.0, 0.0));
     let enemy = spawn_at(&mut reg, 0, &graph, REST);
     set_enemy_position(&mut reg, enemy, Vec3::ZERO);
@@ -516,7 +516,7 @@ fn a_costly_queued_strike_reserves_its_tokens_as_head_of_line_and_is_never_starv
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let sweepers = [
         spawn_at(&mut reg, 0, &sweeper, "sweep_act"),
@@ -595,7 +595,7 @@ fn a_rest_keeps_its_place_in_line_across_a_change_of_attack_and_a_re_entry() {
     let late = hog_graph(SLAM, vec![token("melee")]);
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (1, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let hog = spawn_at(
         &mut reg,
@@ -673,7 +673,7 @@ fn a_first_row_whose_token_refreshes_keeps_the_request() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 4000.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let hog = spawn_at(
         &mut reg,
@@ -727,7 +727,7 @@ fn a_marks_request_outranks_a_rests_which_outranks_a_pending_unmarked_attack() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_resting(&mut reg, 0, &graph);
     runtime
@@ -754,6 +754,7 @@ fn a_marks_request_outranks_a_rests_which_outranks_a_pending_unmarked_attack() {
             },
             runtime.programs.get(enemy),
             pawn,
+            0,
             AttackPoolId::Default,
         )
         .map(|(request, _)| {
@@ -784,7 +785,7 @@ fn two_enemies_in_one_shared_stance_take_turns_and_the_waiter_keeps_its_pose() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (1, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let first = spawn_resting(&mut reg, 0, &graph);
     let second = spawn_resting(&mut reg, 1, &graph);
@@ -860,7 +861,7 @@ fn a_rests_grant_whose_next_evaluation_takes_no_row_ends_and_requeues_behind_ear
         );
         let mut reg = EntityRegistry::new();
         budgets(&mut reg, (1, 160.0), (1, 0.0));
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let pawn = spawn_player(&mut reg, player_spot());
         let brute = spawn_resting(&mut reg, 0, &graph);
         let waiter = spawn_at(
@@ -933,7 +934,7 @@ fn a_break_beats_a_granted_strike_row_and_ends_the_turn() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 1000.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_resting(&mut reg, 0, &graph);
     tick(&mut reg, &mut runtime);
@@ -962,7 +963,7 @@ fn a_rest_waits_out_its_attacks_cooldown_before_requesting() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let enemy = spawn_resting(&mut reg, 0, &graph);
 
@@ -1025,7 +1026,7 @@ fn a_first_row_cooling_down_hands_the_request_to_the_next_and_takes_it_back() {
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (1, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let hog = spawn_at(
         &mut reg,
@@ -1076,7 +1077,7 @@ fn a_cooldown_elapsing_during_a_ticks_evaluation_requests_and_is_granted_that_ti
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (3, 0.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     spawn_player(&mut reg, player_spot());
     let enemy = spawn_resting(&mut reg, 0, &graph);
     set_cooldown(&mut reg, enemy, SLAM, 26.0);
@@ -1117,7 +1118,7 @@ fn a_burst_outlasting_its_recover_ends_its_turn_in_the_rest_and_a_waiter_is_gran
     );
     let mut reg = EntityRegistry::new();
     budgets(&mut reg, (1, 64.0), (1, 0.0));
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let pawn = spawn_player(&mut reg, player_spot());
     let brute = spawn_resting(&mut reg, 0, &graph);
     let waiter = spawn_at(&mut reg, 1, &hog_graph(SWEEP, vec![token("melee")]), "idle");
@@ -1247,7 +1248,7 @@ fn a_stance_under_a_mark_for_its_own_attack_strikes_again_and_again() {
         let graph = stance_under_a_slam_mark(settle_ms);
         let mut reg = EntityRegistry::new();
         budgets(&mut reg, (3, 1000.0), (1, 0.0));
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         let pawn = spawn_player(&mut reg, player_spot());
         let enemy = spawn_at(&mut reg, 0, &graph, "engage");
 
@@ -1285,5 +1286,103 @@ fn a_stance_under_a_mark_for_its_own_attack_strikes_again_and_again() {
             0,
             "settle {settle_ms}: the turn never ended"
         );
+    }
+}
+
+// P1 / P27: a queued grant made on a rest's last run before the schedule
+// skips it opens its row on its next run, however many ticks it sat out.
+#[test]
+fn a_queued_grant_opens_on_the_next_run_after_a_skip() {
+    let graph = queue_graph(
+        vec![queued(SLAM, always())],
+        vec![(SLAM, strike(2.0, 1.0, vec![token("melee")]))],
+        NEVER,
+    );
+    let mut reg = EntityRegistry::new();
+    budgets(&mut reg, (3, 0.0), (1, 0.0));
+    let mut runtime = AiRuntime::deciding_every_tick();
+    spawn_player(&mut reg, Vec3::new(1.8, 0.0, 0.0));
+    let enemy = spawn_resting(&mut reg, 0, &graph);
+    tick(&mut reg, &mut runtime);
+    assert_eq!(state(&reg, enemy), REST);
+    assert_eq!(held(&reg, enemy), vec![SLAM], "requested and granted");
+
+    for tick_index in 0..29 {
+        tick_skipping(&mut reg, &mut runtime, &[enemy]);
+        assert_eq!(state(&reg, enemy), REST, "tick {tick_index}");
+        assert_eq!(held(&reg, enemy), vec![SLAM], "tick {tick_index}");
+    }
+    tick(&mut reg, &mut runtime);
+    assert_eq!(state(&reg, enemy), hold(SLAM), "the row opened on its run");
+}
+
+// P27 at production cadence, for every pair of decide phases: a queued grant
+// opens its rest's row at that enemy's first decide after the grant, so no
+// turn is held across a decide with its row still closed; the waiter is
+// granted on the tick the first's turn ends, as at 60 Hz; and both strike.
+#[test]
+fn a_queued_grant_opens_at_the_next_decide_and_the_waiter_follows_at_every_phase() {
+    let graph = queue_graph(
+        vec![queued(SLAM, always())],
+        vec![(SLAM, strike(2.0, 300.0, vec![token("melee")]))],
+        [0.0, 0.0],
+    );
+    let interval = crate::decide::DECIDE_INTERVAL_TICKS;
+    let identity_on = crate::decide::identity_deciding_on;
+    for first_phase in 0..interval {
+        for second_phase in 0..interval {
+            let mut reg = EntityRegistry::new();
+            budgets(&mut reg, (1, 0.0), (1, 0.0));
+            let mut runtime = AiRuntime::noticing_on_sight();
+            let pawn = spawn_player(&mut reg, player_spot());
+            let enemies = [(0, first_phase), (1, second_phase)].map(|(index, phase)| {
+                let enemy = spawn_resting(&mut reg, index, &graph);
+                let mut brain = brain(&reg, enemy);
+                brain.schedule_identity = Some(identity_on(phase));
+                reg.set_component(enemy, brain).unwrap();
+                (enemy, identity_on(phase))
+            });
+            let label = format!("phases {first_phase}/{second_phase}");
+            // Per enemy: the tick a grant arrived while it rested, until its
+            // row opens.
+            let mut awaiting: [Option<u64>; 2] = [None, None];
+            let mut was_held = [false, false];
+            for tick in 1..=240_u64 {
+                tick_with(&mut reg, &mut runtime, &[]);
+                let held_now = enemies.map(|(enemy, _)| !held(&reg, enemy).is_empty());
+                for (slot, &(enemy, identity)) in enemies.iter().enumerate() {
+                    let decides = tick == 1 || crate::decide::decides_on(tick, identity, interval);
+                    let resting = state(&reg, enemy) == REST;
+                    if let Some(granted) = awaiting[slot] {
+                        if !resting {
+                            awaiting[slot] = None;
+                        } else {
+                            assert!(
+                                !decides || tick == granted,
+                                "{label}: enemy {slot} granted on {granted} still rests at its decide {tick}"
+                            );
+                        }
+                    }
+                    if held_now[slot] && !was_held[slot] && resting {
+                        awaiting[slot] = Some(tick);
+                    }
+                }
+                if held_now[1] && !was_held[1] {
+                    assert!(
+                        !held_now[0] && was_held[0],
+                        "{label}: the waiter is granted on the tick the first's turn ends ({tick})"
+                    );
+                }
+                was_held = held_now;
+                if player_hp(&reg, pawn) <= 98.0 {
+                    break;
+                }
+            }
+            assert!(
+                player_hp(&reg, pawn) <= 98.0,
+                "{label}: both strike, none starves: hp {}",
+                player_hp(&reg, pawn)
+            );
+        }
     }
 }

@@ -203,6 +203,38 @@ impl Rig {
         id
     }
 
+    /// One mover tick and one steering tick under `steps`.
+    fn tick_with(&mut self, steps: AgentSteps<'_>) -> AgentTickResult {
+        run_kinematic_mover_tick(&mut self.registry, &mut self.movers, DT);
+        self.steer_with(steps)
+    }
+
+    /// The steering half of [`Self::tick_with`], after a mover tick the
+    /// caller ran.
+    fn steer_with(&mut self, steps: AgentSteps<'_>) -> AgentTickResult {
+        let collision = CombinedCollisionWorld::new(&self.world, &self.colliders, &self.movers);
+        tick_with_mover_pins(
+            &mut self.registry,
+            &collision,
+            Some(&self.graph),
+            MoverPins {
+                yields: &[],
+                gate: NavGate::new(self.movers.docks()),
+            },
+            steps,
+            &mut Vec::new(),
+            ENV,
+            DT,
+        )
+    }
+
+    /// Owe `id` a drift replan: its plan no longer matches its destination.
+    fn owe_drift(&mut self, id: EntityId) {
+        let mut agent = self.agent_state(id).clone();
+        agent.planned_destination = None;
+        self.registry.set_component(id, agent).unwrap();
+    }
+
     /// One mover tick and one steering tick, in fixed-tick order.
     fn tick(&mut self) -> AgentTickResult {
         run_kinematic_mover_tick(&mut self.registry, &mut self.movers, DT);
@@ -215,6 +247,7 @@ impl Rig {
                 yields: &[],
                 gate: NavGate::new(self.movers.docks()),
             },
+            AgentSteps::EVERY_TICK,
             &mut Vec::new(),
             ENV,
             DT,
@@ -905,7 +938,7 @@ impl Contention {
             set_destination(&mut self.rig.registry, *id, self.goal);
         }
         let result = self.rig.tick();
-        assert!(result.replans <= REPLAN_BUDGET_PER_TICK);
+        assert!(result.replans <= result.budget);
     }
 
     fn all(&self, check: impl Fn(&AgentComponent) -> bool) -> bool {
@@ -1127,3 +1160,208 @@ fn a_chaser_against_a_door_that_never_rests_still_recovers() {
 
 #[path = "positioning_equivalence_tests.rs"]
 mod positioning_equivalence;
+
+// AC 52: the budget is 4 up to 24 owed, then ⌈owed / 6⌉: 22 at 128.
+#[test]
+fn replan_budget_scales_with_owed_demand() {
+    for owed in [0, 1, 4, 23, 24] {
+        assert_eq!(replan_budget(owed), REPLAN_BUDGET_PER_TICK, "{owed} owed");
+    }
+    assert_eq!(replan_budget(25), 5);
+    assert_eq!(replan_budget(128), 22);
+}
+
+// AC 52: under steady demand, every agent owed every tick, the scaled budget
+// serves each within the fair wait.
+#[test]
+fn replan_budget_scales_with_owed_so_drift_waits_at_most_the_fair_wait() {
+    let mut rig = closed_door();
+    let ids: Vec<EntityId> = (0..128)
+        .map(|i| {
+            let at = Vec3::new(
+                1.0 + 0.06 * (i % 64) as f32,
+                REST_Y,
+                1.0 + 2.0 * (i / 64) as f32,
+            );
+            rig.agent(at, Some(WEST))
+        })
+        .collect();
+    let mut longest = 0;
+    for tick in 0..60 {
+        for &id in &ids {
+            rig.owe_drift(id);
+        }
+        let result = rig.tick();
+        assert_eq!(result.budget, 22, "tick {tick}: 128 owed");
+        assert!(result.replans <= result.budget);
+        longest = ids
+            .iter()
+            .map(|&id| rig.agent_state(id).drift_wait_ticks)
+            .max()
+            .unwrap()
+            .max(longest);
+    }
+    assert!(
+        longest < REPLAN_FAIR_WAIT_TICKS,
+        "a drifted agent waited {longest} ticks"
+    );
+}
+
+// AC 51 / P13: a dormant agent latched behind a door steps once every 30
+// ticks; when the door opens it is served on its first step, the gate tier
+// ahead of every drifting agent.
+#[test]
+fn dormant_blocked_route_served_within_bound_under_drift_pressure() {
+    let mut rig = closed_door();
+    let dormant = rig.agent(Vec3::new(8.0, REST_Y, 5.0), Some(EAST));
+    for _ in 0..40 {
+        rig.tick();
+    }
+    assert!(rig.agent_state(dormant).blocked);
+    let drifters: Vec<EntityId> = (0..30)
+        .map(|i| rig.agent(Vec3::new(1.0 + i as f32 * 0.2, REST_Y, 1.0), Some(WEST)))
+        .collect();
+    rig.command(MoverCommand::Start);
+    let mut tick = 0u32;
+    let mut served_on = None;
+    while tick < 90 {
+        for &id in &drifters {
+            rig.owe_drift(id);
+        }
+        let steps_now = tick % 30 == 29;
+        let step = |id| match (id == dormant, steps_now) {
+            (true, false) => AgentStep::CarryOnly,
+            (true, true) => AgentStep::Ticks(30),
+            (false, _) => AgentStep::Ticks(1),
+        };
+        let rank = |id| u8::from(id != dormant);
+        rig.tick_with(AgentSteps::ranked(&step, &rank));
+        if !rig.agent_state(dormant).blocked {
+            served_on = Some(tick);
+            break;
+        }
+        tick += 1;
+    }
+    let served_on = served_on.expect("the dormant agent was served");
+    assert_eq!(
+        served_on % 30,
+        29,
+        "served on a step tick once the door's gate opened: tick {served_on}"
+    );
+    assert!(
+        served_on < 60,
+        "served on its first step after the door opened"
+    );
+}
+
+// Regression: a dormant agent kept the gate generation of its last step through
+// its carry-only ticks, so when a dock owed it a replan it sorted ahead of
+// engaged agents owed no later than it.
+#[test]
+fn a_dormant_agent_owed_with_engaged_ones_never_sorts_ahead_of_them() {
+    let mut rig = Rig::new(KinematicMoverMode::Once, 0.0, false);
+    rig.command(MoverCommand::Start);
+    for _ in 0..80 {
+        rig.tick();
+    }
+    assert_eq!(rig.movers.docks().docked_waypoint(DOOR), Some(1), "open");
+    // Every agent routes east through the open doorway from far back in the
+    // west room: too far to reach it before the door shuts again.
+    let engaged: Vec<EntityId> = (0..REPLAN_BUDGET_PER_TICK)
+        .map(|i| rig.agent(Vec3::new(1.0 + 0.6 * i as f32, REST_Y, 2.0), Some(EAST)))
+        .collect();
+    let dormant = rig.agent(Vec3::new(1.0, REST_Y, 8.0), Some(EAST));
+    for _ in 0..3 {
+        rig.tick();
+    }
+    for &id in engaged.iter().chain([&dormant]) {
+        assert!(
+            !rig.agent_state(id).path.is_empty(),
+            "{id:?} routed through the open door"
+        );
+    }
+    let last_step = rig.agent_state(dormant).gate_generation;
+
+    // The door swings shut: the dormant agent only carries, the engaged ones
+    // step every tick. Its leaving the open dock owes nobody a replan.
+    let rank = |id: EntityId| -> u8 { if id == dormant { 0 } else { 2 } };
+    let carry = |id: EntityId| {
+        if id == dormant {
+            AgentStep::CarryOnly
+        } else {
+            AgentStep::Ticks(1)
+        }
+    };
+    rig.command(MoverCommand::Reverse);
+    let mut closed = false;
+    for _ in 0..120 {
+        run_kinematic_mover_tick(&mut rig.registry, &mut rig.movers, DT);
+        if rig.gate().portal_closed(&rig.graph, 0) {
+            closed = true;
+            break;
+        }
+        rig.steer_with(AgentSteps::ranked(&carry, &rank));
+    }
+    assert!(closed, "the door docked closed");
+    assert!(
+        rig.gate().generation() > last_step + 1,
+        "the door left its open dock, then docked closed"
+    );
+
+    // The closing dock owes every agent a replan, and the dormant one steps
+    // on this tick: the engaged ones, owed no later, take the budget.
+    let step = |id: EntityId| {
+        if id == dormant {
+            AgentStep::Ticks(30)
+        } else {
+            AgentStep::Ticks(1)
+        }
+    };
+    let result = rig.steer_with(AgentSteps::ranked(&step, &rank));
+    assert_eq!(result.budget, REPLAN_BUDGET_PER_TICK);
+    assert_eq!(result.replans, REPLAN_BUDGET_PER_TICK);
+    let live = rig.gate().generation();
+    for &id in &engaged {
+        assert_eq!(
+            rig.agent_state(id).gate_generation,
+            live,
+            "{id:?} admitted ahead of the dormant agent"
+        );
+    }
+    assert_ne!(
+        rig.agent_state(dormant).gate_generation,
+        live,
+        "the dormant agent waits behind them"
+    );
+}
+
+// AC 51: within a replan tier a leap's agent goes first, then the higher NPC
+// tier; slot order breaks ties.
+#[test]
+fn replan_admission_puts_paced_then_higher_tier_first_within_each_replan_tier() {
+    let mut rig = closed_door();
+    // Slot order: dormant-paced, engaged, engaged, idle, idle, dormant.
+    let ranks = [0u8, 2, 2, 1, 1, 0];
+    let ids: Vec<EntityId> = (0..ranks.len())
+        .map(|i| rig.agent(Vec3::new(1.0 + i as f32 * 0.8, REST_Y, 1.0), Some(WEST)))
+        .collect();
+    let mut paced = rig.agent_state(ids[0]).clone();
+    paced.paced = true;
+    rig.registry.set_component(ids[0], paced).unwrap();
+    for &id in &ids {
+        rig.owe_drift(id);
+    }
+    let step = |_| AgentStep::Ticks(1);
+    let rank = |id| {
+        ids.iter()
+            .position(|&each| each == id)
+            .map_or(1, |slot| ranks[slot])
+    };
+    let result = rig.tick_with(AgentSteps::ranked(&step, &rank));
+    assert_eq!(result.budget, REPLAN_BUDGET_PER_TICK);
+    let served: Vec<bool> = ids
+        .iter()
+        .map(|&id| rig.agent_state(id).planned_destination.is_some())
+        .collect();
+    assert_eq!(served, vec![true, true, true, true, false, false]);
+}

@@ -191,6 +191,7 @@ pub(crate) fn up_rect(x0: f32, z0: f32, x1: f32, z1: f32, y: f32) -> Vec<[f32; 3
 pub(crate) fn volumes(records: Vec<EnvironmentVolumeRecord>) -> EnvironmentVolumesSection {
     EnvironmentVolumesSection {
         level_gravity: -9.81,
+        ai_wake_lead: None,
         volumes: records,
     }
 }

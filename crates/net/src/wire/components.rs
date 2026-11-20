@@ -40,8 +40,10 @@ pub const COMPONENT_KIND_GHOST_LINK: u16 = 26;
 pub const COMPONENT_KIND_DEFENSE_LAYERS: u16 = 27;
 /// Reserved discriminant; attack pools are host-only and never replicate.
 pub const COMPONENT_KIND_ATTACK_POOL: u16 = 28;
+/// Reserved discriminant; level seams are host-only and never replicate.
+pub const COMPONENT_KIND_SEAM: u16 = 29;
 /// An entity's live status kinds, one bit per host status declaration.
-pub const COMPONENT_KIND_STATUS_PRESENCE: u16 = 29;
+pub const COMPONENT_KIND_STATUS_PRESENCE: u16 = 30;
 
 /// `status_presence`: bit `i` set while any instance of the host's `i`-th
 /// declared status is live on the entity. An entity with no live status

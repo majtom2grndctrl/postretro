@@ -224,7 +224,7 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
 
     // Two brutes in jab reach of one player, on opposite sides.
     let mut reg = dev_registry(&manifest);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let mut clips = HitZoneStore::new();
     let player = durable_player(&mut reg, Vec3::ZERO);
     let brutes = [
@@ -277,7 +277,7 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
 
     // Three troopers at their firing standoff around one player.
     let mut reg = dev_registry(&manifest);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     durable_player(&mut reg, Vec3::ZERO);
     let troopers: Vec<EntityId> = (0..3)
         .map(|index| {
@@ -325,7 +325,7 @@ fn dev_mod_budget_paces_reference_enemies_and_troopers() {
 fn arena_start_runs_tagged_guards_under_the_arena_profile() {
     let manifest = dev_manifest();
     let mut reg = dev_registry(&manifest);
-    let mut runtime = AiRuntime::new();
+    let mut runtime = AiRuntime::deciding_every_tick();
     let mut clips = HitZoneStore::new();
     durable_player(&mut reg, Vec3::ZERO);
     let arena = reg

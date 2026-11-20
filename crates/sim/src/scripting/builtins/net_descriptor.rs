@@ -820,6 +820,7 @@ mod tests {
             spin_animation: None,
         });
         descriptor.behavior = Some(BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
@@ -1127,6 +1128,7 @@ mod tests {
     fn remote_enemy_presentation_offsets_ai_mesh_from_capsule_center_to_feet() {
         let mut descriptor = enemy_mesh_descriptor("decraniated_mob", true);
         descriptor.behavior = Some(BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

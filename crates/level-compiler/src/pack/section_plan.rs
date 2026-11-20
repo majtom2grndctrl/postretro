@@ -75,6 +75,7 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) environment_volumes: &'a EnvironmentVolumesSection,
     pub(super) teleporters: &'a TeleportersSection,
     pub(super) ghost_links: &'a GhostLinksSection,
+    pub(super) seams: &'a SeamsSection,
     pub(super) mover_probe_channel: Option<&'a MoverProbeChannelSection>,
     pub(super) push_forces: Option<&'a PushForcesSection>,
     pub(super) reflection_probes: Option<&'a ReflectionProbesSection>,
@@ -174,6 +175,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         environment_volumes,
         teleporters,
         ghost_links,
+        seams,
         mover_probe_channel,
         push_forces,
         reflection_probes,
@@ -518,6 +520,15 @@ pub(super) fn build_finalized_section_plan<'a>(
             1,
             ghost_links.byte_len(),
             || Ok(ghost_links.to_bytes()),
+        ));
+    }
+    // Absent means no seams; packed only when the map has one.
+    if !seams.seams.is_empty() {
+        sections.push(PlannedSection::new(
+            SectionId::Seams as u32,
+            1,
+            seams.byte_len(),
+            || Ok(seams.to_bytes()),
         ));
     }
     // Absent means no mover changes the probe data; never written empty.

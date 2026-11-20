@@ -47,7 +47,7 @@ mod respawn;
 mod tick_start;
 pub use tick_start::{
     PendingTickStart, RespawnTurn, StartedTick, begin_tick, finish_tick_start,
-    simulate_tick_with_presentation_aim,
+    simulate_tick_scheduled, simulate_tick_with_presentation_aim,
 };
 #[cfg(test)]
 mod player_life_tests;
@@ -57,6 +57,8 @@ pub mod presentation_projection;
 mod projectile_stage;
 #[cfg(test)]
 mod remote_presence_tests;
+#[cfg(test)]
+mod scheduled_tick_tests;
 pub mod splash;
 pub mod touch;
 #[cfg(any(test, feature = "test-support"))]
@@ -377,6 +379,9 @@ pub struct RemoteProjectileFireRejection {
 /// keyed by `PlayerId` at this boundary.
 pub struct TriggerTickContext<'a> {
     pub teleporters: Option<&'a crate::teleporter_system::TeleporterBindingTable>,
+    /// The installed level's seams and `arrive` bindings; `None` for fixtures
+    /// and levels evaluated without them.
+    pub seams: Option<SeamTickContext<'a>>,
     pub system: &'a mut TriggerSystem,
     pub bridge: &'a TriggerVolumeBridge,
     pub bindings: &'a TriggerBindingTable,
@@ -388,6 +393,12 @@ pub struct TriggerTickContext<'a> {
     /// and never constructed for connected-client prediction.
     pub auto_close_timers: Option<kinematic_mover::MoverAutoCloseTimers>,
     pub use_edges: &'a HashMap<PlayerId, bool>,
+}
+
+/// Host-only seam state for one tick's trigger stage.
+pub struct SeamTickContext<'a> {
+    pub stage: &'a mut crate::seam_stage::SeamStage,
+    pub bindings: &'a crate::seam_system::SeamBindingTable,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -404,6 +415,8 @@ pub struct TickEvents {
     /// Authoritative arrivals retained separately from local-only movement emissions.
     pub teleports: Vec<(EntityId, crate::movement::TeleportEvent)>,
     pub teleport_residuals: Vec<crate::teleporter_system::TeleportResidual>,
+    /// `arrive` presentation and wait work saved for the frame-end drain.
+    pub seam_residuals: Vec<crate::seam_system::SeamArriveResidual>,
     /// AI events raised this tick, each on its enemy: attacks fired and
     /// activities entered (an entry with no authored `on_enter` fires nothing
     /// but still plays its sound).
@@ -600,7 +613,9 @@ pub use reload::{
     clear_feedback_for_weapon as clear_reload_feedback_for_weapon,
     clear_owner_feedback_for_weapons as clear_owner_reload_feedback_for_weapons,
 };
-pub use weapon_stage::apply_authorized_weapon_impact_damage;
+pub use weapon_stage::{
+    apply_authorized_shot_impact_damage, apply_authorized_weapon_impact_damage,
+};
 
 pub use host_movement::drop_vault_if_barred;
 #[cfg(any(test, feature = "test-support"))]
@@ -729,6 +744,7 @@ mod tests {
     /// A direct-graph brain staged directly into its `alert` state.
     fn alert_brain(move_speed: f32) -> BrainComponent {
         let graph = BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),
@@ -2141,6 +2157,7 @@ mod tests {
             &HashMap::new(),
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -2375,6 +2392,7 @@ mod tests {
                 1.0 / 60.0,
                 Some(TriggerTickContext {
                     teleporters: None,
+                    seams: None,
                     system: trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,
@@ -2674,6 +2692,7 @@ mod tests {
             1.0 / 60.0,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -2797,6 +2816,7 @@ mod tests {
             1.0 / 60.0,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -2937,6 +2957,7 @@ mod tests {
                 1.0 / 60.0,
                 Some(TriggerTickContext {
                     teleporters: None,
+                    seams: None,
                     system: &mut trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,

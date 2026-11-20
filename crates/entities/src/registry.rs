@@ -34,6 +34,7 @@ use crate::components::mesh::MeshComponent;
 use crate::components::player_movement::PlayerMovementComponent;
 use crate::components::projectile::{ProjectileComponent, ProjectilePresentationAge};
 use crate::components::projectile_trap::ProjectileTrapComponent;
+use crate::components::seam::SeamComponent;
 use crate::components::spawner::SpawnerComponent;
 use crate::components::sprite_visual::SpriteVisual;
 use crate::components::teleporter::TeleporterComponent;
@@ -186,10 +187,13 @@ pub enum ComponentKind {
     /// state. Host-owned and never replicated; scripts address it through
     /// member handles.
     AttackPool = 28,
+    /// Map-authored level-seam identity and host-owned arming state. Host-only
+    /// and never replicated; scripts address it through member handles.
+    Seam = 29,
     /// A connected client's copy of an entity's replicated status presence:
     /// one bit per host status kind. The host never carries it; its live
     /// instances sit in the registry's status table.
-    StatusPresence = 29,
+    StatusPresence = 30,
 }
 
 impl ComponentKind {
@@ -228,6 +232,7 @@ impl ComponentKind {
             ComponentKind::GhostLink,
             ComponentKind::DefenseLayers,
             ComponentKind::AttackPool,
+            ComponentKind::Seam,
             ComponentKind::StatusPresence,
         ];
         VARIANTS.len()
@@ -307,6 +312,7 @@ pub enum ComponentValue {
     GhostLink(GhostLinkComponent),
     DefenseLayers(DefenseLayersComponent),
     AttackPool(AttackPoolComponent),
+    Seam(SeamComponent),
     StatusPresence(crate::components::statuses::StatusPresenceComponent),
 }
 
@@ -342,6 +348,7 @@ impl ComponentValue {
             ComponentValue::GhostLink(_) => ComponentKind::GhostLink,
             ComponentValue::DefenseLayers(_) => ComponentKind::DefenseLayers,
             ComponentValue::AttackPool(_) => ComponentKind::AttackPool,
+            ComponentValue::Seam(_) => ComponentKind::Seam,
             ComponentValue::StatusPresence(_) => ComponentKind::StatusPresence,
         }
     }
@@ -809,6 +816,19 @@ impl Component for TeleporterComponent {
     }
     fn into_value(self) -> ComponentValue {
         ComponentValue::Teleporter(self)
+    }
+}
+
+impl Component for SeamComponent {
+    const KIND: ComponentKind = ComponentKind::Seam;
+    fn from_value(value: &ComponentValue) -> Option<&Self> {
+        match value {
+            ComponentValue::Seam(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn into_value(self) -> ComponentValue {
+        ComponentValue::Seam(self)
     }
 }
 

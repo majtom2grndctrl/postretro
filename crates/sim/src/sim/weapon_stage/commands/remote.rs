@@ -350,6 +350,10 @@ pub(in crate::sim) fn run_remote_weapon_commands(
                 source_weapon: descriptor_name(&registry, weapon),
                 shot_id,
                 pawn: remote.pawn,
+                pawn_life: postretro_entities::components::player_movement::life_counter(
+                    &registry,
+                    remote.pawn,
+                ),
                 weapon,
                 fire_tick: remote.fire_tick,
                 damage,

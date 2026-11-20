@@ -32,6 +32,8 @@ const CONSEQUENTIAL_PRIMITIVES: &[&str] = &[
     "disarmTrigger",
     "armTeleporter",
     "disarmTeleporter",
+    "armSeam",
+    "disarmSeam",
     postretro_foundation::ARM_GHOST_LINK,
     postretro_foundation::DISARM_GHOST_LINK,
     postretro_foundation::SET_GHOST_LINK_MEMBERS,

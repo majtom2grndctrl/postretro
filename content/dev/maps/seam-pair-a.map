@@ -1,0 +1,192 @@
+// Game: Postretro
+// Format: Standard
+// Level seam pair, map A. Map B is seam-pair-b.map.
+// Compile: cargo run -p postretro-level-compiler -- content/dev/maps/seam-pair-a.map -o content/dev/maps/seam-pair-a.prl
+// TrenchBroom units, 1 unit = 0.0254 m, floor top at z 0.
+// Room interior x 0 to 512, y 0 to 384, ceiling z 256. A doorway in the east wall at y 160 to 224 opens
+// onto a hallway, interior x 576 to 832, y 160 to 224, ceiling z 128, capped at its east end.
+// Seam pair_door covers the hallway at x 640 to 768, targets catalog id seam-pair-b, and carries tag airlock.
+// The data script disarms the seam a player arrives by; the airlock_button trigger in the room arms it again.
+// Its landmark pair_landmark stands on the hallway floor at 704 192 0, yaw 0.
+// Map B holds the same hallway about a landmark at yaw 90, so walking east here walks north there.
+// Every brush is an axis-aligned box. Keep comments free of braces and quotes.
+// entity 0
+{
+"classname" "worldspawn"
+"wad" ""
+"_tb_mod" "dev"
+"_tb_def" "external:../../../sdk/TrenchBroom/postretro.fgd"
+"data_script" "../scripts/seam-pair.luau"
+// brush floor
+{
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 576 0 0 ) ( 576 0 1 ) ( 576 1 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 448 0 ) ( 1 448 0 ) ( 0 448 1 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -64 ) ( 1 0 -64 ) ( 0 1 -64 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush ceiling
+{
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) debug_ceiling_grey 0 0 0 1 1
+( 576 0 0 ) ( 576 0 1 ) ( 576 1 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 448 0 ) ( 1 448 0 ) ( 0 448 1 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 256 ) ( 1 0 256 ) ( 0 1 256 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 320 ) ( 0 1 320 ) ( 1 0 320 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush wall_west
+{
+( -64 0 0 ) ( -64 1 0 ) ( -64 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 448 0 ) ( 1 448 0 ) ( 0 448 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 256 ) ( 0 1 256 ) ( 1 0 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_south
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 0 0 ) ( 512 0 1 ) ( 512 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 256 ) ( 0 1 256 ) ( 1 0 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_north
+{
+( 0 0 0 ) ( 0 1 0 ) ( 0 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 512 0 0 ) ( 512 0 1 ) ( 512 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 384 0 ) ( 0 384 1 ) ( 1 384 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 448 0 ) ( 1 448 0 ) ( 0 448 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 256 ) ( 0 1 256 ) ( 1 0 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_east_south
+{
+( 512 0 0 ) ( 512 1 0 ) ( 512 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 576 0 0 ) ( 576 0 1 ) ( 576 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 -64 0 ) ( 0 -64 1 ) ( 1 -64 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 160 0 ) ( 1 160 0 ) ( 0 160 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 256 ) ( 0 1 256 ) ( 1 0 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_east_north
+{
+( 512 0 0 ) ( 512 1 0 ) ( 512 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 576 0 0 ) ( 576 0 1 ) ( 576 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 224 0 ) ( 0 224 1 ) ( 1 224 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 448 0 ) ( 1 448 0 ) ( 0 448 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 256 ) ( 0 1 256 ) ( 1 0 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush wall_east_lintel
+{
+( 512 0 0 ) ( 512 1 0 ) ( 512 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 576 0 0 ) ( 576 0 1 ) ( 576 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 160 0 ) ( 0 160 1 ) ( 1 160 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 224 0 ) ( 1 224 0 ) ( 0 224 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 256 ) ( 0 1 256 ) ( 1 0 256 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush hall_floor
+{
+( 576 0 0 ) ( 576 1 0 ) ( 576 0 1 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 896 0 0 ) ( 896 0 1 ) ( 896 1 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 288 0 ) ( 1 288 0 ) ( 0 288 1 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 -64 ) ( 1 0 -64 ) ( 0 1 -64 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) 50-free-textures/concrete_pavement_036 0 0 0 1 1
+}
+// brush hall_ceiling
+{
+( 576 0 0 ) ( 576 1 0 ) ( 576 0 1 ) debug_ceiling_grey 0 0 0 1 1
+( 896 0 0 ) ( 896 0 1 ) ( 896 1 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) debug_ceiling_grey 0 0 0 1 1
+( 0 288 0 ) ( 1 288 0 ) ( 0 288 1 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 128 ) ( 1 0 128 ) ( 0 1 128 ) debug_ceiling_grey 0 0 0 1 1
+( 0 0 192 ) ( 0 1 192 ) ( 1 0 192 ) debug_ceiling_grey 0 0 0 1 1
+}
+// brush hall_south
+{
+( 576 0 0 ) ( 576 1 0 ) ( 576 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 896 0 0 ) ( 896 0 1 ) ( 896 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 96 0 ) ( 0 96 1 ) ( 1 96 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 160 0 ) ( 1 160 0 ) ( 0 160 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush hall_north
+{
+( 576 0 0 ) ( 576 1 0 ) ( 576 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 896 0 0 ) ( 896 0 1 ) ( 896 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 224 0 ) ( 0 224 1 ) ( 1 224 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 288 0 ) ( 1 288 0 ) ( 0 288 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+// brush hall_cap
+{
+( 832 0 0 ) ( 832 1 0 ) ( 832 0 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 896 0 0 ) ( 896 0 1 ) ( 896 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 160 0 ) ( 0 160 1 ) ( 1 160 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 224 0 ) ( 1 224 0 ) ( 0 224 1 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) 50-free-textures/concrete_stone_033 0 0 0 1 1
+}
+}
+{
+"classname" "light"
+"origin" "256 192 192"
+"light" "300"
+"_falloff_range" "640"
+}
+{
+"classname" "light"
+"origin" "704 192 96"
+"light" "150"
+"_falloff_range" "320"
+}
+{
+"classname" "player_spawn"
+"origin" "128 192 24"
+"angles" "0 0 0"
+}
+{
+"classname" "teleport_destination"
+"origin" "704 192 0"
+"name" "pair_landmark"
+"angles" "0 0 0"
+}
+{
+"classname" "level_seam"
+"name" "pair_door"
+"target" "seam-pair-b"
+"landmark" "pair_landmark"
+"_tags" "airlock"
+// brush pair_door
+{
+( 640 0 0 ) ( 640 1 0 ) ( 640 0 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 768 0 0 ) ( 768 0 1 ) ( 768 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 160 0 ) ( 0 160 1 ) ( 1 160 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 224 0 ) ( 1 224 0 ) ( 0 224 1 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+( 0 0 128 ) ( 0 1 128 ) ( 1 0 128 ) DebugTextures/debug_floor_purple 0 0 0 1 1
+}
+}
+{
+"classname" "trigger_volume"
+"name" "airlock_button"
+"activation" "touch"
+"fire_mode" "multiple"
+"_tags" "airlock_button"
+// brush airlock_button
+{
+( 224 0 0 ) ( 224 1 0 ) ( 224 0 1 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 288 0 0 ) ( 288 0 1 ) ( 288 1 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 0 64 0 ) ( 0 64 1 ) ( 1 64 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 0 128 0 ) ( 1 128 0 ) ( 0 128 1 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 1 0 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+( 0 0 64 ) ( 0 1 64 ) ( 1 0 64 ) DebugTextures/debug_floor_yellow 0 0 0 1 1
+}
+}

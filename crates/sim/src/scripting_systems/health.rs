@@ -246,6 +246,7 @@ mod tests {
     /// sweep. Mirrors `make_player`: the sweep branches on component *presence*.
     fn make_brain(registry: &mut EntityRegistry, id: EntityId) {
         let graph = BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

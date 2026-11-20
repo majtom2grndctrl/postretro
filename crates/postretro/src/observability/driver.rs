@@ -238,6 +238,7 @@ fn run_headless_inner(
             suppress_boot_pawn: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
+            spawn_checkpoint_seam: false,
         };
         install_world_cpu(
             handles,
@@ -591,6 +592,8 @@ mod tests {
             forgiveness: None,
             crouch: None,
             slide: None,
+            swim: None,
+            vault: None,
             view_feel: None,
         }
     }

@@ -64,6 +64,7 @@ fn run_file_round_trips_level_checkpoint_slots_and_sentiment() {
         level: Some(LevelRecord {
             catalog_id: "campaign-test".into(),
             checkpoint: Some("bridge".into()),
+            seam: None,
         }),
         run: Some(RunRecord {
             character: "00112233445566778899aabbccddeeff".into(),
@@ -80,6 +81,51 @@ fn run_file_round_trips_level_checkpoint_slots_and_sentiment() {
     write_document(&path, &document).unwrap();
 
     assert_eq!(read_document(&path).unwrap(), Some(document));
+}
+
+// E25 Ckpt 6: a run level record with no seam record, a seam record without a
+// pose, and one with a pose each round-trip; a run file written before the
+// seam record existed loads as no seam.
+#[test]
+fn run_level_record_round_trips_with_and_without_seam_and_pose() {
+    let dir = tempfile::tempdir().unwrap();
+    let pose = SeamPoseRecord {
+        offset: [1.0, 1.25, -0.5],
+        view_yaw: 0.4,
+        view_pitch: -0.2,
+    };
+    for (index, seam) in [
+        None,
+        Some(SeamCheckpointRecord { pose: None }),
+        Some(SeamCheckpointRecord { pose: Some(pose) }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = dir.path().join(format!("runs/{index}.json"));
+        let document = LedgerDocument {
+            level: Some(LevelRecord {
+                catalog_id: "seam-destination".into(),
+                checkpoint: Some("door".into()),
+                seam: seam.clone(),
+            }),
+            ..LedgerDocument::default()
+        };
+        write_document(&path, &document).unwrap();
+        let read = read_document(&path).unwrap().unwrap();
+        assert_eq!(read, document, "seam {seam:?}");
+    }
+
+    let before_seams = r#"{"version":1,"level":{"catalogId":"e1m2","checkpoint":"bridge"}}"#;
+    let document = LedgerDocument::from_slice(before_seams.as_bytes()).unwrap();
+    assert_eq!(
+        document.level,
+        Some(LevelRecord {
+            catalog_id: "e1m2".into(),
+            checkpoint: Some("bridge".into()),
+            seam: None,
+        })
+    );
 }
 
 #[test]

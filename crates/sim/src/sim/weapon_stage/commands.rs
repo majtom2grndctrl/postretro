@@ -143,6 +143,8 @@ pub fn spawn_projectile(
         return None;
     };
 
+    let owner_life =
+        postretro_entities::components::player_movement::life_counter(registry, owner_pawn);
     let component = ProjectileComponent {
         source_sounds: launch.sounds,
         predicted_visible: true,
@@ -158,6 +160,7 @@ pub fn spawn_projectile(
         credit_source: launch.credit_source,
         damage_type: launch.damage_type,
         owner_pawn,
+        owner_life,
         owner_weapon,
         attackerless: source.attackerless,
         spawned: true,

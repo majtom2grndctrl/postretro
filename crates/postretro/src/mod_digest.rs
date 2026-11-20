@@ -486,6 +486,7 @@ pub(crate) mod tests {
 
     fn behavior_descriptor() -> BehaviorGraphDescriptor {
         BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

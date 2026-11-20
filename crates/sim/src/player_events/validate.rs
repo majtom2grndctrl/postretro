@@ -75,6 +75,9 @@ fn direct_violation(descriptor: &ReactionDescriptor, slot_table: &SlotTable) -> 
     if crate::teleporter_system::reaction_uses_teleporter(descriptor) {
         return Some("uses `on.teleporter`, which only teleport events publish".to_string());
     }
+    if crate::seam_system::reaction_uses_seam(descriptor) {
+        return Some("uses `on.seam`, which only seam arrive events publish".to_string());
+    }
     if let Some(token) = trigger_token(descriptor) {
         return Some(format!("uses `{token}`, which only trigger events publish"));
     }

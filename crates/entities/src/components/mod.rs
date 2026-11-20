@@ -26,6 +26,7 @@ pub mod mesh;
 pub mod player_movement;
 pub mod projectile;
 pub mod projectile_trap;
+pub mod seam;
 pub mod spawner;
 pub mod sprite_visual;
 pub mod statuses;

@@ -66,7 +66,7 @@ fn parse_inline_map(map_text: &str) -> anyhow::Result<crate::map_data::MapData> 
 #[test]
 fn regions_are_canonical_and_peeled_from_static_geometry() {
     let seam = streaming_hint_entity(
-        "streaming_seam_volume",
+        "stream_split_volume",
         "16 24 32",
         "",
         &box_brush([0, 0, 0], [32, 32, 32], "stream_seam_tex"),
@@ -88,11 +88,11 @@ fn regions_are_canonical_and_peeled_from_static_geometry() {
     )))
     .expect("streaming hint fixture must parse");
 
-    assert_eq!(map.streaming_seam_regions.len(), 1);
+    assert_eq!(map.streaming_split_regions.len(), 1);
     assert_eq!(map.stream_resident_regions.len(), 1);
     assert_eq!(map.stream_priority_regions.len(), 1);
     for region in map
-        .streaming_seam_regions
+        .streaming_split_regions
         .iter()
         .chain(&map.stream_resident_regions)
         .chain(std::iter::once(&map.stream_priority_regions[0].region))
@@ -140,7 +140,7 @@ fn regions_are_canonical_and_peeled_from_static_geometry() {
         map.map_entities.iter().all(|entity| {
             !matches!(
                 entity.classname.as_str(),
-                "streaming_seam_volume" | "stream_resident_volume" | "stream_priority_region"
+                "stream_split_volume" | "stream_resident_volume" | "stream_priority_region"
             )
         }),
         "streaming hints must not become runtime MapEntity records"
@@ -161,7 +161,7 @@ fn regions_are_canonical_and_peeled_from_static_geometry() {
 #[test]
 fn rejects_invalid_brush_counts_and_priorities() {
     for classname in [
-        "streaming_seam_volume",
+        "stream_split_volume",
         "stream_resident_volume",
         "stream_priority_region",
     ] {
@@ -226,7 +226,7 @@ fn rejects_invalid_brush_counts_and_priorities() {
 #[test]
 fn rejects_zero_volume_and_nonfinite_hulls() {
     let zero_volume = streaming_hint_map(&streaming_hint_entity(
-        "streaming_seam_volume",
+        "stream_split_volume",
         "1 2 3",
         "",
         &box_brush([0, 0, 0], [0, 32, 32], "flat_hint_tex"),
@@ -234,7 +234,7 @@ fn rejects_zero_volume_and_nonfinite_hulls() {
     let error = parse_inline_map(&zero_volume).expect_err("collapsed hull must fail");
     let message = error.to_string();
     assert!(
-        message.contains("streaming_seam_volume")
+        message.contains("stream_split_volume")
             && message.contains("brush hull")
             && message.contains("at ("),
         "hull error must name the classname and location: {message}"
@@ -269,7 +269,7 @@ fn rejects_malformed_face_suffix_before_shalrath_can_drop_hint() {
         1,
     );
     let map = streaming_hint_map(&streaming_hint_entity(
-        "streaming_seam_volume",
+        "stream_split_volume",
         "1 2 3",
         "",
         &brush,
@@ -277,7 +277,7 @@ fn rejects_malformed_face_suffix_before_shalrath_can_drop_hint() {
     let error = parse_inline_map(&map).expect_err("malformed hint face must not disappear");
     let message = error.to_string();
     assert!(
-        message.contains("streaming_seam_volume")
+        message.contains("stream_split_volume")
             && message.contains("at (")
             && message.contains("syntax"),
         "malformed face error must identify the hint and location: {message}"

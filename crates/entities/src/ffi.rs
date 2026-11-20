@@ -187,6 +187,7 @@ fn component_kind_name(k: ComponentKind) -> &'static str {
         ComponentKind::GhostLink => "ghost_link",
         ComponentKind::DefenseLayers => "defense_layers",
         ComponentKind::AttackPool => "attack_pool",
+        ComponentKind::Seam => "seam",
         ComponentKind::StatusPresence => "status_presence",
     }
 }
@@ -287,6 +288,10 @@ impl<'js> FromJs<'js> for ComponentValue {
             "attack_pool" => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "AttackPool component is engine-managed and not exposed to scripts",
+            )),
+            "seam" => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Seam component is engine-managed and not exposed to scripts",
             )),
             "fog_volume" => fog_from_js(ctx, &o),
             other => Err(rquickjs::Exception::throw_type(
@@ -437,6 +442,10 @@ impl<'js> IntoJs<'js> for ComponentValue {
                 ctx,
                 "AttackPool component is engine-managed and not exposed to scripts",
             )),
+            ComponentValue::Seam(_) => Err(rquickjs::Exception::throw_type(
+                ctx,
+                "Seam component is engine-managed and not exposed to scripts",
+            )),
             ComponentValue::StatusPresence(_) => Err(rquickjs::Exception::throw_type(
                 ctx,
                 "StatusPresence component is engine-managed and not exposed to scripts",
@@ -532,6 +541,9 @@ impl FromLua for ComponentValue {
             )),
             "attack_pool" => Err(mlua::Error::RuntimeError(
                 "AttackPool component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            "seam" => Err(mlua::Error::RuntimeError(
+                "Seam component is engine-managed and not exposed to scripts".to_string(),
             )),
             "fog_volume" => fog_from_lua(t),
             other => Err(mlua::Error::RuntimeError(format!(
@@ -647,6 +659,9 @@ impl IntoLua for ComponentValue {
             )),
             ComponentValue::AttackPool(_) => Err(mlua::Error::RuntimeError(
                 "AttackPool component is engine-managed and not exposed to scripts".to_string(),
+            )),
+            ComponentValue::Seam(_) => Err(mlua::Error::RuntimeError(
+                "Seam component is engine-managed and not exposed to scripts".to_string(),
             )),
             ComponentValue::StatusPresence(_) => Err(mlua::Error::RuntimeError(
                 "StatusPresence component is engine-managed and not exposed to scripts".to_string(),
@@ -939,6 +954,7 @@ mod tests {
                 "trigger_volume",
                 "teleporter",
                 "ghost_link",
+                "seam",
             ] {
                 let value = Object::new(ctx.clone()).unwrap();
                 value.set("kind", kind).unwrap();
@@ -956,6 +972,7 @@ mod tests {
             "trigger_volume",
             "teleporter",
             "ghost_link",
+            "seam",
         ] {
             let value = lua.create_table().unwrap();
             value.set("kind", kind).unwrap();

@@ -71,7 +71,7 @@ impl Scene {
             registry: Rc::new(RefCell::new(registry)),
             world: floor.collision_world(),
             nav: floor.nav_graph(),
-            runtime: AiRuntime::new(),
+            runtime: AiRuntime::deciding_every_tick(),
         }
     }
 

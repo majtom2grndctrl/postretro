@@ -135,3 +135,49 @@ pub fn drain_level_teleport_events_lua(
     }
     Ok(events)
 }
+
+/// Luau twin of the level-only seam-event drain.
+pub fn drain_level_seam_events_lua(
+    table: &Table,
+    scope: &str,
+) -> Result<Vec<SeamEventDescriptor>, DescriptorError> {
+    let Some(arr) = optional_manifest_array_lua(table, "seamEvents", scope)? else {
+        return Ok(Vec::new());
+    };
+    let len = validate_dense_lua_array(&arr, "`seamEvents` field")?;
+    let mut events = Vec::with_capacity(len);
+    for i in 0..len {
+        let parsed = (|| -> Result<SeamEventDescriptor, DescriptorError> {
+            let item = lua_table(
+                arr.get::<LuaValue>(i + 1).map_err(lua_err)?,
+                "seam-event entry",
+            )?;
+            if item.contains_key("tag").map_err(lua_err)?
+                || item.contains_key("levels").map_err(lua_err)?
+            {
+                return Err(DescriptorError::InvalidShape {
+                    reason: "seamEvents accepts only level seam member ids, without tag or levels"
+                        .into(),
+                });
+            }
+            let event = get_required_string_lua(&item, "event")?;
+            if event != "arrive" {
+                return Err(DescriptorError::InvalidShape {
+                    reason: format!("unknown seam event `{event}`"),
+                });
+            }
+            Ok(SeamEventDescriptor {
+                seam: EntityId::from_raw(get_required_u32_lua(&item, "seam")?),
+                event,
+                fire: string_array_from_lua(&item, "fire")?,
+            })
+        })();
+        match parsed {
+            Ok(event) => events.push(event),
+            Err(error) => log::warn!(
+                "[Scripting] {scope}: seamEvents[{i}] is malformed and was skipped: {error}"
+            ),
+        }
+    }
+    Ok(events)
+}

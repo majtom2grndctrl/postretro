@@ -12,9 +12,10 @@
 -- SYNC OBLIGATION: `brain` mirrors the `BRAIN_INPUTS` table in
 -- `crates/foundation/src/brain.rs`; `candidate` mirrors `CANDIDATE_INPUTS` in
 -- `crates/foundation/src/candidate.rs`. `brain.ts` carries both sets. Adding an
--- input means editing both preludes; the SDK-helper drift tests in
--- `crates/scripting-core/src/data_descriptors/tests/behavior.rs` fail until
--- they agree.
+-- input means editing both preludes and both typedef templates;
+-- `brain_input_typedefs_match_the_foundation_table` (in
+-- `crates/sim/src/scripting/typedef/tests/surface.rs`) fails until the
+-- templates agree with the table.
 -- See: context/lib/scripting.md §11 · context/lib/entity_model.md §4
 
 local function input(name: string): RuntimeGuardNode
@@ -61,7 +62,9 @@ local BrainSdk = {}
 --- (number; points drained from defense layers and health since the
 --- currently-evaluated activity was entered, by every damage producer,
 --- `applyDamage` included; scope-relative like `timeInActivityMs`, resetting
---- to 0 when that level is entered).
+--- to 0 when that level is entered), and `awareness` (number; highest
+--- awareness of any candidate, 0 to 1, 1 once it has a target; a guard on a
+--- decide reads the value that decide's acquisition check produced).
 BrainSdk.brain = table.freeze({
   hasTarget = input("@brain.hasTarget"),
   targetDistance = input("@brain.targetDistance"),
@@ -87,6 +90,7 @@ BrainSdk.brain = table.freeze({
   animationDone = input("@brain.animationDone"),
   activityRoll = input("@brain.activityRoll"),
   damageInActivity = input("@brain.damageInActivity"),
+  awareness = input("@brain.awareness"),
 })
 
 --- Facts about one offered target, evaluated during acquisition.

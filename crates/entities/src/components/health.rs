@@ -41,6 +41,11 @@ pub struct DamageContext {
     /// the producer has one. Splash, script, crush and AI contact attacks leave
     /// it `None`. Evaluator-only data, like `producer`.
     pub point: Option<Vec3>,
+    /// The attacker's life counter when its shot was fired, for a shot that
+    /// lands later (a projectile, its splash, a remote declaration). A shot
+    /// fired before its pawn's latest respawn touches no NPC's awareness
+    /// meter, attacker ledger or damage bearing. `None`: the hit lands as it is fired.
+    pub attacker_life: Option<u32>,
     /// The registered status this hit is a tick of, `None` for any other hit.
     /// Evaluator-only data: `impact.status(h)` reads it.
     pub status: Option<u16>,
@@ -55,6 +60,7 @@ impl DamageContext {
             zone: None,
             producer,
             point: None,
+            attacker_life: None,
             status: None,
         }
     }
@@ -249,6 +255,7 @@ pub fn apply_damage_with_context(
             registry,
             id,
             context.attacker,
+            context.attacker_life,
             drain.points_dealt,
         );
     }
@@ -277,19 +284,25 @@ pub fn apply_damage_with_context(
 /// write is immediate and clamps to `[0, max]`; it deliberately does not
 /// publish a damage impact. A finite, positive stored result re-arms the death
 /// latch and discards all credit from the recovered down. A zero, negative, or
-/// NaN result preserves the one-shot death state.
+/// NaN result preserves the one-shot death state. Raising a depleted entity is
+/// its revive: its brain's damage clock restarts as if never hit.
 pub fn set_health_absolute(registry: &mut EntityRegistry, id: EntityId, value: f32) {
     let Ok(health) = registry.get_component::<HealthComponent>(id) else {
         return;
     };
+    let was_depleted = is_depleted(health);
     let mut updated = health.clone();
     updated.set_current_absolute(value);
-    if updated.current.is_finite() && updated.current > 0.0 {
+    let alive = updated.current.is_finite() && updated.current > 0.0;
+    if alive {
         updated.death_handled = false;
         updated.pending_kill_credit = None;
         updated.contributor_ledger = ContributorLedger::default();
     }
     let _ = registry.set_component(id, updated);
+    if was_depleted && alive {
+        super::damage_perception::restart_damage_clock(registry, id);
+    }
 }
 
 /// One health predicate shared by the pre-sweep simulation gates and the death
@@ -595,6 +608,7 @@ mod tests {
                 zone: None,
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
                 status: None,
             },
         );
@@ -697,6 +711,7 @@ mod tests {
                 zone: Some("torso".to_string()),
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
                 status: None,
             },
         );
@@ -715,6 +730,7 @@ mod tests {
                 zone: Some("head".to_string()),
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
                 status: None,
             },
         );
@@ -758,6 +774,7 @@ mod tests {
                 zone: None,
                 producer: DamageProducer::InTick,
                 point: None,
+                attacker_life: None,
                 status: None,
             },
         );

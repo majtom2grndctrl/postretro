@@ -392,6 +392,7 @@ impl World {
             &edges,
             Some(crate::sim::TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut system,
                 bridge: &bridge,
                 bindings: &bindings,

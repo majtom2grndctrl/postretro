@@ -618,6 +618,7 @@ fn frame(
                     ctx,
                     &TriggerFireContext {
                         fired_teleporter: None,
+                        fired_seam: None,
                         fired_trigger: Some(event.fire.trigger),
                         activator,
                         occupancy,

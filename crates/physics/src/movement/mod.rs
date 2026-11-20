@@ -5,6 +5,7 @@ use glam::{Vec2, Vec3};
 
 pub mod agent_motion;
 mod carry;
+pub mod seam_arrival;
 pub mod teleport;
 pub use teleport::TeleportEvent;
 mod dispatch;

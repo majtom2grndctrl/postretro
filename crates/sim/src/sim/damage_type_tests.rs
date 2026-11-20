@@ -502,6 +502,7 @@ fn shield_only_damage_credits_the_attacker_as_a_contributor() {
 /// A brain that holds still, enough for the chokepoint to record perception.
 fn idle_brain() -> BrainComponent {
     BrainComponent::from_graph(&BehaviorGraphDescriptor {
+        ai: Default::default(),
         knockback: Default::default(),
         envelope: BehaviorGraphEnvelope {
             initial: "idle".to_string(),

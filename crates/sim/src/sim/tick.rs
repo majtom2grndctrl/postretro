@@ -19,6 +19,7 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     mut presentation_camera_aim: (f32, f32),
     _progress_tracker: &mut ProgressTracker,
     mut run_ai: impl FnMut(&mut EntityRegistry, f32, AiTickInputs<'_>, &mut SimAiHost<'_>) -> AiResult,
+    schedule: Option<crate::npc_tiers::ScheduleInput<'_>>,
     mover_colliders: &[MoverCollider],
     mover_tick_states: &mut MoverTickStateTable,
     remote_pawn_commands: &[RemotePawnCommand],
@@ -35,7 +36,7 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
-    trigger_context: Option<TriggerTickContext<'_>>,
+    mut trigger_context: Option<TriggerTickContext<'_>>,
     mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     mut on_impact: impl FnMut(&mut EntityRegistry),
     timing: postretro_stage_timing::TimingGate,
@@ -252,6 +253,15 @@ where
     let stage_capabilities =
         player_life::TriggerStageCapabilities::capture(&registry.borrow(), &players);
     let mut trigger_stage_pawns = stage_capabilities.stage_pawns();
+    // Seams evaluate after triggers, against the same capture, once the
+    // trigger stage's registry borrow ends: an `arrive` reaction writes it.
+    let seam_context = trigger_context
+        .as_mut()
+        .and_then(|context| context.seams.take());
+    let seam_script_ctx = trigger_context
+        .as_ref()
+        .and_then(|context| context.script_ctx.clone());
+    let seam_use_edges = trigger_context.as_ref().map(|context| context.use_edges);
     if let Some(trigger_context) = trigger_context {
         let canonical_player_pawns = &stage_capabilities.pawns;
         let alive_players = &stage_capabilities.occupants;
@@ -374,6 +384,35 @@ where
         trigger_stage_pawns.occupied_volumes =
             trigger_context.system.counted_volumes(&stage_capabilities);
     }
+    let mut seam_residuals = Vec::new();
+    if let Some(seams) = seam_context {
+        // Arrivals spawned since the last tick fire `arrive` inside this one,
+        // host-only, as teleport events fire inside theirs.
+        if let Some(ctx) = seam_script_ctx.as_ref() {
+            for (index, pawn) in seams.stage.take_arrivals() {
+                let player = players
+                    .iter()
+                    .find(|player| player.pawn == pawn)
+                    .map_or(PlayerId::Local(pawn), |player| player.id);
+                if let Some(residual) = seams.bindings.execute(ctx, index, pawn, player) {
+                    seam_residuals.push(residual);
+                }
+            }
+        }
+        let empty = HashMap::new();
+        let occupied = seams.stage.run_tick(
+            &registry.borrow(),
+            &players,
+            &stage_capabilities,
+            seam_use_edges.unwrap_or(&empty),
+        );
+        if !occupied.is_empty() {
+            trigger_stage_pawns.occupied_volumes.extend(occupied);
+            trigger_stage_pawns
+                .occupied_volumes
+                .sort_unstable_by_key(|(volume, _)| *volume);
+        }
+    }
     let touch_events = {
         let mut registry = registry.borrow_mut();
         touch_system.run_authoritative_tick_with_capabilities(
@@ -413,6 +452,32 @@ where
         &mut on_impact,
     );
     drop(stage);
+    // The NPC tiers: perception, then each NPC's tier, after movement,
+    // teleports and projectiles, so a player who teleports into a dormant
+    // arena has its NPCs perceived on this tick's AI stage, and damage landed
+    // so far moves its NPC up now. Without a level input (headless fixtures)
+    // every NPC runs every tick.
+    let mut schedule = schedule;
+    if let Some(schedule) = schedule.as_mut() {
+        let registry = registry.borrow();
+        let crate::npc_tiers::NpcScheduler { perception, tiers } = &mut *schedule.scheduler;
+        perception.step(
+            schedule.level,
+            &registry,
+            players.iter().map(|player| player.pawn),
+        );
+        tiers.choose(
+            &registry,
+            perception,
+            &crate::npc_tiers::TierInputs {
+                level: schedule.level,
+                descriptors,
+                descriptor_generation,
+            },
+        );
+    }
+    let tiers = schedule.as_ref().map(|schedule| &schedule.scheduler.tiers);
+    let ai_run = |id| tiers.map_or(crate::ai_host::AiRun::Run, |tiers| tiers.ai_run(id));
     let stage = cpu.scope(SimStage::Ai);
     let ai_result = {
         let mut registry = registry.borrow_mut();
@@ -438,6 +503,7 @@ where
                 factions,
                 faction_sentiment,
                 clips: Some(hit_zone_store),
+                schedule: crate::ai_host::AiSchedule::scheduled(&ai_run),
                 cpu: Some(&cpu),
             },
             &mut host,
@@ -448,6 +514,16 @@ where
         events: ai,
         projectile_spawns: enemy_projectile_spawns,
     } = ai_result;
+    if let Some(schedule) = schedule.as_mut() {
+        schedule.scheduler.tiers.settle_after_ai(&registry.borrow());
+    }
+    let tiers = schedule.as_ref().map(|schedule| &schedule.scheduler.tiers);
+    let replan_rank = |id| tiers.map_or(1, |tiers| tiers.replan_rank(id));
+    let agent_step = |id| {
+        tiers.map_or(agent_steering::AgentStep::Ticks(1), |tiers| {
+            tiers.agent_step(id)
+        })
+    };
 
     drop(stage);
     // Traps run after this tick's trigger and teleport requests were issued,
@@ -475,6 +551,7 @@ where
                 yields: mover_tick_states.agent_yields(),
                 gate: crate::nav::NavGate::new(mover_tick_states.docks()),
             },
+            agent_steering::AgentSteps::ranked(&agent_step, &replan_rank),
             &mut corpse_yields,
             environment,
             tick_dt,
@@ -638,6 +715,7 @@ where
         movement_edges: movement.state_edges,
         teleports,
         teleport_residuals,
+        seam_residuals,
         ai,
         weapon,
         weapon_fluid_splashes,
@@ -687,6 +765,7 @@ pub(super) fn trigger_fire_context(
     TriggerFireContext {
         fired_trigger: Some(event.fire.trigger),
         fired_teleporter: None,
+        fired_seam: None,
         activator,
         occupancy,
         event_player: None,

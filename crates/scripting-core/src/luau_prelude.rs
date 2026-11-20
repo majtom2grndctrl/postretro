@@ -58,6 +58,11 @@ const MEMBER_WRAPPER_SOURCES: &[(&str, &str, &str)] = &[
         include_str!("../../../sdk/lib/entities/attack_pools.luau"),
         "entities/attack_pools.luau",
     ),
+    (
+        "wrapSeamEntity",
+        include_str!("../../../sdk/lib/entities/seams.luau"),
+        "entities/seams.luau",
+    ),
 ];
 
 /// SDK library prelude — `map_entities.luau` returns `getMapEntities`, which

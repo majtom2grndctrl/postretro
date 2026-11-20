@@ -1909,6 +1909,9 @@ defineEntity({
 | `attacks` | `Attack[]` (optional) | Attack handles from `defineAttack`. Omitted, the behavior has the attacks its actions, marks and rows reference; present, the list is exhaustive: a row to an unlisted attack is dropped with a log, and an action or mark naming one fails load. Each attack's declaration is either inline contact stats or a weapon reference. |
 | `engagementRadius` | `number` (optional) | Graph-wide combat-slot radius for non-attack activities. |
 | `moveSpeed` | `number` | Locomotion speed in metres/sec for behavior graph movement, seeding the navigation agent. Finite and `> 0`. |
+| `tacticalRange` | `number` (optional) | Metres, default `100`; finite and `> 0`. An engaged enemy whose target is farther than this (horizontal distance) routes toward it under `chaseTarget`, `strafe` and `reposition` instead of claiming a combat slot, and claims slots again once the target is 10 m inside. A value below the archetype's largest attack standoff plus 10 m is raised to that, with a warning at load and on each reload. |
+| `awareness` | `{ fillMs?, drainMs? }` (optional) | How fast the enemy notices each candidate when it has no target. Awareness fills over `fillMs` (default `1000`) while it sees a candidate that passes its candidacy, drains over `drainMs` (default `2000`) otherwise, and full awareness targets that candidate. Each finite and `≥ 0`; `0` acts as one check. Checked at the enemy's decide rate, about every 67 ms in view, so shorter differences are not distinguishable. See [Noticing and tick rates](#noticing-and-tick-rates). |
+| `alwaysActive` | `boolean` (optional) | Default `false`. `true` keeps this archetype's enemies at full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. It costs full rate for those enemies only. A placed enemy's `always_active` map key (`0` or `1`) overrides it; enemies a spawner releases take this value. |
 
 ### `candidate.*` inputs
 
@@ -1925,6 +1928,8 @@ defineEntity({
 | `candidate.damageDealtToMe` | `@candidate.damageDealtToMe` | `number` | Accumulated positive damage this candidate has dealt to this enemy, or `0` when absent from its attacker ledger. |
 | `candidate.timeSinceDamageFromCandidate` | `@candidate.timeSinceDamageFromCandidate` | `number` | Milliseconds since this candidate last damaged this enemy, or `1e9` when it has not. |
 | `candidate.tolerance` | `@candidate.tolerance` | `number` | Resolved retaliation tolerance: archetype override, then directional faction relationship, else `f32::MAX`. |
+
+When a player respawns, every enemy forgets what that player did before: `candidate.damageDealtToMe` reads `0` and `candidate.timeSinceDamageFromCandidate` reads `1e9` again, and a shot the player fired before respawning that lands afterwards still deals damage but adds nothing to either. Enemies that were targeting the player drop it on the respawn tick and notice the player again through a fresh fill of their `awareness`, unless the player hits one of them first.
 
 An activity is either a leaf or a composite:
 
@@ -2219,6 +2224,21 @@ These are the rules you cannot author a graph without.
 5. **The aggro gate skips evaluation.** When disarmed, it forces root `initial`
    and clears steering. Re-arming resumes ordinary evaluation.
 
+### Noticing and tick rates
+
+An enemy runs at one of three tiers, chosen on the host every fixed tick:
+
+| Tier | Who | Decides (acquisition, guards, selectors, combat slot) | Acts (steering, attacks, clips, facing) |
+|------|-----|------|------|
+| Engaged | has a target, perceived or not | 15 times a second | every tick |
+| Idle | perceived by a player, `alwaysActive`, or recently disturbed; no target | 15 times a second | every tick |
+| Dormant | no player can perceive it, no target, not `alwaysActive` | every 2 s | its whole tick twice a second |
+
+- **Perceived** means the enemy stands in a cell some player's cell can see, or within the level's AI wake lead of one (`ai_wake_lead` on worldspawn, default 16 m). Armed ghost links count as seeing through.
+- **Decides land on the decide tick.** Transition rows, `move` and `offense` selectors, a hold's release, a release's exit and `animationDone` all evaluate on decide ticks, so they can land up to one interval (about 67 ms) after the moment they become true. Acting between decides follows the last decide's choices.
+- **Moving between tiers.** An enemy moves up on the tick it becomes perceivable, gains a target, is hit, or has its aggro gate opened, with no catch-up movement. It moves down only after 2 s with none of those.
+- **Noticing.** An enemy without a target notices each candidate through its `awareness`: a candidate seen on two checks in a row fills its meter by the time between the checks over `fillMs`; a first sighting fills nothing, so a reveal or a teleport into view still gives a slow first notice. The first meter to reach full is acquired (a retaliation-ranked attacker first, then the candidate the enemy selected on its previous check, then the nearest), and the others clear. A hit from an attacker fills that attacker's meter at once. Closing the aggro gate empties every meter. An enemy that already has a target ranks and switches targets as before; a switch empties the other meters.
+
 ### `@brain.*` guard inputs
 
 A behavior guard binds against a fixed, read-only **brain** namespace. Import
@@ -2235,7 +2255,8 @@ exception is `brain.targetDistance`, which keeps its `1e9` sentinel.
 | `brain.targetDistance` | `@brain.targetDistance` | `number` | Distance to the selected target in metres — or the `1e9` no-target sentinel. **Read the trap below before using it.** |
 | `brain.timeInActivityMs` | `@brain.timeInActivityMs` | `number` | Milliseconds since the activity whose transition rows are being evaluated was entered. Scope-relative in nested graphs; resets on entry. A stance's pose counts as one activity, so it keeps running from rest to hold and back. |
 | `brain.attackCooldownMs` | `@brain.attackCooldownMs` | `number` | Milliseconds left on the active named attack cooldown; `0` when no action is active or the entry has elapsed. |
-| `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the think-stride ticks where the engine re-evaluates acquisition. Detection is time-sliced; conjoin this onto detection edges so they only fire on an acquisition tick. |
+| `brain.acquisitionDue` | `@brain.acquisitionDue` | `boolean` | True on the enemy's decide ticks, where the engine checks acquisition: 15 times a second while it is in view, engaged, `alwaysActive` or recently disturbed, every 2 s while it is dormant. Guards run only on decide ticks, so on any tick a guard sees it reads `true`; kept for graphs written against the retired distance stride. |
+| `brain.awareness` | `@brain.awareness` | `number` | The enemy's highest awareness of any candidate, `0` to `1`; `1` once it has a target. A guard reads the value this decide's acquisition check produced, so `brain.awareness.ge(0.5)` can turn the enemy to look before it acquires. |
 | `brain.health` | `@brain.health` | `number` | The enemy's current hit points. |
 | `brain.maxHealth` | `@brain.maxHealth` | `number` | The enemy's maximum hit points. |
 | `brain.targetHealth` | `@brain.targetHealth` | `number` | The selected target's current hit points, or `0` with no target or no health component. Meaningful only when `hasTarget` is true. |
@@ -2792,8 +2813,9 @@ defineEntity({
 ```
 
 Fresh acquisition considers player pawns and brain-bearing peers. The nearest
-sentiment-hostile offer determines think-stride cadence, so a nearby friendly
-cannot make a farther hostile scan more often. The engine owns retaliation:
+sentiment-hostile offer is what the enemy notices, so a nearby friendly cannot
+stand in for a farther hostile. Acquisition runs on the enemy's decide ticks
+(see [Noticing and tick rates](#noticing-and-tick-rates)). The engine owns retaliation:
 recent accumulated damage above the resolved tolerance can admit and rank an
 otherwise non-hostile attacker ahead of distance candidates. The engine owns the
 formula and retention policy; authors may tune the shipped `windowMs`,
@@ -2916,10 +2938,12 @@ Do **not** spell this `runtime.le(brain.targetHealth, 0)`: that expression also
 fires when there is no target, because target health reads zero then, and it
 does not carry the engine death sweep's complete definition.
 
-On a non-engaged state such as `patrol`, target-side facts are meaningful only
-on an acquisition scan. Between strided scans they hold their no-target values,
-so a detection or re-acquisition guard using `targetDistance`, `targetHostile`,
-or `targetReachable` must conjunct `brain.acquisitionDue`:
+Targets, reachability and detection refresh on the enemy's decide ticks (about
+every 67 ms in view, every 2 s dormant). Between decides an enemy acts on its
+last decide. Guards run only on decide ticks, so a detection or re-acquisition
+guard using `targetDistance`, `targetHostile`, or `targetReachable` always sees
+fresh values and no longer needs to conjunct `brain.acquisitionDue`. Doing so is
+harmless:
 
 ```typescript
 runtime.select(
@@ -2945,19 +2969,20 @@ doors and lifts:
   enemy detours if another route exists. If none does, it holds where it
   stands.
 - **The door leaves.** Once the door starts moving off that waypoint, the next
-  acquisition-due tick reads `true` and the enemy resumes the chase. The fact
-  updates on acquisition-due ticks, like every target-side fact, so conjunct
-  `brain.acquisitionDue` as shown above.
+  decide tick reads `true` and the enemy resumes the chase. The fact updates on
+  decide ticks, like every target-side fact, so it can lag by up to one decide
+  interval (about 67 ms in view, 2 s dormant).
 - **A door stopped between waypoints** is not a gate. The fact does not change,
   and the door blocks the enemy by collision alone.
 - **A target reachable only across a lift.** The route boards a lift only
   while it rests at the enemy's landing, so `targetReachable` reads `false`
   while the lift is away from that landing or travelling, and `true` while it
   is docked there. The fact therefore flips as the lift cycles. It is
-  recomputed on the brain's acquisition stride, not every tick, so it can lag a
-  lift's arrival or departure by up to one stride.
+  recomputed on the enemy's decide ticks, not every tick, so it can lag a
+  lift's arrival or departure by up to one decide interval (about 67 ms in view,
+  2 s dormant).
 - **Riding a lift.** While the enemy rides a lift, `targetReachable` holds the
-  value it had when the enemy boarded, on every acquisition-due tick. It is
+  value it had when the enemy boarded, on every decide tick. It is
   recomputed on the first one after the enemy steps off. It also holds while a
   lift that rests at its stops carries the enemy between its docks, before the
   ride starts.
@@ -3189,6 +3214,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
 | `teleportEvents` | Teleports bound with a teleporter member's `on("teleport", …)` (see [teleporters.md](teleporters.md#the-teleport-event)). |
+| `seamEvents` | Arrivals bound with a seam member's `on("arrive", …)` (see [level-seams.md](level-seams.md#the-arrive-event)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
@@ -3375,9 +3401,9 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, level seams, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
-- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
+- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction, `on.activators` and `on.seam` inside a seam `arrive` reaction.
 
 Every command is a method on its target. In TypeScript call it as `target.verb(…)`; in Luau, `target:verb(…)`. Each target carries only the verbs its kind supports — calling a verb a target lacks is a type error in TypeScript and an error in Luau.
 
@@ -3388,6 +3414,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
+| seam member | `getMapEntities("seam")` | `arm`, `disarm`, `on` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
@@ -3395,10 +3422,11 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage`, `applyStatus`, `clearStatus` |
 | player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
-| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
+| `on.activators` | trigger-, teleport- or seam-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
 | `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
+| `on.seam` | seam `arrive` reaction param | `arm`, `disarm` |
 
 `applyStatus` and `clearStatus` run on the host only. A subject without health
 warns and is skipped. Fired outside a fixed tick, they apply at the next fixed
@@ -3422,6 +3450,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
 | `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
+| `"seam"` | `SeamHandle` (`arm`, `disarm`, `on("arrive", …)`; see [level-seams.md](level-seams.md#scripting)) | `id`, `position`, `tags` |
 | `"ghostLink"` | `GhostLinkHandle` (`arm`, `disarm`, `setMembers`, `setColorFilter`; see [ghost-links.md](ghost-links.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
@@ -3455,7 +3484,7 @@ players();                    // every player
 
 ### Subject tokens
 
-A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event):
+A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event). A seam `arrive` reaction receives `on.activators` (the arriving player) and `on.seam` (the seam arrived through; `arm`, `disarm`), as described in [level-seams.md](level-seams.md#the-arrive-event):
 
 ```typescript
 const heal = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
@@ -4490,7 +4519,8 @@ checkpoint and saves the character. Spawns whose `checkpoint` key matches the
 name become where players respawn and late joiners arrive, and where Continue
 arrives later (see the level design reference's checkpoint spawns). The next
 level start clears it. A checkpoint outside an active run saves the character and the world file,
-never a run.
+never a run. A level seam crossing is a checkpoint too, at the destination seam,
+holding where the host crossed (see [level-seams.md](level-seams.md#seam-checkpoints)).
 
 ```typescript
 import { defineStore, defineReaction } from "postretro";
@@ -4686,7 +4716,8 @@ end))
 
 `getGameState().occupancy.tag(tag)` (`game.occupancy:tag(tag)` in Luau) reads
 two readonly Numbers about the trigger volumes carrying `tag`. A `switch` is a
-trigger volume, so it counts too.
+trigger volume, so it counts too, and so does a level seam carrying the tag,
+by its own brushes rather than a box (see [level-seams.md](level-seams.md#waiting-for-everyone)).
 
 - `occupiedCount`: how many of those volumes have at least one counted player
   inside.

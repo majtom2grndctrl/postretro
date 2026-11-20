@@ -85,7 +85,7 @@
 }
 }
 {
-"classname" "streaming_seam_volume"
+"classname" "stream_split_volume"
 "origin" "256 136 80"
 {
 ( 236 0 0 ) ( 236 1 0 ) ( 236 0 1 ) debug_wall_grey 0 0 0 1 1

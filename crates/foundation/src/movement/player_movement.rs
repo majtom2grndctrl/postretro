@@ -406,6 +406,14 @@ pub struct PlayerMovementComponent {
     /// serialized.
     #[serde(skip)]
     pub life_state_entry: u32,
+    /// Counts this pawn's respawns, wrapping: the respawn drain bumps it, a
+    /// script respawn included; a down, revive, second wind or `setLifeState`
+    /// never does. NPCs stamp it on what they keep about the pawn (target,
+    /// turns, wait clock, meter, attacker ledger) and shots stamp their
+    /// firer's, so a respawn reads as a stored difference. Host-local:
+    /// component rebuilds carry it; never replicated or serialized.
+    #[serde(skip)]
+    pub life_counter: u32,
     #[serde(default)]
     pub life_state_table_revision: u8,
     // Derived from the matching profile at state adoption, never from local
@@ -541,6 +549,7 @@ impl PlayerMovementComponent {
             life_state: super::UNDECLARED_LIFE_STATE,
             life_state_elapsed_ticks: 0,
             life_state_entry: 0,
+            life_counter: 0,
             life_state_table_revision: 0,
             life_movement_abilities: false,
             life_look: false,

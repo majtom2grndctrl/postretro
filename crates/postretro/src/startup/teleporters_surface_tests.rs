@@ -233,6 +233,7 @@ impl Level {
                 suppress_boot_pawn: false,
                 local_carried_loadout: None,
                 spawn_checkpoint: None,
+                spawn_checkpoint_seam: false,
             };
             install_world_cpu(
                 handles,
@@ -515,6 +516,7 @@ impl Level {
             DT,
             Some(TriggerTickContext {
                 teleporters: Some(&app.teleporter_bindings),
+                seams: None,
                 system: &mut session.trigger_system,
                 bridge: &session.trigger_volume_bridge,
                 bindings: &app.trigger_bindings,

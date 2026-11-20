@@ -45,7 +45,7 @@ impl Wave {
     fn new(enemy_count: usize) -> Self {
         let graph = marked_graph(vec![(ATTACK, contact(1.0, 100_000.0))]);
         let mut reg = EntityRegistry::new();
-        let mut runtime = AiRuntime::new();
+        let mut runtime = AiRuntime::deciding_every_tick();
         runtime.turns.budgets = AttackBudgets::new(BudgetTable::new(vec![
             TokenBudget {
                 limit: 3,
@@ -64,6 +64,7 @@ impl Wave {
         let target = TargetPawn {
             entity: pawn,
             position: player_spot(),
+            life: 0,
         };
         let enemies: Vec<EntityId> = (0..enemy_count)
             .map(|index| spawn_at(&mut reg, index, &graph, "attack_act"))
@@ -110,7 +111,7 @@ impl Wave {
         self.runtime.turns.begin_tick(TICK_MS, registry);
         let tick = self.runtime.turns.tick;
         for outcome in &mut self.outcomes {
-            crate::attack_turns::admit(&mut outcome.brain.attack_turns, tick);
+            crate::attack_turns::admit(&mut outcome.brain.attack_turns, tick, false);
             if outcome.attack.is_none() {
                 outcome.attack = Some(ready_attack());
             }
@@ -127,7 +128,7 @@ impl Wave {
             ..
         } = &mut self.runtime;
         let started = Instant::now();
-        arbitrate_attack_turns(&mut self.outcomes, programs, turns, weapons);
+        arbitrate_attack_turns(&mut self.outcomes, &[], programs, turns, weapons);
         let elapsed = started.elapsed();
         let holders = self
             .outcomes

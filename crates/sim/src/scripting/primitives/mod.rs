@@ -768,6 +768,12 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("recencyWeight?", "f32", "Optional finite non-negative per-millisecond age penalty in the engine retaliation score. Defaults to 0.001.")
         .finish();
     registry
+        .register_type("AwarenessDescriptor")
+        .doc("How fast an NPC without a target notices each candidate: one meter per candidate, for the nearest eight.")
+        .field("fillMs?", "f32", "Optional milliseconds, default 1000; finite and >= 0. The meter fills over this while the NPC sees the candidate on consecutive checks and they pass its candidacy; a first sighting gains nothing. 0 acts as one check.")
+        .field("drainMs?", "f32", "Optional milliseconds, default 2000; finite and >= 0. The meter drains over this while the candidate is out of sight or fails its candidacy. 0 empties it on the first check that misses them.")
+        .finish();
+    registry
         .register_type("BehaviorGraphDescriptor")
         .doc("Authored hierarchical behavior statechart attached to `EntityTypeDescriptor.components.behavior`. The root is a recursive envelope plus root-only candidate, patrol, attack, speed, and combat-slot policy.")
         .field("initial", "BehaviorInitial", "Root initial activity, or a stance handle to start in its rest. It is also forced when the aggro gate closes.")
@@ -780,6 +786,9 @@ pub(crate) fn register_shared_types(registry: &mut PrimitiveRegistry) {
         .field("knockback?", "KnockbackResponse", "Optional enemy impulse response. Omit for default scale 1, groundDrag 8, airDrag 0, control 1.")
         .field("moveSpeed", "f32", "Graph navigation movement speed in metres/sec, seeding the navigation agent for `chaseTarget`, `moveToAnchor`, `moveToLastKnown`, and `patrol`. Must be finite and > 0.")
         .field("engagementRadius?", "f32", "Default radius of the ring of combat slots the engine spreads engaged agents around their target, in metres. Must be finite and > 0 when present. Attack-firing states use the named attack's `standoffDistance` when present, otherwise that action's resolved engagement radius; non-attack states use this value or the engine default.")
+        .field("alwaysActive?", "boolean", "Optional; default false. True keeps this archetype's NPCs out of the dormant tier: they keep full-rate AI whether or not a player can perceive them, so an unseen escort, race or scripted walker reaches its triggers on time. Costs full rate for those NPCs only. A placed NPC's `always_active` map key (0 or 1) overrides it; NPCs a spawner releases take this value. A reload moves live NPCs placed without the key.")
+        .field("tacticalRange?", "f32", "Optional metres, default 100; finite and > 0. An engaged NPC whose target is farther than this (horizontal distance) heads straight for it under `chaseTarget`, `strafe` and `reposition` instead of claiming a combat slot, and claims slots again once the target is 10 m inside. A value below the archetype's largest attack standoff plus 10 m is raised to that, with a warning at load and on each reload.")
+        .field("awareness?", "AwarenessDescriptor", "Optional. How fast an NPC notices each candidate: awareness fills over `fillMs` (default 1000) while it sees them and they pass its candidacy, drains over `drainMs` (default 2000) otherwise, and full awareness targets them. Each ≥ 0. Checked at the NPC's decide rate, about every 67 ms in view; shorter differences are not distinguishable.")
         .finish();
     registry
         .register_type("PlayerMovementDescriptor")

@@ -109,6 +109,8 @@ pub enum SubjectToken {
     /// `on.trigger`: the volume that fired.
     FiredTrigger,
     FiredTeleporter,
+    /// `on.seam`: the level seam a pawn arrived by.
+    FiredSeam,
     /// `on.player`: the player a player event fires for.
     EventPlayer,
 }
@@ -121,6 +123,7 @@ impl SubjectToken {
             "@activators" => Some(Self::Activators),
             "@trigger" => Some(Self::FiredTrigger),
             "@teleporter" => Some(Self::FiredTeleporter),
+            "@seam" => Some(Self::FiredSeam),
             "@player" => Some(Self::EventPlayer),
             _ => None,
         }
@@ -131,6 +134,7 @@ impl SubjectToken {
             Self::Activators => "@activators",
             Self::FiredTrigger => "@trigger",
             Self::FiredTeleporter => "@teleporter",
+            Self::FiredSeam => "@seam",
             Self::EventPlayer => "@player",
         }
     }
@@ -141,6 +145,7 @@ impl SubjectToken {
             SequenceTarget::Activators => Some(Self::Activators),
             SequenceTarget::FiredTrigger => Some(Self::FiredTrigger),
             SequenceTarget::FiredTeleporter => Some(Self::FiredTeleporter),
+            SequenceTarget::FiredSeam => Some(Self::FiredSeam),
             SequenceTarget::EventPlayer => Some(Self::EventPlayer),
             _ => None,
         }
@@ -151,6 +156,7 @@ impl SubjectToken {
             Self::Activators => SequenceTarget::Activators,
             Self::FiredTrigger => SequenceTarget::FiredTrigger,
             Self::FiredTeleporter => SequenceTarget::FiredTeleporter,
+            Self::FiredSeam => SequenceTarget::FiredSeam,
             Self::EventPlayer => SequenceTarget::EventPlayer,
         }
     }
@@ -174,12 +180,12 @@ pub fn validate_authored_subject_token(
         AuthoredText::Absent => return Ok(None),
         AuthoredText::Text(spelling) => SubjectToken::from_wire(&spelling).ok_or_else(|| {
             format!(
-                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got \"{spelling}\""
+                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\", \"@teleporter\", \"@seam\" or \"@player\", got \"{spelling}\""
             )
         })?,
         AuthoredText::NonString(type_name) => {
             return Err(format!(
-                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\", \"@teleporter\" or \"@player\", got a {type_name}"
+                "reaction `{reaction}` {site}: `target` must be \"@activators\", \"@trigger\", \"@teleporter\", \"@seam\" or \"@player\", got a {type_name}"
             ));
         }
     };
@@ -210,6 +216,7 @@ pub fn validate_subject_token_primitive(
     }
     let arms_a_trigger = matches!(primitive, "armTrigger" | "disarmTrigger");
     let arms_a_teleporter = matches!(primitive, "armTeleporter" | "disarmTeleporter");
+    let arms_a_seam = matches!(primitive, "armSeam" | "disarmSeam");
     if postretro_foundation::is_ghost_link_primitive(primitive) {
         return Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` addresses one ghost link member from `getMapEntities(\"ghostLink\")`; no subject token carries it, so it cannot take `{}`",
@@ -228,6 +235,12 @@ pub fn validate_subject_token_primitive(
             token.as_wire()
         ));
     }
+    if arms_a_seam && token != SubjectToken::FiredSeam {
+        return Err(format!(
+            "reaction `{reaction}` {site}: `{primitive}` takes `@seam` (`on.seam`), not `{}`",
+            token.as_wire()
+        ));
+    }
     match token {
         SubjectToken::Activators | SubjectToken::EventPlayer if arms_a_trigger => Err(format!(
             "reaction `{reaction}` {site}: `{primitive}` targets a trigger volume, so it takes `@trigger` (`on.trigger`), not `{}`",
@@ -235,6 +248,9 @@ pub fn validate_subject_token_primitive(
         )),
         SubjectToken::FiredTeleporter if !arms_a_teleporter => Err(format!(
             "reaction `{reaction}` {site}: `@teleporter` (`on.teleporter`) carries only `armTeleporter` and `disarmTeleporter`, not `{primitive}`"
+        )),
+        SubjectToken::FiredSeam if !arms_a_seam => Err(format!(
+            "reaction `{reaction}` {site}: `@seam` (`on.seam`) carries only `armSeam` and `disarmSeam`, not `{primitive}`"
         )),
         SubjectToken::FiredTrigger if !arms_a_trigger => Err(format!(
             "reaction `{reaction}` {site}: `@trigger` (`on.trigger`) carries only `armTrigger` and `disarmTrigger`, not `{primitive}`"

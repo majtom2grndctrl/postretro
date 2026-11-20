@@ -91,11 +91,12 @@ fn reaction_handle_authoring_types_widen_in_both_outputs() {
     let luau = generate_luau(&r);
 
     // The name-optional `(body)` overload is present alongside `(name, body)`.
-    // Six authoring shapes (data, crossing, trigger-event, teleport-event,
-    // emitter and player-event tracer), each with and without an explicit name.
+    // Seven authoring shapes (data, crossing, trigger-event, teleport-event,
+    // seam-event, emitter and player-event tracer), each with and without an
+    // explicit name.
     assert_eq!(
         ts.matches("export function defineReaction").count(),
-        12,
+        14,
         "ts must declare data and all dispatch-scope tracer defineReaction overloads"
     );
     assert!(

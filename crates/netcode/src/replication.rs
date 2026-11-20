@@ -701,6 +701,7 @@ mod tests {
     // present, but a real `BrainComponent` keeps the fixture honest.
     fn brain() -> BrainComponent {
         BrainComponent::from_graph(&BehaviorGraphDescriptor {
+            ai: Default::default(),
             knockback: Default::default(),
             envelope: BehaviorGraphEnvelope {
                 initial: "idle".to_string(),

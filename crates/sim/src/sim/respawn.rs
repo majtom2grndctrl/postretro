@@ -60,11 +60,15 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
         };
         let old_teleport = live.teleport.clone();
         let old_entry = live.life_state_entry;
+        let old_life = live.life_counter;
         let mut movement = PlayerMovementComponent::from_descriptor(movement_descriptor);
         movement.teleport = old_teleport;
         // Carried so the entry below counts on from the live pawn's: a respawn
         // into the state it already holds still reads as a re-entry.
         movement.life_state_entry = old_entry;
+        // A new life: NPCs that kept anything about the pawn run the respawn
+        // drop at their next run, and shots fired before it touch no meter.
+        movement.life_counter = old_life.wrapping_add(1);
         if let Some(states) = descriptor.life_states.as_ref() {
             let target = request.state.as_deref().and_then(|name| states.state(name));
             let (id, profile) = target.unwrap_or_else(|| {

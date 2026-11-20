@@ -145,3 +145,12 @@ Left as is, with reasons:
   - Fire and acid hits, which had no row, float in their type's color.
   - `impact.status(h)` keeps a tick from also floating its type's number.
   - Proof: `sim::status_dev_fixture_tests::dev_mod_floats_status_ticks_in_their_status_color`. Docs: scripting reference §Showing a status.
+
+## Landing
+
+- Merged with main after E10 (AI tick scheduling) and E25 (level seams) landed.
+  - E25 claimed component kind 29 for its host-only `Seam`, so `StatusPresence` moved to 30 in the engine `ComponentKind`, the wire constant and the drift guard. Wire 42, snapshot 26 and tuning epoch 18 were still free.
+  - The tick function's E10 schedule and E25 seam edits were ported into the split `sim/tick.rs`.
+  - The e24 closure hash moved to main's v1 encoding; its value is unchanged.
+  - A `type_complexity` lint main carried in `ai/src/clip_timed_shipped_tests.rs` was fixed so the gate passes.
+- Merged into main directly at the owner's request, without a pull request.

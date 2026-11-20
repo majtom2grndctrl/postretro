@@ -508,8 +508,9 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && ts.contains("K extends \"spawner\" ? SpawnerEntityHandle :")
             && ts.contains("K extends \"trap\" ? TrapEntityHandle :")
             && ts.contains("K extends \"attackPool\" ? AttackPoolEntityHandle :")
+            && ts.contains("K extends \"seam\" ? SeamHandle :")
             && ts.contains(
-                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\" | \"attackPool\";"
+                "export type MapEntityKind = \"mover\" | \"trigger\" | \"teleporter\" | \"ghostLink\" | \"light\" | \"fog\" | \"emitter\" | \"spawner\" | \"trap\" | \"attackPool\" | \"seam\";"
             ),
         "TypeScript must select each member handle by map kind:\n{ts}"
     );
@@ -529,9 +530,51 @@ fn raw_world_query_is_hidden_and_get_map_entities_selects_member_handles() {
             && luau.contains("((kind: \"trap\", filter: MapEntityFilter?) -> {TrapEntityHandle})")
             && luau.contains(
                 "((kind: \"attackPool\", filter: MapEntityFilter?) -> {AttackPoolEntityHandle})"
-            ),
+            )
+            && luau.contains("((kind: \"seam\", filter: MapEntityFilter?) -> {SeamHandle})"),
         "Luau must select each member handle by map kind:\n{luau}"
     );
+}
+
+/// The level seam's member handle, arrival event, subject token and step
+/// types reach both author surfaces, mirroring the teleporter's.
+#[test]
+fn seam_member_event_and_token_types_are_emitted_in_both_sdk_surfaces() {
+    use crate::scripting::typedef::register_all;
+    use postretro_entities::ctx::ScriptCtx;
+
+    let mut r = PrimitiveRegistry::new();
+    register_all(&mut r, ScriptCtx::new());
+    let ts = generate_typescript(&r);
+    let luau = generate_luau(&r);
+
+    for needle in [
+        "export interface SeamHandle extends SeamEntity {",
+        "on(event: \"arrive\", fire: SeamEventReaction[]): SeamEventDescriptor;",
+        "export type SeamEventDescriptor = { seam: EntityId; event: \"arrive\"; fire: string[] };",
+        "export type SeamEventParams = Readonly<{ activators: ActivatorsTarget; seam: SeamTarget }>;",
+        "export type ArmSeamStep = { id: EntityId; primitive: \"armSeam\"; args: Record<string, never> };",
+        "export type DisarmSeamStep = { id: EntityId; primitive: \"disarmSeam\"; args: Record<string, never> };",
+        "    | ArmSeamStep\n    | DisarmSeamStep\n",
+        "seamEvents?: SeamEventDescriptor[];",
+        "export type SubjectTokenTarget = \"@activators\" | \"@trigger\" | \"@teleporter\" | \"@seam\" | \"@player\";",
+        "export function defineReaction(name: string, tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;",
+    ] {
+        assert!(ts.contains(needle), "TypeScript lacks `{needle}`");
+    }
+    for needle in [
+        "export type SeamHandle = {",
+        "on: (self: SeamHandle, event: \"arrive\", fire: {Reaction<any> | string}) -> SeamEventDescriptor,",
+        "export type SeamEventDescriptor = { seam: EntityId, event: \"arrive\", fire: {string} }",
+        "export type SeamEventParams = { activators: ActivatorsTarget, seam: SeamTarget }",
+        "export type ArmSeamStep = { id: EntityId, primitive: \"armSeam\", args: {} }",
+        "| ArmSeamStep | DisarmSeamStep |",
+        "seamEvents: {SeamEventDescriptor}?,",
+        "export type SubjectTokenTarget = \"@activators\" | \"@trigger\" | \"@teleporter\" | \"@seam\" | \"@player\"",
+        "& ((name: string, tracer: (SeamEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<SeamEventParams>)",
+    ] {
+        assert!(luau.contains(needle), "Luau lacks `{needle}`");
+    }
 }
 
 /// The ghost-link member steps and their argument shapes reach both author

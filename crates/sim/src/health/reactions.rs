@@ -125,6 +125,7 @@ pub fn dispatch(
                 zone: None,
                 producer: DamageProducer::AppDrain,
                 point: None,
+                attacker_life: None,
                 status: None,
             },
         );

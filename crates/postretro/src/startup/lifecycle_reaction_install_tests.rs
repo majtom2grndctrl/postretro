@@ -117,6 +117,7 @@ fn fresh_install_and_staged_reload_keep_callers_of_surviving_same_address_bodies
             suppress_boot_pawn: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
+            spawn_checkpoint_seam: false,
         };
         let _ = install_world_cpu(
             handles,

@@ -31,7 +31,7 @@ pub const MOVE_DOWN_HOLD_TICKS: u64 = DORMANT_INTERVAL_TICKS * DORMANT_RUNS_PER_
 /// `interval` ticks.
 pub fn decides_on(tick: u64, identity: u64, interval: u64) -> bool {
     let interval = interval.max(1);
-    (tick + phase(identity, interval)) % interval == 0
+    (tick + phase(identity, interval)).is_multiple_of(interval)
 }
 
 /// An identity's phase in a cycle of `interval` ticks: Fibonacci hashing,
@@ -56,7 +56,8 @@ pub fn dormant_decides_on(tick: u64, identity: u64) -> bool {
         return false;
     }
     let run = (tick + phase(identity, DORMANT_INTERVAL_TICKS)) / DORMANT_INTERVAL_TICKS;
-    (run + phase(identity.swap_bytes(), DORMANT_RUNS_PER_DECIDE)) % DORMANT_RUNS_PER_DECIDE == 0
+    (run + phase(identity.swap_bytes(), DORMANT_RUNS_PER_DECIDE))
+        .is_multiple_of(DORMANT_RUNS_PER_DECIDE)
 }
 
 /// The identity an NPC's phases hash: its map placement or spawner and spawn

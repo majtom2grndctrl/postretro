@@ -75,9 +75,7 @@ pub use tick_diagnostics::{
     replan_budget,
 };
 #[cfg(not(any(test, feature = "test-support")))]
-pub(crate) use tick_diagnostics::{
-    AgentTickResult, REPLAN_BUDGET_PER_TICK, REPLAN_STALENESS_TICKS, replan_budget,
-};
+pub(crate) use tick_diagnostics::{AgentTickResult, REPLAN_STALENESS_TICKS, replan_budget};
 
 /// What one agent's steering does this tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -546,8 +544,8 @@ struct AgentSnapshot {
 /// gravity plus installed volumes; each agent resolves its own gravity from it at
 /// its tick-start position. `dt` is the fixed tick delta.
 ///
-/// Returns the count of agents that recomputed a path this tick — bounded by
-/// [`REPLAN_BUDGET_PER_TICK`].
+/// Returns the count of agents that recomputed a path this tick, bounded by
+/// that tick's [`replan_budget`], and the budget itself.
 #[cfg(any(test, feature = "test-support"))]
 pub fn tick(
     registry: &mut EntityRegistry,
@@ -600,6 +598,7 @@ mod fixed_tick {
     /// [`tick`] for the fixed tick: it also hears which living agents movers
     /// yield to, and fills `corpse_yields` with the pairs the mover should now
     /// pass through. Empty in a tick with no pins, and allocates nothing then.
+    #[allow(clippy::too_many_arguments)]
     pub fn tick_with_mover_pins(
         registry: &mut EntityRegistry,
         collision: &CombinedCollisionWorld<'_>,
@@ -644,6 +643,7 @@ pub use fixed_tick::{MoverPins, tick_with_mover_pins};
 #[cfg(not(any(test, feature = "test-support")))]
 pub(crate) use fixed_tick::{MoverPins, tick_with_mover_pins};
 
+#[allow(clippy::too_many_arguments)]
 fn tick_impl(
     registry: &mut EntityRegistry,
     collision: &CombinedCollisionWorld<'_>,
@@ -1834,6 +1834,7 @@ fn easing_onto_mandatory_waypoint(
     mandatory && !is_final && distance_xz(position, agent.path[cursor]) < arrival_radius
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_stuck_ticks(
     agent: &mut AgentComponent,
     start_position: Vec3,

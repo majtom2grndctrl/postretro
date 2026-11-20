@@ -65,6 +65,29 @@ Read at e7438238. Findings that inform the brief; the brief's Decisions conclude
 ## Instance cap
 - Keyed by (status, applier). Co-op hordes: four players plus environment appliers per status, a few statuses per mod. 16 instances per entity covers every plausible combination with a fixed inline array, which keeps the stage allocation-free. Replacing the instance with the least time left drops the one contributing least.
 
+## Pinned orderings
+| Id | Scenario | Ordering | Expected |
+|---|---|---|---|
+| P1 | Instance's own tick on its expiry tick; its policy reapplies it (`"refresh"`/`"stack"`) | Tick lands → its policies apply → expiry judged on the time left they leave | Instance survives with phase unmoved; next tick one `tickMs` later |
+| P2 | Weapon hit refreshes or stacks an instance on its expiry tick | Weapons (apply) → status stage (due tick, expiry) | Due tick lands at its old phase; instance continues |
+| P3 | `"ignore"` application on the instance's last tick | Application sees live instance → ignored → instance ends | Application lost; next application creates a new instance |
+| P4 | Fluid application vs due ticks on one tick | Status stage: this tick's fluid applications first, then due ticks and expiry | Re-entering lava on a lingering instance's last tick keeps it and its phase |
+| P7 | Several instances on one entity due the same tick | Creation order | First lethal tick credits its applier |
+| P8 | A tick's policy applies or clears statuses during the stage | Apply and clear take effect at once; each due tick re-checks its instance is live at its turn | Cleared instance does not land; a new instance does not tick this tick; dedupe counts it |
+| P9 | Clear and due tick on one tick | Trigger-bound clear (before stage) vs player-event or frame-drain clear (after) | Before: no tick. After: tick landed |
+| P11 | Lethal remote hit that waited on fire authorization | Post-tick remote-hit sweep latches → clears statuses → next tick's stage | No instance ticks after that latch |
+| P12 | Lethal hit and immediate `setHealth` recovery on one tick | Recovery before sweep: latch never sets | Instances survive; a recovery after the latch starts with none |
+| P15 | Script impact queued by `levelLoad` | Queued at install; level unload clears the queue | Evaluates at the reveal frame's first evaluation point against that level's policies; an abandoned load drops it |
+| P16 | Frame-end script-impact evaluation | Health republish → evaluate in landing order → overlay sink → removal pass, in both the frame loop and the headless driver (`observability/driver.rs`), which has its own removal pass | Policies read post-damage `player.health`; enemy enters damaged-enemy roster |
+| P17 | Remote pawn with no command this tick; respawn | Carried fluid persists until the next resolve; respawn resets it with immersion | Stalled pawn in lava keeps burning; respawned pawn out of lava takes none |
+| P18 | 17th instance; ties; until-cleared | Least time left goes; ties → oldest; until-cleared ranks most | New instance always enters |
+| P19 | Hot reload changes `tickMs`, `durationMs`, `maxStacks` | Next due tick kept; later spacing uses new `tickMs`; time left unchanged until next application; stacks clamp next tick | No tick skipped or doubled at reload |
+| P21 | Status live less than one snapshot interval | Presence sampled at serialization | May never show on a client |
+| P22 | Client joins mid-burn | Presence before name table install | Shows nothing, then shows from first snapshot after install |
+| P23 | Applier rejoins (new pawn id) and reapplies | New id → new applier | Old instance credits its source id only; new instance is separate |
+
+Ids P5, P6, P10, P13, P14, P20, P24 and P25 are reserved for orderings awaiting owner decisions (review 1).
+
 ## Roadmap updates at promotion
 - E16 Combat Feedback & Economy: replace "DoT / environmental death policy" with this brief; mark `onDamage` per-attack aggregate demand-gated, pointing shot-id threading to `drafts/E10--stealth-opener`.
 - E16 Damage & Defenses: "status effects / DoT" points to this brief.

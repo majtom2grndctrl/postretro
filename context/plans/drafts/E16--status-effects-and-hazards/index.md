@@ -84,24 +84,35 @@ Luau mirrors every name, passing the status name explicitly as it does for damag
 **Stacking, timing and lifecycle edges**
 - [ ] Eight pellets from one applier on one tick add one stack; two appliers on one tick create two instances that tick and credit independently.
 - [ ] `"refresh"` resets time left without moving the tick phase; `"stack"` caps at `maxStacks` and multiplies damage; `"ignore"` leaves a live instance unchanged.
-- [ ] A tick due on the expiry tick lands once, and no tick follows; an instance with `durationMs` omitted ticks until cleared.
-- [ ] `durationMs` below `tickMs`, `tickMs` below one fixed tick, `maxStacks` outside [1, 64], a 65th status, an unknown key and a bad handle each reject load naming the key path; the boundary values load.
-- [ ] Apply and clear on one frame: the later in body or stage order wins; clear removes every applier's instance.
-- [ ] Death latch, respawn, level change, same-map restart and save each leave no instance; an entity at health ≤ 0 refuses a new instance; recovery by `setHealth` starts with none.
-- [ ] A 17th instance replaces the one with the least time left.
-- [ ] Hot reload keeps live instances and their phase, drops a removed kind, and applies a changed `damage` from the next tick.
+- [ ] A tick due on the expiry tick lands once, and no tick follows; a weapon hit that refreshes or stacks the instance on that same tick keeps it, lands that tick's damage at the phase it already had, and ticks on; an instance with `durationMs` omitted ticks until cleared (P2).
+- [ ] An unguarded `"refresh"` policy that reapplies `burning` from its own tick on the expiry tick keeps that instance, with its tick phase unmoved, and the next tick follows one `tickMs` later (P1).
+- [ ] Two appliers' `burning` instances both due on the lethal tick land in instance creation order; the first credits its applier's player (P7).
+- [ ] A tick's own policy changes the instance set at once: a `burning` tick that clears `burning` leaves none, one that applies `corroding` leaves a `corroding` instance that does not tick this tick, and a `corroding` instance cleared by an earlier tick's policy on the same tick does not land (P8).
+- [ ] `durationMs` below `tickMs` or above 600000, `tickMs` below one fixed tick or above 60000, `damage` outside [0, 1e6], `maxStacks` outside [1, 64], a 65th status, an unknown key and a bad handle each reject load naming the key path; the boundary values load.
+- [ ] A status with `type` omitted ticks as the mod's `defaultDamageType`, or untyped ×1 when the mod declares none; a `"stack"` application at `maxStacks` adds nothing and still resets time left.
+- [ ] Clear removes every applier's instance. A trigger-bound `clearStatus` on the tick an instance is due removes it before its tick lands; a clear from a player event or a frame drain after that tick leaves the tick landed (P9).
+- [ ] Death latch (the in-tick sweep and the post-tick remote-hit sweep), respawn, level change, same-map restart, rejoin and save each leave no instance; an entity at health ≤ 0 refuses a new instance; a deferred `setHealth` recovery after the latch starts with none, while an immediate recovery before the sweep keeps its instances (P11, P12).
+- [ ] A 17th instance replaces the one with the least time left; among equals the oldest goes; an until-cleared instance counts as the most time left; the new instance always enters (P18).
+- [ ] Hot reload keeps live instances and their next due tick, drops a removed kind, and applies a changed `damage` or `type` from the next tick; a changed `tickMs` spaces the ticks after that next one; a changed `durationMs` leaves time left unchanged until the next application; a lowered `maxStacks` clamps stacks on the next tick (P19).
 
 **Script damage and policies**
-- [ ] An enemy killed by script `applyDamage` from a trigger, a crossing, a `wait` tail and a UI press each runs its death policy, despawns and reports the kill in the same frames an in-tick kill does.
+- [ ] An enemy killed by script `applyDamage` from a trigger, a player event, a crossing, a `wait` tail, a UI press and `levelLoad` each runs its death policy, despawns and reports the kill in the same frames an in-tick kill does; a `levelLoad` kill evaluates on the reveal frame against that level's policies (P15).
 - [ ] A script impact that lands before a weapon hit in the same tick evaluates before that hit's impact, in landing order, and is not dropped.
-- [ ] A connected client running a raw-tag `applyDamage` evaluates no policy.
+- [ ] A connected client running a raw-tag `applyDamage` evaluates no policy (regression guard).
+- [ ] A frame-end policy on script damage to the local pawn reads `player.health` as post-damage health; an `impact.source.grantHealth` row on script damage grants nothing; a script-damaged enemy enters the damaged-enemy roster as an in-tick hit does (P16).
 
 **Fluids**
-- [ ] A player wading ankle-deep in `lava` takes `scalding` ticks; leaving stops them one tick later; standing exactly on the surface takes none; a fluid without `status` applies none; an enemy in the fluid takes none.
+- [ ] A player wading ankle-deep in `lava` takes `scalding` ticks; after leaving, exactly one more tick lands within `tickMs`, then none; standing exactly on the surface takes none; a fluid without `status` applies none; an enemy in the fluid takes none (P4).
+- [ ] A remote pawn in `lava` with no command for 30 ticks keeps taking `scalding` ticks; a pawn respawned out of lava takes none before its next command (P17).
+- [ ] The host's replicated fluid table carries name and viscosity only; a fluid `status` leaves the tuning payload unchanged.
 
 **Reads, presentation and co-op**
 - [ ] `hasStatus` holds in an impact policy and a brain guard while any instance is live and not after it ends; `player.status.burning` reads the most time left and is absent when none.
-- [ ] Status presence reaches a connected client's entity record within one snapshot of application and clears within one snapshot of the last instance ending. A client that declares the same statuses in a different order shows the host's status by name; a host status the client does not declare shows nothing; neither changes the compatibility digest, and a host hot reload that adds a status keeps every client participating.
+- [ ] Each snapshot's presence bits equal host status presence at the tick it serializes, so presence reaches a connected client within one snapshot of application and clears within one snapshot of the last instance ending; a status live for less than one snapshot interval may never show (P21). A client that declares the same statuses in a different order shows the host's status by name; a host status the client does not declare shows nothing; neither changes the compatibility digest, and a host hot reload that adds a status keeps every client participating.
+- [ ] A client joining while an enemy burns shows nothing for presence that arrives before its status name table installs, then shows the burn from the first snapshot after install (P22).
+- [ ] A `burning` tick on an enemy updates its damage memory toward the applier, so a damage-recency guard holds and retaliation can select the applier.
+- [ ] A connected client creates no instance, lands no tick and applies no `applyStatus` or `clearStatus` from a UI press or crossing; its health moves only by snapshot.
+- [ ] `players().applyStatus` skips a subject without health and warns.
 - [ ] The scripting-reference recipe for an igniting policy guards with `impact.status(h)`, and its fixture shows that an unguarded `"refresh"` policy keeps one burn alive while a guarded one lets it expire.
 - [ ] The Scripting surface example installs as a `content/dev` script and its fixture passes in TS and Luau.
 

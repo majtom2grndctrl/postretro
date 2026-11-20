@@ -27,6 +27,10 @@ pub const SPEC_SHADOWMASK_FLAG_MASK_PRESENT: u32 = 1 << 1;
 /// is the default pixel style, one highlight point per albedo texel
 /// (`rendering_pipeline.md` §4, Texel-centre highlight).
 pub const SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH: u32 = 1 << 2;
+/// The mover pass's per-frame `KinematicLightParams.specular_style` word
+/// (bytes 28..32), shared by the main view and the planar mirror: set for the
+/// smooth specular style. Zero is the default pixel style.
+pub const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = 1;
 
 /// Debug selector for the SDF shadow path: panel-only dropdown, encoded into
 /// the per-frame uniform.

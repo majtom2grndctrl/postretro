@@ -31,7 +31,9 @@ struct KinematicLightParams {
     /// Descriptor-bearing prefix: dynamic tier plus section-45 animated tail.
     scripted_light_count: u32,
     indirect_scale: f32,
-    _pad2: u32,
+    /// `KINEMATIC_SPECULAR_STYLE_SMOOTH` for the smooth specular style; zero
+    /// is pixel.
+    specular_style: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,8 +166,9 @@ fn build_instance_entry(model: glam::Mat4) -> [u8; INSTANCE_ENTRY_SIZE] {
 }
 
 /// Serialize the 32-byte uniform row shared with `KinematicLightParams` in
-/// `kinematic_brush.wgsl`. The dynamic-tier count sits at byte 16 and the
-/// descriptor-bearing dynamic-plus-animated count at byte 20.
+/// `kinematic_brush.wgsl`. The dynamic-tier count sits at byte 16, the
+/// descriptor-bearing dynamic-plus-animated count at byte 20 and the specular
+/// style word at byte 28.
 fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGHT_PARAMS_SIZE] {
     let mut bytes = [0u8; KINEMATIC_LIGHT_PARAMS_SIZE];
     bytes[0..4].copy_from_slice(&params.light_count.to_ne_bytes());
@@ -175,6 +178,7 @@ fn build_light_params_bytes(params: KinematicLightParams) -> [u8; KINEMATIC_LIGH
     bytes[16..20].copy_from_slice(&params.dynamic_light_count.to_ne_bytes());
     bytes[20..24].copy_from_slice(&params.scripted_light_count.to_ne_bytes());
     bytes[24..28].copy_from_slice(&params.indirect_scale.to_ne_bytes());
+    bytes[28..32].copy_from_slice(&params.specular_style.to_ne_bytes());
     bytes
 }
 
@@ -941,7 +945,9 @@ impl KinematicBrushPass {
                 light_term_mask,
                 ambient_floor,
                 indirect_scale,
-                _pad2: 0,
+                // The default pixel style until the mod's
+                // `render.specular.style` is threaded here.
+                specular_style: 0,
             }),
         );
     }
@@ -1262,35 +1268,30 @@ mod tests {
     #[test]
     fn kinematic_brush_shader_matches_forward_post_retro_sampling() {
         let forward = include_str!("../shaders/forward.wgsl");
-        let material_shading = include_str!("../shaders/material_shading.wgsl");
         let kinematic = include_str!("../shaders/kinematic_brush.wgsl");
 
-        // Forward's copy calls the shared `post_retro_texel_uv`; the mover's
-        // still inlines it, so splice the shared body's calls in at the call.
-        let shared = wgsl_call_fingerprint(
-            extract_wgsl_fn(material_shading, "post_retro_texel_uv"),
-            POST_RETRO_SAMPLING_CALLS,
-        );
-        let forward_calls: Vec<String> = wgsl_call_fingerprint(
-            extract_wgsl_fn(forward, "sample_post_retro"),
-            &[POST_RETRO_SAMPLING_CALLS, &["post_retro_texel_uv"]].concat(),
-        )
-        .into_iter()
-        .flat_map(|call| {
-            if call == "post_retro_texel_uv" {
-                shared.clone()
-            } else {
-                vec![call]
-            }
-        })
-        .collect();
-        assert_eq!(
+        // Both copies reconstruct through the shared `post_retro_texel_uv`, so
+        // the call lists compare directly; the reconstruction itself is one
+        // definition (`forward_and_mover_share_the_specular_texel_functions`).
+        let calls = |source| {
             wgsl_call_fingerprint(
-                extract_wgsl_fn(kinematic, "sample_post_retro"),
-                POST_RETRO_SAMPLING_CALLS,
-            ),
-            forward_calls,
+                extract_wgsl_fn(source, "sample_post_retro"),
+                &[POST_RETRO_SAMPLING_CALLS, &["post_retro_texel_uv"]].concat(),
+            )
+        };
+        assert_eq!(
+            calls(kinematic),
+            calls(forward),
             "kinematic brush movers must keep the same Post Retro sampling operations as static world geometry",
+        );
+        assert_eq!(
+            calls(forward),
+            [
+                "textureDimensions",
+                "post_retro_texel_uv",
+                "textureSampleGrad"
+            ],
+            "the sample reconstructs through the shared function, then samples with the original derivatives",
         );
 
         let fs_calls = wgsl_call_fingerprint(
@@ -1316,6 +1317,100 @@ mod tests {
         assert!(
             !fs_calls.iter().any(|call| call == "textureSample"),
             "kinematic brush fragment shader must not bypass the Post Retro helper",
+        );
+    }
+
+    // The texel-centre functions live once, in `material_shading.wgsl`, and
+    // both world-material pipelines compose that one copy: the mover
+    // reconstructs its texture reads and its pixel-style specular point with
+    // forward's own functions, so the two cannot drift (rendering_pipeline.md
+    // §4, Texel-centre highlight; §8).
+    #[test]
+    fn forward_and_mover_share_the_specular_texel_functions() {
+        let material_shading = include_str!("../shaders/material_shading.wgsl");
+        let squashed = |source: &str, name: &str| -> String {
+            strip_wgsl_comments(extract_wgsl_fn(source, name))
+                .split_whitespace()
+                .collect()
+        };
+        for (label, consumer, composed) in [
+            (
+                "forward",
+                include_str!("../shaders/forward.wgsl"),
+                crate::render::pipeline_layout::SHADER_SOURCE,
+            ),
+            (
+                "mover",
+                include_str!("../shaders/kinematic_brush.wgsl"),
+                SHADER_SOURCE,
+            ),
+        ] {
+            for declaration in [
+                "fn post_retro_texel_uv(",
+                "fn specular_texel_point(",
+                "struct SpecularPoint {",
+                "const SPECULAR_POINT_AXES_EPSILON:",
+            ] {
+                assert!(
+                    material_shading.contains(declaration),
+                    "{declaration} lives in material_shading.wgsl"
+                );
+                assert!(
+                    !consumer.contains(declaration),
+                    "{label} must not redeclare {declaration}"
+                );
+                assert_eq!(
+                    composed.matches(declaration).count(),
+                    1,
+                    "{label} composes {declaration} once"
+                );
+            }
+            assert!(
+                squashed(consumer, "sample_post_retro")
+                    .contains("letuv_recon=post_retro_texel_uv(uv,dims,ddx,ddy);"),
+                "{label}'s texture reads reconstruct through the shared function"
+            );
+        }
+
+        // Each pass builds its point through the shared builder, from the
+        // fragment's own UV, the marched UV, the albedo lattice and the
+        // fragment's hoisted derivatives.
+        let forward_fs = squashed(include_str!("../shaders/forward.wgsl"), "fs_main");
+        assert_eq!(forward_fs.matches("specular_texel_point(").count(), 1);
+        let mover = include_str!("../shaders/kinematic_brush.wgsl");
+        let mover_fs = squashed(mover, "fs_main");
+        assert!(!mover_fs.contains("specular_texel_point("));
+        assert!(mover_fs.contains(
+            "letspec_point=mover_specular_point(smooth_style,depth,in.uv,in.world_position,\
+             mesh_n,V,camera.camera_position,\
+             vec2<f32>(textureDimensions(base_texture,0)),ddx,ddy,ddx_world,ddy_world,);"
+        ));
+        let mover_point = squashed(mover, "mover_specular_point");
+        assert_eq!(mover_point.matches("specular_texel_point(").count(), 1);
+        assert!(
+            mover_point.contains(
+                "returnspecular_texel_point(smooth_style,\
+                 SpecularPoint(depth.world_position,view_to_eye),uv,depth.uv,\
+                 world_position+geo_normal*top_height_m,eye,albedo_dims,ddx,ddy,\
+                 ddx_world,ddy_world,);"
+            ),
+            "the mover anchors on the fragment's own UV and plane position, raised by the \
+             struck texel's height, and reconstructs the marched UV"
+        );
+        // `depth.uv` is the mover's marched UV, the one its texture reads use.
+        assert!(mover_fs.contains("letshade_uv=depth.uv;"));
+        assert!(forward_fs.contains(
+            "specular_texel_point(specular_style_smooth(),SpecularPoint(in.world_position,V),\
+             in.uv,shade_uv,"
+        ));
+
+        // The reconstruction's seam width stays on the passed derivatives.
+        assert_eq!(
+            wgsl_call_fingerprint(
+                extract_wgsl_fn(material_shading, "post_retro_texel_uv"),
+                POST_RETRO_SAMPLING_CALLS,
+            ),
+            ["floor", "max", "abs", "abs", "clamp"],
         );
     }
 
@@ -1517,7 +1612,8 @@ mod tests {
     }
 
     #[test]
-    fn kinematic_light_params_uploads_dynamic_and_scripted_counts_in_second_uniform_row() {
+    fn kinematic_light_params_uploads_counts_and_specular_style_in_second_uniform_row() {
+        use postretro_render_cpu::frame_uniforms::KINEMATIC_SPECULAR_STYLE_SMOOTH;
         let bytes = build_light_params_bytes(KinematicLightParams {
             light_count: 11,
             time: 1.5,
@@ -1526,7 +1622,7 @@ mod tests {
             dynamic_light_count: 7,
             scripted_light_count: 10,
             indirect_scale: 0.625,
-            _pad2: 0,
+            specular_style: KINEMATIC_SPECULAR_STYLE_SMOOTH,
         });
 
         assert_eq!(bytes.len(), KINEMATIC_LIGHT_PARAMS_SIZE);
@@ -1537,7 +1633,25 @@ mod tests {
         assert_eq!(bytes[16..20], 7u32.to_ne_bytes());
         assert_eq!(bytes[20..24], 10u32.to_ne_bytes());
         assert_eq!(bytes[24..28], 0.625f32.to_ne_bytes());
-        assert_eq!(bytes[28..], [0; 4]);
+        assert_eq!(bytes[28..], KINEMATIC_SPECULAR_STYLE_SMOOTH.to_ne_bytes());
+    }
+
+    // The style word's smooth value is one constant on both sides, so a zeroed
+    // word reads the default pixel style in the shader.
+    #[test]
+    fn kinematic_specular_style_word_matches_the_cpu_constant() {
+        use postretro_render_cpu::frame_uniforms::KINEMATIC_SPECULAR_STYLE_SMOOTH;
+        let line = include_str!("../shaders/kinematic_brush.wgsl")
+            .lines()
+            .find(|line| line.starts_with("const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = "))
+            .expect("the mover shader declares the smooth style constant");
+        assert_eq!(
+            line,
+            format!(
+                "const KINEMATIC_SPECULAR_STYLE_SMOOTH: u32 = {KINEMATIC_SPECULAR_STYLE_SMOOTH}u;"
+            )
+        );
+        assert_ne!(KINEMATIC_SPECULAR_STYLE_SMOOTH, 0, "zero reads pixel");
     }
 
     #[test]
@@ -1578,7 +1692,7 @@ mod tests {
                 Some("dynamic_light_count"),
                 Some("scripted_light_count"),
                 Some("indirect_scale"),
-                Some("_pad2"),
+                Some("specular_style"),
             ],
         );
         assert_eq!(
@@ -1709,15 +1823,19 @@ mod tests {
             "the composed mover shader must append the shared material shading snippet",
         );
 
-        let dynamic_loop = extract_wgsl_fn(
-            include_str!("../shaders/kinematic_brush.wgsl"),
-            "accumulate_dynamic_direct",
-        );
+        let squashed = |name| -> String {
+            strip_wgsl_comments(extract_wgsl_fn(
+                include_str!("../shaders/kinematic_brush.wgsl"),
+                name,
+            ))
+            .split_whitespace()
+            .collect()
+        };
+        let dynamic_loop = squashed("accumulate_dynamic_direct");
         assert!(
-            dynamic_loop.contains(
-                "if use_specular && i >= kinematic_light_params.scripted_light_count && n_dot_l > 0.0"
-            ),
-            "only front-lit promoted records with LightTermMask specular enabled may add mover specular",
+            dynamic_loop
+                .contains("ifuse_specular&&i>=kinematic_light_params.scripted_light_count{"),
+            "only promoted records with LightTermMask specular enabled may add mover specular",
         );
         let mover_src = include_str!("../shaders/kinematic_brush.wgsl");
         assert!(
@@ -1727,9 +1845,25 @@ mod tests {
         );
         assert!(
             dynamic_loop.contains(
-                "blinn_phong(L, V, n, effective_color, spec_exp, spec_int) * attenuation"
+                "ifsmooth_style{ifn_dot_l>0.0{total=total+blinn_phong(L,spec_point.view,n,\
+                 effective_color,spec_exp,spec_int)*attenuation;}}"
             ),
-            "promoted mover specular must retain the runtime attenuation, cone, shadow, and promotion color factors",
+            "smooth mover specular keeps the front-lit gate and the runtime attenuation, cone, \
+             shadow, and promotion color factors",
+        );
+        assert!(
+            dynamic_loop.contains(
+                "total=total+mover_texel_specular(light,effective_color,effective_aim,spec_point,\
+                 n,mesh_n,depth.hit_top,shadow,spec_exp,spec_int,);"
+            ),
+            "pixel mover specular takes the texel's point, this fragment's shadow and the \
+             promotion color",
+        );
+        assert!(
+            squashed("mover_texel_specular").contains(
+                "blinn_phong(L,point.view,n,color,spec_exp,spec_int)*(geometry.w*shadow)"
+            ),
+            "pixel mover specular keeps the point's attenuation and cone, times the shadow",
         );
     }
 

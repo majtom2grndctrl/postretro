@@ -98,6 +98,10 @@ pub(crate) mod gpu_test_harness;
 #[cfg(test)]
 pub(crate) mod install_cost_model;
 #[cfg(test)]
+mod kinematic_specular_harness;
+#[cfg(test)]
+mod kinematic_specular_test;
+#[cfg(test)]
 mod lightmap_residency_test;
 #[cfg(test)]
 mod render_extent_gpu_test;

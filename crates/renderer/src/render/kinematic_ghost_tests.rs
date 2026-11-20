@@ -87,7 +87,8 @@ fn kinematic_ghost_instance_struct_matches_the_cpu_packing() {
     );
 }
 
-// The ghost samples its mover's texels exactly as the mover pass does.
+// The ghost samples its mover's texels exactly as the mover pass does: the
+// same wrapper, around the one shared reconstruction both compose.
 #[test]
 fn kinematic_ghost_sample_post_retro_matches_the_mover_pass_copy() {
     assert_eq!(
@@ -96,6 +97,18 @@ fn kinematic_ghost_sample_post_retro_matches_the_mover_pass_copy() {
             super::super::kinematic_brush::composed_shader_source(),
             "sample_post_retro"
         )
+    );
+    assert!(
+        wgsl_fn(KINEMATIC_GHOST_SHADER_SOURCE, "sample_post_retro")
+            .contains("post_retro_texel_uv(uv, dims, ddx, ddy)")
+    );
+    assert!(!include_str!("../shaders/kinematic_ghost.wgsl").contains("fn post_retro_texel_uv("));
+    assert_eq!(
+        KINEMATIC_GHOST_SHADER_SOURCE
+            .matches("fn post_retro_texel_uv(")
+            .count(),
+        1,
+        "the ghost composes material_shading.wgsl's reconstruction once"
     );
 }
 

@@ -20,6 +20,9 @@ pub(super) const KINEMATIC_GHOST_SHADER_SOURCE: &str = concat!(
     include_str!("../shaders/kinematic_ghost.wgsl"),
     "\n",
     include_str!("../shaders/ghost_look.wgsl"),
+    "\n",
+    // `post_retro_texel_uv`, which `sample_post_retro` reconstructs through.
+    include_str!("../shaders/material_shading.wgsl"),
 );
 
 /// The mover pass's world vertex stream; unlit, so only position and base UV

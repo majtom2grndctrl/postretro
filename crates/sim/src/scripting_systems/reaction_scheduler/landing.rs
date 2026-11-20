@@ -307,6 +307,18 @@ fn subject_at_landing(
                 sounds_everywhere: true,
             },
         },
+        FireSubject::Seam {
+            player: seated,
+            seam,
+        } => match seat_now(*seated) {
+            Ok(player) => FireSubject::Seam {
+                player,
+                seam: *seam,
+            },
+            Err(()) => FireSubject::Departed {
+                sounds_everywhere: true,
+            },
+        },
         FireSubject::PlayerEvent { player: seated } => match seat_now(*seated) {
             Ok(player) => FireSubject::PlayerEvent { player },
             Err(()) => FireSubject::Departed {

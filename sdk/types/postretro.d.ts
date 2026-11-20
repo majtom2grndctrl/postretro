@@ -2083,6 +2083,22 @@ declare module "postretro" {
   /** What a teleporter member's `on("teleport", …)` accepts: a sourceless or teleport-scoped reaction, or a reaction's name. */
   export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string;
 
+  /** Snapshot of a map-placed level seam: id, position and tags. */
+  export type SeamEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
+  /** Level seam member returned by `getMapEntities("seam")`. Arming state is host-only and never replicated; methods build closed command steps. */
+  export interface SeamHandle extends SeamEntity {
+    /** Arm the seam. Applies on the host at the start of its next tick; pawns latched in it stay latched. */
+    arm(): SequenceStep[];
+    /** Disarm the seam. Applies on the host at the start of its next tick. */
+    disarm(): SequenceStep[];
+    /** Fire `fire` once per pawn arriving by this seam, host-only, inside the first fixed tick after its spawn, and for no sibling sharing its tag. Return the entry from `setupLevel`'s `seamEvents`. */
+    on(event: "arrive", fire: SeamEventReaction[]): SeamEventDescriptor;
+  }
+  /** A seam member binding: the reactions named by `fire` run on the seam's `arrive` event. */
+  export type SeamEventDescriptor = { seam: EntityId; event: "arrive"; fire: string[] };
+  /** What a seam member's `on("arrive", …)` accepts: a sourceless or seam-scoped reaction, or a reaction's name. */
+  export type SeamEventReaction = Reaction<{}> | Reaction<SeamEventParams> | string;
+
   /** Snapshot of a map-placed ghost link: id, position and tags. */
   export type GhostLinkEntity = { id: EntityId; position: Vec3; tags: ReadonlyArray<string> };
   /** Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state, member categories and colour filter are host-authoritative and replicated; each method builds closed command steps that apply on the host at its next tick, in call order, and do nothing on a connected client. An out-of-range argument warns and drops that step when it runs; a non-finite argument (NaN or Infinity) drops the whole reaction when the level loads. */
@@ -2138,7 +2154,7 @@ declare module "postretro" {
   }
 
   /** Map-placed kinds `getMapEntities` accepts. NPCs and players are groups (`npcs`, `players`), not members. */
-  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool";
+  export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam";
 
   /** The member handle each map kind yields. `"emitter"` yields the snapshot only (id, position, tags, and the `BillboardEmitterComponent` under `component`); it has no verbs. */
   export type MapEntityForKind<K extends MapEntityKind> =
@@ -2152,6 +2168,7 @@ declare module "postretro" {
     K extends "spawner" ? SpawnerEntityHandle :
     K extends "trap" ? TrapEntityHandle :
     K extends "attackPool" ? AttackPoolEntityHandle :
+    K extends "seam" ? SeamHandle :
     never;
 
   /** Narrows a member query to instances carrying `tag`. */
@@ -2294,6 +2311,10 @@ declare module "postretro" {
   export type ArmTeleporterStep = { id: EntityId; primitive: "armTeleporter"; args: Record<string, never> };
   /** Sequence step that disarms one teleporter (`t.disarm()`). Applies on the host at the start of its next movement tick. */
   export type DisarmTeleporterStep = { id: EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+  /** Sequence step that arms one level seam (`s.arm()`). Applies on the host at the start of its next tick. */
+  export type ArmSeamStep = { id: EntityId; primitive: "armSeam"; args: Record<string, never> };
+  /** Sequence step that disarms one level seam (`s.disarm()`). Applies on the host at the start of its next tick. */
+  export type DisarmSeamStep = { id: EntityId; primitive: "disarmSeam"; args: Record<string, never> };
   /** Member categories a ghost link shows; an omitted category keeps its value. */
   export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
   /** A ghost link's colour filter. Each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
@@ -2350,6 +2371,8 @@ declare module "postretro" {
     | MoverSetBlockPolicyStep
     | ArmTeleporterStep
     | DisarmTeleporterStep
+    | ArmSeamStep
+    | DisarmSeamStep
     | ArmGhostLinkStep
     | DisarmGhostLinkStep
     | SetGhostLinkMembersStep
@@ -2424,6 +2447,11 @@ declare module "postretro" {
   const teleporterTargetBrand: unique symbol;
   export interface TeleporterTarget { readonly [teleporterTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
   export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
+  const seamTargetBrand: unique symbol;
+  /** The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`. */
+  export interface SeamTarget { readonly [seamTargetBrand]: true; arm(): SubjectTokenCommand; disarm(): SubjectTokenCommand; }
+  /** Dispatch values published by a level seam's `arrive` event: the arriving pawn and the seam it arrived by. */
+  export type SeamEventParams = Readonly<{ activators: ActivatorsTarget; seam: SeamTarget }>;
   export type TriggerEventParams = Readonly<{ activators: ActivatorsTarget; trigger: TriggerTarget; occupancy: RuntimeRead }>;
   const emitterTargetBrand: unique symbol;
   /** Opaque anchor for where the current named gameplay event happened. Legal only as `playSound`'s `at`. */
@@ -2616,6 +2644,8 @@ declare module "postretro" {
     /** Level trigger events, keyed by volume: build each with a trigger member's `on`. A tag-keyed entry belongs in `ModManifest.triggerEvents` (`defineTriggerEvent`) and is rejected here. */
     triggerEvents?: VolumeTriggerEventDescriptor[];
     teleportEvents?: TeleportEventDescriptor[];
+    /** Level seam events, keyed by seam: build each with a seam member's `on`. */
+    seamEvents?: SeamEventDescriptor[];
     triggerPools?: TriggerPoolDescriptor[];
     /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
     playerEvents?: PlayerEventDescriptor[];
@@ -2639,6 +2669,7 @@ declare module "postretro" {
   export function defineReaction(tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
   /** Define a pure impact-policy descriptor. Omit `id` only in a TypeScript direct top-level binding declaration; scripts-build supplies that binding's name. Register it only by returning it through `events`. */
@@ -2655,6 +2686,7 @@ declare module "postretro" {
   export function defineReaction(name: string, tracer: (params: CrossingParams) => ReactionBody<CrossingParams>): Reaction<CrossingParams>;
   export function defineReaction(name: string, tracer: (params: TriggerEventParams) => ReactionBody<TriggerEventParams>): Reaction<TriggerEventParams>;
   export function defineReaction(name: string, tracer: (params: TeleportEventParams) => ReactionBody<TeleportEventParams>): Reaction<TeleportEventParams>;
+  export function defineReaction(name: string, tracer: (params: SeamEventParams) => ReactionBody<SeamEventParams>): Reaction<SeamEventParams>;
   export function defineReaction(name: string, tracer: (params: EmitterParams) => ReactionBody<EmitterParams>): Reaction<EmitterParams>;
   export function defineReaction(name: string, tracer: (params: PlayerEventParams) => ReactionBody<PlayerEventParams>): Reaction<PlayerEventParams>;
 
@@ -2676,7 +2708,7 @@ declare module "postretro" {
   /** One group command: a primitive descriptor carrying `kind` (and an optional `tag` filter) instead of a target. Legal both as a reaction body and directly as a sequence entry; the group resolves when the command takes effect, so NPCs spawned or players joined before then are included. */
   export type GroupCommand = { primitive: string; kind: GroupKind; tag?: string; args: Record<string, unknown> };
   /** The subject a token command addresses: this fire's activators, the volume that fired, or the event's player. */
-  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player";
+  export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player";
   /** One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`, `on.player`): a primitive descriptor whose `target` names the fire's subject. Legal both as a reaction body and directly as a sequence entry, but only before any `wait`, because the fire context does not survive one. */
   export type SubjectTokenCommand = { primitive: string; target: SubjectTokenTarget; args: Record<string, unknown> };
   /** Selects the NPCs a group command reaches. Omit `tag` for every NPC. */

@@ -15,8 +15,15 @@ import type {
   SequenceStep,
   TriggerEventParams,
   TeleportEventParams,
+  SeamEventParams,
 } from "../data_script";
-import { ACTIVATORS_TARGET, PLAYER_TARGET, TRIGGER_TARGET, TELEPORTER_TARGET } from "./commands";
+import {
+  ACTIVATORS_TARGET,
+  PLAYER_TARGET,
+  SEAM_TARGET,
+  TRIGGER_TARGET,
+  TELEPORTER_TARGET,
+} from "./commands";
 
 type ReactionTracer<S> = (params: S) => ReactionBody<S>;
 
@@ -33,6 +40,7 @@ export const DISPATCH_PARAMS = Object.freeze({
   activators: ACTIVATORS_TARGET,
   trigger: TRIGGER_TARGET,
   teleporter: TELEPORTER_TARGET,
+  seam: SEAM_TARGET,
   occupancy: Object.freeze({ op: "input", name: "@occupancy" } as const),
   emitter: EMITTER_TARGET,
   player: PLAYER_TARGET,
@@ -207,6 +215,7 @@ export function defineReaction<S = {}>(body: ReactionBody<S>): Reaction<S>;
 export function defineReaction(tracer: ReactionTracer<CrossingParams>): Reaction<CrossingParams>;
 export function defineReaction(tracer: ReactionTracer<TriggerEventParams>): Reaction<TriggerEventParams>;
 export function defineReaction(tracer: ReactionTracer<TeleportEventParams>): Reaction<TeleportEventParams>;
+export function defineReaction(tracer: ReactionTracer<SeamEventParams>): Reaction<SeamEventParams>;
 export function defineReaction(tracer: ReactionTracer<EmitterParams>): Reaction<EmitterParams>;
 export function defineReaction(tracer: ReactionTracer<PlayerEventParams>): Reaction<PlayerEventParams>;
 export function defineReaction<S = {}>(
@@ -222,6 +231,7 @@ export function defineReaction(
   tracer: ReactionTracer<TriggerEventParams>,
 ): Reaction<TriggerEventParams>;
 export function defineReaction(name: string, tracer: ReactionTracer<TeleportEventParams>): Reaction<TeleportEventParams>;
+export function defineReaction(name: string, tracer: ReactionTracer<SeamEventParams>): Reaction<SeamEventParams>;
 export function defineReaction(
   name: string,
   tracer: ReactionTracer<EmitterParams>,

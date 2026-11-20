@@ -508,6 +508,35 @@
     on_teleport(string) : "Reaction on teleport" : "" : "Authoritative reaction once per travelling player."
 ]
 
+// Level-seam brushwork is a non-solid union standing at the same place, under one
+// shared name, in both maps of a pair. Activating it loads `target`; a player
+// inside arrives at the same place relative to the seam's landmark.
+@SolidClass
+    color(240 160 40)
+    = level_seam : "Level seam (map transition region)"
+[
+    name(string) : "Seam name" : "" : "Required. Shared by both maps of the pair and unique in each; also names a player_spawn checkpoint set."
+    target(string) : "Next map catalog id" : "" : "Required catalog id of the map this seam loads."
+    activation(choices) : "Activation" : "touch" =
+    [
+        "touch" : "Touch"
+        "use" : "Use"
+    ]
+    mode(choices) : "Mode" : "classic" =
+    [
+        "classic" : "Classic (loading screen)"
+        "seamless" : "Seamless (crosses as classic for now)"
+    ]
+    landmark(string) : "Landmark name" : "" : "Optional teleport_destination. Blank uses the seam's bounds centre at yaw 0."
+    enabled_on_spawn(choices) : "Armed on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    on_arrive(string) : "Reaction on arrival" : "" : "Reaction the destination seam fires once per arriving player."
+    _tags(string) : "Space-delimited tags" : ""
+]
+
 // Ghost-link brushwork is a non-solid union over one room copy; while armed, its
 // members draw as ghosts at the landmark → target mapping in the other copy.
 @SolidClass
@@ -838,12 +867,12 @@
 // visibility, lightmap, SDF, and navmesh construction. The hull only
 // influences later SH cluster metadata and never creates a runtime entity.
 //
-// A seam must pass through runtime portal area with brush interior on both
-// portal-plane sides; a seam that matches no runtime portal fails the build.
+// A split must pass through runtime portal area with brush interior on both
+// portal-plane sides; a split that matches no runtime portal fails the build.
 // It cuts clustering and asks the runtime planner to warm the far side while
 // the near side is visible; it never changes cells, portals, a door, gameplay,
 // or portal visibility.
-@SolidClass = streaming_seam_volume : "SH streaming seam and far-side warm-up (brush)"
+@SolidClass = stream_split_volume : "SH streaming split and far-side warm-up (brush)"
 [
 ]
 
@@ -854,7 +883,7 @@
 [
 ]
 
-// Rank only optional SeamWarm/Prefetch work for overlapping runtime cells.
+// Rank only optional split warm-up/prefetch work for overlapping runtime cells.
 // Overlaps take the maximum value. Priority does not reorder visible or pinned
 // work, and zero emits no policy record; an empty overlap is a compiler error.
 @SolidClass = stream_priority_region : "Rank optional SH streaming work under pressure (brush)"

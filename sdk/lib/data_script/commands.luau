@@ -196,8 +196,15 @@ local TELEPORTER_TARGET = opaqueTarget("on.teleporter", {
   disarm = function(_self) return teleporterCommand("disarmTeleporter", {}) end,
 }, "@teleporter")
 
+local seamCommand = tokenCommand("@seam")
+local SEAM_TARGET = opaqueTarget("on.seam", {
+  arm = function(_self) return seamCommand("armSeam", {}) end,
+  disarm = function(_self) return seamCommand("disarmSeam", {}) end,
+}, "@seam")
+
 return {
   TELEPORTER_TARGET = TELEPORTER_TARGET,
+  SEAM_TARGET = SEAM_TARGET,
   builders = CommandsSdk,
   ACTIVATORS_TARGET = ACTIVATORS_TARGET,
   PLAYER_TARGET = PLAYER_TARGET,

@@ -30,7 +30,7 @@ pub(super) struct CellPartitionPlan {
 
 pub(super) struct CellPartitionInputs<'a> {
     pub(super) generated_portals: &'a [portals::Portal],
-    pub(super) streaming_seam_regions: &'a [MapStreamingHintRegion],
+    pub(super) streaming_split_regions: &'a [MapStreamingHintRegion],
     pub(super) stream_resident_regions: &'a [MapStreamingHintRegion],
     pub(super) stream_priority_regions: &'a [MapStreamingPriorityRegion],
     pub(super) leaves: &'a BspLeavesSection,
@@ -44,7 +44,7 @@ pub(super) fn plan_cell_partition(
     let portals = pack::encode_portals(inputs.generated_portals)?;
     let cells = pack::encode_cells(inputs.leaves, &portals, inputs.exterior_leaves)?;
     let streaming_hints = resolve_streaming_hints(
-        inputs.streaming_seam_regions,
+        inputs.streaming_split_regions,
         inputs.stream_resident_regions,
         inputs.stream_priority_regions,
         inputs.generated_portals,

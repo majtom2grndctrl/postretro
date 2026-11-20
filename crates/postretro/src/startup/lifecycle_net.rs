@@ -133,6 +133,8 @@ impl App {
         self.planar_render.clear();
         self.trigger_bindings = TriggerBindingTable::default();
         self.teleporter_bindings = Default::default();
+        self.seam_stage = Default::default();
+        self.seam_bindings = Default::default();
         self.ghost_links = Default::default();
         self.ghost_render.clear();
         self.mover_ghost_render.clear();
@@ -166,10 +168,19 @@ impl App {
     /// | respawn requests and placements, carried life-state names (held seats too) | the bound assist pair table (built from the descriptor set, not level state; rebound at install) |
     /// | assist progress, latches, row-6 records, last-pass pair values, stored per-pawn life states | |
     pub(crate) fn unload_level(&mut self) {
+        self.unload_level_crossing(None);
+    }
+
+    /// Unload, harvesting seam arrivals first when `seam` names the crossing
+    /// a seam load carries (`boot_sequence.md` §4).
+    pub(crate) fn unload_level_crossing(&mut self, seam: Option<&str>) {
         let unload_started = std::time::Instant::now();
         // A frontend backdrop's pawn is never harvested: seat 0 carries the
         // selected character outside play, not the backdrop's pawn.
         let harvest = !std::mem::take(&mut self.backdrop_installed);
+        // Before the net reset replaces the command queues and before any
+        // pawn despawns: the crossing reads poses, motion and facing.
+        self.harvest_seam_crossing(seam, harvest);
         self.cpu_timer.level_changed();
         self.clear_net_level_parity();
         // `net_endpoint` and `audio` are session-owned; reset/release them through
@@ -209,6 +220,12 @@ impl App {
                 .scripting
                 .script_ctx
                 .pending_ghost_link_commands
+                .borrow_mut()
+                .clear();
+            session
+                .scripting
+                .script_ctx
+                .pending_seam_mutations
                 .borrow_mut()
                 .clear();
         }

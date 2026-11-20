@@ -73,6 +73,11 @@ impl App {
                     session.scripting.command_diagnostics.clone(),
                     session.scripting.spawn_context.clone(),
                 );
+            self.seam_bindings = postretro_sim::seam_system::SeamBindingTable::build(
+                &session.scripting.script_ctx,
+                session.scripting.command_diagnostics.clone(),
+                session.scripting.spawn_context.clone(),
+            );
         }
         self.warn_hosted_trigger_machine_local();
         self.rebuild_player_events(true);
@@ -305,6 +310,7 @@ pub(super) fn reaction_uses_trigger_sentinel(
                 SequenceTarget::Activators
                     | SequenceTarget::FiredTrigger
                     | SequenceTarget::FiredTeleporter
+                    | SequenceTarget::FiredSeam
                     | SequenceTarget::EventPlayer
             )
         }),

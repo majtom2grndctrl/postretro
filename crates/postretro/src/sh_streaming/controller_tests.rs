@@ -481,7 +481,7 @@ fn open_portal_beside_closed_seam_keeps_its_cells_visible_and_seam_far_side_out(
 #[test]
 fn compiled_hinted_doorway_keeps_closed_visibility_and_far_cluster_resident_before_door_opens() {
     let map_source = include_str!("../../../../content/dev/maps/sh-streaming-hinted-door.map");
-    assert!(map_source.contains("\"classname\" \"streaming_seam_volume\""));
+    assert!(map_source.contains("\"classname\" \"stream_split_volume\""));
     assert!(map_source.contains("\"classname\" \"stream_resident_volume\""));
     assert!(map_source.contains("\"_stream_priority\" \"3\""));
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

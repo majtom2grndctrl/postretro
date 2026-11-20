@@ -3020,6 +3020,7 @@ Per-level data scripts export a `setupLevel(ctx)` function to register reactions
 | `crossings` | State-crossing watchers (`onStateCrossing`). |
 | `triggerEvents` | Trigger-volume edges bound with a trigger member's `on` (see [Trigger events](#trigger-events)). |
 | `teleportEvents` | Teleports bound with a teleporter member's `on("teleport", …)` (see [teleporters.md](teleporters.md#the-teleport-event)). |
+| `seamEvents` | Arrivals bound with a seam member's `on("arrive", …)` (see [level-seams.md](level-seams.md#the-arrive-event)). |
 | `triggerPools` | Trigger pools (`defineTriggerPool`). |
 | `playerEvents` | Per-player state edges bound with `players().on` (see [Per-player events](#per-player-events)). A `ModManifest` may return this key too. |
 
@@ -3206,9 +3207,9 @@ A `wait` changes when a step happens, never who sees or hears it.
 
 A script reaches an entity in one of three ways, chosen by whether the set can change while the level runs:
 
-- **Map members** — entities placed in the map: movers, triggers, teleporters, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
+- **Map members** — entities placed in the map: movers, triggers, teleporters, level seams, ghost links, lights, fog volumes, emitters, spawners, projectile traps, attack pools. The set is fixed when the level loads, so `getMapEntities` hands you an array to inspect, sort and address one by one.
 - **Groups** — NPCs and players, which come and go. `npcs()` and `players()` are opaque handles the engine resolves each time a command takes effect, so an NPC a spawner releases mid-level is included.
-- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction.
+- **Subject tokens** — the entity an event is about: `on.activators` and `on.trigger` inside a trigger-event reaction, `on.activators` and `on.teleporter` inside a teleport-event reaction, `on.activators` and `on.seam` inside a seam `arrive` reaction.
 
 Every command is a method on its target. In TypeScript call it as `target.verb(…)`; in Luau, `target:verb(…)`. Each target carries only the verbs its kind supports — calling a verb a target lacks is a type error in TypeScript and an error in Luau.
 
@@ -3219,6 +3220,7 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | fog member | `getMapEntities("fog")` | `pulse`, `fade`, `flicker`, `pulseSaturation`, `fadeSaturation` |
 | trigger member | `getMapEntities("trigger")` | `arm`, `disarm`, `on` |
 | teleporter member | `getMapEntities("teleporter")` | `arm`, `disarm`, `on` |
+| seam member | `getMapEntities("seam")` | `arm`, `disarm`, `on` |
 | ghost link member | `getMapEntities("ghostLink")` | `arm`, `disarm`, `setMembers`, `setColorFilter` |
 | spawner member | `getMapEntities("spawner")` | `fire` |
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
@@ -3226,10 +3228,11 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
 | NPC group | `npcs({ tag? })` | `update`, `damage` |
 | player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.activators` | trigger- or teleport-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| `on.activators` | trigger-, teleport- or seam-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
+| `on.seam` | seam `arrive` reaction param | `arm`, `disarm` |
 
 ### getMapEntities
 
@@ -3249,6 +3252,7 @@ Postretro.getMapEntities("light", { tag = "hallway_wave" })
 | `"mover"` | `MoverEntityHandle` | `id`, `position`, `tags` |
 | `"trigger"` | `TriggerVolumeHandle` | `id`, `position`, `tags` |
 | `"teleporter"` | `TeleporterHandle` (`arm`, `disarm`, `on("teleport", …)`; see [teleporters.md](teleporters.md#scripting)) | `id`, `position`, `tags` |
+| `"seam"` | `SeamHandle` (`arm`, `disarm`, `on("arrive", …)`; see [level-seams.md](level-seams.md#scripting)) | `id`, `position`, `tags` |
 | `"ghostLink"` | `GhostLinkHandle` (`arm`, `disarm`, `setMembers`, `setColorFilter`; see [ghost-links.md](ghost-links.md#scripting)) | `id`, `position`, `tags` |
 | `"light"` | `LightEntityHandle` | `id`, `position`, `isDynamic`, `tags`, `component` |
 | `"fog"` | `FogVolumeHandle` | `id`, `position`, `tags`, `component` |
@@ -3282,7 +3286,7 @@ players();                    // every player
 
 ### Subject tokens
 
-A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event):
+A trigger-event reaction receives `on.activators` (the players that caused the edge) and `on.trigger` (the volume that fired). A teleport-event reaction receives `on.activators` (the one player who teleported) and `on.teleporter` (the teleporter that fired; `arm`, `disarm`), as described in [teleporters.md](teleporters.md#the-teleport-event). A seam `arrive` reaction receives `on.activators` (the arriving player) and `on.seam` (the seam arrived through; `arm`, `disarm`), as described in [level-seams.md](level-seams.md#the-arrive-event):
 
 ```typescript
 const heal = defineReaction((on: TriggerEventParams) => on.activators.grantHealth(25));
@@ -4307,7 +4311,8 @@ checkpoint and saves the character. Spawns whose `checkpoint` key matches the
 name become where players respawn and late joiners arrive, and where Continue
 arrives later (see the level design reference's checkpoint spawns). The next
 level start clears it. A checkpoint outside an active run saves the character and the world file,
-never a run.
+never a run. A level seam crossing is a checkpoint too, at the destination seam,
+holding where the host crossed (see [level-seams.md](level-seams.md#seam-checkpoints)).
 
 ```typescript
 import { defineStore, defineReaction } from "postretro";
@@ -4503,7 +4508,8 @@ end))
 
 `getGameState().occupancy.tag(tag)` (`game.occupancy:tag(tag)` in Luau) reads
 two readonly Numbers about the trigger volumes carrying `tag`. A `switch` is a
-trigger volume, so it counts too.
+trigger volume, so it counts too, and so does a level seam carrying the tag,
+by its own brushes rather than a box (see [level-seams.md](level-seams.md#waiting-for-everyone)).
 
 - `occupiedCount`: how many of those volumes have at least one counted player
   inside.

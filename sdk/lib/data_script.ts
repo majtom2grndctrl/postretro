@@ -16,6 +16,7 @@ import type {
   SubjectTokenCommand,
   TriggerTarget,
   TeleporterTarget,
+  SeamTarget,
 } from "./data_script/commands";
 import type { VolumeTriggerEventDescriptor, TriggerPoolDescriptor } from "./data_script/trigger_events";
 import type { PlayerEventDescriptor } from "./data_script/player_events";
@@ -35,6 +36,7 @@ export type {
   SubjectTokenTarget,
   TriggerTarget,
   TeleporterTarget,
+  SeamTarget,
 } from "./data_script/commands";
 export { assistGiven, assistReceived, becomes, ceases } from "./data_script/player_events";
 export type {
@@ -86,6 +88,9 @@ export type TriggerEventParams = Readonly<{
 
 export type TeleportEventParams = Readonly<{ activators: ActivatorsTarget; teleporter: TeleporterTarget }>;
 
+/** Dispatch values published by a level seam's `arrive` event: the arriving pawn and the seam it arrived by. */
+export type SeamEventParams = Readonly<{ activators: ActivatorsTarget; seam: SeamTarget }>;
+
 /** Dispatch values published by a player event (`players().on`): the player it fired for. */
 export type PlayerEventParams = Readonly<{
   player: PlayerTarget;
@@ -108,7 +113,7 @@ export type PrimitiveReactionDescriptor<S = {}> = ReactionBodyScope<S> & {
   primitive: string;
   kind?: "npc" | "player";
   tag?: string;
-  target?: "@activators" | "@trigger" | "@teleporter" | "@player";
+  target?: "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player";
   args?: Record<string, unknown> | null;
   onComplete?: string;
 };
@@ -156,6 +161,8 @@ export type MoverSetSpinRateStep = import("postretro").MoverSetSpinRateStep;
 export type MoverSetBlockPolicyStep = import("postretro").MoverSetBlockPolicyStep;
 export type ArmTeleporterStep = { id: import("postretro").EntityId; primitive: "armTeleporter"; args: Record<string, never> };
 export type DisarmTeleporterStep = { id: import("postretro").EntityId; primitive: "disarmTeleporter"; args: Record<string, never> };
+export type ArmSeamStep = { id: import("postretro").EntityId; primitive: "armSeam"; args: Record<string, never> };
+export type DisarmSeamStep = { id: import("postretro").EntityId; primitive: "disarmSeam"; args: Record<string, never> };
 /** Member categories a ghost link shows; an omitted category keeps its value. */
 export type GhostLinkMembersArgs = { players?: boolean; entities?: boolean; projectiles?: boolean; movers?: boolean };
 /** A ghost link's colour filter: each named field ramps on its own over `periodMs` (default 0); an omitted field keeps its value and any ramp in flight. `tint` is `[r, g, b]`; `tint` components, `opacity` and `saturation` lie in 0..=1, and `periodMs` is finite and at least 0. Naming none of `tint`, `opacity` and `saturation` warns and drops the step. */
@@ -194,6 +201,8 @@ export type SequenceStep =
   | MoverSetBlockPolicyStep
   | ArmTeleporterStep
   | DisarmTeleporterStep
+  | ArmSeamStep
+  | DisarmSeamStep
   | ArmGhostLinkStep
   | DisarmGhostLinkStep
   | SetGhostLinkMembersStep
@@ -260,6 +269,8 @@ export type LevelManifest = {
   /** Level trigger events, keyed by volume: build each with a trigger member's `on`. */
   triggerEvents?: VolumeTriggerEventDescriptor[];
   teleportEvents?: import("./entities/teleporters").TeleportEventDescriptor[];
+  /** Level seam events, keyed by seam: build each with a seam member's `on`. */
+  seamEvents?: import("./entities/seams").SeamEventDescriptor[];
   triggerPools?: TriggerPoolDescriptor[];
   /** Per-player events, built with `players().on`. A level's entries belong to that level; an entry carrying `levels` is skipped with a warning (its siblings install). */
   playerEvents?: PlayerEventDescriptor[];

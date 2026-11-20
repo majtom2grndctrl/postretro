@@ -486,6 +486,67 @@ impl Relay {
         first.map(|first| (first.pawn, first.placement))
     }
 
+    /// [`Self::install_from`] of a level world carrying seams, as catalog level
+    /// `catalog_id`: the host's pawn spawns in the spawn set its saves select
+    /// from `level_points`, then the seam install moves it to its arrival and
+    /// offers each remote seat its own, then the hints.
+    pub(super) fn install_seam_level(
+        &mut self,
+        catalog_id: &str,
+        world: postretro_level_loader::LevelWorld,
+        level_points: Vec<MapEntity>,
+    ) -> Option<(EntityId, usize)> {
+        self.level_digest =
+            crate::runtime_movers::level_content_digest(&world.kinematic_geometry, &world);
+        self.app.level_load = Some(crate::startup::InFlightLevelLoad {
+            map_path: PathBuf::from(format!("content/dev/maps/{catalog_id}.prl")),
+            content_root: PathBuf::from("content/dev"),
+            entry: crate::startup::LevelLoadEntry {
+                catalog_id: Some(catalog_id.to_string()),
+                path: format!("maps/{catalog_id}.prl"),
+                name: catalog_id.to_string(),
+                tags: Vec::new(),
+                loading_tree: Vec::new(),
+            },
+            host_named: false,
+        });
+        self.app.install_level_identity(&world);
+        self.app.level_load = None;
+        let points = {
+            let saves = &self.app.session.as_ref().unwrap().saves;
+            crate::scripting::builtins::player_spawn::spawn_set_for(
+                &level_points,
+                saves.spawn_checkpoint(),
+                saves.spawn_checkpoint_is_seam(),
+            )
+        };
+        let ctx = script_ctx(&self.app);
+        let first = spawn_from_player_starts(
+            &points,
+            &ctx.data_registry.borrow().entities,
+            &mut ctx.registry.borrow_mut(),
+            None,
+        );
+        let session = self.app.session.as_mut().unwrap();
+        let seats = session.seat_table.as_mut().unwrap();
+        bind_installed_first_player(seats, &mut ctx.registry.borrow_mut(), first);
+        crate::respawn_placements::publish(
+            &ctx,
+            &points,
+            &ctx.data_registry.borrow().entities,
+            Some(seats),
+            first.map(|first| first.placement),
+        );
+        self.app.host_spawn_points = points;
+        self.app.level_spawn_points = level_points;
+        self.app.collision_world = crate::collision::CollisionWorld::from_level(&world).unwrap();
+        self.app.level = Some(world);
+        let _ = self.app.install_level_seams(None);
+        self.app.send_install_spawn_pose_hints();
+        self.step();
+        first.map(|first| (first.pawn, first.placement))
+    }
+
     /// Production unload; it clears the data registry, which a mod reload
     /// would refill, so the fixture refills it.
     pub(super) fn unload(&mut self) {

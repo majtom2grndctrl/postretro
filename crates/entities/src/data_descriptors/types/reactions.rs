@@ -38,6 +38,15 @@ pub struct TeleportEventDescriptor {
     pub fire: Vec<String>,
 }
 
+/// Level-local seam member event (`s.on("arrive", …)`); bound only to its
+/// installed seam entity. Wire: `{ seam: <id>, event, fire }`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SeamEventDescriptor {
+    pub seam: EntityId,
+    pub event: String,
+    pub fire: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriggerPoolDescriptor {
     pub tag: String,
@@ -125,6 +134,8 @@ pub enum SequenceTarget {
     FiredTrigger,
     /// `on.teleporter`: the teleporter that fired an authoritative relocation.
     FiredTeleporter,
+    /// `on.seam`: the level seam a pawn arrived by.
+    FiredSeam,
     /// `on.player`: the player a player event fires for.
     EventPlayer,
     /// Control step: `wait`. Enrolls the remainder of the body with the reaction

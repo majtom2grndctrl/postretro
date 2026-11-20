@@ -1,4 +1,4 @@
-// Shared little-endian codec of the convex-leaf sections (ids 52, 55, 56):
+// Shared little-endian codec of the convex-leaf sections (ids 52, 55, 56, 61):
 // bounded reader, scalar and string writers, and the id-52 brush encoding.
 // See: context/lib/build_pipeline.md §PRL section IDs
 

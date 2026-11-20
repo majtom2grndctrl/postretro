@@ -181,6 +181,7 @@ live, so renaming it after release strands them.\n\
 - `docs/weapon-mounts.md` — weapon mount and viewmodel authoring.\n\
 - `docs/character-animation.md` — shared clip libraries for characters.\n\
 - `docs/teleporters.md` — classic and seamless teleporters.\n\
+- `docs/level-seams.md` — joining two maps with a level seam.\n\
 - `docs/ghost-links.md` — seeing another room copy through a ghost link.\n\
 - `docs/diagnostics.md` — diagnosing and profiling a running session.\n\
 - `tools/` — Python asset helpers. See `tools/README.md` for the Python and\n\
@@ -323,6 +324,7 @@ mod tests {
             "docs/weapon-mounts.md",
             "docs/character-animation.md",
             "docs/teleporters.md",
+            "docs/level-seams.md",
             "docs/ghost-links.md",
             "docs/diagnostics.md",
             "docs/distribution.md",

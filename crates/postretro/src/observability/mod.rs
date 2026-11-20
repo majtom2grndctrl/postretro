@@ -68,6 +68,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::GhostLink,
     ComponentKind::DefenseLayers,
     ComponentKind::AttackPool,
+    ComponentKind::Seam,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -108,6 +109,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::GhostLink => "ghost_link",
         ComponentKind::DefenseLayers => "defense_layers",
         ComponentKind::AttackPool => "attack_pool",
+        ComponentKind::Seam => "seam",
     }
 }
 
@@ -348,6 +350,7 @@ mod tests {
             ComponentKind::Agent => ComponentValue::Agent(AgentComponent::new(0.3, 1.6, 0.35, 5.0)),
             ComponentKind::Brain => {
                 ComponentValue::Brain(BrainComponent::from_graph(&BehaviorGraphDescriptor {
+                    ai: Default::default(),
                     knockback: Default::default(),
                     envelope: BehaviorGraphEnvelope {
                         initial: "idle".to_string(),
@@ -488,6 +491,13 @@ mod tests {
                     "arena".to_string(),
                 ),
             ),
+            ComponentKind::Seam => ComponentValue::Seam(postretro_entities::SeamComponent {
+                index: 0,
+                source_entity: 0,
+                name: "sample".to_string(),
+                armed: true,
+                on_arrive: String::new(),
+            }),
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
             ),

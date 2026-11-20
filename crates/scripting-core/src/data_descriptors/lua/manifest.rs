@@ -52,6 +52,7 @@ impl LevelManifest {
         let events = drain_impact_events_lua(&table, "setupLevel")?;
         let trigger_events = drain_level_trigger_events_lua(&table, "setupLevel")?;
         let teleport_events = drain_level_teleport_events_lua(&table, "setupLevel")?;
+        let seam_events = drain_level_seam_events_lua(&table, "setupLevel")?;
         let trigger_pools = drain_trigger_pools_lua(&table, "setupLevel")?;
         let player_events = drain_player_events_lua(&table, PlayerEventSite::Level, "setupLevel")?;
 
@@ -63,6 +64,7 @@ impl LevelManifest {
             crossings,
             trigger_events,
             teleport_events,
+            seam_events,
             trigger_pools,
             player_events,
             ui_trees,

@@ -693,6 +693,7 @@ impl RawComponentPayload {
                 Some(presence) if populated == 1 && presence.bits != 0 => {
                     Ok(ComponentPayload::StatusPresence(presence))
                 }
+                Some(_) if populated == 1 => Err(ValidationError::EmptyStatusPresence),
                 Some(_) => Err(ValidationError::MismatchedComponentPayload(
                     self.component_kind,
                 )),

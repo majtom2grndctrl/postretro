@@ -169,7 +169,7 @@ fn parse_status(
         .ok_or_else(|| format!("`{path}.name` must be a string"))?;
     validate_defense_name(name).map_err(|error| format!("`{path}.name`: {error}"))?;
 
-    let damage = required_number(object, path, "damage", STATUS_DAMAGE_RANGE)?;
+    let damage = required_number(object, path, "damage", f32_bounds(STATUS_DAMAGE_RANGE))? as f32;
     let damage_type = match object.get("type") {
         None | Some(Value::Null) => None,
         Some(value) => {
@@ -186,15 +186,18 @@ fn parse_status(
             })?)
         }
     };
-    let tick_ms = required_number(object, path, "tickMs", STATUS_TICK_MS_RANGE)?;
+    let tick_ms_exact = required_number(object, path, "tickMs", f32_bounds(STATUS_TICK_MS_RANGE))?;
+    let tick_ms = tick_ms_exact as f32;
     let duration_ms = match object.get("durationMs") {
         None | Some(Value::Null) => None,
-        Some(_) => Some(required_number(
-            object,
-            path,
-            "durationMs",
-            (tick_ms, STATUS_DURATION_MS_MAX),
-        )?),
+        Some(_) => Some(
+            required_number(
+                object,
+                path,
+                "durationMs",
+                (tick_ms_exact, f64::from(STATUS_DURATION_MS_MAX)),
+            )? as f32,
+        ),
     };
     let stacking = match object.get("stacking") {
         None | Some(Value::Null) => StatusStacking::Refresh,
@@ -210,8 +213,12 @@ fn parse_status(
         None | Some(Value::Null) => 1,
         Some(_) => {
             let (min, max) = STATUS_MAX_STACKS_RANGE;
-            let value =
-                required_number(object, path, "maxStacks", (f32::from(min), f32::from(max)))?;
+            let value = required_number(
+                object,
+                path,
+                "maxStacks",
+                (f64::from(min), f64::from(max)),
+            )?;
             if value.fract() != 0.0 {
                 return Err(format!("`{path}.maxStacks` must be a whole number"));
             }
@@ -234,16 +241,22 @@ fn parse_status(
     })
 }
 
+fn f32_bounds((min, max): (f32, f32)) -> (f64, f64) {
+    (f64::from(min), f64::from(max))
+}
+
+// Range-checks in f64 so a value a hair past a bound cannot round onto it when
+// narrowed to f32; callers narrow after the check.
 fn required_number(
     object: &Map<String, Value>,
     path: &str,
     key: &str,
-    (min, max): (f32, f32),
-) -> Result<f32, String> {
+    (min, max): (f64, f64),
+) -> Result<f64, String> {
     let value = object
         .get(key)
         .and_then(Value::as_f64)
-        .ok_or_else(|| format!("`{path}.{key}` must be a number"))? as f32;
+        .ok_or_else(|| format!("`{path}.{key}` must be a number"))?;
     if !value.is_finite() || value < min || value > max {
         return Err(format!(
             "`{path}.{key}` must be in [{min}, {max}], got {value}"
@@ -391,10 +404,31 @@ mod tests {
         assert!(error.contains("`statuses[64]`"), "{error}");
     }
 
+    // Regression: range checks ran after narrowing to f32, so values a hair past a
+    // bound rounded onto it and loaded.
+    #[test]
+    fn define_status_rejects_values_just_past_bounds_in_f64() {
+        let cases = [
+            (json!({ "damage": 1000000.03 }), "damage"),
+            (json!({ "damage": -0.00000001 }), "damage"),
+            (json!({ "tickMs": 0.99999999 }), "tickMs"),
+            (json!({ "tickMs": 60000.01 }), "tickMs"),
+            (json!({ "durationMs": 600000.03 }), "durationMs"),
+            (json!({ "tickMs": 500, "durationMs": 499.99999999 }), "durationMs"),
+            (json!({ "maxStacks": 64.00000001 }), "maxStacks"),
+            (json!({ "maxStacks": 0.99999999 }), "maxStacks"),
+        ];
+        for (fields, key) in cases {
+            let error = parse(json!([status(fields.clone())])).unwrap_err();
+            assert!(error.contains(&format!("`statuses[0].{key}`")), "{fields}: {error}");
+        }
+    }
+
     #[test]
     fn define_status_boundary_values_load() {
         let boundaries = [
             json!({ "tickMs": 1, "durationMs": 1 }),
+            json!({ "tickMs": 500, "durationMs": 500 }),
             json!({ "tickMs": 60_000, "durationMs": 600_000 }),
             json!({ "damage": 0 }),
             json!({ "damage": 1.0e6 }),

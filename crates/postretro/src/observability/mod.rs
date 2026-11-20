@@ -68,6 +68,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::GhostLink,
     ComponentKind::DefenseLayers,
     ComponentKind::AttackPool,
+    ComponentKind::StatusPresence,
 ];
 
 /// Snake_case name for a component kind, matching `ComponentValue`'s serde
@@ -108,6 +109,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::GhostLink => "ghost_link",
         ComponentKind::DefenseLayers => "defense_layers",
         ComponentKind::AttackPool => "attack_pool",
+        ComponentKind::StatusPresence => "status_presence",
     }
 }
 
@@ -487,6 +489,9 @@ mod tests {
                     "arena_guard".to_string(),
                     "arena".to_string(),
                 ),
+            ),
+            ComponentKind::StatusPresence => ComponentValue::StatusPresence(
+                postretro_entities::components::statuses::StatusPresenceComponent { bits: 1 },
             ),
             ComponentKind::Immersion => ComponentValue::Immersion(
                 postretro_entities::components::immersion::ImmersionComponent {

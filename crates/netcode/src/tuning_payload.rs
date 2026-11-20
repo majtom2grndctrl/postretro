@@ -20,6 +20,8 @@ pub(crate) enum TuningPayloadError {
     InvalidWeapon(postretro_foundation::DescriptorError),
     #[error("tuning payload has invalid life states: {0}")]
     InvalidLifeStates(String),
+    #[error("tuning payload has invalid status names: {0}")]
+    InvalidStatusNames(String),
     #[error("tuning payload epoch mismatch: expected {expected}, received {received}")]
     EpochMismatch { expected: u32, received: u32 },
 }
@@ -68,6 +70,7 @@ pub(crate) fn decode_tuning_payload(data: &[u8]) -> Result<TuningPayload, Tuning
     }
     let mut payload: TuningPayload = serde_json::from_slice(data).map_err(payload_json_error)?;
     validate_life_states(&payload)?;
+    validate_status_names(&payload)?;
     if let Some(descriptor) = payload.movement.as_mut() {
         descriptor.view_feel = None;
         descriptor.sounds = None;
@@ -114,6 +117,33 @@ fn validate_life_states(payload: &TuningPayload) -> Result<(), TuningPayloadErro
             .and_then(assistable::literal_fault_message)
         {
             return Err(TuningPayloadError::InvalidLifeStates(message));
+        }
+    }
+    Ok(())
+}
+
+/// The host's status table is the bit order of the replicated presence word:
+/// at most `MAX_STATUSES` names, none empty, none repeated. Order is the host's
+/// declaration order, so it is not required to be sorted.
+fn validate_status_names(payload: &TuningPayload) -> Result<(), TuningPayloadError> {
+    let names = &payload.environment.status_names;
+    if names.len() > postretro_foundation::status::MAX_STATUSES {
+        return Err(TuningPayloadError::InvalidStatusNames(format!(
+            "at most {} names",
+            postretro_foundation::status::MAX_STATUSES
+        )));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(names.len());
+    for name in names {
+        if name.is_empty() {
+            return Err(TuningPayloadError::InvalidStatusNames(
+                "names must not be empty".into(),
+            ));
+        }
+        if !seen.insert(name.as_str()) {
+            return Err(TuningPayloadError::InvalidStatusNames(format!(
+                "duplicate name `{name}`"
+            )));
         }
     }
     Ok(())
@@ -390,6 +420,59 @@ mod tests {
         assert!(matches!(
             decode_tuning_payload(&encode_tuning_payload(&payload)),
             Err(TuningPayloadError::InvalidLifeStates(_))
+        ));
+    }
+
+    fn payload_with_status_names(names: Vec<String>) -> TuningPayload {
+        let mut payload = full_payload();
+        payload.environment.status_names = names;
+        payload
+    }
+
+    #[test]
+    fn status_names_round_trip_in_host_order_up_to_the_presence_width() {
+        let unsorted = vec!["burn".to_string(), "chill".into(), "ablaze".into()];
+        let decoded = decode_tuning_payload(&encode_tuning_payload(&payload_with_status_names(
+            unsorted.clone(),
+        )))
+        .unwrap();
+        assert_eq!(decoded.environment.status_names, unsorted);
+
+        let full: Vec<String> = (0..postretro_foundation::status::MAX_STATUSES)
+            .map(|index| format!("status{index}"))
+            .collect();
+        assert!(
+            decode_tuning_payload(&encode_tuning_payload(&payload_with_status_names(full)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn status_names_over_the_presence_width_are_rejected() {
+        let names = (0..=postretro_foundation::status::MAX_STATUSES)
+            .map(|index| format!("status{index}"))
+            .collect();
+        assert!(matches!(
+            decode_tuning_payload(&encode_tuning_payload(&payload_with_status_names(names))),
+            Err(TuningPayloadError::InvalidStatusNames(_))
+        ));
+    }
+
+    #[test]
+    fn status_names_with_an_empty_name_are_rejected() {
+        let names = vec!["burn".to_string(), String::new()];
+        assert!(matches!(
+            decode_tuning_payload(&encode_tuning_payload(&payload_with_status_names(names))),
+            Err(TuningPayloadError::InvalidStatusNames(_))
+        ));
+    }
+
+    #[test]
+    fn status_names_with_a_duplicate_name_are_rejected() {
+        let names = vec!["burn".to_string(), "chill".into(), "burn".into()];
+        assert!(matches!(
+            decode_tuning_payload(&encode_tuning_payload(&payload_with_status_names(names))),
+            Err(TuningPayloadError::InvalidStatusNames(_))
         ));
     }
 

@@ -21,9 +21,10 @@ import { acid, fireDamage } from "./damage-types";
 import { referenceRifleEntity } from "./reference-rifle";
 import { burning, corroding, scalding, wet } from "./statuses";
 
-// Fire ignites what is not wet; acid dries it; a burn kill plays its own
-// death. The `impact.status(burning)` guard keeps a burn tick (itself fire)
-// from reapplying `burning` and so burning forever.
+// Fire ignites what is not wet; acid dries it; a burn kill plays `burn_death`
+// where the target's animation set defines it (none in the dev mod does, so
+// `enemy-death` still plays `death`). The `impact.status(burning)` guard keeps
+// a burn tick (itself fire) from reapplying `burning` and so burning forever.
 export const ignite = defineImpactEvent("statuses.ignite", { tag: "enemy" }, (impact) => [
   when(
     impact.type(fireDamage).and(impact.status(burning).not()).and(impact.target.hasStatus(wet).not()),

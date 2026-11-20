@@ -356,10 +356,6 @@ pub struct ModManifestResult {
     pub attack_budgets: postretro_foundation::attack_budget::AttackBudgetVocabulary,
 }
 
-/// Check every descriptor's layer and resist names, and every attack's
-/// `draws`, against the registered vocabularies, naming the failing key path.
-/// Fail load on a fluid `status` that is not a handle of a status `defineMod`
-/// registers, naming the fluid.
 /// Fail load on a status `presentation.emitter` that is not an `emitter()`
 /// value, naming the status.
 pub(crate) fn check_status_presentation(
@@ -383,6 +379,8 @@ pub(crate) fn check_status_presentation(
     Ok(())
 }
 
+/// Fail load on a fluid `status` that is not a handle of a status `defineMod`
+/// registers, naming the fluid. Also runs the status presentation check.
 pub(crate) fn check_fluid_status_references(
     fluids: &postretro_foundation::data_descriptors::FluidRegistry,
     vocabulary: &postretro_foundation::defense::DefenseVocabulary,
@@ -396,6 +394,8 @@ pub(crate) fn check_fluid_status_references(
     check_status_presentation(vocabulary)
 }
 
+/// Check every descriptor's layer and resist names, and every attack's
+/// `draws`, against the registered vocabularies, naming the failing key path.
 pub(crate) fn check_entity_defense_references(
     entities: &[EntityTypeDescriptor],
     vocabulary: &postretro_foundation::defense::DefenseVocabulary,

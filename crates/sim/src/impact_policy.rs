@@ -1,4 +1,5 @@
-// Runtime-owned impact-policy binding and per-fire evaluation.
+// Runtime-owned impact-policy installation and per-fire evaluation; binding and
+// planning live in `impact_policy/binding.rs`.
 // See: context/lib/scripting.md (Impact-policy composition and evaluation).
 
 use postretro_entities::components::health::{

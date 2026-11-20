@@ -62,7 +62,7 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C47; // "PRLG"
 /// The roster entry's display name and status advance it to 40.
 /// The carried loadout on `JoinSeed` and `FinalCharacter` advances it to 41:
 /// both shipped messages changed layout.
-/// Status presence, a new entity component payload, advances it to 42.
+/// Status presence, a new entity component payload, advances it to 42 (`SNAPSHOT_VERSION` 26).
 pub const WIRE_VERSION: u32 = 42;
 
 #[must_use]

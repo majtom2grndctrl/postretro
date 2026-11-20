@@ -45,9 +45,10 @@ local scalding = Postretro.defineStatus("scalding", {
 local corroding = Postretro.defineStatus("corroding", { damage = 2, type = acid, tickMs = 1000 })
 local wet = Postretro.defineStatus("wet", { damage = 0, tickMs = 500, durationMs = 5000 })
 
--- Fire ignites what is not wet; acid dries it; a burn kill plays its own
--- death. The `impact.status(burning)` guard keeps a burn tick from
--- reapplying `burning`.
+-- Fire ignites what is not wet; acid dries it; a burn kill plays `burn_death`
+-- where the target's animation set defines it (none in the dev mod does, so
+-- `enemy-death` still plays `death`). The `impact.status(burning)` guard keeps
+-- a burn tick from reapplying `burning`.
 local ignite = Postretro.defineImpactEvent("statuses.ignite", { tag = "enemy" }, function(impact)
   local target = impact.target
   local isFire = impact.type(fire)

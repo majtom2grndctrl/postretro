@@ -632,6 +632,9 @@ pub enum ValidationError {
     /// More than one payload slot was `Some` (ambiguous which one `component_kind`
     /// names).
     MismatchedComponentPayload(u16),
+    /// A status-presence payload carried no bits. An empty presence is never
+    /// sent: a pawn with no live status sends no payload.
+    EmptyStatusPresence,
     /// A record carried movement-authority metadata
     /// (`has_last_processed_client_tick` / `local_player`) but does not carry a
     /// `PlayerMovementState` component. Ack/local-player metadata is only meaningful
@@ -754,6 +757,9 @@ impl std::fmt::Display for ValidationError {
                     f,
                     "mismatched/duplicate payload slot for component_kind {k}"
                 )
+            }
+            ValidationError::EmptyStatusPresence => {
+                write!(f, "status presence payload with no bits set")
             }
             ValidationError::MovementMetadataWithoutMovement => write!(
                 f,
@@ -4024,6 +4030,7 @@ mod tests {
         let raw = raw_from_typed(&ComponentPayload::StatusPresence(WireStatusPresence {
             bits: 1 << 63 | 1,
         }));
+        assert!(round_trips(&raw));
         assert_eq!(
             raw.validate(),
             Ok(ComponentPayload::StatusPresence(WireStatusPresence {
@@ -4032,7 +4039,8 @@ mod tests {
         );
         let mut empty = raw.clone();
         empty.status_presence = Some(WireStatusPresence { bits: 0 });
-        assert!(empty.validate().is_err());
+        assert!(round_trips(&empty));
+        assert_eq!(empty.validate(), Err(ValidationError::EmptyStatusPresence));
         let mut missing = raw;
         missing.status_presence = None;
         assert_eq!(

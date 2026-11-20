@@ -2,8 +2,9 @@
 
 A sealed hall of small areas, one per environment-volume behaviour, for the
 manual swim, low-gravity, hazard and co-op playtests. Its fluids, `water`,
-`sludge` and `lava`, come from content/dev's manifest (`start-script.ts`); the player's swim tuning
-is the `movement.swim` block in `scripts/player.ts`. Build and run it:
+`sludge` and `lava`, come from content/dev's manifest (`start-script.ts`); the
+player's swim tuning is the `movement.swim` block in `scripts/player.ts`. Build
+and run it:
 
 ```bash
 cargo run -p postretro-level-compiler -- content/dev/maps/e24-environment-test.map -o content/dev/maps/e24-environment-test.prl
@@ -11,9 +12,9 @@ cargo run -p postretro-tool -- run --install-root . maps/e24-environment-test.pr
 ```
 
 `postretro-tool run` passes `--mod`, so its map path is relative to the mod
-folder (`content/dev`). The `.prl` is a local build artifact; do not commit it. Units: 1 map unit =
-0.0254 m. Room floors are at z 0, pits bottom out at z −112, and every fluid
-surface sits at z −16.
+folder (`content/dev`). The `.prl` is a local build artifact; do not commit it.
+Units: 1 map unit = 0.0254 m. Room floors are at z 0, pits bottom out at
+z −112, every pool's surface sits at z −16, and the lava puddle's sits at z 8.
 
 ## Areas
 
@@ -52,14 +53,15 @@ You spawn in the pool room, facing the pool.
   pool, and reach and leave its floating block. Walk out through a doorway and
   confirm normal gravity returns at once.
 - **Fluid motion:** in the wing, compare the still pool with the current pool, and check that standing in the current carries you the way, and at about the speed, its surface moves. Check the bending river pushes nothing and the force-3 pool shoves harder than it looks. Look closely at cell borders on the still and fine pools for smear, and at a view-filling still pool for flicker.
-- **Statuses:** walk into the lava puddle: it sizzles every tick, your shield and then
-  health drop while you stand in it and stop just after you leave, and the HUD's
-  `SCALDING` indicator shows meanwhile. Walk through the burn trap: `BURNING`
-  shows, you take damage every half second for three seconds, and the indicator
-  clears; the trap victim across the room plays its death, and its corpse
-  despawns a moment later. Switch to the incendiary rifle (last in the loadout) on a map with
-  enemies, such as `combat-demo` (its reference enemy): a hit sets it burning with embers and
-  a tick sound, and both stop when it goes out.
+- **Statuses:** walk into the lava puddle: it sizzles every tick, your shield
+  and then health drop while you stand in it and stop just after you leave, and
+  the HUD's `SCALDING` indicator shows meanwhile. Walk through the burn trap:
+  `BURNING` shows, you take damage every half second for three seconds, and the
+  indicator clears; the trap victim across the room plays its death, and its
+  corpse despawns a moment later. Switch to the incendiary rifle (last in the
+  loadout) on a map with enemies, such as `combat-demo` (its reference enemy): a
+  hit sets it burning with embers and a tick sound, and both stop when it goes
+  out.
 - **Co-op:** host this map, join with a second client, and repeat the swim,
   the low-gravity room, the updraft, the wind corridor and the current on the
   client. The client should show no visible corrections.

@@ -1272,11 +1272,6 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
 
     // Who fired each shot this frame, before impacts are attributed.
     app.record_ghost_shot_owners(&pending_weapon_script_events, &pending_ai_events);
-    // Descriptor sounds for this frame's events, placed at fire time.
-    // They play alongside any reaction addressed to the same event.
-    // The listener's pawn is named here, before any play this frame,
-    // with the key the audio step's listener carries: own-pawn
-    // treatment is decided at `play`, ahead of `audio.update`.
     // Status tick sounds and attached emitters follow each entity's status
     // presence on this machine; the emitters spawn at render prep below.
     let mut status_sounds = Vec::new();
@@ -1290,6 +1285,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         app.status_presentation
             .update(&registry, own_pawn, frame_dt * 1000.0, &mut status_sounds);
     }
+    // Descriptor sounds for this frame's events, placed at fire time.
+    // They play alongside any reaction addressed to the same event.
+    // The listener's pawn is named here, before any play this frame,
+    // with the key the audio step's listener carries: own-pawn
+    // treatment is decided at `play`, ahead of `audio.update`.
     let (pending_mover_edges, descriptor_sounds, listener_attached) = {
         let registry = script_ctx.registry.borrow();
         let listener_attached = sound_events::listener_attached_key(&registry);

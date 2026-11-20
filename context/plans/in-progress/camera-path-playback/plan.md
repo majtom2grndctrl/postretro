@@ -128,6 +128,15 @@ Rows number top to bottom through Acceptance (Automated 1–48, Manual 49–51).
 | 50 showcase copy run | owner, Mac | manual |
 | 51 SDK bundle record / generate / play | owner | manual |
 
+## Integration notes
+
+E25 (level seams, `claude/tender-sagan-z91xgd`) is not on `main` as of 2026-11-20. Whichever branch lands second makes these edits. The integration branch `claude/blissful-hawking-klwrdj` already has them.
+
+- `playback_request_abort_reason` needs a `LevelRequest::Seam { .. }` arm that aborts the route like any level change.
+- Two source-order tests search for the load branch's unload as `self.unload_level();`. E25 changes that call to `self.unload_level_crossing(seam.as_deref())`, so the search lands on the Frontend branch. Both tests must look for `self.unload_level_crossing(` instead:
+  - `lifecycle_tests::level_requests_and_joins_reach_the_abort_hook_before_they_act`
+  - `recording_tests::level_requests_end_a_recording_before_the_level_unloads`
+
 ## Tasks
 
 The thin slice is Tasks 1–4. It ends at the riskiest premise, that a Metal System Trace export attributes the drain encoders to a playback frame index. Task 1 comes first only because the baseline must predate the move. Tasks 5–10 continue while the owner's Mac export is pending. Task 11's sample waits on it.

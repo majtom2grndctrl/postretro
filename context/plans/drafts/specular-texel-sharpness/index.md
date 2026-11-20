@@ -63,23 +63,25 @@ The Luau mirror ships too: `render = { specular = { style = "smooth" } }`, typed
 - [ ] A repository gate fails if an option name, settings key or `options.*` slot names a specular style, sharpness or tint, as it does for reflection style.
 - [ ] The scripting-surface example, run as a test-fixture manifest in TS and Luau, selects smooth. `content/dev`'s manifest leaves pixel.
 **Sharpness read**
-- [ ] On a four-channel slot, under each style, authored smoothness byte 0 shades as exponent 1, 255 as 8192, and 128 as 2/r⁴ − 2 at r = 127/255. Every byte whose exponent would pass 8192 shades at 8192, and byte 255 shades at 8192 on every backend (pin P12). A material without `_p` shades at its prefix exponent, whatever its channel count.
+- [ ] On a four-channel slot, under each style, authored smoothness byte 0 shades as exponent 1, 255 as 8192, and 128 as 2/r⁴ − 2 at r = 127/255. Every byte whose exponent would pass 8192 shades at 8192, and byte 255 shades at 8192 by readback. Both the forward and mover decodes floor r⁴ before the divide, a source gate (pin P12). A material without `_p` shades at its prefix exponent, whatever its channel count.
 - [ ] Surface Depth Off then On keeps per-texel sharpness throughout and restores the march. This holds for `_p`+`_h`, for `_p` without `_h`, and for a `_p` material whose prefix has no Surface Depth tuning (pin P3).
 - [ ] Built at Surface Depth Off, and through Off then On, a `_p` material keeps per-texel sharpness and a `_t` material keeps its tint on every frame, in both the forward and mover passes (pin P11).
 **Tint**
 - [ ] On a material without `_t`, under each style, specular is byte-identical to the build before this change, in both the forward and mover passes. This covers one- and two-channel slots and a `_p` slot with A = 255.
+- [ ] A `_p` slot storing B = 1 and A = 255 on every texel shades at exponent 1 in raw albedo, and a `_t` slot storing B = 0 and A = 254 on every texel shades at its prefix exponent at t = 1. Each holds sampled magnified across a seam, minified between mips and at a grazing angle, in both the forward and mover passes (pin P15).
 - [ ] A real one-channel slot, a real two-channel slot and the 1×1 placeholder, each sampled as a texture, shade specular in raw albedo exactly as before this change, in both the forward and mover passes (pin P8).
 - [ ] With `_t`, a t = 0 texel's highlight is white times intensity on any albedo. A t = 1 texel glints identically on a dark and a bright albedo of one hue. A grey or black albedo glints white. A mid value lies between the t = 0 and t = 1 results.
 - [ ] Diffuse is byte-identical with and without `_t`, and with tint at 0 and at 1.
 - [ ] The mover pass reads tint exactly as forward does, under each style.
 **Bake**
 - [ ] A material with neither `_p` nor `_t` bakes the same sidecar bytes and key as before this change, and an existing sidecar is a cache hit.
-- [ ] `_p` alone, `_p`+`_s`, `_p`+`_h` and all three each bake four-channel with R, G and B as decided, and A = 255. Each sets the SPECULAR slot bit and reads back through the runtime `.prm` reader.
-- [ ] `_t` alone, `_t`+`_p` and all four inputs each bake four-channel with A = round(t·254). Each sets the SPECULAR slot bit and reads back through the runtime `.prm` reader. `_t` without `_p` stores 0 in B and shades at the prefix exponent exactly. Two materials with identical PNG bundles but different prefixes share one sidecar and each shades at its own prefix exponent.
+- [ ] `_p` alone, `_p`+`_s`, `_p`+`_h` and all three each bake four-channel with R, G and B as decided, and A = 255 at every mip. Each sets the SPECULAR slot bit and reads back through the runtime `.prm` reader.
+- [ ] `_t` alone, `_t`+`_p` and all four inputs each bake four-channel with A = round(t·254). Each sets the SPECULAR slot bit and reads back through the runtime `.prm` reader. `_t` without `_p` stores 0 in B at every mip and shades at the prefix exponent exactly. Two materials with identical PNG bundles but different prefixes share one sidecar and each shades at its own prefix exponent.
 - [ ] At every mip, B of a `_p` material stays at or above 1 and A of a `_t` material at or below 254, including beside a hard 0-to-255 edge in the authored map (pin P13).
 - [ ] Without `_h`, a four-channel material on a prefix with Surface Depth tuning, at Surface Depth On, uploads a relief row byte-equal to the same prefix with no height map (pin P7).
 - [ ] With `_h`, a four-channel material loaded through the runtime loader sets has-depth. At every uploaded mip its relief band equals the two-channel band from the same height, with sharpness bytes that differ from the height bytes.
 - [ ] A `_p` whose dimensions disagree with the diffuse, `_s` or `_h` fails the build, naming both files. A `_t` that disagrees with any of the diffuse, `_s`, `_h` or `_p` does the same. Matching dimensions pass.
+- [ ] An `_n` whose dimensions differ from the diffuse still builds with or without `_p` and `_t`, and so does an `_s` that differs when neither is present (pin P14).
 - [ ] A `_p` or `_t` carrying sRGB or iCCP, or a non-unit gAMA, fails colour-space validation.
 - [ ] One mip down, a 2×2 block of authored smoothness bytes 0 and 255 in equal parts filters to about 128. This is a regression guard on the third channel's mip stride.
 - [ ] A bundle with `_p`, `_t` or both bakes diffuse, normal and emissive slots byte-identical to the same bundle without them.
@@ -88,7 +90,7 @@ The Luau mirror ships too: `render = { specular = { style = "smooth" } }`, typed
 - [ ] TrenchBroom's game config excludes `*_p` and `*_t`, so these maps never appear as textures. The material-input gate's pinned suffix lists name `_p` and `_t`.
 **Docs**
 - [ ] `docs/level_design.md` documents `{name}_p.png` and `{name}_t.png`: the exponent mapping, the tint rule, linear colour space and matching dimensions. It also gives the conversion rule: `_p` is one minus roughness and `_t` is metallic, each copied per texel. `docs/scripting-reference.md` documents `render.specular.style`.
-- [ ] `resource_management.md` §4.1, §4.6 and §4.7, `rendering_pipeline.md` §4 (Texel-centre highlight) and §13, and `player_options.md` describe smoothness with the 8192 cap, tint in A, and both markers. No log encoding, 256 cap, unused A, or slot-format has-sharpness remains, and a `_t`-only four-channel slot is named as shading at its prefix exponent.
+- [ ] `resource_management.md` §1.2, §4.1, §4.6 and §4.7, `build_pipeline.md` §Baked texture mips, and `rendering_pipeline.md` §4 (Texel-centre highlight) and §13 describe smoothness with the 8192 cap, tint in A, both markers and the per-mip marker clamp, and name `_t` beside `_p` wherever the four-channel form is introduced. No log encoding, 256 cap, unused A, slot-format has-sharpness or "every channel filters the same way" remains, and a `_t`-only four-channel slot is named as shading at its prefix exponent. `player_options.md` names tint beside specular style and sharpness under the option-name gate.
 ### Manual
 - [ ] GPU captures under a static light against the previous build. Under pixel, default-prefix terrain and wood highlights become texel blocks with antialiased seams, and concrete is visually unchanged. Under smooth, chosen by the capture scene key, the render matches the previous build.
 - [ ] A slow camera move across a glossy face under pixel shows no movement inside any texel.
@@ -111,7 +113,7 @@ The Luau mirror ships too: `render = { specular = { style = "smooth" } }`, typed
   - Capture: `CaptureReflectionStyle` in `capture/scene.rs`.
   - Option gate: `crates/xtask/src/environment_gates.rs`.
   - Ordering pins P4 and P5: boot state retention (`renderer_init.rs`), and `level_build.rs`'s dispatch-time snapshot.
-- **Markers.** The shader reads has-sharpness from B and has-tint from A; neither needs a uniform bit (`research.md` §Tint). The bake clamp follows the mip filter in `texture_mips.rs` (pin P13).
+- **Markers.** The bake clamp follows the mip filter in `texture_mips.rs` (pin P13).
 - **Tint sites.** Specular folds into the lighting sum before the albedo multiply: forward `fs_main` (`base_color.rgb * total_light`) and mover `fs_main` (`base_color.rgb * lighting`). With tint, the specular sum must be held apart from that sum. `_t` joins the bake lists beside `_p`.
 - **Bake.** `_p` joins `BUNDLE_SUFFIXES`, `bundle_hash_for` (append-only, as for height), `filename_key_for`'s present-count, and the `_h` interleave in `bake_materials_into`. The SPECULAR bit is set today only in the `_s` and `_h` arms. Slot widening touches:
   - `format_allowed_for_slot`

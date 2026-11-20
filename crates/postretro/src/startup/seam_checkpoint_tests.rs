@@ -49,6 +49,7 @@ fn verb(command: &str, index: usize, name: &str) -> SystemReactionCommand {
     match command {
         "create" => SystemReactionCommand::CreateCharacter {
             index,
+            name: None,
             dispatch_source,
             origin: origin(),
         },

@@ -153,4 +153,6 @@ Left as is, with reasons:
   - The tick function's E10 schedule and E25 seam edits were ported into the split `sim/tick.rs`.
   - The e24 closure hash moved to main's v1 encoding; its value is unchanged.
   - A `type_complexity` lint main carried in `ai/src/clip_timed_shipped_tests.rs` was fixed so the gate passes.
+- A second merge brought in the co-op save character names (#684). Main does not build its tests there: E25's `seam_checkpoint_tests` builds a `CreateCharacter` without the `name` field #684 added. Fixed here with `name: None`.
+- The driver test helper's `swim` and `vault` fields, added by both main and this branch, were deduplicated.
 - Lands through a pull request into main.

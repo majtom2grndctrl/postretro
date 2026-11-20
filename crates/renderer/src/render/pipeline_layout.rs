@@ -6,7 +6,10 @@ use super::*;
 use crate::render::gpu_create::GpuCreate;
 
 // `material_shading.wgsl` owns world-material leaf helpers (`blinn_phong`,
-// `sample_normal`, `reconstruct_tbn_normal`). Its argument-only helpers are
+// `sample_normal`, `reconstruct_tbn_normal`) and the texel-grid functions:
+// `post_retro_texel_uv`, the reconstruction inside `sample_post_retro`, and
+// `specular_texel_point`, which maps that reconstructed UV to the pixel-style
+// specular point. Its argument-only helpers are
 // reusable by any world-material pass; `sample_normal` resolves the consumer's
 // group-1 `aniso_sampler` and per-consumer `sample_post_retro` by lexical name.
 // Skinned meshes stay diffuse-only and deliberately do not append this snippet.
@@ -217,7 +220,8 @@ pub(crate) const TIMING_PAIR_COUNT: usize = 22;
 // 16-byte row carries load-fixed `has_scatter` mode + `has_direct` bit 0 /
 // animated-tail count bits 1..31 +
 // `total_light_count`; that row's trailing word is `spec_shadowmask_flags`
-// (bit 0 force-one dev toggle, bit 1 load-fixed mask-present).
+// (bit 0 force-one dev toggle, bit 1 load-fixed mask-present, bit 2 smooth
+// specular style).
 // Only billboard.wgsl reads these (the mesh path uses its own group-4
 // `DynamicDirectParams`); only forward reads `spec_shadowmask_flags`, and
 // all three shaders keep the shared 4-way byte contract (Rust writer +

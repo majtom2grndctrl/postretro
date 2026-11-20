@@ -1,468 +1,18 @@
-// GPU readback of forward.wgsl's owner-based world static specular
-// (`world_static_specular`), fed per-face owners through a second vertex
-// buffer and a flat varying exactly as the forward pipeline delivers them.
-// See: context/lib/rendering_pipeline.md §4 (Static specular ownership)
+// GPU readback tests of forward.wgsl's world static specular: per-face owners,
+// the SDF selection, and the pixel style's one point per albedo texel.
+// See: context/lib/rendering_pipeline.md §4 (Static specular ownership,
+// Texel-centre highlight)
 //
-// Intentional exception to testing_guide.md §3 "No GPU context in tests": the
-// function is WGSL, so verifying it means running it. Each case renders quads
-// into a one-row `Rgba32Float` target; a pixel's world position is a fixed
-// function of its column. The harness self-skips without an adapter and says
-// so; a skipped run proves nothing. Set `POSTRETRO_REQUIRE_GPU` to any
-// non-empty value other than `0` to make a missing adapter fail instead.
+// Harness and its skip policy: `world_specular_harness.rs`.
 
-use super::gpu_test_harness::{GpuCtx, gpu_or_skip, wgsl_const_line, wgsl_function, wgsl_item};
+use std::collections::HashMap;
 
-const FORWARD_WGSL: &str = include_str!("../shaders/forward.wgsl");
-const MATERIAL_SHADING_WGSL: &str = include_str!("../shaders/material_shading.wgsl");
-const LIGHT_FALLOFF_WGSL: &str = include_str!("../shaders/light_falloff.wgsl");
-const SDF_LIGHT_SELECT_WGSL: &str = include_str!("../shaders/sdf_light_select.wgsl");
-
-const WIDTH: u32 = 16;
-const TEXEL_BYTES: u32 = 16;
-const EMPTY: u16 = 0xFFFF;
-const NO_OWNERS: [u16; 4] = [EMPTY; 4];
-
-fn shader_source() -> String {
-    let prelude = r#"
-struct SpecLight {
-    position_and_range: vec4<f32>,
-    color_and_pad:      vec4<f32>,
-    cone_dir_and_type:  vec4<f32>,
-    cone_cos:           vec4<f32>,
+use super::gpu_test_harness::{gpu_or_skip, wgsl_const_line, wgsl_function};
+use super::world_specular_harness::{
+    Case, EMPTY, FORWARD_WGSL, Face, Geometry, LATTICE, Light, MATERIAL_SHADING_WGSL, March,
+    NO_OWNERS, PIXELS_PER_TEXEL, Style, TEXEL_TARGET, TexelCase, WIDTH, fragment_visibility,
+    key_is_centre, reconstructed_texel_key, render, render_texels,
 };
-struct Case {
-    mask: vec4<f32>,
-    sdf_factor: vec4<f32>,
-    sdf_indices: vec4<u32>,
-    sdf_count: u32,
-    owners_readable: u32,
-    spec_shadowmask_flags: u32,
-    sdf_force_lit: u32,
-};
-@group(0) @binding(0) var<uniform> uniforms: Case;
-@group(0) @binding(1) var<storage, read> spec_lights: array<SpecLight>;
-"#;
-    let entry = r#"
-struct HarnessVaryings {
-    @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) owners: vec4<u32>,
-};
-
-@vertex
-fn vs_main(@location(0) ndc: vec2<f32>, @location(1) owners: vec4<u32>) -> HarnessVaryings {
-    var out: HarnessVaryings;
-    out.position = vec4<f32>(ndc, 0.0, 1.0);
-    out.owners = owners;
-    return out;
-}
-
-@fragment
-fn fs_main(in: HarnessVaryings) -> @location(0) vec4<f32> {
-    // Pixel column c sits at world x = (c + 0.5 - 8) * 0.25 on a floor facing +Y,
-    // viewed from straight above.
-    let world = vec3<f32>((in.position.x - 8.0) * 0.25, 0.0, 0.0);
-    let up = vec3<f32>(0.0, 1.0, 0.0);
-    var sel: SdfLightSelection;
-    sel.indices = array<u32, 4>(
-        uniforms.sdf_indices.x,
-        uniforms.sdf_indices.y,
-        uniforms.sdf_indices.z,
-        uniforms.sdf_indices.w,
-    );
-    sel.count = uniforms.sdf_count;
-    let specular = world_static_specular(
-        world,
-        up,
-        up,
-        8.0,
-        1.0,
-        in.owners,
-        uniforms.mask,
-        uniforms.owners_readable != 0u,
-        sel,
-        uniforms.sdf_factor,
-        uniforms.sdf_force_lit != 0u,
-    );
-    return vec4<f32>(specular, 1.0);
-}
-"#;
-    let consts = [
-        "SPEC_OWNER_EMPTY",
-        "SPEC_OWNER_CHANNELS",
-        "SPEC_LIGHT_TYPE_DIRECTIONAL",
-        "SPEC_SHADOWMASK_FLAG_FORCE_ONE",
-    ]
-    .map(|name| wgsl_const_line(FORWARD_WGSL, name))
-    .join("\n");
-    let helpers = [
-        wgsl_item(SDF_LIGHT_SELECT_WGSL, "struct SdfLightSelection {"),
-        wgsl_function(FORWARD_WGSL, "world_static_specular"),
-        wgsl_function(FORWARD_WGSL, "world_static_light_specular"),
-        wgsl_function(FORWARD_WGSL, "positional_cone_aim"),
-        wgsl_function(FORWARD_WGSL, "spec_shadowmask_forced_one"),
-        wgsl_function(FORWARD_WGSL, "shadowmask_channel_value"),
-        wgsl_function(FORWARD_WGSL, "slice_for_visibility"),
-        wgsl_function(FORWARD_WGSL, "cone_attenuation_cos"),
-        wgsl_function(MATERIAL_SHADING_WGSL, "blinn_phong"),
-        wgsl_function(LIGHT_FALLOFF_WGSL, "light_eval_falloff"),
-    ]
-    .join("\n\n");
-    format!("{prelude}\n{consts}\n{helpers}\n{entry}")
-}
-
-/// A spec light as `pack_spec_lights` lays it out.
-#[derive(Clone, Copy)]
-struct Light {
-    position: [f32; 3],
-    range: f32,
-    color: [f32; 3],
-    sdf: bool,
-    aim: [f32; 3],
-    kind: f32,
-}
-
-impl Light {
-    /// A linear-falloff point light 2 m above the edge between the two faces.
-    fn point(color: [f32; 3]) -> Self {
-        Self {
-            position: [0.0, 2.0, 0.0],
-            range: 10.0,
-            color,
-            sdf: false,
-            aim: [0.0; 3],
-            kind: 0.0,
-        }
-    }
-
-    fn directional(origin: [f32; 3], aim: [f32; 3]) -> Self {
-        Self {
-            position: origin,
-            range: 0.0,
-            color: [1.0, 1.0, 1.0],
-            sdf: false,
-            aim,
-            kind: 2.0,
-        }
-    }
-
-    fn bytes(self) -> Vec<u8> {
-        let floats = [
-            self.position[0],
-            self.position[1],
-            self.position[2],
-            self.range,
-            self.color[0],
-            self.color[1],
-            self.color[2],
-            if self.sdf { 1.0 } else { 0.0 },
-            self.aim[0],
-            self.aim[1],
-            self.aim[2],
-            self.kind,
-            1.0,
-            -1.0,
-            0.0,
-            0.0,
-        ];
-        floats.iter().flat_map(|f| f.to_ne_bytes()).collect()
-    }
-}
-
-/// Columns `[x0, x1)` of the one-row target, all of one face's owners.
-struct Face {
-    columns: (u32, u32),
-    owners: [u16; 4],
-}
-
-#[derive(Clone, Copy)]
-struct Case {
-    mask: [f32; 4],
-    sdf_factor: [f32; 4],
-    sdf_indices: [u32; 4],
-    sdf_count: u32,
-    owners_readable: bool,
-    force_one: bool,
-    sdf_force_lit: bool,
-}
-
-impl Default for Case {
-    fn default() -> Self {
-        Self {
-            mask: [1.0; 4],
-            sdf_factor: [1.0; 4],
-            sdf_indices: [u32::MAX; 4],
-            sdf_count: 0,
-            owners_readable: true,
-            force_one: false,
-            sdf_force_lit: false,
-        }
-    }
-}
-
-impl Case {
-    fn bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64);
-        for f in self.mask.iter().chain(&self.sdf_factor) {
-            out.extend_from_slice(&f.to_ne_bytes());
-        }
-        let words = [
-            self.sdf_indices[0],
-            self.sdf_indices[1],
-            self.sdf_indices[2],
-            self.sdf_indices[3],
-            self.sdf_count,
-            u32::from(self.owners_readable),
-            // `SPEC_SHADOWMASK_FLAG_FORCE_ONE`, bit 0.
-            u32::from(self.force_one),
-            u32::from(self.sdf_force_lit),
-        ];
-        for word in words {
-            out.extend_from_slice(&word.to_ne_bytes());
-        }
-        out
-    }
-}
-
-/// Render `faces` with `lights` under `case`; one RGB specular sum per column.
-fn render(ctx: &GpuCtx, lights: &[Light], faces: &[Face], case: Case) -> Vec<[f32; 3]> {
-    use wgpu::util::DeviceExt;
-
-    let device = &ctx.device;
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("world_specular_test shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source().into()),
-    });
-
-    let mut positions: Vec<u8> = Vec::new();
-    let mut owners: Vec<u8> = Vec::new();
-    for face in faces {
-        let x0 = face.columns.0 as f32 / WIDTH as f32 * 2.0 - 1.0;
-        let x1 = face.columns.1 as f32 / WIDTH as f32 * 2.0 - 1.0;
-        for [x, y] in [
-            [x0, -1.0],
-            [x1, -1.0],
-            [x1, 1.0],
-            [x0, -1.0],
-            [x1, 1.0],
-            [x0, 1.0],
-        ] {
-            positions.extend_from_slice(&f32::to_ne_bytes(x));
-            positions.extend_from_slice(&f32::to_ne_bytes(y));
-            for owner in face.owners {
-                owners.extend_from_slice(&owner.to_ne_bytes());
-            }
-        }
-    }
-    let vertex_count = faces.len() as u32 * 6;
-    let position_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test positions"),
-        contents: &positions,
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let owner_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test owners"),
-        contents: &owners,
-        usage: wgpu::BufferUsages::VERTEX,
-    });
-    let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test case"),
-        contents: &case.bytes(),
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let light_bytes: Vec<u8> = lights.iter().flat_map(|light| light.bytes()).collect();
-    let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("world_specular_test spec lights"),
-        contents: &light_bytes,
-        usage: wgpu::BufferUsages::STORAGE,
-    });
-
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("world_specular_test layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("world_specular_test bind group"),
-        layout: &layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniforms.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: light_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("world_specular_test pipeline layout"),
-        bind_group_layouts: &[Some(&layout)],
-        immediate_size: 0,
-    });
-    let target_format = wgpu::TextureFormat::Rgba32Float;
-    let position_attributes = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
-        offset: 0,
-        shader_location: 0,
-    }];
-    // The owner stream's layout: one Uint16x4 per vertex in its own buffer.
-    let owner_attributes = [wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Uint16x4,
-        offset: 0,
-        shader_location: 1,
-    }];
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("world_specular_test pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_main"),
-            compilation_options: Default::default(),
-            buffers: &[
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: 8,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &position_attributes,
-                }),
-                Some(wgpu::VertexBufferLayout {
-                    array_stride: 8,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &owner_attributes,
-                }),
-            ],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_main"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: target_format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    });
-
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("world_specular_test target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: target_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let target_view = target.create_view(&Default::default());
-    let row_bytes = (WIDTH * TEXEL_BYTES).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("world_specular_test readback"),
-        size: u64::from(row_bytes),
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("world_specular_test pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: -1.0,
-                        g: -1.0,
-                        b: -1.0,
-                        a: 0.0,
-                    }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        pass.set_vertex_buffer(0, position_buffer.slice(..));
-        pass.set_vertex_buffer(1, owner_buffer.slice(..));
-        pass.draw(0..vertex_count, 0..1);
-    }
-    encoder.copy_texture_to_buffer(
-        target.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row_bytes),
-                rows_per_image: Some(1),
-            },
-        },
-        wgpu::Extent3d {
-            width: WIDTH,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
-    ctx.queue.submit([encoder.finish()]);
-
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("map world_specular_test readback");
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("poll world_specular_test device");
-    let bytes = slice
-        .get_mapped_range()
-        .expect("buffer mapped for readback");
-    let texels = bytes[..(WIDTH * TEXEL_BYTES) as usize]
-        .as_chunks::<{ TEXEL_BYTES as usize }>()
-        .0
-        .iter()
-        .map(|texel| {
-            let alpha = f32::from_ne_bytes(texel[12..16].try_into().unwrap());
-            assert_eq!(alpha, 1.0, "every column must be covered by a face");
-            std::array::from_fn(|c| f32::from_ne_bytes(texel[c * 4..c * 4 + 4].try_into().unwrap()))
-        })
-        .collect();
-    drop(bytes);
-    readback.unmap();
-    texels
-}
 
 fn one_face(owners: [u16; 4]) -> [Face; 1] {
     [Face {
@@ -923,4 +473,596 @@ fn sdf_directional_specular_stays_keyed_on_its_origin() {
         "owned directional is uniform",
     );
     assert_ne!(owned, here);
+}
+
+// --- Texel-centre highlight (pixel style) and the smooth style ---
+
+const OWNER_0: [u16; 4] = [0, EMPTY, EMPTY, EMPTY];
+
+/// A point light and an eye off the floor's low corner, so the highlight
+/// falls off monotonically across the whole floor along x and z.
+fn flank_light() -> Light {
+    Light::point(WHITE).at([-1.0, 1.5, -1.0], 10.0)
+}
+
+/// A spot straight down over the floor's middle, its cone edge crossing
+/// texels.
+fn spot_light() -> Light {
+    Light::spot([2.0, 2.0, 2.0], [0.0, -1.0, 0.0], 20.0, 30.0)
+}
+
+fn sun() -> Light {
+    Light::directional([2.0, 5.0, 2.0], [0.6, -0.8, 0.0])
+}
+
+/// A point light low over the floor's middle whose range circle crosses
+/// texels.
+fn ranged_light() -> Light {
+    Light::point(WHITE).at([2.0, 0.5, 2.0], 1.5)
+}
+
+fn pixel_index(x: u32, y: u32) -> usize {
+    (y * TEXEL_TARGET + x) as usize
+}
+
+fn pixels() -> impl Iterator<Item = (u32, u32)> {
+    (0..TEXEL_TARGET).flat_map(|y| (0..TEXEL_TARGET).map(move |x| (x, y)))
+}
+
+/// Every fragment, grouped by the texel coordinate its shading UV
+/// reconstructs to under `march`.
+fn texel_groups(march: March) -> HashMap<(i64, i64), Vec<usize>> {
+    let mut groups: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (x, y) in pixels() {
+        groups
+            .entry(reconstructed_texel_key(x, y, march))
+            .or_default()
+            .push(pixel_index(x, y));
+    }
+    groups
+}
+
+/// Every fragment reconstructing to one texel coordinate draws one value.
+fn assert_constant_per_texel(out: &[[f32; 3]], march: March, what: &str) {
+    let groups = texel_groups(march);
+    assert!(
+        groups.values().filter(|members| members.len() > 1).count() >= 16,
+        "{what}: the target must hold many multi-fragment texels",
+    );
+    for (key, members) in groups {
+        let first = out[members[0]];
+        for &member in &members {
+            assert_eq!(
+                out[member], first,
+                "{what}: texel {key:?} must draw one value, fragment {member}"
+            );
+        }
+    }
+}
+
+/// A fragment well inside albedo texel (tx, ty), clear of every seam band.
+fn interior_value(out: &[[f32; 3]], tx: u32, ty: u32) -> [f32; 3] {
+    out[pixel_index(
+        tx * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+        ty * PIXELS_PER_TEXEL + PIXELS_PER_TEXEL / 2,
+    )]
+}
+
+/// Whether some fragment of one un-marched texel interior differs from
+/// another.
+fn varies_inside_some_texel(out: &[[f32; 3]]) -> bool {
+    texel_groups(March::OFF)
+        .into_iter()
+        .any(|((kx, ky), members)| {
+            key_is_centre(kx)
+                && key_is_centre(ky)
+                && members.iter().any(|&m| out[m] != out[members[0]])
+        })
+}
+
+fn bits(value: [f32; 3]) -> [u32; 3] {
+    value.map(f32::to_bits)
+}
+
+#[test]
+fn pixel_specular_is_constant_inside_a_magnified_texel() {
+    let Some(ctx) = gpu_or_skip("pixel_specular_is_constant_inside_a_magnified_texel") else {
+        return;
+    };
+    for (name, light) in [
+        ("point", flank_light()),
+        ("spot", spot_light()),
+        ("directional", sun()),
+    ] {
+        for march in [March::OFF, March::ON] {
+            let out = render_texels(
+                &ctx,
+                &[light],
+                OWNER_0,
+                TexelCase {
+                    march,
+                    ..TexelCase::new(Style::Pixel)
+                },
+            );
+            assert_constant_per_texel(&out, march, &format!("{name} owner, {march:?}"));
+        }
+    }
+
+    // Neighbouring texels sit at different points, so their highlights
+    // differ, along both texture axes.
+    for (name, light) in [("point", flank_light()), ("directional", sun())] {
+        let out = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Pixel));
+        for a in 0..LATTICE {
+            for b in 0..LATTICE - 1 {
+                assert_ne!(
+                    interior_value(&out, b, a),
+                    interior_value(&out, b + 1, a),
+                    "{name}: texels ({b}, {a}) and ({}, {a})",
+                    b + 1
+                );
+                assert_ne!(
+                    interior_value(&out, a, b),
+                    interior_value(&out, a, b + 1),
+                    "{name}: texels ({a}, {b}) and ({a}, {})",
+                    b + 1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn smooth_specular_varies_inside_a_magnified_texel() {
+    let Some(ctx) = gpu_or_skip("smooth_specular_varies_inside_a_magnified_texel") else {
+        return;
+    };
+    for (name, light) in [
+        ("point", flank_light()),
+        ("spot", spot_light()),
+        ("directional", sun()),
+    ] {
+        let out = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Smooth));
+        assert!(
+            varies_inside_some_texel(&out),
+            "{name}: smooth evaluates per fragment, so a texel's fragments differ",
+        );
+    }
+}
+
+#[test]
+fn pixel_seam_band_lies_between_neighbouring_texels() {
+    let Some(ctx) = gpu_or_skip("pixel_seam_band_lies_between_neighbouring_texels") else {
+        return;
+    };
+    let out = render_texels(
+        &ctx,
+        &[flank_light()],
+        OWNER_0,
+        TexelCase::new(Style::Pixel),
+    );
+    let mut checked = 0;
+    for (x, y) in pixels() {
+        let (kx, ky) = reconstructed_texel_key(x, y, March::OFF);
+        let band_along_u = !key_is_centre(kx) && key_is_centre(ky);
+        let band_along_v = key_is_centre(kx) && !key_is_centre(ky);
+        // The texels either side of the seam the fragment's band straddles.
+        let (tx, ty) = (x / PIXELS_PER_TEXEL, y / PIXELS_PER_TEXEL);
+        let neighbours = if band_along_u && tx + 1 < LATTICE {
+            [
+                interior_value(&out, tx, ty),
+                interior_value(&out, tx + 1, ty),
+            ]
+        } else if band_along_v && ty + 1 < LATTICE {
+            [
+                interior_value(&out, tx, ty),
+                interior_value(&out, tx, ty + 1),
+            ]
+        } else {
+            continue;
+        };
+        let value = out[pixel_index(x, y)][0];
+        let (low, high) = (
+            neighbours[0][0].min(neighbours[1][0]),
+            neighbours[0][0].max(neighbours[1][0]),
+        );
+        assert!(
+            low < value && value < high,
+            "seam fragment ({x}, {y}) draws {value}, outside its neighbours' {low}..{high}",
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 2 * 7 * 7 * 7,
+        "every interior seam crossing must be checked, got {checked}"
+    );
+}
+
+#[test]
+fn pixel_specular_holds_across_range_and_cone_boundaries() {
+    let Some(ctx) = gpu_or_skip("pixel_specular_holds_across_range_and_cone_boundaries") else {
+        return;
+    };
+    for (name, light) in [("range", ranged_light()), ("cone", spot_light())] {
+        for march in [March::OFF, March::ON] {
+            let case = TexelCase {
+                march,
+                ..TexelCase::new(Style::Pixel)
+            };
+            let pixel = render_texels(&ctx, &[light], OWNER_0, case);
+            assert_constant_per_texel(&pixel, march, &format!("{name} boundary, {march:?}"));
+        }
+        // The boundary crosses texel interiors: per fragment it splits them,
+        // and the texel's own point decides the whole texel both ways.
+        let pixel = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Pixel));
+        let smooth = render_texels(&ctx, &[light], OWNER_0, TexelCase::new(Style::Smooth));
+        let lit_past_the_boundary =
+            (0..pixel.len()).any(|i| smooth[i][0] == 0.0 && pixel[i][0] > 0.0);
+        let dark_inside_it = (0..pixel.len()).any(|i| smooth[i][0] > 0.0 && pixel[i][0] == 0.0);
+        assert!(
+            lit_past_the_boundary && dark_inside_it,
+            "{name}: the boundary must cross texels whose centres fall on either side",
+        );
+    }
+}
+
+#[test]
+fn pixel_point_anchors_on_the_fragment_uv_under_a_march() {
+    let Some(ctx) = gpu_or_skip("pixel_point_anchors_on_the_fragment_uv_under_a_march") else {
+        return;
+    };
+    let lights = [flank_light()];
+    let flat = render_texels(&ctx, &lights, OWNER_0, TexelCase::new(Style::Pixel));
+    let marched = render_texels(
+        &ctx,
+        &lights,
+        OWNER_0,
+        TexelCase {
+            march: March::ON,
+            ..TexelCase::new(Style::Pixel)
+        },
+    );
+    assert_constant_per_texel(&marched, March::ON, "marched");
+    // Fragments from different texels of the plane land on one texel.
+    let gathered = texel_groups(March::ON).values().any(|members| {
+        let own = |m: usize| {
+            let (x, y) = (m as u32 % TEXEL_TARGET, m as u32 / TEXEL_TARGET);
+            reconstructed_texel_key(x, y, March::OFF)
+        };
+        members.iter().any(|&m| own(m) != own(members[0]))
+    });
+    assert!(
+        gathered,
+        "the march must gather fragments from several own texels"
+    );
+
+    // The point is the texel the march landed on, placed on the plane from
+    // the fragment's own UV and position: the un-marched fragment that
+    // reconstructs to that texel draws the same value.
+    let mut flat_by_texel = HashMap::new();
+    for (x, y) in pixels() {
+        flat_by_texel.insert(
+            reconstructed_texel_key(x, y, March::OFF),
+            flat[pixel_index(x, y)],
+        );
+    }
+    let mut matched = 0;
+    for (x, y) in pixels() {
+        if let Some(expected) = flat_by_texel.get(&reconstructed_texel_key(x, y, March::ON)) {
+            assert_eq!(
+                marched[pixel_index(x, y)],
+                *expected,
+                "fragment ({x}, {y}) under the march"
+            );
+            matched += 1;
+        }
+    }
+    assert!(
+        matched > (TEXEL_TARGET * TEXEL_TARGET / 2) as usize,
+        "most marched fragments land on a texel the plane also shows, got {matched}",
+    );
+    assert_ne!(flat, marched, "the march moves the highlight");
+}
+
+#[test]
+fn pixel_specular_scales_by_each_fragments_own_visibility() {
+    let Some(ctx) = gpu_or_skip("pixel_specular_scales_by_each_fragments_own_visibility") else {
+        return;
+    };
+    let sdf_light = Light {
+        sdf: true,
+        ..flank_light()
+    };
+    let sdf_selected = Case {
+        sdf_indices: [0, u32::MAX, u32::MAX, u32::MAX],
+        sdf_count: 1,
+        ..Case::default()
+    };
+    for (name, light, owners, shadowing) in [
+        ("owner mask", flank_light(), OWNER_0, Case::default()),
+        ("SDF slice", sdf_light, NO_OWNERS, sdf_selected),
+    ] {
+        let case = TexelCase {
+            shadowing,
+            ..TexelCase::new(Style::Pixel)
+        };
+        let unshadowed = render_texels(&ctx, &[light], owners, case);
+        let shadowed = render_texels(
+            &ctx,
+            &[light],
+            owners,
+            TexelCase {
+                per_fragment_visibility: true,
+                ..case
+            },
+        );
+        assert_constant_per_texel(&unshadowed, March::OFF, name);
+        for (x, y) in pixels() {
+            let i = pixel_index(x, y);
+            let visibility = fragment_visibility(x, y);
+            assert_eq!(
+                shadowed[i],
+                unshadowed[i].map(|c| c * visibility),
+                "{name}: fragment ({x}, {y}) at visibility {visibility}"
+            );
+        }
+        assert!(
+            varies_inside_some_texel(&shadowed),
+            "{name}: visibility stays per fragment"
+        );
+    }
+}
+
+#[test]
+fn degenerate_jacobian_specular_matches_the_per_pixel_evaluation() {
+    let Some(ctx) = gpu_or_skip("degenerate_jacobian_specular_matches_the_per_pixel_evaluation")
+    else {
+        return;
+    };
+    let lights = [flank_light(), spot_light(), sun()];
+    let owners = [0, 1, 2, EMPTY];
+    for geometry in [Geometry::EdgeOn, Geometry::CollapsedUv] {
+        for march in [March::OFF, March::ON] {
+            let case = |style| TexelCase {
+                geometry,
+                march,
+                ..TexelCase::new(style)
+            };
+            let pixel = render_texels(&ctx, &lights, owners, case(Style::Pixel));
+            let smooth = render_texels(&ctx, &lights, owners, case(Style::Smooth));
+            for (i, (p, s)) in pixel.iter().zip(&smooth).enumerate() {
+                assert!(
+                    p.iter().all(|c| c.is_finite()),
+                    "{geometry:?}: fragment {i} is {p:?}"
+                );
+                assert_eq!(
+                    bits(*p),
+                    bits(*s),
+                    "{geometry:?}, {march:?}: fragment {i} must fall back to per pixel"
+                );
+            }
+            assert!(
+                pixel.iter().any(|p| p[0] > 0.0),
+                "{geometry:?}: the lights must reach the floor"
+            );
+        }
+    }
+}
+
+#[test]
+fn smooth_specular_matches_the_frozen_pre_change_function() {
+    let Some(ctx) = gpu_or_skip("smooth_specular_matches_the_frozen_pre_change_function") else {
+        return;
+    };
+    let sdf_light = Light {
+        sdf: true,
+        ..flank_light()
+    };
+    let all_lights = [
+        flank_light(),
+        spot_light(),
+        sun(),
+        ranged_light(),
+        sdf_light,
+    ];
+    let smooth = TexelCase::new(Style::Smooth);
+    let sdf_selected = Case {
+        sdf_indices: [4, u32::MAX, u32::MAX, u32::MAX],
+        sdf_count: 1,
+        sdf_factor: [0.5, 1.0, 1.0, 1.0],
+        ..Case::default()
+    };
+    let cases = [
+        ("owners", smooth),
+        (
+            "owner masks and SDF selection",
+            TexelCase {
+                shadowing: Case {
+                    mask: [0.9, 0.6, 0.3, 0.15],
+                    ..sdf_selected
+                },
+                ..smooth
+            },
+        ),
+        (
+            "per-fragment visibility",
+            TexelCase {
+                shadowing: sdf_selected,
+                per_fragment_visibility: true,
+                ..smooth
+            },
+        ),
+        (
+            "force-one",
+            TexelCase {
+                shadowing: Case {
+                    mask: [0.0; 4],
+                    force_one: true,
+                    ..Case::default()
+                },
+                ..smooth
+            },
+        ),
+        (
+            "unreadable owners",
+            TexelCase {
+                shadowing: Case {
+                    owners_readable: false,
+                    sdf_force_lit: true,
+                    ..sdf_selected
+                },
+                ..smooth
+            },
+        ),
+        (
+            "march",
+            TexelCase {
+                march: March::ON,
+                ..smooth
+            },
+        ),
+        (
+            "edge-on",
+            TexelCase {
+                geometry: Geometry::EdgeOn,
+                ..smooth
+            },
+        ),
+        (
+            "collapsed UV",
+            TexelCase {
+                geometry: Geometry::CollapsedUv,
+                ..smooth
+            },
+        ),
+        (
+            "sharp exponent",
+            TexelCase {
+                exponent: 96.0,
+                ..smooth
+            },
+        ),
+    ];
+    for (name, case) in cases {
+        let current = render_texels(&ctx, &all_lights, [0, 1, 2, 3], case);
+        let frozen = render_texels(
+            &ctx,
+            &all_lights,
+            [0, 1, 2, 3],
+            TexelCase {
+                frozen: true,
+                ..case
+            },
+        );
+        for (i, (c, f)) in current.iter().zip(&frozen).enumerate() {
+            assert_eq!(
+                bits(*c),
+                bits(*f),
+                "{name}: fragment {i} is {c:?}, the 1c7fc9e3a function drew {f:?}"
+            );
+        }
+        assert!(
+            current.iter().any(|p| p[0] > 0.0),
+            "{name}: the lights must reach the floor"
+        );
+    }
+}
+
+/// `src` with every `//` comment removed, then every whitespace character.
+fn squashed_code(src: &str) -> String {
+    src.lines()
+        .map(|line| line.split("//").next().unwrap_or(""))
+        .collect::<String>()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+#[test]
+fn forward_fs_main_builds_the_specular_point_through_the_shared_builder() {
+    let fs = squashed_code(wgsl_function(FORWARD_WGSL, "fs_main"));
+    assert!(
+        fs.contains("letddx=dpdx(in.uv);letddy=dpdy(in.uv);")
+            && fs.contains(
+                "letddx_world=dpdx(in.world_position);letddy_world=dpdy(in.world_position);"
+            ),
+        "the builder's derivatives are fs_main's hoisted ones",
+    );
+    assert_eq!(fs.matches("specular_texel_point(").count(), 1);
+    assert!(
+        fs.contains(
+            "letspec_point=specular_texel_point(specular_style_smooth(),\
+             SpecularPoint(in.world_position,V),in.uv,shade_uv,in.world_position,\
+             uniforms.camera_position,vec2<f32>(textureDimensions(base_texture,0)),\
+             ddx,ddy,ddx_world,ddy_world,);"
+        ),
+        "fs_main feeds the builder its own UV, the marched UV, its plane position, \
+         the albedo lattice and the hoisted derivatives",
+    );
+    assert!(
+        fs.contains("world_static_specular(spec_point.position,N_shade,spec_point.view,"),
+        "world static specular takes L and V from the built point",
+    );
+    // One shared definition: forward calls the material snippet's builder and
+    // reconstruction, and never redeclares either.
+    let composed = super::pipeline_layout::SHADER_SOURCE;
+    for name in [
+        "specular_texel_point",
+        "post_retro_texel_uv",
+        "struct SpecularPoint",
+    ] {
+        let declaration = if name.starts_with("struct") {
+            format!("{name} {{")
+        } else {
+            format!("fn {name}(")
+        };
+        assert!(
+            !FORWARD_WGSL.contains(&declaration),
+            "forward must not redeclare {name}"
+        );
+        assert!(
+            MATERIAL_SHADING_WGSL.contains(&declaration),
+            "{name} lives in material_shading.wgsl"
+        );
+        assert_eq!(
+            composed.matches(&declaration).count(),
+            1,
+            "{name} is composed once"
+        );
+    }
+    assert!(
+        squashed_code(wgsl_function(FORWARD_WGSL, "sample_post_retro"))
+            .contains("post_retro_texel_uv(uv,dims,ddx,ddy)"),
+        "forward's texture sample reconstructs through the shared function",
+    );
+}
+
+#[test]
+fn spec_shadowmask_flag_bits_match_the_cpu_constants() {
+    use postretro_render_cpu::frame_uniforms::{
+        SPEC_SHADOWMASK_FLAG_FORCE_ONE, SPEC_SHADOWMASK_FLAG_MASK_PRESENT,
+        SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+    };
+    for (name, cpu) in [
+        (
+            "SPEC_SHADOWMASK_FLAG_FORCE_ONE",
+            SPEC_SHADOWMASK_FLAG_FORCE_ONE,
+        ),
+        (
+            "SPEC_SHADOWMASK_FLAG_MASK_PRESENT",
+            SPEC_SHADOWMASK_FLAG_MASK_PRESENT,
+        ),
+        (
+            "SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH",
+            SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH,
+        ),
+    ] {
+        let line = wgsl_const_line(FORWARD_WGSL, name);
+        let value = line
+            .split('=')
+            .nth(1)
+            .and_then(|rhs| rhs.trim().strip_suffix("u;"))
+            .and_then(|digits| digits.parse::<u32>().ok())
+            .unwrap_or_else(|| panic!("`{line}` must be a decimal u32 literal"));
+        assert_eq!(value, cpu, "{name}");
+    }
 }

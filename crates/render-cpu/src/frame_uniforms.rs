@@ -22,6 +22,11 @@ pub const SPEC_SHADOWMASK_FLAG_FORCE_ONE: u32 = 1 << 0;
 /// 42, a mask pool the renderer refused, and placeholder mode; the forward
 /// pass then adds no static non-SDF world specular and no union subtraction.
 pub const SPEC_SHADOWMASK_FLAG_MASK_PRESENT: u32 = 1 << 1;
+/// Bit 2 of `Uniforms.spec_shadowmask_flags`: the mod's specular style is
+/// smooth, so world static specular evaluates every input per fragment. Clear
+/// is the default pixel style, one highlight point per albedo texel
+/// (`rendering_pipeline.md` §4, Texel-centre highlight).
+pub const SPEC_SHADOWMASK_FLAG_STYLE_SMOOTH: u32 = 1 << 2;
 
 /// Debug selector for the SDF shadow path: panel-only dropdown, encoded into
 /// the per-frame uniform.

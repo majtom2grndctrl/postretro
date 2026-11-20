@@ -1262,17 +1262,34 @@ mod tests {
     #[test]
     fn kinematic_brush_shader_matches_forward_post_retro_sampling() {
         let forward = include_str!("../shaders/forward.wgsl");
+        let material_shading = include_str!("../shaders/material_shading.wgsl");
         let kinematic = include_str!("../shaders/kinematic_brush.wgsl");
 
+        // Forward's copy calls the shared `post_retro_texel_uv`; the mover's
+        // still inlines it, so splice the shared body's calls in at the call.
+        let shared = wgsl_call_fingerprint(
+            extract_wgsl_fn(material_shading, "post_retro_texel_uv"),
+            POST_RETRO_SAMPLING_CALLS,
+        );
+        let forward_calls: Vec<String> = wgsl_call_fingerprint(
+            extract_wgsl_fn(forward, "sample_post_retro"),
+            &[POST_RETRO_SAMPLING_CALLS, &["post_retro_texel_uv"]].concat(),
+        )
+        .into_iter()
+        .flat_map(|call| {
+            if call == "post_retro_texel_uv" {
+                shared.clone()
+            } else {
+                vec![call]
+            }
+        })
+        .collect();
         assert_eq!(
             wgsl_call_fingerprint(
                 extract_wgsl_fn(kinematic, "sample_post_retro"),
                 POST_RETRO_SAMPLING_CALLS,
             ),
-            wgsl_call_fingerprint(
-                extract_wgsl_fn(forward, "sample_post_retro"),
-                POST_RETRO_SAMPLING_CALLS,
-            ),
+            forward_calls,
             "kinematic brush movers must keep the same Post Retro sampling operations as static world geometry",
         );
 

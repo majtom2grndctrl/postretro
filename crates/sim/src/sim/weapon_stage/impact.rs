@@ -180,6 +180,7 @@ fn apply_weapon_impact_damage_with_source(
             producer: DamageProducer::InTick,
             point,
             attacker_life,
+            status: None,
         },
     );
 }

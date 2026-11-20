@@ -708,6 +708,7 @@ mod tests {
                     emitter: None,
                     fog: None,
                     ghost_link: None,
+                    status_presence: None,
                 }],
             }],
             state_schema_fingerprint: [0u8; 32],

@@ -969,6 +969,8 @@ mod tests {
             max_health: 10.0,
             target,
             source: None,
+            source_id: String::new(),
+            status: None,
             producer: crate::components::health::DamageProducer::InTick,
             point: None,
         }

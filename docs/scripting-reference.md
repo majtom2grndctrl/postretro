@@ -56,7 +56,7 @@ the manifest lacks any required field.
 - TypeScript: standard ES module `import` of relative paths. The script compiler bundles all relative imports into `start-script.js` at build time. Bare-specifier imports of `"postretro"`, `"postretro/ui"` and `"postretro/audio"` symbols are stripped (the symbols arrive as runtime globals).
 - Luau: `require("./path")` resolves relative to the mod root. `require("./actors/player")` reads `content/<mod>/actors/player.luau` (the `.luau` extension is appended automatically). `require("postretro")`, `require("postretro/ui")` and `require("postretro/audio")` return engine-owned SDK module tables before file lookup. `..` traversal and absolute paths are rejected. Module caching, init-file conventions, and upward search are not implemented.
 
-**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer`, `defineAttackToken`, `defineAttack` and `defineStance` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. For `defineDamageType`, `defineAttack` and `defineStance` the first argument must also be an object literal; `defineDefenseLayer` and `defineAttackToken` take the binding when called with no arguments or with an object literal, so a variable passed as the options takes no name from the binding. `defineStore`, `definePresentationTemplate` and `defineImpactEvent` need only the call shape. Otherwise pass the name as the first argument. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
+**Names from `const` bindings.** In TypeScript, `defineStore`, `definePresentationTemplate`, `defineImpactEvent`, `defineDamageType`, `defineDefenseLayer`, `defineAttackToken`, `defineAttack`, `defineStance` and `defineStatus` take their name from the binding they initialize: `export const progression = defineStore({ ... })` names the store `progression`. Prefer this form, so the name a map or another script uses is the identifier you import. It needs the call to be the whole initializer of a top-level `const`, `let` or `var`, exported or not. For `defineDamageType`, `defineAttack`, `defineStance` and `defineStatus` the first argument must also be an object literal (exactly one object-literal argument; `const held = { ... }; export const wet = defineStatus(held)` stays unnamed and throws); `defineDefenseLayer` and `defineAttackToken` take the binding when called with no arguments or with an object literal, so a variable passed as the options takes no name from the binding. `defineStore`, `definePresentationTemplate` and `defineImpactEvent` need only the call shape. Otherwise pass the name as the first argument. Inside an array, a function, a destructuring pattern or a re-export, pass the name as the first argument. Luau always passes it.
 
 **Lifecycle.** Entity types returned from `ModManifest.entities` survive level
 loads — they live in the engine-global type registry. Reactions are not
@@ -655,6 +655,190 @@ Pair shields with a `plasma` type that strips them (`{ shield: 1.5 }`) and
 armor with a `corrosive` one (`{ armor: 2 }`) to give each weapon a job.
 
 ---
+
+## Statuses
+
+A **status** is an effect that lives on an entity for a while: damage over
+time such as burning or corrosion, or with `damage: 0` a **marker** such as
+wet that other rules read. You declare statuses, list them in `defineMod`,
+and apply them from impact policies, reactions and fluids. Every damaging
+tick is a typed hit: it drains layers and health by its damage type's matrix,
+runs impact policies, and credits whoever applied it.
+
+### Declaring and registering
+
+```typescript
+// scripts/statuses.ts — each is named by its binding when scripts build
+import { defineStatus, emitter } from "postretro";
+import { acid, fireDamage } from "./damage-types";
+
+export const burning = defineStatus({
+  damage: 4, type: fireDamage, tickMs: 500, durationMs: 3000,
+  stacking: "stack", maxStacks: 3,
+  presentation: {
+    emitter: emitter({ sprite: "ember", rate: 24, lifetime: 0.6, velocity: [0, 1.5, 0] }),
+    tickSound: "burn_tick",
+  },
+});
+export const corroding = defineStatus({ damage: 2, type: acid, tickMs: 1000 }); // until cleared
+export const wet = defineStatus({ damage: 0, tickMs: 500, durationMs: 5000 }); // a marker
+
+// start-script.ts
+export default defineMod({
+  /* … */
+  damageTypes: [fireDamage, acid],
+  statuses: [burning, corroding, wet],
+});
+```
+
+Luau passes each name explicitly:
+`Postretro.defineStatus("burning", { damage = 4, type = fire, tickMs = 500 })`.
+
+In TypeScript, don't bind a declaration to a name the SDK already uses, such as
+`fire`, `wait` or `players`. The script fails to load with
+`redeclaration of 'fire'`. Name the binding something else and pass the name
+explicitly: `export const fireDamage = defineDamageType("fire", { health: 1.25 })`
+declares a type named `fire`.
+
+| Field | Range | What it does |
+|---|---|---|
+| `damage` | `0`–`1000000` | Damage per tick per stack. `0` makes a marker: its ticks deal nothing, run no impact policy and restart no layer delay. |
+| `type` | a damage-type handle, optional | The type each tick deals. Leave it out to deal `defaultDamageType`. |
+| `tickMs` | `1`–`60000` | Time between ticks. |
+| `durationMs` | `tickMs`–`600000`, optional | How long an instance lasts after its last application. Leave it out to last until cleared. |
+| `stacking` | `"refresh"` (default) or `"stack"` | What reapplying does: see below. |
+| `maxStacks` | whole number `1`–`64`, default `1` | The most stacks one applier builds with `"stack"`. |
+| `presentation` | optional | `{ emitter?, tickSound? }`: see [Showing a status](#showing-a-status). |
+
+- `tickMs` and `durationMs` round up to whole fixed ticks (60 per second), as
+  weapon timings do: `tickMs` 1 through 16 ticks every fixed tick.
+- A mod registers at most 64 statuses; more fails the load. A bad handle, or
+  a value out of range, fails the load naming the field.
+- Hot reload keeps live instances by status name, drops those whose status
+  was removed, and applies changed fields from the next tick.
+
+### Instances, stacking and timing
+
+- **One instance per status and applier.** The applier is the applying hit's
+  damager, or with none its source: `fluid.lava` for lava, `script.applyStatus`
+  for a reaction. Two players burning one enemy each own an instance: each
+  ticks, stacks and lasts on its own and credits its own player.
+- **One application per applier per tick.** Eight pellets from one shotgun
+  blast, or a rocket and its splash, apply once.
+- **`"refresh"`** resets the time left. **`"stack"`** adds a stack up to
+  `maxStacks` and resets the time left; a tick deals `damage × stacks`.
+- **Ticks.** An instance first ticks `tickMs` after it is created, then every
+  `tickMs`. Reapplying never moves the tick phase. A tick due on the tick the
+  instance runs out still lands; then it ends.
+- **Limits.** An entity holds at most 16 instances. A new one on a full
+  entity replaces the one with the least time left.
+- **Deaths.** A lethal tick kills on its own tick and credits the applier.
+  A tick due on a target already at health 0 or below is skipped, so another
+  hit's death plays alone. An entity at health 0 or below takes no new status.
+- **What clears them.** Death, respawn, a level change, a restart and a
+  rejoin clear every status. Saves record none.
+
+### Applying, clearing and reading
+
+| Where | Apply | Clear | Read |
+|---|---|---|---|
+| Impact policy | `impact.target.applyStatus(h)` | `impact.target.clearStatus(h)` | `impact.target.hasStatus(h)`, `impact.status(h)` |
+| Reaction | `players().applyStatus(h)`, `npcs({ tag }).applyStatus(h)`, `on.activators.applyStatus(h)`, `on.player.applyStatus(h)` | the same subjects' `.clearStatus(h)` | — |
+| Fluid | `defineFluid({ …, status: h })` | — | — |
+| Brain guard | — | — | `hasStatus(h)` |
+| HUD | — | — | `h.active` |
+
+- `hasStatus(h)` holds while any applier's instance of `h` is live on that
+  entity. `clearStatus(h)` removes every applier's.
+- `impact.status(h)` holds when this impact *is a tick of* `h`. Every other
+  hit reads it false.
+- A policy's `applyStatus` applies with the impact's damager as applier. A
+  reaction applies as `script.applyStatus`, on the host only; a subject
+  without health is skipped with a warning. An application made outside a
+  fixed tick, such as from a UI press or a `wait`, applies at the next tick.
+- A fluid's `status` applies every tick to each player whose body is in that
+  fluid at any depth, as `fluid.<name>`. After the player leaves, one more
+  tick can land. Fluid statuses reach players only; to hurt an enemy standing
+  in lava, cover the lava with a `trigger_volume` and apply the status from a
+  reaction.
+- In a brain transition, `{ to: "flee", when: hasStatus(burning) }` flees
+  while the enemy burns.
+- `h.active` is true while the local player carries `h`. Use it in a HUD
+  widget's `visibleWhen: stateEquals(burning.active, true)`. It reads only
+  your own player: it takes no `byPlayer`.
+
+### Recipe: fire ignites
+
+A burn tick is itself a fire hit. A policy that lights `burning` on every fire
+hit would relight it from its own ticks, and the burn would never end. Guard
+it with `impact.status(burning)`:
+
+```typescript
+import { defineImpactEvent, when } from "postretro";
+
+export const ignite = defineImpactEvent("statuses.ignite", { tag: "enemy" }, (impact) => [
+  // Fire lights what is not already a burn tick and not wet.
+  when(
+    impact.type(fireDamage).and(impact.status(burning).not()).and(impact.target.hasStatus(wet).not()),
+    [impact.target.applyStatus(burning)],
+  ),
+  // Acid dries a wet target.
+  when(impact.type(acid), [impact.target.clearStatus(wet)]),
+  // A burn kill plays its own death.
+  when(impact.status(burning).and(impact.target.healthAfter.le(0)), [impact.target.playAnim("burn_death")]),
+]);
+```
+
+```lua
+local ignite = Postretro.defineImpactEvent("statuses.ignite", { tag = "enemy" }, function(impact)
+  local target = impact.target
+  local isFire, burnTick, isWet = impact.type(fire), impact.status(burning), target:hasStatus(wet)
+  local lights = isFire["and"](isFire, burnTick["not"](burnTick))
+  lights = lights["and"](lights, isWet["not"](isWet))
+  return {
+    { when = lights, ["do"] = { target:applyStatus(burning) } },
+    { when = impact.type(acid), ["do"] = { target:clearStatus(wet) } },
+    { when = burnTick["and"](burnTick, target.healthAfter:le(0)), ["do"] = { target:playAnim("burn_death") } },
+  }
+end)
+```
+
+The `burn_death` row plays only if the target's animation set defines a
+`burn_death` state; otherwise the row does nothing.
+
+With the guard, one fire hit burns six times over three seconds and goes out.
+Each new fire hit stacks it again, up to three stacks.
+
+Lava that scalds, and a cure:
+
+```typescript
+export const scalding = defineStatus({ damage: 10, type: fireDamage, tickMs: 250, durationMs: 250 });
+export const lava = defineFluid({
+  name: "lava", viscosity: 0.6, viewTint: [1, 0.35, 0.05, 0.8], muffle: 0.9, surfaceOpacity: 1,
+  status: scalding,
+});
+export const cure = defineReaction("statuses.cure", players().clearStatus(corroding));
+```
+
+The dev mod carries this example, an incendiary rifle, a lava pool and a burn
+trap: see `content/dev/scripts/statuses.ts` and `status-hazards.ts`, and the
+lava and trap rows in `content/dev/maps/e24-environment-test.README.md`.
+
+### Showing a status
+
+`presentation` is optional and shows on every machine:
+
+- `emitter`: an `emitter()` value that follows each afflicted entity while
+  it carries the status. Your own player gets none, so it never fills your
+  view. A `presentation.emitter` that is not an `emitter()` value fails the
+  load.
+- `tickSound`: a sound played at the entity every `tickMs` while it carries
+  the status, starting one `tickMs` after the status appears.
+
+**In co-op,** the host runs every status; clients run none. Each entity's
+statuses reach clients by name, and each client shows them with its own
+declaration of that name, as fluids do. A client whose mod lacks a status
+shows nothing for it. Statuses do not affect who can join.
 
 ## Attack tokens and budgets
 
@@ -3226,13 +3410,17 @@ Every command is a method on its target. In TypeScript call it as `target.verb(�
 | trap member | `getMapEntities("trap")` | `fire`, `start`, `stop` |
 | attack pool member | `getMapEntities("attackPool")` | `start`, `stop` |
 | emitter member | `getMapEntities("emitter")` | none — snapshot fields only |
-| NPC group | `npcs({ tag? })` | `update`, `damage` |
-| player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.activators` | trigger-, teleport- or seam-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
-| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn` |
+| NPC group | `npcs({ tag? })` | `update`, `damage`, `applyStatus`, `clearStatus` |
+| player group | `players()` | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
+| `on.activators` | trigger-, teleport- or seam-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
+| `on.player` | player-event reaction param | `damage`, `grantHealth`, `grantLayer`, `grantAmmo`, `addSlot`, `setLifeState`, `respawn`, `applyStatus`, `clearStatus` |
 | `on.trigger` | trigger-event reaction param | `arm`, `disarm` |
 | `on.teleporter` | teleport-event reaction param | `arm`, `disarm` |
 | `on.seam` | seam `arrive` reaction param | `arm`, `disarm` |
+
+`applyStatus` and `clearStatus` run on the host only. A subject without health
+warns and is skipped. Fired outside a fixed tick, they apply at the next fixed
+tick. See [Statuses](#statuses).
 
 ### getMapEntities
 
@@ -3857,9 +4045,9 @@ const purge = defineReaction("purge", players().damage(20));
 
 `damage(amount)` on an NPC group, the player group or `on.activators` routes a
 fixed `amount` of damage through the engine's damage chokepoint for every
-resolved target that carries a health component. This is the only non-weapon
-damage producer — use it to script scene damage (a trap, a collapsing floor, a
-retaliation strike).
+resolved target that carries a health component. Use it to script scene damage
+(a trap, a collapsing floor, a retaliation strike); for damage over time, apply
+a [status](#statuses) instead.
 
 `amount` must be **finite and `>= 0`** (the chokepoint only ever reduces HP;
 healing is out of scope). The handler never despawns. Reaching zero HP does not
@@ -3919,9 +4107,10 @@ amount is a warn-and-no-op at the chokepoint, never a subtraction path.
 `grantAmmo` pool keys must use the same ASCII identifier grammar as weapon
 resource types; a well-formed pool does not need a weapon to exist yet. Missing
 health or ammo-reserve components warn and skip that recipient while sibling
-targets continue. These reaction grants are independent of impact-policy
-producer gating, so a trigger pickup can grant resources even though
-source-addressed impact grants run only for in-tick weapon and AI impacts in v1.
+targets continue. These reaction grants are separate from impact policies, so a
+trigger pickup grants resources directly. Script damage has no damager, so
+`impact.source` grants on it reach no one (see
+[Impact policies](#impact-policies)).
 
 ### `addSlot`
 
@@ -3963,8 +4152,14 @@ expression; `set(ref, value)` writes an absolute value; and
 not an atomic increment. Use `when(condition, effects)` to defer a group until
 its boolean expression is true. If one fire writes the same slot more than
 once, every operand reads the same starting value and the last applied write
-wins. Impact policies currently run only for in-tick weapon damage, AI damage,
-and `kinematic_mover` crush damage; `applyDamage` reactions and other app-drain producers run no policy in v1.
+wins. Every impact runs its policies, whatever produced it: weapon damage, AI
+damage, `kinematic_mover` crush damage, status ticks and script damage.
+Script damage (an `applyDamage` reaction) is evaluated on the host where it
+lands, in landing order. Inside a fixed tick it is evaluated right after its
+damage (trigger- and teleporter-bound reactions); outside a tick it is evaluated
+at the start of the next tick, or at the end of the frame before the
+end-of-frame removal pass, whichever comes first. Connected clients discard
+script impacts unevaluated.
 
 `impact.target.adjustSentimentToward(impact.source, delta)` adjusts the target
 faction's live sentiment **toward** the source faction; calling the method on
@@ -3975,7 +4170,10 @@ the impact-policy wire primitive `adjustSentiment` (not
 recipient is gone, or either recipient has no faction; it never changes the
 authored baseline.
 
-That producer gate also applies to source grants: a script-fired `applyDamage` can create an impact record but never evaluates `impact.source.grantHealth` or `impact.source.grantAmmo` in v1. In-tick weapon and AI impacts are the only producers that can credit their damager through this arm.
+Source grants credit whoever dealt the damage. Script damage has no damager, so
+`impact.source.grantHealth` and `impact.source.grantAmmo` on it reach no one.
+A status tick credits its applier: an `impact.source.grantHealth` row on a burn
+tick heals the applier. Weapon, AI and crush impacts credit their damager.
 
 The type definitions for this area carry committed `@ts-expect-error` cases, so unsafe narrowing and forged effects fail a type check. Nothing here installs or downloads `tsc` — supply your own, and run `tsc --noEmit` against your scripts.
 
@@ -5278,6 +5476,7 @@ through its `fluid` key. Each field is checked when the mod loads:
 | `muffle` | number | `0`–`1` | Low-pass on world sounds while the camera is inside. `0` is none, `1` the most. Music and UI sounds are never muffled. |
 | `surfaceOpacity` | number | `0`–`1` | How opaque the fluid's surface draws. |
 | `surfaceReflectivity` | number | `0`–`50`, optional | How strongly the surface reflects the room around it, strongest at a glancing view and faintest looking straight down. `0` reflects nothing, `1` is water (the default when left out), about `2` reads as glass, about `10` as wet polished stone, and `50` is a mirror at every angle. Opacity never dims the reflection: a clear fluid still mirrors fully at a glancing view. |
+| `status` | status handle | optional | Applied every tick to each player whose body is in this fluid at any depth, as `fluid.<name>`; a handle of a status `defineMod` does not register fails the load. See [Statuses](#statuses). |
 | `enterSound` | sound key | optional | Plays when the player starts swimming in this fluid. |
 | `exitSound` | sound key | optional | Plays when the player stops swimming in this fluid. |
 | `fogDistance` | metres | above `0`, optional | How far you see into the fluid from outside it: at this depth of view 95% of what lies beyond is hidden. Leave it out for a clear fluid. Never applies to the view from inside, which `viewTint` alone covers. |

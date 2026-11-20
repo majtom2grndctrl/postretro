@@ -27,6 +27,9 @@ pub const IMPACT_BROKE_INPUT: &str = "@impact.broke";
 /// dealt that registered type, the mod's default included. Each binds against
 /// the registered vocabulary, so a type's identity never enters the IR.
 pub const IMPACT_TYPE_INPUT_PREFIX: &str = "@impact.type.";
+/// Prefix of the per-status Bools: `@impact.status.<name>` is true when the
+/// hit is a tick of that registered status.
+pub const IMPACT_STATUS_INPUT_PREFIX: &str = "@impact.status.";
 
 pub const IMPACT_DISPATCH_INPUTS: [(&str, IrType); 7] = [
     (IMPACT_AMOUNT_INPUT, IrType::Number),
@@ -69,6 +72,11 @@ pub struct ImpactDispatch {
     pub max_health: f32,
     pub target: EntityId,
     pub source: Option<EntityId>,
+    /// The hit's source id, as the contributor ledger records it: an applied
+    /// status keys to it when the hit has no damager.
+    pub source_id: String,
+    /// The registered status this hit is a tick of; `None` for any other hit.
+    pub status: Option<u16>,
     pub producer: DamageProducer,
     /// World-space contact point carried from [`DamageContext::point`].
     /// Evaluator-only: never an IR input, so [`Self::ir_values`] omits it.

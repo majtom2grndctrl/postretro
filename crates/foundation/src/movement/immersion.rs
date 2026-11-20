@@ -15,4 +15,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct ImmersionComponent {
     pub immersion: f32,
+    /// The winning fluid's declaration index on that tick, `None` when dry.
+    /// Host-only: the status stage applies its fluid's `status` from it, so a
+    /// wading pawn, which keeps no fluid in its movement state, still has one.
+    /// It persists until the pawn's next resolve, as `immersion` does.
+    #[serde(default)]
+    pub fluid: Option<u16>,
 }

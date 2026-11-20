@@ -834,6 +834,7 @@ pub(crate) fn component_kind_discriminant(kind: ComponentKind) -> u16 {
         ComponentKind::GhostLink => postretro_net::wire::COMPONENT_KIND_GHOST_LINK,
         ComponentKind::DefenseLayers => postretro_net::wire::COMPONENT_KIND_DEFENSE_LAYERS,
         ComponentKind::AttackPool => postretro_net::wire::COMPONENT_KIND_ATTACK_POOL,
+        ComponentKind::StatusPresence => postretro_net::wire::COMPONENT_KIND_STATUS_PRESENCE,
         ComponentKind::Seam => postretro_net::wire::COMPONENT_KIND_SEAM,
     }
 }
@@ -888,6 +889,7 @@ fn payload_is_finite(payload: &ComponentPayload) -> bool {
             state.index != postretro_net::wire::NO_WIRE_TELEPORTER
         }
         ComponentPayload::GhostLinkState(state) => state.validate().is_ok(),
+        ComponentPayload::StatusPresence(_) => true,
         // The movement payload is received and validated here but not yet applied
         // to any local `PlayerMovementComponent` — the authoritative mover is
         // Transform-only. Validate its floats now so a non-finite payload is
@@ -1848,6 +1850,14 @@ pub fn host_environment_tuning(script_ctx: &postretro_entities::ScriptCtx) -> En
     EnvironmentTuning {
         level_gravity: script_ctx.gravity.get(),
         fluids: FluidMovementTable::from_registry(&script_ctx.data_registry.borrow().fluids),
+        status_names: script_ctx
+            .data_registry
+            .borrow()
+            .defense
+            .statuses
+            .iter()
+            .map(|status| status.name.clone())
+            .collect(),
     }
 }
 
@@ -2908,6 +2918,7 @@ mod tests {
         EnvironmentTuning {
             level_gravity: -9.81,
             fluids: test_fluids(),
+            status_names: Vec::new(),
         }
     }
 
@@ -3429,6 +3440,7 @@ mod tests {
             EnvironmentTuning {
                 level_gravity: -3.0,
                 fluids: test_fluids(),
+                status_names: Vec::new(),
             },
         );
         let rebytes = tuning_payload::encode_tuning_payload(&regravitated);
@@ -3454,6 +3466,7 @@ mod tests {
             installed.wieldables.clone(),
             EnvironmentTuning {
                 level_gravity: -3.0,
+                status_names: Vec::new(),
                 fluids: FluidMovementTable::new(vec![
                     postretro_combat_model::FluidMovementTuning {
                         name: "water".to_string(),
@@ -3490,6 +3503,7 @@ mod tests {
             EnvironmentTuning {
                 level_gravity: -3.0,
                 fluids: test_fluids(),
+                status_names: Vec::new(),
             },
         );
         replace_client_tuning(
@@ -3557,6 +3571,7 @@ mod tests {
                 &EnvironmentTuning {
                     level_gravity,
                     fluids: test_fluids(),
+                    status_names: Vec::new(),
                 },
                 &[],
                 0,
@@ -7046,6 +7061,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             },
         ));
         // The type was frozen from the host's weapon at FIRE; the client's
@@ -7380,7 +7396,8 @@ mod tests {
                 ComponentKind::ProjectileTrap => Some(ComponentKind::GhostLink),
                 ComponentKind::GhostLink => Some(ComponentKind::DefenseLayers),
                 ComponentKind::DefenseLayers => Some(ComponentKind::AttackPool),
-                ComponentKind::AttackPool => Some(ComponentKind::Seam),
+                ComponentKind::AttackPool => Some(ComponentKind::StatusPresence),
+                ComponentKind::StatusPresence => Some(ComponentKind::Seam),
                 ComponentKind::Seam => None,
             }
         }

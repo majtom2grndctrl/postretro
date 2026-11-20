@@ -145,7 +145,10 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
         let _ = registry.set_component(pawn, movement);
         let _ = registry.set_component(
             pawn,
-            postretro_foundation::ImmersionComponent { immersion: 0.0 },
+            postretro_foundation::ImmersionComponent {
+                immersion: 0.0,
+                fluid: None,
+            },
         );
         let _ = registry.set_presentation_transform(pawn, pose);
         if let Ok(health) = registry.get_component::<HealthComponent>(pawn) {
@@ -166,6 +169,8 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
             set_health_absolute(registry, pawn, health);
         }
         postretro_entities::components::defense_layers::refill_layers_on_respawn(registry, pawn);
+        // Statuses are transient: a respawned pawn arrives with none.
+        registry.clear_statuses(pawn);
         crate::scripting_systems::health::cancel_owned_weapon_activations(registry, pawn);
         arrivals.push(Arrival {
             pawn,

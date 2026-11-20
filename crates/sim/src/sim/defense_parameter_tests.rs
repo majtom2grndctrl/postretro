@@ -149,6 +149,7 @@ pub(crate) fn session(descriptors: Vec<(&str, bool, HealthDescriptor)>) -> Scrip
                 )]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         }));
     {
         let mut data = ctx.data_registry.borrow_mut();

@@ -177,6 +177,7 @@ mod tests {
             wave_amplitude: 8.0,
             wave_length: [64.0, 80.0],
             surface_reflectivity: 1.0,
+            status: None,
         }
     }
 
@@ -192,11 +193,16 @@ mod tests {
     }
 
     #[test]
-    fn fluid_table_from_registry_keeps_declaration_order_and_drops_presentation() {
-        let host = registry(vec![
-            fluid("water", 2.0, [0.1, 0.3, 0.4, 0.35]),
-            fluid("sludge", 6.5, [0.3, 0.3, 0.1, 0.8]),
-        ]);
+    fn fluid_table_from_registry_keeps_declaration_order_and_drops_presentation_and_status() {
+        // A fluid's `status` is host-only gameplay data: the replicated table
+        // carries name and viscosity alone.
+        let mut sludge = fluid("sludge", 6.5, [0.3, 0.3, 0.1, 0.8]);
+        sludge.status = Some(postretro_foundation::AuthoredHandle::from_handle(
+            &postretro_foundation::defense::HandleRef::Status {
+                name: "scalding".to_string(),
+            },
+        ));
+        let host = registry(vec![fluid("water", 2.0, [0.1, 0.3, 0.4, 0.35]), sludge]);
         let table = FluidMovementTable::from_registry(&host);
         assert_eq!(table.names(), ["water", "sludge"]);
         assert_eq!(table.viscosities(), [2.0, 6.5]);

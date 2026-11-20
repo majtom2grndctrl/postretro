@@ -68,6 +68,7 @@ const ALL_KINDS: [ComponentKind; ComponentKind::COUNT] = [
     ComponentKind::GhostLink,
     ComponentKind::DefenseLayers,
     ComponentKind::AttackPool,
+    ComponentKind::StatusPresence,
     ComponentKind::Seam,
 ];
 
@@ -109,6 +110,7 @@ fn component_kind_snake(kind: ComponentKind) -> &'static str {
         ComponentKind::GhostLink => "ghost_link",
         ComponentKind::DefenseLayers => "defense_layers",
         ComponentKind::AttackPool => "attack_pool",
+        ComponentKind::StatusPresence => "status_presence",
         ComponentKind::Seam => "seam",
     }
 }
@@ -490,6 +492,9 @@ mod tests {
                     "arena".to_string(),
                 ),
             ),
+            ComponentKind::StatusPresence => ComponentValue::StatusPresence(
+                postretro_entities::components::statuses::StatusPresenceComponent { bits: 1 },
+            ),
             ComponentKind::Seam => ComponentValue::Seam(postretro_entities::SeamComponent {
                 index: 0,
                 source_entity: 0,
@@ -498,7 +503,10 @@ mod tests {
                 on_arrive: String::new(),
             }),
             ComponentKind::Immersion => ComponentValue::Immersion(
-                postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
+                postretro_entities::components::immersion::ImmersionComponent {
+                    immersion: 0.5,
+                    fluid: None,
+                },
             ),
             ComponentKind::HitVolume => ComponentValue::HitVolume(
                 postretro_entities::components::hit_volume::HitVolumeComponent {

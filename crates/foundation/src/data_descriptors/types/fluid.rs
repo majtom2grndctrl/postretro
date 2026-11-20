@@ -48,6 +48,12 @@ pub struct FluidDescriptor {
     /// Crest-to-crest length range `[min, max]`, in texture texels. Resolved:
     /// [`Self::default_wave_length`] of the amplitude when omitted.
     pub wave_length: [f32; 2],
+    /// A status handle applied each tick to every player pawn in this fluid
+    /// at any depth. Host-only gameplay data: it never enters the replicated
+    /// movement tuning, the mod digest or surface drift. A reference to a
+    /// status `defineMod` does not register fails load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::AuthoredHandle>,
 }
 
 /// The first out-of-range field on a fluid declaration, by its authored key.
@@ -359,6 +365,7 @@ mod tests {
             wave_length: FluidDescriptor::default_wave_length(
                 FluidDescriptor::DEFAULT_WAVE_AMPLITUDE,
             ),
+            status: None,
         }
     }
 

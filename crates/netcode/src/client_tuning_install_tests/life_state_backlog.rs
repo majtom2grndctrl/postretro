@@ -33,6 +33,7 @@ impl Backlog {
             EnvironmentTuning {
                 level_gravity: GRAVITY,
                 fluids: Default::default(),
+                status_names: Vec::new(),
             },
         );
         payload.life_state_names = vec!["alive".into(), "down".into()];

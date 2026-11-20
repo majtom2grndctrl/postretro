@@ -12,6 +12,7 @@ fn host_tuning(fixture: &Fixture) -> postretro_combat_model::TuningPayload {
         &postretro_combat_model::EnvironmentTuning {
             level_gravity: 0.0,
             fluids: Default::default(),
+            status_names: Vec::new(),
         },
         &[],
         0,

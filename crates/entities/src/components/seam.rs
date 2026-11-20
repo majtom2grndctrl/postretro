@@ -51,6 +51,6 @@ mod tests {
         let decoded: ComponentValue = serde_json::from_value(serialized).unwrap();
         assert_eq!(decoded.kind(), ComponentKind::Seam);
         assert_eq!(SeamComponent::from_value(&decoded), Some(stored));
-        assert_eq!(ComponentKind::Seam as u16, 29);
+        assert_eq!(ComponentKind::Seam as u16, 30);
     }
 }

@@ -22,6 +22,8 @@ return Postretro.defineMod({
     DamageTypes.shock,
     DamageTypes.corrosive,
     DamageTypes.flechette,
+    DamageTypes.fire,
+    DamageTypes.acid,
   },
   defaultDamageType = DamageTypes.ballistic,
   stores = { Combat.progression },

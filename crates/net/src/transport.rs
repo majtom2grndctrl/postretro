@@ -3412,15 +3412,23 @@ mod tests {
     // cause, a PRLE peer the session-password challenge, and a PRLF or
     // wire-40 peer the carried loadout. The admission gate refuses each
     // declaration with a typed cause, logging the protocol mismatch, and
-    // admits a PRLG / 41 one.
+    // admits a PRLG / 42 one. A wire-41 peer lacks the status-presence
+    // component payload.
     #[test]
-    fn admission_refuses_prlb_to_prlf_or_wire_32_to_40_and_admits_prlg_41() {
+    fn admission_refuses_prlb_to_prlf_or_wire_32_to_41_and_admits_prlg_42() {
         let current = wire::ProtocolVersion {
             app_protocol_id: 0x_5052_4C47,
-            wire_version: 41,
+            wire_version: 42,
         };
         assert_eq!(protocol_version(), current);
         let cases = [
+            (
+                wire::ProtocolVersion {
+                    wire_version: 41,
+                    ..current
+                },
+                false,
+            ),
             (
                 wire::ProtocolVersion {
                     app_protocol_id: 0x_5052_4C46,

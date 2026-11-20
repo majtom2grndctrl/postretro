@@ -103,6 +103,7 @@ fn environment() -> EnvironmentTuning {
     EnvironmentTuning {
         level_gravity: -9.81,
         fluids: Default::default(),
+        status_names: Vec::new(),
     }
 }
 
@@ -489,7 +490,7 @@ fn client_demotion_or_unload_before_the_payload_composes_nothing_until_the_next(
             endpoint.demote_client_state(&mut registry);
             assert!(!registry.exists(old), "demotion despawns the mapped pawn");
         } else {
-            endpoint.reset_level_scoped_client_state();
+            endpoint.reset_level_scoped_client_state(&mut registry);
             // Level unload clears the registry.
             registry = EntityRegistry::new();
         }

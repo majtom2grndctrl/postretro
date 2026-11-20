@@ -314,6 +314,7 @@ impl PlayerHudStatePublisher {
         // feedback consumer can acknowledge and drain its stream.
         if is_connected_client {
             self.publish_life_state(true, client_life_state_name);
+            self.publish_statuses(true);
             // These switching display slots are local on every role: their inventory
             // source is locally owned, so no host projection exists to replicate.
             let values = weapon_hud_values(&self.ctx.registry.borrow());
@@ -330,6 +331,31 @@ impl PlayerHudStatePublisher {
         let pawn_health = pawn_health_values(registry);
         self.publish_health_values(pawn_health);
         self.publish_defense_layers(registry);
+    }
+
+    /// Publish the local-only `player.status.<name>` slots from the local
+    /// pawn's status presence: its live instances on the host and in single
+    /// player, its replicated presence through the host's name table on a
+    /// connected client. Writes only on change and allocates nothing.
+    fn publish_statuses(&mut self, is_connected_client: bool) {
+        use postretro_foundation::status::PLAYER_STATUS_SLOT_PREFIX;
+        let registry = self.ctx.registry.borrow();
+        let pawn = if is_connected_client {
+            registry.local_player_pawn()
+        } else {
+            registry.local_player_movement_pawn()
+        };
+        let mut slots = self.ctx.slot_table.borrow_mut();
+        for (name, record) in slots.iter_mut() {
+            let Some(status) = name.strip_prefix(PLAYER_STATUS_SLOT_PREFIX) else {
+                continue;
+            };
+            let active = pawn.is_some_and(|pawn| registry.shows_status(pawn, status));
+            let value = Some(SlotValue::Boolean(active));
+            if record.value != value {
+                record.write_value(value);
+            }
+        }
     }
 
     /// Publish the local pawn's `player.defense.<name>` pair for every
@@ -372,6 +398,7 @@ impl PlayerHudStatePublisher {
 
     fn tick_and_report_sampled_weapon(&mut self) -> Option<EntityId> {
         self.publish_life_state(false, None);
+        self.publish_statuses(false);
         self.publish_local_per_owner_mod_slots();
         let values = weapon_hud_values(&self.ctx.registry.borrow());
         self.publish_local_weapon_state(&values);
@@ -1430,6 +1457,76 @@ mod tests {
             read_store_slot(&ctx, "player.reloadActive").unwrap(),
             SlotValue::Boolean(false)
         );
+    }
+
+    // `burning.active` reads the local pawn's presence: its live instances on
+    // the host and in single player, its replicated presence through the
+    // host's name table on a connected client; false once it ends.
+    #[test]
+    fn status_active_slots_read_local_pawn_presence_on_host_and_client() {
+        use crate::scripting::primitives::store::read_store_slot;
+        use postretro_entities::components::statuses::{StatusApplier, StatusPresenceComponent};
+
+        let ctx = ScriptCtx::new();
+        let vocabulary = postretro_foundation::defense::DefenseVocabulary {
+            statuses: postretro_foundation::status::parse_statuses(
+                Some(&serde_json::json!([
+                    { "kind": "status", "name": "wet", "damage": 0, "tickMs": 500 },
+                    { "kind": "status", "name": "burning", "damage": 1, "tickMs": 500 },
+                ])),
+                |_| None,
+            )
+            .unwrap(),
+            ..Default::default()
+        };
+        postretro_scripting_core::defense_vocabulary::commit_defense_vocabulary(&ctx, vocabulary);
+        let pawn = spawn_pawn_with_health(&ctx, 100.0);
+        let mut publisher = PlayerHudStatePublisher::new(ctx.clone());
+        let active = |ctx: &ScriptCtx| read_store_slot(ctx, "player.status.burning").unwrap();
+
+        publisher.tick(None);
+        assert_eq!(active(&ctx), SlotValue::Boolean(false));
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            registry.set_status_applications_immediate(true);
+            let source = registry.intern_status_source("fluid.lava");
+            registry.apply_status(pawn, 1, StatusApplier::Source(source), source);
+        }
+        publisher.tick(None);
+        assert_eq!(
+            active(&ctx),
+            SlotValue::Boolean(true),
+            "host: a live instance"
+        );
+        ctx.registry.borrow_mut().clear_status(pawn, 1);
+        publisher.tick(None);
+        assert_eq!(
+            active(&ctx),
+            SlotValue::Boolean(false),
+            "false after it ends"
+        );
+
+        // A connected client: the host's bit 0 is `burning`.
+        {
+            let mut registry = ctx.registry.borrow_mut();
+            registry.mark_local_player_pawn(pawn).unwrap();
+            registry.set_presence_status_names(&["burning".to_string()]);
+            registry
+                .set_component(pawn, StatusPresenceComponent { bits: 0b1 })
+                .unwrap();
+        }
+        publisher.tick_for_role(true, None);
+        assert_eq!(
+            active(&ctx),
+            SlotValue::Boolean(true),
+            "client: replicated presence"
+        );
+        ctx.registry
+            .borrow_mut()
+            .remove_component::<StatusPresenceComponent>(pawn)
+            .unwrap();
+        publisher.tick_for_role(true, None);
+        assert_eq!(active(&ctx), SlotValue::Boolean(false));
     }
 
     #[test]

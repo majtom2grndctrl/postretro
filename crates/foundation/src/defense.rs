@@ -60,6 +60,9 @@ pub enum HandleRef {
     /// An attack token (`entity_model.md` §7c, Attack budget).
     #[serde(rename = "attackToken")]
     AttackToken { name: String },
+    /// A status kind (`status.rs`).
+    #[serde(rename = "status")]
+    Status { name: String },
 }
 
 impl HandleRef {
@@ -67,7 +70,8 @@ impl HandleRef {
         match self {
             HandleRef::DefenseLayer { name }
             | HandleRef::DamageType { name }
-            | HandleRef::AttackToken { name } => name,
+            | HandleRef::AttackToken { name }
+            | HandleRef::Status { name } => name,
         }
     }
 
@@ -77,6 +81,7 @@ impl HandleRef {
             HandleRef::DefenseLayer { name } => format!("defense layer `{name}`"),
             HandleRef::DamageType { name } => format!("damage type `{name}`"),
             HandleRef::AttackToken { name } => format!("attack token `{name}`"),
+            HandleRef::Status { name } => format!("status `{name}`"),
         }
     }
 
@@ -108,6 +113,17 @@ impl HandleRef {
             HandleRef::AttackToken { name } => Ok(name),
             other => Err(format!(
                 "expected an attack token handle, got {}",
+                other.describe()
+            )),
+        }
+    }
+
+    /// The status name, or a diagnostic naming what was found instead.
+    pub fn expect_status(&self) -> Result<&str, String> {
+        match self {
+            HandleRef::Status { name } => Ok(name),
+            other => Err(format!(
+                "expected a status handle, got {}",
                 other.describe()
             )),
         }
@@ -297,11 +313,14 @@ pub struct DefenseVocabulary {
     pub damage_types: Vec<DamageTypeDeclaration>,
     /// Index into `damage_types` dealt by a producer that names no type.
     pub default_damage_type: Option<usize>,
+    /// Status kinds in `defineMod({ statuses })` order; a status's index is
+    /// its presence bit.
+    pub statuses: Vec<crate::status::StatusDeclaration>,
 }
 
 impl DefenseVocabulary {
     pub fn is_empty(&self) -> bool {
-        self.layers.is_empty() && self.damage_types.is_empty()
+        self.layers.is_empty() && self.damage_types.is_empty() && self.statuses.is_empty()
     }
 
     pub fn layer_index(&self, name: &str) -> Option<usize> {
@@ -312,13 +331,34 @@ impl DefenseVocabulary {
         self.damage_types.iter().position(|ty| ty.name == name)
     }
 
-    /// Parse the manifest's `defenseLayers`, `damageTypes` and
-    /// `defaultDamageType` values (each absent when `None`). Every failure
-    /// names its key path.
+    pub fn status_index(&self, name: &str) -> Option<usize> {
+        self.statuses.iter().position(|status| status.name == name)
+    }
+
+    /// Check a status reference at `path`: a handle of a registered status.
+    /// Returns its index.
+    pub fn check_status(
+        &self,
+        path: &str,
+        handle: &crate::AuthoredHandle,
+    ) -> Result<usize, String> {
+        let handle = handle.handle(path)?;
+        let name = handle
+            .expect_status()
+            .map_err(|error| format!("`{path}`: {error}"))?;
+        self.status_index(name).ok_or_else(|| {
+            format!("`{path}`: status `{name}` is not registered in `defineMod({{ statuses }})`")
+        })
+    }
+
+    /// Parse the manifest's `defenseLayers`, `damageTypes`,
+    /// `defaultDamageType` and `statuses` values (each absent when `None`).
+    /// Every failure names its key path.
     pub fn from_manifest(
         layers: Option<&serde_json::Value>,
         damage_types: Option<&serde_json::Value>,
         default_damage_type: Option<&serde_json::Value>,
+        statuses: Option<&serde_json::Value>,
     ) -> Result<Self, String> {
         let mut vocabulary = DefenseVocabulary::default();
         for (index, entry) in list_entries("defenseLayers", layers)?.iter().enumerate() {
@@ -365,6 +405,8 @@ impl DefenseVocabulary {
             })?;
             vocabulary.default_damage_type = Some(index);
         }
+        vocabulary.statuses =
+            crate::status::parse_statuses(statuses, |name| vocabulary.type_index(name))?;
         Ok(vocabulary)
     }
 }
@@ -737,6 +779,7 @@ mod tests {
                 {"kind": "damageType", "name": "flechette", "matrix": {"shield": "bypass", "armor": 0, "health": 1.5}, "options": {}}
             ])),
             Some(&serde_json::json!({"kind": "damageType", "name": "flechette"})),
+            None,
         )
         .unwrap();
         assert_eq!(vocabulary.layers, ["shield", "armor"]);
@@ -864,9 +907,13 @@ mod tests {
             ),
         ];
         for (layers, types, default, needle) in cases {
-            let error =
-                DefenseVocabulary::from_manifest(layers.as_ref(), types.as_ref(), default.as_ref())
-                    .expect_err(needle);
+            let error = DefenseVocabulary::from_manifest(
+                layers.as_ref(),
+                types.as_ref(),
+                default.as_ref(),
+                None,
+            )
+            .expect_err(needle);
             assert!(
                 error.contains(needle),
                 "`{error}` should mention `{needle}`"

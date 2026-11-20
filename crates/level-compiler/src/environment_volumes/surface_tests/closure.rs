@@ -482,21 +482,36 @@ fn levels_with_no_open_seam_keep_their_bytes_from_before_closure() {
         assert_eq!(blake3::hash(&v1_bytes(&section)).to_hex().as_str(), hash);
     }
 
-    // The e24 fixture, encoded as the pipeline encodes it, captured the same
-    // way.
+    // The e24 fixture, encoded as the pipeline encodes it: closure leaves its
+    // bytes exactly as the unclosed encoder writes them. The hash was captured
+    // from the push-cut-gated compiler, and recaptured when the statuses
+    // brief added the lava puddle (closed and unclosed bytes still equal).
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../content/dev/maps/e24-environment-test.map");
     let map = parse_map_file(&path, MapFormat::IdTech2).expect("e24 fixture parses");
-    let mut texture_names = TextureNamesSection { names: Vec::new() };
-    let section = encode_environment_volumes_section(
-        &map.environment_volumes,
-        map.initial_gravity,
-        &map.brush_volumes,
-        &mut texture_names,
+    let encode = |close: bool| {
+        let mut texture_names = TextureNamesSection { names: Vec::new() };
+        let encode = if close {
+            encode_environment_volumes_section
+        } else {
+            encode_environment_volumes_section_unclosed
+        };
+        encode(
+            &map.environment_volumes,
+            map.initial_gravity,
+            &map.brush_volumes,
+            &mut texture_names,
+        )
+    };
+    let section = encode(true);
+    assert_eq!(
+        section.to_bytes(),
+        encode(false).to_bytes(),
+        "closure moves nothing in e24"
     );
     assert_eq!(
         blake3::hash(&v1_bytes(&section)).to_hex().as_str(),
-        "48901a4beaf980c347fd8ef3da19f6da59fe975de96e97035fdc10fe50338e5c"
+        "72e2716d4905dc18bdefece1db2d460ce10c57840644eb7de23ed06a71169162"
     );
 }
 

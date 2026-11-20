@@ -145,6 +145,8 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             updated.death_handled = true;
             let ledger = ContributorLedgerSnapshot::from_health(&updated);
             let _ = registry.set_component(id, updated);
+            // The death latch clears statuses (`scripting.md` §2).
+            registry.clear_statuses(id);
             report.player_died = true;
             report.player_contributor_ledger = Some(ledger);
             continue;
@@ -174,6 +176,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
                 contributor_ledger: updated.contributor_ledger.clone(),
             });
             let _ = registry.set_component(id, updated);
+            registry.clear_statuses(id);
             continue;
         }
 
@@ -196,6 +199,7 @@ pub(crate) fn sweep_deaths(registry: &mut EntityRegistry) -> DeathReport {
             contributor_ledger: updated.contributor_ledger.clone(),
         });
         let _ = registry.set_component(id, updated);
+        registry.clear_statuses(id);
     }
 
     report

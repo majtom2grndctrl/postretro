@@ -5,6 +5,7 @@ import { referencePistolEntity } from "./reference-pistol";
 import { referenceRifleEntity } from "./reference-rifle";
 import { referenceShotgunEntity } from "./reference-shotgun";
 import { positionalSoundMovementSounds } from "./positional-sound";
+import { incendiaryRifleEntity } from "./status-hazards";
 import {
   referencePlasmaBoltEntity,
   referenceRocketEntity,
@@ -66,6 +67,8 @@ export const playerEntity = defineEntity({
         referenceRifleEntity,
         referencePlasmaBoltEntity,
         referenceRocketEntity,
+        // Ignites enemies (scripts/status-hazards.ts).
+        incendiaryRifleEntity,
       ],
     },
     mesh: {

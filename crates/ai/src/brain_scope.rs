@@ -102,6 +102,8 @@ pub(crate) enum BrainInputHandle {
     Defense(usize),
     /// Index into the interned named attack-turn reads.
     AttackTurn(usize),
+    /// Index into the interned `@status.*` reads of the brain's own statuses.
+    Status(usize),
 }
 
 /// Values whose meaning changes with the activity level currently being
@@ -185,6 +187,11 @@ pub(crate) struct BrainScope {
     /// bind. Parallel to `attack_turn_values`, refreshed per enemy.
     attack_turn_reads: RefCell<Vec<(String, AttackTurnRead)>>,
     attack_turn_values: RefCell<Vec<bool>>,
+    /// Interned `@status.*` names, appended at bind; parallel to
+    /// `status_values`, refreshed per enemy by name against the committed
+    /// vocabulary, so a hot reload that reorders statuses keeps each read.
+    status_names: RefCell<Vec<String>>,
+    status_values: RefCell<Vec<bool>>,
     /// The enemy's selector choices this pass: recorded on a decide tick,
     /// recalled on the ticks between.
     selectors: SelectorTrack,
@@ -355,6 +362,8 @@ impl BrainScope {
             attack_turn_reads: RefCell::new(Vec::new()),
             attack_turn_values: RefCell::new(Vec::new()),
             selectors: SelectorTrack::default(),
+            status_names: RefCell::new(Vec::new()),
+            status_values: RefCell::new(Vec::new()),
         }
     }
 
@@ -417,6 +426,17 @@ impl BrainScope {
         ];
 
         self.defense.seed(registry, Some(entity));
+        {
+            let names = self.status_names.borrow();
+            let mut values = self.status_values.borrow_mut();
+            let vocabulary = registry.defense_vocabulary();
+            for (value, name) in values.iter_mut().zip(names.iter()) {
+                *value = vocabulary
+                    .status_index(name)
+                    .and_then(|index| u16::try_from(index).ok())
+                    .is_some_and(|index| registry.has_status(entity, index));
+            }
+        }
         let state = registry.get_component::<EntityStateComponent>(entity).ok();
         let names = self.state_names.borrow();
         let mut values = self.state_values.borrow_mut();
@@ -475,6 +495,17 @@ impl BrainScope {
         reads.len() - 1
     }
 
+    /// Intern one `@status.*` read, returning its stable snapshot index.
+    fn intern_status_read(&self, status: &str) -> usize {
+        let mut names = self.status_names.borrow_mut();
+        if let Some(index) = names.iter().position(|bound| bound == status) {
+            return index;
+        }
+        names.push(status.to_string());
+        self.status_values.borrow_mut().push(false);
+        names.len() - 1
+    }
+
     /// Intern one `@state.*` field name, returning its stable snapshot index.
     ///
     /// This is the only place either snapshot grows, and it runs at bind alone —
@@ -523,6 +554,10 @@ impl BindingScope for BrainScope {
                 ),
                 ir_type: IrType::Bool,
             }),
+            BrainInputRef::Status(status) => Some(ResolvedInput {
+                handle: BrainInputHandle::Status(self.intern_status_read(status)),
+                ir_type: IrType::Bool,
+            }),
         }
     }
 
@@ -545,6 +580,7 @@ impl BindingScope for BrainScope {
             BrainInputHandle::AttackTurn(index) => {
                 IrValue::Bool(self.attack_turn_values.borrow()[*index])
             }
+            BrainInputHandle::Status(index) => IrValue::Bool(self.status_values.borrow()[*index]),
         }
     }
 
@@ -857,6 +893,48 @@ mod tests {
         // The other enemy carries no armor: it reads 0, as unset state does.
         scope.refresh(&registry, target, engaged_facts(enemy));
         assert_number(eval_value(&capacity, &scope), 0.0);
+    }
+
+    // A `hasStatus(h)` guard holds while the brain entity carries any
+    // instance of `h`, by name, so a reload that reorders statuses keeps it.
+    #[test]
+    fn brain_guard_reads_own_status_presence() {
+        use postretro_entities::components::statuses::StatusApplier;
+        let (mut registry, enemy, target) = seeded_registry();
+        let statuses = |names: &[&str]| {
+            let entries: Vec<_> = names
+                .iter()
+                .map(|name| serde_json::json!({ "kind": "status", "name": name, "damage": 0, "tickMs": 500 }))
+                .collect();
+            std::sync::Arc::new(postretro_foundation::defense::DefenseVocabulary {
+                statuses: postretro_foundation::status::parse_statuses(
+                    Some(&serde_json::Value::Array(entries)),
+                    |_| None,
+                )
+                .unwrap(),
+                ..Default::default()
+            })
+        };
+        registry.set_defense_vocabulary(statuses(&["wet", "burning"]));
+        let mut scope = BrainScope::for_validation();
+        bind_brain_guard(&input("@status.burning")).expect("validates as a Bool read");
+        let burning = bind_read("@status.burning", &scope);
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(eval_value(&burning, &scope), IrValue::Bool(false));
+        registry.set_status_applications_immediate(true);
+        let source = registry.intern_status_source("weapon.incendiary");
+        registry.apply_status(enemy, 1, StatusApplier::Source(source), source);
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(eval_value(&burning, &scope), IrValue::Bool(true));
+        registry.set_defense_vocabulary(statuses(&["burning", "wet"]));
+        scope.refresh(&registry, enemy, engaged_facts(target));
+        assert_eq!(
+            eval_value(&burning, &scope),
+            IrValue::Bool(true),
+            "kept by name across a reorder"
+        );
+        scope.refresh(&registry, target, engaged_facts(enemy));
+        assert_eq!(eval_value(&burning, &scope), IrValue::Bool(false));
     }
 
     #[test]

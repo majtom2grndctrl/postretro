@@ -365,6 +365,7 @@ where
                                 producer: DamageProducer::InTick,
                                 point: None,
                                 attacker_life: None,
+                                status: None,
                             },
                         );
                         // Observe the direct damage result before impact policy

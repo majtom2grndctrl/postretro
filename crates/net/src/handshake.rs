@@ -62,7 +62,8 @@ pub const PROTOCOL_ID: u32 = 0x_5052_4C47; // "PRLG"
 /// The roster entry's display name and status advance it to 40.
 /// The carried loadout on `JoinSeed` and `FinalCharacter` advances it to 41:
 /// both shipped messages changed layout.
-pub const WIRE_VERSION: u32 = 41;
+/// Status presence, a new entity component payload, advances it to 42 (`SNAPSHOT_VERSION` 26).
+pub const WIRE_VERSION: u32 = 42;
 
 #[must_use]
 pub const fn transport_protocol_id() -> u64 {
@@ -1284,7 +1285,7 @@ mod switch_tick_epoch_tests {
     fn assist_refuses_wire_38_peers_and_admits_wire_39() {
         const PRE_ASSIST_WIRE_VERSION: u32 = 38;
         const { assert!(WIRE_VERSION > PRE_ASSIST_WIRE_VERSION) };
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
+        const { assert!(crate::wire::SNAPSHOT_VERSION >= 25) };
         const {
             assert!(
                 PROTOCOL_ID >= 0x_5052_4C43,
@@ -1599,7 +1600,7 @@ mod server_vocabulary_tests {
         );
 
         assert_eq!(PROTOCOL_ID, 0x_5052_4C47, "PROTOCOL_ID is still \"PRLG\"");
-        assert_eq!(WIRE_VERSION, 41);
-        assert_eq!(crate::wire::SNAPSHOT_VERSION, 25);
+        assert_eq!(WIRE_VERSION, 42);
+        assert_eq!(crate::wire::SNAPSHOT_VERSION, 26);
     }
 }

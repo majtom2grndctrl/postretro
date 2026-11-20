@@ -734,6 +734,7 @@ mod tests {
                     )]),
                 }],
                 default_damage_type: None,
+                statuses: Vec::new(),
             },
         ));
         let owner = registry.spawn(Transform::default());
@@ -789,6 +790,7 @@ mod tests {
                 ]),
             }],
             default_damage_type: None,
+            statuses: Vec::new(),
         }));
         let owner = registry.spawn(Transform::default());
         let weapon = registry.spawn(Transform::default());

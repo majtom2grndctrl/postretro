@@ -23,6 +23,8 @@ Worst drain is the estimate's maximum (`drain_estimate_us_max`), far-point walk.
 
 ## Recommendation
 
+**Owner decision, 2026-11-19:** the play budget is 4 ms, and the showcase acceptance row is re-based on the byte cap of the same bake. Both are recorded in `index.md`.
+
 | Question | Recommendation | Basis |
 |---|---|---|
 | Play budget | **4 ms holds; no rise.** The SH pop-in the open question feared does not appear on either bake. 5 ms gives the same worst drain on campaign-test and 0.15 ms more on the showcase, and buys only fewer cuts, which cost no pop-in here. Above 5 ms the worst drain grows with the budget and buys nothing | Late items identical at every budget; worst drain floored by the lone SH cluster |

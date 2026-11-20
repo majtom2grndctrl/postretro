@@ -359,6 +359,9 @@ fn run_headless_inner(
             &mut session.scripting.slot_accumulator_bindings,
             TICK_DT,
         );
+        // Script impacts that landed after the tick evaluate before the
+        // removal pass, as the frame loop's do.
+        session.scripting.settle_frame_end_impacts(false);
         run_headless_frame_end_removals(
             &registry,
             &mut progress_tracker,

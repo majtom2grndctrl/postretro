@@ -187,6 +187,12 @@ pub(crate) enum BoundTriggerCommandKind {
 }
 
 impl BoundTriggerCommand {
+    /// Whether executing this command can publish an impact dispatch, so an
+    /// in-tick caller evaluates right after it.
+    pub(crate) fn produces_impacts(&self) -> bool {
+        matches!(self, Self::Damage { .. })
+    }
+
     pub(crate) fn execute(
         &self,
         registry: &mut EntityRegistry,

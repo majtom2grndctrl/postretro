@@ -51,6 +51,8 @@ mod revive_marker_surface_tests;
 #[cfg(test)]
 mod save_points_tests;
 pub(crate) mod save_verbs;
+#[cfg(test)]
+mod script_impact_surface_tests;
 pub(crate) mod session;
 pub(crate) mod settle_log;
 pub(crate) mod settling;

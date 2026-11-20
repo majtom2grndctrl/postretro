@@ -5857,6 +5857,51 @@ impl App {
         )
     }
 
+    /// Evaluate script impacts pending outside a fixed tick, in landing order:
+    /// at tick start and at frame end (`scripting.md` §2, Impact-policy
+    /// evaluation). A networked host streams overlay edges exactly as its
+    /// in-tick hits do; a connected client discards them unevaluated.
+    fn evaluate_pending_script_impacts(&mut self) {
+        let connected_client = self.is_connected_client();
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let script_ctx = session.scripting.script_ctx.clone();
+        let scripting = &mut session.scripting;
+        let Some(netcode::NetEndpoint::Host {
+            allocator,
+            replicable,
+            descriptor_entities,
+            ..
+        }) = session.net_endpoint.as_mut()
+        else {
+            scripting.settle_frame_end_impacts(connected_client);
+            return;
+        };
+        let overlay_config = scripting.impact_policy_runtime.client_overlay_config();
+        let overlay_tracker = &mut session.host_overlay_fact_tracker;
+        let identities = crate::host_overlays::HostOverlayIdentities::new(
+            allocator,
+            replicable,
+            descriptor_entities,
+        );
+        let mut registry = script_ctx.registry.borrow_mut();
+        scripting.evaluate_pending_in_tick_impacts_with_overlay_sink(
+            &mut registry,
+            |registry, damage| {
+                if let Some(config) = overlay_config.as_ref() {
+                    identities.record_damage(
+                        registry,
+                        damage,
+                        &mut script_ctx.presentation_overrides.borrow_mut(),
+                        overlay_tracker,
+                        config,
+                    );
+                }
+            },
+        );
+    }
+
     fn host_take_ready_hit_declarations(&mut self) -> Vec<netcode::PendingHitDeclaration> {
         let Some(netcode::NetEndpoint::Host {
             tick,

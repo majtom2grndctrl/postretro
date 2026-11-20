@@ -782,6 +782,11 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 continue;
             }
 
+            // Script impacts that landed before this tick (UI presses,
+            // `levelLoad`, the previous tick's player events) evaluate first,
+            // in landing order, before anything this tick reads health.
+            app.evaluate_pending_script_impacts();
+
             // Host-only ghost-link steps queued before this tick apply now,
             // at its start, in call order.
             app.apply_pending_ghost_link_commands();
@@ -1612,12 +1617,9 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         );
     }
 
-    if let Some(session) = app.session.as_mut() {
-        session
-            .scripting
-            .impact_policy_runtime
-            .discard_app_drain_pending();
-    }
+    // Script impacts that landed after the frame's last tick evaluate here,
+    // before the removal pass reaps any despawn their policies requested.
+    app.evaluate_pending_script_impacts();
 
     drop(stage_scope);
     let stage_scope = cpu_stages.scope(cpu_timing::FrameStage::FrameEndRemoval);

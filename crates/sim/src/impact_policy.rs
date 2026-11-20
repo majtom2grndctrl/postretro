@@ -340,18 +340,17 @@ impl ImpactPolicyRuntime {
         self.rebuild();
     }
 
-    /// Evaluate every dispatch currently published by one damage call while
-    /// the fixed-tick producer still owns the registry. Producers call this
-    /// immediately after each hit, never as a post-tick batch.
+    /// Evaluate every pending dispatch, in landing order, against the live
+    /// registry. In-tick producers call this immediately after each hit; the
+    /// host also calls it at tick start and at frame end for script damage
+    /// that landed outside a tick (`scripting.md` §2, Impact-policy
+    /// evaluation). Whatever produced an impact, it runs its policies.
     pub fn evaluate_pending_in_registry(
         &mut self,
         registry: &mut postretro_entities::EntityRegistry,
     ) {
         let dispatches = registry.take_impact_dispatches();
         for dispatch in dispatches {
-            if dispatch.producer != DamageProducer::InTick {
-                continue;
-            }
             if let Some(damage) = self.evaluate_dispatch(registry, dispatch) {
                 self.retain_local_overlay_damage(registry, damage);
             }
@@ -370,20 +369,17 @@ impl ImpactPolicyRuntime {
     ) {
         let dispatches = registry.take_impact_dispatches();
         for dispatch in dispatches {
-            if dispatch.producer != DamageProducer::InTick {
-                continue;
-            }
             if let Some(damage) = self.evaluate_dispatch(registry, dispatch) {
                 sink(registry, damage);
             }
         }
     }
 
-    /// Consume the app-drain producer arm after reaction dispatch settles.
-    /// v1 intentionally runs no policy for these impacts. An in-tick dispatch
-    /// reaching this sink is an ordering bug and is dropped rather than being
-    /// evaluated against a stale post-tick snapshot.
-    pub fn discard_app_drain_pending(&mut self) {
+    /// A connected client's frame-end sink: its damage is not authoritative,
+    /// so script impacts it produced (the raw-tag `applyDamage` arm) are
+    /// discarded unevaluated. An in-tick dispatch reaching this sink is an
+    /// ordering bug and is dropped rather than evaluated late.
+    pub fn discard_client_pending(&mut self) {
         let dispatches = self.ctx.registry.borrow_mut().take_impact_dispatches();
         for dispatch in dispatches {
             if dispatch.producer == DamageProducer::InTick {
@@ -3628,8 +3624,10 @@ mod tests {
         }));
     }
 
+    // Script damage runs its policies; with no damager, a source-addressed
+    // grant has no recipient and grants nothing.
     #[test]
-    fn app_drain_dispatches_are_consumed_without_policy_evaluation() {
+    fn script_impacts_run_policies_and_source_grants_skip() {
         let ctx = ScriptCtx::new();
         let target = target(&ctx, &["crate"]);
         let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
@@ -3640,6 +3638,41 @@ mod tests {
         )]);
 
         hit(&ctx, target, DamageProducer::AppDrain);
+        let health_after_hit = ctx
+            .registry
+            .borrow()
+            .get_component::<HealthComponent>(target)
+            .unwrap()
+            .current;
+        evaluate_pending(&ctx, &mut runtime);
+
+        assert_eq!(state(&ctx, target, "ran"), 1.0);
+        assert_eq!(
+            ctx.registry
+                .borrow()
+                .get_component::<HealthComponent>(target)
+                .unwrap()
+                .current,
+            health_after_hit,
+            "the source grant reached no one"
+        );
+    }
+
+    // A connected client's script damage is not authoritative: its frame-end
+    // sink discards the impact unevaluated.
+    #[test]
+    fn client_discards_script_impacts_unevaluated() {
+        let ctx = ScriptCtx::new();
+        let target = target(&ctx, &["crate"]);
+        let mut runtime = ImpactPolicyRuntime::new(ctx.clone());
+        runtime.replace_global_events(vec![event(
+            "client",
+            "crate",
+            vec![state_write("ran", number(1.0))],
+        )]);
+
+        hit(&ctx, target, DamageProducer::AppDrain);
+        runtime.discard_client_pending();
         evaluate_pending(&ctx, &mut runtime);
 
         assert_eq!(state(&ctx, target, "ran"), 0.0);

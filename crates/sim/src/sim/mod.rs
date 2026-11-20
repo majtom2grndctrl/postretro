@@ -25,6 +25,8 @@ mod grant_layer_tests;
 mod layer_lifecycle_tests;
 #[cfg(test)]
 mod layer_stress_tests;
+#[cfg(test)]
+mod script_impact_tick_tests;
 // Callers hand the CPU timing gate to the tick as a value.
 pub use postretro_stage_timing::TimingGate;
 mod descriptor_health;
@@ -756,7 +758,13 @@ where
                 .map_or(PlayerId::Local(*pawn), |remote| {
                     PlayerId::Remote(remote.owner_client_id)
                 });
-            if let Some(residual) = bindings.execute(ctx, event.teleporter, *pawn, player) {
+            if let Some(residual) = bindings.execute_evaluating_impacts(
+                ctx,
+                event.teleporter,
+                *pawn,
+                player,
+                &mut on_impact,
+            ) {
                 teleport_residuals.push(residual);
             }
         }
@@ -833,12 +841,13 @@ where
                     |event, occupancy, occupants, registry| {
                         let fire_context =
                             trigger_fire_context(event, occupancy, canonical_player_pawns);
-                        let execution = trigger_context.bindings.execute_with_script_ctx(
+                        let execution = trigger_context.bindings.execute_evaluating_impacts(
                             event.fire.trigger,
                             event.edge,
                             registry,
                             script_ctx,
                             &fire_context,
+                            &mut on_impact,
                         );
                         #[cfg(test)]
                         {

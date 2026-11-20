@@ -349,7 +349,7 @@ fn failed_level_label(entry: &LevelLoadEntry) -> String {
 pub(crate) mod tests {
     pub(super) use super::lifecycle_test_fixtures::descriptor;
     pub(crate) use super::lifecycle_test_fixtures::{
-        drop_in_flight_load, install_capture_world, install_descriptor_world, level_world,
-        runtime_audience_manifest, script_ctx, test_app,
+        connect_test_app_as_client, drop_in_flight_load, install_capture_world,
+        install_descriptor_world, level_world, runtime_audience_manifest, script_ctx, test_app,
     };
 }

@@ -111,12 +111,17 @@ pub fn simulate_tick_with_presentation_aim<AiResult>(
     drop_pressed: &HashMap<PlayerId, bool>,
     trigger_context: Option<TriggerTickContext<'_>>,
     ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
-    on_impact: impl FnMut(&mut EntityRegistry),
+    mut on_impact: impl FnMut(&mut EntityRegistry),
     timing: postretro_stage_timing::TimingGate,
 ) -> TickEvents
 where
     AiResult: Into<AiTickResult>,
 {
+    // Script impacts that landed before this tick evaluate at its start, in
+    // landing order, before anything this tick reads health (`scripting.md`
+    // §2, Impact-policy evaluation). The windowed host does the same before
+    // calling [`begin_tick`] itself.
+    on_impact(&mut registry.borrow_mut());
     let ctx = trigger_context
         .as_ref()
         .and_then(|context| context.script_ctx.as_ref());

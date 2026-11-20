@@ -28,13 +28,13 @@ Derivation behind the brief. Source read at `e7438238`. The handoff's verified f
 - `@invariant` clip position is shared by `depth_prepass.wgsl`, `forward.wgsl` and `kinematic_brush.wgsl`; that is what lets a second entry land on `Equal`.
 - `pipeline_layout.rs` `FORWARD_SAMPLED_TEXTURE_BUDGET` = 16, at 16/16 (`surface_depth.wgsl` header). Forward uses groups 0–6 (`rendering_pipeline.md` §10).
 - Precedent for a per-vertex side stream: world specular owners, forward-only, vertex slot 1, stamped from id 42 per id-17 face (`rendering_pipeline.md` §6).
-- No memory-ledger row for probes: `sh_residency.rs` `ShAllocationKind` names none.
+- No memory-ledger row for probes: `sh_allocation.rs` `ShAllocationKind` names none.
 
 **Stage order (handoff "not verified", now grounded).** `pipeline.rs` runs `texture_stage::bake_world_materials` and `bake_remaining_textures` before `reflection_probes::bake_or_load_reflection_probes`. `ReflectionProbeInputs` already carries `texture_keys` and `prm_root`, so placement can read each material's baked `_p` channel before capture.
 
 ## Today's specular combine and the tint rule
 
-Forward `fs_main` returns `base_color.rgb * total_light` with specular inside `total_light`; the mover pass does the same (`specular-texel-sharpness/research.md` §Tint). So a highlight without `_t` is tinted by raw albedo. The reflection takes the same colour as the highlight, `_t` or not. The tint rule and its storage belong to `specular-texel-sharpness`; at this read that brief's Decisions still say "A unused". Its research §Tint and the orchestrator's correction carry the rule.
+Forward `fs_main` returns `base_color.rgb * total_light` with specular inside `total_light`; the mover pass does the same (`specular-texel-sharpness/research.md` §Tint). So a highlight without `_t` is tinted by raw albedo. The reflection takes the same colour as the highlight, `_t` or not. The tint rule and its storage belong to `specular-texel-sharpness`, whose Decisions store tint in the specular slot's A.
 
 ## The reflector is in its own capture
 
@@ -115,6 +115,26 @@ Tencent WO2026113651A1 claim 1 reads on most parallax-corrected probe reflection
 - **Coplanar mover.** A mover face exactly coplanar with a world face passes the colour pass's `Equal` and draws over the world (`rendering_pipeline.md` §7.3). An overlay `Equal` redraw of the glossy world face would then blend the world face's reflection over the mover there.
 - **Glossy faces in captures.** Capture shading has no specular, so a glossy face seen in another probe's capture shows its diffuse only. No recursion. Accepted.
 - **Planar mirror.** The mirror view reuses main pipelines for world draws. Whether it also records the overlay is open.
+
+## Pins
+
+Orderings the Acceptance rows cite.
+
+| ID | Scenario | Ordering | Expected outcome |
+|---|---|---|---|
+| P1 | A level with glossy world faces and no fluid volume | geometry install, then a fluid install with no surface face | Probe resources upload, the overlay draws, the ledger counts them; nothing drops before unload |
+| P2 | A glossy face flush with a coplanar face whose material does not reflect (a bronze inlay in a stone floor, or a matte strip crossing a glossy floor) | capture traces from 2 mm off the shared plane | No fragment of the glossy face lies in capture shadow cast by any face on its plane, bound or not |
+| P3 | One authored box binds a glossy floor and a glossy wall, or a pool and a glossy wall | the box makes one probe per facing; each probe captures with only its own faces transparent | The floor reflects the wall and the wall reflects the floor; the pool reflects the wall and the wall reflects the pool |
+| P4 | An authored box binds faces on several planes, including a pool above a lower glossy floor | one probe per facing; each probe's capture point chosen from its own faces, then the offset | Each probe's capture point is on the front side of every face it binds, or a face it cannot serve binds nothing and the warning names it |
+| P5 | A stored light forced off its reference on frame N, with only a floor, a wall or a ceiling drawn; N is the first frame after install, or the first overlay frame after frames with none, or a frame with no water draw | descriptor flush, per-probe sums, overlay, all on N | The reflection changes on N for every orientation; no overlay fragment reads unwritten or stale sums |
+| P6 | A texel whose exponent selects between colour mips m and m+1, near the octahedral fold, down to the 4² mip | per-mip interiors differ (126, 62, … 2 texels), so one UV cannot address two mips | Each mip read lands on the interior texel the compiler wrote for that direction |
+| P7 | `reflection_quality` off → low → off live; a level built at off and switched to low on its commit frame | tier change applies live; a level load's commit applies no tier | Off frames record no overlay; the low frame draws the probe term; nothing is built or reinstalled |
+| P8 | Unload level A, install level B with different glossy faces and probes | B's install replaces A's side stream, draw plan and probes | B's first frame draws only B's faces from B's probes; the ledger holds only B's probes |
+| P9 | A committed reflection-style switch while a level is installed, either direction | style commit, then the next frame | That frame's overlay is in the new style |
+| P10 | Very high, selected plane, glossy faces in the mirror's reach | planar group records world draws with main pipelines | Mirror glossy faces draw no overlay, or one tested against mirror depth from the mirror camera |
+| P11 (conditional) | Surface Depth quality toggled live over a glossy Surface Depth material | toggle applies, then the next frame | The overlay's sampled texel follows the same quality as forward's on that frame |
+
+P11 holds only if the Surface Depth open question answers that the overlay reruns the march. No Acceptance row cites it until that answer lands.
 
 ## Not verified
 

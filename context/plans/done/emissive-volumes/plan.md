@@ -158,3 +158,9 @@ Merged origin/main (91 commits, E25 level seams landed) at c4c64ac65. On main, E
 Gate after the merge: `cargo test --workspace --features postretro/dev-tools` 107 targets pass; `telemetry_run` failed in the batch with a stalled window and passed 2/2 rerun with the display awake (environmental, as at preflight); xtask `seam_gates::retired_streaming_split_classname_appears_only_in_plans` fails locally only on the gitignored stale `dist/postretro-dev-sdk/` bundle (no tracked file matches). clippy `-D warnings` clean with and without dev-tools; fmt clean.
 
 Owner played `emissive-volumes-demo` on Windows and on the Mac: "Looks solid."
+
+## Second merge with main: E16 status effects (2026-11-20)
+
+E16 landed first with `StatusPresence` at component kind 30 and `WIRE_VERSION` 42 / `SNAPSHOT_VERSION` 26. Merged at 4f8007052: `EmissiveVolume` moves to component kind 31, and emissive advances `WIRE_VERSION` to 43 and `SNAPSHOT_VERSION` to 27; the emissive gate tests now refuse wire 42 and snapshot 26. Presentation binding kind 3 is unchanged (main has 0–2). Also fixed main's `needless_borrow` clippy lint in `startup/environment_install.rs`.
+
+Gate (relevant subset, not the full workspace): net 346, netcode 1076, entities 347, sim 2192 (no SDK type drift), level-format 832, render-cpu 828, scripting-core 1142, postretro dev-tools bin filtered to emissive/presentation/coop/seam/status/observability 234 and environment/fluid/immersion 80, `emissive_volumes_compile` 3, all passed; xtask 52 passed with the one local-only seam gate failure on the gitignored `dist/` bundle; clippy both feature sets clean; fmt clean. `net` `transport::tests::netcode_connection_stashes_decoded_connect_claim` is flaky (fails 2 in 3 alone; text identical on main), passed in the full rerun.

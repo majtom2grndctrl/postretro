@@ -156,6 +156,9 @@ pub(super) struct Rig {
     hit_zones: HitZoneStore,
     steps: SequencedPrimitiveRegistry,
     remote: Vec<RemotePawnCommand>,
+    /// Environment volumes and per-fluid viscosity the tick resolves against;
+    /// none resolves every body dry.
+    pub(super) environment: Option<(postretro_collision::EnvironmentVolumes, Vec<f32>)>,
 }
 
 impl Rig {
@@ -215,6 +218,7 @@ impl Rig {
             hit_zones: HitZoneStore::new(),
             steps,
             remote: Vec::new(),
+            environment: None,
         }
     }
 
@@ -323,7 +327,7 @@ impl Rig {
         trigger
     }
 
-    fn place(&self, pawn: EntityId, position: Vec3) {
+    pub(super) fn place(&self, pawn: EntityId, position: Vec3) {
         let mut registry = self.ctx.registry.borrow_mut();
         let mut transform = *registry.get_component::<Transform>(pawn).unwrap();
         transform.position = position;
@@ -390,12 +394,18 @@ impl Rig {
         let use_edges = Default::default();
         let steps = &self.steps;
         let teleporters = &self.teleporters;
+        let environment = match &self.environment {
+            Some((volumes, viscosity)) => {
+                postretro_collision::EnvironmentView::new(0.0, volumes, viscosity)
+            }
+            None => postretro_collision::EnvironmentView::level_only(0.0),
+        };
         simulate_tick(
             self.ctx.registry.clone(),
             &self.world,
             &self.hit_zones,
             None,
-            postretro_collision::EnvironmentView::level_only(0.0),
+            environment,
             None,
             0.0,
             &mut self.progress,

@@ -327,6 +327,7 @@ fn the_reflection_scripting_example_parses_identically_in_ts_and_luau() {
                 wave_length: FluidDescriptor::default_wave_length(
                     FluidDescriptor::DEFAULT_WAVE_AMPLITUDE
                 ),
+                status: None,
             }]
         );
     }

@@ -165,6 +165,29 @@ fn run_headless_inner(
         &world,
         environment_fluids.names(),
     );
+    // Fluid statuses, as the windowed host installs them.
+    {
+        let data = script_ctx.data_registry.borrow();
+        let statuses: Vec<(String, Option<String>)> = data
+            .fluids
+            .descriptors()
+            .iter()
+            .map(|fluid| {
+                let status = fluid.status.as_ref().and_then(|status| {
+                    status
+                        .handle("status")
+                        .ok()
+                        .and_then(|handle| handle.expect_status().ok().map(str::to_string))
+                });
+                (fluid.name.clone(), status)
+            })
+            .collect();
+        script_ctx.registry.borrow_mut().set_fluid_statuses(
+            statuses
+                .iter()
+                .map(|(fluid, status)| (fluid.as_str(), status.as_deref())),
+        );
+    }
     let mut fog_volume_bridge = FogVolumeBridge::new();
     // Trigger volumes are populated for parity with the windowed install, but the
     // tick loop passes no `TriggerTickContext` to `simulate_tick`, so the trigger

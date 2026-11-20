@@ -131,6 +131,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 wave_amplitude: 8.0,
                 wave_length: [64.0, 80.0],
                 surface_reflectivity: 1.0,
+                status: None,
             },
             FluidDescriptor {
                 name: "sludge".into(),
@@ -146,6 +147,7 @@ fn fluids_swim_twins_run_as_mod_manifests_and_declare_the_same_surface() {
                 wave_amplitude: 8.0,
                 wave_length: [64.0, 80.0],
                 surface_reflectivity: 1.0,
+                status: None,
             },
         ]
     );

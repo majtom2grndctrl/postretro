@@ -489,7 +489,10 @@ mod tests {
                 ),
             ),
             ComponentKind::Immersion => ComponentValue::Immersion(
-                postretro_entities::components::immersion::ImmersionComponent { immersion: 0.5 },
+                postretro_entities::components::immersion::ImmersionComponent {
+                    immersion: 0.5,
+                    fluid: None,
+                },
             ),
             ComponentKind::HitVolume => ComponentValue::HitVolume(
                 postretro_entities::components::hit_volume::HitVolumeComponent {

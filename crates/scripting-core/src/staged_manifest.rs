@@ -788,6 +788,13 @@ fn manifest_from_js_value<'js>(
             ),
         },
     )?;
+    crate::runtime::check_fluid_status_references(&fluids, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!(
+                "mod-init: `{source_path}` default mod manifest export invalid: {error}"
+            ),
+        }
+    })?;
 
     Ok(ModManifestResult {
         name,
@@ -1192,6 +1199,11 @@ fn run_staged_mod_init_luau(
             reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
         },
     )?;
+    crate::runtime::check_fluid_status_references(&fluids, &defense).map_err(|error| {
+        ScriptError::InvalidArgument {
+            reason: format!("mod-init: `{source_path}` returned mod manifest invalid: {error}"),
+        }
+    })?;
 
     Ok(ModManifestResult {
         name,

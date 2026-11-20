@@ -138,6 +138,7 @@ impl App {
         self.environment_volumes = environment_volumes_for(world, fluids.names(), source);
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
+        self.install_fluid_statuses();
         self.install_planar_candidates(world);
     }
 
@@ -165,6 +166,7 @@ impl App {
         }
         self.environment_fluids = fluids;
         self.environment_fluid_source = source;
+        self.install_fluid_statuses();
         if (renamed || resourced)
             && let Some(world) = self.level.as_ref()
         {
@@ -173,6 +175,38 @@ impl App {
         }
         self.resolve_fluid_surface_drift();
         self.reinstall_planar_candidates();
+    }
+
+    /// Install the status each fluid applies, in the active table's index
+    /// order. Fluid statuses are host-only gameplay data: only this machine's
+    /// own manifest carries them, so a connected client installs none.
+    fn install_fluid_statuses(&self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let script_ctx = &session.scripting.script_ctx;
+        let own = self.environment_fluid_source == FluidTableSource::OwnManifest;
+        let data = script_ctx.data_registry.borrow();
+        let fluids = data
+            .fluids
+            .descriptors()
+            .iter()
+            .filter(|_| own)
+            .map(|fluid| {
+                let status = fluid.status.as_ref().and_then(|status| {
+                    status
+                        .handle("status")
+                        .ok()
+                        .and_then(|handle| handle.expect_status().ok().map(str::to_string))
+                });
+                (fluid.name.clone(), status)
+            });
+        let fluids: Vec<(String, Option<String>)> = fluids.collect();
+        script_ctx.registry.borrow_mut().set_fluid_statuses(
+            fluids
+                .iter()
+                .map(|(fluid, status)| (fluid.as_str(), status.as_deref())),
+        );
     }
 
     /// Point every `Swim { fluid }` pawn at `next`'s index for the name its

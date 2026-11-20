@@ -28,6 +28,8 @@ mod layer_stress_tests;
 #[cfg(test)]
 mod script_impact_tick_tests;
 #[cfg(test)]
+mod status_fluid_tests;
+#[cfg(test)]
 mod status_policy_tests;
 #[cfg(test)]
 mod status_tick_tests;

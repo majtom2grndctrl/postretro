@@ -131,3 +131,42 @@ fn bad_status_declarations_fail_load_naming_the_key_path() {
         result.diagnostics
     );
 }
+
+// A fluid's `status` names a registered status in both runtimes; a status
+// `defineMod` does not register fails load.
+#[test]
+fn fluid_status_must_name_a_registered_status() {
+    const FLUID: &str = r#"name: "lava", viscosity: 0.6, viewTint: [1, 0.35, 0.05, 0.8], muffle: 0.9, surfaceOpacity: 1"#;
+    let ts = format!(
+        r#"const scalding = defineStatus("scalding", {{ damage: 10, tickMs: 250, durationMs: 250 }});
+           globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1",
+             statuses: [scalding], fluids: [defineFluid({{ {FLUID}, status: scalding }})] }});"#
+    );
+    let luau = r#"local scalding = defineStatus("scalding", { damage = 10, tickMs = 250, durationMs = 250 })
+        return defineMod({ name = "M", id = "m", version = "1", statuses = { scalding },
+          fluids = { defineFluid({ name = "lava", viscosity = 0.6, viewTint = { 1, 0.35, 0.05, 0.8 }, muffle = 0.9, surfaceOpacity = 1, status = scalding }) } })"#;
+    let js = built(build("fluid_js", "start-script.js", &ts));
+    let lua = built(build("fluid_luau", "start-script.luau", luau));
+    for manifest in [&js, &lua] {
+        let status = manifest.fluids.descriptors()[0].status.as_ref().unwrap();
+        assert_eq!(
+            status.handle("status").unwrap().expect_status(),
+            Ok("scalding")
+        );
+    }
+
+    let unlisted = format!(
+        r#"const scalding = defineStatus("scalding", {{ damage: 10, tickMs: 250 }});
+           globalThis.__postretroModManifest = defineMod({{ name: "M", id: "m", version: "1",
+             fluids: [defineFluid({{ {FLUID}, status: scalding }})] }});"#
+    );
+    let result = build("fluid_unlisted", "start-script.js", &unlisted);
+    assert_eq!(result.status, StagedManifestBuildStatus::Failed);
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("status `scalding` is not registered")),
+        "{:?}",
+        result.diagnostics
+    );
+}

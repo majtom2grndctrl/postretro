@@ -21,6 +21,9 @@ pub(crate) fn run_status_stage(
     registry: &mut EntityRegistry,
     on_impact: &mut dyn FnMut(&mut EntityRegistry),
 ) {
+    // This tick's fluid applications come first, so re-entering lava on a
+    // lingering instance's last tick refreshes it before its expiry is judged.
+    registry.apply_fluid_statuses();
     if registry.statuses().is_empty() {
         return;
     }

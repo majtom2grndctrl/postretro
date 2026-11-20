@@ -1647,6 +1647,8 @@ export type FluidDescriptor = {
   waveAmplitude: number?,
   --- Crest-to-crest length, in texture texels: one number L, meaning [L, L], or a `[min, max]` range from which each crest takes its own length. Finite, 0 < min <= max <= 128, and min >= 8 x `waveAmplitude` (the default 8 included). Omitted: [max(48, 8A), max(80, 8A)] for amplitude A.
   waveLength: number | {number}?,
+  --- Optional status, a handle `defineMod({ statuses })` registers, applied each tick to every player pawn whose body is in this fluid at any depth, as `fluid.<name>`. Host-only gameplay data: it never reaches a client or the replicated movement tuning. Enemies resolve no fluid; hurt them with a trigger and `applyStatus`. A status `defineMod` does not register fails load.
+  status: Status?,
 }
 
 --- A ghost style declared in `ModManifest.ghostStyles`, built with `defineGhostStyle`: how a ghost link's ghosts look and whether their sounds carry. A map's `ghost_link` names it through its `ghost_style` key. Every field but `name` is optional; an omitted field takes the floor style's value (neutral, translucent, no sound). A malformed field drops the whole style with a warning naming it, and a second declaration of an existing name is dropped; the first declaration stands and the rest of the manifest is kept. A link naming no declared style uses the floor style. Styles resolve on each machine by name and never affect co-op compatibility.

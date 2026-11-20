@@ -295,6 +295,7 @@ fn fluid(name: &str) -> postretro_foundation::FluidDescriptor {
         wave_amplitude: 8.0,
         wave_length: [64.0, 80.0],
         surface_reflectivity: 1.0,
+        status: None,
     }
 }
 

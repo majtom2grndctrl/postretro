@@ -155,6 +155,19 @@ pub struct StatusTable {
     immediate: bool,
     /// Due-tick scratch the status stage reuses each tick.
     due: Vec<(EntityId, u64)>,
+    /// By fluid declaration index: the status that fluid applies and its
+    /// interned `fluid.<name>` source. Host-only; empty on a client.
+    fluid_statuses: Vec<Option<FluidStatus>>,
+    /// Fluid-application scratch the status stage reuses each tick.
+    fluid_scratch: Vec<(EntityId, u16, u16)>,
+}
+
+/// The status one fluid applies, by name so a hot reload that reorders
+/// statuses never retargets it, and the `fluid.<name>` source it applies as.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FluidStatus {
+    pub status: String,
+    pub source: u16,
 }
 
 const ABSENT: u32 = u32::MAX;
@@ -586,5 +599,65 @@ impl crate::registry::EntityRegistry {
     pub fn expire_statuses(&mut self) {
         let tick = self.host_tick();
         self.statuses.expire(tick);
+    }
+}
+
+impl crate::registry::EntityRegistry {
+    /// Install the status each fluid applies, in fluid declaration order:
+    /// `(fluid name, status name)`. The host and single player install their
+    /// manifest's fluids; a client installs none.
+    pub fn set_fluid_statuses<'a>(
+        &mut self,
+        fluids: impl IntoIterator<Item = (&'a str, Option<&'a str>)>,
+    ) {
+        let mut table = Vec::new();
+        for (fluid, status) in fluids {
+            table.push(status.map(|status| FluidStatus {
+                status: status.to_string(),
+                source: self.statuses.intern_source(&format!(
+                    "{}{fluid}",
+                    postretro_foundation::status::FLUID_SOURCE_PREFIX
+                )),
+            }));
+        }
+        self.statuses.fluid_statuses = table;
+    }
+
+    /// Apply each fluid's status to every player pawn whose last resolve put
+    /// its body in that fluid at any depth, as `fluid.<name>`. A pawn without
+    /// a command this tick keeps its last resolve. Runs first in the status
+    /// stage, so a refresh lands before that tick's due ticks and expiry.
+    /// Allocation-free once its scratch has grown.
+    pub fn apply_fluid_statuses(&mut self) {
+        if self.statuses.fluid_statuses.iter().all(Option::is_none) {
+            return;
+        }
+        let mut scratch = std::mem::take(&mut self.statuses.fluid_scratch);
+        scratch.clear();
+        {
+            let vocabulary = self.defense_vocabulary();
+            for (entity, value) in self.iter_with_kind(crate::registry::ComponentKind::Immersion) {
+                let crate::registry::ComponentValue::Immersion(immersion) = value else {
+                    continue;
+                };
+                let Some(fluid) = immersion.fluid.filter(|_| immersion.immersion > 0.0) else {
+                    continue;
+                };
+                let Some(Some(applied)) = self.statuses.fluid_statuses.get(usize::from(fluid))
+                else {
+                    continue;
+                };
+                if let Some(status) = vocabulary
+                    .status_index(&applied.status)
+                    .and_then(|index| u16::try_from(index).ok())
+                {
+                    scratch.push((entity, status, applied.source));
+                }
+            }
+        }
+        for &(entity, status, source) in &scratch {
+            self.apply_status(entity, status, StatusApplier::Source(source), source);
+        }
+        self.statuses.fluid_scratch = scratch;
     }
 }

@@ -339,7 +339,10 @@ fn respawn_tick_start_resets_crouched_geometry_motion_budgets_and_registry_pose_
         r.set_component(pawn, health).unwrap();
         r.set_component(
             pawn,
-            postretro_foundation::ImmersionComponent { immersion: 1.0 },
+            postretro_foundation::ImmersionComponent {
+                immersion: 1.0,
+                fluid: Some(0),
+            },
         )
         .unwrap();
     }
@@ -358,9 +361,9 @@ fn respawn_tick_start_resets_crouched_geometry_motion_budgets_and_registry_pose_
             .registry
             .borrow()
             .get_component::<postretro_foundation::ImmersionComponent>(pawn)
-            .unwrap()
-            .immersion,
-        0.0
+            .unwrap(),
+        &postretro_foundation::ImmersionComponent::default(),
+        "a respawn leaves the pawn dry, so a fluid status stops before its next command"
     );
     assert_eq!(
         rig.pose(pawn).position,

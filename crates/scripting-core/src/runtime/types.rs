@@ -358,6 +358,20 @@ pub struct ModManifestResult {
 
 /// Check every descriptor's layer and resist names, and every attack's
 /// `draws`, against the registered vocabularies, naming the failing key path.
+/// Fail load on a fluid `status` that is not a handle of a status `defineMod`
+/// registers, naming the fluid.
+pub(crate) fn check_fluid_status_references(
+    fluids: &postretro_foundation::data_descriptors::FluidRegistry,
+    vocabulary: &postretro_foundation::defense::DefenseVocabulary,
+) -> Result<(), String> {
+    for fluid in fluids.descriptors() {
+        if let Some(status) = &fluid.status {
+            vocabulary.check_status(&format!("fluids[\"{}\"].status", fluid.name), status)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn check_entity_defense_references(
     entities: &[EntityTypeDescriptor],
     vocabulary: &postretro_foundation::defense::DefenseVocabulary,

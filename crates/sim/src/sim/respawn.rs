@@ -141,7 +141,10 @@ pub(super) fn drain(ctx: &ScriptCtx, registry: &mut EntityRegistry) -> Vec<Arriv
         let _ = registry.set_component(pawn, movement);
         let _ = registry.set_component(
             pawn,
-            postretro_foundation::ImmersionComponent { immersion: 0.0 },
+            postretro_foundation::ImmersionComponent {
+                immersion: 0.0,
+                fluid: None,
+            },
         );
         let _ = registry.set_presentation_transform(pawn, pose);
         if let Ok(health) = registry.get_component::<HealthComponent>(pawn) {

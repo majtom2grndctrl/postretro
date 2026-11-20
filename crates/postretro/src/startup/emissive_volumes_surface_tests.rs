@@ -391,6 +391,57 @@ fn emissive_surface_example_flickers_cuts_the_power_and_locks_the_door() {
     assert_eq!(level.volume(exit).brightness, 1.0);
 }
 
+// Manual-check support (V1): the lamp pads fire on every entry, so walking
+// between them cycles the lamp red and back to its authored green while its
+// pulse runs on; the west panel's pulse reaches brightness 0 (its unlit
+// diffuse) and 1 within one 3 s period.
+#[test]
+fn emissive_demo_lamp_cycles_red_and_green_and_the_panel_breathes_to_zero() {
+    let (_out, mut level) = level(false);
+    let [lamp] = level.volumes("status_lamp")[..] else {
+        panic!("one status lamp")
+    };
+    let [panel] = level.volumes("breathe_panel")[..] else {
+        panic!("one breathing panel")
+    };
+    let pulse = level
+        .volume(lamp)
+        .animation
+        .expect("the lamp pulses from load");
+
+    for (pad, color) in [
+        ("door_locked_pad", DOOR_LOCKED_RED),
+        ("door_unlocked_pad", LAMP_GREEN),
+        ("door_locked_pad", DOOR_LOCKED_RED),
+        ("door_unlocked_pad", LAMP_GREEN),
+    ] {
+        assert_eq!(level.step_onto(pad).len(), 1, "`{pad}` fires on entry");
+        level.frame();
+        let lamp_now = level.volume(lamp);
+        assert_eq!(lamp_now.color, color, "after `{pad}`");
+        assert_eq!(
+            lamp_now.animation.as_ref(),
+            Some(&pulse),
+            "a colour write leaves the pulse"
+        );
+    }
+
+    let mut low = f32::MAX;
+    let mut high = f32::MIN;
+    for _ in 0..180 {
+        level.frame();
+        let volume = level.volume(panel);
+        assert!(volume.animation.is_some(), "the panel keeps breathing");
+        low = low.min(volume.brightness);
+        high = high.max(volume.brightness);
+    }
+    assert!(
+        low < 0.01,
+        "the panel's trough reaches its unlit diffuse: {low}"
+    );
+    assert!(high > 0.99, "the panel's crest reaches full glow: {high}");
+}
+
 // A10, TS and Luau: the Luau twin returns byte-identical wire and installs
 // the same animations on the same volumes.
 #[test]
@@ -398,7 +449,7 @@ fn emissive_surface_example_twins_emit_identical_wire_and_animations() {
     let (_ts_out, ts) = level(false);
     let (_luau_out, luau) = level(true);
     assert_eq!(ts.wire, luau.wire, "TS and Luau wire diverged");
-    for tag in ["bar_sign", "status_lamp", "exit_sign"] {
+    for tag in ["bar_sign", "status_lamp", "exit_sign", "breathe_panel"] {
         let animations = |level: &Level| -> Vec<Option<EmissiveAnimation>> {
             level
                 .volumes(tag)

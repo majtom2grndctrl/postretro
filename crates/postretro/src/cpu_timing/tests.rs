@@ -282,6 +282,8 @@ fn drive_timer_frames(timer: &mut CpuFrameTimer, frames: u32) {
                     timer.nested_mut().extend_from(&streaming, anchor);
                     let particles = every_stage::<super::ParticleStage>(gate);
                     timer.nested_mut().extend_from(&particles, anchor);
+                    let emissive = every_stage::<super::EmissiveStage>(gate);
+                    timer.nested_mut().extend_from(&emissive, anchor);
                 }
                 FrameStage::Render => {
                     let render = every_stage::<RenderStage>(gate);
@@ -489,6 +491,7 @@ fn shared_timing_crate_source_names_no_engine_stage() {
         .chain(labels::<super::PredictionStage>())
         .chain(labels::<super::StreamingStage>())
         .chain(labels::<super::ParticleStage>())
+        .chain(labels::<super::EmissiveStage>())
         .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
         .chain(labels::<postretro_visibility::VisibilityStage>())
         .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
@@ -527,6 +530,7 @@ fn every_folded_stage_label_is_unique() {
         .chain(labels::<super::PredictionStage>())
         .chain(labels::<super::StreamingStage>())
         .chain(labels::<super::ParticleStage>())
+        .chain(labels::<super::EmissiveStage>())
         .chain(labels::<postretro_sim::sim::cpu_stages::SimStage>())
         .chain(labels::<postretro_visibility::VisibilityStage>())
         .chain(labels::<postretro_renderer::cpu_stages::RenderStage>())
@@ -679,6 +683,48 @@ fn particle_stages_sit_under_render_prep_in_the_log_line() {
         window.row("particle_live").unwrap().parent,
         Some("render_prep")
     );
+}
+
+// The emissive volume step (curve sampling, flash limiter, packing and the
+// changed-run upload) reaches the `[CpuTiming]` line under `render_prep`, with
+// the entries it sent beside it: the Ms2 and Ms3 readings of a stress run.
+#[test]
+fn emissive_stages_sit_under_render_prep_in_the_log_line() {
+    use postretro_stage_timing::StageFrame;
+
+    use super::EmissiveStage;
+
+    // Drift guard: a new variant must be placed here and given a label.
+    for &stage in EmissiveStage::ALL {
+        let (expected, kind) = match stage {
+            EmissiveStage::Update => ("emissive_update", StageKind::Time),
+            EmissiveStage::Uploaded => ("emissive_uploaded", StageKind::Count),
+        };
+        assert_eq!(stage.label(), expected);
+        assert_eq!(stage.parent(), None, "{expected} is a root");
+        assert_eq!(stage.kind(), kind);
+    }
+
+    let capture = LogCapture::start();
+    let mut timer = CpuFrameTimer::new(TimingGate::ON);
+    for _ in 0..WINDOW_FRAMES {
+        let start = Instant::now();
+        timer.begin_frame(start);
+        timer.stages().add_nanos(FrameStage::RenderPrep, 3 * MS);
+        let emissive = StageFrame::<EmissiveStage>::new(timer.gate());
+        emissive.add_nanos(EmissiveStage::Update, MS);
+        emissive.add_count(EmissiveStage::Uploaded, 16);
+        timer
+            .nested_mut()
+            .extend_from(&emissive, Some(FrameStage::RenderPrep.label()));
+        timer.finish_frame(start + Duration::from_nanos(4 * MS));
+    }
+    let window = timer.last_window().expect("window closed");
+    for label in ["emissive_update", "emissive_uploaded"] {
+        assert_eq!(window.row(label).unwrap().parent, Some("render_prep"));
+    }
+    capture.assert_logged_once(log::Level::Info, "emissive_update=1.000/1.000ms");
+    capture.assert_logged_once(log::Level::Info, "emissive_uploaded=16.0/16");
 }
 
 #[test]

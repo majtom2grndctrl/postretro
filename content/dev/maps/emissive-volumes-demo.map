@@ -4,12 +4,16 @@
 // thickness 16. Four plates sit on the north wall, each inside its own
 // emissive_volume -- from west to east: a bright bar sign and a dim bar sign,
 // both tagged bar_sign, an exit sign tagged exit_sign, and a status lamp with
-// a grey glow map tagged status_lamp, authored green.
-// emissive-volumes-demo.ts flickers both bar signs, pulses the lamp and fades
-// the exit sign up once at load. Two floor pads fire the scripted reactions:
-// the west pad fires powerCut, which holds both bar signs dark; the east pad
-// fires doorLocked, which turns the lamp red while its pulse runs on.
-// Each pad fires once per level load. Reload to test again.
+// a grey glow map tagged status_lamp, authored green. A fifth plate on the
+// west wall, tagged breathe_panel, uses the bright panel texture.
+// emissive-volumes-demo.ts flickers both bar signs, pulses the lamp, fades
+// the exit sign up once at load and breathes the west panel between its unlit
+// diffuse and full glow. Three floor pads fire the scripted reactions: the
+// west pad fires powerCut, which holds both bar signs dark; the east pad
+// fires doorLocked, which turns the lamp red while its pulse runs on; the pad
+// north of it fires doorUnlocked, which turns the lamp back to green.
+// powerCut fires once per level load. The two lamp pads fire on every entry,
+// so walking between them cycles the lamp red and green.
 // Compile: cargo run -p postretro-level-compiler -- content/dev/maps/emissive-volumes-demo.map -o content/dev/maps/emissive-volumes-demo.prl
 // Run: cargo run -p xtask -- run --features dev-tools -- content/dev/maps/emissive-volumes-demo.prl
 // NOTE: keep map comments free of braces and quotes, and never leave a blank
@@ -111,6 +115,15 @@
 ( 392 320 112 ) ( 424 312 112 ) ( 392 312 112 ) metal/metal_rough_046a 0 0 0 1 1
 ( 392 312 80 ) ( 424 320 80 ) ( 392 320 80 ) metal/metal_rough_046a 0 0 0 1 1
 }
+// breathing panel on the west wall, glowing face toward the room
+{
+( 8 112 48 ) ( 8 240 112 ) ( 8 240 48 ) neon/glow_panel 0 0 0 1 1
+( 0 240 48 ) ( 0 112 112 ) ( 0 112 48 ) metal/metal_rough_046a 0 0 0 1 1
+( 8 240 48 ) ( 0 240 112 ) ( 0 240 48 ) metal/metal_rough_046a 0 0 0 1 1
+( 0 112 48 ) ( 8 112 112 ) ( 8 112 48 ) metal/metal_rough_046a 0 0 0 1 1
+( 0 240 112 ) ( 8 112 112 ) ( 0 112 112 ) metal/metal_rough_046a 0 0 0 1 1
+( 0 112 48 ) ( 8 240 48 ) ( 0 240 48 ) metal/metal_rough_046a 0 0 0 1 1
+}
 }
 // entity 1
 {
@@ -179,7 +192,22 @@
 ( 384 300 72 ) ( 432 314 72 ) ( 384 314 72 ) trigger 0 0 0 1 1
 }
 }
-// entity 6 -- west pad: fires powerCut
+// entity 6 -- volume around the breathing panel
+{
+"classname" "emissive_volume"
+"emissive_min" "0"
+"emissive_max" "1"
+"_tags" "breathe_panel"
+{
+( 14 104 40 ) ( 14 248 120 ) ( 14 248 40 ) trigger 0 0 0 1 1
+( 6 248 40 ) ( 6 104 120 ) ( 6 104 40 ) trigger 0 0 0 1 1
+( 14 248 40 ) ( 6 248 120 ) ( 6 248 40 ) trigger 0 0 0 1 1
+( 6 104 40 ) ( 14 104 120 ) ( 14 104 40 ) trigger 0 0 0 1 1
+( 6 248 120 ) ( 14 104 120 ) ( 6 104 120 ) trigger 0 0 0 1 1
+( 6 104 40 ) ( 14 248 40 ) ( 6 248 40 ) trigger 0 0 0 1 1
+}
+}
+// entity 7 -- west pad: fires powerCut
 {
 "classname" "trigger_volume"
 "activation" "touch"
@@ -197,12 +225,12 @@
 ( 64 96 0 ) ( 160 192 0 ) ( 64 192 0 ) trigger 0 0 0 1 1
 }
 }
-// entity 7 -- east pad: fires doorLocked
+// entity 8 -- east pad: fires doorLocked on every entry
 {
 "classname" "trigger_volume"
 "activation" "touch"
 "on_fire" "doorLocked"
-"fire_mode" "once"
+"fire_mode" "multiple"
 "rearm_ms" "0"
 "enabled_on_spawn" "1"
 "_tags" "door_locked_pad"
@@ -215,7 +243,25 @@
 ( 288 96 0 ) ( 384 192 0 ) ( 288 192 0 ) trigger 0 0 0 1 1
 }
 }
-// entity 8 -- room light
+// entity 9 -- pad north of the east pad: fires doorUnlocked on every entry
+{
+"classname" "trigger_volume"
+"activation" "touch"
+"on_fire" "doorUnlocked"
+"fire_mode" "multiple"
+"rearm_ms" "0"
+"enabled_on_spawn" "1"
+"_tags" "door_unlocked_pad"
+{
+( 384 232 0 ) ( 384 296 64 ) ( 384 296 0 ) trigger 0 0 0 1 1
+( 288 296 0 ) ( 288 232 64 ) ( 288 232 0 ) trigger 0 0 0 1 1
+( 384 296 0 ) ( 288 296 64 ) ( 288 296 0 ) trigger 0 0 0 1 1
+( 288 232 0 ) ( 384 232 64 ) ( 384 232 0 ) trigger 0 0 0 1 1
+( 288 296 64 ) ( 384 232 64 ) ( 288 232 64 ) trigger 0 0 0 1 1
+( 288 232 0 ) ( 384 296 0 ) ( 288 296 0 ) trigger 0 0 0 1 1
+}
+}
+// entity 10 -- room light
 {
 "classname" "light"
 "origin" "224 160 144"

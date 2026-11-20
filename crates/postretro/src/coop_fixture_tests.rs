@@ -6,8 +6,8 @@ use postretro_entities::{
     NamedReaction, ReactionDescriptor, ScriptCtx, ScriptError, SequenceTarget,
 };
 use postretro_level_format::{
-    data_script::DataScriptSection, fog_volumes::FogVolumeRecord, map_entity::MapEntityRecord,
-    trigger_volumes::TriggerVolumeRecord,
+    data_script::DataScriptSection, emissive::EmissiveVolumeRecord, fog_volumes::FogVolumeRecord,
+    map_entity::MapEntityRecord, trigger_volumes::TriggerVolumeRecord,
 };
 use postretro_level_loader::{
     FalloffModel, LightType, LoadedKinematicMover, LoadedKinematicWaypoint, MapLight, ShadowType,
@@ -105,6 +105,16 @@ fn fixture_world() -> postretro_level_loader::LevelWorld {
                 ambient_scatter: 1.0,
                 tags: entity_tags,
             }),
+            // Membership needs geometry this harness never bakes: an emptied
+            // volume still spawns its entity, so its tag still resolves.
+            "emissive_volume" => world.emissive.volumes.push(EmissiveVolumeRecord {
+                min: 0.0,
+                max: 1.0,
+                color: [1.0; 3],
+                origin: [world.emissive.volumes.len() as f32 * 4.0, 2.0, 0.0],
+                faces: vec![],
+                tags: entity_tags,
+            }),
             "trigger_volume" => world.trigger_volumes.push(TriggerVolumeRecord {
                 name: entity.get("name").cloned().unwrap_or_default(),
                 tags: entity_tags,
@@ -185,6 +195,7 @@ fn fixture_world() -> postretro_level_loader::LevelWorld {
     }
     assert_eq!(world.lights.len(), 3);
     assert_eq!(world.fog_volumes.len(), 1);
+    assert_eq!(world.emissive.volumes.len(), 2);
     assert_eq!(world.trigger_volumes.len(), 5);
     assert_eq!(world.kinematic_geometry.movers.len(), 1);
     assert_eq!(world.kinematic_geometry.waypoints.len(), 2);
@@ -378,7 +389,7 @@ fn install(luau: bool, capture_return: bool) -> (crate::App, Value) {
             .count();
         assert_eq!(
             count,
-            23,
+            25,
             "{script}: unwrapped shipping setup failed: {:#?}",
             logs.records()
         );
@@ -592,7 +603,7 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
         .iter()
         .filter(|r| r.name.starts_with("coop."))
         .collect();
-    assert_eq!(fixture.len(), 23);
+    assert_eq!(fixture.len(), 25);
     for name in [
         "coop.atmosphere.lights",
         "coop.atmosphere.fogFade",
@@ -646,6 +657,14 @@ fn coop_fixture_twins_evaluate_validate_and_cpu_install_equivalently() {
         (
             "coop_death_enemy",
             postretro_entities::ComponentKind::Health,
+        ),
+        (
+            "coop_sign",
+            postretro_entities::ComponentKind::EmissiveVolume,
+        ),
+        (
+            "coop_lamp",
+            postretro_entities::ComponentKind::EmissiveVolume,
         ),
     ] {
         assert!(

@@ -2128,19 +2128,41 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         // limits each volume through the photosensitivity limiter on
         // presented-frame time, the same limiter input the ghost clamps take.
         // Only entries that changed are sent; a static frame sends nothing. A
-        // renderer with no level keeps them pending for the next frame.
+        // renderer with no level keeps them pending for the next frame. Its
+        // CPU folds under `render_prep` as `emissive_update`, with the entries
+        // sent as `emissive_uploaded`.
         {
-            let limiter = crate::scripting_systems::ghost_render::ghost_limiter_frame(
-                &script_ctx.slot_table.borrow(),
-                app.ghost_links.presented_elapsed(),
+            let emissive_cpu = postretro_stage_timing::StageFrame::<cpu_timing::EmissiveStage>::new(
+                app.cpu_timer.gate(),
             );
-            let mut registry = script_ctx.registry.borrow_mut();
-            let bridge = &mut session.emissive_volume_bridge;
-            bridge.update(&mut registry, app.script_time, Some(&limiter));
-            let upload = bridge.pending_upload();
-            if !upload.runs.is_empty() && renderer.upload_emissive_volume_table(upload) {
-                bridge.mark_uploaded();
+            let mut uploaded_entries = 0u64;
+            {
+                let _scope = emissive_cpu.scope(cpu_timing::EmissiveStage::Update);
+                let limiter = crate::scripting_systems::ghost_render::ghost_limiter_frame(
+                    &script_ctx.slot_table.borrow(),
+                    app.ghost_links.presented_elapsed(),
+                );
+                let mut registry = script_ctx.registry.borrow_mut();
+                let bridge = &mut session.emissive_volume_bridge;
+                bridge.update(&mut registry, app.script_time, Some(&limiter));
+                let upload = bridge.pending_upload();
+                let entries: u64 = upload
+                    .runs
+                    .iter()
+                    .map(|run| u64::from(run.end - run.start))
+                    .sum();
+                if !upload.runs.is_empty() && renderer.upload_emissive_volume_table(upload) {
+                    bridge.mark_uploaded();
+                    uploaded_entries = entries;
+                }
             }
+            emissive_cpu.add_count(cpu_timing::EmissiveStage::Uploaded, uploaded_entries);
+            app.cpu_timer.nested_mut().extend_from(
+                &emissive_cpu,
+                Some(postretro_stage_timing::StageSet::label(
+                    cpu_timing::FrameStage::RenderPrep,
+                )),
+            );
         }
 
         renderer

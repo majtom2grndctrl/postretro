@@ -38,6 +38,10 @@ export function setupLevel() {
     defineReaction("coop.atmosphere.descriptorEmitter", { primitive: "setEmitterRate", tag: "coop_descriptor_emitter", args: { rate: 0 } }),
     defineReaction("coop.atmosphere.prop", { primitive: "setAnimationState", tag: "coop_mesh_prop", args: { state: "alert" } }),
     defineReaction("coop.atmosphere.door", { sequence: doors.flatMap((door) => door.start()) }),
+    // The north-wall sign dims and the green lamp turns red; a joiner after
+    // the plate fired sees both.
+    defineReaction("coop.atmosphere.signDim", { primitive: "setEmissiveBrightness", tag: "coop_sign", args: { brightness: 0.25 } }),
+    defineReaction("coop.atmosphere.lampColor", { primitive: "setEmissiveColor", tag: "coop_lamp", args: { color: [1, 0.05, 0.02] } }),
     // A singleton enemy's install-time progress threshold is the death source.
     // Same-name bodies give one fire both the light change and global flash.
     defineReaction("coop.enemy.dead", { sequence: lights.flatMap((light) => light.pulse({ min: 0.15, max: 1, periodMs: 1500 })) }),

@@ -908,8 +908,10 @@ fn run_after_parsing(
     let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
     // Read every build, warm or cold: only reflection capture and id 60
     // see its values, and both are computed from them each time.
+    let materials_toml_start = Instant::now();
     let materials_toml =
         crate::materials_toml::MaterialsToml::load(&resolve_content_root(&args.input));
+    let materials_toml_elapsed = materials_toml_start.elapsed();
     let mut material_stage = texture_stage::bake_world_materials(
         &geo_result.texture_names.names,
         &texture_root,
@@ -923,6 +925,9 @@ fn run_after_parsing(
         stage_start,
         true,
     );
+    // A sub-line of Materials, not a stage: reading and parsing the mod's
+    // `materials.toml`, uncached, on every build.
+    timings.push(("  materials.toml", materials_toml_elapsed));
     // Built only once the material table exists, so no SH bake can see a
     // colour-blind context by accident.
     let sh_ctx = sh_bake::ShBakeCtx {
@@ -2205,6 +2210,7 @@ fn run_after_parsing(
     // done and no later stage reorders faces, so its indices are the ones
     // Geometry (id 17) packs. It precedes reflection capture, which shades
     // each member face at its volume's reference state.
+    let membership_start = Instant::now();
     let emissive_section = postretro_level_format::emissive::EmissiveSection {
         textures: emissive_textures,
         volumes: crate::emissive_membership::resolve_emissive_volume_records(
@@ -2215,6 +2221,8 @@ fn run_after_parsing(
             &has_emissive_map,
         ),
     };
+    // Listed alone, not a stage: it runs uncached on every build.
+    timings.push(("Emissive Membership", membership_start.elapsed()));
 
     // Reflection probes read the encoded id 52 and id 22, the packed base SH,
     // ids 25 and 27 as they ship (culled, repacked, dropped and compacted),

@@ -41,8 +41,11 @@ Coordinates below are TrenchBroom editor units, with Z up.
   seconds, fog density and every scalar fog family change and a typed fog fade
   runs, map smoke stops and its spin tween advances, descriptor-only smoke
   stops, both descriptor light kinds pulse, the mesh-only brute switches from
-  `idle` to `walk`, and the door opens. Join another client after firing;
-  it should see the current state and animation age, including finished fades.
+  `idle` to `walk`, and the door opens. On the north wall facing the plate,
+  the emissive sign `(192..320,744)` dims to a quarter of its glow and the
+  green status lamp `(352..384,744)` turns red, on both screens. Join another
+  client after firing; it should see the current state and animation age,
+  including finished fades, the dimmed sign and the red lamp.
 - The **door** at `(968,368)` rises vertically. Its `open_event` is `door.open`,
   using the dev positioned-sound reaction `playSound(..., { at: on.emitter })`.
   Both clients hear it at the door rather than at their camera.

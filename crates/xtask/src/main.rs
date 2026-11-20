@@ -16,6 +16,8 @@ use std::process::{Command, Stdio};
 mod crate_graph;
 mod dist;
 #[cfg(test)]
+mod emissive_gates;
+#[cfg(test)]
 mod environment_gates;
 #[cfg(test)]
 mod stance_gates;

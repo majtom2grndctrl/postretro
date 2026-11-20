@@ -343,7 +343,10 @@ Event durations come from the summary: stage transitions overlap under the TUI.
   own filter. Every build ends with a warning tally (count plus the formatted records),
   printed on the normal screen even for warnings that scrolled out of the live TUI region.
 - **Build Summary.** A successful build hands `Reporter::finalize` one `BuildSummary`, printed to
-  stdout as the same text by every frontend: stage timings and total, then detail blocks. The
+  stdout as the same text by every frontend: stage timings and total, then detail blocks. A few
+  rows are not stages: indented sub-lines (`TexelSteps`, Materials' uncached `materials.toml`
+  read) and uncached steps listed alone (`Emissive Membership`, `SH bound`, `Lightmap bound`). The
+  text prints hundredths of a second; the `bake_summary` telemetry rows carry milliseconds. The
   mover-lighting block (step 12, Mover light gate) always prints: movers analysed and not analysed,
   rows, baked lights not analysed, gated texels and probes (shared and differing), side-count
   totals, and the mask estimate both ways as a share of the same PRL's packed ids 22, 25 and 42

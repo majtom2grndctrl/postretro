@@ -2,12 +2,15 @@
 // held view Settling streams from.
 // See: context/lib/rendering_pipeline.md §11, §12
 
+use std::time::Instant;
+
 use glam::Vec3;
 use postretro_camera_route::format_pose_file;
 use postretro_entities::EntityId;
 use postretro_foundation::{BobParams, MovementStateKind, ViewFeelParams};
 
 use super::*;
+use crate::playback::run::Phase;
 use crate::frame_eye::{FrameEye, ViewFeelDriver, ViewFeelTracking, assemble_frame_eye};
 use crate::playback::route::tests::pose_file;
 use crate::view_feel::ViewFeelState;
@@ -156,10 +159,11 @@ fn settling_held_view_is_the_route_frame_camera() {
 
 #[test]
 fn playback_from_args_is_inactive_without_a_route() {
-    let playback = Playback::from_args(&args(&["map.prl"])).unwrap();
+    let playback = Playback::from_args(&args(&["map.prl"]), Instant::now()).unwrap();
     assert!(playback.active.is_none());
     assert!(!playback.captures_gameplay());
     assert_eq!(playback.route_view(), None);
+    assert!(playback.stall.is_none(), "no run arms no stall timeout");
 }
 
 #[test]
@@ -169,7 +173,9 @@ fn playback_from_args_loads_the_route_and_refuses_a_bad_file() {
     std::fs::write(&path, format_pose_file(&pose_file(100.0, 3))).unwrap();
     let path_arg = path.display().to_string();
     let mut playback =
-        Playback::from_args(&args(&["--camera-route", &path_arg, "map.prl"])).unwrap();
+        Playback::from_args(&args(&["--camera-route", &path_arg, "map.prl"]), Instant::now())
+            .unwrap();
+    assert!(playback.stall.is_some(), "a run arms its stall timeout at launch");
     {
         let active = playback.active.as_ref().expect("a named route is active");
         assert_eq!(active.args.hold, args::DEFAULT_HOLD_FRAMES);
@@ -186,8 +192,11 @@ fn playback_from_args_loads_the_route_and_refuses_a_bad_file() {
 
     let bad = dir.path().join("bad.txt");
     std::fs::write(&bad, format_pose_file(&pose_file(140.0, 1))).unwrap();
-    let error = Playback::from_args(&args(&["--camera-route", &bad.display().to_string()]))
-        .err()
+    let error = Playback::from_args(
+        &args(&["--camera-route", &bad.display().to_string()]),
+        Instant::now(),
+    )
+    .err()
         .expect("a FOV outside the band refuses");
     assert!(error.contains("140°"), "{error}");
 }
@@ -198,26 +207,65 @@ fn route_view_follows_the_world_frame_plan() {
     let path = dir.path().join("cp.txt");
     let file = pose_file(100.0, 2);
     std::fs::write(&path, format_pose_file(&file)).unwrap();
-    let mut playback = Playback::from_args(&args(&[
-        "--camera-route",
-        &path.display().to_string(),
-        "--camera-route-hold",
-        "1",
-    ]))
+    let mut playback = Playback::from_args(
+        &args(&[
+            "--camera-route",
+            &path.display().to_string(),
+            "--camera-route-hold",
+            "1",
+        ]),
+        Instant::now(),
+    )
     .unwrap();
     let active = playback.active.as_mut().unwrap();
     active.run.arm();
     let mut drawn = Vec::new();
     for _ in 0..3 {
         let active = playback.active.as_mut().unwrap();
-        active.run.begin_world_frame();
+        active.run.begin_world_frame(Instant::now());
         drawn.push(playback.route_view().unwrap().eye);
         let active = playback.active.as_mut().unwrap();
-        active.run.finish_frame(true);
+        active.run.finish_frame(true, true);
         assert_eq!(playback.route_view(), None, "no pose outside a world frame");
     }
     assert_eq!(
         drawn,
         vec![file.poses[0].eye, file.poses[0].eye, file.poses[1].eye]
     );
+}
+
+#[test]
+fn wall_clock_route_view_interpolates_between_poses_at_the_file_fov() {
+    // P16: a frame at t draws the pose interpolated at 60t.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cp.txt");
+    let file = pose_file(100.0, 4);
+    std::fs::write(&path, format_pose_file(&file)).unwrap();
+    let mut playback = Playback::from_args(
+        &args(&[
+            "--camera-route",
+            &path.display().to_string(),
+            "--camera-route-hold=0",
+            "--camera-route-pacing=wall-clock",
+        ]),
+        Instant::now(),
+    )
+    .unwrap();
+    let active = playback.active.as_mut().unwrap();
+    active.run.arm();
+    let start = Instant::now();
+    active.run.begin_world_frame(start);
+    assert_eq!(playback.route_view().unwrap().eye, file.poses[0].eye);
+    let active = playback.active.as_mut().unwrap();
+    active.run.finish_frame(true, true);
+    active
+        .run
+        .begin_world_frame(start + std::time::Duration::from_micros(25_000));
+    let view = playback.route_view().unwrap();
+    // 25 ms is pose 1.5: halfway between poses 1 and 2.
+    let halfway = file.poses[1].eye.lerp(file.poses[2].eye, 0.5);
+    assert!(view.eye.distance(halfway) < 1.0e-3, "{:?}", view.eye);
+    let mid_yaw = (file.poses[1].yaw + file.poses[2].yaw) * 0.5;
+    assert!((view.yaw - mid_yaw).abs() < 1.0e-3);
+    assert_eq!(view.hfov, 100.0_f32.to_radians());
 }

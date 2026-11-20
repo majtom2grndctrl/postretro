@@ -2451,6 +2451,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => frame_loop::redraw(self, event_loop),
+            // A hidden window's gap marks the playback rows that span it.
+            #[cfg(feature = "dev-tools")]
+            WindowEvent::Occluded(occluded) => self.playback.note_occluded(occluded),
             _ => {}
         }
     }
@@ -2498,7 +2501,15 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A camera route exits here once it ends, and fails a stalled run:
+        // a hidden window gets no redraw to check it from.
+        #[cfg(feature = "dev-tools")]
+        if self.playback_about_to_wait(event_loop) {
+            return;
+        }
+        #[cfg(not(feature = "dev-tools"))]
+        let _ = event_loop;
         if let Some(ws) = self.window_state.as_ref() {
             ws.window.request_redraw();
         }
@@ -3380,6 +3391,8 @@ impl App {
             Some(renderer) if renderer.is_boot_ready() => match renderer.render_splash_frame() {
                 Ok(Some(handle)) => {
                     renderer.present(handle);
+                    #[cfg(feature = "dev-tools")]
+                    self.playback.note_any_present();
                     true
                 }
                 Ok(None) => false,
@@ -6331,6 +6344,9 @@ impl App {
                     // when the user is staring at it to see what changed.
                     self.frame_rate_meter.clear();
                     self.cpu_timer.discard_partial();
+                    #[cfg(feature = "dev-tools")]
+                    self.playback
+                        .note_change(crate::playback::ChangeKind::Vsync);
                     log::info!("[Renderer] vsync {}", if enabled { "on" } else { "off" },);
                 }
             }

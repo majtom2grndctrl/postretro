@@ -1768,10 +1768,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // pawn's preset must not leak onto the selected camera.
     // A camera route draws its pose at its own FOV with no view feel, so the
     // render eye is the pose's eye.
-    #[cfg(feature = "dev-tools")]
-    let route_hfov = app.playback.route_view().map(|view| view.hfov);
-    #[cfg(not(feature = "dev-tools"))]
-    let route_hfov: Option<f32> = None;
+    let route_hfov = route_hfov(app);
     let view_feel_driver = match route_hfov {
         Some(_) => None,
         None => frame_eye::view_feel_driver(
@@ -2255,6 +2252,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 return;
             }
         };
+        // A route frame that streamed and drained writes a row even when it
+        // then presents nothing (a no-draw row).
+        #[cfg(feature = "dev-tools")]
+        app.playback.note_streamed();
         app.cpu_timer.nested_mut().extend_from(
             &streaming_cpu,
             Some(postretro_stage_timing::StageSet::label(
@@ -2991,4 +2992,16 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
     // ends the run after its last pose.
     #[cfg(feature = "dev-tools")]
     app.playback_end_frame(event_loop);
+}
+
+/// The playing camera route's horizontal FOV this frame: none without a route,
+/// and always in a build without playback.
+fn route_hfov(app: &App) -> Option<f32> {
+    #[cfg(feature = "dev-tools")]
+    return app.playback.route_view().map(|view| view.hfov);
+    #[cfg(not(feature = "dev-tools"))]
+    {
+        let _ = app;
+        None
+    }
 }

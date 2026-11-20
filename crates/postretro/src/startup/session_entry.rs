@@ -665,6 +665,11 @@ impl App {
             log::warn!("[Net] join refused: select a character first");
             return false;
         }
+        // A join ends a playing camera route instead (pin P4).
+        #[cfg(feature = "dev-tools")]
+        if self.playback_abort(self.playback_join_abort_reason(addr)) {
+            return false;
+        }
         self.cancel_backdrop_load_for_join();
         self.save_progress_for_join();
         let Some(failure) = self.enter_net_role(

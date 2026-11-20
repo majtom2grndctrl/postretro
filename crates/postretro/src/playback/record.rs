@@ -8,20 +8,31 @@ use std::path::Path;
 use postretro_camera_route::{PoseFile, Projection, RouteOrigin};
 use serde::Serialize;
 
-use super::args::PlaybackArgs;
+use super::args::{Pacing, PlaybackArgs};
+use super::marks::{ChangeSet, LifeKey};
 use super::route::Identity;
 use super::run::{FramePlan, RowKind};
 
 pub(crate) const SCHEMA: &str = "postretro.camera_route_playback.v1";
 
-/// Rows reserved past hold + poses, so frames the plan did not count
-/// (later: no-draw rows) still fill without allocating.
+/// Rows reserved past the planned ones, so no-draw rows still fill without
+/// allocating.
 const ROW_SLACK: usize = 256;
+
+/// Wall-clock route rows are planned at this frame rate over the route's
+/// duration; a faster run grows the row store rarely, never per frame.
+const WALL_CLOCK_PLANNED_HZ: f64 = 240.0;
+
+/// Life-state entries reserved: a run logs one per death, respawn or
+/// teleport, so the steady state never allocates.
+const LIFE_STATE_SLACK: usize = 32;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct PlaybackRecord {
     header: RecordHeader,
     rows: Vec<Row>,
+    /// Local pawn life-state changes, each on the row of the frame that saw it.
+    life_states: Vec<LifeStateEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +45,12 @@ struct RecordHeader {
     level: Option<LevelReport>,
     pacing: &'static str,
     hold_frames: u32,
+    /// How Settling ended: `settled` or `timed_out`.
+    settle: Option<&'static str>,
+    /// `complete` or `aborted`; `null` only in a record never written.
+    outcome: Option<&'static str>,
+    /// Why an aborted run ended.
+    abort_reason: Option<String>,
     /// What route frame 0 rendered: the file's horizontal FOV at the
     /// window's aspect.
     rendered_projection: Option<ProjectionReport>,
@@ -84,10 +101,35 @@ pub(crate) struct Row {
     /// The record's frame index, and the frame mark's `k`.
     pub(crate) frame: u64,
     pub(crate) phase: RowKind,
+    /// The pose drawn; under wall-clock pacing, the pose the frame's route
+    /// time falls after.
     pub(crate) pose: usize,
+    /// Wall-clock route and no-draw rows: seconds since route frame 0 began.
+    pub(crate) route_time_s: Option<f64>,
     /// Microseconds since the previous world frame began; `null` for the
     /// first, which has none.
     pub(crate) interval_us: Option<u64>,
+    /// Every mid-run change from the first row it touched on.
+    pub(crate) changes: ChangeSet,
+    /// The interval spans a hidden window or a frame that presented nothing.
+    pub(crate) gap: bool,
+}
+
+/// One life-state change the local pawn went through.
+#[derive(Debug, Clone, Serialize)]
+struct LifeStateEntry {
+    /// The row of the frame that saw it.
+    frame: u64,
+    /// The pawn now followed; `null` when none is.
+    pawn: Option<u32>,
+    life_state: Option<u8>,
+    /// The life state's declared name, when the table names it.
+    life_state_name: Option<String>,
+    life_state_entry: Option<u32>,
+    teleport_generation: Option<u8>,
+    table_revision: Option<u8>,
+    /// The life state the previous frame saw.
+    previous_life_state: Option<u8>,
 }
 
 impl PlaybackRecord {
@@ -113,11 +155,48 @@ impl PlaybackRecord {
                 level: None,
                 pacing: args.pacing.key(),
                 hold_frames: args.hold,
+                settle: None,
+                outcome: None,
+                abort_reason: None,
                 rendered_projection: None,
                 adapter: None,
             },
-            rows: Vec::with_capacity(args.hold as usize + file.poses.len() + ROW_SLACK),
+            rows: Vec::with_capacity(args.hold as usize + planned_route_rows(args, file) + ROW_SLACK),
+            life_states: Vec::with_capacity(LIFE_STATE_SLACK),
         }
+    }
+
+    pub(crate) fn set_settle(&mut self, timed_out: bool) {
+        self.header.settle = Some(if timed_out { "timed_out" } else { "settled" });
+    }
+
+    /// Marks the record aborted with `reason`.
+    pub(crate) fn set_aborted(&mut self, reason: String) {
+        self.header.outcome = Some("aborted");
+        self.header.abort_reason = Some(reason);
+    }
+
+    pub(crate) fn set_complete(&mut self) {
+        self.header.outcome = Some("complete");
+    }
+
+    /// Logs a life-state change on the row the current frame takes.
+    pub(crate) fn push_life_state(
+        &mut self,
+        now: Option<LifeKey>,
+        name: Option<String>,
+        previous: Option<LifeKey>,
+    ) {
+        self.life_states.push(LifeStateEntry {
+            frame: self.next_frame(),
+            pawn: now.map(|key| key.pawn),
+            life_state: now.map(|key| key.life_state),
+            life_state_name: name,
+            life_state_entry: now.map(|key| key.life_state_entry),
+            teleport_generation: now.map(|key| key.teleport_generation),
+            table_revision: now.map(|key| key.table_revision),
+            previous_life_state: previous.map(|key| key.life_state),
+        });
     }
 
     pub(crate) fn set_level(&mut self, bake: String, identity: Identity) {
@@ -150,12 +229,20 @@ impl PlaybackRecord {
         self.rows.len() as u64
     }
 
-    pub(crate) fn push_row(&mut self, plan: FramePlan, interval_us: Option<u64>) {
+    pub(crate) fn push_row(
+        &mut self,
+        plan: FramePlan,
+        interval_us: Option<u64>,
+        (changes, gap): (ChangeSet, bool),
+    ) {
         self.rows.push(Row {
             frame: self.next_frame(),
             phase: plan.kind,
             pose: plan.pose,
+            route_time_s: plan.route_time_s,
             interval_us,
+            changes,
+            gap,
         });
     }
 
@@ -164,12 +251,29 @@ impl PlaybackRecord {
         &self.rows
     }
 
+    #[cfg(test)]
+    pub(crate) fn header_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.header).expect("the header serializes")
+    }
+
     /// The record's one write.
     pub(crate) fn write(&self, path: &Path) -> Result<(), String> {
         let text = serde_json::to_string_pretty(self)
             .map_err(|err| format!("serializing the playback record: {err}"))?;
         std::fs::write(path, text)
             .map_err(|err| format!("writing the playback record {}: {err}", path.display()))
+    }
+}
+
+/// Route rows a run plans: one per pose frame-locked; the route's duration
+/// at [`WALL_CLOCK_PLANNED_HZ`] under wall-clock pacing.
+fn planned_route_rows(args: &PlaybackArgs, file: &PoseFile) -> usize {
+    match args.pacing {
+        Pacing::FrameLocked => file.poses.len(),
+        Pacing::WallClock => {
+            let seconds = file.poses.len() as f64 / f64::from(file.header.cadence_hz.max(1));
+            (seconds * WALL_CLOCK_PLANNED_HZ).ceil() as usize + 1
+        }
     }
 }
 
@@ -187,27 +291,31 @@ mod tests {
             hold,
             report: PathBuf::from("cp.playback.json"),
             pacing: Pacing::FrameLocked,
+            stall_timeout: crate::playback::args::DEFAULT_STALL_TIMEOUT,
         }
     }
 
     fn plan(kind: RowKind, pose: usize) -> FramePlan {
-        FramePlan { pose, kind }
+        FramePlan::for_test(kind, pose)
     }
+
+    const UNMARKED: (ChangeSet, bool) = (ChangeSet::EMPTY, false);
 
     #[test]
     fn playback_record_header_and_rows_serialize_in_order() {
         let file = pose_file(100.0, 2);
         let mut record = PlaybackRecord::new(&args(1), &file);
         record.set_level(file.header.bake.clone(), Identity::Proven);
-        record.push_row(plan(RowKind::Hold, 0), None);
+        record.push_row(plan(RowKind::Hold, 0), None, UNMARKED);
         record.set_rendered(100.0, 1.5, Some(("GPU".into(), "Dx12".into())));
-        record.push_row(plan(RowKind::Route, 0), Some(16_667));
-        record.push_row(plan(RowKind::Route, 1), Some(16_600));
+        record.push_row(plan(RowKind::Route, 0), Some(16_667), UNMARKED);
+        record.push_row(plan(RowKind::Route, 1), Some(16_600), UNMARKED);
         let json: serde_json::Value = serde_json::to_value(&record).unwrap();
 
         let header = &json["header"];
         assert_eq!(header["schema"], SCHEMA);
         assert!(header["revision"].is_null());
+        assert!(header["settle"].is_null(), "no settle outcome until the reveal");
         assert_eq!(header["pacing"], "frame-locked");
         assert_eq!(header["hold_frames"], 1);
         assert_eq!(header["pose_file"]["path"], "routes/cp.txt");
@@ -255,10 +363,10 @@ mod tests {
 
         let probe = AllocSnapshot::arm();
         for _ in 0..600 {
-            record.push_row(plan(RowKind::Hold, 0), Some(16_000));
+            record.push_row(plan(RowKind::Hold, 0), Some(16_000), UNMARKED);
         }
         for pose in 0..500 {
-            record.push_row(plan(RowKind::Route, pose), Some(16_000));
+            record.push_row(plan(RowKind::Route, pose), Some(16_000), UNMARKED);
         }
         assert_eq!(probe.allocs_since(), 0);
         assert_eq!(record.rows().len(), 1_100);
@@ -269,12 +377,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("run.playback.json");
         let mut record = PlaybackRecord::new(&args(0), &pose_file(90.0, 1));
-        record.push_row(plan(RowKind::Route, 0), None);
+        record.push_row(plan(RowKind::Route, 0), None, UNMARKED);
         record.write(&path).unwrap();
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(written["rows"].as_array().unwrap().len(), 1);
         let missing_dir = dir.path().join("absent").join("run.json");
         assert!(record.write(&missing_dir).unwrap_err().contains("absent"));
+    }
+
+    #[test]
+    fn playback_record_carries_marks_settle_outcome_and_life_states() {
+        let file = pose_file(100.0, 3);
+        let mut record = PlaybackRecord::new(&args(0), &file);
+        record.set_settle(true);
+        let mut changes = ChangeSet::EMPTY;
+        record.push_row(plan(RowKind::Route, 0), None, UNMARKED);
+        let key = LifeKey {
+            pawn: 7,
+            teleport_generation: 1,
+            life_state: 2,
+            life_state_entry: 5,
+            table_revision: 1,
+        };
+        record.push_life_state(Some(key), Some("dead".into()), Some(LifeKey { life_state: 0, ..key }));
+        changes.insert(crate::playback::marks::ChangeKind::Extents);
+        record.push_row(plan(RowKind::NoDraw, 1), Some(9), (changes, true));
+        record.set_aborted("level unload requested".into());
+        let json = serde_json::to_value(&record).unwrap();
+        assert_eq!(json["header"]["settle"], "timed_out");
+        assert_eq!(json["header"]["outcome"], "aborted");
+        assert_eq!(json["header"]["abort_reason"], "level unload requested");
+        let rows = json["rows"].as_array().unwrap();
+        assert_eq!(rows[0]["changes"], serde_json::json!([]));
+        assert_eq!(rows[0]["gap"], false);
+        assert_eq!(rows[1]["phase"], "no_draw");
+        assert_eq!(rows[1]["changes"], serde_json::json!(["extents"]));
+        assert_eq!(rows[1]["gap"], true);
+        let life = &json["life_states"][0];
+        assert_eq!(life["frame"], 1, "logged on the row its frame takes");
+        assert_eq!(life["life_state_name"], "dead");
+        assert_eq!(life["previous_life_state"], 0);
+    }
+
+    #[test]
+    fn playback_record_plans_wall_clock_rows_over_the_route_duration() {
+        let file = pose_file(100.0, 600);
+        let mut wall = args(10);
+        wall.pacing = Pacing::WallClock;
+        let record = PlaybackRecord::new(&wall, &file);
+        // 600 poses at 60 Hz is 10 s: 2,400 rows at 240 Hz, plus the hold.
+        assert!(record.rows.capacity() >= 10 + 2_400 + ROW_SLACK);
     }
 }

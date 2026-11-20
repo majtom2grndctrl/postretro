@@ -341,6 +341,8 @@ impl App {
         }
         if let Some(present_handle) = present_handle {
             renderer.present(present_handle);
+            #[cfg(feature = "dev-tools")]
+            self.playback.note_any_present();
         }
         if let VisibleCells::Culled(cells) = visible_render.visible_cells {
             self.portal_walk_scratch.recycle_cells(cells);

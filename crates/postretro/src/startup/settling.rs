@@ -276,6 +276,9 @@ impl App {
             hold_marked = settle.hold_marked;
             self.settle_summary = Some(settle.log.finish(timed_out, settle.hold));
         }
+        // A camera route's record names how its Settling ended.
+        #[cfg(feature = "dev-tools")]
+        self.playback_level_revealed(matches!(release, SettleRelease::TimedOut(_)));
         // Line C's `reveal`: the deciding frame to this edge, a timed-out
         // reveal included. A hold no deciding frame closed (none in
         // production: a release is always decided first) is closed here.

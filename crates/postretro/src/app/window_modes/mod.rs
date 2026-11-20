@@ -163,6 +163,12 @@ impl crate::App {
     fn finish_window_change(&mut self, change: policy::Change) {
         use policy::Change;
         use postretro_ui::demo::DISPLAY_MODE_CONFIRM_NAME;
+        // A camera route's rows from here on run in the new window mode.
+        #[cfg(feature = "dev-tools")]
+        if !matches!(change, Change::None | Change::SelectionChanged) {
+            self.playback
+                .note_change(crate::playback::ChangeKind::WindowMode);
+        }
         let Some(session) = self.session.as_mut() else {
             return;
         };

@@ -83,6 +83,11 @@ impl App {
         // a load whose bundle this frame would find ready (pin P1).
         if boot_state_drains_level_requests(&self.boot_state) {
             self.drain_level_requests();
+            // A request that ended a camera route stops the frame here.
+            #[cfg(feature = "dev-tools")]
+            if self.playback_take_exit(event_loop) {
+                return false;
+            }
             // A waiting host or join press runs once the unload it waited for
             // has drained and any ended host's close is done. Splash and the
             // first-launch hold drain nothing, so nothing resumes there.
@@ -246,12 +251,17 @@ impl App {
     /// supersedes a load beside the running level: it is cancelled first,
     /// then the request takes its ordinary path. A host-named request that
     /// no longer resolves leaves the host level the client was following.
-    pub(in crate::startup) fn drain_level_requests(&mut self) {
+    pub(crate) fn drain_level_requests(&mut self) {
         if self.boot_state == BootState::Loading && self.level_load_in_flight() && self.boot_load {
             return;
         }
 
         while let Some(request) = self.level_requests.pop_front() {
+            // A request that resolves ends a playing camera route instead
+            // (pins P3, P4): the record keeps every row so far, the level
+            // stays, and the session exits.
+            #[cfg(feature = "dev-tools")]
+            let playback_abort = self.playback_request_abort_reason(&request);
             let (source, host_named) = match request {
                 LevelRequest::Load(source) => (Some(source), false),
                 LevelRequest::HostLevel(id) => (Some(LevelSource::Catalog(id)), true),
@@ -270,6 +280,10 @@ impl App {
                         continue;
                     };
                     load.host_named = host_named;
+                    #[cfg(feature = "dev-tools")]
+                    if self.playback_abort(playback_abort) {
+                        return;
+                    }
                     self.cancel_beside_level_load();
                     if self.level_is_installed_state() {
                         self.unload_level();
@@ -279,6 +293,10 @@ impl App {
                     return;
                 }
                 None => {
+                    #[cfg(feature = "dev-tools")]
+                    if self.playback_abort(playback_abort) {
+                        return;
+                    }
                     let played = self.played_level_present();
                     self.cancel_beside_level_load();
                     self.abandon_level_load_for_frontend();

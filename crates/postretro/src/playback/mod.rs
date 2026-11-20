@@ -3,24 +3,28 @@
 // See: context/lib/rendering_pipeline.md §11, §12 · context/lib/boot_sequence.md §1 (Settling)
 
 mod args;
+mod lifecycle;
+mod marks;
+mod pacing;
 mod record;
 mod route;
 mod run;
+mod stall;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use glam::Vec3;
 use postretro_camera_route::PoseFile;
-use winit::event_loop::ActiveEventLoop;
 
-use crate::App;
 use crate::app::world_less_frame::HeldLevelView;
 use crate::camera::RenderCamera;
 
-use args::PlaybackArgs;
+use args::{Pacing, PlaybackArgs};
+pub(crate) use marks::ChangeKind;
+use marks::{LifeWatch, Marks};
 use record::PlaybackRecord;
-use route::Identity;
-use run::{Phase, RouteRun, RowKind};
+use run::{Clock, RouteRun};
+use stall::StallWatch;
 
 /// The pose a playing route draws this frame, at the route's projection.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,6 +60,13 @@ impl RouteView {
 #[derive(Default)]
 pub(crate) struct Playback {
     active: Option<Box<ActivePlayback>>,
+    /// Armed at launch for a measurement run, until its first world frame.
+    stall: Option<StallWatch>,
+    /// The event loop waits until the stall deadline while armed; the flag
+    /// restores the default wait once it disarms.
+    waiting_on_stall: bool,
+    /// The run ended: every hook holding the event loop exits it.
+    exit_pending: bool,
 }
 
 struct ActivePlayback {
@@ -64,11 +75,15 @@ struct ActivePlayback {
     hfov: f32,
     run: RouteRun,
     record: PlaybackRecord,
+    marks: Marks,
+    life: LifeWatch,
     /// Why the installed level refused the route, until a Settling frame
     /// stops the run before any world frame.
     refusal: Option<String>,
     /// The current world frame presented.
     presented: bool,
+    /// The current world frame ran the level streaming step.
+    streamed: bool,
     /// When the previous world frame of this run began.
     last_frame_start: Option<Instant>,
     /// The current world frame's interval from the previous one.
@@ -76,10 +91,10 @@ struct ActivePlayback {
 }
 
 impl Playback {
-    /// Reads the playback flags and loads the pose file. A bad flag or file
-    /// stops the launch: it prints the reason and exits 1, before any window.
+    /// Reads the playback flags and loads the pose file. A bad flag, file or
+    /// launch stops it: it prints the reason and exits 1, before any window.
     pub(crate) fn from_args_or_exit(args: &[String]) -> Self {
-        match Self::from_args(args) {
+        match Self::from_args(args, Instant::now()) {
             Ok(playback) => playback,
             Err(err) => {
                 eprintln!("[Playback] {err}");
@@ -89,36 +104,53 @@ impl Playback {
         }
     }
 
-    fn from_args(args: &[String]) -> Result<Self, String> {
+    fn from_args(args: &[String], launched: Instant) -> Result<Self, String> {
         let Some(args) = args::playback_args(args)? else {
             return Ok(Self::default());
         };
         let file = route::load_route(&args.poses)?;
         log::info!(
-            "[Playback] camera route {}: {} poses at {}°, hold {} frames, {} pacing, record {}",
+            "[Playback] camera route {}: {} poses at {}°, hold {} frames, {} pacing, stall timeout {} s, record {}",
             args.poses.display(),
             file.poses.len(),
             file.header.projection.hfov_degrees,
             args.hold,
             args.pacing.key(),
+            args.stall_timeout.as_secs_f64(),
             args.report.display(),
         );
-        Ok(Self {
-            active: Some(Box::new(ActivePlayback {
-                hfov: file.header.projection.hfov_degrees.to_radians(),
-                run: RouteRun::new(args.hold, file.poses.len()),
-                record: PlaybackRecord::new(&args, &file),
-                args,
-                file,
-                refusal: None,
-                presented: false,
-                last_frame_start: None,
-                frame_interval_us: None,
-            })),
-        })
+        let clock = match args.pacing {
+            Pacing::FrameLocked => Clock::FrameLocked,
+            Pacing::WallClock => Clock::WallClock {
+                cadence_hz: f64::from(file.header.cadence_hz),
+                cut: file.poses.iter().map(|pose| pose.cut).collect(),
+            },
+        };
+        let mut playback = Self::default();
+        playback.arm_stall(launched, args.stall_timeout);
+        playback.active = Some(Box::new(ActivePlayback {
+            hfov: file.header.projection.hfov_degrees.to_radians(),
+            run: RouteRun::new(args.hold, file.poses.len(), clock),
+            record: PlaybackRecord::new(&args, &file),
+            marks: Marks::default(),
+            life: LifeWatch::default(),
+            args,
+            file,
+            refusal: None,
+            presented: false,
+            streamed: false,
+            last_frame_start: None,
+            frame_interval_us: None,
+        }));
+        Ok(playback)
     }
 
-    /// Armed and not complete: gameplay input stays suspended and the pause
+    /// Arms the stall timeout from launch: playback here, recording later.
+    pub(crate) fn arm_stall(&mut self, launched: Instant, timeout: Duration) {
+        self.stall = Some(StallWatch::arm(launched, timeout));
+    }
+
+    /// Armed and not ended: gameplay input stays suspended and the pause
     /// menu stays shut, so nothing moves the pawn or covers a measured frame.
     pub(crate) fn captures_gameplay(&self) -> bool {
         self.active
@@ -129,168 +161,70 @@ impl Playback {
     /// The pose this world frame draws, between its begin and end hooks.
     pub(crate) fn route_view(&self) -> Option<RouteView> {
         let active = self.active.as_ref()?;
-        active.view(active.run.current()?.pose)
+        let plan = active.run.current()?;
+        active.view(plan.pose, plan.blend)
     }
 
+    /// The current world frame's present: it presented the world, or not.
+    /// Any present also tells the stall timeout the window is alive.
     pub(crate) fn note_presented(&mut self, presented: bool) {
+        if presented {
+            self.note_any_present();
+        }
         if let Some(active) = self.active.as_mut() {
             active.presented = presented;
+        }
+    }
+
+    /// The current world frame ran the level streaming step: one that then
+    /// presents nothing writes a no-draw row.
+    pub(crate) fn note_streamed(&mut self) {
+        if let Some(active) = self.active.as_mut() {
+            active.streamed = true;
+        }
+    }
+
+    /// A splash, loading, Settling, frontend or first-launch panel frame
+    /// presented.
+    pub(crate) fn note_any_present(&mut self) {
+        if let Some(stall) = self.stall.as_mut() {
+            stall.note_present();
+        }
+    }
+
+    /// The window was hidden or shown again (`WindowEvent::Occluded`).
+    pub(crate) fn note_occluded(&mut self, occluded: bool) {
+        if let Some(active) = self.active.as_mut() {
+            active.marks.note_occluded(occluded);
+        }
+    }
+
+    /// A mid-run change landed: every row from the next one on carries it.
+    /// Before the first row it changes nothing the record compares.
+    pub(crate) fn note_change(&mut self, kind: ChangeKind) {
+        if let Some(active) = self.active.as_mut()
+            && active.run.writes_rows()
+        {
+            log::info!("[Playback] mid-route change: {}", kind.key());
+            active.marks.note_change(kind);
         }
     }
 }
 
 impl ActivePlayback {
-    fn view(&self, pose: usize) -> Option<RouteView> {
-        let pose = self.file.poses.get(pose)?;
+    /// Pose `pose`, `blend` of the way to the next one.
+    fn view(&self, pose: usize, blend: f32) -> Option<RouteView> {
+        let from = self.file.poses.get(pose)?;
+        let (eye, yaw, pitch) = match self.file.poses.get(pose + 1) {
+            Some(to) => pacing::interpolate(from, to, blend),
+            None => (from.eye, from.yaw, from.pitch),
+        };
         Some(RouteView {
-            eye: pose.eye,
-            yaw: pose.yaw,
-            pitch: pose.pitch,
+            eye,
+            yaw,
+            pitch,
             hfov: self.hfov,
         })
-    }
-}
-
-impl App {
-    /// Install's camera step on the session's first gameplay level: the
-    /// route's bake must be the level's (id-51 hash and walk epoch). A match
-    /// arms the run; a mismatch is held for the first Settling frame, which
-    /// stops the run. A frontend backdrop is never the route's level.
-    pub(crate) fn playback_level_installed(&mut self) {
-        let backdrop = self.frontend_menu_is_present();
-        let Some(active) = self.playback.active.as_mut() else {
-            return;
-        };
-        if backdrop || active.run.phase() != Phase::AwaitingInstall {
-            return;
-        }
-        let Some(world) = self.level.as_ref() else {
-            return;
-        };
-        let path = self
-            .level_load
-            .as_ref()
-            .map(|load| load.map_path.display().to_string())
-            .or_else(|| {
-                self.map_path
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-            })
-            .unwrap_or_default();
-        let bake = postretro_camera_route::bake_identity(&path, world);
-        match route::match_level(&active.file, &bake) {
-            Ok(identity) => {
-                if identity == Identity::Unproven {
-                    log::warn!(
-                        "[Playback] level {path} has no id-51 hash; camera route {} accepted unproven",
-                        active.args.poses.display(),
-                    );
-                }
-                active.record.set_level(bake, identity);
-                active.run.arm();
-            }
-            Err(reason) => {
-                active.refusal = Some(format!(
-                    "camera route {} does not match level {path}: {reason}",
-                    active.args.poses.display(),
-                ));
-            }
-        }
-    }
-
-    /// A Settling frame's held view: the route's first pose at its FOV while
-    /// the run is armed, else `fallback`. `None` after stopping a run whose
-    /// route the level refused.
-    pub(crate) fn playback_settling_view(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        fallback: HeldLevelView,
-    ) -> Option<HeldLevelView> {
-        let aspect = self.camera.aspect();
-        let Some(active) = self.playback.active.as_mut() else {
-            return Some(fallback);
-        };
-        if let Some(refusal) = active.refusal.take() {
-            log::error!("[Playback] {refusal}");
-            self.playback.active = None;
-            self.exit_result = Err(anyhow::anyhow!(refusal));
-            event_loop.exit();
-            return None;
-        }
-        let held = active
-            .run
-            .settling_pose()
-            .and_then(|pose| active.view(pose))
-            .map(|view| view.held_view(aspect));
-        Some(held.unwrap_or(fallback))
-    }
-
-    /// A Running frame, before its eye and streaming step: pick the frame's
-    /// pose and mark its GPU work with the frame index its row will take.
-    pub(crate) fn playback_begin_world_frame(&mut self, now: Instant) {
-        let Some(active) = self.playback.active.as_mut() else {
-            return;
-        };
-        if !active.run.is_playing() {
-            return;
-        }
-        active.presented = false;
-        active.frame_interval_us = active.last_frame_start.map(|previous| {
-            u64::try_from(now.duration_since(previous).as_micros()).unwrap_or(u64::MAX)
-        });
-        active.last_frame_start = Some(now);
-        let Some(plan) = active.run.begin_world_frame() else {
-            return;
-        };
-        if plan.kind == RowKind::Route && !active.record.has_rendered() {
-            let adapter = self.renderer.as_ref().map(|renderer| {
-                let identity = renderer.capture_measurement_adapter_identity();
-                (identity.name.clone(), identity.backend.clone())
-            });
-            active.record.set_rendered(
-                active.file.header.projection.hfov_degrees,
-                self.camera.aspect(),
-                adapter,
-            );
-        }
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_frame_mark(Some(active.record.next_frame()));
-        }
-    }
-
-    /// The frame's end: a frame that presented the world writes its row and
-    /// advances the route. After the last pose's route frame the record is
-    /// written, once, and the session exits 0, or non-zero if the write failed.
-    pub(crate) fn playback_end_frame(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(active) = self.playback.active.as_mut() else {
-            return;
-        };
-        let outcome = active
-            .run
-            .finish_frame(std::mem::take(&mut active.presented));
-        if let Some(plan) = outcome.row {
-            active.record.push_row(plan, active.frame_interval_us);
-        }
-        if !outcome.complete {
-            return;
-        }
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_frame_mark(None);
-        }
-        let report = &active.args.report;
-        match active.record.write(report) {
-            Ok(()) => log::info!(
-                "[Playback] camera route complete: {} frames recorded to {}",
-                active.record.next_frame(),
-                report.display(),
-            ),
-            Err(err) => {
-                log::error!("[Playback] {err}");
-                self.exit_result = Err(anyhow::anyhow!(err));
-            }
-        }
-        self.release_cursor_for_exit();
-        event_loop.exit();
     }
 }
 

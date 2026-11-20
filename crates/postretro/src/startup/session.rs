@@ -238,7 +238,12 @@ pub(crate) fn build_session() -> Result<BootSession> {
     }
 
     // Camera-route playback reads and checks its pose file before the event
-    // loop exists, so a bad file stops the launch before any window.
+    // loop exists, so a bad file or launch stops before any window. A build
+    // without it warns and runs as if the flags were unset.
+    super::camera_route_flags::warn_camera_route_flags_without_feature(
+        &args,
+        cfg!(feature = "dev-tools"),
+    );
     #[cfg(feature = "dev-tools")]
     let playback = crate::playback::Playback::from_args_or_exit(&args);
 
@@ -449,19 +454,6 @@ pub(crate) fn build_session() -> Result<BootSession> {
 /// `--core-root` would hit next.
 const PATH_FLAGS: [&str; 4] = ["--mod", "--baked-root", "--core-root", APP_NAME_FLAG];
 
-/// Camera-route playback's value-taking flags. They sit outside playback's
-/// feature gate so every build steps over their values when it finds the map.
-pub(crate) const CAMERA_ROUTE_FLAG: &str = "--camera-route";
-pub(crate) const CAMERA_ROUTE_HOLD_FLAG: &str = "--camera-route-hold";
-pub(crate) const CAMERA_ROUTE_REPORT_FLAG: &str = "--camera-route-report";
-pub(crate) const CAMERA_ROUTE_PACING_FLAG: &str = "--camera-route-pacing";
-const CAMERA_ROUTE_VALUE_FLAGS: [&str; 4] = [
-    CAMERA_ROUTE_FLAG,
-    CAMERA_ROUTE_HOLD_FLAG,
-    CAMERA_ROUTE_REPORT_FLAG,
-    CAMERA_ROUTE_PACING_FLAG,
-];
-
 /// Recover the positional map-path argument (the raw-path dev bypass), skipping
 /// the values consumed by [`PATH_FLAGS`], `--pool-seed`, `--observe-live`, the
 /// netcode role flags `--host`/`--connect`, and `--password`. A value-taking flag missing
@@ -480,7 +472,9 @@ pub(crate) fn resolve_map_path(args: &[String]) -> Option<String> {
             || arg == "--pool-seed"
             || arg == "--observe-live"
             || arg == super::start_pose::START_POSE_FLAG
-            || CAMERA_ROUTE_VALUE_FLAGS.contains(&arg.as_str())
+            // Outside playback's feature gate, so every build steps over
+            // their values when it finds the map.
+            || super::camera_route_flags::CAMERA_ROUTE_VALUE_FLAGS.contains(&arg.as_str())
         {
             if iter.peek().is_some_and(|value| !value.starts_with("--")) {
                 let _ = iter.next();
@@ -936,6 +930,10 @@ mod tests {
             "out.json",
             "--camera-route-pacing",
             "frame-locked",
+            "--camera-route-stall-timeout",
+            "30",
+            "--record-camera-route",
+            "rec.txt",
             "map.prl",
         ]
         .into_iter()

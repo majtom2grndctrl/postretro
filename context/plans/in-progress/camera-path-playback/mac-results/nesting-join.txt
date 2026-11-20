@@ -1,0 +1,27 @@
+metal-application-intervals: 1272 encoder rows labelled pr-frame; 1247 distinct k, 724..1970 (contiguous: True)
+pr-frame rows are always event-type Encoding, depth = parent command buffer row depth + 1, same cmdbuffer-id, own encoder-id.
+pr-frame rows by parent command buffer label:
+   1247  Frame Encoder
+     10  (wgpu internal) Signal
+      9  Streamed SH Upload Copies
+      6  Streamed Lightmap Drain
+
+per drain / SH-copies command buffer: app parent row -> child encoder row (pr-frame) -> GPU rows (joined on encoder-id)
+start	parent label	parent depth	cmdbuffer	child label	child depth	encoder	GPU rows (channel dur)
+00:04.799.067	Streamed Lightmap Drain	34	0x23e024aaab	Blit Command 0  -  :pr-frame 986	35	0x23e024aaac	SDMA0 20.42 µs, GFX 1.08 ms
+00:07.338.078	Streamed SH Upload Copies	34	0x23e024f469	Blit Command 0  -  :pr-frame 1136	35	0x23e024f46a	SDMA0 167.21 µs, GFX 98.99 µs
+00:07.339.231	Streamed SH Upload Copies	14	0x23e024f46f	Blit Command 0  -  :pr-frame 1136	15	0x23e024f470	SDMA0 81.27 µs, GFX 72.40 µs
+00:07.339.826	Streamed SH Upload Copies	14	0x23e024f472	Blit Command 0  -  :pr-frame 1136	15	0x23e024f473	SDMA0 17.51 µs, GFX 24.84 µs
+00:07.341.988	Streamed SH Upload Copies	14	0x23e024f475	Blit Command 0  -  :pr-frame 1136	15	0x23e024f476	SDMA0 321.02 µs, GFX 692.54 µs
+00:07.351.752	Streamed SH Upload Copies	34	0x23e024f502	Blit Command 0  -  :pr-frame 1137	35	0x23e024f503	SDMA0 72.80 µs, SDMA0 23.30 µs, SDMA0 14.36 µs, SDMA0 51.43 µs, GFX 1.04 ms, GFX 238.08 µs, GFX 14.00 µs, GFX 427.12 µs
+00:07.367.581	Streamed SH Upload Copies	34	0x23e024f58f	Blit Command 0  -  :pr-frame 1138	35	0x23e024f590	SDMA0 260.38 µs, GFX 268.00 µs
+00:07.372.378	Streamed SH Upload Copies	14	0x23e024f595	Blit Command 0  -  :pr-frame 1138	15	0x23e024f596	SDMA0 528.79 µs, GFX 862.72 µs, GFX 71.12 µs
+00:07.374.579	Streamed SH Upload Copies	14	0x23e024f598	Blit Command 0  -  :pr-frame 1138	15	0x23e024f599	SDMA0 85.89 µs, GFX 43.58 µs
+00:07.389.363	Streamed SH Upload Copies	14	0x23e024f631	Blit Command 0  -  :pr-frame 1139	15	0x23e024f632	SDMA0 19.99 µs
+00:09.265.878	Streamed Lightmap Drain	34	0x23e0253317	Blit Command 0  -  :pr-frame 1248	35	0x23e0253318	SDMA0 21.06 µs, GFX 400.49 µs
+00:10.268.233	Streamed Lightmap Drain	34	0x23e0255716	Blit Command 0  -  :pr-frame 1307	35	0x23e0255717	SDMA0 26.91 µs
+00:11.717.812	Streamed Lightmap Drain	34	0x23e02595df	Blit Command 0  -  :pr-frame 1394	35	0x23e02595e0	SDMA0 20.56 µs, GFX 1.13 ms
+00:12.704.508	Streamed Lightmap Drain	34	0x23e025bc29	Blit Command 0  -  :pr-frame 1453	35	0x23e025bc2a	SDMA0 24.65 µs
+00:16.383.586	Streamed Lightmap Drain	34	0x23e0265e24	Blit Command 0  -  :pr-frame 1672	35	0x23e0265e25	SDMA0 14.59 µs
+
+GPU row label example: Streamed Lightmap Drain:Blit Command 0  ( postretro (42538) )  0xe12618d3

@@ -251,6 +251,16 @@ impl Renderer {
         self.full().vsync_enabled
     }
 
+    /// Camera-route playback's frame index for the frame about to record:
+    /// while `Some(k)`, the lightmap drain, SH upload-copies and frame
+    /// encoders each carry a `pr-frame <k>` debug group, so a GPU trace
+    /// attributes their work to that frame. `None` marks nothing and leaves
+    /// every encoder label as it is. Set before the frame's streaming step.
+    #[cfg(feature = "dev-tools")]
+    pub fn set_frame_mark(&mut self, frame: Option<u64>) {
+        self.queue.set_frame_mark(frame);
+    }
+
     /// Enables CPU stage timing for this renderer. Read once at startup by the
     /// binary; see context/lib/rendering_pipeline.md §12.
     pub fn set_cpu_timing(&mut self, gate: postretro_stage_timing::TimingGate) {

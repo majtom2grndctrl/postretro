@@ -125,6 +125,7 @@ impl Renderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Frame Encoder"),
                 });
+            let marked = self.queue.open_frame_mark(&mut encoder);
 
             compose_submitted = self.record_scene_passes(
                 &mut encoder,
@@ -143,6 +144,7 @@ impl Renderer {
                 clear_color,
                 scene,
             )?;
+            self.queue.close_frame_mark(&mut encoder, marked);
             {
                 let _submit = cpu.scope(RenderStage::Submit);
                 self.submit_windowed_frame(encoder);

@@ -107,6 +107,13 @@ impl App {
         // not the camera's default aspect left by an unload.
         self.commit_render_extents();
         let view = self.presented_pose().held_view(self.camera.aspect());
+        // A camera route holds its first pose instead, at its own FOV; a
+        // route that does not match the level stops the run here, before any
+        // world frame.
+        #[cfg(feature = "dev-tools")]
+        let Some(view) = self.playback_settling_view(event_loop, view) else {
+            return false;
+        };
         let held = match self.prepare_held_level_frame(view) {
             Ok(held) => held,
             Err(err) => {

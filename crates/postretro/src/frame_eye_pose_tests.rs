@@ -98,6 +98,7 @@ impl Rig {
             FrameEyeInputs {
                 presented_eye: Vec3::new(1.0, 2.0, 3.0),
                 aspect: 16.0 / 9.0,
+                base_hfov: crate::camera::HFOV,
                 render_yaw: YAW,
                 pitch: step.pitch,
                 driver: Some(ViewFeelDriver {
@@ -533,6 +534,7 @@ mod driver {
             FrameEyeInputs {
                 presented_eye: eye,
                 aspect: 16.0 / 9.0,
+                base_hfov: crate::camera::HFOV,
                 render_yaw: YAW,
                 pitch,
                 driver,

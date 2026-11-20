@@ -294,6 +294,7 @@ fn peak_dev_focus(movement: &PlayerMovementDescriptor, top_y: f32, gap: f32) -> 
                 FrameEyeInputs {
                     presented_eye: eye,
                     aspect: 16.0 / 9.0,
+                    base_hfov: crate::camera::HFOV,
                     render_yaw: 0.0,
                     pitch: 0.0,
                     driver: view_feel_driver(&registry, eye.y, eye.y, DT, 1.0),

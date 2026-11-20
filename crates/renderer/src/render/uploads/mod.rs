@@ -8,6 +8,8 @@ use std::panic::Location;
 mod allocation_tests;
 #[cfg(test)]
 mod drift_tests;
+#[cfg(feature = "dev-tools")]
+mod frame_mark;
 pub(crate) mod staged_uploads;
 mod staging_pool;
 pub(crate) use staged_uploads::StagedUploads;
@@ -77,6 +79,9 @@ pub(crate) struct UploadQueue {
     window_start: Cell<UploadCounts>,
     window_max_live: Cell<u64>,
     window_max_batch_bytes: Cell<u64>,
+    /// Camera-route playback's frame mark, read by every marked encoder.
+    #[cfg(feature = "dev-tools")]
+    frame_mark: RefCell<frame_mark::FrameMark>,
 }
 
 impl UploadQueue {
@@ -98,6 +103,35 @@ impl UploadQueue {
             window_start: Cell::new(UploadCounts::default()),
             window_max_live: Cell::new(0),
             window_max_batch_bytes: Cell::new(0),
+            #[cfg(feature = "dev-tools")]
+            frame_mark: RefCell::default(),
+        }
+    }
+
+    /// Camera-route playback names the frame it records: `Some(k)` brackets
+    /// each drain and frame encoder in a `pr-frame <k>` debug group until the
+    /// next call, `None` leaves every encoder as it is.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn set_frame_mark(&self, frame: Option<u64>) {
+        self.frame_mark.borrow_mut().set(frame);
+    }
+
+    /// Opens this frame's playback mark on `encoder`, returning whether it
+    /// did; hand the result to [`Self::close_frame_mark`] before `finish`.
+    /// Unmarked, and in builds without playback, it records nothing.
+    pub(crate) fn open_frame_mark(&self, encoder: &mut wgpu::CommandEncoder) -> bool {
+        #[cfg(feature = "dev-tools")]
+        if let Some(label) = self.frame_mark.borrow().label() {
+            encoder.push_debug_group(label);
+            return true;
+        }
+        let _ = encoder;
+        false
+    }
+
+    pub(crate) fn close_frame_mark(&self, encoder: &mut wgpu::CommandEncoder, opened: bool) {
+        if opened {
+            encoder.pop_debug_group();
         }
     }
 

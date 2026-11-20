@@ -43,7 +43,8 @@ pub(crate) struct RenderCamera {
 }
 
 impl RenderCamera {
-    /// Assemble the effective eye and matrix used by the entire render stage.
+    /// Assemble the effective eye and matrix used by the entire render stage,
+    /// at the engine's base horizontal FOV ([`HFOV`]).
     pub(crate) fn new(
         position: Vec3,
         aspect: f32,
@@ -52,6 +53,33 @@ impl RenderCamera {
         roll: f32,
         eye_offset: Vec3,
         fov_offset_degrees: f32,
+    ) -> Self {
+        Self::with_base_hfov(
+            position,
+            aspect,
+            yaw,
+            pitch,
+            roll,
+            eye_offset,
+            fov_offset_degrees,
+            HFOV,
+        )
+    }
+
+    /// [`Self::new`] at another base horizontal FOV, in radians: a camera
+    /// route's projection. A view-feel FOV offset adds to it and clamps to
+    /// the presentation band; the base itself is never clamped here, so a
+    /// caller validates it against [`MIN_FOV_DEG`]..=[`MAX_FOV_DEG`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_base_hfov(
+        position: Vec3,
+        aspect: f32,
+        yaw: f32,
+        pitch: f32,
+        roll: f32,
+        eye_offset: Vec3,
+        fov_offset_degrees: f32,
+        base_hfov: f32,
     ) -> Self {
         let eye_position = effective_eye_position(position, eye_offset);
         // Aim is clamped already; view-feel pitch on top of it (impulses, a
@@ -65,11 +93,11 @@ impl RenderCamera {
         // vfov near PI, which makes tan(vfov/2) explode).
         let safe_aspect = aspect.max(0.1);
         // Preserve the prior projection bit-for-bit when no FOV effect is active:
-        // reusing HFOV avoids an otherwise harmless add/clamp rounding change.
+        // reusing the base avoids an otherwise harmless add/clamp rounding change.
         let hfov = if fov_offset_degrees == 0.0 {
-            HFOV
+            base_hfov
         } else {
-            (HFOV + fov_offset_degrees.to_radians())
+            (base_hfov + fov_offset_degrees.to_radians())
                 .clamp(MIN_FOV_DEG.to_radians(), MAX_FOV_DEG.to_radians())
         };
         let vfov = 2.0 * ((hfov / 2.0).tan() / safe_aspect).atan();
@@ -578,6 +606,30 @@ mod tests {
             camera.view_projection.to_cols_array(),
             expected.to_cols_array()
         );
+        let at_default_base =
+            RenderCamera::with_base_hfov(position, aspect, yaw, pitch, 0.0, Vec3::ZERO, 0.0, HFOV);
+        assert_eq!(
+            at_default_base.view_projection.to_cols_array(),
+            expected.to_cols_array(),
+            "a base FOV equal to HFOV keeps today's matrix bit for bit"
+        );
+    }
+
+    #[test]
+    fn base_hfov_projects_at_that_fov_unclamped_by_the_offset_path() {
+        let position = Vec3::new(2.0, 3.0, -4.0);
+        let aspect = 16.0 / 9.0;
+        let base = 75.0_f32.to_radians();
+        let camera =
+            RenderCamera::with_base_hfov(position, aspect, 0.4, -0.2, 0.0, Vec3::ZERO, 0.0, base);
+        let vfov = 2.0 * ((base / 2.0).tan() / aspect).atan();
+        let expected = glam::camera::rh::proj::directx::perspective(vfov, aspect, NEAR, FAR)
+            * render_view_matrix(position, look_direction(0.4, -0.2), 0.0, Vec3::ZERO);
+        assert_eq!(
+            camera.view_projection.to_cols_array(),
+            expected.to_cols_array()
+        );
+        assert_eq!(camera.eye_position.to_array(), position.to_array());
     }
 
     #[test]

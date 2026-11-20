@@ -198,7 +198,9 @@ impl StagedUploads {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Streamed SH Upload Copies"),
         });
+        let marked = queue.open_frame_mark(&mut encoder);
         let recorded = self.record(pool, device, &mut encoder);
+        queue.close_frame_mark(&mut encoder, marked);
         queue.submit(std::iter::once(encoder.finish()));
         recorded.finish(pool)
     }

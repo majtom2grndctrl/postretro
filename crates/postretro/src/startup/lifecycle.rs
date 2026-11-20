@@ -280,6 +280,8 @@ impl App {
             self.finish_beside_level_failure(&reason);
             return;
         }
+        // An arrival belongs to the load that carried the seam.
+        self.clear_seam_crossing();
         self.retire_active_level_load();
         let host_named = self.level_load.as_ref().is_some_and(|load| load.host_named);
         let level = self

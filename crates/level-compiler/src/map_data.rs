@@ -732,6 +732,8 @@ pub struct MapData {
     pub teleporters: postretro_level_format::teleporters::TeleportersSection,
     /// Ghost-link records (id 56), in source entity order. Presentation only.
     pub ghost_links: postretro_level_format::ghost_links::GhostLinksSection,
+    /// Level-seam records (id 61), in source entity order, landmarks resolved.
+    pub seams: postretro_level_format::seams::SeamsSection,
     /// Mapper-authored SH probe-coarsening protection volumes: world-space AABBs
     /// `[minx,miny,minz,maxx,maxy,maxz]` in engine meters (Y-up), one per
     /// `sh_protect_volume` brush entity, already dilated by its `dilation` KVP.

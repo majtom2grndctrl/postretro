@@ -418,6 +418,7 @@ impl Rig {
             DT,
             Some(TriggerTickContext {
                 teleporters: Some(&self.bindings),
+                seams: None,
                 system: &mut self.trigger_system,
                 bridge: &self.bridge,
                 bindings: &self.triggers,

@@ -140,6 +140,8 @@ impl TriggerBindingTable {
                 Some((reaction, "on.player", "a player event"))
             } else if crate::teleporter_system::reaction_uses_teleporter(&reaction.descriptor) {
                 Some((reaction, "on.teleporter", "a teleport event"))
+            } else if crate::seam_system::reaction_uses_seam(&reaction.descriptor) {
+                Some((reaction, "on.seam", "a seam arrive event"))
             } else {
                 None
             }

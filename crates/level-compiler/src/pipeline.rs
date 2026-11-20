@@ -2302,6 +2302,7 @@ fn run_after_parsing(
         environment_volumes: &environment_volumes_section,
         teleporters: &map_data.teleporters,
         ghost_links: &map_data.ghost_links,
+        seams: &map_data.seams,
         mover_probe_channel: delta_sections.mover_channel.as_ref(),
         push_forces: push_forces_section.as_ref(),
         reflection_probes: reflection_probes_section.as_ref(),

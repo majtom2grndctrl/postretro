@@ -494,6 +494,35 @@
     on_teleport(string) : "Reaction on teleport" : "" : "Authoritative reaction once per travelling player."
 ]
 
+// Level-seam brushwork is a non-solid union standing at the same place, under one
+// shared name, in both maps of a pair. Activating it loads `target`; a player
+// inside arrives at the same place relative to the seam's landmark.
+@SolidClass
+    color(240 160 40)
+    = level_seam : "Level seam (map transition region)"
+[
+    name(string) : "Seam name" : "" : "Required. Shared by both maps of the pair and unique in each; also names a player_spawn checkpoint set."
+    target(string) : "Next map catalog id" : "" : "Required catalog id of the map this seam loads."
+    activation(choices) : "Activation" : "touch" =
+    [
+        "touch" : "Touch"
+        "use" : "Use"
+    ]
+    mode(choices) : "Mode" : "classic" =
+    [
+        "classic" : "Classic (loading screen)"
+        "seamless" : "Seamless (crosses as classic for now)"
+    ]
+    landmark(string) : "Landmark name" : "" : "Optional teleport_destination. Blank uses the seam's bounds centre at yaw 0."
+    enabled_on_spawn(choices) : "Armed on spawn" : 1 =
+    [
+        0 : "Off"
+        1 : "On"
+    ]
+    on_arrive(string) : "Reaction on arrival" : "" : "Reaction the destination seam fires once per arriving player."
+    _tags(string) : "Space-delimited tags" : ""
+]
+
 // Ghost-link brushwork is a non-solid union over one room copy; while armed, its
 // members draw as ghosts at the landmark → target mapping in the other copy.
 @SolidClass

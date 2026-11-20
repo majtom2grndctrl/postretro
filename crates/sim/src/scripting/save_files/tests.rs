@@ -64,6 +64,7 @@ fn run_file_round_trips_level_checkpoint_slots_and_sentiment() {
         level: Some(LevelRecord {
             catalog_id: "campaign-test".into(),
             checkpoint: Some("bridge".into()),
+            seam: None,
         }),
         run: Some(RunRecord {
             character: "00112233445566778899aabbccddeeff".into(),

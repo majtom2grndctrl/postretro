@@ -210,6 +210,7 @@ impl World {
                         activator: Some(pawn),
                         occupancy,
                         fired_teleporter: None,
+                        fired_seam: None,
                         event_player: None,
                     },
                 );

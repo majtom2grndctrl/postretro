@@ -261,6 +261,20 @@ export const mapCatalog = defineMapCatalog([
     // Also the frontend backdrop, so its loading screen shows at every boot.
     loadingTree: loadingTreeName("combat-demo"),
   },
+  // A level seam pair: each map's `pair_door` seam targets the other's id.
+  // No screenshot, so their loads take the mod-wide plain loading screen.
+  {
+    id: "seam-pair-a",
+    path: "maps/seam-pair-a.prl",
+    name: "Seam Pair A",
+    tags: ["seam", "test"],
+  },
+  {
+    id: "seam-pair-b",
+    path: "maps/seam-pair-b.prl",
+    name: "Seam Pair B",
+    tags: ["seam", "test"],
+  },
 ]);
 
 function hasTag(entry: ModMapEntry, tag: string): boolean {

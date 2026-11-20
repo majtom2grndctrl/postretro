@@ -964,6 +964,7 @@ fn windowed_install_assigns_light_entity_ids_before_fog_entity_ids() {
             suppress_boot_pawn: false,
             local_carried_loadout: None,
             spawn_checkpoint: None,
+            spawn_checkpoint_seam: false,
         };
         // No-op mesh hook: headless-shaped, no renderer to upload models.
         let _ = install_world_cpu(

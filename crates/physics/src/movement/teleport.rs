@@ -88,27 +88,9 @@ pub(super) fn resolve(
         teleporters.warn_refused(index);
         return position;
     }
-    // State payloads bank motion too; rotating total velocity alone would let the
-    // next dash/slide intent reintroduce motion in the source room's frame.
-    match &mut component.movement_state {
-        MovementState::Dash { boost, .. } | MovementState::Sliding { boost, .. } => {
-            *boost = rotation * *boost
-        }
-        MovementState::Vault { .. } => {
-            // An abort, not the shared vault settle: the teleport keeps and
-            // rotates every velocity channel instead of zeroing the path's.
-            component.movement_state = MovementState::Normal;
-            component.swim_reentry_latched = false;
-            events.state_edges.push(MovementStateEdge {
-                from: MovementStateKind::Vault,
-                to: MovementStateKind::Normal,
-            });
-        }
-        _ => {}
-    }
-    component.velocity = rotation * component.velocity;
-    component.knockback_velocity = rotation * component.knockback_velocity;
-    component.push_velocity = rotation * component.push_velocity;
+    events
+        .state_edges
+        .extend(rotate_arrival_motion(component, rotation));
     settle_arrival(
         component,
         collision,
@@ -123,6 +105,39 @@ pub(super) fn resolve(
         arrival,
     });
     arrival
+}
+
+/// Turn a relocated pawn's banked motion by `rotation`, a world-up yaw. Every
+/// velocity channel and a dash or slide boost rotate; a vault aborts to
+/// `Normal`, keeping its velocity channels, and reports that edge. Teleports
+/// and seam arrivals share this rule (`movement.md` §6).
+pub fn rotate_arrival_motion(
+    component: &mut PlayerMovementComponent,
+    rotation: Quat,
+) -> Option<MovementStateEdge> {
+    // State payloads bank motion too; rotating total velocity alone would let the
+    // next dash/slide intent reintroduce motion in the source room's frame.
+    let mut edge = None;
+    match &mut component.movement_state {
+        MovementState::Dash { boost, .. } | MovementState::Sliding { boost, .. } => {
+            *boost = rotation * *boost
+        }
+        MovementState::Vault { .. } => {
+            // An abort, not the shared vault settle: the arrival keeps and
+            // rotates every velocity channel instead of zeroing the path's.
+            component.movement_state = MovementState::Normal;
+            component.swim_reentry_latched = false;
+            edge = Some(MovementStateEdge {
+                from: MovementStateKind::Vault,
+                to: MovementStateKind::Normal,
+            });
+        }
+        _ => {}
+    }
+    component.velocity = rotation * component.velocity;
+    component.knockback_velocity = rotation * component.knockback_velocity;
+    component.push_velocity = rotation * component.push_velocity;
+    edge
 }
 
 /// Finish a validated relocation at its exact body point. Teleporters and

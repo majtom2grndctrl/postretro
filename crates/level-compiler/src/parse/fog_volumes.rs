@@ -1,13 +1,14 @@
 //! Fog volume, lamp and tube resolution from FGD key-values.
 //! See: context/lib/build_pipeline.md §Custom FGD
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use glam::DVec3;
 use shambler::GeoMap;
 use shambler::brush::BrushId;
 
+use super::authoring_regions::{BrushRegionBounds, resolve_brush_region_bounds};
 use super::{quake_to_engine, shambler_to_dvec3};
 use crate::map_data::MapFogVolume;
 use postretro_level_format::fog_volumes::MAX_PLANES_PER_VOLUME;

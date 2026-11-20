@@ -39,6 +39,9 @@ pub(crate) struct UnbackedSpawn {
     /// next leaves participation, to a player start unless the source offers
     /// again.
     pub(crate) single_use: bool,
+    /// A seam crossing's arrival this pose comes from: participation entry
+    /// applies its motion and latch, and promotion re-tests its fit.
+    pub(crate) arrival: Option<crate::seam_crossing::SeamSpawnArrival>,
 }
 
 /// Where a seat spawns, as resolved and recorded.
@@ -67,6 +70,9 @@ pub(crate) struct SpawnPlacements<'a> {
     descriptors: &'a [EntityTypeDescriptor],
     agent_params: Option<NavAgentParams>,
     sites: Vec<PlacementSite>,
+    /// The world a seam arrival's capsule must fit; `None` skips the test,
+    /// which promotion then makes.
+    arrival_world: Option<postretro_physics::collision::moving::CombinedCollisionWorld<'a>>,
 }
 
 impl<'a> SpawnPlacements<'a> {
@@ -93,7 +99,17 @@ impl<'a> SpawnPlacements<'a> {
             descriptors,
             agent_params,
             sites: joinable_sites(spawn_points, descriptors),
+            arrival_world: None,
         }
+    }
+
+    /// Test seam arrivals against `world` when they resolve.
+    pub(crate) fn with_arrival_world(
+        mut self,
+        world: postretro_physics::collision::moving::CombinedCollisionWorld<'a>,
+    ) -> Self {
+        self.arrival_world = Some(world);
+        self
     }
 
     /// The pose a pawn spawned at `map_index` presents: its standing position
@@ -180,6 +196,10 @@ pub(crate) struct SpawnPoseResolver {
     /// since. Level-scoped, like `resolved`.
     awaiting_resolution: BTreeSet<Seat>,
     unbacked_source: Option<Box<dyn UnbackedSpawnSource>>,
+    /// Remote seats' seam arrivals for the installed level, each offered
+    /// before any player start until the seat's first spawn consumes it, or
+    /// its arrival is found blocked. Level-scoped.
+    seam_offers: BTreeMap<Seat, crate::seam_crossing::SeamSpawnArrival>,
 }
 
 /// The spawn promotion materializes, and whether its client's hint must be
@@ -240,6 +260,11 @@ impl SpawnPoseResolver {
         placements: &SpawnPlacements<'_>,
     ) -> Option<ResolvedSpawn> {
         self.awaiting_resolution.remove(&seat);
+        if let Some(spawn) = self.seam_spawn(seat, seats, registry, placements) {
+            seats.release_placement(seat);
+            self.resolved.insert(seat, spawn.clone());
+            return Some(spawn);
+        }
         if let Some(unbacked) = self
             .unbacked_source
             .as_ref()
@@ -287,6 +312,23 @@ impl SpawnPoseResolver {
     ) -> Option<PromotionSpawn> {
         let recorded = self.resolved.get(&seat).cloned();
         let spawn = match &recorded {
+            // A seam arrival that fit when it resolved is tested again now: a
+            // mover or a pawn may stand there since. Blocked, the seat takes a
+            // start chosen now and its client is hinted again.
+            Some(ResolvedSpawn::Unbacked(UnbackedSpawn {
+                arrival: Some(arrival),
+                entity_class,
+                ..
+            })) if !Self::arrival_fits(arrival, entity_class, registry, placements) => {
+                crate::seam_crossing::warn_fallback(
+                    &arrival.seam,
+                    crate::seam_crossing::ArrivalFallback::Blocked,
+                    &format!("seat {}", seat.0),
+                );
+                self.seam_offers.remove(&seat);
+                self.resolved.remove(&seat);
+                self.resolve_placement(seat, seats, registry, placements)?
+            }
             Some(spawn @ ResolvedSpawn::Unbacked(_)) => spawn.clone(),
             Some(ResolvedSpawn::Placement { .. }) => {
                 self.resolve_placement(seat, seats, registry, placements)?
@@ -325,6 +367,9 @@ impl SpawnPoseResolver {
     /// consumed: its source stops offering it, the record goes, and the seat
     /// awaits a fresh resolution.
     pub(crate) fn spawned(&mut self, seat: Seat) {
+        // A seat's first spawn consumes its seam arrival, whichever start or
+        // arrival it spawned at.
+        self.seam_offers.remove(&seat);
         let Some(ResolvedSpawn::Unbacked(UnbackedSpawn {
             single_use: true, ..
         })) = self.resolved.get(&seat)
@@ -384,6 +429,91 @@ impl SpawnPoseResolver {
     pub(crate) fn clear_for_level_unload(&mut self) {
         self.resolved.clear();
         self.awaiting_resolution.clear();
+        self.seam_offers.clear();
+    }
+
+    /// The installed level's remote seam arrivals, replacing any before.
+    pub(crate) fn set_seam_offers(
+        &mut self,
+        offers: BTreeMap<Seat, crate::seam_crossing::SeamSpawnArrival>,
+    ) {
+        self.seam_offers = offers;
+    }
+
+    /// `seat`'s seam arrival as an unbacked spawn of the class of the start
+    /// it would otherwise take, or `None` with no offer. An arrival blocked
+    /// now warns once and is consumed: the seat's spawn falls back to a start.
+    fn seam_spawn(
+        &mut self,
+        seat: Seat,
+        seats: &mut SeatTable,
+        registry: &EntityRegistry,
+        placements: &SpawnPlacements<'_>,
+    ) -> Option<ResolvedSpawn> {
+        let arrival = self.seam_offers.get(&seat)?.clone();
+        let class = seats
+            .assign_joiner_placement(registry, seat, &placements.sites)
+            .and_then(|map_index| placements.spawn_points.get(map_index))
+            .or_else(|| {
+                placements
+                    .sites
+                    .first()
+                    .and_then(|site| placements.spawn_points.get(site.map_index))
+            })
+            .map(|spawn| {
+                crate::scripting::builtins::data_archetype::player_spawn_entity_class(spawn)
+                    .to_owned()
+            })?;
+        seats.release_placement(seat);
+        if !Self::arrival_fits(&arrival, &class, registry, placements) {
+            crate::seam_crossing::warn_fallback(
+                &arrival.seam,
+                crate::seam_crossing::ArrivalFallback::Blocked,
+                &format!("seat {}", seat.0),
+            );
+            self.seam_offers.remove(&seat);
+            return None;
+        }
+        let capsule = find_descriptor(placements.descriptors, &class)?
+            .movement
+            .as_ref()?
+            .capsule
+            .clone();
+        let eye_height = arrival
+            .motion
+            .crouched_capsule
+            .as_ref()
+            .map_or(capsule.eye_height, |crouched| crouched.eye_height);
+        Some(ResolvedSpawn::Unbacked(UnbackedSpawn {
+            pose: SpawnPose {
+                eye: arrival.body_point() + Vec3::Y * eye_height,
+                yaw: arrival.view_yaw(),
+                pitch: arrival.motion.view_pitch,
+            },
+            entity_class: class,
+            single_use: true,
+            arrival: Some(arrival),
+        }))
+    }
+
+    /// Whether a seam arrival's capsule, of `class`, fits the placements'
+    /// world and every live pawn. With no world supplied, it fits.
+    fn arrival_fits(
+        arrival: &crate::seam_crossing::SeamSpawnArrival,
+        class: &str,
+        registry: &EntityRegistry,
+        placements: &SpawnPlacements<'_>,
+    ) -> bool {
+        let Some(world) = placements.arrival_world.as_ref() else {
+            return true;
+        };
+        let Some(capsule) = find_descriptor(placements.descriptors, class)
+            .and_then(|descriptor| descriptor.movement.as_ref())
+            .map(|movement| movement.capsule.clone())
+        else {
+            return true;
+        };
+        arrival.fits(world, registry, None, &capsule)
     }
 
     /// No production source exists until a consumer supplies one; tests
@@ -422,6 +552,13 @@ impl crate::App {
         ) else {
             return;
         };
+        let placements = placements.with_arrival_world(
+            postretro_physics::collision::moving::CombinedCollisionWorld::new(
+                &self.collision_world,
+                &self.kinematic_mover_colliders,
+                &self.kinematic_mover_tick_states,
+            ),
+        );
         let level = NamedLevel {
             placements: &placements,
             level_identity,

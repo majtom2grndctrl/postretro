@@ -751,6 +751,7 @@ impl SimHarness {
             DT,
             Some(super::TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut self.trigger_system,
                 bridge: &self.trigger_bridge,
                 bindings: &self.trigger_bindings,

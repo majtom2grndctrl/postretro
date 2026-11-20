@@ -197,6 +197,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         trigger_volumes,
         teleporters,
         ghost_links,
+        seams,
         fog_volumes,
         fog_pixel_scale,
         environment_volumes,
@@ -305,6 +306,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
     same_debug("trigger_volumes", trigger_volumes, &m.trigger_volumes);
     same_debug("teleporters", teleporters, &m.teleporters);
     same_debug("ghost_links", ghost_links, &m.ghost_links);
+    same_debug("seams", seams, &m.seams);
     same_debug("fog_volumes", fog_volumes, &m.fog_volumes);
     same_debug("fog_pixel_scale", fog_pixel_scale, &m.fog_pixel_scale);
     same_debug(
@@ -385,6 +387,7 @@ fn assert_hand_outs_match(hand_outs: &[HandOut], monolithic: &LevelWorld) {
                     trigger_volumes,
                     teleporters,
                     ghost_links,
+                    seams,
                     environment_volumes,
                     environment_push_forces,
                     reflection_probes,

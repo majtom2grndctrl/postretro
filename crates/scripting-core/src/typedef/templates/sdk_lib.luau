@@ -116,6 +116,29 @@ export type TeleportEventDescriptor = { teleporter: EntityId, event: "teleport",
 --- teleport-scoped reaction, or a reaction's name.
 export type TeleportEventReaction = Reaction<{}> | Reaction<TeleportEventParams> | string
 
+--- Snapshot of a map-placed level seam: id, position and tags.
+export type SeamEntity = { id: EntityId, position: Vec3, tags: {string} }
+--- Level seam member returned by `getMapEntities("seam")`. Arming state is
+--- host-only and never replicated; methods return closed command steps.
+export type SeamHandle = {
+  id: EntityId, position: Vec3, tags: {string},
+  --- Arm the seam. Applies on the host at the start of its next tick; pawns
+  --- latched in it stay latched.
+  arm: (self: SeamHandle) -> {ArmSeamStep},
+  --- Disarm the seam. Applies on the host at the start of its next tick.
+  disarm: (self: SeamHandle) -> {DisarmSeamStep},
+  --- Fire `fire` once per pawn arriving by this seam, host-only, inside the
+  --- first fixed tick after its spawn, and for no sibling sharing its tag.
+  --- Return the entry from `setupLevel`'s `seamEvents`.
+  on: (self: SeamHandle, event: "arrive", fire: {Reaction<any> | string}) -> SeamEventDescriptor,
+}
+--- A seam member binding: the reactions named by `fire` run on the seam's
+--- `arrive` event.
+export type SeamEventDescriptor = { seam: EntityId, event: "arrive", fire: {string} }
+--- What a seam member's `on("arrive", ...)` accepts: a sourceless or
+--- seam-scoped reaction, or a reaction's name.
+export type SeamEventReaction = Reaction<{}> | Reaction<SeamEventParams> | string
+
 --- Snapshot of a map-placed ghost link: id, position and tags.
 export type GhostLinkEntity = { id: EntityId, position: Vec3, tags: {string} }
 --- Ghost-link member returned by `getMapEntities("ghostLink")`. Armed state,
@@ -208,7 +231,7 @@ export type AttackPoolEntityHandle = {
 
 --- Map-placed kinds `getMapEntities` accepts. NPCs and players are groups
 --- (`npcs`, `players`), not members.
-export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool"
+export type MapEntityKind = "mover" | "trigger" | "teleporter" | "ghostLink" | "light" | "fog" | "emitter" | "spawner" | "trap" | "attackPool" | "seam"
 
 --- Narrows a member query to instances carrying `tag`.
 export type MapEntityFilter = { tag: string? }
@@ -229,6 +252,7 @@ declare getMapEntities: ((kind: "mover", filter: MapEntityFilter?) -> {MoverEnti
   & ((kind: "spawner", filter: MapEntityFilter?) -> {SpawnerEntityHandle})
   & ((kind: "trap", filter: MapEntityFilter?) -> {TrapEntityHandle})
   & ((kind: "attackPool", filter: MapEntityFilter?) -> {AttackPoolEntityHandle})
+  & ((kind: "seam", filter: MapEntityFilter?) -> {SeamHandle})
 
 --- Level default gravity in m/s² (negative = downward; positive = upward):
 --- the gravity outside every gravity volume. Seeded from the worldspawn
@@ -503,6 +527,12 @@ export type ArmTeleporterStep = { id: EntityId, primitive: "armTeleporter", args
 --- Sequence step that disarms one teleporter (`t:disarm()`). Applies on the
 --- host at the start of its next movement tick.
 export type DisarmTeleporterStep = { id: EntityId, primitive: "disarmTeleporter", args: {} }
+--- Sequence step that arms one level seam (`s:arm()`). Applies on the host at
+--- the start of its next tick.
+export type ArmSeamStep = { id: EntityId, primitive: "armSeam", args: {} }
+--- Sequence step that disarms one level seam (`s:disarm()`). Applies on the
+--- host at the start of its next tick.
+export type DisarmSeamStep = { id: EntityId, primitive: "disarmSeam", args: {} }
 --- Member categories a ghost link shows; an omitted category keeps its value.
 export type GhostLinkMembersArgs = { players: boolean?, entities: boolean?, projectiles: boolean?, movers: boolean? }
 --- A ghost link's colour filter. Each named field ramps on its own over
@@ -599,7 +629,7 @@ export type FireStep = {
 
 --- Union of every supported sequence step shape. New sequenced primitives
 --- extend this union.
-export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
+export type SequenceStep = SetLightAnimationStep | SetFogDensityStep | SetFogGlowStep | SetFogEdgeSoftnessStep | SetFogFalloffStep | SetFogParamsStep | SetFogAnimationStep | MoverStartStep | MoverStopStep | MoverReverseStep | MoverGoToPathNodeStep | MoverSetSpinRateStep | MoverSetBlockPolicyStep | ArmTeleporterStep | DisarmTeleporterStep | ArmSeamStep | DisarmSeamStep | ArmGhostLinkStep | DisarmGhostLinkStep | SetGhostLinkMembersStep | SetGhostLinkColorFilterStep | ArmTriggerStep | DisarmTriggerStep | SpawnFromSpawnerStep | FireTrapStep | StartTrapStep | StopTrapStep | StartAttackPoolStep | StopAttackPoolStep | GroupCommand | SubjectTokenCommand | SystemReactionStep | WaitStep | FireStep
 
 --- Steps in authored order. Nested tables of steps flatten at any depth, so the
 --- tables member methods, `wait()` and `fire()` return need no `append`. A
@@ -658,6 +688,15 @@ export type TeleporterTarget = {
   disarm: (self: TeleporterTarget) -> SubjectTokenCommand,
 }
 export type TeleportEventParams = { activators: ActivatorsTarget, teleporter: TeleporterTarget }
+--- The level seam a pawn arrived by (`on.seam`). Legal only before any `wait`.
+--- Call its verbs with `:`.
+export type SeamTarget = {
+  arm: (self: SeamTarget) -> SubjectTokenCommand,
+  disarm: (self: SeamTarget) -> SubjectTokenCommand,
+}
+--- Dispatch values published by a level seam's `arrive` event: the arriving
+--- pawn and the seam it arrived by.
+export type SeamEventParams = { activators: ActivatorsTarget, seam: SeamTarget }
 export type TriggerEventParams = { activators: ActivatorsTarget, trigger: TriggerTarget, occupancy: RuntimeRead }
 --- Opaque anchor for where the current named gameplay event happened. Legal
 --- only as `playSound`'s `at`.
@@ -948,6 +987,8 @@ export type LevelManifest = {
   --- (`defineTriggerEvent`) and is rejected here.
   triggerEvents: {VolumeTriggerEventDescriptor}?,
   teleportEvents: {TeleportEventDescriptor}?,
+  --- Level seam events, keyed by seam: build each with a seam member's `on`.
+  seamEvents: {SeamEventDescriptor}?,
   triggerPools: {TriggerPoolDescriptor}?,
   --- Per-player events, built with `players():on`. A level's entries belong
   --- to that level; an entry carrying `levels` is skipped with a warning (its
@@ -976,6 +1017,8 @@ declare defineReaction: (
   & ((name: string, tracer: (CrossingParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<CrossingParams>)
   & ((tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TeleportEventParams>)
   & ((name: string, tracer: (TeleportEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TeleportEventParams>)
+  & ((tracer: (SeamEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<SeamEventParams>)
+  & ((name: string, tracer: (SeamEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<SeamEventParams>)
   & ((tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TriggerEventParams>)
   & ((name: string, tracer: (TriggerEventParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<TriggerEventParams>)
   & ((tracer: (EmitterParams) -> (ProgressReactionDescriptor | PrimitiveReactionDescriptor | SequenceReactionDescriptor | ReactionStepList)) -> Reaction<EmitterParams>)
@@ -1013,7 +1056,7 @@ export type GroupKind = "npc" | "player"
 export type GroupCommand = { primitive: string, kind: GroupKind, tag: string?, args: { [string]: any } }
 --- The subject a token command addresses: this fire's activators, the volume
 --- that fired, the teleporter that fired, or the event's player.
-export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@player"
+export type SubjectTokenTarget = "@activators" | "@trigger" | "@teleporter" | "@seam" | "@player"
 --- One subject-token command (`on.activators`, `on.trigger`, `on.teleporter`,
 --- `on.player`): a primitive
 --- descriptor whose `target` names the fire's subject. Legal both as a reaction

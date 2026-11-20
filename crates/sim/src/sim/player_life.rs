@@ -44,6 +44,9 @@ struct TriggerCapabilities {
     use_enabled: Option<bool>,
     touch: Option<bool>,
     occupancy: Option<bool>,
+    /// An undeclared pawn's teleporter bar: quiescent (zero health) pawns
+    /// never teleport, so they never cross a seam on their own either.
+    quiescent: bool,
 }
 
 /// Captured once before any trigger reaction. Membership remains physical;
@@ -98,6 +101,7 @@ impl TriggerStageCapabilities {
                         use_enabled: pawn_capability(registry, pawn, Capability::Use),
                         touch: pawn_capability(registry, pawn, Capability::Touch),
                         occupancy: pawn_capability(registry, pawn, Capability::Occupancy),
+                        quiescent: crate::scripting_systems::health::is_quiescent(registry, pawn),
                     },
                 )
             })
@@ -141,6 +145,26 @@ impl TriggerStageCapabilities {
             .get(&player)
             .and_then(|gates| gates.use_enabled)
             .unwrap_or(true)
+    }
+
+    /// Whether the effective occupancy rule counts `player` this tick.
+    pub fn counts_occupant(&self, player: PlayerId) -> bool {
+        self.occupants.contains(&player)
+    }
+
+    /// A seam activates as a teleporter admits: a declared pawn by its state's
+    /// `touch`, an undeclared one unless it is quiescent.
+    pub fn permits_seam_touch(&self, player: PlayerId) -> bool {
+        self.capabilities
+            .get(&player)
+            .is_some_and(|gates| gates.touch.unwrap_or(!gates.quiescent))
+    }
+
+    /// As `permits_seam_touch`, by the declared state's `use`.
+    pub fn permits_seam_use(&self, player: PlayerId) -> bool {
+        self.capabilities
+            .get(&player)
+            .is_some_and(|gates| gates.use_enabled.unwrap_or(!gates.quiescent))
     }
 
     pub fn permits_touch(&self, player: PlayerId) -> bool {

@@ -288,13 +288,28 @@ impl App {
         set_seat_zero_carry_from_selection(session);
         session.saves.set_run_active(true);
         session.saves.mark_continue_arrival(&level);
-        // Continue arrives at the run's checkpoint, if it reached one.
-        session.saves.set_spawn_checkpoint(
-            document
-                .level
-                .as_ref()
-                .and_then(|level| level.checkpoint.clone()),
-        );
+        // Continue arrives at the run's checkpoint, if it reached one. A seam
+        // checkpoint selects the seam's set, marked a seam's, and seat 0's
+        // saved pose rides beside it to that level's install.
+        let record = document.level.as_ref();
+        match record.and_then(|record| Some((record.checkpoint.clone()?, record.seam.as_ref()?))) {
+            Some((seam, mark)) => {
+                session.saves.set_seam_spawn_checkpoint(seam.clone());
+                session.saves.set_continue_seam_pose(mark.pose.map(|pose| {
+                    crate::session::saves::ContinueSeamPose {
+                        catalog_id: level.clone(),
+                        seam,
+                        pose,
+                    }
+                }));
+            }
+            None => {
+                session
+                    .saves
+                    .set_spawn_checkpoint(record.and_then(|record| record.checkpoint.clone()));
+                session.saves.set_continue_seam_pose(None);
+            }
+        }
         self.queue_run_level(level);
         Ok(())
     }

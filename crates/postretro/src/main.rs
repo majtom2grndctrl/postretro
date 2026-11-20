@@ -100,7 +100,9 @@ mod ghost_links;
 mod render;
 mod render_preparation;
 mod runtime_movers;
+mod runtime_seams;
 mod runtime_teleporters;
+mod seam_crossing;
 use postretro_sim::scripting;
 // Live session-lifetime container: all session-lifetime state (scripting core,
 // audio, net endpoint, input/UI/modal group, and their bridges and registries),
@@ -1112,6 +1114,19 @@ pub(crate) struct App {
     /// the composed reaction set. The authoritative fixed tick dispatches each
     /// teleport's reactions through it, and the frame-end residual drain reads it.
     teleporter_bindings: postretro_sim::teleporter_system::TeleporterBindingTable,
+    /// The installed level's seams: inside test, latches, activations and
+    /// queued `arrive` events. Host-side; level-scoped.
+    seam_stage: postretro_sim::seam_stage::SeamStage,
+    /// The installed level's `arrive` bindings: brush `on_arrive` and script
+    /// `seamEvents`, host-only.
+    seam_bindings: postretro_sim::seam_system::SeamBindingTable,
+    /// Arrivals a seam load's unload harvested, for the next level's first
+    /// spawns. Cleared by the next unload, suspend, and a failed, cancelled
+    /// or superseded load.
+    seam_crossing: Option<crate::seam_crossing::SeamCrossing>,
+    /// A script level verb ran this frame; the frame-end seam pick drops
+    /// every seam activation.
+    script_level_request_this_frame: bool,
     /// The level's ghost links: link-state history and this frame's ghosts,
     /// built at level install and dropped at unload. Render collection reads it.
     ghost_links: ghost_links::GhostLinks,
@@ -2825,6 +2840,13 @@ impl App {
                         self.nav_graph.as_ref().map(|graph| graph.agent_params()),
                     )
                 {
+                    let placements = placements.with_arrival_world(
+                        crate::collision::moving::CombinedCollisionWorld::new(
+                            &self.collision_world,
+                            &self.kinematic_mover_colliders,
+                            &self.kinematic_mover_tick_states,
+                        ),
+                    );
                     self.spawn_poses.resolve_and_hint(
                         &crate::spawn_pose::NamedLevel {
                             placements: &placements,
@@ -3843,6 +3865,7 @@ impl App {
                     if let Some(session) = self.session.as_mut() {
                         session.modal_stack.clear_pushed();
                     }
+                    self.note_script_level_request();
                     self.enqueue_level_request(LevelRequest::Load(LevelSource::Catalog(map)));
                 }
                 SystemReactionCommand::RestartLevel { dispatch_source } => {
@@ -3853,6 +3876,7 @@ impl App {
                         if let Some(session) = self.session.as_mut() {
                             session.modal_stack.clear_pushed();
                         }
+                        self.note_script_level_request();
                         self.enqueue_level_request(LevelRequest::Load(source));
                     }
                 }
@@ -4072,6 +4096,12 @@ impl App {
         let environment_volumes = &self.environment_volumes;
         let collision_world = &self.collision_world;
         let spawn_poses = &mut self.spawn_poses;
+        let seam_stage = &mut self.seam_stage;
+        let arrival_world = crate::collision::moving::CombinedCollisionWorld::new(
+            &self.collision_world,
+            &self.kinematic_mover_colliders,
+            &self.kinematic_mover_tick_states,
+        );
         let published_level_identity = self.published_level_identity.as_deref();
         // `net_endpoint` and `mesh_clip_tables` are both session-owned but distinct
         // fields; bind the session once and reach each as a disjoint field borrow,
@@ -4227,6 +4257,8 @@ impl App {
                                                     host_agent_params,
                                                 )
                                         {
+                                            let placements =
+                                                placements.with_arrival_world(arrival_world);
                                             spawn_poses.resolve_and_hint(
                                                 &crate::spawn_pose::NamedLevel {
                                                     placements: &placements,
@@ -4419,7 +4451,8 @@ impl App {
                                     &host_spawn_points,
                                     &net_descriptors,
                                     host_agent_params,
-                                );
+                                )
+                                .map(|placements| placements.with_arrival_world(arrival_world));
                                 let mut promotion = None;
                                 let pawn = match placements.as_ref() {
                                     None => {
@@ -4504,6 +4537,34 @@ impl App {
                                     );
                                     continue;
                                 };
+                                // A seam arrival's motion, and every spawn's
+                                // latch, before any trigger tick sees the pawn.
+                                if let Some(crate::spawn_pose::PromotionSpawn {
+                                    spawn:
+                                        crate::spawn_pose::ResolvedSpawn::Unbacked(
+                                            crate::spawn_pose::UnbackedSpawn {
+                                                arrival: Some(arrival),
+                                                ..
+                                            },
+                                        ),
+                                    ..
+                                }) = promotion.as_ref()
+                                {
+                                    match crate::seam_crossing::apply_spawn_arrival(
+                                        &mut registry,
+                                        &arrival_world,
+                                        pawn,
+                                        arrival,
+                                    ) {
+                                        Ok(_) => seam_stage.queue_arrival(arrival.seam_index, pawn),
+                                        Err(fallback) => crate::seam_crossing::warn_fallback(
+                                            &arrival.seam,
+                                            fallback,
+                                            &format!("seat {}", seat.0),
+                                        ),
+                                    }
+                                }
+                                seam_stage.latch_spawned_in(&registry, pawn);
                                 replication.register_client(*client_id);
                                 state_slots.register_client(*client_id);
                                 if let Some(seats) = seat_table.as_deref_mut() {

@@ -379,6 +379,37 @@ fn teleport_subject_commands_emit_identical_wire_in_both_runtimes() {
 }
 
 #[test]
+fn seam_subject_commands_emit_identical_wire_in_both_runtimes() {
+    let ts = quickjs_fixture_value(
+        r#"
+        import { defineReaction, type SeamEventParams } from "postretro";
+        JSON.stringify([
+          defineReaction("sealed", (on: SeamEventParams) => on.seam.disarm()),
+          defineReaction("open", (on: SeamEventParams) => on.seam.arm()),
+          defineReaction("heal", (on: SeamEventParams) => on.activators.grantHealth(5)),
+        ]);
+    "#,
+    );
+    let lua = luau_fixture_value(
+        r#"
+        return {
+          defineReaction("sealed", function(on) return on.seam:disarm() end),
+          defineReaction("open", function(on) return on.seam:arm() end),
+          defineReaction("heal", function(on) return on.activators:grantHealth(5) end),
+        }
+    "#,
+    );
+    assert_eq!(
+        serde_json::to_vec(&ts).unwrap(),
+        serde_json::to_vec(&lua).unwrap()
+    );
+    assert_eq!(ts[0]["target"], "@seam");
+    assert_eq!(ts[0]["primitive"], "disarmSeam");
+    assert_eq!(ts[1]["primitive"], "armSeam");
+    assert_eq!(ts[2]["target"], "@activators");
+}
+
+#[test]
 fn life_state_verbs_and_predicates_lower_identically_in_both_sdks() {
     let ts = quickjs_fixture_value(
         r#"

@@ -606,6 +606,7 @@ fn unbacked_test_pose_drives_the_stand_in_and_the_arming_frame_single_use_or_not
             },
             entity_class: "scout".into(),
             single_use,
+            arrival: None,
         };
         let points = spawn_points(3);
         let mut relay = Relay::admitted(&[CLIENT]);

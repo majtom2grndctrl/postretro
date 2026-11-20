@@ -23,7 +23,7 @@ use crate::map_format::MapFormat;
 use crate::mover_light_gate::MAX_POSES;
 use crate::surface_radiance;
 use postretro_level_format::environment_volumes::DEFAULT_WORLD_GRAVITY_MPS2;
-use postretro_level_format::fog_volumes::{MAX_FOG_VOLUMES, MAX_PLANES_PER_VOLUME};
+use postretro_level_format::fog_volumes::MAX_FOG_VOLUMES;
 use postretro_level_format::kinematic_geometry::KINEMATIC_WAYPOINT_MIN_SEGMENT_LENGTH;
 
 #[path = "parse/attack_pools.rs"]
@@ -51,6 +51,8 @@ mod reflection_capture_tests;
 mod reflection_volume_tests;
 #[path = "parse/reflection_volumes.rs"]
 mod reflection_volumes;
+#[path = "parse/seams.rs"]
+mod seams;
 #[path = "parse/streaming_hint_source.rs"]
 mod streaming_hint_source;
 #[cfg(test)]
@@ -60,8 +62,8 @@ mod streaming_hint_tests;
 mod teleporters;
 
 use authoring_regions::{
-    BrushRegionBounds, resolve_brush_region_bounds, resolve_lightmap_scale_region,
-    resolve_sh_protect_aabb, resolve_streaming_hint_region, resolve_streaming_priority_region,
+    resolve_lightmap_scale_region, resolve_sh_protect_aabb, resolve_streaming_hint_region,
+    resolve_streaming_priority_region,
 };
 use fog_volumes::{resolve_fog_ellipsoid, resolve_fog_lamp, resolve_fog_tube, resolve_fog_volume};
 use map_source::{normalize_map_source, parse_complete_map};
@@ -990,6 +992,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     let mut environment_volumes = Vec::new();
     let mut teleporters = teleporters::TeleporterParser::default();
     let mut ghost_links = ghost_links::GhostLinkParser::default();
+    let mut seams = seams::SeamParser::default();
     let mut attack_pools = attack_pools::AttackPoolChecker::default();
     // Parallel to `environment_volumes`: each volume's authored brush ids, kept
     // until the fluid volumes' textured sides are built in one pass.
@@ -1300,6 +1303,19 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
                 &props,
                 scale,
                 &classname,
+                entities.len() - 1,
+                &mut map_entities,
+            )?;
+            continue;
+        }
+
+        if classname == postretro_level_format::seams::SEAM_CLASSNAME {
+            let props = collect_entity_properties(&geo_map, entity_id);
+            seams.extract(
+                &geo_map,
+                &brush_ids,
+                &props,
+                scale,
                 entities.len() - 1,
                 &mut map_entities,
             )?;
@@ -1820,6 +1836,8 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
     log::info!("Environment volumes: {}", environment_volumes.len());
     log::info!("Reflection volumes: {}", reflection_volumes.len());
     let ghost_links = ghost_links.finish(teleporters.destinations())?;
+    seams.warn_without_player_spawn(&map_entities);
+    let seams = seams.finish(teleporters.destinations())?;
 
     Ok(MapData {
         brush_volumes,
@@ -1841,6 +1859,7 @@ pub fn parse_map_file(path: &Path, format: MapFormat) -> Result<MapData> {
         reflection_volumes,
         teleporters: teleporters.finish()?,
         ghost_links,
+        seams,
         sh_protect_aabbs,
         uniform_grid_optout,
         fog_volumes,

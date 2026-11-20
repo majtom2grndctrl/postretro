@@ -365,6 +365,9 @@ pub struct RemoteProjectileFireRejection {
 /// keyed by `PlayerId` at this boundary.
 pub struct TriggerTickContext<'a> {
     pub teleporters: Option<&'a crate::teleporter_system::TeleporterBindingTable>,
+    /// The installed level's seams and `arrive` bindings; `None` for fixtures
+    /// and levels evaluated without them.
+    pub seams: Option<SeamTickContext<'a>>,
     pub system: &'a mut TriggerSystem,
     pub bridge: &'a TriggerVolumeBridge,
     pub bindings: &'a TriggerBindingTable,
@@ -376,6 +379,12 @@ pub struct TriggerTickContext<'a> {
     /// and never constructed for connected-client prediction.
     pub auto_close_timers: Option<kinematic_mover::MoverAutoCloseTimers>,
     pub use_edges: &'a HashMap<PlayerId, bool>,
+}
+
+/// Host-only seam state for one tick's trigger stage.
+pub struct SeamTickContext<'a> {
+    pub stage: &'a mut crate::seam_stage::SeamStage,
+    pub bindings: &'a crate::seam_system::SeamBindingTable,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -392,6 +401,8 @@ pub struct TickEvents {
     /// Authoritative arrivals retained separately from local-only movement emissions.
     pub teleports: Vec<(EntityId, crate::movement::TeleportEvent)>,
     pub teleport_residuals: Vec<crate::teleporter_system::TeleportResidual>,
+    /// `arrive` presentation and wait work saved for the frame-end drain.
+    pub seam_residuals: Vec<crate::seam_system::SeamArriveResidual>,
     /// AI events raised this tick, each on its enemy: attacks fired and
     /// activities entered (an entry with no authored `on_enter` fires nothing
     /// but still plays its sound).
@@ -602,7 +613,7 @@ pub fn simulate_started_tick_with_presentation_aim<AiResult>(
     default_weapon_placement: Option<&WeaponPlacementDescriptor>,
     use_pressed: &HashMap<PlayerId, bool>,
     drop_pressed: &HashMap<PlayerId, bool>,
-    trigger_context: Option<TriggerTickContext<'_>>,
+    mut trigger_context: Option<TriggerTickContext<'_>>,
     mut ingest_ready_remote_hits: impl FnMut(&mut EntityRegistry, &mut dyn FnMut(&mut EntityRegistry)),
     mut on_impact: impl FnMut(&mut EntityRegistry),
     timing: postretro_stage_timing::TimingGate,
@@ -808,6 +819,15 @@ where
     let stage_capabilities =
         player_life::TriggerStageCapabilities::capture(&registry.borrow(), &players);
     let mut trigger_stage_pawns = stage_capabilities.stage_pawns();
+    // Seams evaluate after triggers, against the same capture, once the
+    // trigger stage's registry borrow ends: an `arrive` reaction writes it.
+    let seam_context = trigger_context
+        .as_mut()
+        .and_then(|context| context.seams.take());
+    let seam_script_ctx = trigger_context
+        .as_ref()
+        .and_then(|context| context.script_ctx.clone());
+    let seam_use_edges = trigger_context.as_ref().map(|context| context.use_edges);
     if let Some(trigger_context) = trigger_context {
         let canonical_player_pawns = &stage_capabilities.pawns;
         let alive_players = &stage_capabilities.occupants;
@@ -928,6 +948,36 @@ where
         // occupies for it, and leaves on the next.
         trigger_stage_pawns.occupied_volumes =
             trigger_context.system.counted_volumes(&stage_capabilities);
+    }
+    let mut seam_residuals = Vec::new();
+    if let Some(seams) = seam_context {
+        // Arrivals spawned since the last tick fire `arrive` inside this one,
+        // host-only, as teleport events fire inside theirs.
+        let arrivals = seams.stage.take_arrivals();
+        if let Some(ctx) = seam_script_ctx.as_ref() {
+            for (index, pawn) in arrivals {
+                let player = players
+                    .iter()
+                    .find(|player| player.pawn == pawn)
+                    .map_or(PlayerId::Local(pawn), |player| player.id);
+                if let Some(residual) = seams.bindings.execute(ctx, index, pawn, player) {
+                    seam_residuals.push(residual);
+                }
+            }
+        }
+        let empty = HashMap::new();
+        let occupied = seams.stage.run_tick(
+            &registry.borrow(),
+            &players,
+            &stage_capabilities,
+            seam_use_edges.unwrap_or(&empty),
+        );
+        if !occupied.is_empty() {
+            trigger_stage_pawns.occupied_volumes.extend(occupied);
+            trigger_stage_pawns
+                .occupied_volumes
+                .sort_unstable_by_key(|(volume, _)| *volume);
+        }
     }
     let touch_events = {
         let mut registry = registry.borrow_mut();
@@ -1185,6 +1235,7 @@ where
         movement_edges: movement.state_edges,
         teleports,
         teleport_residuals,
+        seam_residuals,
         ai,
         weapon,
         weapon_fluid_splashes,
@@ -1234,6 +1285,7 @@ fn trigger_fire_context(
     TriggerFireContext {
         fired_trigger: Some(event.fire.trigger),
         fired_teleporter: None,
+        fired_seam: None,
         activator,
         occupancy,
         event_player: None,
@@ -3650,6 +3702,7 @@ mod tests {
             &HashMap::new(),
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -3884,6 +3937,7 @@ mod tests {
                 1.0 / 60.0,
                 Some(TriggerTickContext {
                     teleporters: None,
+                    seams: None,
                     system: trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,
@@ -4183,6 +4237,7 @@ mod tests {
             1.0 / 60.0,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -4306,6 +4361,7 @@ mod tests {
             1.0 / 60.0,
             Some(TriggerTickContext {
                 teleporters: None,
+                seams: None,
                 system: &mut trigger_system,
                 bridge: &bridge,
                 bindings: &bindings,
@@ -4446,6 +4502,7 @@ mod tests {
                 1.0 / 60.0,
                 Some(TriggerTickContext {
                     teleporters: None,
+                    seams: None,
                     system: &mut trigger_system,
                     bridge: &bridge,
                     bindings: &bindings,

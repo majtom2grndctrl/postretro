@@ -530,7 +530,10 @@ impl App {
     /// a connected client refuse it, naming the membership verbs.
     pub(crate) fn run_return_to_frontend_verb(&mut self, source: String, origin: FireOrigin) {
         match self.session_role() {
-            SessionRole::SinglePlayer => self.navigate_to_frontend(),
+            SessionRole::SinglePlayer => {
+                self.note_script_level_request();
+                self.navigate_to_frontend()
+            }
             SessionRole::Host => self.report_refused_verb(
                 "returnToFrontend",
                 source,

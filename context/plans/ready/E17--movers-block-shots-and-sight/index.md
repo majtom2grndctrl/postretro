@@ -1,6 +1,6 @@
 # E17--movers-block-shots-and-sight
 
-Brief · compact · Epic 17 · reads: `context/lib/networking.md` §Combat authority, §World-LOS-only validation · `context/lib/entity_model.md` §Components (Splash), §7c · `context/lib/development_guide.md` §Workspace · `in-progress/E10--ai-tick-scheduling/` · `research.md` · read at e7438238, AI rows at E10 branch 768446184
+Brief · resumable · Epic 17 · reads: `context/lib/networking.md` §Combat authority, §World-LOS-only validation · `context/lib/entity_model.md` §Components (Splash), §7c · `context/lib/development_guide.md` §Workspace · `in-progress/E10--ai-tick-scheduling/` · `research.md` · read at e7438238, AI rows at E10 branch 768446184
 
 **Sequence:** builds after `E10--ai-tick-scheduling` merges; re-read the AI rows at its merge commit.
 

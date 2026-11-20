@@ -318,6 +318,63 @@ fn a_lightmap_only_level_decodes_its_pairs_on_the_pool_not_the_issuer() {
     level.retire(&mut None);
 }
 
+// Camera-route playback's rows read each frame's admission from the step:
+// per resource, the items the shared budget admitted and their bytes, the
+// shared drain's own figures, and nothing on a frame that streams nothing.
+#[test]
+fn the_streaming_step_reports_each_resources_admission_from_the_shared_drain() {
+    let source = TestBlockSource::with_log(corridor_blocks(64, true), Arc::default());
+    let set = corridor_set();
+    let visible = VisibleCells::Culled(Vec::new());
+    let cpu = StageFrame::default();
+    let mut level = LevelStreaming::default();
+    level.install_cell_demand(CellDemand::new(corridor_set().max_lead));
+    level.install_lightmap(lightmap_session(&source));
+    let mut admitted_items = 0;
+    wait_until("camera 0's pairs admitted", || {
+        level
+            .prepare_drains(&mut None, Some(&set), frame(&visible, 0, &cpu))
+            .unwrap();
+        let admission = level.admission();
+        assert_eq!(
+            admission.lightmap,
+            level.drain.admission(StreamResource::LightmapBlock)
+        );
+        assert_eq!(admission.sh, level.drain.admission(StreamResource::Sh));
+        assert_eq!(admission.sh.admitted, 0, "a lightmap-only level");
+        let batch = renderer_installs_lightmap_batch(&mut level);
+        assert_eq!(
+            batch.len(),
+            admission.lightmap.admitted,
+            "the batch takes exactly the admitted pairs"
+        );
+        assert_eq!(
+            admission.lightmap.bytes > 0,
+            admission.lightmap.admitted > 0
+        );
+        admitted_items += admission.lightmap.admitted;
+        admitted_items >= 3
+    });
+    level.clear_admission();
+    assert_eq!(level.admission(), DrainAdmission::default());
+    level.retire(&mut None);
+
+    // The step reads the admission between its two halves, and a frame that
+    // streams nothing clears it first.
+    let hooks = include_str!("hooks.rs");
+    let prepare = hooks
+        .find("let sh_batch = self.prepare_streaming_drains(")
+        .expect("the step prepares");
+    let read = hooks
+        .find("let admission = self.level_streaming.admission();")
+        .expect("the step reads the admission");
+    let drain = hooks
+        .find("self.drain_lightmap_streaming(renderer, cpu, now_seconds)?;")
+        .expect("the step drains");
+    assert!(prepare < read && read < drain);
+    assert!(hooks.contains("self.level_streaming.clear_admission();"));
+}
+
 // AC 13 / P3: a reload while a pair's second half is being read discards the
 // old generation's pair and releases its buffers; the new generation reads
 // the block afresh and never sees an old completion.

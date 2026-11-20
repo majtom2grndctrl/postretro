@@ -338,6 +338,15 @@ impl ShResidencyState {
         self.grid_dimensions
     }
 
+    /// Staging buffers this level's SH residency uploads have created;
+    /// `None` before the GPU pools exist.
+    #[cfg(feature = "dev-tools")]
+    pub(in crate::render) fn staging_buffers_created(&self) -> Option<u64> {
+        self.gpu
+            .as_ref()
+            .map(StreamingGpuPools::staging_buffers_created)
+    }
+
     /// The manifest base lattice, origin and cell size: what this level's
     /// streamed grid uniform carries, so what the SH sampler reads.
     pub(in crate::render) fn base_lattice(&self) -> ([f32; 3], [f32; 3]) {

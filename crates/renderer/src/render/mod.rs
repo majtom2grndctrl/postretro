@@ -155,6 +155,8 @@ mod renderer_light_terms;
 mod renderer_lighting;
 mod renderer_mirror_lights;
 mod renderer_models;
+#[cfg(feature = "dev-tools")]
+mod renderer_playback;
 mod renderer_pre_scene;
 mod renderer_render_frame;
 mod renderer_resources;
@@ -251,6 +253,8 @@ pub use model_cache::{
     ModelEntryIdentity,
 };
 use promoted_depth_cache::{PromotedDepthCache, PromotedDepthCacheFramePlan};
+#[cfg(feature = "dev-tools")]
+pub use renderer_playback::PlaybackDrainCounters;
 pub use renderer_render_frame::{FrameScene, ShDrainFrameResult};
 pub use renderer_splash::PresentationDrawInput;
 pub use residency::{
@@ -272,6 +276,8 @@ pub use sh_streaming::{
 use sh_volume::{ShVolumeResources, ShVolumeSections};
 use smoke::SmokePass;
 pub use smoke::{SpriteCollectionRegistration, sprite_specular_exponent_is_valid};
+#[cfg(feature = "dev-tools")]
+pub use uploads::{PlaybackGpuSample, PlaybackGpuSpan};
 pub(crate) use uploads::{StagedUploads, StagingPool, UploadQueue};
 
 // Cross-crate re-export: these items now live in `postretro_render_cpu`, kept

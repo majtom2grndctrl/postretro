@@ -67,6 +67,7 @@ impl App {
                 }
                 active.record.set_level(bake, identity);
                 active.run.arm();
+                self.playback_arm_timing();
             }
             Err(reason) => {
                 active.refusal = Some(format!(
@@ -166,19 +167,23 @@ impl App {
             active.record.push_life_state(life_key, name, previous);
         }
         if plan.kind == RowKind::Route && !active.record.has_rendered() {
-            let adapter = self.renderer.as_ref().map(|renderer| {
-                let identity = renderer.capture_measurement_adapter_identity();
-                (identity.name.clone(), identity.backend.clone())
-            });
             active.record.set_rendered(
                 active.file.header.projection.hfov_degrees,
                 self.camera.aspect(),
-                adapter,
             );
         }
+        let frame = active.record.next_frame();
+        let needs_context = !active.record.has_context();
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_frame_mark(Some(active.record.next_frame()));
+            renderer.set_frame_mark(Some(frame));
         }
+        if needs_context
+            && let Some(context) = self.playback_run_context()
+            && let Some(active) = self.playback.active.as_mut()
+        {
+            active.record.set_context(context);
+        }
+        self.playback_sample_begin();
     }
 
     /// The followed local pawn's life-state identity, when one exists.
@@ -208,6 +213,7 @@ impl App {
     }
 
     pub(crate) fn playback_finish_frame(&mut self) {
+        let fill = self.playback_row_fill();
         let Some(active) = self.playback.active.as_mut() else {
             return;
         };
@@ -217,9 +223,12 @@ impl App {
         let outcome = active.run.finish_frame(presented, streamed);
         if let Some(plan) = outcome.row {
             let marks = active.marks.take_row_marks();
-            active
-                .record
-                .push_row(plan, active.frame_interval_us, marks);
+            active.record.push_row(
+                plan,
+                active.frame_interval_us,
+                marks,
+                fill.unwrap_or_default(),
+            );
             // The run's first world frame disarms the stall timeout.
             if plan.kind != RowKind::NoDraw {
                 self.playback.stall = None;
@@ -228,6 +237,7 @@ impl App {
         if planned {
             active.marks.after_frame(presented);
         }
+        self.playback_take_gpu_samples();
         if outcome.complete {
             self.end_playback_run(Ending::Complete);
         }
@@ -288,6 +298,7 @@ impl App {
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_frame_mark(None);
         }
+        self.playback_finish_gpu(&mut active);
         let report = active.args.report.clone();
         match &ending {
             Ending::Complete => active.record.set_complete(),

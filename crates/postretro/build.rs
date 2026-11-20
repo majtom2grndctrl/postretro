@@ -16,6 +16,18 @@ fn main() {
     postretro_script_compiler::write_prelude(&sdk_root, &out_path)
         .unwrap_or_else(|e| panic!("failed to generate SDK prelude: {e:#}"));
 
+    // Camera-route playback's record names the build profile: the profile
+    // directory `OUT_DIR` sits under (`target/<profile>/build/<pkg>/out`),
+    // which names a custom profile too, where cargo's `PROFILE` reads only
+    // `debug` or `release`.
+    let profile = Path::new(&out_dir)
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown");
+    println!("cargo:rustc-env=POSTRETRO_BUILD_PROFILE_DIR={profile}");
+
     println!("cargo:rerun-if-changed=build.rs");
     // Directory watch is best-effort for additions/deletions; per-file directives
     // from emit_ts_rerun_directives are the reliable path.

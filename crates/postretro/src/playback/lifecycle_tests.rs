@@ -17,6 +17,7 @@ use super::*;
 use crate::playback::route::tests::pose_file;
 use crate::playback::run::{Clock, RouteRun};
 use crate::playback::{ChangeKind, Playback};
+use crate::session::level_streaming::DrainAdmission;
 use crate::startup::lifecycle::tests::test_app;
 
 struct Run {
@@ -65,7 +66,7 @@ fn playing(hold: u32, poses: usize, extra: &[&str]) -> Run {
 fn frame(app: &mut App, now: Instant, presented: bool, streamed: bool) {
     app.playback_begin_world_frame(now);
     if streamed {
-        app.playback.note_streamed();
+        app.playback.note_streamed(DrainAdmission::default());
     }
     app.playback.note_presented(presented);
     app.playback_finish_frame();
@@ -96,7 +97,10 @@ fn playback_writes_hold_no_draw_and_route_rows_then_completes() {
     let now = Instant::now();
     let app = &mut run.app;
     frame(app, now, true, true);
-    assert!(app.playback.stall.is_none(), "the first world frame disarms");
+    assert!(
+        app.playback.stall.is_none(),
+        "the first world frame disarms"
+    );
     frame(app, now, false, true);
     frame(app, now, false, false);
     frame(app, now, true, true);
@@ -112,7 +116,9 @@ fn playback_writes_hold_no_draw_and_route_rows_then_completes() {
     let rows = record["rows"].as_array().unwrap();
     assert_eq!(rows[1]["pose"], 0, "the no-draw row streamed from pose 0");
     assert_eq!(
-        rows.iter().map(|row| row["gap"].as_bool().unwrap()).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|row| row["gap"].as_bool().unwrap())
+            .collect::<Vec<_>>(),
         [false, false, true, false],
         "the first row after unpresented frames spans their gap"
     );
@@ -165,9 +171,10 @@ fn playback_level_request_during_settling_or_the_hold_aborts() {
     let mut hold = playing(3, 2, &[]);
     hold.app.active_level_source = Some(LevelSource::Path(level));
     frame(&mut hold.app, Instant::now(), true, true);
-    hold.app.enqueue_level_request(LevelRequest::Load(LevelSource::Path(
-        PathBuf::from("maps/other.prl"),
-    )));
+    hold.app
+        .enqueue_level_request(LevelRequest::Load(LevelSource::Path(PathBuf::from(
+            "maps/other.prl",
+        ))));
     hold.app.drain_level_requests();
     let record_hold = record(&hold);
     assert!(
@@ -190,7 +197,7 @@ fn playback_level_request_on_the_last_pose_frame_leaves_the_run_complete() {
     run.app.playback_begin_world_frame(now);
     run.app
         .enqueue_level_request(crate::startup::LevelRequest::Unload);
-    run.app.playback.note_streamed();
+    run.app.playback.note_streamed(DrainAdmission::default());
     run.app.playback.note_presented(true);
     run.app.playback_finish_frame();
     run.app.drain_level_requests();
@@ -236,7 +243,10 @@ fn playback_changes_mark_every_row_from_the_first_they_touch() {
     app.playback.note_change(ChangeKind::DrainCap);
     frame(app, now, true, true);
     frame(app, now, true, true);
-    assert!(app.exit_result.is_ok(), "marked rows leave the run to its end");
+    assert!(
+        app.exit_result.is_ok(),
+        "marked rows leave the run to its end"
+    );
 
     let record = record(&run);
     let rows = record["rows"].as_array().unwrap();
@@ -252,7 +262,9 @@ fn playback_changes_mark_every_row_from_the_first_they_touch() {
         ]
     );
     assert_eq!(
-        rows.iter().map(|row| row["gap"].as_bool().unwrap()).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|row| row["gap"].as_bool().unwrap())
+            .collect::<Vec<_>>(),
         [false, false, true, false, false]
     );
 }
@@ -294,10 +306,12 @@ fn playback_stall_timeout_names_the_screen_a_presenting_run_waited_on() {
         error.contains("first-launch accessibility panel") && !error.contains("stalled window"),
         "{error}"
     );
-    assert!(record(&run)["header"]["abort_reason"]
-        .as_str()
-        .unwrap()
-        .contains("first-launch accessibility panel"));
+    assert!(
+        record(&run)["header"]["abort_reason"]
+            .as_str()
+            .unwrap()
+            .contains("first-launch accessibility panel")
+    );
 }
 
 #[test]
@@ -327,7 +341,14 @@ fn playback_records_how_settling_ended() {
 fn playback_logs_a_pawn_life_state_change_on_its_frame_and_continues() {
     // P11: the frame that sees the change logs it; the route goes on.
     let mut run = playing(0, 3, &[]);
-    let ctx = run.app.session.as_ref().unwrap().scripting.script_ctx.clone();
+    let ctx = run
+        .app
+        .session
+        .as_ref()
+        .unwrap()
+        .scripting
+        .script_ctx
+        .clone();
     let pawn = ctx.registry.borrow_mut().spawn(Transform::default());
     ctx.registry
         .borrow_mut()
@@ -366,11 +387,25 @@ fn playback_logs_a_pawn_life_state_change_on_its_frame_and_continues() {
 fn playback_settling_view_is_the_first_pose_with_or_without_a_pawn() {
     // P5: the held view ignores the presented (spawn) pose either way.
     let mut run = playing(0, 2, &[]);
-    let route = run.app.playback.active.as_ref().unwrap().view(0, 0.0).unwrap();
+    let route = run
+        .app
+        .playback
+        .active
+        .as_ref()
+        .unwrap()
+        .view(0, 0.0)
+        .unwrap();
     let expected = route.held_view(run.app.camera.aspect()).camera;
     for with_pawn in [false, true] {
         if with_pawn {
-            let ctx = run.app.session.as_ref().unwrap().scripting.script_ctx.clone();
+            let ctx = run
+                .app
+                .session
+                .as_ref()
+                .unwrap()
+                .scripting
+                .script_ctx
+                .clone();
             let pawn = ctx.registry.borrow_mut().spawn(Transform::default());
             ctx.registry
                 .borrow_mut()
@@ -388,7 +423,10 @@ fn playback_settling_view_is_the_first_pose_with_or_without_a_pawn() {
         };
         assert_eq!(view.camera.eye_position, run.file.poses[0].eye);
         assert_eq!(
-            view.camera.view_projection.to_cols_array().map(f32::to_bits),
+            view.camera
+                .view_projection
+                .to_cols_array()
+                .map(f32::to_bits),
             expected.view_projection.to_cols_array().map(f32::to_bits),
             "pawn {with_pawn}"
         );
@@ -427,7 +465,10 @@ fn playback_route_frame_aim_ignores_the_pawn_aim_and_mover_carry() {
         (aim.position, aim.yaw.to_bits(), aim.pitch.to_bits()),
         (pose.eye, pose.yaw.to_bits(), pose.pitch.to_bits())
     );
-    assert_eq!(run.app.camera.position, camera_before, "the pawn's camera stays");
+    assert_eq!(
+        run.app.camera.position, camera_before,
+        "the pawn's camera stays"
+    );
 }
 
 #[test]
@@ -459,21 +500,87 @@ fn playback_suspends_gameplay_input_from_settling_through_the_route() {
     assert!(!run.app.playback.captures_gameplay(), "the run ended");
 }
 
+/// Every hook a frame calls, with playback inactive.
+fn inactive_frame(app: &mut App, now: Instant) {
+    app.playback_begin_world_frame(now);
+    app.playback.note_streamed(DrainAdmission::default());
+    app.playback.note_presented(true);
+    app.playback.note_change(ChangeKind::Vsync);
+    app.playback.note_occluded(false);
+    std::hint::black_box(app.playback.route_view());
+    std::hint::black_box(app.playback.captures_gameplay());
+    app.playback_finish_frame();
+}
+
+#[test]
+fn inactive_playback_hooks_allocate_nothing() {
+    // AC 30: with no route, a frame allocates nothing for playback.
+    let mut app = test_app();
+    let now = Instant::now();
+    inactive_frame(&mut app, now);
+
+    let control = crate::alloc_probe::AllocSnapshot::arm();
+    std::hint::black_box(Box::new(7_u64));
+    assert!(
+        control.allocs_since() >= 1,
+        "probe must count in this binary"
+    );
+
+    let probe = crate::alloc_probe::AllocSnapshot::arm();
+    for _ in 0..240 {
+        inactive_frame(&mut app, now);
+    }
+    assert_eq!(probe.allocs_since(), 0);
+    assert!(app.playback.active.is_none());
+}
+
+#[test]
+fn playback_rows_carry_drain_columns_and_absent_cpu_and_gpu_fields_with_timing_off() {
+    // AC 26: timing off, the stage and GPU fields read null; the interval,
+    // admission, drain flags and late counts are present.
+    let mut run = playing(0, 1, &[]);
+    let now = Instant::now();
+    let app = &mut run.app;
+    app.playback_begin_world_frame(now);
+    app.playback.note_streamed(DrainAdmission {
+        lightmap: crate::streaming::shared_drain::ResourceAdmission {
+            admitted: 2,
+            bytes: 4_096,
+            left_behind: false,
+        },
+        ..DrainAdmission::default()
+    });
+    app.playback.note_presented(true);
+    app.playback_finish_frame();
+    let record = record(&run);
+    let row = &record["rows"][0];
+    assert!(row["cpu_ns"].is_null() && row["ticks"].is_null());
+    assert!(row["gpu"].is_null());
+    assert_eq!(row["drain"]["lightmap_admitted_items"], 2);
+    assert_eq!(row["drain"]["lightmap_admitted_bytes"], 4_096);
+    assert_eq!(row["drain"]["cold"], false);
+    assert!(row["drain"].get("sh_late_cluster_frames").is_some());
+    assert!(record["header"]["gpu_timing"]["rows_missing"].is_null());
+}
+
 // Source order: the frame loop and its neighbours call playback where the
 // tests above assume.
 const FRAME_LOOP: &str = include_str!("../frame_loop/mod.rs");
 const MAIN: &str = include_str!("../main.rs");
 const BOOT_STATE: &str = include_str!("../startup/lifecycle_boot_state.rs");
 const SESSION_ENTRY: &str = include_str!("../startup/session_entry.rs");
-const PLAYBACK_SOURCES: [&str; 8] = [
+const PLAYBACK_SOURCES: [&str; 11] = [
     include_str!("mod.rs"),
     include_str!("lifecycle.rs"),
     include_str!("args.rs"),
     include_str!("marks.rs"),
     include_str!("pacing.rs"),
-    include_str!("record.rs"),
+    include_str!("record/mod.rs"),
+    include_str!("record/header.rs"),
+    include_str!("record/row.rs"),
     include_str!("route.rs"),
     include_str!("run.rs"),
+    include_str!("sample.rs"),
 ];
 
 fn at(haystack: &str, needle: &str, from: usize) -> usize {
@@ -485,16 +592,28 @@ fn at(haystack: &str, needle: &str, from: usize) -> usize {
 #[test]
 fn frame_loop_calls_playback_hooks_in_frame_order() {
     let redraw = at(FRAME_LOOP, "pub(crate) fn redraw(", 0);
-    let gate = at(FRAME_LOOP, "ui_captured_gameplay_at_frame_start || playback_holds_input", redraw);
+    let gate = at(
+        FRAME_LOOP,
+        "ui_captured_gameplay_at_frame_start || playback_holds_input",
+        redraw,
+    );
     let snapshot = at(FRAME_LOOP, "gameplay_snapshot_for_capture_state(", gate);
     let tick = at(FRAME_LOOP, "FrameStage::FixedStep", snapshot);
     let begin = at(FRAME_LOOP, "app.playback_begin_world_frame(now);", tick);
     let aim = at(FRAME_LOOP, "app.render_aim_pose(presented_aim)", begin);
     let eye = at(FRAME_LOOP, "frame_eye::assemble_frame_eye(", aim);
     let streaming = at(FRAME_LOOP, "session.run_level_streaming_step(", eye);
-    let streamed = at(FRAME_LOOP, "app.playback.note_streamed();", streaming);
+    let streamed = at(
+        FRAME_LOOP,
+        "app.playback.note_streamed(streaming_step.admission);",
+        streaming,
+    );
     let render = at(FRAME_LOOP, "render_frame_indirect", streamed);
-    let presented = at(FRAME_LOOP, "app.playback.note_presented(presented);", render);
+    let presented = at(
+        FRAME_LOOP,
+        "app.playback.note_presented(presented);",
+        render,
+    );
     let end = at(FRAME_LOOP, "app.playback_end_frame(event_loop);", presented);
     assert!(
         gate < snapshot && snapshot < tick && tick < begin && begin < aim && aim < eye,
@@ -535,19 +654,30 @@ fn playback_never_moves_the_pawn_or_touches_the_sim_clock() {
 #[test]
 fn level_requests_and_joins_reach_the_abort_hook_before_they_act() {
     let drain = at(BOOT_STATE, "pub(crate) fn drain_level_requests(", 0);
-    let reason = at(BOOT_STATE, "self.playback_request_abort_reason(&request)", drain);
+    let reason = at(
+        BOOT_STATE,
+        "self.playback_request_abort_reason(&request)",
+        drain,
+    );
     let load_abort = at(BOOT_STATE, "self.playback_abort(playback_abort)", reason);
     let unload = at(BOOT_STATE, "self.unload_level();", load_abort);
     let begin = at(BOOT_STATE, "self.begin_level_load(load);", load_abort);
     let none_abort = at(BOOT_STATE, "self.playback_abort(playback_abort)", begin);
-    let frontend = at(BOOT_STATE, "self.abandon_level_load_for_frontend();", none_abort);
+    let frontend = at(
+        BOOT_STATE,
+        "self.abandon_level_load_for_frontend();",
+        none_abort,
+    );
     assert!(load_abort < unload && unload < begin && none_abort < frontend);
 
     let drive = at(BOOT_STATE, "fn drive_boot_state_for_redraw(", 0);
     let drained = at(BOOT_STATE, "self.drain_level_requests();", drive);
     let exit = at(BOOT_STATE, "self.playback_take_exit(event_loop)", drained);
     let resume = at(BOOT_STATE, "self.resume_pending_entry();", drained);
-    assert!(exit < resume, "an aborted run's frame stops after the drain");
+    assert!(
+        exit < resume,
+        "an aborted run's frame stops after the drain"
+    );
 
     let join = at(SESSION_ENTRY, "fn join_from_frontend_with(", 0);
     let hook = at(SESSION_ENTRY, "self.playback_join_abort_reason(addr)", join);
@@ -557,7 +687,9 @@ fn level_requests_and_joins_reach_the_abort_hook_before_they_act() {
 
 #[test]
 fn main_routes_occlusion_vsync_and_the_stall_wait_to_playback() {
-    assert!(MAIN.contains("WindowEvent::Occluded(occluded) => self.playback.note_occluded(occluded)"));
+    assert!(
+        MAIN.contains("WindowEvent::Occluded(occluded) => self.playback.note_occluded(occluded)")
+    );
     let vsync = at(MAIN, "DiagnosticAction::ToggleVsync =>", 0);
     let toggle = at(MAIN, "renderer.toggle_vsync()", vsync);
     let mark = at(MAIN, "crate::playback::ChangeKind::Vsync", toggle);

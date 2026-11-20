@@ -84,7 +84,8 @@ pub(super) fn running_frame(app: &mut App, exit: &TestExit) -> Option<RunningFra
                 cpu: &cpu,
             },
         )
-        .expect("the in-play streaming step runs");
+        .expect("the in-play streaming step runs")
+        .sh_batch;
     let result = renderer
         .capture_frame_indirect(
             CameraCullVisibility {

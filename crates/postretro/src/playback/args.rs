@@ -305,7 +305,12 @@ mod tests {
     #[test]
     fn playback_args_refuse_recording_beside_playback_naming_both_flags() {
         for list in [
-            &["--camera-route", "r.txt", "--record-camera-route", "rec.txt"][..],
+            &[
+                "--camera-route",
+                "r.txt",
+                "--record-camera-route",
+                "rec.txt",
+            ][..],
             &["--record-camera-route=rec.txt", "--camera-route=r.txt"][..],
         ] {
             let error = playback_args(&args(list)).unwrap_err();

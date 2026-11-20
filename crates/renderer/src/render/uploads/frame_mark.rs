@@ -59,6 +59,28 @@ mod tests {
         assert_eq!(mark.label.capacity(), capacity);
     }
 
+    /// Marking brackets an encoder in a debug group; it never renames one,
+    /// so per-encoder trace reducers group as they always have.
+    #[test]
+    fn marked_encoders_keep_their_labels() {
+        for (source, label) in [
+            (
+                include_str!("../../lighting/lightmap/stream/execute.rs"),
+                "label: Some(\"Streamed Lightmap Drain\")",
+            ),
+            (
+                include_str!("staged_uploads.rs"),
+                "label: Some(\"Streamed SH Upload Copies\")",
+            ),
+            (
+                include_str!("../renderer_render_frame.rs"),
+                "label: Some(\"Frame Encoder\")",
+            ),
+        ] {
+            assert!(source.contains(label), "{label}");
+        }
+    }
+
     /// Marked and unmarked encoders both finish and submit without a
     /// validation error: the group is pushed only while marked, and every
     /// push is popped before `finish`.
@@ -84,10 +106,10 @@ mod tests {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("frame mark test encoder"),
                 });
-            let marked = queue.open_frame_mark(&mut encoder);
+            let marked = queue.open_frame_mark(&mut encoder, super::super::MarkSite::Frame);
             assert_eq!(marked, frame.is_some(), "pushed only while marked");
             encoder.clear_buffer(&buffer, 0, None);
-            queue.close_frame_mark(&mut encoder, marked);
+            queue.close_frame_mark(&mut encoder, super::super::MarkSite::Frame, marked);
             queue.submit(std::iter::once(encoder.finish()));
             let error = pollster::block_on(scope.pop());
             assert!(error.is_none(), "frame {frame:?}: {error:?}");

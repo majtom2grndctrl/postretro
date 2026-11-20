@@ -31,7 +31,8 @@ use crate::streaming::drain_budget::{
     MAX_INSTALL_DECODED_BYTES_PER_DRAIN, SETTLING_INSTALL_DECODED_BYTES_PER_DRAIN,
 };
 use crate::streaming::issuer_busy::IssuerBusyLog;
-use crate::streaming::shared_drain::SharedDrain;
+use crate::streaming::request::StreamResource;
+use crate::streaming::shared_drain::{ResourceAdmission, SharedDrain};
 
 /// One frame's visibility, as every streamed resource reads it.
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +55,25 @@ pub(crate) struct StreamingFrame<'a> {
     /// This frame's streaming CPU stages; the binary folds them under
     /// `render_prep`.
     pub(crate) cpu: &'a StageFrame<StreamingStage>,
+}
+
+/// What one frame's streaming step admitted against the shared per-drain
+/// budget, per resource: the items each takes into its batch and their
+/// decoded bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DrainAdmission {
+    pub(crate) sh: ResourceAdmission,
+    pub(crate) lightmap: ResourceAdmission,
+}
+
+/// One frame's streaming step: SH's batch for the renderer's pre-compose
+/// drain, and what the step admitted.
+#[derive(Debug, Default)]
+pub(crate) struct LevelStreamingStep {
+    pub(crate) sh_batch: ShDrainBatch,
+    /// Read by camera-route playback's rows.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) admission: DrainAdmission,
 }
 
 /// Streaming state whose lifetime is one loaded level: the lightmap session,
@@ -110,6 +130,21 @@ impl LevelStreaming {
             "a lightmap session is installed only after retirement"
         );
         self.lightmap = Some(session);
+    }
+
+    /// What the latest drain admitted, per resource; nothing after
+    /// [`Self::clear_admission`].
+    pub(crate) fn admission(&self) -> DrainAdmission {
+        DrainAdmission {
+            sh: self.drain.admission(StreamResource::Sh),
+            lightmap: self.drain.admission(StreamResource::LightmapBlock),
+        }
+    }
+
+    /// A frame that streams nothing admits nothing: the previous drain's
+    /// list must not read as this frame's.
+    pub(crate) fn clear_admission(&mut self) {
+        self.drain.begin();
     }
 
     /// Joins a predecessor's threads once they have all finished.

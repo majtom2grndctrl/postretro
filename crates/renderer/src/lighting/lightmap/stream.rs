@@ -253,6 +253,13 @@ impl LightmapStreamState {
         self.counters
     }
 
+    /// Staging buffers this level's drains have created: a drain that adds
+    /// one found no pooled buffer to reuse (a cold drain).
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn staging_buffers_created(&self) -> u64 {
+        self.staging.counts().1
+    }
+
     /// Run one drain: validate, release each pool's completed retirement,
     /// plan, then execute the plan in one encoder and one upload batch (each
     /// pool's growth copies and repack moves through its spare layer, pair

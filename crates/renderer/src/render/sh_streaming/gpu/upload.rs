@@ -145,6 +145,13 @@ fn pack_moment_upload_spans(
 }
 
 impl StreamingGpuPools {
+    /// Staging buffers the residency uploads' pool has created: a drain that
+    /// adds one found no pooled buffer to reuse (a cold drain).
+    #[cfg(feature = "dev-tools")]
+    pub(in crate::render::sh_streaming) fn staging_buffers_created(&self) -> u64 {
+        self.staging.counts().1
+    }
+
     /// Start an upload batch on the pools' reusable scratch vector.
     pub(in crate::render::sh_streaming) fn begin_uploads(
         &mut self,

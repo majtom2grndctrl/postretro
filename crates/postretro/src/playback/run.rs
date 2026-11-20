@@ -483,7 +483,10 @@ mod tests {
         let mut run = armed_with(0, 4, wall_clock(4));
         let start = Instant::now();
         run.begin_world_frame(start);
-        assert_eq!(run.finish_frame(false, true).row.unwrap().kind, RowKind::NoDraw);
+        assert_eq!(
+            run.finish_frame(false, true).row.unwrap().kind,
+            RowKind::NoDraw
+        );
         let plan = run
             .begin_world_frame(start + Duration::from_millis(40))
             .unwrap();

@@ -117,7 +117,7 @@ impl App {
         let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
             self.cpu_timer.gate(),
         );
-        let sh_drain_batch = session.run_level_streaming_step(
+        let streaming_step = session.run_level_streaming_step(
             world.sh_stream_manifest(),
             Some(world),
             renderer,
@@ -138,7 +138,7 @@ impl App {
         Ok(Some(HeldLevelFrame {
             view,
             visible_render,
-            sh_drain_batch,
+            sh_drain_batch: streaming_step.sh_batch,
         }))
     }
 

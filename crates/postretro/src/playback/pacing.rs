@@ -144,7 +144,11 @@ mod tests {
         let exact = interpolate(&from, &to, 0.0);
         assert_eq!(
             (exact.0.to_array(), exact.1.to_bits(), exact.2.to_bits()),
-            (from.eye.to_array(), from.yaw.to_bits(), from.pitch.to_bits())
+            (
+                from.eye.to_array(),
+                from.yaw.to_bits(),
+                from.pitch.to_bits()
+            )
         );
     }
 }

@@ -10,9 +10,9 @@ use postretro_entities::EntityId;
 use postretro_foundation::{BobParams, MovementStateKind, ViewFeelParams};
 
 use super::*;
-use crate::playback::run::Phase;
 use crate::frame_eye::{FrameEye, ViewFeelDriver, ViewFeelTracking, assemble_frame_eye};
 use crate::playback::route::tests::pose_file;
+use crate::playback::run::Phase;
 use crate::view_feel::ViewFeelState;
 
 const ASPECT: f32 = 16.0 / 10.0;
@@ -172,10 +172,15 @@ fn playback_from_args_loads_the_route_and_refuses_a_bad_file() {
     let path = dir.path().join("cp.txt");
     std::fs::write(&path, format_pose_file(&pose_file(100.0, 3))).unwrap();
     let path_arg = path.display().to_string();
-    let mut playback =
-        Playback::from_args(&args(&["--camera-route", &path_arg, "map.prl"]), Instant::now())
-            .unwrap();
-    assert!(playback.stall.is_some(), "a run arms its stall timeout at launch");
+    let mut playback = Playback::from_args(
+        &args(&["--camera-route", &path_arg, "map.prl"]),
+        Instant::now(),
+    )
+    .unwrap();
+    assert!(
+        playback.stall.is_some(),
+        "a run arms its stall timeout at launch"
+    );
     {
         let active = playback.active.as_ref().expect("a named route is active");
         assert_eq!(active.args.hold, args::DEFAULT_HOLD_FRAMES);
@@ -197,7 +202,7 @@ fn playback_from_args_loads_the_route_and_refuses_a_bad_file() {
         Instant::now(),
     )
     .err()
-        .expect("a FOV outside the band refuses");
+    .expect("a FOV outside the band refuses");
     assert!(error.contains("140°"), "{error}");
 }
 

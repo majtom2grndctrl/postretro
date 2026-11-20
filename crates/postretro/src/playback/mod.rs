@@ -9,15 +9,18 @@ mod pacing;
 mod record;
 mod route;
 mod run;
+mod sample;
 mod stall;
 
 use std::time::{Duration, Instant};
 
 use glam::Vec3;
 use postretro_camera_route::PoseFile;
+use postretro_renderer::PlaybackDrainCounters;
 
 use crate::app::world_less_frame::HeldLevelView;
 use crate::camera::RenderCamera;
+use crate::session::level_streaming::DrainAdmission;
 
 use args::{Pacing, PlaybackArgs};
 pub(crate) use marks::ChangeKind;
@@ -88,6 +91,10 @@ struct ActivePlayback {
     last_frame_start: Option<Instant>,
     /// The current world frame's interval from the previous one.
     frame_interval_us: Option<u64>,
+    /// What the current world frame's streaming step admitted.
+    admission: DrainAdmission,
+    /// The renderer's drain counters as the current world frame began.
+    drain_before: PlaybackDrainCounters,
 }
 
 impl Playback {
@@ -141,6 +148,8 @@ impl Playback {
             streamed: false,
             last_frame_start: None,
             frame_interval_us: None,
+            admission: DrainAdmission::default(),
+            drain_before: PlaybackDrainCounters::default(),
         }));
         Ok(playback)
     }
@@ -176,11 +185,12 @@ impl Playback {
         }
     }
 
-    /// The current world frame ran the level streaming step: one that then
-    /// presents nothing writes a no-draw row.
-    pub(crate) fn note_streamed(&mut self) {
+    /// The current world frame ran the level streaming step and admitted
+    /// `admission`: one that then presents nothing writes a no-draw row.
+    pub(crate) fn note_streamed(&mut self, admission: DrainAdmission) {
         if let Some(active) = self.active.as_mut() {
             active.streamed = true;
+            active.admission = admission;
         }
     }
 

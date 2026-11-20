@@ -9,6 +9,7 @@ use super::super::pool::block_region_writes;
 use super::textures::PoolTextures;
 use super::{DrainEffects, LightmapResidencyDrainError, LightmapStreamState};
 use crate::render::StagedUploads;
+use crate::render::uploads::MarkSite;
 
 /// What one drain's execution did on the GPU.
 #[derive(Debug, Clone, Copy, Default)]
@@ -72,7 +73,7 @@ impl LightmapStreamState {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Streamed Lightmap Drain"),
         });
-        let marked = queue.open_frame_mark(&mut encoder);
+        let marked = queue.open_frame_mark(&mut encoder, MarkSite::LightmapDrain);
         for kind in PoolKind::ALL {
             let pool = &plan.pools[kind];
             let Some(generation) = &self.pools[kind] else {
@@ -167,7 +168,7 @@ impl LightmapStreamState {
         executed.table_writes = plan.table_writes.len() as u64;
 
         let recorded = uploads.record(&mut self.staging, device, &mut encoder);
-        queue.close_frame_mark(&mut encoder, marked);
+        queue.close_frame_mark(&mut encoder, MarkSite::LightmapDrain, marked);
         queue.submit(std::iter::once(encoder.finish()));
         self.upload_scratch = recorded.finish(&self.staging);
 

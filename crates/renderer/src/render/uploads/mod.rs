@@ -10,10 +10,27 @@ mod allocation_tests;
 mod drift_tests;
 #[cfg(feature = "dev-tools")]
 mod frame_mark;
+#[cfg(feature = "dev-tools")]
+mod playback_ring;
+#[cfg(feature = "dev-tools")]
+mod playback_timing;
 pub(crate) mod staged_uploads;
 mod staging_pool;
+#[cfg(feature = "dev-tools")]
+pub use playback_timing::{PlaybackGpuSample, PlaybackGpuSpan};
 pub(crate) use staged_uploads::StagedUploads;
 pub(crate) use staging_pool::StagingPool;
+
+/// Which marked encoder a frame mark brackets: playback times each apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarkSite {
+    /// "Streamed Lightmap Drain".
+    LightmapDrain,
+    /// "Streamed SH Upload Copies".
+    ShUploads,
+    /// "Frame Encoder", the frame's last marked encoder.
+    Frame,
+}
 
 // Measured campaign writer batches fit a 1 MiB size class.
 // Retain four such buffers for two frames in flight; small uniform-only batches
@@ -82,6 +99,10 @@ pub(crate) struct UploadQueue {
     /// Camera-route playback's frame mark, read by every marked encoder.
     #[cfg(feature = "dev-tools")]
     frame_mark: RefCell<frame_mark::FrameMark>,
+    /// Camera-route playback's timestamp ring; `None` unless a run with GPU
+    /// timing enabled it.
+    #[cfg(feature = "dev-tools")]
+    playback_timing: RefCell<Option<playback_timing::PlaybackTiming>>,
 }
 
 impl UploadQueue {
@@ -105,34 +126,91 @@ impl UploadQueue {
             window_max_batch_bytes: Cell::new(0),
             #[cfg(feature = "dev-tools")]
             frame_mark: RefCell::default(),
+            #[cfg(feature = "dev-tools")]
+            playback_timing: RefCell::new(None),
         }
     }
 
     /// Camera-route playback names the frame it records: `Some(k)` brackets
     /// each drain and frame encoder in a `pr-frame <k>` debug group until the
-    /// next call, `None` leaves every encoder as it is.
+    /// next call, and gives frame `k` a slot group of the playback ring when
+    /// one is enabled; `None` leaves every encoder as it is.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn set_frame_mark(&self, frame: Option<u64>) {
         self.frame_mark.borrow_mut().set(frame);
+        if let Some(timing) = self.playback_timing.borrow_mut().as_mut() {
+            match frame {
+                Some(frame) => timing.begin_frame(frame),
+                None => timing.end_frame(),
+            }
+        }
+    }
+
+    /// Builds the playback timestamp ring. The caller has checked the device
+    /// carries the timestamp features per-pass GPU timing uses.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn enable_playback_timing(&self) {
+        let mut timing = self.playback_timing.borrow_mut();
+        if timing.is_none() {
+            *timing = Some(playback_timing::PlaybackTiming::new(
+                &self.device,
+                &self.raw,
+            ));
+        }
+    }
+
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn playback_timing(
+        &self,
+    ) -> std::cell::RefMut<'_, Option<playback_timing::PlaybackTiming>> {
+        self.playback_timing.borrow_mut()
+    }
+
+    /// After a frame's submit: drives the playback ring's readbacks.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) fn playback_post_submit(&self) {
+        if let Some(timing) = self.playback_timing.borrow_mut().as_mut() {
+            timing.post_submit(&self.device);
+        }
     }
 
     /// Opens this frame's playback mark on `encoder`, returning whether it
     /// did; hand the result to [`Self::close_frame_mark`] before `finish`.
-    /// Unmarked, and in builds without playback, it records nothing.
-    pub(crate) fn open_frame_mark(&self, encoder: &mut wgpu::CommandEncoder) -> bool {
+    /// While the playback ring is enabled the mark also writes the begin
+    /// timestamps of `site`'s spans. Unmarked, and in builds without
+    /// playback, it records nothing.
+    pub(crate) fn open_frame_mark(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        site: MarkSite,
+    ) -> bool {
         #[cfg(feature = "dev-tools")]
         if let Some(label) = self.frame_mark.borrow().label() {
             encoder.push_debug_group(label);
+            if let Some(timing) = self.playback_timing.borrow_mut().as_mut() {
+                timing.open(encoder, site);
+            }
             return true;
         }
-        let _ = encoder;
+        let _ = (encoder, site);
         false
     }
 
-    pub(crate) fn close_frame_mark(&self, encoder: &mut wgpu::CommandEncoder, opened: bool) {
-        if opened {
-            encoder.pop_debug_group();
+    pub(crate) fn close_frame_mark(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        site: MarkSite,
+        opened: bool,
+    ) {
+        if !opened {
+            return;
         }
+        #[cfg(feature = "dev-tools")]
+        if let Some(timing) = self.playback_timing.borrow_mut().as_mut() {
+            timing.close(encoder, site);
+        }
+        let _ = site;
+        encoder.pop_debug_group();
     }
 
     /// Only installation and third-party resource owners receive the raw queue.

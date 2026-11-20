@@ -63,7 +63,9 @@ impl ChangeSet {
 
 impl serde::Serialize for ChangeSet {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let kinds = ChangeKind::ALL.into_iter().filter(|kind| self.contains(*kind));
+        let kinds = ChangeKind::ALL
+            .into_iter()
+            .filter(|kind| self.contains(*kind));
         let mut seq = serializer.serialize_seq(None)?;
         for kind in kinds {
             seq.serialize_element(kind.key())?;
@@ -180,7 +182,11 @@ mod tests {
         assert!(marks.take_row_marks().1);
         marks.after_frame(true);
         assert!(!marks.take_row_marks().1);
-        assert_eq!(marks.take_row_marks().0, ChangeSet::default(), "a gap is no change");
+        assert_eq!(
+            marks.take_row_marks().0,
+            ChangeSet::default(),
+            "a gap is no change"
+        );
     }
 
     #[test]
@@ -204,7 +210,11 @@ mod tests {
             ..alive
         };
         let mut watch = LifeWatch::default();
-        assert_eq!(watch.observe(Some(alive)), None, "the first frame is the baseline");
+        assert_eq!(
+            watch.observe(Some(alive)),
+            None,
+            "the first frame is the baseline"
+        );
         assert_eq!(watch.observe(Some(alive)), None);
         assert_eq!(watch.observe(Some(dead)), Some(Some(alive)));
         assert_eq!(watch.observe(Some(dead)), None);

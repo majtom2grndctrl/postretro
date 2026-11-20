@@ -69,6 +69,17 @@ impl WindowModes {
         self.boot(window, options);
     }
 
+    /// The window's effective mode, as last applied or read back, and its
+    /// exclusive display mode: what a performance record names, since a saved
+    /// exclusive mode can fall back to another.
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
+    pub(crate) fn effective_mode(
+        &self,
+    ) -> (crate::options::WindowMode, Option<&crate::options::DisplayMode>) {
+        let effective = &self.controller.effective;
+        (effective.mode, effective.display.as_ref())
+    }
+
     /// Apply an exclusive mode `apply_boot` deferred, once the renderer has
     /// created its surface. A no-op for every other boot.
     pub(crate) fn finish_boot(&mut self, window: &Window, options: &PlayerOptions) {

@@ -2231,7 +2231,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
         let streaming_cpu = postretro_stage_timing::StageFrame::<cpu_timing::StreamingStage>::new(
             app.cpu_timer.gate(),
         );
-        let sh_drain_batch = match session.run_level_streaming_step(
+        let streaming_step = match session.run_level_streaming_step(
             sh_stream_manifest.as_ref(),
             app.level.as_ref(),
             renderer,
@@ -2245,7 +2245,7 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
                 cpu: &streaming_cpu,
             },
         ) {
-            Ok(batch) => batch,
+            Ok(step) => step,
             Err(err) => {
                 app.exit_result = Err(err);
                 event_loop.exit();
@@ -2253,9 +2253,10 @@ pub(crate) fn redraw(app: &mut App, event_loop: &ActiveEventLoop) {
             }
         };
         // A route frame that streamed and drained writes a row even when it
-        // then presents nothing (a no-draw row).
+        // then presents nothing (a no-draw row), carrying what it admitted.
         #[cfg(feature = "dev-tools")]
-        app.playback.note_streamed();
+        app.playback.note_streamed(streaming_step.admission);
+        let sh_drain_batch = streaming_step.sh_batch;
         app.cpu_timer.nested_mut().extend_from(
             &streaming_cpu,
             Some(postretro_stage_timing::StageSet::label(

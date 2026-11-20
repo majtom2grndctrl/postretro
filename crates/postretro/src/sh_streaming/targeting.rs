@@ -203,15 +203,18 @@ impl ShResidencyController {
         drawn: &BTreeSet<u32>,
     ) -> Result<(), ShResidencyControllerError> {
         self.prior_visible_misses.retain(|id| drawn.contains(id));
+        let mut not_sampleable = 0u32;
         for &cluster_id in drawn {
-            if self.states[cluster_id as usize].state != ClusterResidencyState::Sampleable
-                && self.prior_visible_misses.insert(cluster_id)
-            {
+            let sampleable =
+                self.states[cluster_id as usize].state == ClusterResidencyState::Sampleable;
+            not_sampleable += u32::from(!sampleable);
+            if !sampleable && self.prior_visible_misses.insert(cluster_id) {
                 Self::increment_counter(&mut self.counters.misses, "visible misses")?;
                 let bucket = self.miss_bucket(cluster_id);
                 Self::increment_counter(bucket, "visible miss bucket")?;
             }
         }
+        self.counters.last_frame_drawn_not_resident = not_sampleable;
         Ok(())
     }
 

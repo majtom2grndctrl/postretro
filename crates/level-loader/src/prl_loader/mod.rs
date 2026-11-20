@@ -394,6 +394,7 @@ fn assemble_world(
         face_meta,
         texture_names,
         texture_cache_keys,
+        emissive,
     } = geometry;
     let SpatialSections {
         bvh,
@@ -459,6 +460,7 @@ fn assemble_world(
         cell_visibility,
         texture_names,
         texture_cache_keys,
+        emissive,
         bvh,
         lights,
         light_influences,

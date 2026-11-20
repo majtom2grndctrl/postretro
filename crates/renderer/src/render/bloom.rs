@@ -846,15 +846,18 @@ fn encode_fullscreen_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postretro_render_data::material::Material;
+
+    /// The baked strength the dev mod's material file gives its neon panels,
+    /// which keeps their look now that strength is baked content, not a prefix.
+    const DEV_PANEL_EMISSIVE_STRENGTH: f32 = 4.0;
 
     #[test]
-    fn neon_emissive_strength_clears_the_bloom_threshold() {
-        let strength = Material::Neon.emissive_strength();
-        assert!(strength > 1.0, "neon must produce HDR emissive output");
+    fn dev_panel_emissive_strength_clears_the_bloom_threshold() {
+        let strength = DEV_PANEL_EMISSIVE_STRENGTH;
+        assert!(strength > 1.0, "the panel must produce HDR emissive output");
         assert!(
             strength > BLOOM_THRESHOLD,
-            "neon authored at full emissive value must pass the bloom bright-pass"
+            "a panel authored at full emissive value must pass the bloom bright-pass"
         );
     }
 

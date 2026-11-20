@@ -3,9 +3,10 @@
 
 use super::probe_test_metrics as metrics;
 use super::*;
-use crate::surface_materials::stats::{BOUNCE_SATURATION, BounceMaterials, MaterialStats};
+use crate::surface_materials::stats::{
+    BOUNCE_SATURATION, BounceMaterials, EmissiveGlow, MaterialStats,
+};
 use log::Level;
-use postretro_render_data::material::derive_material;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -56,9 +57,21 @@ impl Fixture {
         StageTextureBytes,
     ) {
         let mut bytes = StageTextureBytes::new();
-        let (keys, stats) =
+        let bake =
             bake_materials_into(names, &self.textures, &self.cache, &mut bytes, true).unwrap();
-        (keys, stats, bytes)
+        (bake.keys, bake.stats, bytes)
+    }
+
+    fn glow(&self, names: &[String]) -> Vec<EmissiveGlow> {
+        bake_materials_into(
+            names,
+            &self.textures,
+            &self.cache,
+            &mut StageTextureBytes::new(),
+            true,
+        )
+        .unwrap()
+        .glow
     }
 
     fn sidecars(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
@@ -173,12 +186,14 @@ fn material_stage_stats_match_reused_sidecars_and_preserve_sidecar_bytes() {
     }
 }
 
+// Aliases resolve one source bundle, and the glow test reads that bundle's
+// `_e` slot, never the name: every alias, backslashed or not, takes one mean.
 #[test]
-fn material_stage_aliases_preserve_name_order_and_current_glow_strength() {
-    const SLASH: &str = "panels/neon_panel";
-    const SLASH_ALIAS: &str = "textures/PANELS/NEON_PANEL";
-    const BACKSLASH: &str = "textures/PANELS\\NEON_PANEL";
-    const BACKSLASH_ALIAS: &str = "PANELS\\neon_panel";
+fn material_stage_aliases_preserve_name_order_and_share_one_glow_mean() {
+    const SLASH: &str = "panels/glow_panel";
+    const SLASH_ALIAS: &str = "textures/PANELS/GLOW_PANEL";
+    const BACKSLASH: &str = "textures/PANELS\\GLOW_PANEL";
+    const BACKSLASH_ALIAS: &str = "PANELS\\glow_panel";
     const PLAIN: &str = "panels/plain_panel";
     for reversed in [false, true] {
         let fixture = Fixture::new();
@@ -189,14 +204,14 @@ fn material_stage_aliases_preserve_name_order_and_current_glow_strength() {
                 1,
                 |x, _| if x == 0 { [255, 0, 0, 255] } else { [255; 4] },
             );
-            fixture.png(&format!("{stem}_e"), 2, 1, |x, _| {
-                if x == 0 {
-                    [255, 0, 0, 255]
-                } else {
-                    [0, 0, 0, 255]
-                }
-            });
         }
+        fixture.png(&format!("{SLASH}_e"), 2, 1, |x, _| {
+            if x == 0 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 0, 255]
+            }
+        });
         let mut names: Vec<_> = [SLASH, SLASH_ALIAS, PLAIN, BACKSLASH, BACKSLASH_ALIAS]
             .into_iter()
             .map(str::to_owned)
@@ -207,56 +222,53 @@ fn material_stage_aliases_preserve_name_order_and_current_glow_strength() {
         for phase in ["cold", "warm"] {
             let ((keys, stats, bytes), observed) = metrics::observe(|| fixture.bake(&names));
             if phase == "cold" {
-                assert_eq!(observed.decode_attempts.len(), 2);
+                assert_eq!(observed.decode_attempts.len(), 3);
                 assert!(observed.decode_attempts.values().all(|&count| count == 1));
                 assert_eq!(observed.decode_attempts, observed.decode_successes);
             } else {
                 assert!(observed.decode_attempts.is_empty());
             }
-            assert_eq!(
-                fixture.sidecars().len(),
-                1,
-                "content-identical sources share a sidecar"
-            );
-            assert!(keys.values().all(|key| *key == keys[&names[0]]));
-            assert_eq!(bytes.summary().material_count(), 1);
+            assert_eq!(fixture.sidecars().len(), 2, "one sidecar per bundle");
+            let glow_key = keys[SLASH];
+            for alias in [SLASH_ALIAS, BACKSLASH, BACKSLASH_ALIAS] {
+                assert_eq!(keys[alias], glow_key, "{alias} shares the bundle");
+            }
+            assert_ne!(keys[PLAIN], glow_key);
+            assert_eq!(bytes.summary().material_count(), 2);
             assert_eq!(bytes.summary().entries().next().unwrap().0, names[0]);
             let means: HashMap<_, _> = names
                 .iter()
                 .zip(&stats)
                 .map(|(name, stat)| (name.as_str(), stat.snapped_mean()))
                 .collect();
-            for name in [SLASH, SLASH_ALIAS] {
+            for name in [SLASH, SLASH_ALIAS, BACKSLASH, BACKSLASH_ALIAS] {
                 assert_eq!(
                     means[name],
                     Some([255; 3]),
-                    "{name}, {phase}, reversed={reversed}"
+                    "the red glow texel leaves {name}'s mean ({phase}, reversed={reversed})"
                 );
             }
-            for name in [PLAIN, BACKSLASH, BACKSLASH_ALIAS] {
-                assert_eq!(
-                    means[name],
-                    Some([255, 188, 188]),
-                    "{name}, {phase}, reversed={reversed}"
-                );
-            }
-            // Preserve runtime derivation: backslashes resolve source paths but
-            // do not delimit the material prefix, so their glow strength is zero.
-            let mut warned = HashSet::new();
-            for name in [SLASH, SLASH_ALIAS] {
-                assert!(derive_material(name, &mut warned).emissive_strength() > 0.0);
-            }
-            for name in [PLAIN, BACKSLASH, BACKSLASH_ALIAS] {
-                assert!(
-                    derive_material(name, &mut warned).emissive_strength().abs() < f32::EPSILON
-                );
-            }
-            assert_eq!(means[SLASH], means[SLASH_ALIAS]);
-            assert_eq!(means[BACKSLASH], means[BACKSLASH_ALIAS]);
-            assert_ne!(
-                means[SLASH], means[BACKSLASH],
-                "shared sidecar must not merge different per-name glow strengths"
+            assert_eq!(
+                means[PLAIN],
+                Some([255, 188, 188]),
+                "no `_e`: the full mean ({phase}, reversed={reversed})"
             );
+            let glow: HashMap<_, _> = names
+                .iter()
+                .zip(fixture.glow(&names))
+                .map(|(name, glow)| (name.as_str(), glow))
+                .collect();
+            for name in [SLASH, SLASH_ALIAS, BACKSLASH, BACKSLASH_ALIAS] {
+                assert_eq!(
+                    glow[name],
+                    EmissiveGlow {
+                        has_emissive: true,
+                        mean_color: [1.0, 0.0, 0.0],
+                    },
+                    "{name}"
+                );
+            }
+            assert_eq!(glow[PLAIN], EmissiveGlow::default());
         }
     }
 }
@@ -480,6 +492,9 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
     {
         fixture.png(name, 2, 2, |_, _| [(index * 50) as u8, 32, 64, 255]);
     }
+    fixture.png("panels/fluid_e", 2, 2, |x, _| {
+        if x == 0 { [255; 4] } else { [0, 0, 0, 255] }
+    });
     let names: Vec<_> = [
         "panels/world",
         "panels/mover",
@@ -495,7 +510,11 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
             bake_world_texture_mips(&names, &fixture.textures, &full_cache).unwrap();
         let observation = metrics::Observation::start();
         let mut split_bytes = StageTextureBytes::new();
-        let (mut split_keys, stats) = bake_materials_into(
+        let MaterialBake {
+            keys: mut split_keys,
+            stats,
+            glow,
+        } = bake_materials_into(
             &names[..3],
             &fixture.textures,
             &fixture.cache,
@@ -505,7 +524,8 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
         .unwrap();
         assert_eq!(stats.len(), 3);
         assert!(stats.iter().all(|stat| stat.snapped_mean().is_some()));
-        let (tail, tail_stats) = bake_materials_into(
+        assert_eq!(glow, [EmissiveGlow::default(); 3]);
+        let tail = bake_materials_into(
             &names[3..],
             &fixture.textures,
             &fixture.cache,
@@ -513,11 +533,22 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
             false,
         )
         .unwrap();
-        assert!(tail_stats.is_empty());
+        assert!(tail.stats.is_empty());
+        // The fluid tail takes no bounce stats but still reads its `_e`
+        // facts, cold and warm: id 60 covers fluid-only names.
+        assert_eq!(
+            tail.glow,
+            [EmissiveGlow {
+                has_emissive: true,
+                mean_color: [1.0; 3],
+            }],
+            "{phase}"
+        );
+        let tail = tail.keys;
         let observed = observation.snapshot();
         drop(observation);
         if phase == "cold" {
-            assert_eq!(observed.decode_attempts.len(), 4);
+            assert_eq!(observed.decode_attempts.len(), 5);
             assert!(observed.decode_attempts.values().all(|&count| count == 1));
             assert_eq!(observed.decode_attempts, observed.decode_successes);
         } else {
@@ -533,7 +564,7 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
             assert_eq!(std::fs::read(full_cache.join(filename)).unwrap(), bytes);
         }
         let before = split_bytes.summary().clone();
-        let (keys, stats) = bake_materials_into(
+        let empty = bake_materials_into(
             &[],
             &fixture.textures,
             &fixture.cache,
@@ -541,7 +572,7 @@ fn material_stage_and_fluid_tail_match_full_name_byte_accounting_cold_and_warm()
             false,
         )
         .unwrap();
-        assert!(keys.is_empty() && stats.is_empty());
+        assert!(empty.keys.is_empty() && empty.stats.is_empty() && empty.glow.is_empty());
         assert_eq!(split_bytes.summary(), &before);
     }
 }
@@ -566,8 +597,9 @@ fn snapped_linear_mean(texels: &[[u8; 3]]) -> [u8; 3] {
     })
 }
 
+// The glow test reads the `_e` slot, whatever the name's prefix and strength.
 #[test]
-fn material_stage_glow_names_exclude_only_masked_texels_and_fall_back_to_the_full_average() {
+fn material_stage_emissive_textures_exclude_only_masked_texels_and_fall_back_to_the_full_average() {
     const STRIP: [u8; 3] = [255, 255, 255];
     const PANEL: [u8; 3] = [40, 80, 160];
     let fixture = Fixture::new();
@@ -575,29 +607,23 @@ fn material_stage_glow_names_exclude_only_masked_texels_and_fall_back_to_the_ful
         let [r, g, b] = if x < 2 { STRIP } else { PANEL };
         [r, g, b, 255]
     };
-    // One painted strip; three glow-prefixed names that differ only in `_e`.
-    for stem in ["panels/neon_bare", "panels/neon_strip", "panels/neon_all"] {
+    // One painted strip; three names that differ only in `_e`. No prefix
+    // marks any of them as glowing.
+    for stem in ["panels/bare", "panels/strip", "panels/all"] {
         fixture.png(stem, 8, 2, diffuse);
     }
-    fixture.png("panels/neon_strip_e", 8, 2, |x, _| {
+    fixture.png("panels/strip_e", 8, 2, |x, _| {
         if x < 2 {
             [255, 64, 0, 255]
         } else {
             [0, 0, 0, 255]
         }
     });
-    fixture.png("panels/neon_all_e", 8, 2, |_, _| [0, 32, 0, 255]);
-    let names: Vec<_> = ["panels/neon_bare", "panels/neon_strip", "panels/neon_all"]
+    fixture.png("panels/all_e", 8, 2, |_, _| [0, 32, 0, 255]);
+    let names: Vec<_> = ["panels/bare", "panels/strip", "panels/all"]
         .into_iter()
         .map(str::to_owned)
         .collect();
-    let mut warned = HashSet::new();
-    for name in &names {
-        assert!(
-            derive_material(name, &mut warned).emissive_strength() > 0.0,
-            "{name} must be a glowing material"
-        );
-    }
     let texels: Vec<[u8; 3]> = (0..2)
         .flat_map(|_| (0..8).map(|x| if x < 2 { STRIP } else { PANEL }))
         .collect();
@@ -611,6 +637,18 @@ fn material_stage_glow_names_exclude_only_masked_texels_and_fall_back_to_the_ful
             [Some(full), Some(PANEL), Some(full)],
             "no `_e`: full; strip `_e`: panel only; all-glow `_e`: full ({phase})"
         );
+        let glow = fixture.glow(&names);
+        assert_eq!(glow[0], EmissiveGlow::default(), "{phase}");
+        assert!(glow[1].has_emissive && glow[2].has_emissive, "{phase}");
+        let strip = [255, 64, 0].map(|channel| srgb_to_linear(channel) as f32);
+        for (actual, expected) in glow[1].mean_color.iter().zip(strip) {
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "{phase}: {:?}",
+                glow[1].mean_color
+            );
+        }
+        assert!((glow[2].mean_color[1] - srgb_to_linear(32) as f32).abs() < 1e-6);
     }
 }
 

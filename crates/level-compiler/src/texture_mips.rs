@@ -23,9 +23,13 @@ mod world;
 #[cfg(test)]
 mod world_tests;
 // The binary pipeline consumes this export; the helper library omits it.
-#[allow(unused_imports)]
-pub(crate) use world::bake_materials_into;
 pub use world::bake_world_texture_mips;
+#[allow(unused_imports)]
+pub(crate) use world::{MaterialBake, bake_materials_into};
+// `materials.toml` keys match texture names as source lookup normalizes them.
+// The binary reads it; the helper library omits it.
+#[allow(unused_imports)]
+pub(crate) use resolution::normalize_map_texture_name;
 
 use bake::{
     build_diffuse_chain, build_normal_bc5_chain, build_specular_chain, build_surface_chain,
@@ -33,9 +37,7 @@ use bake::{
 use cache::{
     SLOT_MASK_BITS, bundle_hash_for, cache_entry_has_valid_declared_slots, filename_key_for,
 };
-use resolution::{
-    build_name_to_path_map, normalize_map_texture_name, resolve_texture_bundle_paths,
-};
+use resolution::{build_name_to_path_map, resolve_texture_bundle_paths};
 
 // -- Gamma helpers --------------------------------------------------------
 

@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use glam::Vec3;
+use postretro_level_format::emissive::EmissiveTexture;
 use postretro_level_format::prm::{PrmFile, PrmFormat, PrmSlot, cache_filename_for_key};
-use postretro_render_data::material::derive_material;
 
 use crate::texture_mips::build_srgb_to_linear_lut;
 
@@ -23,8 +23,8 @@ const PLACEHOLDER_SQUARE: u32 = 8;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MaterialSample {
     pub albedo: Vec3,
-    /// Emissive texel times the prefix multiplier; zero for a non-emissive
-    /// prefix, which the forward pass never samples.
+    /// Emissive texel times the texture's baked strength (id 60); zero at
+    /// strength 0, which the forward pass never samples.
     pub emissive: Vec3,
 }
 
@@ -37,6 +37,8 @@ pub(crate) struct MaterialSample {
 pub(crate) struct SurfaceMaterials<'a> {
     names: &'a [String],
     keys: &'a HashMap<String, [u8; 32]>,
+    /// Id 60's records, index-aligned with `names`.
+    emissive: &'a [EmissiveTexture],
     prm_root: &'a Path,
     loaded: Vec<OnceLock<SurfaceMaterial>>,
     srgb_to_linear: [f32; 256],
@@ -100,11 +102,13 @@ impl<'a> SurfaceMaterials<'a> {
     pub(crate) fn new(
         names: &'a [String],
         keys: &'a HashMap<String, [u8; 32]>,
+        emissive: &'a [EmissiveTexture],
         prm_root: &'a Path,
     ) -> Self {
         Self {
             names,
             keys,
+            emissive,
             prm_root,
             loaded: (0..names.len()).map(|_| OnceLock::new()).collect(),
             srgb_to_linear: build_srgb_to_linear_lut(),
@@ -179,8 +183,10 @@ impl<'a> SurfaceMaterials<'a> {
 
     fn load(&self, index: usize) -> SurfaceMaterial {
         let name = &self.names[index];
-        let mut warned = std::collections::HashSet::new();
-        let emissive_strength = derive_material(name, &mut warned).emissive_strength();
+        let emissive_strength = self
+            .emissive
+            .get(index)
+            .map_or(0.0, |texture| texture.strength);
         let (diffuse, emissive) = match self.keys.get(name) {
             Some(key) if *key != [0u8; 32] => self.read_slots(name, key),
             _ => (None, None),
@@ -309,7 +315,8 @@ mod tests {
         );
         let names = vec!["concrete_floor".to_string()];
         let keys = HashMap::from([(names[0].clone(), [1u8; 32])]);
-        let materials = SurfaceMaterials::new(&names, &keys, dir.path());
+        let emissive = [EmissiveTexture::DARK];
+        let materials = SurfaceMaterials::new(&names, &keys, &emissive, dir.path());
 
         let near = materials.sample(0, [1.5, 2.5], 0.5);
         assert_eq!(near.albedo, Vec3::new(1.0, 0.0, 0.0));
@@ -321,8 +328,10 @@ mod tests {
         assert_eq!(materials.sample(0, [-2.5, 9.0], 0.5).albedo, near.albedo);
     }
 
+    /// The capture's emissive term is the texel times the texture's baked
+    /// strength, whatever its name's prefix; strength 0 samples nothing.
     #[test]
-    fn materials_scale_emissive_by_the_prefix_multiplier_and_skip_non_emissive_prefixes() {
+    fn materials_scale_emissive_by_the_baked_strength_and_skip_zero_strength() {
         let dir = tempfile::tempdir().unwrap();
         let half = 188; // sRGB 188 ≈ linear 0.5
         write_prm(
@@ -332,17 +341,33 @@ mod tests {
             [255; 4],
             Some([half, half, half, 255]),
         );
-        let names = vec!["neon_sign".to_string(), "metal_sign".to_string()];
-        let keys = HashMap::from([(names[0].clone(), [2u8; 32]), (names[1].clone(), [2u8; 32])]);
-        let materials = SurfaceMaterials::new(&names, &keys, dir.path());
+        let names = vec![
+            "panels/sign".to_string(),
+            "metal_sign".to_string(),
+            "neon_sign".to_string(),
+        ];
+        let keys = names.iter().map(|name| (name.clone(), [2u8; 32])).collect();
+        let strength = |strength| EmissiveTexture {
+            strength,
+            glow_color: [0.5; 3],
+        };
+        let emissive = [strength(4.0), strength(1.0), strength(0.0)];
+        let materials = SurfaceMaterials::new(&names, &keys, &emissive, dir.path());
 
-        let neon = materials.sample(0, [0.5, 0.5], 1.0);
-        assert!(
-            (neon.emissive.x - 0.5 * 4.0).abs() < 0.02,
-            "{}",
-            neon.emissive
+        for (index, expected) in [(0, 4.0), (1, 1.0)] {
+            let sample = materials.sample(index, [0.5, 0.5], 1.0);
+            assert!(
+                (sample.emissive.x - 0.5 * expected).abs() < 0.02,
+                "{}: {}",
+                names[index as usize],
+                sample.emissive
+            );
+        }
+        assert_eq!(
+            materials.sample(2, [0.5, 0.5], 1.0).emissive,
+            Vec3::ZERO,
+            "strength 0 adds nothing, whatever the prefix"
         );
-        assert_eq!(materials.sample(1, [0.5, 0.5], 1.0).emissive, Vec3::ZERO);
     }
 
     // The emissive texture samples with its own derivatives: the UV both
@@ -360,9 +385,13 @@ mod tests {
             chain(4, fine, coarse),
             Some(chain(8, fine, coarse)),
         );
-        let names = vec!["neon_tube".to_string()];
+        let names = vec!["panels/tube".to_string()];
         let keys = HashMap::from([(names[0].clone(), [3u8; 32])]);
-        let materials = SurfaceMaterials::new(&names, &keys, dir.path());
+        let emissive = [EmissiveTexture {
+            strength: 4.0,
+            glow_color: [1.0; 3],
+        }];
+        let materials = SurfaceMaterials::new(&names, &keys, &emissive, dir.path());
 
         // One diffuse texel: diffuse level 0, emissive level 1.
         let sample = materials.sample(0, [1.5, 2.5], 1.0);
@@ -381,7 +410,7 @@ mod tests {
             Some(chain(2, fine, coarse)),
         );
         let keys = HashMap::from([(names[0].clone(), [4u8; 32])]);
-        let materials = SurfaceMaterials::new(&names, &keys, dir.path());
+        let materials = SurfaceMaterials::new(&names, &keys, &emissive, dir.path());
         let sample = materials.sample(0, [1.5, 2.5], 2.0);
         assert_eq!(sample.albedo, Vec3::ZERO, "the diffuse's level 1");
         assert!(sample.emissive.x > 1.0, "{}", sample.emissive);
@@ -391,7 +420,7 @@ mod tests {
     fn materials_without_a_sidecar_read_the_renderer_placeholder() {
         let names = vec!["missing".to_string()];
         let keys = HashMap::from([(names[0].clone(), [0u8; 32])]);
-        let materials = SurfaceMaterials::new(&names, &keys, Path::new("."));
+        let materials = SurfaceMaterials::new(&names, &keys, &[], Path::new("."));
         assert_eq!(
             materials.sample(0, [0.5, 0.5], 1.0).albedo,
             Vec3::new(1.0, 0.0, 1.0)
@@ -406,34 +435,6 @@ mod tests {
                 )
                 .albedo,
             Vec3::new(1.0, 0.0, 1.0)
-        );
-    }
-
-    /// The capture's per-prefix emissive multiplier is the renderer's: both
-    /// read `Material::emissive_strength` through `derive_material`.
-    #[test]
-    fn emissive_multiplier_matches_the_runtime_for_every_material_prefix() {
-        use postretro_render_data::material::{MATERIAL_PREFIXES, Material};
-        let names: Vec<String> = MATERIAL_PREFIXES
-            .iter()
-            .map(|(prefix, _)| format!("{prefix}_panel"))
-            .chain(std::iter::once("unknownprefix_panel".to_string()))
-            .collect();
-        let keys = HashMap::new();
-        let materials = SurfaceMaterials::new(&names, &keys, Path::new("."));
-        for (index, name) in names.iter().enumerate() {
-            let expected = MATERIAL_PREFIXES
-                .iter()
-                .find(|(prefix, _)| name.starts_with(&format!("{prefix}_")))
-                .map_or(Material::Default, |(_, material)| *material)
-                .emissive_strength();
-            let loaded = materials.loaded[index].get_or_init(|| materials.load(index));
-            assert_eq!(loaded.emissive_strength, expected, "{name}");
-        }
-        assert_eq!(
-            materials.loaded[3].get().unwrap().emissive_strength,
-            4.0,
-            "neon is the emissive prefix"
         );
     }
 }

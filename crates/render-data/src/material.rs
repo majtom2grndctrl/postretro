@@ -4,7 +4,8 @@
 use std::collections::HashSet;
 
 /// Surface material type derived from texture name prefix.
-/// Rendering consumes each variant's shininess and emissive strength.
+/// Rendering consumes each variant's shininess and Surface Depth. Glow strength
+/// is not a prefix property: it is baked per texture ([`TextureMaterial`]).
 /// Gameplay and audio hooks such as footsteps, impacts, ricochets, and decals
 /// remain future consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,24 @@ pub enum Material {
     Default,
 }
 
+/// One world texture as the renderer binds it: the material its name's prefix
+/// derives, and the glow strength the level baked for it (PRL Emissive, id 60;
+/// `resource_management.md` §4.5). Strength never derives from the name: the
+/// bake and the runtime read one baked number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextureMaterial {
+    pub material: Material,
+    pub emissive_strength: f32,
+}
+
+impl TextureMaterial {
+    /// The default material, glowing nothing: a texture past the level's table.
+    pub const DEFAULT: Self = Self {
+        material: Material::Default,
+        emissive_strength: 0.0,
+    };
+}
+
 /// Per-material property flags. Later phases consume these to drive
 /// rendering and audio behaviors.
 #[allow(dead_code)]
@@ -29,9 +48,7 @@ pub struct MaterialProperties {
 
 /// Surface Depth (texel-space parallax) tuning for one material prefix.
 ///
-/// Prefix-driven exactly like [`Material::shininess`] and
-/// [`Material::emissive_strength`]: this engine has no author-facing material
-/// descriptor file and this feature deliberately does not introduce one.
+/// Prefix-driven exactly like [`Material::shininess`].
 ///
 /// `depth_meters` carries whichever unit [`SURFACE_DEPTH_TEXEL_MODE`] selects,
 /// and the two readings trade against each other rather than one being right.
@@ -170,21 +187,6 @@ impl Material {
             Material::Concrete => 4.0,
             Material::Grate => 8.0,
             Material::Default => 32.0,
-        }
-    }
-
-    /// Static emissive multiplier for this material prefix. The texture carries
-    /// the per-texel pattern; this keeps v1 authoring prefix-driven like
-    /// `shininess()` without introducing gameplay material properties.
-    pub fn emissive_strength(self) -> f32 {
-        match self {
-            Material::Neon => 4.0,
-            Material::Metal
-            | Material::Concrete
-            | Material::Grate
-            | Material::Glass
-            | Material::Wood
-            | Material::Default => 0.0,
         }
     }
 

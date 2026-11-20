@@ -167,6 +167,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         cell_visibility,
         texture_names,
         texture_cache_keys,
+        emissive,
         bvh,
         lights,
         light_influences,
@@ -231,6 +232,7 @@ fn assert_worlds_match_as(staged: &LevelWorld, monolithic: &LevelWorld, identity
         texture_cache_keys,
         &m.texture_cache_keys,
     );
+    same_debug("emissive", emissive, &m.emissive);
     same_debug("bvh", bvh, &m.bvh);
     same_debug("lights", lights, &m.lights);
     same_debug("light_influences", light_influences, &m.light_influences);
@@ -358,7 +360,8 @@ fn assert_hand_outs_match(hand_outs: &[HandOut], monolithic: &LevelWorld) {
                     indices,
                     face_meta,
                     texture_names,
-                    texture_cache_keys
+                    texture_cache_keys,
+                    emissive
                 ]
             ),
             HandOut::Spatial(spatial) => same_fields!(

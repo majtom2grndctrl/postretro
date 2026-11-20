@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub(super) fn normalize_map_texture_name(name: &str) -> String {
+pub(crate) fn normalize_map_texture_name(name: &str) -> String {
     let lowered = name.to_lowercase().replace('\\', "/");
     lowered
         .strip_prefix("textures/")

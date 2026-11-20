@@ -346,10 +346,12 @@ impl App {
         world: &mut postretro_level_loader::LevelWorld,
         prm_cache_root: &Path,
     ) -> Result<Option<LevelLightSeed>, LevelInstallRejection> {
-        // Derive material properties from texture names so the renderer can
-        // populate per-material uniforms (shininess) without re-parsing. Load
-        // prep builds the same table with the same function.
-        let texture_materials = crate::level_load::level_texture_materials(&world.texture_names);
+        // Derive material properties from texture names, and take each
+        // texture's baked glow strength, so the renderer can populate
+        // per-material uniforms without re-parsing. Load prep builds the same
+        // table with the same function.
+        let texture_materials =
+            crate::level_load::level_texture_materials(&world.texture_names, &world.emissive);
 
         let (shadow_quality, surface_depth_quality, reflection_quality) = {
             let options = &self

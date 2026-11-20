@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use postretro_level_format::SectionId;
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection, NO_TEXTURE};
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
 use postretro_level_format::texture_names::TextureNamesSection;
@@ -73,6 +74,17 @@ pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode
         read_section(SectionId::TextureCacheKeys)?.ok_or(PrlLoadError::NoTextureCacheKeys)?;
     let texture_cache_keys = TextureCacheKeysSection::from_bytes(&texture_cache_keys_data)?;
 
+    // Required: the baked glow strength every material uniform packs. A level
+    // compiled before it has no strength the runtime may derive, so it is
+    // stale rather than defaulted.
+    let emissive_data = read_section(SectionId::Emissive)?
+        .ok_or_else(|| stale_section("Emissive", SectionId::Emissive))?;
+    let emissive = EmissiveSection::from_bytes(&emissive_data)
+        .map_err(|err| section_validation_from_error("Emissive", err))?;
+    emissive
+        .validate_against_level(texture_names.len(), geom.faces.len())
+        .map_err(|err| section_validation_from_error("Emissive", err))?;
+
     let mut warned_prefixes = HashSet::new();
     let vertices: Vec<WorldVertex> = geom
         .vertices
@@ -128,5 +140,6 @@ pub(super) fn decode_geometry(container: &PrlContainer) -> Result<GeometryDecode
         face_meta,
         texture_names,
         texture_cache_keys,
+        emissive,
     })
 }

@@ -1,0 +1,10 @@
+# Per-texture material values for the dev mod, read only by prl-build.
+# Keys are texture names as TrenchBroom shows them (`collection/name`).
+# `emissive` scales a texture's `_e` glow map: 1.0 with no entry, 0 without `_e`.
+
+# The neon panels keep the 4.0 their `neon_` prefix used to give them.
+["neon/neon_glow_panel"]
+emissive = 4.0
+
+["neon/neon_dim_panel"]
+emissive = 4.0

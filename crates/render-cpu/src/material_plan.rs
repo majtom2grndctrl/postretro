@@ -83,15 +83,18 @@ pub struct MaterialUniformPlan {
 
 impl MaterialUniformPlan {
     /// Plan one material against the slot that actually loaded.
+    /// `emissive_strength` is the texture's baked strength (PRL id 60), the one
+    /// the bake's reflection capture shades with; models pass 0.
     pub fn new(
         material: postretro_render_data::material::Material,
+        emissive_strength: f32,
         specular_is_surface_map: bool,
         specular_mip_count: u32,
         surface_relief: crate::surface_depth::SurfaceReliefLevels,
     ) -> Self {
         Self {
             shininess: material.shininess(),
-            emissive_strength: material.emissive_strength(),
+            emissive_strength,
             surface_depth: material.surface_depth(),
             specular_is_surface_map,
             specular_mip_count,
@@ -199,7 +202,7 @@ mod material_uniform_tests {
             peak_raise: 0.3,
             trough: -0.25,
         });
-        let plan = MaterialUniformPlan::new(Material::Concrete, true, 11, raw);
+        let plan = MaterialUniformPlan::new(Material::Concrete, 0.0, true, 11, raw);
         assert_eq!(
             plan.surface_relief, raw,
             "the plan keeps the raw load values"
@@ -234,7 +237,7 @@ mod material_uniform_tests {
 
     #[test]
     fn a_coarse_mip_overshoot_does_not_move_the_band_of_base_mip_zero() {
-        let plan = MaterialUniformPlan::new(Material::Concrete, true, 3, overshooting_chain());
+        let plan = MaterialUniformPlan::new(Material::Concrete, 0.0, true, 3, overshooting_chain());
         let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
         let levels = Material::Concrete.surface_depth().quantize_levels as f32;
         assert_eq!(f32_at(&bytes, 8), surface_height_quantize(0.25, levels));
@@ -245,7 +248,8 @@ mod material_uniform_tests {
 
     #[test]
     fn another_base_mip_packs_its_own_band() {
-        let mut plan = MaterialUniformPlan::new(Material::Concrete, true, 3, overshooting_chain());
+        let mut plan =
+            MaterialUniformPlan::new(Material::Concrete, 0.0, true, 3, overshooting_chain());
         plan.requested_base_mip = 1;
         let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
         let levels = Material::Concrete.surface_depth().quantize_levels as f32;
@@ -259,7 +263,7 @@ mod material_uniform_tests {
 
     #[test]
     fn off_then_on_round_trips_byte_for_byte() {
-        let plan = MaterialUniformPlan::new(Material::Concrete, true, 3, overshooting_chain());
+        let plan = MaterialUniformPlan::new(Material::Concrete, 0.0, true, 3, overshooting_chain());
         let on = plan.uniform_bytes(SurfaceDepthQuality::On);
         let _ = plan.uniform_bytes(SurfaceDepthQuality::Off);
         assert_eq!(plan.uniform_bytes(SurfaceDepthQuality::On), on);
@@ -270,7 +274,7 @@ mod material_uniform_tests {
     /// A carving material with a real surface map: the plan the renderer keeps
     /// for a `.prm` whose specular slot baked to `Rg8Unorm`.
     fn carving_plan() -> MaterialUniformPlan {
-        MaterialUniformPlan::new(Material::Concrete, true, 11, STONES)
+        MaterialUniformPlan::new(Material::Concrete, 4.0, true, 11, STONES)
     }
 
     #[test]
@@ -278,7 +282,7 @@ mod material_uniform_tests {
         let plan = carving_plan();
         let flat_material_bytes = build_material_uniform(
             Material::Concrete.shininess(),
-            Material::Concrete.emissive_strength(),
+            4.0,
             SurfaceDepthUniform::FLAT,
         );
         assert_eq!(
@@ -298,9 +302,9 @@ mod material_uniform_tests {
     fn an_all_mid_gray_map_uploads_bytes_identical_to_no_map() {
         // An empty band marches nothing, so it costs what no map costs.
         let mid_gray =
-            MaterialUniformPlan::new(Material::Concrete, true, 11, SurfaceReliefLevels::FLAT);
+            MaterialUniformPlan::new(Material::Concrete, 0.0, true, 11, SurfaceReliefLevels::FLAT);
         let no_map =
-            MaterialUniformPlan::new(Material::Concrete, false, 1, SurfaceReliefLevels::FLAT);
+            MaterialUniformPlan::new(Material::Concrete, 0.0, false, 1, SurfaceReliefLevels::FLAT);
         assert_eq!(
             mid_gray.uniform_bytes(SurfaceDepthQuality::On),
             no_map.uniform_bytes(SurfaceDepthQuality::On),
@@ -353,7 +357,7 @@ mod material_uniform_tests {
         // The whole point of deciding has-depth from the LOADED slot: neither
         // state may make a material without an `_h.png` sibling march, even
         // with a band that says it has relief.
-        let plan = MaterialUniformPlan::new(Material::Concrete, false, 11, STONES);
+        let plan = MaterialUniformPlan::new(Material::Concrete, 0.0, false, 11, STONES);
         for quality in SurfaceDepthQuality::ALL {
             assert!(
                 plan.uniform_bytes(quality)[8..].iter().all(|&b| b == 0),
@@ -376,7 +380,7 @@ mod material_uniform_tests {
     #[test]
     fn the_reported_surface_depth_is_what_the_bytes_pack() {
         for material in [Material::Concrete, Material::Glass] {
-            let plan = MaterialUniformPlan::new(material, true, 4, STONES);
+            let plan = MaterialUniformPlan::new(material, 0.0, true, 4, STONES);
             for quality in SurfaceDepthQuality::ALL {
                 let packed = plan.surface_depth_uniform(quality);
                 assert_eq!(
@@ -385,23 +389,24 @@ mod material_uniform_tests {
                 );
             }
         }
-        let glass = MaterialUniformPlan::new(Material::Glass, true, 4, STONES);
+        let glass = MaterialUniformPlan::new(Material::Glass, 0.0, true, 4, STONES);
         assert_eq!(
             glass.surface_depth_uniform(SurfaceDepthQuality::On),
             crate::surface_depth::SurfaceDepthUniform::FLAT,
         );
     }
 
+    /// Shininess and Surface Depth come from the prefix; emissive strength is
+    /// the baked value the caller passes, whatever the prefix.
     #[test]
-    fn the_plan_records_shininess_and_emissive_from_the_material_prefix() {
-        let plan = MaterialUniformPlan::new(Material::Metal, true, 4, STONES);
-        let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
-        assert_eq!(&bytes[0..4], &Material::Metal.shininess().to_le_bytes());
-        assert_eq!(
-            &bytes[4..8],
-            &Material::Metal.emissive_strength().to_le_bytes()
-        );
-        assert_eq!(plan.surface_depth, Material::Metal.surface_depth());
+    fn the_plan_records_prefix_shininess_and_the_baked_emissive_strength() {
+        for strength in [0.0, 1.0, 4.0] {
+            let plan = MaterialUniformPlan::new(Material::Metal, strength, true, 4, STONES);
+            let bytes = plan.uniform_bytes(SurfaceDepthQuality::On);
+            assert_eq!(&bytes[0..4], &Material::Metal.shininess().to_le_bytes());
+            assert_eq!(&bytes[4..8], &strength.to_le_bytes());
+            assert_eq!(plan.surface_depth, Material::Metal.surface_depth());
+        }
     }
 
     #[test]
@@ -409,7 +414,7 @@ mod material_uniform_tests {
         // A one-level chain (the placeholder shape) can only ever load level 0.
         let plan = MaterialUniformPlan {
             requested_base_mip: 9,
-            ..MaterialUniformPlan::new(Material::Concrete, true, 1, STONES)
+            ..MaterialUniformPlan::new(Material::Concrete, 0.0, true, 1, STONES)
         };
         let march = crate::surface_depth::unpack_surface_depth_march(u32::from_le_bytes(
             plan.uniform_bytes(SurfaceDepthQuality::On)[28..32]

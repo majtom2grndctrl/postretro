@@ -21,7 +21,7 @@ use postretro_render_cpu::sh_volume::{animated_light_count, usable_sh_volume};
 use postretro_render_cpu::surface_depth::SurfaceDepthQuality;
 use postretro_render_cpu::texture_prep::{prepare_model_materials, prepare_world_textures};
 use postretro_render_cpu::uv_normalize::{diffuse_dims, normalize_world_uvs_with_dims};
-use postretro_render_data::material::Material;
+use postretro_render_data::material::TextureMaterial;
 
 use super::*;
 use crate::render::fluid_baked_frame_test_fixtures::{direct_section, sh_section};
@@ -108,7 +108,7 @@ struct LegacyFixture {
     dir: tempfile::TempDir,
     names: Vec<String>,
     keys: TextureCacheKeysSection,
-    materials: Vec<Material>,
+    materials: Vec<TextureMaterial>,
     sh: postretro_level_format::sh_volume::OctahedralShVolumeSection,
     direct: postretro_level_format::direct_sh_volume::DirectShVolumeSection,
     lights: Vec<postretro_level_loader::MapLight>,
@@ -133,7 +133,7 @@ fn legacy_fixture(fill: u8) -> LegacyFixture {
         dir,
         names: vec![format!("baked-{fill:02x}")],
         keys: TextureCacheKeysSection { keys: vec![key] },
-        materials: vec![Material::Default],
+        materials: vec![TextureMaterial::DEFAULT],
         sh,
         direct,
         lights: vec![spot_light()],
@@ -344,7 +344,7 @@ fn off_main_build_matches_the_oracle_set() {
 
         let mut world = load();
         assert!(world.sh_stream_manifest().is_some(), "the fixture streams");
-        let materials = vec![Material::Default; world.texture_names.len()];
+        let materials = vec![TextureMaterial::DEFAULT; world.texture_names.len()];
         renderer.install_textures(
             &world.texture_names,
             &world.texture_cache_keys,
@@ -495,7 +495,7 @@ fn off_main_build_matches_the_oracle_set_on_dev_maps() {
             eprintln!("[OffMainEquivalence] {label}: skipped (stale)");
             continue;
         };
-        let materials = vec![Material::Default; world.texture_names.len()];
+        let materials = vec![TextureMaterial::DEFAULT; world.texture_names.len()];
         renderer.install_textures(
             &world.texture_names,
             &world.texture_cache_keys,

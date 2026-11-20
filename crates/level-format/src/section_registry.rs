@@ -269,6 +269,12 @@ pub enum SectionId {
     /// moments.
     /// See `probe_depth_tiles::ProbeDepthTilesSection`.
     ProbeDepthTiles = 59,
+
+    /// Required per-texture glow strength and mean glow colour, index-aligned
+    /// with TextureNames, plus emissive volumes over static world faces.
+    /// Every map emits it; a level without it is stale.
+    /// See `emissive::EmissiveSection`.
+    Emissive = 60,
 }
 
 impl SectionId {
@@ -321,6 +327,7 @@ impl SectionId {
             57 => Some(Self::MoverProbeChannel),
             58 => Some(Self::LightmapPoolBound),
             59 => Some(Self::ProbeDepthTiles),
+            60 => Some(Self::Emissive),
             _ => None,
         }
     }
@@ -380,6 +387,7 @@ mod tests {
             SectionId::MoverProbeChannel,
             SectionId::LightmapPoolBound,
             SectionId::ProbeDepthTiles,
+            SectionId::Emissive,
         ];
 
         for section_id in registered {
@@ -387,6 +395,6 @@ mod tests {
         }
 
         assert_eq!(SectionId::from_u32(14), None);
-        assert_eq!(SectionId::from_u32(60), None);
+        assert_eq!(SectionId::from_u32(61), None);
     }
 }

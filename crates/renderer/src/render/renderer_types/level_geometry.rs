@@ -139,7 +139,7 @@ pub struct LevelGeometry<'a> {
     /// Runtime cells in id order. A streamed-SH level indexes their bounds
     /// at install so per-frame sample gating names cells by id.
     pub cells: &'a [postretro_level_loader::CellData],
-    pub texture_materials: &'a [postretro_render_data::material::Material],
+    pub texture_materials: &'a [postretro_render_data::material::TextureMaterial],
 }
 
 impl LevelGeometry<'_> {

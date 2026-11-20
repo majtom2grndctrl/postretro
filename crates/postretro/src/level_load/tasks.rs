@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_loader::{
     CompleteHandOuts, GeometryHandOut, GpuLightingPayloads, LevelWorld, ShManifestMetadata,
     ShStreamingMode, SpatialHandOut, assemble,
@@ -18,7 +19,7 @@ use postretro_render_cpu::sh_residency::{ShResidencyPlan, plan_sh_residency_part
 use postretro_render_cpu::sh_volume::{animated_light_count, sh_sampler_lattice, usable_sh_volume};
 use postretro_render_cpu::texture_prep::{PreparedWorldTextures, prepare_world_textures};
 use postretro_render_cpu::uv_normalize::{diffuse_dims, normalize_world_uvs_with_dims};
-use postretro_render_data::material::Material;
+use postretro_render_data::material::{Material, TextureMaterial};
 
 use postretro_audio::DecodedLevelSounds;
 use postretro_level_format::map_entity::MapEntityRecord;
@@ -36,7 +37,7 @@ use crate::session::level_streaming::{
 pub(super) struct TexturePrep {
     /// The CPU pass; `None` once handed to the load's set builder.
     pub(super) textures: Option<PreparedWorldTextures>,
-    pub(super) materials: Vec<Material>,
+    pub(super) materials: Vec<TextureMaterial>,
     pub(super) dims: Vec<(u32, u32)>,
 }
 
@@ -51,20 +52,26 @@ pub(super) fn prep_textures(geometry: &GeometryHandOut, prm_cache_root: &Path) -
     );
     let dims = diffuse_dims(&textures);
     TexturePrep {
-        materials: level_texture_materials(&geometry.texture_names),
+        materials: level_texture_materials(&geometry.texture_names, &geometry.emissive),
         textures: Some(textures),
         dims,
     }
 }
 
-/// Each world texture's material, derived from its name; an unknown prefix
-/// warns once and takes the default. The oracle install's renderer stage and
-/// prep both build the table here.
-pub(crate) fn level_texture_materials(texture_names: &[String]) -> Vec<Material> {
+/// Each world texture's material, derived from its name, and its baked glow
+/// strength from the level's Emissive section (id 60), which the loader
+/// checked holds one record per name. An unknown prefix warns once and takes
+/// the default. The oracle install's renderer stage and prep both build the
+/// table here.
+pub(crate) fn level_texture_materials(
+    texture_names: &[String],
+    emissive: &EmissiveSection,
+) -> Vec<TextureMaterial> {
     let mut warned = std::collections::HashSet::new();
     texture_names
         .iter()
-        .map(|name| {
+        .enumerate()
+        .map(|(index, name)| {
             let warned_count = warned.len();
             let material = postretro_render_data::material::derive_material(name, &mut warned);
             let prefix = postretro_render_data::material::parse_prefix(name);
@@ -73,7 +80,10 @@ pub(crate) fn level_texture_materials(texture_names: &[String]) -> Vec<Material>
                     "[Material] Unknown prefix '{prefix}' in texture '{name}' — using default material",
                 );
             }
-            material
+            TextureMaterial {
+                material,
+                emissive_strength: emissive.texture_strength(index),
+            }
         })
         .collect()
 }

@@ -142,7 +142,7 @@ impl CaptureScene<'_> {
     /// the angular width one sample stands for.
     ///
     /// Static is `albedo × (lightmap + selected sdf direct + base SH ×
-    /// production weight) + emissive × prefix multiplier`; a light's unit term
+    /// production weight) + emissive × baked strength (id 60)`; a light's unit term
     /// is `albedo × (its weight-map direct + its delta SH × production
     /// weight)`. These are the forward pass's terms with the shading normal at
     /// the face normal (no normal map, so both bumped-Lambert factors are 1).

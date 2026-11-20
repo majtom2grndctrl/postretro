@@ -96,7 +96,7 @@ fn animated_baked_light_tail_count() -> u32 {
 struct MaterialUniform {
     // Blinn-Phong specular exponent; constant per-material variant.
     shininess: f32,
-    // Prefix-driven static multiplier for the emissive texture.
+    // The texture's baked glow strength (PRL id 60) on its emissive map.
     emissive_strength: f32,
     // --- Surface Depth (bytes 8..32) ---
     // The CPU buffer was already 32 bytes while this struct was 16, so the

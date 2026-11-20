@@ -36,6 +36,8 @@ use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection
 #[cfg(feature = "load-prl")]
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
 #[cfg(feature = "load-prl")]
+use postretro_level_format::emissive::EmissiveSection;
+#[cfg(feature = "load-prl")]
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 #[cfg(feature = "load-prl")]
 use postretro_level_format::fog_volumes::FogVolumeRecord;
@@ -689,6 +691,11 @@ pub struct LevelWorld {
     /// Required — loader rejects files where the section is absent.
     #[cfg(feature = "load-prl")]
     pub texture_cache_keys: TextureCacheKeysSection,
+    /// Emissive (PRL section 60): per-texture baked glow strength and mean
+    /// glow colour, parallel to `texture_names`, and the emissive volumes.
+    /// Required — loader rejects files where the section is absent.
+    #[cfg(feature = "load-prl")]
+    pub emissive: EmissiveSection,
     /// Always present — loader rejects files without a BVH section.
     #[cfg(feature = "load-prl")]
     pub bvh: BvhTree,
@@ -941,6 +948,8 @@ impl LevelWorld {
             texture_names: vec![],
             #[cfg(feature = "load-prl")]
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
+            #[cfg(feature = "load-prl")]
+            emissive: EmissiveSection::default(),
             #[cfg(feature = "load-prl")]
             bvh: BvhTree {
                 nodes: vec![],
@@ -2085,6 +2094,7 @@ mod tests {
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
+            emissive: EmissiveSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -2197,6 +2207,7 @@ mod tests {
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
+            emissive: EmissiveSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -2263,6 +2274,7 @@ mod tests {
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
+            emissive: EmissiveSection::default(),
             bvh: empty_bvh(),
             lights: vec![],
             light_influences: vec![],
@@ -2419,10 +2431,13 @@ mod tests {
         }
     }
 
+    /// `sections` as written, plus Emissive (id 60) when they name none: a
+    /// fixture that omits another required section still reaches its check.
     fn write_prl_fixture_raw(
-        sections: Vec<prl_format::SectionBlob>,
+        mut sections: Vec<prl_format::SectionBlob>,
         name: &str,
     ) -> std::path::PathBuf {
+        crate::prl_load_test_fixtures::complete_emissive_section(&mut sections);
         let tmp = std::env::temp_dir().join(name);
         let mut file = std::fs::File::create(&tmp).unwrap();
         prl_format::write_prl(&mut file, &sections).unwrap();
@@ -4835,6 +4850,129 @@ mod tests {
             "got {err:?}"
         );
         std::fs::remove_file(&tmp).ok();
+    }
+
+    fn texture_names_blob(names: &[&str]) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::TextureNames as u32,
+            version: 1,
+            data: postretro_level_format::texture_names::TextureNamesSection {
+                names: names.iter().map(|name| (*name).to_owned()).collect(),
+            }
+            .to_bytes(),
+        }
+    }
+
+    fn emissive_blob(section: &EmissiveSection) -> prl_format::SectionBlob {
+        prl_format::SectionBlob {
+            section_id: SectionId::Emissive as u32,
+            version: postretro_level_format::emissive::EMISSIVE_VERSION,
+            data: section.to_bytes(),
+        }
+    }
+
+    /// A two-face, two-texture level whose Emissive section is `emissive`.
+    fn emissive_level(emissive: &EmissiveSection, name: &str) -> std::path::PathBuf {
+        write_prl_fixture(
+            vec![
+                geometry_blob(sample_geometry()),
+                bvh_blob(sample_bvh_section()),
+                texture_names_blob(&["signs/bar", "metal/plate"]),
+                default_texture_cache_keys_blob(),
+                default_fog_volumes_blob(),
+                emissive_blob(emissive),
+            ],
+            name,
+        )
+    }
+
+    fn baked_emissive() -> EmissiveSection {
+        use postretro_level_format::emissive::{EmissiveTexture, EmissiveVolumeRecord};
+        EmissiveSection {
+            textures: vec![
+                EmissiveTexture {
+                    strength: 4.0,
+                    glow_color: [0.43, 0.2, 0.1],
+                },
+                EmissiveTexture::DARK,
+            ],
+            volumes: vec![EmissiveVolumeRecord {
+                min: 0.0,
+                max: 1.0,
+                color: [1.0, 0.5, 0.0],
+                origin: [0.5, 0.5, 0.5],
+                faces: vec![1],
+                tags: vec!["bar_sign".to_owned()],
+            }],
+        }
+    }
+
+    #[test]
+    fn load_prl_carries_the_emissive_section_into_the_world() {
+        let emissive = baked_emissive();
+        let tmp = emissive_level(&emissive, "postretro_test_emissive_loads.prl");
+        let world = load_prl(tmp.to_str().unwrap()).expect("a level with id 60 loads");
+        assert_eq!(world.emissive, emissive);
+        assert_eq!(world.emissive.texture_strength(0), 4.0);
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_rejects_a_level_without_the_emissive_section_as_stale() {
+        let sections: Vec<_> = complete_prl_fixture_sections(vec![
+            geometry_blob(sample_geometry()),
+            bvh_blob(sample_bvh_section()),
+            default_texture_cache_keys_blob(),
+            default_fog_volumes_blob(),
+        ])
+        .into_iter()
+        .filter(|section| section.section_id != SectionId::Emissive as u32)
+        .collect();
+        let tmp = std::env::temp_dir().join("postretro_test_missing_emissive.prl");
+        let mut file = std::fs::File::create(&tmp).unwrap();
+        prl_format::write_prl(&mut file, &sections).unwrap();
+        let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PrlLoadError::StaleFormatMissingSection {
+                    section: "Emissive",
+                    id: 60,
+                }
+            ),
+            "got {err:?}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn load_prl_refuses_emissive_records_that_do_not_fit_the_level() {
+        let mut short = baked_emissive();
+        short.textures.pop();
+        let mut past_faces = baked_emissive();
+        past_faces.volumes[0].faces = vec![2];
+        let mut inverted = baked_emissive();
+        inverted.volumes[0].min = 2.0;
+        for (case, emissive, expected) in [
+            (
+                "texture count",
+                short,
+                "1 texture records for 2 texture names",
+            ),
+            ("face range", past_faces, "outside the level's 2 faces"),
+            ("min above max", inverted, "above its max"),
+        ] {
+            let tmp = emissive_level(&emissive, "postretro_test_emissive_refused.prl");
+            let err = load_prl(tmp.to_str().unwrap()).unwrap_err();
+            match err {
+                PrlLoadError::SectionValidation { section, message } => {
+                    assert_eq!(section, "Emissive", "{case}");
+                    assert!(message.contains(expected), "{case}: {message}");
+                }
+                other => panic!("{case}: got {other:?}"),
+            }
+            std::fs::remove_file(&tmp).ok();
+        }
     }
 
     #[test]

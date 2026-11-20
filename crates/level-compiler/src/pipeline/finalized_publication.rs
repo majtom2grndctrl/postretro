@@ -23,6 +23,7 @@ use postretro_level_format::data_script::DataScriptSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
 use postretro_level_format::direct_sh_delta_volumes::DirectShDeltaVolumesSection;
 use postretro_level_format::direct_sh_volume::DirectShVolumeSection;
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::entity_shadow_lights::EntityShadowLightsSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_cell_masks::FogCellMasksSection;
@@ -157,6 +158,8 @@ pub(super) struct FinalizedPrlPackInputs<'a> {
     pub(super) map_entities: Option<&'a MapEntitySection>,
     pub(super) fog_volumes: &'a FogVolumesSection,
     pub(super) fog_cell_masks: Option<&'a FogCellMasksSection>,
+    /// Emissive (id 60): written for every map.
+    pub(super) emissive: &'a EmissiveSection,
     pub(super) sdf_atlas: Option<&'a SdfAtlasSection>,
     pub(super) navmesh: Option<&'a NavMeshSection>,
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
@@ -217,6 +220,7 @@ pub(super) fn write_finalized_prl(
         map_entities,
         fog_volumes,
         fog_cell_masks,
+        emissive,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -271,6 +275,7 @@ pub(super) fn write_finalized_prl(
         map_entities,
         fog_volumes,
         fog_cell_masks,
+        emissive,
         sdf_atlas,
         navmesh,
         kinematic_geometry,

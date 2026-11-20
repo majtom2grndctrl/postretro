@@ -68,7 +68,10 @@ pub(in crate::render) fn write_prm(root: &Path, key: [u8; 32], slots: [Option<Pr
 }
 
 /// One triangle in one cell whose leaf draws material bucket 0.
-pub(in crate::render) fn install_one_triangle(renderer: &mut Renderer, materials: &[Material]) {
+pub(in crate::render) fn install_one_triangle(
+    renderer: &mut Renderer,
+    materials: &[TextureMaterial],
+) {
     install_one_triangle_with_sh(renderer, materials, None, None);
 }
 
@@ -76,7 +79,7 @@ pub(in crate::render) fn install_one_triangle(renderer: &mut Renderer, materials
 /// and direct compose families bind real data.
 pub(in crate::render) fn install_one_triangle_with_sh(
     renderer: &mut Renderer,
-    materials: &[Material],
+    materials: &[TextureMaterial],
     sh_volume: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     direct_sh_volume: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
 ) {
@@ -90,7 +93,7 @@ pub(in crate::render) fn install_one_triangle_with_sh(
 /// The one-triangle level (one cell, one BVH leaf, the triangle at z = 0
 /// facing +Z) with `lights`, handed to `use_geometry` to install or build.
 pub(in crate::render) fn with_one_triangle<R>(
-    materials: &[Material],
+    materials: &[TextureMaterial],
     sh_volume: Option<&postretro_level_format::sh_volume::OctahedralShVolumeSection>,
     direct_sh_volume: Option<&postretro_level_format::direct_sh_volume::DirectShVolumeSection>,
     lights: &[postretro_level_loader::MapLight],

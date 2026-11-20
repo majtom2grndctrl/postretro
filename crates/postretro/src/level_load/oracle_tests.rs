@@ -118,7 +118,7 @@ fn assert_prep_matches_oracle(
         texture_summary(&oracle_textures.entries),
         "{label}: prepared textures"
     );
-    let materials = level_texture_materials(&world.texture_names);
+    let materials = level_texture_materials(&world.texture_names, &world.emissive);
     assert_eq!(gpu.texture_materials, materials, "{label}: materials");
     let dims = diffuse_dims(&oracle_textures);
     assert_eq!(gpu.diffuse_dims, dims, "{label}: diffuse dims");

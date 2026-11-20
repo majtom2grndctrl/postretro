@@ -63,6 +63,7 @@ use postretro_level_format::animated_direct_sh_delta_volumes::AnimatedDirectShDe
 use postretro_level_format::animated_light_weight_maps::AnimatedLightWeightMapsSection;
 use postretro_level_format::chunk_light_list::ChunkLightListSection;
 use postretro_level_format::delta_sh_volumes::DeltaShVolumesSection;
+use postretro_level_format::emissive::EmissiveTexture;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::lightmap::{IRRADIANCE_FORMAT_BC6H, LightmapSection};
 use postretro_level_format::probe_depth_tiles::ProbeDepthTilesSection;
@@ -127,7 +128,9 @@ const STAGE_ID: &str = "reflection_probes";
 /// bounds every later read: past its depth the ray takes the leak guard.
 /// 14: a probe with a depth tile (id 59) weighs by the tile's moments toward
 /// the sample, as the runtime does; the key gains id 59.
-const STAGE_VERSION: u32 = 14;
+/// 15: emissive strength is the baked id-60 value (`materials.toml`, else 1
+/// with an `_e` map), not the texture-name prefix.
+const STAGE_VERSION: u32 = 15;
 
 /// What the stage reads. Everything here enters its cache key.
 pub(crate) struct ReflectionProbeInputs<'a> {
@@ -177,6 +180,9 @@ pub(crate) struct ReflectionProbeInputs<'a> {
     pub chunk_light_list: &'a ChunkLightListSection,
     /// Texture name → `.prm` key, from the TextureMips stage.
     pub texture_keys: &'a HashMap<String, [u8; 32]>,
+    /// Id 60's per-texture records, index-aligned with the texture names:
+    /// the strength the runtime material uniform also packs.
+    pub emissive_textures: &'a [EmissiveTexture],
     pub prm_root: &'a Path,
 }
 
@@ -408,6 +414,7 @@ fn bake_or_load_with(
         materials: SurfaceMaterials::new(
             &inputs.geometry.texture_names.names,
             inputs.texture_keys,
+            inputs.emissive_textures,
             inputs.prm_root,
         ),
         lightmap: LightmapSampler::new(inputs.lightmap),

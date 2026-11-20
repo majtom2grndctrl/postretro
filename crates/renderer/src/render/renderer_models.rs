@@ -339,6 +339,11 @@ impl Renderer {
     }
 }
 
+/// Every skinned model material. Models load only their diffuse slot
+/// (`TextureSlotPolicy::ModelDiffuseOnly`), so a model texture's `_e` sibling
+/// never binds and its uniform packs no glow.
+pub(in crate::render) const SKINNED_MODEL_MATERIAL: TextureMaterial = TextureMaterial::DEFAULT;
+
 /// One skinned model's GPU entry: its prepared materials uploaded and bound
 /// (one bind group per distinct key, shared by the submeshes that reuse it)
 /// and its mesh uploaded with the skeleton, clips and pose stack cloned in.
@@ -382,7 +387,7 @@ pub(in crate::render) fn build_model_entry(
                 bind.texture_bgl,
                 &tex,
                 &character_model_sampler,
-                Material::Default,
+                SKINNED_MODEL_MATERIAL,
                 bind.surface_depth_quality,
                 &format!("Skinned Model Material {key_hex}"),
             )
@@ -440,4 +445,36 @@ pub(super) fn loaded_texture_dimensions(textures: &[LoadedTexture]) -> Vec<[u32;
         .iter()
         .map(|tex| [tex.diffuse_texture.width(), tex.diffuse_texture.height()])
         .collect()
+}
+
+#[cfg(test)]
+mod skinned_model_material_tests {
+    use super::SKINNED_MODEL_MATERIAL;
+    use postretro_level_format::prm::{PrmReadError, PrmSlot, PrmSlots};
+    use postretro_render_cpu::loaded_texture::{TextureSlotPolicy, texture_slot_plan};
+    use postretro_render_cpu::material_plan::MaterialUniformPlan;
+    use postretro_render_cpu::surface_depth::{SurfaceDepthQuality, SurfaceReliefLevels};
+
+    // Acceptance A1a: a skinned model with an `_e` sibling still packs 0.
+    #[test]
+    fn a_skinned_model_with_an_emissive_sibling_still_packs_zero_glow() {
+        let absent: [Result<PrmSlot, PrmReadError>; 4] =
+            std::array::from_fn(|_| Err(PrmReadError::NotPresent));
+        let plan = texture_slot_plan(
+            PrmSlots::DIFFUSE | PrmSlots::EMISSIVE,
+            &absent,
+            TextureSlotPolicy::ModelDiffuseOnly,
+        );
+        assert!(!plan.consume[3], "a model never binds its `_e` slot");
+        let uniform = MaterialUniformPlan::new(
+            SKINNED_MODEL_MATERIAL.material,
+            SKINNED_MODEL_MATERIAL.emissive_strength,
+            false,
+            1,
+            SurfaceReliefLevels::FLAT,
+        );
+        for quality in SurfaceDepthQuality::ALL {
+            assert_eq!(uniform.uniform_bytes(quality)[4..8], 0.0f32.to_le_bytes());
+        }
+    }
 }

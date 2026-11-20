@@ -906,10 +906,15 @@ fn run_after_parsing(
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::Materials);
     let prm_root = resolve_prm_root(&args.input, args.baked_root.as_deref());
+    // Read every build, warm or cold: only reflection capture and id 60
+    // see its values, and both are computed from them each time.
+    let materials_toml =
+        crate::materials_toml::MaterialsToml::load(&resolve_content_root(&args.input));
     let mut material_stage = texture_stage::bake_world_materials(
         &geo_result.texture_names.names,
         &texture_root,
         &prm_root,
+        materials_toml,
     )?;
     finish_stage(
         &mut timings,
@@ -2178,14 +2183,17 @@ fn run_after_parsing(
     );
 
     let stage_start = begin_stage(reporter.as_ref(), StageId::TextureMips);
-    texture_stage::bake_remaining_textures(
-        &args.input,
-        &geo_result.texture_names.names,
-        &map_data.map_entities,
-        &texture_root,
-        &prm_root,
-        &mut material_stage,
-    )?;
+    let emissive_section = postretro_level_format::emissive::EmissiveSection {
+        textures: texture_stage::bake_remaining_textures(
+            &args.input,
+            &geo_result.texture_names.names,
+            &map_data.map_entities,
+            &texture_root,
+            &prm_root,
+            &mut material_stage,
+        )?,
+        volumes: Vec::new(),
+    };
     let name_to_key = material_stage.name_to_key;
     finish_stage(
         &mut timings,
@@ -2226,6 +2234,7 @@ fn run_after_parsing(
             alpha_lights: &alpha_lights_section,
             chunk_light_list: &chunk_light_list_section,
             texture_keys: &name_to_key,
+            emissive_textures: &emissive_section.textures,
             prm_root: &prm_root,
         },
         stage_cache.as_ref(),
@@ -2295,6 +2304,7 @@ fn run_after_parsing(
         map_entities: map_entities_section.as_ref(),
         fog_volumes: &fog_volumes_section,
         fog_cell_masks: fog_cell_masks_section.as_ref(),
+        emissive: &emissive_section,
         sdf_atlas: sdf_atlas_section.as_ref(),
         navmesh: navmesh_section.as_ref(),
         kinematic_geometry: kinematic_geometry_section.as_ref(),

@@ -68,6 +68,8 @@ pub(super) struct FinalizedSectionPlanInputs<'a> {
     pub(super) map_entities: Option<&'a MapEntitySection>,
     pub(super) fog_volumes: &'a FogVolumesSection,
     pub(super) fog_cell_masks: Option<&'a FogCellMasksSection>,
+    /// Id 60, written for every map.
+    pub(super) emissive: &'a EmissiveSection,
     pub(super) sdf_atlas: Option<&'a SdfAtlasSection>,
     pub(super) navmesh: Option<&'a NavMeshSection>,
     pub(super) kinematic_geometry: Option<&'a KinematicGeometrySection>,
@@ -167,6 +169,7 @@ pub(super) fn build_finalized_section_plan<'a>(
         map_entities,
         fog_volumes,
         fog_cell_masks,
+        emissive,
         sdf_atlas,
         navmesh,
         kinematic_geometry,
@@ -479,6 +482,18 @@ pub(super) fn build_finalized_section_plan<'a>(
             || Ok(section.to_bytes()),
         ));
     }
+    anyhow::ensure!(
+        emissive.textures.len() == geo_result.texture_names.names.len(),
+        "Emissive carries {} texture records for {} texture names",
+        emissive.textures.len(),
+        geo_result.texture_names.names.len()
+    );
+    sections.push(PlannedSection::new(
+        SectionId::Emissive as u32,
+        postretro_level_format::emissive::EMISSIVE_VERSION,
+        emissive.byte_len(),
+        || Ok(emissive.to_bytes()),
+    ));
     if let Some(section) = sdf_atlas {
         sections.push(PlannedSection::new(
             SectionId::SdfAtlas as u32,

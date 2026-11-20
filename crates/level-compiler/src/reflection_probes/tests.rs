@@ -124,6 +124,8 @@ pub(super) struct Extras {
     pub alpha_lights: AlphaLightsSection,
     pub chunk_list: ChunkLightListSection,
     pub authored: Vec<MapReflectionVolume>,
+    /// Id 60's texture records; empty reads every texture at strength 0.
+    pub emissive: Vec<postretro_level_format::emissive::EmissiveTexture>,
 }
 
 impl Default for Extras {
@@ -137,6 +139,7 @@ impl Default for Extras {
             alpha_lights: AlphaLightsSection::default(),
             chunk_list: ChunkLightListSection::placeholder(),
             authored: Vec::new(),
+            emissive: Vec::new(),
         }
     }
 }
@@ -235,6 +238,7 @@ pub(super) fn with_inputs<R>(
         alpha_lights: &extras.alpha_lights,
         chunk_light_list: &extras.chunk_list,
         texture_keys: &room.keys,
+        emissive_textures: &extras.emissive,
         prm_root: room.prm_dir.path(),
     })
 }
@@ -679,6 +683,40 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
     expect_miss(&room, &environment, "albedo or emissive texture");
     room.keys.insert("floor".to_string(), [1; 32]);
 
+    // Id 60's strength of a texture a static-world face shows re-keys the
+    // capture, which shades its emissive at that strength. Its glow colour,
+    // which the capture never reads, keeps the key.
+    {
+        use postretro_level_format::emissive::EmissiveTexture;
+        let lit = |strength| EmissiveTexture {
+            strength,
+            glow_color: [0.5; 3],
+        };
+        room.extras.emissive = vec![lit(4.0), EmissiveTexture::DARK];
+        expect_miss(&room, &environment, "static-world texture strength");
+        let at_four = stage_key(&room, &environment);
+        room.extras.emissive[0].glow_color = [1.0, 0.0, 0.0];
+        assert_eq!(at_four, stage_key(&room, &environment), "glow colour");
+        // Pin P47: a texture only a fluid shows is no static-world face's,
+        // so its strength never keys the capture.
+        room.extras.emissive = vec![EmissiveTexture::DARK; 2];
+        let names = room.geometry.texture_names.names.clone();
+        room.geometry
+            .texture_names
+            .names
+            .push("fluid_only".to_string());
+        room.extras.emissive.push(lit(1.0));
+        let fluid_one = stage_key(&room, &environment);
+        room.extras.emissive[2].strength = 4.0;
+        assert_eq!(
+            fluid_one,
+            stage_key(&room, &environment),
+            "fluid-only strength"
+        );
+        room.geometry.texture_names.names = names;
+        room.extras.emissive = Vec::new();
+    }
+
     let sh = room.extras.sh.clone();
     room.extras.sh = room_sh(0.5);
     room.extras.sh.animation_descriptors = sh.animation_descriptors.clone();
@@ -802,7 +840,7 @@ fn cache_key_misses_on_every_input_the_capture_reads_and_hits_otherwise() {
         room.extras.authored.clear();
         stage_key(&room, &environment)
     });
-    assert_eq!(misses, 13);
+    assert_eq!(misses, 14);
 }
 
 #[test]

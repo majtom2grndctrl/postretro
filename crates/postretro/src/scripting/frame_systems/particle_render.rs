@@ -541,6 +541,7 @@ mod tests {
             cell_visibility: None,
             texture_names: vec![],
             texture_cache_keys: TextureCacheKeysSection { keys: vec![] },
+            emissive: Default::default(),
             bvh: postretro_render_data::geometry::BvhTree {
                 nodes: vec![],
                 leaves: vec![],

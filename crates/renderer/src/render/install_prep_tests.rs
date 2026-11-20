@@ -21,7 +21,7 @@ use postretro_render_cpu::sh_volume::{
 };
 use postretro_render_cpu::texture_prep::prepare_world_textures;
 use postretro_render_cpu::uv_normalize::diffuse_dims;
-use postretro_render_data::material::Material;
+use postretro_render_data::material::TextureMaterial;
 
 use super::gpu_test_harness::offscreen_renderer_or_skip;
 use super::renderer_textures::tests::{chain, write_prm};
@@ -95,7 +95,7 @@ fn prepared_diffuse_dims_match_the_uploaded_textures() {
     let keys = TextureCacheKeysSection {
         keys: vec![small, [0u8; 32], missing, wide, no_diffuse],
     };
-    let materials = vec![Material::Default; names.len()];
+    let materials = vec![TextureMaterial::DEFAULT; names.len()];
 
     renderer.install_textures(&names, &keys, dir.path(), &materials);
     let prepared = diffuse_dims(&prepare_world_textures(&names, &keys, dir.path()));
@@ -187,7 +187,7 @@ fn assert_prep_matches_install(
     prm_root: Option<&Path>,
 ) -> PrepCoverage {
     let limits = renderer.install_device_limits();
-    let materials = vec![Material::Default; world.texture_names.len()];
+    let materials = vec![TextureMaterial::DEFAULT; world.texture_names.len()];
     let dims = match prm_root {
         Some(root) => {
             renderer.install_textures(

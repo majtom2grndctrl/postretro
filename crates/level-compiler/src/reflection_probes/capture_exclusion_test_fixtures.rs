@@ -395,6 +395,7 @@ impl CaptureFixture {
             alpha_lights: &self.alpha_lights,
             chunk_light_list: &self.chunk_list,
             texture_keys: &self.keys,
+            emissive_textures: &[],
             prm_root: self.prm_dir.path(),
         })
     }
@@ -415,6 +416,7 @@ impl CaptureFixture {
             materials: SurfaceMaterials::new(
                 &self.world.geometry.texture_names.names,
                 &self.keys,
+                &[],
                 self.prm_dir.path(),
             ),
             lightmap: LightmapSampler::new(&self.lightmap),

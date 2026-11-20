@@ -150,8 +150,9 @@ pub(super) fn cache_key(
         .iter()
         .map(|face| face.texture_index)
         .collect();
+    // A fluid-only texture is no static-world face's, so its strength never
+    // keys the capture.
     let mut materials = Vec::new();
-    let mut warned = std::collections::HashSet::new();
     for index in used {
         let Some(name) = inputs.geometry.texture_names.names.get(index as usize) else {
             continue;
@@ -160,8 +161,10 @@ pub(super) fn cache_key(
         materials.extend_from_slice(&(name.len() as u64).to_le_bytes());
         materials.extend_from_slice(name.as_bytes());
         materials.extend_from_slice(&inputs.texture_keys.get(name).copied().unwrap_or([0; 32]));
-        let strength =
-            postretro_render_data::material::derive_material(name, &mut warned).emissive_strength();
+        let strength = inputs
+            .emissive_textures
+            .get(index as usize)
+            .map_or(0.0, |texture| texture.strength);
         materials.extend_from_slice(&strength.to_le_bytes());
     }
     section("materials", &materials);

@@ -6,12 +6,14 @@ use postretro_level_format::cell_locator::{
     CellLocatorChild as FormatCellLocatorChild, CellLocatorNodeRecord, CellLocatorSection,
 };
 use postretro_level_format::cells::{CellRecord, CellsSection};
+use postretro_level_format::emissive::EmissiveSection;
 use postretro_level_format::environment_volumes::EnvironmentVolumesSection;
 use postretro_level_format::fog_volumes::FogVolumesSection;
 use postretro_level_format::geometry::{GEOMETRY_CONTAINER_VERSION, GeometrySection};
 use postretro_level_format::portals::{PortalRecord, PortalsSection};
 use postretro_level_format::sh_volume::OctahedralShVolumeSection;
 use postretro_level_format::texture_cache_keys::TextureCacheKeysSection;
+use postretro_level_format::texture_names::TextureNamesSection;
 use postretro_level_format::{SectionBlob, SectionId, write_prl};
 
 /// A loadable two-cell PRL with empty geometry plus `additional_sections`,
@@ -187,9 +189,32 @@ fn write_fixture(
             data: EnvironmentVolumesSection::default().to_bytes(),
         });
     }
+    complete_emissive_section(&mut sections);
 
     let path = std::env::temp_dir().join(name);
     let mut file = std::fs::File::create(&path).unwrap();
     write_prl(&mut file, &sections).unwrap();
     path
+}
+
+/// Every current PRL carries Emissive (id 60). A fixture that names none gets
+/// one dark record per TextureNames entry and no volume; a stale-section test
+/// writes its sections without this.
+pub(crate) fn complete_emissive_section(sections: &mut Vec<SectionBlob>) {
+    if sections
+        .iter()
+        .any(|section| section.section_id == SectionId::Emissive as u32)
+    {
+        return;
+    }
+    let texture_count = sections
+        .iter()
+        .find(|section| section.section_id == SectionId::TextureNames as u32)
+        .and_then(|section| TextureNamesSection::from_bytes(&section.data).ok())
+        .map_or(0, |names| names.names.len());
+    sections.push(SectionBlob {
+        section_id: SectionId::Emissive as u32,
+        version: postretro_level_format::emissive::EMISSIVE_VERSION,
+        data: EmissiveSection::dark(texture_count).to_bytes(),
+    });
 }

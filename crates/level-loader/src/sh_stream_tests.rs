@@ -1022,6 +1022,7 @@ fn write_stream_fixture_variant(
         ),
     ];
     sections.extend(extra_sections);
+    crate::prl_load_test_fixtures::complete_emissive_section(&mut sections);
 
     let mut file = std::fs::File::create(&path).unwrap();
     write_prl(&mut file, &sections).unwrap();
@@ -1082,6 +1083,7 @@ pub(crate) fn write_minimal_whole_load_fixture(
         ),
     ];
     sections.extend(extra_sections);
+    crate::prl_load_test_fixtures::complete_emissive_section(&mut sections);
     let mut file = std::fs::File::create(&path).unwrap();
     write_prl(&mut file, &sections).unwrap();
     StreamFixture {

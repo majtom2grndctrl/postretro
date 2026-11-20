@@ -215,7 +215,9 @@ use postretro_lighting::{GPU_LIGHT_SIZE, pack_lights, pack_lights_with_slots_int
 use postretro_render_cpu::chunk_list::ChunkGrid;
 use postretro_render_data::geometry::BvhTree;
 use postretro_render_data::influence::LightInfluence;
+#[cfg(test)]
 use postretro_render_data::material::Material;
+use postretro_render_data::material::TextureMaterial;
 use postretro_visibility::{CameraCullVisibility, VisibleCells};
 pub use renderer_resources::{LevelInstallError, lightmap_family_inputs};
 pub use upload_thread::UPLOAD_SUBMIT_CHUNK_BYTES;

@@ -121,7 +121,7 @@ pub(in crate::render) struct LevelTextures {
     /// GPU textures indexed by texture index; never empty (a level with no
     /// textures holds one placeholder slot).
     pub(in crate::render) gpu_textures: Vec<GpuTexture>,
-    pub(in crate::render) stored_texture_materials: Vec<Material>,
+    pub(in crate::render) stored_texture_materials: Vec<TextureMaterial>,
     /// Samplers the materials' bind groups needed that the renderer's
     /// add-only maps lacked; merged into those maps when the set publishes.
     pub(in crate::render) samplers: SamplerMaps,
@@ -179,7 +179,7 @@ pub(in crate::render) struct LevelResourceSet {
     pub(in crate::render) loaded_textures: Vec<LoadedTexture>,
     pub(in crate::render) gpu_textures: Vec<GpuTexture>,
     /// Per-texture material properties derived from texture names.
-    pub(in crate::render) stored_texture_materials: Vec<Material>,
+    pub(in crate::render) stored_texture_materials: Vec<TextureMaterial>,
 
     // --- World geometry and cull ---
     pub(in crate::render) vertex_buffer: wgpu::Buffer,

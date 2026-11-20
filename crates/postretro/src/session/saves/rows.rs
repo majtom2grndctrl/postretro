@@ -93,6 +93,8 @@ pub(crate) fn publish_save_rows(session: &mut Session) {
     ] {
         write_if_changed(&mut table, name, SlotValue::Number(index as f32));
     }
+    drop(table);
+    super::set_seat_zero_name_from_selection(session);
 }
 
 fn write_row<const N: usize>(

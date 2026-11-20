@@ -204,6 +204,32 @@ fn create_character_refuses_occupied_slot() {
     );
 }
 
+// Play-test regression: the host's own row and roster entry read `Player 1`
+// whatever its character was named, because seat 0 asserts no claim.
+#[test]
+fn seat_zero_is_named_for_the_selected_character() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = frontend(dir.path());
+    let seat_zero_name = |app: &App| {
+        app.session
+            .as_ref()
+            .unwrap()
+            .seat_table
+            .as_ref()
+            .expect("the frontend fixture holds a seat ledger")
+            .display_name(postretro_foundation::Seat(0))
+            .to_owned()
+    };
+    character(&mut app, 0, "Vex");
+    assert_eq!(seat_zero_name(&app), "Vex");
+    character(&mut app, 1, "Ash");
+    assert_eq!(seat_zero_name(&app), "Ash");
+    app.handle_save_verb(select(0));
+    assert_eq!(seat_zero_name(&app), "Vex");
+    app.handle_save_verb(delete_character(0));
+    assert_eq!(seat_zero_name(&app), "", "no character selected");
+}
+
 #[test]
 fn select_character_replaces_per_owner_values() {
     let dir = tempfile::tempdir().unwrap();

@@ -72,6 +72,16 @@ pub(crate) fn set_seat_zero_carry_from_selection(session: &mut Session) {
     if let Some(seats) = session.seat_table.as_mut() {
         seats.set_carried_state(Seat(0), carry);
     }
+    set_seat_zero_name_from_selection(session);
+}
+
+/// Seat 0 is named for the selected character, so the host's own row and
+/// roster entry show it; empty with none, which reads `Player 1`.
+pub(crate) fn set_seat_zero_name_from_selection(session: &mut Session) {
+    let name = session.saves.selected_character_name().to_owned();
+    if let Some(seats) = session.seat_table.as_mut() {
+        seats.set_local_display_name(&name);
+    }
 }
 
 /// Reset every mod-owned slot to its default, then overlay the world file,

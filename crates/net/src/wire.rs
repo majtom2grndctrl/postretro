@@ -74,7 +74,7 @@ pub use control::{
     DivergenceReason, HoldingCause, JoinSeedValue, NETCODE_USER_DATA_BYTES, ParityDeclaration,
     PlayerClaimId, ProtocolVersion, RevealedLevel, RosterEntry, ServerControlMessage, SessionId,
     SessionRosterMessage, SpawnPoseHint, decode_connect_claim, encode_connect_claim,
-    password_proof, roster_status, session_password_key,
+    password_proof, roster_status, session_password_key, truncate_display_name,
 };
 pub(crate) use control::{ParticipationFrame, ServerControlFrame};
 
